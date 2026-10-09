@@ -1,7 +1,7 @@
 """Bounded, retry-free HTTP transport for the existing official Exa agent MCP.
 
 Credentials are read from the worker's EXA_API_KEY environment only. Discovery
-is read-only; callers own durable start claims and all-in spending admission.
+is read-only; callers own durable start claims and immutable source admission.
 Raw HTTP receipts are separate from unchanged provider records. A receipt_sink
 can retain each response before a provider acknowledgement leaves this adapter.
 """
@@ -268,18 +268,14 @@ class ExaTransport(_EvidenceParser):
 
 
     def start(self, request):
-        from tools.daily_research.expansion import LIMIT_MICROS, _cap_supported
+        from tools.daily_research.expansion import _cap_supported
 
         deadline = time.monotonic() + self.timeout
         if self._start_attempted:
             self._fail("exa_mcp_start_already_attempted")
-        if (not isinstance(request, dict) or set(request) != {"query", "effort", "budget"}
+        if (not isinstance(request, dict) or set(request) != {"query", "effort"}
                 or request.get("effort") != "ultra"
-                or not isinstance(request.get("query"), str) or not request["query"].strip()
-                or not isinstance(request.get("budget"), dict) or set(request["budget"]) != {"maxCostDollars"}
-                or type(request["budget"]["maxCostDollars"]) not in (int, float)
-                or not math.isfinite(request["budget"]["maxCostDollars"])
-                or not 1 <= request["budget"]["maxCostDollars"] <= LIMIT_MICROS / 1_000_000):
+                or not isinstance(request.get("query"), str) or not request["query"].strip()):
             self._fail("exa_mcp_start_arguments_invalid")
         if not _cap_supported(self._discover(deadline), request):
             self._fail("exa_mcp_supported_cost_cap_missing")
@@ -334,14 +330,14 @@ def reconcile_start_ack(receipt, expected_request):
         request = _json(request_raw)
     except (ValueError, UnicodeError, RecursionError):
         parser._fail("exa_mcp_retained_ack_request_invalid")
-    if (not isinstance(expected_request, dict) or set(expected_request) not in ({"query", "budget"}, {"query", "effort", "budget"})
+    if (not isinstance(expected_request, dict) or set(expected_request) not in ({"query", "budget"}, {"query", "effort", "budget"}, {"query", "effort"})
             or "effort" in expected_request and expected_request["effort"] != "ultra"
             or not isinstance(expected_request.get("query"), str) or not expected_request["query"].strip()
-            or not isinstance(expected_request.get("budget"), dict)
-            or set(expected_request["budget"]) != {"maxCostDollars"}
-            or type(expected_request["budget"]["maxCostDollars"]) not in (int, float)
-            or not math.isfinite(expected_request["budget"]["maxCostDollars"])
-            or expected_request["budget"]["maxCostDollars"] <= 0
+            or "budget" in expected_request and (not isinstance(expected_request["budget"], dict)
+                or set(expected_request["budget"]) != {"maxCostDollars"}
+                or type(expected_request["budget"]["maxCostDollars"]) not in (int, float)
+                or not math.isfinite(expected_request["budget"]["maxCostDollars"])
+                or expected_request["budget"]["maxCostDollars"] <= 0)
             or not isinstance(request, dict) or set(request) != {"jsonrpc", "id", "method", "params"}
             or request["jsonrpc"] != "2.0" or request["method"] != "tools/call"
             or type(request["id"]) is not int or type(receipt.get("request_id")) is not int

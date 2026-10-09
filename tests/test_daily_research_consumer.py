@@ -881,7 +881,7 @@ def test_correction_completed_same_second_as_fractional_start_is_valid(fixture):
     assert ledger.get(DAY)["qa"]["corrections"][0]["state"] == "validated"
 
 
-def test_legacy_qa_search_envelope_counts_prior_and_corrected_reviews(fixture):
+def test_legacy_qa_counts_prior_and_corrected_reviews_without_a_count_gate(fixture):
     consumer, api, ledger, bridge, _ = fixture
     malformed_qa(consumer, api)
     row = ledger.get(DAY)
@@ -897,11 +897,11 @@ def test_legacy_qa_search_envelope_counts_prior_and_corrected_reviews(fixture):
             result.append({"id": "correction_search", "type": "web_search_call", "turn_id": "turn_qa_correction_1"})
         return result
     api.listing = values
-    assert consumer.step()["state"] == "qa_blocked"
+    assert consumer.step()["state"] == "reviewed"
     row = ledger.get(DAY)
     assert row["qa"]["web_tool_activities"] == 2
-    assert row["qa"]["error"] == "agent_qa_terminal_guard_failed"
-    assert "decision" not in row["qa"]
+    assert row["qa"]["state"] == "validated"
+    assert "decision" in row["qa"]
 
 
 def test_terminal_correction_artifact_missing_remains_explicit_and_never_claims_repair(fixture):
@@ -1594,12 +1594,12 @@ def test_enabled_qa_reads_the_evidence_once_and_review_reuses_it(enabled, monkey
     assert ledger.get(DAY)["review"]["outreach_ready_keys"] == [ledger.get(DAY)["packet"]["candidates"][0]["candidate_key"]]
 
 
-def test_an_evidence_read_over_budget_admits_nothing_and_qa_continues(enabled, monkeypatch):
+def test_an_evidence_read_after_its_time_bound_admits_nothing_and_qa_continues(enabled, monkeypatch):
     from tools.daily_research import outreach_ready
     consumer, api, ledger, _, _ = enabled
     retain_page(ledger)
     hypothesis_qa(api)
-    monkeypatch.setattr(outreach_ready, "EVIDENCE_MAX_READS", 0)
+    monkeypatch.setattr(outreach_ready, "EVIDENCE_MAX_SECONDS", 0)
     assert consumer.step()["state"] == "reviewed"
     row = ledger.get(DAY)
     assert row["review"]["lead_verification"]["tier_evidence"] == verification.UNAVAILABLE
@@ -1848,7 +1848,7 @@ def test_the_shadow_records_only_a_skip_code_near_the_deadline_or_over_budget(fi
     if cause == "near_deadline":  # The legacy fixture's deadline is NOW + 3 min.
         consumer.clock = lambda: NOW + timedelta(seconds=120)
     else:
-        monkeypatch.setattr(outreach_ready, "EVIDENCE_MAX_READS", 1)  # The QA artifact read uses it.
+        monkeypatch.setattr(outreach_ready, "EVIDENCE_MAX_SECONDS", 0)  # No time remains for evidence reads.
     assert finish(consumer, ledger)["state"] == "completed"
     record = shadow_file(ledger)
     assert record["state"] == "skipped" and record["code"] == "outreach_ready_shadow_" + cause and "results" not in record

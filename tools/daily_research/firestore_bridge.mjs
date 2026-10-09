@@ -65,18 +65,18 @@ const hexOK=(x,n=64)=>typeof x==='string' && x.length===n && /^[a-f0-9]+$/.test(
 const keysAre=(value,keys)=>!!value && typeof value==='object' && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort())===JSON.stringify([...keys].sort());
 const paidMicros=x=>{
-  if(typeof x!=='string' || !/^[1-9]\d{0,2}(?:\.\d{2})?$/.test(x)) return null;
+  if(typeof x!=='string' || !/^[1-9]\d*(?:\.\d{2})?$/.test(x)) return null;
   const [whole,cents='0']=x.split('.'),value=Number(whole)*1000000+Number(cents)*10000;
-  return value>=1000000 && value<=100000000?value:null;
+  return Number.isSafeInteger(value) && value>0?value:null;
 };
-const paidPerStart=limit=>Math.min(Math.max(Math.floor(limit/2),1000000),50000000);
+const paidPerStart=limit=>limit===null?null:Math.min(Math.max(Math.floor(limit/2),1000000),50000000);
 // FindAll claims are the owner journal entries (parallel_findall_owner.SUBMISSIONS_FIELD). Each
 // reserves its prepared request's whole maximum_cost_usd (mirrors allocation.findall_micros).
 const FINDALL_FIELD='parallel_findall_submissions', FINDALL_PROFILE='parallel-findall-v1';
 const findallMicros=x=>{
-  if(typeof x!=='string' || !/^(?:0|[1-9]\d{0,2})(?:\.\d{1,2})?$/.test(x)) return null;
+  if(typeof x!=='string' || !/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(x)) return null;
   const [whole,cents='']=x.split('.'),value=Number(whole)*1000000+Number(cents.padEnd(2,'0'))*10000;
-  return value>0 && value<=100000000?value:null;
+  return Number.isSafeInteger(value) && value>0?value:null;
 };
 function findallClaims(row) {
   const entries=row[FINDALL_FIELD];
@@ -215,7 +215,7 @@ function saContactCells(recipient) {
 }
 function paidDirectionProblem(d,control) {
   if(!keysAre(d,PAID_FIELDS) || d.schema_version!==PAID_DIRECTION) return 'paid_expansion_direction_invalid';
-  if(paidMicros(d.per_run_limit_usd)===null) return 'paid_expansion_limit_invalid';
+  if(d.per_run_limit_usd!==null && paidMicros(d.per_run_limit_usd)===null) return 'paid_expansion_limit_invalid';
   const scope=d.scope,[issued,start,end]=['issued_at','effective_from','expires_at'].map(k=>paidStamp(d[k]));
   if(!keysAre(scope,['agent_id','firestore_root','project_id','run_key_prefix','timezone'])
       || scope.project_id!==control?.project_id || scope.agent_id!==control?.agent_id || scope.firestore_root!==ROOT
@@ -452,28 +452,22 @@ export class Store {
       if(Object.keys(findall).length && (row.findall_profile!==FINDALL_PROFILE || !hexOK(row.metadata?.findall_tools_digest)))
         refuse('findall_profile_invalid');
       const freshFindall=Object.keys(findall).filter(key=>!knownFindall[key]);
-      // Exa and FindAll debit one combined allowance; an unknown cost holds its whole reservation.
-      // The Exa reservation is the immutable intent's native budget on every write, so a
-      // later rewrite of cap_micros cannot hide reserved spend from the combined check.
+      // Exa and FindAll keep all durable accounting claims, including unknown exposure.
+      // Preserve the exact historical capped request, or a new uncapped request,
+      // on every write. Neither amount gates admission or permits a rewrite.
       const exaReserved=exa?Math.round(Number(exa.intent?.request?.budget?.maxCostDollars)*1000000):null;
-      if(exa && (!Number.isSafeInteger(exaReserved) || exaReserved!==exa.cap_micros)) refuse('paid_expansion_claim_cap_mismatch');
-      const reserved=[...(exa?[exaReserved]:[]),...Object.values(findall).map(claim=>claim.reserved_micros)];
-      const overGrant=limit=>!reserved.every(v=>Number.isSafeInteger(v) && v>0)
-        || reserved.reduce((a,b)=>a+b,0)>limit;
+      if(exa && (exa.cap_micros!==null && !Number.isSafeInteger(exaReserved) || (exa.cap_micros===null?exa.intent?.request?.budget!==undefined:exaReserved!==exa.cap_micros))) refuse('paid_expansion_claim_cap_mismatch');
       if(exa && !prior.data()?.exa_expansion_intent_digest) {
-        // A new paid claim debits the frozen grant; an unknown cost holds its whole cap.
+        // A new paid claim must still bind the frozen authority and current fences.
         if(unbound || grant?.state!=='granted' || valueHash(exa.intent?.grant ?? null)!==grantDigest)
           refuse('paid_expansion_grant_required');
-        const liveLimit=await this.paidGrantGate(tx,control,row,grant,false,'exa');
+        await this.paidGrantGate(tx,control,row,grant,false,'exa');
         const dollars=exa.intent?.request?.budget?.maxCostDollars;
-        if(typeof dollars!=='number' || Math.round(dollars*1000000)!==exa.cap_micros) refuse('paid_expansion_claim_cap_mismatch');
-        if(exa.cap_micros>paidPerStart(liveLimit) || overGrant(liveLimit)) refuse('paid_expansion_reservation_exceeds_grant');
+        if(exa.cap_micros!==null && (typeof dollars!=='number' || Math.round(dollars*1000000)!==exa.cap_micros)) refuse('paid_expansion_claim_cap_mismatch');
       }
       if(freshFindall.length) {
         if(unbound || findallUnbound || grant?.state!=='granted') refuse('paid_expansion_grant_required');
-        const liveLimit=await this.paidGrantGate(tx,control,row,grant,false,'findall');
-        if(freshFindall.some(key=>findall[key].reserved_micros>paidPerStart(liveLimit)) || overGrant(liveLimit))
-          refuse('paid_expansion_reservation_exceeds_grant');
+        await this.paidGrantGate(tx,control,row,grant,false,'findall');
       }
       const outreach=row.outreach_ready,outreachDigest=outreach===undefined || outreach===null?null:valueHash(outreach);
       // One frozen outreach-ready record per row, bound at the durable intent: never added, replaced or
@@ -999,11 +993,10 @@ export class Store {
   }
   budgetGate(control, row) {
     if (row.search_provider !== 'perplexity-fast-v1') return;
-    const authority = row.recurring_budget_authority_reference, target = row.soft_target_usd;
-    if (typeof authority !== 'string' || !authority.trim() || authority.trim().startsWith('PENDING')
-        || typeof target !== 'number' || !Number.isFinite(target) || target <= 0)
+    const authority = row.recurring_budget_authority_reference;
+    if (typeof authority !== 'string' || !authority.trim() || authority.trim().startsWith('PENDING'))
       refuse('research_tool_budget_authority_not_pinned');
-    if (control.config?.search_provider !== row.search_provider || control.config?.soft_target_usd !== target
+    if (control.config?.search_provider !== row.search_provider
         || control.config?.recurring_budget_authority_reference !== authority)
       refuse('research_tool_budget_authority_changed');
   }
@@ -1011,7 +1004,7 @@ export class Store {
     // A granted record binds its audited owner direction, the live brake and the reviewed
     // release; at the durable intent it must also be frozen from the current direction.
     // Validate the live successor in this same transaction: it can tighten the source,
-    // allowance or interval before a new reservation is durable. The worker repeats
+    // interval before a new claim is durable. The worker repeats
     // the complete check immediately before POST, including the frozen run deadline.
     const limit=grant?.limit_micros;
     if(!keysAre(grant,PAID_GRANT_FIELDS) || grant.schema_version!==PAID_GRANT || grant.state!=='granted'
@@ -1033,7 +1026,7 @@ export class Store {
     const liveAudit=(await tx.get(this.db.doc(`${ROOT}/paidExpansionDirections/${current.sha256}`))).data();
     if(!liveAudit || valueHash(liveAudit.direction)!==current.sha256 || liveAudit.sha256!==current.sha256
         || liveAudit.version!==current.version || liveAudit.uri!==current.uri) refuse('paid_expansion_grant_not_admitted');
-    return Math.min(limit,paidMicros(current.direction.per_run_limit_usd));
+    return null; // No application dollar limit; authority and immutable bindings above still apply.
   }
   async paidExpansionSet(expected,value) {
     // The only writer of control.paid_expansion: an owner direction compare-and-swap under

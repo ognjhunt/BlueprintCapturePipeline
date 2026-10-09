@@ -82,7 +82,7 @@ def prepare(value, row, snapshot, source_commit, *, session=None, environment=No
     context = row["knowledge_context"]
     if digest(context) != row["knowledge_context_digest"] or digest(row["refresh_policy"]) != row["refresh_policy_digest"]:
         raise Refusal("original_context_binding_mismatch")
-    text = prompt(row["date"], context, 3, adaptive=True, target_usd=25)
+    text = prompt(row["date"], context, 3, adaptive=True)
     # A follow-up artifact must have its own path as well as an exact new turn
     # binding; it must not overwrite the earlier daily artifact in the sandbox.
     output_path = "/workspace/outputs/" + config["test_id"] + ".json"
@@ -90,8 +90,8 @@ def prepare(value, row, snapshot, source_commit, *, session=None, environment=No
     text += (" This is a separate authorized test, not recovery of the earlier failed daily intent. "
              "The previous root scan's two-search/two-open/three-candidate task limits do not apply to this test. "
              "The admitted total watchdog is 30 minutes with 10 minutes reserved for agent QA; stop early when "
-             "useful coverage is complete. The $25 test ceiling is separate from the daily $1 soft target. "
-             "The controller may stop earlier for conservative spend/usage uncertainty. Monster Laundry's "
+             "useful coverage is complete. Blueprint adds no dollar budget or call quota. "
+             "Retain actual usage and unknown billing under the original authority. Monster Laundry's "
              "existing Dyna deployment is a learning contact, not new opportunity quota. MealPro BP-000002 "
              "is a CRM duplicate, not new quota. Independently check sources; do not present the direct Codex "
              "prototype's reads, counts or findings as your own verification. Complete CRM identity-only data "

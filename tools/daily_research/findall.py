@@ -1,11 +1,12 @@
 """Parallel FindAll list-building tools for the existing leased daily research caller.
 
-Owner decision 2026-10-04: FindAll is enabled under the same owner-set per-run paid
-expansion allowance as Exa (allocation.py). A create is admitted only by
+FindAll retains the same immutable source authority as Exa (allocation.py),
+without a Blueprint dollar or call-count limit. A create is admitted only by
 ``allocation.problem(..., source="findall")`` against the row's frozen grant and the
 live control fences (brake, source_commit, valid_until), and then by the canonical
 ``parallel_findall`` grant for that exact request. Its durable claim reserves the
-request's whole ``maximum_cost_usd``; an uncertain create keeps that reservation.
+request's versioned provider estimate in the historical ``maximum_cost_usd``
+binding; an uncertain create keeps that estimate and unknown billing exposure.
 A run still active when research ends or reaches its original deadline is
 cancelled through the provider's cancel API (``settle``), which then retains one
 free result snapshot of every run it cancels or finds terminal.
@@ -50,8 +51,7 @@ OWNER_FIELDS = (SUBMISSIONS_FIELD, READS_FIELD, SETTLEMENTS_FIELD)
 # The portable release projects the canonical closure beside this module
 # (standalone.RUNTIME_PREFIX): the WebApp installer admits only tools/daily_research/.
 RUNTIME_DIRECTORY = "pipeline_runtime"
-CREATE_FIELDS = frozenset({"objective", "entity_type", "generator", "match_limit", "match_conditions",
-                           "maximum_cost_usd"})
+CREATE_FIELDS = frozenset({"objective", "entity_type", "generator", "match_limit", "match_conditions"})
 CAP_PROBLEMS = frozenset({"paid_expansion_cap_exceeds_remaining", "paid_expansion_cap_exceeds_per_start_maximum"})
 CLIENT_TIMEOUT_SECONDS = 10  # Per socket operation; inside the 15 s create bound.
 TOOL_BOUND_SECONDS = 15  # search.respond's application-tool bound, which creates keep.
@@ -76,17 +76,14 @@ def tools():
             "additionalProperties": False, "properties": {
                 "name": {"type": "string"}, "description": {"type": "string"}},
             "required": ["name", "description"]}},
-        "maximum_cost_usd": {"type": "string"},
     }
     definitions = [{"type": "function", "name": CREATE, "defer_loading": False,
         "description": "Start one asynchronous Parallel FindAll enumeration early in research, before deep individual "
                        "verification and QA. Choose objective, entity type, positive evidence conditions, generator and "
                        f"match_limit; start with a match_limit of about {FIRST_MATCH_LIMIT}. The result lists every "
                        "evaluated candidate, including non-matches, so it is larger than match_limit suggests. "
-                       "maximum_cost_usd is a USD string with at most two decimals that covers the "
-                       "generator's price for match_limit; the host reserves all of it from this run's owner-set "
-                       "paid expansion allowance, shared with Exa, and admits at most half of that allowance per "
-                       "start. A refusal names max_start_micros and remaining_micros and starts nothing. Matches "
+                       "The host records the provider's price estimate for the exact chosen request without "
+                       "an application dollar allowance or per-start ceiling. Matches "
                        "are discovery hypotheses. No automatic retry follows an uncertain start.",
         "parameters": {"type": "object", "additionalProperties": False,
                        "properties": properties, "required": list(properties)}}]
@@ -141,9 +138,6 @@ def instructions():
     execution = rt.execution
     prices = "; ".join(f"{generator} ${fixed} per run plus ${per_match} per match"
                        for generator, (fixed, per_match) in execution._RATES.items())
-    # The same listed estimate prepare_submission computes for a base request of FIRST_MATCH_LIMIT.
-    base_fixed, base_per_match = execution._RATES["base"]
-    first = Decimal(base_fixed) + Decimal(base_per_match) * FIRST_MATCH_LIMIT
     retention_mib = rt.owner.MAX_SNAPSHOT_BYTES // (1024 * 1024)
     return (" Parallel FindAll application tools (blueprint_findall_create, blueprint_findall_status and "
             "blueprint_findall_result) support asynchronous list building. For broad operating-site discovery, "
@@ -159,19 +153,8 @@ def instructions():
             f"10 matches. Start with a match_limit of about {FIRST_MATCH_LIMIT} per request, and raise it only when "
             "a completed result shows that a segment needs more. "
             f"Versioned prices ({execution.PRICING_VERSION}): {prices}, times match_limit. "
-            "maximum_cost_usd is a USD string with at most two decimals and at least that estimate; the host "
-            "reserves all of it until the run's actual cost is known, so a larger value only uses more allowance. "
-            f"At a $10 combined allowance, one base request of {FIRST_MATCH_LIMIT} matches has a listed estimate "
-            f"of ${first} (${base_fixed} per run plus {FIRST_MATCH_LIMIT} matches at ${base_per_match}) and "
-            f"reserves ${first}, leaving ${Decimal('10.00') - first} for further distinct requests or an Exa "
-            "start; these are requested limits, not promised or qualified matches. "
-            "Use distinct useful segments and deduplicate sites; do not spend two requests on the same list. "
-            "The general admission rule, current prices and actual remaining allowance decide every request; "
-            "the example is not extra authority or a required provider quota. "
-            "FindAll draws on this run's separate host-reserved paid expansion allowance, shared with Exa and frozen "
-            "from the owner's direction at run start; the research soft target is unchanged and neither is extra "
-            "authority. The host admits at most half of the owner-set allowance per start and only within what "
-            "remains; a refusal names max_start_micros and remaining_micros and starts nothing. Creates are refused "
+            "Blueprint adds no dollar allowance, per-start ceiling or call quota. The host retains the "
+            "provider's versioned estimate, actual costs and unknown exposure. Creates are refused "
             "after research output, in QA or repair, after the original deadline, under the owner's brake or when "
             "the owner's direction omits FindAll; retain that actionable skip and continue ordinary research. "
             "Retain each returned findall_id. Poll blueprint_findall_status until the run is no longer active "
@@ -459,15 +442,6 @@ class FindAllApplicationTools:
             code = allocation.standing(grant, control, now, source="findall")
             if code:
                 return code
-            found = allocation.claims(row)
-            limit = allocation.effective_limit(grant, control)
-            room = allocation.headroom(grant, found, limit)
-            if room["reserved_micros"] is None:
-                return "paid_expansion_claims_unverified"
-            if (room["reserved_micros"] > limit or any(
-                    claim["source"] == "findall" and claim["reserved_micros"] > allocation.per_start_max(limit)
-                    for claim in found)):
-                return "paid_expansion_live_limit_lowered"
         except Exception:  # noqa: BLE001 - unknown live authority conservatively cancels and retains reservations
             return "paid_expansion_authority_unverified"
         return None
@@ -527,12 +501,8 @@ class FindAllApplicationTools:
 
     def _create(self, args, row, owner, phase, cid, ledger):
         rt = self.rt
-        if set(args) != CREATE_FIELDS:
+        if set(args) - {"maximum_cost_usd"} != CREATE_FIELDS:
             raise rt.api.FindAllError("findall_tool_arguments_invalid")
-        cost = args["maximum_cost_usd"]
-        cap = allocation.findall_micros(cost)
-        if cap is None:
-            raise rt.api.FindAllError("findall_maximum_cost_usd_invalid")
         spec = {key: value for key, value in args.items() if key != "maximum_cost_usd"}
         operation_id = row["run_key"] + ":findall:" + cid
         claimed = (owner.get(SUBMISSIONS_FIELD) or {}).get(_operation_key(operation_id))
@@ -543,20 +513,18 @@ class FindAllApplicationTools:
                     "reserved_micros": allocation.findall_micros(claimed.get("prepared", {}).get("maximum_cost_usd")),
                     "replay_permitted": False, "billing_verified": False}
         try:
+            # The legacy exact-request binding calls this field maximum_cost_usd.
+            # It is the price of the chosen provider request, never an allowance:
+            # no model dollar input, comparison or admission ceiling restricts it.
+            body = rt.api.prepare_run(spec)["body_json"]
+            fixed, per_match = rt.execution._RATES[body["generator"]]
+            estimate = Decimal(fixed) + Decimal(per_match) * body["match_limit"]
+            cost = format(estimate, "f")
+            cap = allocation.findall_micros(cost)
             prepared = rt.execution.prepare_submission(spec, operation_id=operation_id, maximum_cost_usd=cost)
         except rt.api.FindAllError as exc:
-            estimate = {}
-            try:
-                estimate["estimated_maximum_cost_usd"] = rt.execution.prepare_submission(
-                    spec, operation_id=operation_id, maximum_cost_usd="1000000")["estimated_maximum_cost_usd"]
-            except rt.api.FindAllError:
-                pass
-            return self.skip(owner, str(exc), "Correct the request or continue ordinary research.", **estimate)
+            return self.skip(owner, str(exc), "Correct the request or continue ordinary research.")
         code = self.create_problem(owner, prepared, phase)
-        if code in CAP_PROBLEMS:
-            return self.skip(owner, code, "Use maximum_cost_usd no larger than max_start_micros (USD micros) with a "
-                             "generator and match_limit whose estimate fits, or continue ordinary research.",
-                             estimated_maximum_cost_usd=prepared["estimated_maximum_cost_usd"])
         if code:
             return self.skip(owner, code, "FindAll is not admitted now; retain this list-building gap and continue "
                              "ordinary research.")

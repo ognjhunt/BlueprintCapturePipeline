@@ -105,16 +105,17 @@ class EvidenceBudgetExhausted(Exception):
 
 
 class ReadBudget:
-    """At most ``reads`` result reads within ``seconds`` of monotonic time, checked before each read."""
+    """Read within ``seconds``; optional ``reads`` preserves historical callers."""
 
     def __init__(self, reads, seconds, clock=time.monotonic):
         self.reads, self.clock = reads, clock
         self.deadline = clock() + seconds
 
     def take(self):
-        if self.reads <= 0 or self.clock() >= self.deadline:
+        if self.reads is not None and self.reads <= 0 or self.clock() >= self.deadline:
             raise EvidenceBudgetExhausted()
-        self.reads -= 1
+        if self.reads is not None:
+            self.reads -= 1
 
 
 def digest(value):

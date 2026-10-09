@@ -1,5 +1,8 @@
 # Perplexity Fast application tools
 
+> Owner direction, 2026-10-09: application dollar budgets and arbitrary call-count gates are retired. Historical dollar fields and capped requests remain immutable accounting and request-binding data. New research keeps the original source, scope, expiry, release, idempotency, byte and time constraints, and actual provider limits. This source change grants no activation, paid run or send authority. Older numeric allowance descriptions below are historical and do not govern admission.
+
+
 The selected production default is `search_provider=perplexity-fast-v1` with
 `discovery_profile=adaptive-sites-v1`. The disabled example is
 `perplexity-daily.config.example.json`. This is an agent-owned discovery loop:

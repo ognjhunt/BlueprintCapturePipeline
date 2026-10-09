@@ -29,11 +29,10 @@ and its local part names the person (``site_screen.address_role``; never a role 
 profile, where it gives one, names the same person at the operator now. A deliverable address never makes up for the
 wrong person. Every other address is dropped before anything is written; personal emails and phones are never asked for.
 
-Spend. The first ``--apply`` pins the owner reference, a FullEnrich credit ceiling and a call limit in
-``lookup/owner_ceiling.json``, once; a later run may only lower them. Each call is admitted against the pin, and its
-``intent`` is fsynced to ``lookup/spend.jsonl`` (whose first line is the pin) before the call is sent: the credits of
-answered calls, the most a call may still cost while its outcome or result is unknown, and the new call stay within the
-ceiling. A lookup (one people search per domain, one enrichment per person and domain) is never sent twice; an
+Accounting. The first ``--apply`` pins the owner reference in the historical
+``lookup/owner_ceiling.json`` binding. Legacy credit/call fields remain readable but do not limit admission. Each
+``intent`` is fsynced to ``lookup/spend.jsonl`` (whose first line is the pin) before the call is sent. Answered credits
+and the most a call may still cost while its outcome or result is unknown remain recorded. A lookup (one people search per domain, one enrichment per person and domain) is never sent twice; an
 enrichment that may exist is only read again. Only a refusal is sent again by a later run: an answer every later call
 would meet (401, 402, 403, 429, a redirect or no connection), or an enrichment FullEnrich ended unbilled (out of credits,
 rate limited or cancelled). Results are read (reads are not billed) for up to ``wait_seconds``, and a later run reads the
@@ -82,7 +81,7 @@ NOT_DECIDING = frozenset({"assistant", "associate", "intern", "coordinator", "pr
 TITLE_FILLER = frozenset({"of", "the", "and", "for", "at", "senior", "sr"})
 SEARCH_LIMIT = 5  # People per search; FullEnrich bills 0.25 credit per person returned.
 MOST_CREDITS = {"search": Decimal("0.25") * SEARCH_LIMIT, "enrich": Decimal(1)}  # A found work email is 1 credit.
-MAX_CREDITS, MAX_CALLS = Decimal(10000), 5000  # Typo guards; the owner's pin is the control.
+
 WAIT_SECONDS, MAX_WAIT_SECONDS, POLL_SECONDS = 120, 1800, 10
 REQUEST_TIMEOUT_SECONDS, MAX_RESPONSE_BYTES = 60, 4 * 1024 * 1024
 # Answers every later call would meet: they stop the command, and nothing was billed.
@@ -100,7 +99,7 @@ class LookupFailure(ss.ScreenError):
 
 
 class Stop(LookupFailure):
-    """Ends the command before its next call: the pin's ceiling or call limit is reached."""
+    """Ends the command before its next call on an actual provider or authority refusal."""
 
 
 class Refused(Stop):
@@ -117,6 +116,8 @@ def _text(value, limit=300):
 
 def amount(value):
     """A Decimal as compact text: 2 for 2.00, 0.25 for 0.250."""
+    if value is None:
+        return None
     text = format(value, "f")
     return text.rstrip("0").rstrip(".") if "." in text else text
 
@@ -386,13 +387,13 @@ def parse_reference(value):
 
 def parse_credits(value):
     credits = _credits(value)
-    if credits is None or not Decimal(0) < credits <= MAX_CREDITS:
+    if credits is None or not Decimal(0) < credits:
         raise LookupFailure("contact_lookup_credits_invalid")
     return credits
 
 
 def parse_calls(value):
-    if type(value) is not int or not 1 <= value <= MAX_CALLS:
+    if type(value) is not int or value < 1:
         raise LookupFailure("contact_lookup_calls_invalid")
     return value
 
@@ -401,23 +402,19 @@ def _pin_valid(pin):
     try:
         return (isinstance(pin, dict) and set(pin) == PIN_FIELDS and pin["schema_version"] == OWNER_CEILING
                 and parse_reference(pin["owner_reference"]) == pin["owner_reference"]
-                and amount(parse_credits(pin["max_credits"])) == pin["max_credits"]
-                and parse_calls(pin["max_calls"]) == pin["max_calls"] and isinstance(pin["created_at"], str))
+                and (pin["max_credits"] is None or amount(parse_credits(pin["max_credits"])) == pin["max_credits"])
+                and (pin["max_calls"] is None or parse_calls(pin["max_calls"]) == pin["max_calls"]) and isinstance(pin["created_at"], str))
     except LookupFailure:
         return False
 
 
-def limits(pin, owner_reference, max_credits, max_calls):
-    """This run's owner reference, credit ceiling and call limit. Against a pin they may only be lower."""
-    reference, credits, calls = parse_reference(owner_reference), parse_credits(max_credits), parse_calls(max_calls)
-    if pin is not None:
-        if reference != pin["owner_reference"]:
-            raise LookupFailure("contact_lookup_owner_reference_mismatch")
-        if credits > Decimal(pin["max_credits"]):
-            raise LookupFailure("contact_lookup_credits_above_pin")
-        if calls > pin["max_calls"]:
-            raise LookupFailure("contact_lookup_calls_above_pin")
-    return {"owner_reference": reference, "max_credits": credits, "max_calls": calls}
+def limits(pin, owner_reference, max_credits=None, max_calls=None):
+    """Keep the owner binding; historical ceiling arguments no longer limit work."""
+    reference = parse_reference(owner_reference)
+    if pin is not None and reference != pin["owner_reference"]:
+        raise LookupFailure("contact_lookup_owner_reference_mismatch")
+    return {"owner_reference": reference, "max_credits": None, "max_calls": None}
+
 
 
 def _event(line):
@@ -551,7 +548,7 @@ class Book:
         self.journal.append({"schema_version": JOURNAL, **event, "recorded_at": ss._now()})
 
     def create_pin(self, bounds):
-        """Pin the owner reference, credit ceiling and call limit: in the journal first, then owner_ceiling.json."""
+        """Pin the owner reference with null legacy ceilings: journal first, then owner_ceiling.json."""
         self.root.mkdir(mode=0o700, exist_ok=True)
         pin = {"schema_version": OWNER_CEILING, "owner_reference": bounds["owner_reference"],
                "max_credits": amount(bounds["max_credits"]), "max_calls": bounds["max_calls"], "created_at": ss._now()}
@@ -582,11 +579,6 @@ class Calls:
         if self.mode == "replay":
             return key, None
         most = MOST_CREDITS[kind]
-        credits, count = committed(self.book.calls)
-        if count + 1 > self.bounds["max_calls"]:
-            raise Stop("contact_lookup_max_calls_reached")
-        if credits + most > self.bounds["max_credits"]:
-            raise Stop("contact_lookup_credit_ceiling_reached")
         state = {"state": "unknown", "kind": kind, "site_key": site_key, "most_credits": amount(most), "closed": False}
         if self.mode == "dry":
             self.book.calls[key] = state  # What this call would commit.
@@ -1550,9 +1542,9 @@ def _recipients(built):
     return dict(counts)
 
 
-def lookup(workspace, *, client, owner_reference, max_credits, max_calls, person_search=None, apply=False,
+def lookup(workspace, *, client, owner_reference, max_credits=None, max_calls=None, person_search=None, apply=False,
            wait_seconds=WAIT_SECONDS, monotonic=time.monotonic, sleep=time.sleep, environ=None, today=None):
-    """Look up a work email for each contact site that needs one, within the pinned ceilings; a dry run unless
+    """Look up a work email for each contact site that needs one, under the pinned owner reference; a dry run unless
     ``apply``. A dry run admits the same calls and writes and sends nothing; it counts only the searches of sites
     without a person, as their enrichments depend on the answers. Counts only."""
     refuse_on_worker(environ)

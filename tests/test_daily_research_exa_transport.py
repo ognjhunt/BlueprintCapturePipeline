@@ -11,8 +11,7 @@ from tools.daily_research.exa_transport import ENDPOINT, ExaTransport, ExaTransp
 SCHEMA = {"type": "object", "properties": {"query": {"type": "string"}, "runId": {"type": "string"},
     "effort": {"type": "string", "enum": ["low", "auto", "ultra"], "default": "low"},
     "budget": {"type": "object", "properties": {"maxCostDollars": {"type": "number", "maximum": 5}}}}}
-REQUEST = {"query": "US regional laundry sites with towel handling evidence", "effort": "ultra",
-           "budget": {"maxCostDollars": 1.75}}
+REQUEST = {"query": "US regional laundry sites with towel handling evidence", "effort": "ultra"}
 RECORD = {"id": "agent_run_synthetic", "status": "running", "outputReady": False, "usage": None}
 
 
@@ -106,7 +105,7 @@ def test_no_guessed_or_unsupported_cost_cap_and_no_native_start(schema):
     {"query": "US", "maxCostDollars": 1}, {**REQUEST, "query": "", "budget": {"maxCostDollars": 1}},
     {**REQUEST, "budget": {"maxCostDollars": True}},
     {**REQUEST, "budget": {"maxCostDollars": float("nan")}},
-    {k: v for k, v in REQUEST.items() if k != "effort"}, {**REQUEST, "effort": "auto"},
+    {"query": REQUEST["query"], "budget": {"maxCostDollars": 1.75}}, {**REQUEST, "effort": "auto"},
     {**REQUEST, "budget": {"maxCostDollars": .99}}, {**REQUEST, "budget": {"maxCostDollars": 50.01}},
 ])
 def test_bad_start_is_rejected_before_any_http(start_request):
@@ -117,23 +116,23 @@ def test_bad_start_is_rejected_before_any_http(start_request):
 
 
 @pytest.mark.parametrize(("cap", "maximum"), [(1, 5), (5, 5), (15, None), (50, 50)])
-def test_ultra_cap_endpoints_and_required_effort_are_sent_explicitly(cap, maximum):
-    """The host's single $50 per-start ceiling; a live schema maximum still binds when present."""
+def test_optional_budget_schema_does_not_add_a_dollar_cap(cap, maximum):
+    """An optional provider budget field does not enter the uncapped request."""
     schema = copy.deepcopy({**SCHEMA, "required": ["query", "effort"]})
     budget = schema["properties"]["budget"]["properties"]["maxCostDollars"]
     budget.pop("maximum")
     if maximum is not None:
         budget["maximum"] = maximum
     wire = Wire(schema=schema)
-    request = {**REQUEST, "budget": {"maxCostDollars": cap}}
+    request = dict(REQUEST)
     assert ExaTransport(request_io=wire).start(request) == RECORD
     assert wire.native_calls == [{"name": "agent_run", "arguments": request}]
 
 
-def test_live_schema_maximum_still_binds_below_the_host_ceiling():
-    wire = Wire()  # The live catalog advertises maximum 5.
+def test_provider_required_budget_refuses_an_uncapped_request():
+    wire = Wire(schema={**SCHEMA, "required": ["query", "budget"]})
     with pytest.raises(ExaTransportError, match="exa_mcp_supported_cost_cap_missing"):
-        ExaTransport(request_io=wire).start({**REQUEST, "budget": {"maxCostDollars": 10}})
+        ExaTransport(request_io=wire).start(REQUEST)
     assert wire.native_calls == []
 
 
@@ -424,7 +423,7 @@ def test_retained_ack_parser_never_constructs_transport(retained_ack, monkeypatc
 def test_legacy_no_effort_raw_ack_keeps_original_request_binding(retained_ack, monkeypatch):
     from tools.daily_research.exa_transport import reconcile_start_ack
 
-    original = {k: v for k, v in REQUEST.items() if k != "effort"}
+    original = {"query": REQUEST["query"], "budget": {"maxCostDollars": 1.75}}
     body = json.loads(base64.b64decode(retained_ack["request_body_base64"]))
     body["params"]["arguments"] = original
     raw = json.dumps(body).encode()

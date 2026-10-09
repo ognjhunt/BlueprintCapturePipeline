@@ -626,7 +626,6 @@ def inspect(bridge, approval, receipt, api, cache, now=None):
             or candidate["config"].get("qa_reserved_seconds") != 600
             or candidate["config"].get("search_provider") != search.PROFILE
             or candidate["config"].get("discovery_profile") != "adaptive-sites-v1"
-            or candidate["config"].get("soft_target_usd") != 5
             or candidate["config"].get("recurring_budget_authority_reference") != migration.BUDGET_AUTHORITY):
         raise Refusal("canary_production_profile_not_migrated")
     candidate["enabled"] = candidate["config"]["enabled"] = candidate["workflow"]["enabled"] = True

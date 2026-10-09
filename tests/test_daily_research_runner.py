@@ -480,12 +480,13 @@ def test_terminal_failure_visible_and_blocks_next_date(fixture, status):
     assert len(api.payloads) == 1
 
 
-def test_guard_rejects_excess_tool_calls(fixture):
+def test_tool_calls_are_observed_without_a_count_gate(fixture):
     runner, api, _ = fixture
     api.turn_status = "in_progress"
     api.tool_count = 6
-    assert runner.start_or_resume()["state"] == "cancel_pending"
-    assert len(api.cancellations) == 1
+    row = runner.start_or_resume()
+    assert row["state"] == "running" and row["web_tool_activities"] == 6
+    assert api.cancellations == []
 
 
 def test_artifact_wait_is_bounded(fixture):

@@ -96,12 +96,11 @@ def test_adaptive_prompt_uses_skill_paths_and_does_not_inherit_scan_caps():
     assert "UNTRUSTED DATA" in text and "Snapshot data JSON string:" in text
 
 
-def test_new_daily_example_is_disabled_and_cannot_adopt_test_budget():
+def test_new_daily_example_is_disabled_without_a_numeric_budget():
     cfg = json.loads((ROOT / "tools/daily_research/adaptive-daily.config.example.json").read_text())
-    assert configuration(cfg)["enabled"] is False and cfg["soft_target_usd"] == 1
+    assert configuration(cfg)["enabled"] is False and cfg["soft_target_usd"] is None
     assert cfg["max_runtime_seconds"] - cfg["qa_reserved_seconds"] == 1200
-    with pytest.raises(Refusal, match="approved_envelope"):
-        configuration({**cfg, "soft_target_usd": 25})
+    assert configuration({**cfg, "soft_target_usd": 25})["soft_target_usd"] == 25
     for bad in (None, "1800", True, []):
         with pytest.raises(Refusal, match="approved_envelope"):
             configuration({**cfg, "max_runtime_seconds": bad})

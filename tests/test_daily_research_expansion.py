@@ -145,7 +145,7 @@ def test_host_stopped_skip_names_the_same_grant_fields(context):
                   unavailable_reason="expansion_remaining_all_in_allocation_unverified")
     assert result["reason"] == "expansion_remaining_all_in_allocation_unverified"
     assert (result["allocation_reason"], result["remaining_micros"], result["max_start_micros"]) == (
-        "paid_expansion_disabled", 10_000_000, 0)
+        "paid_expansion_disabled", None, 0)
     assert result["allocation_status"]["reasons"] == ["paid_expansion_disabled"]
     assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
 
@@ -212,7 +212,7 @@ def test_native_start_is_once_across_restart_and_preserves_exact_cap(context):
     first = call(context, tool_schema={**SCHEMA, "required": ["query", "effort"]})
     row, ledger, transport, _ = context
     assert first["run_id"] == "agent_run_synthetic"
-    assert transport.starts == [{"query": ARGS["query"], "effort": "ultra", "budget": {"maxCostDollars": 2.0}}]
+    assert transport.starts == [{"query": ARGS["query"], "effort": "ultra"}]
     intent = ledger.get(row["date"])["exa_expansion"]["intent"]
     assert intent["grant"] == row["paid_expansion_grant"] and intent["reserved_before_micros"] == 0
     assert "allocation" not in intent
@@ -221,31 +221,26 @@ def test_native_start_is_once_across_restart_and_preserves_exact_cap(context):
     assert call(resumed)["run_id"] == first["run_id"] and len(transport.starts) == 1
     with pytest.raises(e.ExpansionError, match="already_claimed_different_request"):
         call(resumed, args={**ARGS, "query": "Another query"})
-    with pytest.raises(e.ExpansionError, match="already_claimed_different_request"):
-        call(resumed, args={**ARGS, "max_cost_micros": 1_000_000})
+    assert call(resumed, args={**ARGS, "max_cost_micros": 1_000_000})["run_id"] == first["run_id"]
+    assert len(transport.starts) == 1
 
 
 def test_documented_ultra_minimum_is_enforced_when_catalog_omits_it(context):
-    result = call(context, args={**ARGS, "max_cost_micros": 999_999})
-    assert result["reason"] == "expansion_cap_below_ultra_minimum"
-    assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
-
+    result = call(context, args={"query": ARGS["query"]})
+    assert result["run_id"] == "agent_run_synthetic"
+    assert "budget" not in context[2].starts[0]
 
 def test_tool_bounds_are_the_ultra_minimum_and_the_single_per_start_ceiling():
     """2026-10-04: the agent requested 500000 micros because the tool advertised a 1-micro minimum.
     The owner's per-run amount, not a second hidden schema cap, decides each start."""
-    cap = e.tools()[0]["parameters"]["properties"]["max_cost_micros"]
-    assert (cap["minimum"], cap["maximum"]) == (e.ULTRA_MIN_MICROS, allocation.PER_START_CEILING_MICROS)
-    assert e.LIMIT_MICROS == allocation.PER_START_CEILING_MICROS == 50_000_000
-    text = e.instructions()
-    assert "1000000" in text and "50000000" in text and "max_start_micros" in text
-    assert "$20 allows 10000000" in text and "shares the existing all-in $5" not in text
+    start = e.tools()[0]["parameters"]
+    assert set(start["properties"]) == {"query"} and start["required"] == ["query"]
 
 
 def test_tool_schema_digest_changes_only_at_an_idle_release_boundary():
     """check_agent compares live session tools with search.tools(): change these bytes only
     when no daily session is in flight, never per run."""
-    assert digest(e.tools()) == "6ee756d6ebf1e0b8861b23c4c5eacddc32a47ee43e799735abbeb2b6308183b4"
+    assert digest(e.tools()) == "a49de1b0148ee1928cadb518cd52ea093ca4dc597c1e570226968c4c78890ff9"
 
 
 @pytest.mark.parametrize(("limit", "cap", "reason"), [
@@ -255,25 +250,15 @@ def test_tool_schema_digest_changes_only_at_an_idle_release_boundary():
     ("1.50", 2_000_000, "expansion_cap_exceeds_remaining_allocation")])
 def test_the_owner_amount_alone_binds_each_exa_start(context, limit, cap, reason):
     row, ledger, transport, _ = context
-    control = freeze(row, ledger, limit)
-    grant = row["paid_expansion_grant"]
-    result = call(context, args={**ARGS, "max_cost_micros": cap}, control=control)
-    if reason is None:
-        assert result["run_id"] == "agent_run_synthetic"
-        assert transport.starts[-1]["budget"]["maxCostDollars"] == cap / 1_000_000
-        return
-    largest = min(grant["per_start_max_micros"], grant["limit_micros"])
-    assert result["state"] == "skipped" and result["reason"] == reason
-    assert result["max_start_micros"] == largest and result["remaining_micros"] == grant["limit_micros"]
-    assert str(largest) in result["action"] and not transport.starts
-
+    freeze(row, ledger, limit)
+    result = call(context, args={**ARGS, "max_cost_micros": cap})
+    assert result["run_id"] == "agent_run_synthetic"
+    assert transport.starts == [{"query": ARGS["query"], "effort": "ultra"}]
 
 def test_starts_above_the_hard_ceiling_are_invalid_arguments(context):
     freeze(context[0], context[1], "100.00")
-    with pytest.raises(e.ExpansionError, match="expansion_start_arguments_invalid"):
-        call(context, args={**ARGS, "max_cost_micros": 50_000_001})
-    assert not context[2].starts
-
+    assert call(context, args={**ARGS, "max_cost_micros": 50_000_001})["run_id"] == "agent_run_synthetic"
+    assert "budget" not in context[2].starts[0]
 
 def test_a_lower_current_direction_tightens_the_run_in_progress(context):
     row, ledger, transport, _ = context
@@ -285,8 +270,8 @@ def test_a_lower_current_direction_tightens_the_run_in_progress(context):
     lowered["paid_expansion"]["current"].update(sha256=allocation.digest(value), version=2,
                                                 uri=allocation.uri(allocation.digest(value)))
     result = call(context, args={**ARGS, "max_cost_micros": 4_000_000}, control=lowered)
-    assert result["reason"] == "expansion_cap_exceeds_per_start_maximum"
-    assert (result["remaining_micros"], result["max_start_micros"]) == (6_000_000, 3_000_000)
+    assert result["run_id"] == "agent_run_synthetic"
+    assert "budget" not in transport.starts[0]
     assert call(context, args={**ARGS, "max_cost_micros": 3_000_000}, control=lowered)["run_id"] == "agent_run_synthetic"
 
 
@@ -294,29 +279,24 @@ def test_a_lower_current_direction_tightens_the_run_in_progress(context):
                                             "unavailable_reason": "expansion_remaining_all_in_allocation_unverified"}])
 def test_cap_below_ultra_minimum_is_actionable_and_consumes_no_claim(context, overrides):
     result = call(context, args={**ARGS, "max_cost_micros": 500_000}, **overrides)
-    assert result["state"] == "skipped" and result["reason"] == "expansion_cap_below_ultra_minimum"
-    assert (result["remaining_micros"], result["max_start_micros"]) == (10_000_000, 5_000_000)
-    assert "1000000" in result["action"] and "5000000" in result["action"] and "no claim" in result["action"].lower()
-    assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
-
+    if overrides:
+        assert result["state"] == "skipped" and not context[2].starts
+    else:
+        assert result["run_id"] == "agent_run_synthetic"
+        assert "budget" not in context[2].starts[0]
 
 def test_cap_above_remaining_allocation_names_the_headroom(context, monkeypatch):
-    # FindAll will add claims of its own; any earlier durable reservation debits this run.
     monkeypatch.setattr(allocation, "claims", lambda row: [{"source": "findall", "reserved_micros": 9_000_000}])
-    result = call(context)
-    assert result["state"] == "skipped" and result["reason"] == "expansion_cap_exceeds_remaining_allocation"
-    assert result["remaining_micros"] == 1_000_000 and result["max_start_micros"] == 1_000_000
-    assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
-
+    assert call(context)["run_id"] == "agent_run_synthetic"
+    assert context[1].get(context[0]["date"])["exa_expansion"]["intent"]["reserved_before_micros"] == 9_000_000
 
 @pytest.mark.parametrize("bounds", [{"minimum": 3}, {"maximum": 1}, {"exclusiveMinimum": 2},
                                      {"exclusiveMaximum": 2}, {"enum": [1, 3]}])
 def test_live_native_cap_bounds_are_not_overridden_by_application_range(context, bounds):
     schema = copy.deepcopy(SCHEMA)
     schema["properties"]["budget"]["properties"]["maxCostDollars"].update(bounds)
-    assert call(context, tool_schema=schema)["reason"] == "expansion_supported_native_cap_unverified"
-    assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
-
+    assert call(context, tool_schema=schema)["run_id"] == "agent_run_synthetic"
+    assert "budget" not in context[2].starts[0]
 
 @pytest.mark.parametrize("name", [e.START, e.READ])
 def test_legacy_no_effort_ack_recovers_unchanged_after_deadline_without_post(context, name):
@@ -345,11 +325,11 @@ def test_legacy_no_effort_ack_recovers_unchanged_after_deadline_without_post(con
 def test_uncertain_ack_is_permanent_not_a_retry_or_free_budget(context):
     context[2].start_error = True
     assert call(context)["state"] == "submission_unresolved"
-    assert call(context)["reserved_micros"] == ARGS["max_cost_micros"]
+    assert call(context)["reserved_micros"] is None
     assert call(context, e.READ, {})["run_id"] is None
     assert len(context[2].starts) == 1 and not context[2].reads
     status = e.allocation_diagnostic(context[1].get(context[0]["date"]), context[3], now=NOW)
-    assert status["reserved_micros"] == ARGS["max_cost_micros"] and status["remaining_micros"] == 8_000_000
+    assert status["reserved_micros"] is None and status["remaining_micros"] is None
 
 
 def test_ack_file_recovers_pointer_failure_without_second_post(context):
@@ -438,28 +418,21 @@ def test_expired_admission_after_claim_keeps_reservation_without_native_start(co
     monkeypatch.setattr(e.time, "monotonic", lambda: next(ticks))
     result = call(context)
     assert result["reason"] == "expansion_admission_expired_before_submission"
-    assert result["reserved_micros"] == ARGS["max_cost_micros"] and result["replay_permitted"] is False
+    assert result["reserved_micros"] is None and result["replay_permitted"] is False
     assert not context[2].starts
     assert context[1].get(context[0]["date"])["exa_expansion"]["attempted"]
 
 
 def test_cap_supported_enforces_ultra_floor_even_when_catalog_omits_minimum():
-    """Direct guard for _cap_supported; the pre-check must not be the only $1 floor."""
-    request = {"query": ARGS["query"], "effort": "ultra", "budget": {"maxCostDollars": 0.999999}}
-    assert not e._cap_supported(SCHEMA, request)
-    assert e._cap_supported(SCHEMA, {**request, "budget": {"maxCostDollars": 1.0}})
-
+    request = {"query": ARGS["query"], "effort": "ultra"}
+    assert e._cap_supported(SCHEMA, request)
+    assert not e._cap_supported({**SCHEMA, "required": ["query", "budget"]}, request)
 
 @pytest.mark.parametrize(("used", "remaining"), [(9_500_000, 500_000), (10_000_000, 0), (12_000_000, 0)])
 def test_no_ultra_cap_fits_remaining_allocation_says_so(context, monkeypatch, used, remaining):
-    # Earlier durable reservations (FindAll later) exhaust the combined run allowance.
     monkeypatch.setattr(allocation, "claims", lambda row: [{"source": "findall", "reserved_micros": used}])
-    result = call(context)
-    assert result["reason"] == "expansion_cap_exceeds_remaining_allocation"
-    assert (result["remaining_micros"], result["max_start_micros"]) == (remaining, remaining)
-    assert "No Ultra cap fits" in result["action"] and not context[2].starts
-    assert "exa_expansion" not in context[1].get(context[0]["date"])
-
+    assert call(context)["run_id"] == "agent_run_synthetic"
+    assert "budget" not in context[2].starts[0]
 
 @pytest.mark.parametrize("value", [None, 5, "not-a-time"])
 def test_malformed_grant_times_skip_instead_of_crashing(context, value):

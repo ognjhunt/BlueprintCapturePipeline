@@ -277,8 +277,7 @@ class FencedProvider(Provider):
                 or phase in {"qa", "repair", "publication"} and control.get("workflow", {}).get("enabled") is not True):
             raise Refusal("research_tool_disabled_or_profile_changed")
         if (
-                control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"]
-                or control.get("config", {}).get("soft_target_usd") != row["soft_target_usd"]):
+                control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"]):
             raise Refusal("research_tool_budget_authority_changed")
         if phase == "publication" and control.get("workflow") != row["publication"]["workflow_authority"]:
             raise Refusal("publication_agent_authority_changed")
@@ -379,8 +378,7 @@ class FencedProvider(Provider):
                 or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
             raise Refusal("qa_correction_stopped_disabled_expired_or_authority_changed")
         if (row.get("search_provider") == "perplexity-fast-v1" and (control.get("config", {}).get("search_provider") != row.get("search_provider")
-                or control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"]
-                or control.get("config", {}).get("soft_target_usd") != row["soft_target_usd"])):
+                or control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"])):
             raise Refusal("research_tool_budget_authority_changed")
 
     def recovered_qa_action_guard(self, session_id, day, deadline_ms, *, origin_guard=None):

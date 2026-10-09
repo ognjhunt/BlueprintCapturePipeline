@@ -82,19 +82,18 @@ async function findallFixture(sources=['exa','findall']) {
 }
 
 
-test('a later write cannot lower an existing Exa reservation to admit more FindAll spend', async()=>{
+test('new work has no dollar ceiling while existing Exa reservation bytes stay immutable', async()=>{
   const {store,value}=await findallFixture();
   const exa=exaClaim(value,5000000);
   await store.put({...value,state:'running',exa_expansion:exa});
   const a=findallEntry(value,'call_a','5');
   await store.put({...value,state:'running',exa_expansion:exa,parallel_findall_submissions:Object.fromEntries([a])});
   const b=findallEntry(value,'call_b','1');
-  // $5 Exa + $5 FindAll uses the $10 grant: one more claim is refused.
-  await assert.rejects(store.put({...value,state:'running',exa_expansion:exa,parallel_findall_submissions:Object.fromEntries([a,b])}),
-    /paid_expansion_reservation_exceeds_grant/);
+  // Crossing the historical allowance is admitted without rewriting old claims.
+  await store.put({...value,state:'running',exa_expansion:exa,parallel_findall_submissions:Object.fromEntries([a,b])});
   // Rewriting only cap_micros lower, with the same immutable intent, is refused too.
   await assert.rejects(store.put({...value,state:'running',exa_expansion:{...exa,cap_micros:1000000},
     parallel_findall_submissions:Object.fromEntries([a,b])}), /paid_expansion_claim_cap_mismatch/);
   await assert.rejects(store.put({...value,state:'running',exa_expansion:{...exa,cap_micros:1000000},
-    parallel_findall_submissions:Object.fromEntries([a])}), /paid_expansion_claim_cap_mismatch/);
+    parallel_findall_submissions:Object.fromEntries([a,b])}), /paid_expansion_claim_cap_mismatch/);
 });

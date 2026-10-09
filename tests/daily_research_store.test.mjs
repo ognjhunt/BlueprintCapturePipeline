@@ -225,6 +225,8 @@ test('fresh recurring budget gates both model create and QA claims', async () =>
   Object.assign(db.values.get(ROOT), {config, workflow:{enabled:true, qa_authority_reference:'owner-qa', publication_authority_reference:'owner-publication'}});
   const value = {...row(), ...config}; await store.put(value);
   db.values.get(ROOT).config = {...config, soft_target_usd:3};
+  store.budgetGate(db.values.get(ROOT),value); // A target change does not limit work.
+  db.values.get(ROOT).config = {...config, recurring_budget_authority_reference:'changed-owner'};
   await assert.rejects(store.createCheck(value.date,value.metadata), /budget_authority_changed/);
   assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).create_attempt_claimed,false);
   db.values.get(ROOT).config = config;
@@ -501,7 +503,7 @@ test('owner direction swap is a fenced compare-and-swap with a create-only audit
   assert.equal(db.values.has(`${ROOT}/paidExpansionDirections/${competing.sha256}`),false);
   for(const [value,code] of [
     [entry(direction(4,second.sha256)),'direction_chain_invalid'],[entry(direction(3,first.sha256)),'direction_chain_invalid'],
-    [entry(direction(3,second.sha256,{per_run_limit_usd:'200.00'})),'limit_invalid'],
+    [entry(direction(3,second.sha256,{per_run_limit_usd:'2e2'})),'limit_invalid'],
     [entry(direction(3,second.sha256,{per_run_limit_usd:'10.0'})),'limit_invalid'],
     [entry(direction(3,second.sha256,{scope:{...direction().scope,agent_id:'agent_other'}})),'scope_mismatch'],
     [entry(direction(3,second.sha256,{approval_reference:'PENDING-owner'})),'direction_invalid'],
@@ -582,8 +584,8 @@ test('direction objects are content-addressed, validated and create-only without
   const spaced=Buffer.from(JSON.stringify(first.direction,null,1)),spacedHash=createHash('sha256').update(spaced).digest('hex');
   await assert.rejects(store.dispatch({op:'paid_expansion_object_put',sha256:spacedHash,bytes:spaced.toString('base64')}),/digest_mismatch/);
   const typo=entry(direction(1,null,{per_run_limit_usd:'1000.00'})),typoRaw=Buffer.from(canonicalJSON(typo.direction));
-  await assert.rejects(store.dispatch({op:'paid_expansion_object_put',sha256:typo.sha256,bytes:typoRaw.toString('base64')}),/limit_invalid/);
-  await assert.rejects(store.dispatch({op:'paid_expansion_object_get',sha256:typo.sha256}),/paid_expansion_object_missing/);
+  await store.dispatch({op:'paid_expansion_object_put',sha256:typo.sha256,bytes:typoRaw.toString('base64')});
+  assert.equal((await store.dispatch({op:'paid_expansion_object_get',sha256:typo.sha256})).sha256,typo.sha256);
   await assert.rejects(store.dispatch({op:'paid_expansion_object_get',sha256:'../x'}),/paid_expansion_request_invalid/);
   bucket.objects.get(`operations/research/paid-expansion/${first.sha256}/direction.json`).raw=Buffer.from('{}');
   await assert.rejects(store.dispatch({op:'paid_expansion_object_get',sha256:first.sha256}),/paid_expansion_object_conflict/);
@@ -617,10 +619,7 @@ test('new reservations honor a lower live amount atomically, while existing clai
     await store.put(value);
     const lower=entry(direction(2,original.sha256,{per_run_limit_usd:amount}));
     await setDirection(store,original.sha256,lower);
-    await assert.rejects(store.put({...value,state:'running',exa_expansion:exaClaim(value,5000000)}),
-      /paid_expansion_reservation_exceeds_grant/);
-    assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).exa_expansion_intent_digest,null);
-    const admitted={...value,state:'running',exa_expansion:exaClaim(value,1000000)};
+    const admitted={...value,state:'running',exa_expansion:exaClaim(value,5000000)};
     await store.put(admitted);
     await setDirection(store,lower.sha256,lower,false);
     await store.put({...admitted,exa_expansion:{...admitted.exa_expansion,run_id:'synthetic_existing'}});
@@ -724,14 +723,11 @@ test('FindAll and Exa claims debit one frozen grant within its per-start maximum
   await store.put(withClaims(value,first,second));
   assert.deepEqual(Object.keys(db.values.get(`${ROOT}/runs/${value.date}`).findall_claims).sort(),[first[0],second[0]].sort());
   assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).findall_unbound,false);
-  // $4 + $2.50 + a $4 Exa cap is $10.50 > $10: refused in the same transaction as the claim.
-  await assert.rejects(store.put({...withClaims(value,first,second),exa_expansion:exaClaim(value,4000000)}),
-    /paid_expansion_reservation_exceeds_grant/);
-  await assert.rejects(store.put(withClaims(value,first,second,findallEntry(value,'call_c','3.51'))),
-    /paid_expansion_reservation_exceeds_grant/);
-  await assert.rejects(store.put(withClaims(value,first,second,findallEntry(value,'call_d','5.01'))),
-    /paid_expansion_reservation_exceeds_grant/);
-  await store.put({...withClaims(value,first,second),exa_expansion:exaClaim(value,3500000)});
+  const exa=exaClaim(value,4000000),third=findallEntry(value,'call_c','3.51'),fourth=findallEntry(value,'call_d','5.01');
+  await store.put({...withClaims(value,first,second),exa_expansion:exa});
+  await store.put({...withClaims(value,first,second,third),exa_expansion:exa});
+  await store.put({...withClaims(value,first,second,third,fourth),exa_expansion:exa});
+  assert.equal(Object.keys(db.values.get(`${ROOT}/runs/${value.date}`).findall_claims).length,4);
   assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).exa_expansion_intent_digest!==null,true);
 });
 

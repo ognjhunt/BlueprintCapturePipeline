@@ -110,11 +110,11 @@ test('legitimate cleanup can advance the current blob; altered original research
   f.row.session_id='other-session';f.saveRow();
   await assert.rejects(()=>verifyContactResearchDiscovery(f.store,f.task,proof),/contact_research_run_changed/);
 });
-test('second unsuccessful daily attempt is exhausted without inventing a contact or result',async()=>{
+test('second unsuccessful daily attempt remains pending without inventing a contact or result',async()=>{
   const f=fixture();f.row.application_tool_calls={};f.records.get(`${CONTACT}/${f.task.requestId}`).attempts=2;
   await finishContactResearch(f.store,f.row,f.saveRow());
   const record=f.records.get(`${CONTACT}/${f.task.requestId}`);
-  assert.equal(record.state,'exhausted');assert.equal(record.discovery,undefined);assert.equal(record.sent,false);
+  assert.equal(record.state,'pending');assert.equal(record.discovery,undefined);assert.equal(record.sent,false);
 });
 for(const field of ['phase','turn','call','acknowledged','requestDigest','resultDigest','resultBytes','resultFile','bytes','timestamp','future','scope','truncated','rawArtifact','qaArtifact','frozenInput']) {
   test(`rejects ${field} corruption of the original native proof`,async()=>{

@@ -156,7 +156,7 @@ def site_screen_out(tmp_path, contacts, *, kept=None, screen_changes=None):
 
 def lookup(workspace, api, **options):
     clock = options.pop("clock", None) or Clock()
-    settings = {"owner_reference": LOOKUP_OWNER, "max_credits": "20", "max_calls": 50, "apply": True, "wait_seconds": 0,
+    settings = {"owner_reference": LOOKUP_OWNER, "max_credits": None, "max_calls": None, "apply": True, "wait_seconds": 0,
                 "monotonic": clock.monotonic, "sleep": clock.sleep, **options}
     return cl.lookup(workspace, client=cl.FullEnrichClient(FULLENRICH_KEY, transport=api), **settings)
 
@@ -376,15 +376,13 @@ def test_the_first_apply_pins_the_ceilings_and_a_later_run_may_only_lower_them(t
     lookup(workspace, api)
     pin = json.loads((workspace.root / cl.FOLDER / "owner_ceiling.json").read_text())
     assert {name: pin[name] for name in ("schema_version", "owner_reference", "max_credits", "max_calls")} == {
-        "schema_version": cl.OWNER_CEILING, "owner_reference": LOOKUP_OWNER, "max_credits": "20", "max_calls": 50}
-    for changes, code in (({"max_credits": "21"}, "contact_lookup_credits_above_pin"),
-                          ({"max_calls": 51}, "contact_lookup_calls_above_pin"),
-                          ({"owner_reference": "owner-decision-synthetic-other"}, "contact_lookup_owner_reference_mismatch"),
-                          ({"max_credits": "0"}, "contact_lookup_credits_invalid"),
-                          ({"max_calls": True}, "contact_lookup_calls_invalid")):
-        with pytest.raises(ss.ScreenError, match=f"^{code}$"):
-            lookup(workspace, api, **changes)
+        "schema_version": cl.OWNER_CEILING, "owner_reference": LOOKUP_OWNER, "max_credits": None, "max_calls": None}
+    for changes in ({"max_credits": "21"}, {"max_calls": 51}, {"max_credits": "0"}, {"max_calls": True}):
+        assert lookup(workspace, api, **changes)["stop"] is None
+    with pytest.raises(ss.ScreenError, match="^contact_lookup_owner_reference_mismatch$"):
+        lookup(workspace, api, owner_reference="owner-decision-synthetic-other")
     assert lookup(workspace, api, max_credits="2", max_calls=5)["pin"]["state"] == "pinned"
+
 
 
 def test_every_call_is_admitted_and_journaled_before_it_is_sent(tmp_path):
@@ -394,12 +392,12 @@ def test_every_call_is_admitted_and_journaled_before_it_is_sent(tmp_path):
         api.emails[("Avery", "Placeholder", f"operator-{number}.example")] = (
             f"avery.placeholder@operator-{number}.example", "DELIVERABLE", None)
     result = lookup(workspace, api, max_credits="2")
-    assert (result["state"], result["stop"], result["calls"]["made"]) == ("stopped", "contact_lookup_credit_ceiling_reached", 2)
+    assert (result["state"], result["stop"], result["calls"]["made"]) == ("complete", None, 3)
     events = [json.loads(line) for line in (workspace.root / cl.FOLDER / "spend.jsonl").read_text().splitlines()]
-    assert [event["event"] for event in events] == ["pinned", "intent", "created", "intent", "created", "answered", "answered"]
+    assert [event["event"] for event in events] == ["pinned", "intent", "created", "intent", "created", "intent", "created", "answered", "answered", "answered"]
     assert {event["owner_reference"] for event in events if event["event"] == "intent"} == {LOOKUP_OWNER}
-    assert lookup(workspace, api, max_credits="2", max_calls=2)["stop"] == "contact_lookup_max_calls_reached"
-    assert len(api.posts("/api/v2/contact/enrich/bulk")) == 2
+    assert lookup(workspace, api, max_credits="2", max_calls=2)["stop"] is None
+    assert len(api.posts("/api/v2/contact/enrich/bulk")) == 3
 
 
 @pytest.mark.parametrize("answer, code, retried", [
@@ -466,7 +464,7 @@ def test_a_damaged_journal_or_pin_refuses(tmp_path):
     (folder / "spend.jsonl").unlink()
     with pytest.raises(ss.ScreenError, match="^contact_lookup_journal_missing$"):
         lookup(workspace, api)
-    (folder / "spend.jsonl").write_bytes(journal.replace(b'"max_credits":"20"', b'"max_credits":"99"', 1))
+    (folder / "spend.jsonl").write_bytes(journal.replace(b'"max_credits":null', b'"max_credits":"99"', 1))
     with pytest.raises(ss.ScreenError, match="^contact_lookup_owner_ceiling_mismatch$"):
         lookup(workspace, api)
     (folder / "spend.jsonl").write_bytes(b"\n".join(journal.split(b"\n")[:1] + journal.split(b"\n")[2:]))
