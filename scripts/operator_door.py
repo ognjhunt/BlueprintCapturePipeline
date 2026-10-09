@@ -653,6 +653,10 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         elif action == "renew":
             sub.add_argument("--for", dest="ttl_seconds", type=_scratch_duration, required=True)
         _add_wait(sub, 120)
+    selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
+    selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
+    selected.add_argument("--dispatch", action="store_true", help="invoke only the existing admission-fenced native handler")
+    _add_wait(selected, 2 * 3600 + 600)
     request = commands.add_parser("request")
     request.add_argument("id")
     _add_wait(request, 3 * 3600)
@@ -730,6 +734,18 @@ def run(args: argparse.Namespace) -> int:
         return _submit(body, args)
     elif command == "legacy-owner-census":
         return _submit({"kind": "legacy-owner-census"}, args)
+    elif command == "selected-handoff":
+        with Path(args.selector_file).open("rb") as stream:
+            raw = stream.read(4097)
+        if not 0 < len(raw) <= 4096:
+            raise DoorError(2, "selected_handoff_selector_file_invalid")
+        body = json.loads(raw)
+        if not isinstance(body, dict) or "kind" in body or "mode" in body or "operation_key" in body:
+            raise DoorError(2, "selected_handoff_selector_file_invalid")
+        body.update(kind="selected-handoff", mode="dispatch" if args.dispatch else "inspect")
+        if not args.operation_key:
+            args.operation_key = "selected-handoff-" + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        return _submit(body, args)
     elif command == "provider-output-resume":
         return _submit({"kind": "provider-output-resume", "run": args.run, "attempt": args.attempt,
                         "ingest": args.ingest}, args)

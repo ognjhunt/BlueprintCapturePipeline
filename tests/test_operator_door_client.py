@@ -433,3 +433,28 @@ def test_historical_unit_acceptance_is_not_objective_completion():
     assert client._terminal({"request": {"kind": "unit"}, "result": {"status": "done"}}) is None
     assert client._terminal({"observed_outcome": {"status": "observed_completed"}}) is True
     assert client._terminal({"observed_outcome": {"status": "observed_failed"}}) is False
+
+
+@pytest.mark.parametrize("dispatch", [False, True])
+def test_selected_handoff_cli_defaults_to_inspect_and_dispatch_requires_flag(door: dict[str, Any], dispatch: bool) -> None:
+    from test_operator_door_requests import _selected_request
+    body = _selected_request(); body.pop("kind"); body.pop("mode")
+    selector = door["base"] / "selected.json"; selector.write_text(json.dumps(body))
+    args = ["selected-handoff", "--selector-file", str(selector)]
+    if dispatch: args.append("--dispatch")
+    code, out = _run(*args)
+    assert code == 0
+    request_id = json.loads(out)["id"]
+    request = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())["request"]
+    assert request == {**body, "kind": "selected-handoff", "mode": "dispatch" if dispatch else "inspect"}
+
+
+def test_selected_handoff_cli_refuses_oversized_input_and_read_only_actor(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    from test_operator_door_requests import _selected_request
+    selector = door["base"] / "selected.json"; selector.write_text(" " * 4097)
+    assert _run("selected-handoff", "--selector-file", str(selector))[0] == 2
+    assert not list((door["state"] / "requests" / "pending").iterdir())
+    body = _selected_request(); body.pop("kind"); body.pop("mode"); selector.write_text(json.dumps(body))
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
+    assert _run("selected-handoff", "--selector-file", str(selector), "--dispatch")[0] == 3
+    assert not list((door["state"] / "requests" / "pending").iterdir())
