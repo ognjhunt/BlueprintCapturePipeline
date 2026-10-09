@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .common import write_json
 from . import website_task_context as context_reader
+from .website_preparation_contracts import validate_preparation_proposal as _proposal_admitted
 
 PENDING_CODE = "website_control_scene-sponsorship_http_409:website_assessment_preparation_pending"
 SCHEMA = "website_assessment_resume.v1"
@@ -116,23 +117,6 @@ def _payload_bytes(listener, payload, digest):
     listener.parse_handoff_payload(raw)
     _browser_wire_metadata(value)
     return raw
-
-
-def _proposal_admitted(authority, context):
-    proposal = authority.get("assessment_preparation_proposal")
-    _require(type(proposal) is dict and set(proposal) == {
-        "schema_version", "request_id", "capture_id", "job_id", "run_id", "source_key", "context_digest",
-        "packet_sha256", "questions_pending", "scope", "robot_suitability_verified", "physical_trial_authorized"})
-    _require(proposal["schema_version"] == "site_assessment_preparation_proposal.v1"
-        and proposal["request_id"] == context["request_id"] and proposal["capture_id"] == context["capture_id"]
-        and proposal["scope"] == "scene_preparation_only" and proposal["robot_suitability_verified"] is False
-        and proposal["physical_trial_authorized"] is False and type(proposal["questions_pending"]) is bool)
-    _require(re.fullmatch(r"advisory-[a-f0-9]{64}", str(proposal["job_id"])) is not None
-        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", str(proposal["run_id"])) is not None
-        and re.fullmatch(r"sha256:[a-f0-9]{64}", str(proposal["source_key"])) is not None
-        and all(re.fullmatch(r"[a-f0-9]{64}", str(proposal[key])) is not None
-                for key in ("context_digest", "packet_sha256")))
-    _require(all(type(proposal[key]) is str for key in ("job_id", "run_id", "source_key", "context_digest", "packet_sha256")))
 
 
 def admit_browser_preparation(listener, *, payload, handoff, capture_root, observation,

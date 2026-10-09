@@ -107,7 +107,7 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
              and now - 86400 <= consent["accepted_at_epoch"] <= now, "consent_actor_or_time_invalid")
     _require(all(isinstance(consent[k], str) and 1 <= len(consent[k]) <= 1000
                  for k in ("rights_reference", "provider_terms_reference")), "consent_references_missing")
-    from .website_preparation_authority import preparation_consent_valid
+    from .website_preparation_contracts import preparation_consent_valid
     _require(consent["private_processing_authorized"] is True
              and consent["provider_training_authorized"] is False
              and (consent["task_confirmed"] is True or preparation_consent_valid(value))

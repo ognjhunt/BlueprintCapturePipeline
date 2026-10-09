@@ -600,7 +600,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         if value.get(field) != canonical_digest(value, digest_field=field):
             raise ValueError("website_preparation_input_digest_mismatch")
     if task_context.get("confirmed") is not True:
-        from .website_preparation_authority import validate_preparation_authority
+        from .website_preparation_contracts import validate_preparation_authority
         validate_preparation_authority(task_context=task_context, authority=spend, now=now)
     if task_masks.get("source_geometry_digest") != source_geometry["digest"]:
         raise ValueError("website_preparation_geometry_binding_mismatch")

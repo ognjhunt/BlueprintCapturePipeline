@@ -113,7 +113,8 @@ def scene_execution_authority_blockers(
                 return ['scene_execution_visual_review_correction_invalid']
         except (ValueError,OSError,KeyError,TypeError):
             return ['scene_execution_visual_review_correction_invalid']
-    from .website_preparation_authority import preparation_consent_valid, require_retained_preparation_authority
+    from .website_preparation_contracts import preparation_consent_valid
+    from .website_preparation_authority import require_retained_preparation_authority
     if consent.get("task_confirmed") is False:
         try:
             moment = require_retained_preparation_authority(request=request, queue_root=root, now=moment)

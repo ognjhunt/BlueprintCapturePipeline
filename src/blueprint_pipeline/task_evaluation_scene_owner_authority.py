@@ -188,7 +188,7 @@ def validate_task_scene_owner(task, *, provider_terms_path=None, now=None):
             and owner.get("accepted_on") == datetime.fromtimestamp(
                 consent["accepted_at_epoch"], timezone.utc).isoformat(),
             "scene_owner_authority_mismatch")
-    from .website_preparation_authority import preparation_consent_valid
+    from .website_preparation_contracts import preparation_consent_valid
     require(consent["private_processing_authorized"] is True
             and consent["provider_training_authorized"] is False
             and (consent["task_confirmed"] is True or preparation_consent_valid(request))

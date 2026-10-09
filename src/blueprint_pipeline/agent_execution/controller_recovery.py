@@ -55,7 +55,8 @@ def validate_controller_binding(binding):
     # This is only the entry check. The controller still runs its complete
     # current authority, failure-class, retry, spend and provider-zero checks.
     consent = intent.get("request", {}).get("consent", {})
-    from ..website_preparation_authority import preparation_consent_valid, require_retained_preparation_authority
+    from ..website_preparation_contracts import preparation_consent_valid
+    from ..website_preparation_authority import require_retained_preparation_authority
     if consent.get("task_confirmed") is False:
         try:
             require_retained_preparation_authority(request=intent["request"], queue_root=config["intent_root"], now=time.time())

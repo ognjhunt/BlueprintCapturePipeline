@@ -220,7 +220,7 @@ def construction_rights_admission(*, preparation: Mapping[str, Any], task_contex
         raise ValueError("website_construction_preparation_not_ready")
     request = validate_request(preparation["intake_request"], now=now)
     if task_context.get("confirmed") is not True:
-        from .website_preparation_authority import validate_preparation_request
+        from .website_preparation_contracts import validate_preparation_request
         validate_preparation_request(request=request, task_context=task_context,
             authority=preparation.get("website_preparation_authority") or {}, now=now)
     consent = request["consent"]
