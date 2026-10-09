@@ -40,7 +40,9 @@ def test_new_profile_adds_paid_mcp_and_existing_reads_without_mutating_saved_age
     assert row["create_payload"]["vault_ids"] == sorted("vault_synthetic_" + label for label in catalog)
     instructions = row["create_payload"]["agent"]["instructions"]
     assert "effort=ultra" in instructions and "runId" in instructions
-    assert "not a hard cap" in instructions and "unknown, never zero" in instructions
+    assert "Do not add application cost-control fields or call quotas" in instructions
+    assert "Preserve provider-imposed limits and actual usage reporting" in instructions
+    assert "unknown, never zero" in instructions
     assert row["create_payload"]["environment"]["network"]["access"] == "disabled"
     Consumer.check_session(row, api.get("session", row["session_id"]))
     changed = deepcopy(row)
