@@ -24,6 +24,7 @@ from .website_capture_entry import is_website_entry_source
 
 def validate_website_task_context(
     value: Mapping[str, Any], *, request_id: str, scene_id: str, capture_id: str,
+    purpose: str | None = None,
 ) -> dict[str, Any]:
     if value.get("schema_version") != "website_site_task_context.v1":
         raise ValueError("website_task_context_schema_invalid")
@@ -33,7 +34,16 @@ def validate_website_task_context(
         raise ValueError("website_task_context_identity_mismatch")
     if value.get("context_digest") != canonical_digest(value, digest_field="context_digest"):
         raise ValueError("website_task_context_digest_mismatch")
-    if value.get("confirmed") is not True or not value.get("confirmed_at"):
+    if purpose not in {None, "scene_preparation"}:
+        raise ValueError("website_task_context_purpose_invalid")
+    if purpose == "scene_preparation" and value.get("purpose") != purpose and not (
+            "purpose" not in value and value.get("confirmed") is True and value.get("confirmed_at")):
+        raise ValueError("website_task_context_purpose_mismatch")
+    if purpose == "scene_preparation" and (type(value.get("confirmed")) is not bool
+            or (value["confirmed"] is False and value.get("confirmed_at") is not None)
+            or (value["confirmed"] is True and not value.get("confirmed_at"))):
+        raise ValueError("website_task_context_confirmation_invalid")
+    if purpose is None and (value.get("confirmed") is not True or not value.get("confirmed_at")):
         raise ValueError("website_task_context_not_confirmed")
     if not isinstance(value.get("description"), str) or not value["description"].strip():
         raise ValueError("website_task_context_description_missing")
@@ -97,12 +107,17 @@ def validate_website_task_context(
 
 def load_current_website_task_context(
     *, request_id: str, scene_id: str, capture_id: str,
+    purpose: str | None = None,
 ) -> dict[str, Any]:
     """One authenticated bounded read; errors hold preparation without fallback."""
-    value = website_webapp_request(capture_id=capture_id, operation="task-context",
-                                  payload={"request_id": request_id, "scene_id": scene_id})
+    payload = {"request_id": request_id, "scene_id": scene_id}
+    if purpose is not None:
+        if purpose != "scene_preparation":
+            raise ValueError("website_task_context_purpose_invalid")
+        payload["purpose"] = purpose
+    value = website_webapp_request(capture_id=capture_id, operation="task-context", payload=payload)
     return validate_website_task_context(value, request_id=request_id,
-                                         scene_id=scene_id, capture_id=capture_id)
+                                         scene_id=scene_id, capture_id=capture_id, purpose=purpose)
 
 
 def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -196,7 +211,7 @@ def publish_website_visual_scene(*, descriptor: Mapping[str, Any], world: Mappin
             or (metadata.get("clean_plate") or {}).get("privacy_verified") is not True):
         raise ValueError("website_visual_scene_preparation_missing")
     validate_website_task_context(context, request_id=context.get("request_id", ""),
-                                  scene_id=descriptor["scene_id"], capture_id=descriptor["capture_id"])
+                                  scene_id=descriptor["scene_id"], capture_id=descriptor["capture_id"], purpose="scene_preparation")
     assets = world.get("assets") or {}
     imagery = assets.get("imagery") or {}
     world_id = world.get("world_id") or world.get("id")
@@ -215,9 +230,20 @@ def publish_website_visual_scene(*, descriptor: Mapping[str, Any], world: Mappin
     return value
 
 
-def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: float) -> dict[str, Any]:
+def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: float, create: bool = True) -> dict[str, Any]:
+    if type(create) is not bool:
+        raise ValueError("website_scene_sponsorship_create_invalid")
+    payload = {"request_id": task_context["request_id"], "scene_id": task_context["scene_id"]}
+    if task_context.get("purpose") == "scene_preparation":
+        validate_website_task_context(task_context, request_id=task_context["request_id"],
+            scene_id=task_context["scene_id"], capture_id=task_context["capture_id"], purpose="scene_preparation")
+        payload.update(purpose="scene_preparation", expected_task_context_digest=task_context["context_digest"])
+        if create is False:
+            payload["create"] = False
+    elif create is not True:
+        raise ValueError("website_scene_sponsorship_read_purpose_required")
     value = website_webapp_request(capture_id=task_context["capture_id"], operation="scene-sponsorship",
-        payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"]})
+        payload=payload)
     from math import isfinite
     issued = (value.get("consent") or {}).get("accepted_at_epoch")
     authoring_provider = value.get("authoring_provider", "openai")
@@ -260,6 +286,9 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
             or not now < value["expires_at_epoch"]
             or not 0 < value["expires_at_epoch"] - issued <= 86400):
         raise ValueError("website_scene_sponsorship_binding_invalid")
+    if task_context.get("purpose") == "scene_preparation":
+        from .website_preparation_authority import validate_preparation_authority
+        validate_preparation_authority(task_context=task_context, authority=value, now=now)
     return value
 
 

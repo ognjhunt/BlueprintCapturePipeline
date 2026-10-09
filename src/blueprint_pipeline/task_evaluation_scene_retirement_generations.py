@@ -279,7 +279,7 @@ def _prepare_capture_parent(path, rows):
         current /= part
 
 
-def birth_capture_member(path, *, observation, membership_selector, membership_raw, now=None):
+def birth_capture_member(path, *, observation, membership_selector, membership_raw, now=None, expected_purpose=None):
     """Birth a selected website capture before its first ledger or payload write.
 
     The caller acquires ``observation`` through the signed original-owner read
@@ -303,12 +303,14 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
             scene_id=observation.get('scene_id'), capture_id=observation.get('capture_id'),
             marker_generation=observation.get('completion_marker', {}).get('generation'),
             now_epoch=now,
+            expected_purpose=expected_purpose,
         )
         _require(tuple(path.parts[-5:]) == (
             owner['bucket'], 'scenes', owner['scene_id'], 'captures', owner['capture_id']),
             'scene_capture_target_identity_invalid')
         membership = validate_capture_delivery_membership(
             membership_raw, selector=membership_selector, observation=owner)
+        capture_owner_user_id = (owner['capture_owner'] or {}).get('user_id')
         marker = owner['completion_marker']
         delivery = owner['producer_delivery']
         store = Path(policy['generation_store'])
@@ -351,12 +353,13 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
                         _require(prior_owner['source_projection_digest'] == owner['source_projection_digest']
                                  and prior_delivery == birth_delivery
                                  and _raw_reference(membership_ref) == membership
-                                 and prior['capture_owner_user_id'] == owner['capture_owner']['user_id']
+                                 and prior['capture_owner_user_id'] == capture_owner_user_id
+                                 and prior.get('capture_observation_purpose') == expected_purpose
                                  and prior['pinned_marker'] == marker,
                                  'scene_capture_active_delivery_conflict')
                         return prior
-                    _require(prior['state'] == 'retired'
-                             and prior_owner['capture_owner']['user_id'] == owner['capture_owner']['user_id']
+                    _require(prior['state'] == 'retired' and capture_owner_user_id is not None
+                             and (prior_owner['capture_owner'] or {}).get('user_id') == capture_owner_user_id
                              and prior_delivery['producer_delivery']['delivery_key'] != delivery['delivery_key']
                              and prior_delivery['source_finalize']['generation'] != marker['generation']
                              and prior_delivery['producer_delivery']['raw_video'] != delivery['raw_video'],
@@ -385,7 +388,8 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
                         schema_version='scene_capture_generation.v1', canonical_path=str(path),
                         generation_id=secrets.token_hex(16),
                         previous_generation_id=prior['generation_id'] if prior else None,
-                        capture_owner_user_id=owner['capture_owner']['user_id'],
+                        capture_owner_user_id=capture_owner_user_id,
+                        **({'capture_observation_purpose': expected_purpose} if expected_purpose else {}),
                         owner_observation_raw_ref=owner_ref,
                         pinned_marker=marker,
                         birth_delivery_raw_ref=delivery_ref,
@@ -411,13 +415,14 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
                     return value
 
 
-def capture_birth_source_projection(path):
+def capture_birth_source_projection(path, *, expected_purpose=None):
     """Reopen one native capture's retained original source for registration.
 
     This is historical producer evidence, not execution or removal consent.
     An absent native generation returns None for the existing legacy caller.
     An incomplete enrolled generation refuses instead of becoming legacy.
     """
+    _require(expected_purpose in {None, 'scene_preparation'}, 'scene_capture_observation_purpose_invalid')
     policy = _policy()
     if policy is None:
         return None
@@ -448,7 +453,8 @@ def capture_birth_source_projection(path):
             owner, bucket=owner['bucket'], scene_id=owner['scene_id'],
             capture_id=owner['capture_id'],
             marker_generation=state['pinned_marker']['generation'],
-            now_epoch=owner['observed_at_epoch'])
+            now_epoch=owner['observed_at_epoch'],
+            expected_purpose=state.get('capture_observation_purpose') if expected_purpose == 'scene_preparation' else None)
         delivery = _raw_reference(state['birth_delivery_raw_ref'])
         _require(delivery.get('schema_version') == 'capture_birth_delivery.v1'
                  and delivery.get('producer_delivery') == owner['producer_delivery']
@@ -483,7 +489,9 @@ def capture_birth_source_projection(path):
             'canonical_path': str(path), 'generation_id': state['generation_id'],
             'request_id': owner['request_id'], 'scene_id': owner['scene_id'],
             'capture_id': owner['capture_id'],
-            'capture_owner_user_id': owner['capture_owner']['user_id'],
+            'capture_owner_user_id': (owner['capture_owner'] or {}).get('user_id'),
+            **({'capture_observation_purpose': state['capture_observation_purpose']}
+               if state.get('capture_observation_purpose') else {}),
             'capture_rights': owner['capture_rights'],
             'owner_observation_raw_ref': state['owner_observation_raw_ref'],
             'birth_delivery_raw_ref': state['birth_delivery_raw_ref'],

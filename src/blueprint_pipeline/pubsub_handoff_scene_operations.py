@@ -9,11 +9,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterator
 
-def _stage_handoff_capture_body(_listener, /, handoff, *, storage_root, storage_client):
+def _stage_handoff_capture_body(_listener, /, handoff, *, storage_root, storage_client, expected_purpose=None):
     if handoff.source_finalize is not None:
         from .capture_delivery_staging import stage_selected_capture
         return stage_selected_capture(_listener, handoff, storage_root=storage_root,
-                                      storage_client=storage_client)
+                                      storage_client=storage_client,
+                                      **({"expected_purpose": expected_purpose} if expected_purpose else {}))
     client = storage_client or _listener.storage.Client()
     resolved_storage_root = storage_root.resolve()
     bucket_root = _listener.contained_path(resolved_storage_root, handoff.bucket, field='Pub/Sub staging bucket path')
@@ -88,7 +89,7 @@ def __synthesize_pipeline_handoff_body(_listener, /, handoff, *, capture_root):
     return destination
 
 
-def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False):
+def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None):
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
@@ -146,7 +147,8 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                             'retirement_receipt': retired['receipt']}
             try:
                 selected_staged = _listener.stage_handoff_capture(
-                    handoff, storage_root=storage_root, storage_client=storage_client)
+                    handoff, storage_root=storage_root, storage_client=storage_client,
+                    **({"expected_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}))
             except Exception:
                 _listener.logger.warning('pubsub_handoff.capture_source_membership_unavailable',
                                          extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id})
@@ -240,7 +242,8 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         with _listener._JobLeaseHeartbeat(capture_root=capture_root, owner=owner, token=token, lease_seconds=lease_seconds):
             staged_capture_root = (selected_staged if selected_staged is not None else
                 _listener.stage_handoff_capture(handoff=handoff, storage_root=storage_root,
-                                                storage_client=storage_client))
+                                                storage_client=storage_client,
+                    **({"expected_purpose": expected_preparation_purpose} if expected_preparation_purpose else {})))
             raw_manifest = _listener._read_optional_json_object(staged_capture_root / 'raw' / 'manifest.json')
             website_capture = _listener.is_website_capture_manifest(raw_manifest)
             run_kwargs: dict[str, Any] = {'capture_root': str(staged_capture_root), 'provider': provider, 'run_evaluation_prep': run_evaluation_prep, 'resume_completed_stages': True}

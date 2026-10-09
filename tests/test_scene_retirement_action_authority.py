@@ -101,7 +101,7 @@ def test_capture_owner_scope_requires_exact_user_request_pair_and_shares_owner_c
 def test_capture_member_requires_original_and_sponsor_scopes(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_authority import load_authority, cohort_digest
     _, policy, target = access_fixture(tmp_path, monkeypatch)
-    principal = dict(principal_id='operator', actions=['retire'],
+    principal = dict(principal_id='operator', actions=['retire', 'restore'],
                      owner_intent_ids=['scene-1'], private_archive_classes=[],
                      capture_owner_scopes=[dict(user_id='capture-user', request_id='request-1')])
     ref = {'path': str(tmp_path / 'proof.json'), 'sha256': 'sha256:' + 'a' * 64, 'size_bytes': 1}
@@ -115,18 +115,20 @@ def test_capture_member_requires_original_and_sponsor_scopes(tmp_path, monkeypat
                    association_raw_ref=ref, scene_intent_raw_ref=ref)
     policy_path = Path(os.environ['BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE'])
     plan = dict(ref, sha256='sha256:' + 'd' * 64)
+    journal = dict(plan, path=str(Path(policy['journal_store']) / 'retired' / ('d' * 64 + '.json')))
 
-    def admit(*, scopes=None, member=None):
+    def admit(*, scopes=None, member=None, action='retire'):
         policy['principals'] = [dict(principal, **(scopes or {}))]
         policy['policy_digest'] = canonical_digest(policy, digest_field='policy_digest')
         policy_path.write_text(json.dumps(policy))
-        consent_path, consent = protected_consent(tmp_path, plan=plan)
+        consent_path, consent = protected_consent(tmp_path, action=action,
+            plan=plan if action == 'retire' else None, journal=journal if action == 'restore' else None)
         consent['members'] = [dict(capture, **(member or {}))]
         consent['policy_sha256'] = 'sha256:' + hashlib.sha256(policy_path.read_bytes()).hexdigest()
         consent['cohort_sha256'] = cohort_digest(policy['consumer_cohort'])
         consent['consent_digest'] = canonical_digest(consent, digest_field='consent_digest')
         consent_path.write_text(json.dumps(consent))
-        return load_authority(consent_path, action='retire', now=lambda: 100)
+        return load_authority(consent_path, action=action, now=lambda: 100)
 
     assert admit()['consent']['members'] == [capture]
     with pytest.raises(ValueError, match='scene_retirement_capture_owner_scope_denied'):
@@ -135,3 +137,6 @@ def test_capture_member_requires_original_and_sponsor_scopes(tmp_path, monkeypat
         admit(scopes={'owner_intent_ids': []})
     with pytest.raises(ValueError, match='scene_retirement_capture_association_invalid'):
         admit(member={'sponsoring_intent_id': 'other-intent'})
+    for action in ('retire', 'restore'):
+        with pytest.raises(ValueError, match='scene_retirement_capture_owner_scope_denied'):
+            admit(member={'capture_owner_user_id': None}, action=action)

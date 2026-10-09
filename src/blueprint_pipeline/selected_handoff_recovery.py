@@ -108,6 +108,7 @@ def current_admission(selection, observation):
         request_id=observation["request_id"],
         scene_id=selection["scene_id"],
         capture_id=selection["capture_id"],
+        purpose="scene_preparation",
     )
     authority = reader.load_website_scene_sponsorship(task_context=context, now=time.time())
     _proposal_admitted(authority, context)
@@ -200,6 +201,7 @@ def recover_selected_handoff(
             scene_id=selection["scene_id"],
             capture_id=selection["capture_id"],
             marker_generation=selection["marker_generation"],
+            expected_purpose="scene_preparation",
         )
         if observation["producer_delivery"]["kind"] != "website_browser_capture_delivery":
             raise ValueError("selected_handoff_original_browser_delivery_required")
@@ -238,6 +240,7 @@ def recover_selected_handoff(
                 storage_root=Path(storage_root),
                 provider=provider,
                 require_unattempted_delivery=True,
+                expected_preparation_purpose="scene_preparation",
             )
             result.update(
                 native_status=native.get("status"),

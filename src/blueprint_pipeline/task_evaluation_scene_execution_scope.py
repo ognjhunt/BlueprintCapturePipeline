@@ -38,7 +38,8 @@ def validate_execution(value, *, now):
     _require(execution["claim_scope"] == "development_only", "claim_scope_invalid")
     policies = execution["policy_candidates"]
     if scene_preparation_only(value):
-        _require(policies == [] and "robot_binding_id" not in value["task"], "scene_preparation_must_not_select_robot_or_policy")
+        _require(policies == [] and "robot_binding_id" not in value["task"]
+                 and "evaluation_source" not in value["task"], "scene_preparation_must_not_select_robot_or_policy")
         return
     _require(isinstance(policies, list) and len(policies) == 2, "two_policies_required")
     for policy in policies:

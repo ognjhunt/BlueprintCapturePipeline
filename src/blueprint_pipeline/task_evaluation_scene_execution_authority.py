@@ -113,7 +113,16 @@ def scene_execution_authority_blockers(
                 return ['scene_execution_visual_review_correction_invalid']
         except (ValueError,OSError,KeyError,TypeError):
             return ['scene_execution_visual_review_correction_invalid']
-    if (consent.get("spend_authorized") is not True or consent.get("task_confirmed") is not True
+    from .website_preparation_authority import preparation_consent_valid, require_retained_preparation_authority
+    if consent.get("task_confirmed") is False:
+        try:
+            moment = require_retained_preparation_authority(request=request, queue_root=root, now=moment)
+            if moment >= effective_execution_expiry(directory, intent):
+                return ["scene_execution_owner_expired"]
+        except (ValueError, OSError, KeyError, TypeError):
+            return ["scene_execution_owner_preparation_authority_invalid"]
+    if (consent.get("spend_authorized") is not True
+            or not (consent.get("task_confirmed") is True or preparation_consent_valid(request))
             or consent.get("private_processing_authorized") is not True
             or consent.get("provider_training_authorized") is not False
             or consent.get("accepted_by") != request.get("owner", {}).get("user_id")

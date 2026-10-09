@@ -1,0 +1,571 @@
+{
+  "schema_version": "SYNTHETIC.offline.preparation_contract_v2.fixture.v1",
+  "synthetic": true,
+  "production_proof": false,
+  "label": "SYNTHETIC OFFLINE ONLY: NOT a current grant, site fact, paid admission, native execution, or runtime receipt",
+  "baseline_existing_confirmed_context": {
+    "schema_version": "website_site_task_context.v1",
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "description": "Move the carton intact",
+    "confirmed": true,
+    "confirmed_at": "2026-10-06T00:00:00Z",
+    "operator_answers": {
+      "item_rigidity": "rigid"
+    },
+    "unresolved": [
+      "cycle"
+    ],
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00Z"
+    },
+    "operator_task_details": {
+      "item_weight": "approximately 5 lb, not weighed",
+      "item_make_model": "ACME X2"
+    },
+    "success_criteria": {
+      "successDefinition": "Arrives intact",
+      "successRate": 95,
+      "cycleTimeSeconds": null,
+      "unknown": false
+    },
+    "task_evidence_provenance": {
+      "item_details": "owner_stated_unverified",
+      "success_criteria": "owner_stated_target",
+      "success_rate_unit": "percent",
+      "cycle_time_unit": "seconds",
+      "physical_measurements_verified": false
+    },
+    "task_items": [
+      {
+        "item_id": "item_box",
+        "label": "Carton",
+        "location_note": null,
+        "quantity_hint": null,
+        "basis": "operator_added",
+        "images": [
+          {
+            "image_id": "img1",
+            "storage_path": "scenes/site-synthetic-contract/items/item_box/img1.jpg",
+            "uploaded_at_iso": "2026-10-06T00:00:00Z",
+            "source": {
+              "generation": "123",
+              "size_bytes": 15,
+              "crc32c": "AAAAAA==",
+              "sha256": "sha256:fa87dfdcebfc3a806b57b9a1ed4409d6e9fca89afc28a72c942ccb79443703f3"
+            },
+            "basis": "owner_supplied_photo",
+            "physical_metrology": false
+          }
+        ]
+      }
+    ],
+    "context_digest": "sha256:b20401b64679bbda07fa2f461584e93802d8d830db500e8420a31ab09b44c8f0"
+  },
+  "baseline_unconfirmed_context": {
+    "schema_version": "website_site_task_context.v1",
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "description": "SYNTHETIC offline articulated assembly task; site acceptance unknown",
+    "confirmed": false,
+    "confirmed_at": null,
+    "operator_answers": {},
+    "unresolved": [
+      "required_final_state",
+      "cycle_time",
+      "assist_allowed"
+    ],
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00Z"
+    },
+    "task_items": [
+      {
+        "item_id": "item_box",
+        "label": "Carton",
+        "location_note": null,
+        "quantity_hint": null,
+        "basis": "operator_added",
+        "images": [
+          {
+            "image_id": "img1",
+            "storage_path": "scenes/site-synthetic-contract/items/item_box/img1.jpg",
+            "uploaded_at_iso": "2026-10-06T00:00:00Z",
+            "source": {
+              "generation": "123",
+              "size_bytes": 15,
+              "crc32c": "AAAAAA==",
+              "sha256": "sha256:fa87dfdcebfc3a806b57b9a1ed4409d6e9fca89afc28a72c942ccb79443703f3"
+            },
+            "basis": "owner_supplied_photo",
+            "physical_metrology": false
+          }
+        ]
+      }
+    ],
+    "context_digest": "sha256:e6c994ceb83f3fa752e2964074d7f7fd2a3e1057d3cb08cb35288c3617cd9f2a"
+  },
+  "task_context_request_legacy": {
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract"
+  },
+  "task_context_request_preparation": {
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "purpose": "scene_preparation"
+  },
+  "task_context_response_preparation": {
+    "schema_version": "website_site_task_context.v1",
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "description": "SYNTHETIC offline articulated assembly task; site acceptance unknown",
+    "confirmed": false,
+    "confirmed_at": null,
+    "operator_answers": {},
+    "unresolved": [
+      "required_final_state",
+      "cycle_time",
+      "assist_allowed"
+    ],
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00Z"
+    },
+    "task_items": [
+      {
+        "item_id": "item_box",
+        "label": "Carton",
+        "location_note": null,
+        "quantity_hint": null,
+        "basis": "operator_added",
+        "images": [
+          {
+            "image_id": "img1",
+            "storage_path": "scenes/site-synthetic-contract/items/item_box/img1.jpg",
+            "uploaded_at_iso": "2026-10-06T00:00:00Z",
+            "source": {
+              "generation": "123",
+              "size_bytes": 15,
+              "crc32c": "AAAAAA==",
+              "sha256": "sha256:fa87dfdcebfc3a806b57b9a1ed4409d6e9fca89afc28a72c942ccb79443703f3"
+            },
+            "basis": "owner_supplied_photo",
+            "physical_metrology": false
+          }
+        ]
+      }
+    ],
+    "purpose": "scene_preparation",
+    "context_digest": "sha256:32686c7866763c749a55525b99fe05cfa4c3bc94a8f134ffd5ce9462b659b37b"
+  },
+  "assessment_preparation_proposal": {
+    "schema_version": "site_assessment_preparation_proposal.v1",
+    "request_id": "synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "job_id": "advisory-af36bf7eff8a84667640239a61d162ac3c0665233762cd668fcf789dda44cb95",
+    "run_id": "synthetic-assessment-run-v2",
+    "source_key": "sha256:724a5f914c26b695ce249d0f2b529fc4e4aa7e15bdccd1d246d9c90a7df3de40",
+    "context_digest": "08940580beec9560ef36642cb86ef4ee3f1913c968dfd63a87e40eab661920f0",
+    "packet_sha256": "4f484a7b8dbcb102caf6e97f17f78417591f8bfa0ebf65eeb1265e1c02037a83",
+    "questions_pending": true,
+    "scope": "scene_preparation_only",
+    "robot_suitability_verified": false,
+    "physical_trial_authorized": false
+  },
+  "changed_assessment_preparation_proposal": {
+    "schema_version": "site_assessment_preparation_proposal.v1",
+    "request_id": "synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "job_id": "advisory-af36bf7eff8a84667640239a61d162ac3c0665233762cd668fcf789dda44cb95",
+    "run_id": "synthetic-assessment-run-v3",
+    "source_key": "sha256:724a5f914c26b695ce249d0f2b529fc4e4aa7e15bdccd1d246d9c90a7df3de40",
+    "context_digest": "08940580beec9560ef36642cb86ef4ee3f1913c968dfd63a87e40eab661920f0",
+    "packet_sha256": "a418310c17179b1a37257836c835ec19c0b4c63ee45eeb22eb329b5b3eb33a67",
+    "questions_pending": true,
+    "scope": "scene_preparation_only",
+    "robot_suitability_verified": false,
+    "physical_trial_authorized": false
+  },
+  "sponsorship_request": {
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "purpose": "scene_preparation",
+    "expected_task_context_digest": "sha256:32686c7866763c749a55525b99fe05cfa4c3bc94a8f134ffd5ce9462b659b37b"
+  },
+  "sponsorship_request_canonical_json": "{\"expected_task_context_digest\":\"sha256:32686c7866763c749a55525b99fe05cfa4c3bc94a8f134ffd5ce9462b659b37b\",\"purpose\":\"scene_preparation\",\"request_id\":\"synthetic-contract\",\"scene_id\":\"site-synthetic-contract\"}",
+  "sponsorship_request_digest": "sha256:7c915c19394669e4b0d08a03a81837b05c428c9cfbacd8adac0e032d94632a39",
+  "sponsorship_response": {
+    "schema_version": "website_scene_sponsorship.v1",
+    "sponsor": "blueprint",
+    "purpose": "scene_preparation",
+    "request_id": "synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "task_context_digest": "sha256:32686c7866763c749a55525b99fe05cfa4c3bc94a8f134ffd5ce9462b659b37b",
+    "policy_digest": "sha256:e32c01ba68d93dd88945f1a6e83538ccccafaac52fa75a0ac256bf83666e91d5",
+    "assessment_preparation_proposal": {
+      "schema_version": "site_assessment_preparation_proposal.v1",
+      "request_id": "synthetic-contract",
+      "capture_id": "walkthrough-synthetic-contract",
+      "job_id": "advisory-af36bf7eff8a84667640239a61d162ac3c0665233762cd668fcf789dda44cb95",
+      "run_id": "synthetic-assessment-run-v2",
+      "source_key": "sha256:724a5f914c26b695ce249d0f2b529fc4e4aa7e15bdccd1d246d9c90a7df3de40",
+      "context_digest": "08940580beec9560ef36642cb86ef4ee3f1913c968dfd63a87e40eab661920f0",
+      "packet_sha256": "4f484a7b8dbcb102caf6e97f17f78417591f8bfa0ebf65eeb1265e1c02037a83",
+      "questions_pending": true,
+      "scope": "scene_preparation_only",
+      "robot_suitability_verified": false,
+      "physical_trial_authorized": false
+    },
+    "authoring_provider": "openai",
+    "owner": {
+      "user_id": "synthetic-owner",
+      "organization_id": "synthetic-org"
+    },
+    "preparation_max_total_spend_usd": 2,
+    "upstream_max_spend_usd": 1,
+    "max_total_spend_usd": 1,
+    "max_paid_attempts": 1,
+    "expires_at_epoch": 1791525600,
+    "consent": {
+      "rights_reference": "sha256:e3a00c0e89df7d75de02d25608f8b01ea227b15b8bf29286c632738c7e49e40d",
+      "provider_terms_reference": "sha256:53427603a7e55435ef71637d31b97a50cb7402928f1600b47448ee6d63c466be",
+      "accepted_by": "synthetic-owner",
+      "accepted_at_epoch": 1791522000,
+      "private_processing_authorized": true,
+      "provider_training_authorized": false,
+      "task_confirmed": false,
+      "spend_authorized": true
+    },
+    "authority_digest": "sha256:4e3076186e9e30f5a19a7506b12dbb8f970d936958487ee83aa5a55feaa4ebb4"
+  },
+  "prepared_scene_body": {
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "request": {
+      "schema_version": "task_evaluation_scene_intake_request.v1",
+      "submission_id": "walkthrough-synthetic-contract",
+      "owner": {
+        "user_id": "synthetic-owner",
+        "organization_id": "synthetic-org"
+      },
+      "source": {
+        "kind": "gaussian_splat",
+        "binding_id": "website-splat-638192ca521dcdfc775a71904c1b131e",
+        "content_digest": "sha256:638192ca521dcdfc775a71904c1b131e85de7183675921ddfcf95ccebe990883"
+      },
+      "task": {
+        "task_id": "website-32686c7866763c749a55",
+        "strategy": "articulated_open_close",
+        "subject": {
+          "synthetic": true,
+          "geometry_origin": "removed_before_reconstruction"
+        },
+        "support": {
+          "synthetic": true
+        },
+        "articulation": {
+          "assembly_label": "Synthetic assembly",
+          "part_label": "Synthetic drawer",
+          "joint_type": "prismatic",
+          "estimated_usable_stroke_m": 0.1,
+          "travel_authority": "SYNTHETIC rehearsal estimate",
+          "estimated_front_normal_world": [
+            0,
+            0,
+            1
+          ],
+          "lock_status": "unknown",
+          "part_observed_open_in_footage": false,
+          "physical_measurement_proven": false
+        },
+        "success": {
+          "control_frequency_hz": 15,
+          "maximum_episode_seconds": 30,
+          "minimum_opening_fraction_of_estimated_stroke": 0.6,
+          "minimum_hold_seconds": 1,
+          "maximum_retries": 0
+        }
+      },
+      "execution": {
+        "purpose": "scene_preparation",
+        "max_total_spend_usd": 1,
+        "max_paid_attempts": 1,
+        "max_retries": 0,
+        "expires_at_epoch": 1791525600,
+        "allowed_providers": [
+          "vast",
+          "openai"
+        ],
+        "policy_candidates": [],
+        "claim_scope": "development_only"
+      },
+      "consent": {
+        "rights_reference": "sha256:e3a00c0e89df7d75de02d25608f8b01ea227b15b8bf29286c632738c7e49e40d",
+        "provider_terms_reference": "sha256:53427603a7e55435ef71637d31b97a50cb7402928f1600b47448ee6d63c466be",
+        "accepted_by": "synthetic-owner",
+        "accepted_at_epoch": 1791522000,
+        "private_processing_authorized": true,
+        "provider_training_authorized": false,
+        "task_confirmed": false,
+        "spend_authorized": true
+      }
+    }
+  },
+  "prepared_scene_request_digest": "sha256:c51f3a8227709f5dd0b52f4fd63e49d2716dd08644a75f664251ee3106d37706",
+  "digests": {
+    "legacy_confirmed": "sha256:b20401b64679bbda07fa2f461584e93802d8d830db500e8420a31ab09b44c8f0",
+    "legacy_unconfirmed": "sha256:e6c994ceb83f3fa752e2964074d7f7fd2a3e1057d3cb08cb35288c3617cd9f2a",
+    "preparation": "sha256:32686c7866763c749a55525b99fe05cfa4c3bc94a8f134ffd5ce9462b659b37b"
+  },
+  "continuation_mechanical_vector": {
+    "synthetic": true,
+    "claim": "DIGEST/RETENTION ONLY; not proposal admission or an authorized supplement",
+    "root_context": {
+      "schema_version": "website_site_task_context.v1",
+      "request_id": "synthetic-contract",
+      "scene_id": "site-synthetic-contract",
+      "capture_id": "walkthrough-synthetic-contract",
+      "description": "SYNTHETIC offline articulated assembly task; site acceptance unknown",
+      "confirmed": false,
+      "confirmed_at": null,
+      "operator_answers": {},
+      "unresolved": [
+        "required_final_state",
+        "cycle_time",
+        "assist_allowed"
+      ],
+      "capture_rights": {
+        "derived_scene_generation_allowed": true,
+        "data_licensing_allowed": false,
+        "capture_contributor_payout_eligible": false,
+        "consent_status": "granted",
+        "consent_revoked": false,
+        "consent_scope": [
+          "derived_scene_generation",
+          "robot_evaluation"
+        ],
+        "statement_version": "2026-09-18.v1",
+        "recorded_at_iso": "2026-10-06T00:00:00Z"
+      },
+      "task_items": [
+        {
+          "item_id": "item_box",
+          "label": "Carton",
+          "location_note": null,
+          "quantity_hint": null,
+          "basis": "operator_added",
+          "images": [
+            {
+              "image_id": "img1",
+              "storage_path": "scenes/site-synthetic-contract/items/item_box/img1.jpg",
+              "uploaded_at_iso": "2026-10-06T00:00:00Z",
+              "source": {
+                "generation": "123",
+                "size_bytes": 15,
+                "crc32c": "AAAAAA==",
+                "sha256": "sha256:fa87dfdcebfc3a806b57b9a1ed4409d6e9fca89afc28a72c942ccb79443703f3"
+              },
+              "basis": "owner_supplied_photo",
+              "physical_metrology": false
+            }
+          ]
+        }
+      ],
+      "purpose": "scene_preparation",
+      "context_digest": "sha256:32686c7866763c749a55525b99fe05cfa4c3bc94a8f134ffd5ce9462b659b37b"
+    },
+    "child_full_context": {
+      "schema_version": "website_site_task_context.v1",
+      "request_id": "synthetic-contract",
+      "scene_id": "site-synthetic-contract",
+      "capture_id": "supplement-synthetic-contract-child",
+      "description": "SYNTHETIC offline articulated assembly task; site acceptance unknown",
+      "confirmed": false,
+      "confirmed_at": null,
+      "operator_answers": {},
+      "unresolved": [
+        "required_final_state",
+        "cycle_time",
+        "assist_allowed"
+      ],
+      "capture_rights": {
+        "derived_scene_generation_allowed": true,
+        "data_licensing_allowed": false,
+        "capture_contributor_payout_eligible": false,
+        "consent_status": "granted",
+        "consent_revoked": false,
+        "consent_scope": [
+          "derived_scene_generation",
+          "robot_evaluation"
+        ],
+        "statement_version": "2026-09-18.v1",
+        "recorded_at_iso": "2026-10-06T00:00:00Z"
+      },
+      "task_items": [
+        {
+          "item_id": "item_box",
+          "label": "Carton",
+          "location_note": null,
+          "quantity_hint": null,
+          "basis": "operator_added",
+          "images": [
+            {
+              "image_id": "img1",
+              "storage_path": "scenes/site-synthetic-contract/items/item_box/img1.jpg",
+              "uploaded_at_iso": "2026-10-06T00:00:00Z",
+              "source": {
+                "generation": "123",
+                "size_bytes": 15,
+                "crc32c": "AAAAAA==",
+                "sha256": "sha256:fa87dfdcebfc3a806b57b9a1ed4409d6e9fca89afc28a72c942ccb79443703f3"
+              },
+              "basis": "owner_supplied_photo",
+              "physical_metrology": false
+            }
+          ]
+        }
+      ],
+      "purpose": "scene_preparation",
+      "capture_binding": {
+        "schema_version": "website_capture_continuation.v1",
+        "original_capture_id": "walkthrough-synthetic-contract",
+        "capture_id": "supplement-synthetic-contract-child",
+        "coordinate_frames_independent": true,
+        "lineage": [
+          {
+            "supplement": {
+              "parent_capture_id": "walkthrough-synthetic-contract",
+              "parent_bundle_digest": "sha256:4642d2306b9cdea21e7485796dfb7b326e8ba3411e9463b2f4b40fa3de877611",
+              "parent_manifest_uri": "gs://synthetic-bucket/scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/manifest.json"
+            },
+            "child": {
+              "capture_id": "supplement-synthetic-contract-child",
+              "raw_bundle_digest": "sha256:eea0c7d0f6968cb435a32e0df7daf8625acaa95c568d0514a72a79340fe84a5b",
+              "raw_manifest_uri": "gs://synthetic-bucket/scenes/site-synthetic-contract/captures/supplement-synthetic-contract-child/raw/manifest.json",
+              "upload_completion_digest": "sha256:81b72d9d1e440b7cf3c9d510ee9dfd8c19f8f09fd2cbdb778748dc754ceb2a9a",
+              "completion_generation": "223",
+              "completion_record_generation": "224",
+              "manifest_generation": "225"
+            },
+            "parent": {
+              "capture_id": "walkthrough-synthetic-contract",
+              "raw_bundle_digest": "sha256:4642d2306b9cdea21e7485796dfb7b326e8ba3411e9463b2f4b40fa3de877611",
+              "raw_manifest_uri": "gs://synthetic-bucket/scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/manifest.json",
+              "upload_completion_digest": "sha256:4abbd8706690ec6de5caf8c49a3d5b6a431ba9a23441b55ada4ada6a1fe5d7b5",
+              "completion_generation": "123",
+              "completion_record_generation": "124",
+              "manifest_generation": "125"
+            }
+          }
+        ]
+      },
+      "context_digest": "sha256:ba152fe4099bbfcb1bcffec3a3eebf6fc5b82bb249e11d0c287e0a9a1b091696"
+    },
+    "child_sponsorship_request": {
+      "request_id": "synthetic-contract",
+      "scene_id": "site-synthetic-contract",
+      "purpose": "scene_preparation",
+      "expected_task_context_digest": "sha256:ba152fe4099bbfcb1bcffec3a3eebf6fc5b82bb249e11d0c287e0a9a1b091696"
+    },
+    "child_authority": {
+      "schema_version": "website_scene_sponsorship.v1",
+      "sponsor": "blueprint",
+      "purpose": "scene_preparation",
+      "request_id": "synthetic-contract",
+      "capture_id": "supplement-synthetic-contract-child",
+      "scene_id": "site-synthetic-contract",
+      "task_context_digest": "sha256:ba152fe4099bbfcb1bcffec3a3eebf6fc5b82bb249e11d0c287e0a9a1b091696",
+      "policy_digest": "sha256:e32c01ba68d93dd88945f1a6e83538ccccafaac52fa75a0ac256bf83666e91d5",
+      "assessment_preparation_proposal": {
+        "schema_version": "site_assessment_preparation_proposal.v1",
+        "request_id": "synthetic-contract",
+        "capture_id": "walkthrough-synthetic-contract",
+        "job_id": "advisory-af36bf7eff8a84667640239a61d162ac3c0665233762cd668fcf789dda44cb95",
+        "run_id": "synthetic-assessment-run-v2",
+        "source_key": "sha256:724a5f914c26b695ce249d0f2b529fc4e4aa7e15bdccd1d246d9c90a7df3de40",
+        "context_digest": "08940580beec9560ef36642cb86ef4ee3f1913c968dfd63a87e40eab661920f0",
+        "packet_sha256": "4f484a7b8dbcb102caf6e97f17f78417591f8bfa0ebf65eeb1265e1c02037a83",
+        "questions_pending": true,
+        "scope": "scene_preparation_only",
+        "robot_suitability_verified": false,
+        "physical_trial_authorized": false
+      },
+      "authoring_provider": "openai",
+      "owner": {
+        "user_id": "synthetic-owner",
+        "organization_id": "synthetic-org"
+      },
+      "preparation_max_total_spend_usd": 2,
+      "upstream_max_spend_usd": 1,
+      "max_total_spend_usd": 1,
+      "max_paid_attempts": 1,
+      "expires_at_epoch": 1791525600,
+      "consent": {
+        "rights_reference": "sha256:e3a00c0e89df7d75de02d25608f8b01ea227b15b8bf29286c632738c7e49e40d",
+        "provider_terms_reference": "sha256:53427603a7e55435ef71637d31b97a50cb7402928f1600b47448ee6d63c466be",
+        "accepted_by": "synthetic-owner",
+        "accepted_at_epoch": 1791522000,
+        "private_processing_authorized": true,
+        "provider_training_authorized": false,
+        "task_confirmed": false,
+        "spend_authorized": true
+      },
+      "continuation_parent_authority_digest": "sha256:4e3076186e9e30f5a19a7506b12dbb8f970d936958487ee83aa5a55feaa4ebb4",
+      "authority_digest": "sha256:193872107f9c1e3fdfd6e1404d4dc78626f757de3d959e783f3e10c9702da532"
+    },
+    "source_bound_proposal_limit": "Retained original proposal capture_id is original capture. Existing browser proposal loader admits original capture only, and native _proposal_admitted requires matching context.capture_id. Child execution requires its own currently supported admission; this vector MUST NOT bypass that refusal."
+  },
+  "checks": {
+    "root_grant_has_no_capture_binding": true,
+    "child_full_context_binding_changes_digest": true,
+    "child_expected_digest_matches_full_context": true,
+    "child_authority_keeps_root_clock_caps_and_consent": true,
+    "stored_root_authority_unchanged": true,
+    "existing_confirmed_vector_digest_unchanged": true,
+    "default_unconfirmed_digest_pinned": true,
+    "optional_purpose_omitted_on_default": true,
+    "preparation_adds_only_purpose": true,
+    "preparation_digest_differs": true,
+    "proposal_not_in_context": true,
+    "proposal_refresh_does_not_change_context_digest": true,
+    "confirmation_false_and_null_retained": true,
+    "unresolved_retained": true,
+    "sponsorship_expected_digest_matches_exact_context": true,
+    "sponsorship_authority_digest_verified": true,
+    "intake_digest_exact_matches_prepared_scene_request": true,
+    "preparation_policy_candidates_empty": true,
+    "no_evaluation_or_robot_binding": true
+  }
+}

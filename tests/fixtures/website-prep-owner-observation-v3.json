@@ -1,0 +1,249 @@
+{
+  "schema_version": "SYNTHETIC.offline.prep_owner_observation_contract.fixture.v3",
+  "synthetic": true,
+  "production_proof": false,
+  "label": "SYNTHETIC OFFLINE ONLY; not source observations, site ownership, grants, or execution receipts",
+  "fixture_correction": {
+    "supersedes_fixture_sha256": "decf7e76c29ea28bf843f78ad7c8693d22cda8f4a09c4fa4a239fb76a71b6309",
+    "reason": "Synthetic browser producer receipt filename now binds raw_video generation 122; retains v2 exact equal timestamps; no production gate change",
+    "native_failure": "45 PASS / 4 FAIL retained by native owner: three synthetic delivery defects; one author restore fixture snapshot absence"
+  },
+  "default_request": {
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "completion_marker_generation": "123",
+    "remaining_timeout_ms": 3000
+  },
+  "default_response": {
+    "schema_version": "website_capture_owner_observation.v1",
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "bucket": "synthetic-bucket",
+    "raw_prefix_uri": "gs://synthetic-bucket/scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw",
+    "capture_owner": {
+      "user_id": "synthetic-capture-owner",
+      "basis": "inboundRequests.account_owner_uid"
+    },
+    "ownership_record": {
+      "claimed_at_iso": null
+    },
+    "consent_attestation": {
+      "granted": true,
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00.000Z"
+    },
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00.000Z"
+    },
+    "completion_marker": {
+      "object_name": "scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/capture_upload_complete.json",
+      "generation": "123",
+      "size_bytes": 100,
+      "sha256": "sha256:4844c1e0b7347c4ff722a594635fdb888f89038d0bdb1cfd072a17c7a3fe7031"
+    },
+    "producer_delivery": {
+      "kind": "website_browser_capture_delivery",
+      "delivery_key": "sha256:f99e5093fbbdc2f34dadcfb2916f2cadef3fded7aa16e0acdba33963f4422003",
+      "server_record": {
+        "object_name": "scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/upload/producer_deliveries/browser-video-122.json",
+        "generation": "124",
+        "size_bytes": 200,
+        "sha256": "sha256:175a700943766e51e9c6c6f0b78ca36cea4737fbb8c9afe98023db06dee748c8"
+      },
+      "raw_video": {
+        "object_name": "scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/walkthrough.mp4",
+        "generation": "122",
+        "size_bytes": 7,
+        "crc32c": "AAAAAA=="
+      }
+    },
+    "source_document": {
+      "collection": "inboundRequests",
+      "document_id": "synthetic-contract",
+      "update_time": {
+        "seconds": 1,
+        "nanoseconds": 0
+      }
+    },
+    "source_projection_digest": "sha256:a5ef348efd0e3419dcb69617f74690359df11eff4af5341f0c1e1c8c4c71a7b3",
+    "observed_at_epoch": 1791522000,
+    "valid_until_epoch": 1791522060,
+    "observation_digest": "sha256:48fc785137d7f0e95ba2582cc54dee7f43ce222ce84e559f502396f5935acee7"
+  },
+  "default_response_canonical_json": "{\"bucket\":\"synthetic-bucket\",\"capture_id\":\"walkthrough-synthetic-contract\",\"capture_owner\":{\"basis\":\"inboundRequests.account_owner_uid\",\"user_id\":\"synthetic-capture-owner\"},\"capture_rights\":{\"capture_contributor_payout_eligible\":false,\"consent_revoked\":false,\"consent_scope\":[\"derived_scene_generation\",\"robot_evaluation\"],\"consent_status\":\"granted\",\"data_licensing_allowed\":false,\"derived_scene_generation_allowed\":true,\"recorded_at_iso\":\"2026-10-06T00:00:00.000Z\",\"statement_version\":\"2026-09-18.v1\"},\"completion_marker\":{\"generation\":\"123\",\"object_name\":\"scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/capture_upload_complete.json\",\"sha256\":\"sha256:4844c1e0b7347c4ff722a594635fdb888f89038d0bdb1cfd072a17c7a3fe7031\",\"size_bytes\":100},\"consent_attestation\":{\"granted\":true,\"recorded_at_iso\":\"2026-10-06T00:00:00.000Z\",\"statement_version\":\"2026-09-18.v1\"},\"observation_digest\":\"sha256:48fc785137d7f0e95ba2582cc54dee7f43ce222ce84e559f502396f5935acee7\",\"observed_at_epoch\":1791522000,\"ownership_record\":{\"claimed_at_iso\":null},\"producer_delivery\":{\"delivery_key\":\"sha256:f99e5093fbbdc2f34dadcfb2916f2cadef3fded7aa16e0acdba33963f4422003\",\"kind\":\"website_browser_capture_delivery\",\"raw_video\":{\"crc32c\":\"AAAAAA==\",\"generation\":\"122\",\"object_name\":\"scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/walkthrough.mp4\",\"size_bytes\":7},\"server_record\":{\"generation\":\"124\",\"object_name\":\"scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/upload/producer_deliveries/browser-video-122.json\",\"sha256\":\"sha256:175a700943766e51e9c6c6f0b78ca36cea4737fbb8c9afe98023db06dee748c8\",\"size_bytes\":200}},\"raw_prefix_uri\":\"gs://synthetic-bucket/scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw\",\"request_id\":\"synthetic-contract\",\"scene_id\":\"site-synthetic-contract\",\"schema_version\":\"website_capture_owner_observation.v1\",\"source_document\":{\"collection\":\"inboundRequests\",\"document_id\":\"synthetic-contract\",\"update_time\":{\"nanoseconds\":0,\"seconds\":1}},\"source_projection_digest\":\"sha256:a5ef348efd0e3419dcb69617f74690359df11eff4af5341f0c1e1c8c4c71a7b3\",\"valid_until_epoch\":1791522060}",
+  "default_response_canonical_sha256": "18757b49d1dbaa25242ab34c9fedb1476dad2cced68bf3ff5c7dd74381f95ffe",
+  "preparation_request": {
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "completion_marker_generation": "123",
+    "remaining_timeout_ms": 3000,
+    "purpose": "scene_preparation"
+  },
+  "preparation_source_projection": {
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "bucket": "synthetic-bucket",
+    "raw_prefix_uri": "gs://synthetic-bucket/scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw",
+    "capture_owner": null,
+    "ownership_record": {
+      "claimed_at_iso": null
+    },
+    "consent_attestation": {
+      "granted": true,
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00.000Z"
+    },
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00.000Z"
+    },
+    "completion_marker": {
+      "object_name": "scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/capture_upload_complete.json",
+      "generation": "123",
+      "size_bytes": 100,
+      "sha256": "sha256:4844c1e0b7347c4ff722a594635fdb888f89038d0bdb1cfd072a17c7a3fe7031"
+    },
+    "producer_delivery": {
+      "kind": "website_browser_capture_delivery",
+      "delivery_key": "sha256:f99e5093fbbdc2f34dadcfb2916f2cadef3fded7aa16e0acdba33963f4422003",
+      "server_record": {
+        "object_name": "scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/upload/producer_deliveries/browser-video-122.json",
+        "generation": "124",
+        "size_bytes": 200,
+        "sha256": "sha256:175a700943766e51e9c6c6f0b78ca36cea4737fbb8c9afe98023db06dee748c8"
+      },
+      "raw_video": {
+        "object_name": "scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/walkthrough.mp4",
+        "generation": "122",
+        "size_bytes": 7,
+        "crc32c": "AAAAAA=="
+      }
+    },
+    "purpose": "scene_preparation"
+  },
+  "preparation_response": {
+    "schema_version": "website_capture_owner_observation.v1",
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "bucket": "synthetic-bucket",
+    "raw_prefix_uri": "gs://synthetic-bucket/scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw",
+    "capture_owner": null,
+    "ownership_record": {
+      "claimed_at_iso": null
+    },
+    "consent_attestation": {
+      "granted": true,
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00.000Z"
+    },
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00.000Z"
+    },
+    "completion_marker": {
+      "object_name": "scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/capture_upload_complete.json",
+      "generation": "123",
+      "size_bytes": 100,
+      "sha256": "sha256:4844c1e0b7347c4ff722a594635fdb888f89038d0bdb1cfd072a17c7a3fe7031"
+    },
+    "producer_delivery": {
+      "kind": "website_browser_capture_delivery",
+      "delivery_key": "sha256:f99e5093fbbdc2f34dadcfb2916f2cadef3fded7aa16e0acdba33963f4422003",
+      "server_record": {
+        "object_name": "scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/upload/producer_deliveries/browser-video-122.json",
+        "generation": "124",
+        "size_bytes": 200,
+        "sha256": "sha256:175a700943766e51e9c6c6f0b78ca36cea4737fbb8c9afe98023db06dee748c8"
+      },
+      "raw_video": {
+        "object_name": "scenes/site-synthetic-contract/captures/walkthrough-synthetic-contract/raw/walkthrough.mp4",
+        "generation": "122",
+        "size_bytes": 7,
+        "crc32c": "AAAAAA=="
+      }
+    },
+    "purpose": "scene_preparation",
+    "source_document": {
+      "collection": "inboundRequests",
+      "document_id": "synthetic-contract",
+      "update_time": {
+        "seconds": 1,
+        "nanoseconds": 0
+      }
+    },
+    "source_projection_digest": "sha256:01bcb2d8fe5c58f6e877f64333c7b4ad35d118a414cfca524dc8815430f81110",
+    "observed_at_epoch": 1791522000,
+    "valid_until_epoch": 1791522060,
+    "observation_digest": "sha256:374300a594e0e80c02e7d86fe31e301b87b5810547031a45be0d0e66e8ecb3c3"
+  },
+  "field_freeze": {
+    "request_optional": {
+      "purpose": "scene_preparation"
+    },
+    "response_optional": {
+      "purpose": "scene_preparation"
+    },
+    "capture_owner": "null only for explicit prep DATA-only observation when actual owner absent/null; otherwise existing object"
+  },
+  "sponsorship_extension_request": {
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "purpose": "scene_preparation",
+    "expected_task_context_digest": "sha256:32686c7866763c749a55525b99fe05cfa4c3bc94a8f134ffd5ce9462b659b37b",
+    "create": false
+  },
+  "sponsorship_extension_request_digest": "sha256:b4774d2c32d2e8ff81c627bac357c565b1576ba3cdc5aee848c585540e2bf230",
+  "sponsorship_default_request": {
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "purpose": "scene_preparation",
+    "expected_task_context_digest": "sha256:32686c7866763c749a55525b99fe05cfa4c3bc94a8f134ffd5ce9462b659b37b"
+  },
+  "invariants": [
+    "Default absent purpose retains current exact fields/bytes/owner requirement; default capture_owner:null rejects.",
+    "Explicit purpose required for null owner. Wrong/null/missing expected purpose rejects in native opted-in validator.",
+    "Source projection digest and observation digest both include purpose; no configured sponsor becomes capture owner.",
+    "DATA-only observation neither creates a grant nor authorizes processing. Execution needs current separate exact grant/proposal/rights/full-context checks.",
+    "Null-vs-null owner comparison never authorizes subscriber restore, retirement, rebirth, or execution; strict legacy readers remain.",
+    "create:false only on explicit scene_preparation sponsorship request with exact expected_task_context_digest. It cannot create or renew a grant; absent create retains creation behavior."
+  ],
+  "checks": {
+    "default_canonical_bytes_stable_with_corrected_delivery": true,
+    "both_preparation_digests_include_purpose": true,
+    "unclaimed_preparation_owner_null": true,
+    "no_invented_owner": true,
+    "sponsorship_no_create_digest_pinned": true
+  },
+  "limits": "Synthetic byte fixture verifies proposed schema/digests, not production owner/source admission. Original preparation fixture remains unchanged."
+}

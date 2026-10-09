@@ -37,7 +37,7 @@ def _selected_capture_source(preparation_path, preparation, context):
         return None
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
 
-    source = capture_birth_source_projection(preparation_file.parents[2])
+    source = capture_birth_source_projection(preparation_file.parents[2], expected_purpose="scene_preparation")
     if source is None:
         return None
     rights_digest = cross_runtime_canonical_digest(source['capture_rights'])

@@ -143,12 +143,12 @@ def admit_browser_preparation(listener, *, payload, handoff, capture_root, obser
     _require(handoff.source_finalize is not None and handoff.source_membership_selector is not None
              and producer_delivery_key == observation["producer_delivery"]["delivery_key"])
     context = context_reader.load_current_website_task_context(request_id=observation["request_id"],
-        scene_id=handoff.scene_id, capture_id=handoff.capture_id)
+        scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
     path = capture_root / "pipeline" / "website_task_context.json"
     from .website_preparation_status import _read
     if path.is_file():
         retained = context_reader.validate_website_task_context(_read(path), request_id=observation["request_id"],
-            scene_id=handoff.scene_id, capture_id=handoff.capture_id)
+            scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
         _require(retained["context_digest"] == context["context_digest"])
     else:
         write_json(path, context)
@@ -221,17 +221,19 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
                 "producer_delivery_key": record["producer_delivery_key"],
                 "source_payload_sha256": record["source_payload_sha256"], "task_context_digest": record["task_context_digest"]})
             _require(status["state"] == "failed_retryable" and status["revision"] == before["revision"])
-            birth = capture_birth_source_projection(root)
+            birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
             _require(birth is not None and birth["source_membership_selector"] == handoff.source_membership_selector
                 and _read(Path(birth["birth_delivery_raw_ref"]["path"]))["producer_delivery"]["kind"] == "website_browser_capture_delivery")
             context = context_reader.validate_website_task_context(_read(root / "pipeline" / "website_task_context.json"),
-                request_id=request_id, scene_id=handoff.scene_id, capture_id=handoff.capture_id)
+                request_id=request_id, scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
             _proposal_admitted(context_reader.load_website_scene_sponsorship(task_context=context, now=time.time()), context)
             _require(listener._read_job_ledger(root) == before)
             # The SAME successful lease claim consumes the pending field; its
             # historical failure row retains the bytes. Never synthesize an ack.
             result = listener.process_handoff_payload(raw, storage_root=storage_root,
-                payload_digest=record["source_payload_sha256"], expected_assessment_resume={"revision": before["revision"], "record": record}, **process_args)
+                payload_digest=record["source_payload_sha256"], expected_assessment_resume={"revision": before["revision"], "record": record},
+                **({"expected_preparation_purpose": "scene_preparation"}
+                   if birth.get("capture_observation_purpose") == "scene_preparation" else {}), **process_args)
             if result.get("status") in {"processed", "retryable_blocked"}:
                 counts["resumed"] += 1
                 counts["pending"] -= 1
