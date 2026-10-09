@@ -99,6 +99,18 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             geometry = run_website_scene_geometry(source_video=video,
                 output_root=Path(clean_plate["stage_manifest_path"]).parent / "source_geometry",
                 capture_id=context["capture_id"], task_context=context, task_masks=clean_plate["task_masks"])
+            if geometry.get("status") == "pending" and geometry.get("backend") == "atlas":
+                # Unposed RGB preparation is useful without MapAnything. The
+                # admitted Atlas pose/depth operation and final scene assets
+                # remain separate proof; never pass pending RGB into native
+                # geometry/mask lifting or quietly allocate a GPU instead.
+                result.update(status="needs_input", visual_reconstruction_ready=not failed_fixture,
+                    blockers=geometry["blockers"], geometry_backend="atlas",
+                    geometry_controller_invoked=False, provider_mutation_performed=False,
+                    atlas_pose_inputs_path=str(Path(clean_plate["stage_manifest_path"]).parent
+                                               / "source_geometry" / "atlas_pose_inputs.json"))
+                write_json(root / "handoff.json", result)
+                return result
             masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
             write_json(root / "task_masks.geometry.json", masks)
             clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
