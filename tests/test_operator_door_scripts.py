@@ -7,6 +7,7 @@
 #   deploy/operator-door/door-retire-scene-workspace.sh
 #   deploy/operator-door/door-restore-scene-workspace.sh
 #   deploy/operator-door/door-provider-output-resume.sh
+#   deploy/operator-door/door-selected-handoff.sh
 #   deploy/operator-door/door-repair-notifier-binding.sh
 #   deploy/operator-door/install.sh
 
@@ -571,6 +572,41 @@ shift
 { echo "setpriv ${options[*]} --"; echo "umask $(umask)"; } >> "$STUB_LOG"
 exec "$@"
 """
+
+
+@pytest.mark.parametrize(("guard_rc", "helper_rc"), [(0, 0), (0, 1), (1, 0)])
+def test_selected_handoff_receipts_readable_and_service_artifacts_private(env, tmp_path, guard_rc, helper_rc):
+    request_id = "20261009T154718Z-selected-handoff-0000abcd"
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_stub(tmp_path / "stubs/setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "stubs/chgrp", "#!/bin/bash\nexit 0\n")
+    python = tmp_path / "selected-python"
+    _write_stub(python, '''#!/bin/bash
+if [[ "$*" == *production_runtime_env_guard* ]]; then
+  : > "$STUB_DIR/guard-private"
+  exit "$FAKE_GUARD_RC"
+fi
+: > "$STUB_DIR/helper-private"
+printf '%s\\n' '{"status":"blocked"}'
+exit "$FAKE_HELPER_RC"
+''')
+    rc, outcome, calls = _run("door-selected-handoff.sh", env, DOOR_REQUEST_ID=request_id,
+        DOOR_VENV_PYTHON=str(python), DOOR_CONTROL_PLANE_REPO=str(repository), DOOR_SERVICE_USER="blueprint",
+        DOOR_SELECTED_HANDOFF_REQUEST='{"mode":"dispatch"}', FAKE_GUARD_RC=str(guard_rc),
+        FAKE_HELPER_RC=str(helper_rc))
+    assert rc == (2 if guard_rc else helper_rc)
+    assert outcome["status"] == ("refused" if guard_rc else "failed" if helper_rc else "completed")
+    for suffix in ("log", "outcome.json"):
+        assert stat.S_IMODE((Path(env["DOOR_RESULTS_DIR"]) / f"{request_id}.{suffix}").stat().st_mode) == 0o644
+    assert stat.S_IMODE((tmp_path / "guard-private").stat().st_mode) == 0o600
+    if not guard_rc:
+        result = Path(env["DOOR_RESULTS_DIR"]) / f"{request_id}.selected-handoff.json"
+        assert stat.S_IMODE(result.stat().st_mode) == 0o640
+        assert stat.S_IMODE((tmp_path / "helper-private").stat().st_mode) == 0o600
+    else:
+        assert not (tmp_path / "helper-private").exists()
+    assert all(line == "umask 0077" for line in calls if line.startswith("umask "))
 RESUME_PYTHON_STUB = r"""#!/bin/bash
 { echo "resume $*"; echo "cwd $PWD"; echo "pythonpath ${PYTHONPATH:-}"
   echo "artifact-bucket ${BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET:-unset}"

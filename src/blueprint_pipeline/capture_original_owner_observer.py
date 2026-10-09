@@ -39,6 +39,32 @@ _SOURCE_KEYS = (
 )
 
 
+OWNER_OBSERVATION_REASON_CODES = frozenset({
+    'capture_owner_attestation_invalid',
+    'capture_owner_capture_identity_invalid',
+    'capture_owner_delivery_invalid',
+    'capture_owner_identity_invalid',
+    'capture_owner_identity_mismatch',
+    'capture_owner_marker_generation_invalid',
+    'capture_owner_marker_generation_mismatch',
+    'capture_owner_observation_digest_invalid',
+    'capture_owner_observation_stale',
+    'capture_owner_ownership_record_invalid',
+    'capture_owner_purpose_invalid',
+    'capture_owner_purpose_mismatch',
+    'capture_owner_request_too_large',
+    'capture_owner_response_duplicate_key',
+    'capture_owner_response_nonfinite',
+    'capture_owner_response_unavailable',
+    'capture_owner_rights_not_admitted',
+    'capture_owner_shape_invalid',
+    'capture_owner_source_document_invalid',
+    'capture_owner_source_invalid',
+    'capture_owner_timeout_invalid',
+    'capture_owner_webapp_url_missing',
+})
+
+
 class CaptureOwnerObservationError(ValueError):
     """A fixed-code, secret-free refusal of owner evidence."""
 

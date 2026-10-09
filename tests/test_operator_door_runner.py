@@ -765,3 +765,121 @@ def test_canonical_provenance_cannot_replace_existing_results_symlink(config: Do
     assert victim.read_text() == "preserve"
     assert not any(call[0] == "systemd-run" for call in runner.calls)
     assert _result(config, request_id)["status"] != "launched"
+
+
+_PRIOR_SELECTED = "20261009T154718Z-selected-handoff-9ef60661"
+
+
+def _preclaim_evidence(config):
+    from tests.test_operator_door_requests import _selected_request
+
+    selection = {**_selected_request(), "mode": "dispatch"}
+    results = Path(config.spool_root) / "results"
+    native_path = results / f"{_PRIOR_SELECTED}.selected-handoff.json"
+    outcome_path = results / f"{_PRIOR_SELECTED}.outcome.json"
+    native = {"schema_version": "selected_handoff_recovery.v1", "mode": "dispatch", "status": "blocked",
+              "native_status": "capture_owner_observation_unavailable_retryable", "native_disposition": "retryable",
+              "source_membership_verified": True, "current_admission_verified": True,
+              "selector_sha256": hashlib.sha256(json.dumps(selection, sort_keys=True).encode()).hexdigest(),
+              "blockers": ["selected_handoff_native_admission_or_result_blocked"],
+              "provider_dispatch_performed": "unknown; consult native receipts"}
+    outcome = {"schema": "blueprint_operator_door_outcome.v1", "status": "failed",
+               "code": "selected_handoff_blocked", "exit_code": 1, "result": str(native_path)}
+    native_path.write_text(json.dumps(native))
+    native_path.chmod(0o640)
+    outcome_path.write_text(json.dumps(outcome))
+    outcome_path.chmod(0o600)
+    return {**selection, "resume_request_id": _PRIOR_SELECTED}, native_path, outcome_path
+
+
+@pytest.mark.parametrize("launch_rc", [0, 1])
+def test_selected_preclaim_recovery_is_linked_exclusive_and_keeps_original_evidence(config, monkeypatch, launch_rc):
+    import operator_door.spool_runner as module
+
+    body, native_path, outcome_path = _preclaim_evidence(config)
+    before = (native_path.read_bytes(), outcome_path.read_bytes())
+    syncs = []
+    real_fsync = os.fsync
+    def sync(fd):
+        syncs.append(os.fstat(fd).st_mode)
+        real_fsync(fd)
+    monkeypatch.setattr(module.os, "fsync", sync)
+    request_id = _spooled(config, body)
+    runner = FakeRunner(systemd_run_rc=launch_rc)
+    process_spool(config, runner=runner)
+    launch = next(call for call in runner.calls if call[0] == "systemd-run")
+    env = dict(part.removeprefix("--setenv=").split("=", 1) for part in launch if part.startswith("--setenv="))
+    assert json.loads(env["DOOR_SELECTED_HANDOFF_REQUEST"]) == {key: value for key, value in body.items() if key != "resume_request_id"}
+    marker_path = native_path.parent / f"{_PRIOR_SELECTED}.selected-handoff-recovery.json"
+    marker = json.loads(marker_path.read_text())
+    assert marker["request_id"] == request_id and marker["prior_request_id"] == _PRIOR_SELECTED
+    assert marker["selector_sha256"] == json.loads(before[0])["selector_sha256"]
+    assert marker_path.stat().st_mode & 0o777 == 0o600
+    import stat
+    assert any(stat.S_ISREG(mode) for mode in syncs) and any(stat.S_ISDIR(mode) for mode in syncs)
+    assert (native_path.read_bytes(), outcome_path.read_bytes()) == before
+    second_id = _spooled(config, body)
+    runner.calls.clear()
+    process_spool(config, runner=runner)
+    assert not any(call[0] == "systemd-run" for call in runner.calls)
+    assert _result(config, second_id)["code"] == "selected_handoff_recovery_already_consumed"
+    assert json.loads(marker_path.read_text()) == marker
+
+
+@pytest.mark.parametrize("mutation", [
+    "schema", "completed", "postlease", "unknown", "hash", "admission", "membership", "disposition", "mode",
+    "blockers", "outcome_schema", "outcome_status", "outcome_code", "outcome_exit_bool", "outcome_path",
+    "missing", "symlink", "writable", "oversize", "duplicate", "nonfinite", "foreign_owner", "self",
+])
+def test_selected_preclaim_recovery_refuses_untrusted_or_ineligible_evidence(config, monkeypatch, mutation):
+    body, native_path, outcome_path = _preclaim_evidence(config)
+    native = json.loads(native_path.read_text())
+    outcome = json.loads(outcome_path.read_text())
+    changes = {"schema": ("schema_version", "wrong"), "completed": ("status", "native_handler_returned"),
+               "postlease": ("native_status", "provider_failed_retryable"), "unknown": ("native_status", "unknown"),
+               "hash": ("selector_sha256", "0" * 64), "admission": ("current_admission_verified", False),
+               "membership": ("source_membership_verified", False), "disposition": ("native_disposition", "terminal_success"),
+               "mode": ("mode", "inspect"), "blockers": ("blockers", [])}
+    outcome_changes = {"outcome_schema": ("schema", "wrong"), "outcome_status": ("status", "completed"),
+                       "outcome_code": ("code", "script_exited_early"), "outcome_exit_bool": ("exit_code", True),
+                       "outcome_path": ("result", "/other/result")}
+    if mutation in changes:
+        key, value = changes[mutation]
+        native[key] = value
+        native_path.write_text(json.dumps(native))
+    if mutation in outcome_changes:
+        key, value = outcome_changes[mutation]
+        outcome[key] = value
+        outcome_path.write_text(json.dumps(outcome))
+    if mutation == "missing":
+        native_path.unlink()
+    if mutation == "symlink":
+        native_path.unlink()
+        native_path.symlink_to(outcome_path)
+    if mutation == "writable":
+        native_path.chmod(0o660)
+    if mutation == "oversize":
+        native_path.write_text(" " * 16385)
+    if mutation == "duplicate":
+        native_path.write_text('{"x": 1, "x": 2}')
+    if mutation == "nonfinite":
+        native_path.write_text('{"x": NaN}')
+    if mutation == "foreign_owner":
+        import operator_door.spool_runner as module
+        real_fstat = os.fstat
+        from types import SimpleNamespace
+        def foreign(fd):
+            info = real_fstat(fd)
+            return SimpleNamespace(st_uid=info.st_uid + 1, st_mode=info.st_mode, st_size=info.st_size, st_nlink=info.st_nlink)
+        monkeypatch.setattr(module.os, "fstat", foreign)
+    request_id = _spooled(config, body)
+    if mutation == "self":
+        pending = Path(config.spool_root) / "pending" / f"{request_id}.json"
+        document = json.loads(pending.read_text())
+        document["request"]["resume_request_id"] = request_id
+        pending.write_text(json.dumps(document))
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert not any(call[0] == "systemd-run" for call in runner.calls)
+    assert _result(config, request_id)["status"] == "refused"
+    assert not (native_path.parent / f"{_PRIOR_SELECTED}.selected-handoff-recovery.json").exists()

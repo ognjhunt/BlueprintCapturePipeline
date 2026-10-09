@@ -334,8 +334,13 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation",
                   "handoff_generation", "handoff_sha256", "handoff_size_bytes", "receipt_generation",
                   "receipt_sha256", "receipt_size_bytes"}
-        if set(body) != fields or type(body["mode"]) is not str or body["mode"] not in {"inspect", "dispatch"}:
+        if (set(body) not in (fields, fields | {"resume_request_id"})
+                or type(body["mode"]) is not str or body["mode"] not in {"inspect", "dispatch"}):
             raise RequestRefused("selected_handoff_fields_invalid")
+        if "resume_request_id" in body:
+            if (body["mode"] != "dispatch" or type(body["resume_request_id"]) is not str
+                    or not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-selected-handoff-[0-9a-f]{8}", body["resume_request_id"])):
+                raise RequestRefused("selected_handoff_resume_identity_invalid")
         if not isinstance(body["bucket"], str) or not _BUCKET.fullmatch(body["bucket"]):
             raise RequestRefused("selected_handoff_bucket_invalid")
         for field in ("scene_id", "capture_id"):

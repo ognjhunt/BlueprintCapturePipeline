@@ -511,3 +511,16 @@ def test_selected_handoff_is_exact_bounded_operation_under_existing_operate_scop
 def test_selected_handoff_rejects_invalid_or_widened_selector(changed: dict) -> None:
     with pytest.raises(RequestRefused):
         validate_request({**_selected_request(), **changed})
+
+
+@pytest.mark.parametrize("prior", ["../prior", "20261009T154718Z-deploy-9ef60661", "", None, True])
+def test_selected_handoff_resume_requires_exact_prior_selected_request(prior):
+    with pytest.raises(RequestRefused):
+        validate_request({**_selected_request(), "mode": "dispatch", "resume_request_id": prior})
+
+
+def test_selected_handoff_resume_is_dispatch_only():
+    body = {**_selected_request(), "resume_request_id": "20261009T154718Z-selected-handoff-9ef60661"}
+    with pytest.raises(RequestRefused):
+        validate_request(body)
+    assert validate_request({**body, "mode": "dispatch"}) == {**body, "mode": "dispatch"}
