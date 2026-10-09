@@ -115,6 +115,7 @@ def test_parent_failure_or_watchdog_seals_failed_report(tmp_path, monkeypatch, f
     run = tmp_path / "run"
     run.mkdir(mode=0o700)
     monkeypatch.setattr(module, "require_kernel_confinement", lambda: {"contract_fixture": True})
+    builder_started = builder_finished = False
     if failure == "initial_measurement":
 
         def unreadable(root):
@@ -122,7 +123,14 @@ def test_parent_failure_or_watchdog_seals_failed_report(tmp_path, monkeypatch, f
 
         monkeypatch.setattr(module, "allocated_tree_bytes", unreadable)
     else:
-        monkeypatch.setattr(module, "_runtime_bundle", lambda *args: time.sleep(2))
+
+        def slow_builder(*args):
+            nonlocal builder_started, builder_finished
+            builder_started = True
+            time.sleep(2)
+            builder_finished = True
+
+        monkeypatch.setattr(module, "_runtime_bundle", slow_builder)
     arguments = SimpleNamespace(
         report=run / "report.json",
         control_plane_root=run / "control",
@@ -137,9 +145,12 @@ def test_parent_failure_or_watchdog_seals_failed_report(tmp_path, monkeypatch, f
         child_timeout_seconds=120,
         global_timeout_seconds=0.1,
     )
-    started = time.monotonic()
     assert module.run_benchmark(arguments) == 1
-    assert time.monotonic() - started < 1.5
+    # Checkout/release verification precedes the watchdog; report recovery has
+    # its own bound. Prove cancellation inside the builder directly instead of
+    # imposing a shorter wall-clock limit on those independent operations.
+    if failure == "synchronous_builder":
+        assert builder_started is True and builder_finished is False
     report = json.loads(arguments.report.read_text())
     assert report["status"] == "failed" and report["owner_sized_acceptance_complete"] is False
     expected = (
