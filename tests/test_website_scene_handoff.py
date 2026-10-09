@@ -75,7 +75,20 @@ def test_held_or_changed_inputs_do_not_enter_scene_construction(tmp_path, monkey
     assert result["simulator_ready"] is False
 
 
-def test_geometry_controller_runs_only_after_visual_world_and_assets_are_ready(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend,retained_result,expected", [
+    (None, None, "atlas"), ("mapanything", None, "mapanything"),
+    (None, "/retained-source-geometry.json", "mapanything"),
+    ("atlas", "/retained-source-geometry.json", "atlas"),
+])
+def test_geometry_controller_runs_only_after_visual_world_and_assets_are_ready(
+        tmp_path, monkeypatch, backend, retained_result, expected):
+    monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", "/legacy-mapanything-weights")
+    for name, value in (("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND", backend),
+                        ("BLUEPRINT_WEBSITE_GEOMETRY_RESULT", retained_result)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
     kwargs = inputs(tmp_path)
     video = tmp_path / "walkthrough.mov"
     video.write_bytes(b"source")
@@ -93,6 +106,7 @@ def test_geometry_controller_runs_only_after_visual_world_and_assets_are_ready(t
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result["blockers"] == ["geometry_capacity_pending"]
     assert len(calls) == 1 and calls[0]["task_context"] == kwargs["descriptor"]["metadata"]["site_task_context"]
+    assert calls[0].get("backend") == expected
     assert kwargs["provider_run"]["status"] == "ready"
     assert result["geometry_controller_invoked"] is True
 
