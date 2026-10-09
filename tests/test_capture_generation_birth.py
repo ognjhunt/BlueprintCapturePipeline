@@ -438,6 +438,24 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
 
     monkeypatch.setattr(observer, 'load_original_owner_observation', lambda **_: owner)
     monkeypatch.setattr(listener, 'download_with_reservation', download)
+    # OFFLINE: the actual browser producer now requires current assessment
+    # admission before consuming these pinned members. Supply that contract;
+    # do not bypass the source staging, terminal or duplicate-processing guards.
+    from blueprint_pipeline import website_task_context as context_reader
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    context = {'schema_version': 'website_site_task_context.v1',
+        **{key: owner[key] for key in ('request_id', 'scene_id', 'capture_id')},
+        'description': 'Synthetic owned preparation control', 'confirmed': True,
+        'confirmed_at': '2026-10-08T00:00:00Z', 'success_criteria': {
+            'successDefinition': None, 'successRate': None, 'cycleTimeSeconds': None, 'unknown': True}}
+    context['context_digest'] = canonical_digest(context, digest_field='context_digest')
+    monkeypatch.setattr(context_reader, 'load_current_website_task_context', lambda **_: dict(context))
+    monkeypatch.setattr(context_reader, 'load_website_scene_sponsorship', lambda **_: {
+        'assessment_preparation_proposal': {'schema_version': 'site_assessment_preparation_proposal.v1',
+            'request_id': owner['request_id'], 'capture_id': owner['capture_id'], 'job_id': 'advisory-' + 'a' * 64,
+            'run_id': 'synthetic-assessment', 'source_key': 'sha256:' + 'b' * 64,
+            'context_digest': 'c' * 64, 'packet_sha256': 'd' * 64, 'questions_pending': True,
+            'scope': 'scene_preparation_only', 'robot_suitability_verified': False, 'physical_trial_authorized': False}})
     payload = {
         'bucket': owner['bucket'], 'scene_id': owner['scene_id'],
         'capture_id': owner['capture_id'], 'raw_prefix_uri': owner['raw_prefix_uri'],
