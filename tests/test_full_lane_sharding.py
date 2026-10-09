@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.full_lane_sharding import (
     FullLaneShardError,
@@ -143,6 +146,56 @@ def test_committed_duration_baseline_is_exact_green_run_evidence() -> None:
     assert payload["source_run_id"] == 31897024458
     assert payload["test_count"] == 12866
     assert payload["file_count"] == len(rows) == 1124
+
+
+def test_workflow_retains_committed_baseline_when_collection_fails(tmp_path: Path) -> None:
+    """An early collection error must not erase the shard's source telemetry."""
+    workflow = yaml.safe_load((ROOT / ".github/workflows/full-test-lane.yml").read_text())
+    steps = workflow["jobs"]["full-pytest-shard"]["steps"]
+    collection_index = next(
+        index for index, step in enumerate(steps) if step["name"] == "Collect full lane"
+    )
+    workspace = tmp_path / "workspace"
+    (workspace / ".github").mkdir(parents=True)
+    baseline = (ROOT / ".github/full-test-lane-duration-baseline.json").read_bytes()
+    (workspace / ".github/full-test-lane-duration-baseline.json").write_bytes(baseline)
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # No pytest collection, install or provider call: preserve its actual exit 2.
+    uv = bin_dir / "uv"
+    uv.write_text("#!/bin/sh\nexit 2\n")
+    uv.chmod(0o755)
+    env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}
+    for step in steps[:collection_index]:
+        script = step.get("run", "")
+        if "cp .github/full-test-lane-duration-baseline.json" in script:
+            result = subprocess.run(
+                ["bash", "-e", "-c", script.replace("${{ runner.temp }}", str(runner_temp))],
+                cwd=workspace,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+    result = subprocess.run(
+        [
+            "bash",
+            "-e",
+            "-c",
+            steps[collection_index]["run"].replace("${{ runner.temp }}", str(runner_temp)),
+        ],
+        cwd=workspace,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    staged = runner_temp / "blueprint-ci/full-test-lane-duration-baseline.json"
+    assert staged.read_bytes() == baseline
+    assert not (staged.parent / "full-test-lane-shard-plan.json").exists()
+    assert not (staged.parent / "full-test-lane-shard-executed.json").exists()
 
 
 def _seed_shard_artifacts(tmp_path: Path) -> tuple[Path, Path]:

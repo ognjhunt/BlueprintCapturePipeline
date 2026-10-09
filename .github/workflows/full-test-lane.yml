@@ -247,7 +247,11 @@ jobs:
           BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: ${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json
           BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: planned
         run: |
+          set -euo pipefail
           mkdir -p "${{ runner.temp }}/blueprint-ci"
+          # Preserve exact committed telemetry even if collection exits early.
+          cp .github/full-test-lane-duration-baseline.json \
+            "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json"
           # Exact Drake/Chrono/Isaac runtimes and retained real-dataset bytes
           # are separately provisioned by their evidence lanes. Keep those
           # unavailable inputs out of this hermetic CPU lane instead of
@@ -260,8 +264,6 @@ jobs:
       - name: Build deterministic full-lane shard plan
         run: |
           set -euo pipefail
-          cp .github/full-test-lane-duration-baseline.json \
-            "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json"
           uv run --no-sync python scripts/full_lane_sharding.py plan \
             --planned "${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json" \
             --duration-baseline "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json" \
