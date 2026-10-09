@@ -51,8 +51,9 @@ def test_collected_world_drives_preparation_but_never_invents_execution(tmp_path
 
 
 @pytest.mark.parametrize("deferred_masks", [False, True])
+@pytest.mark.parametrize("selected", [None, "atlas", "atlas_pose"])
 def test_marble_assets_survive_missing_source_geometry_without_an_automatic_provider(
-        tmp_path, monkeypatch, deferred_masks):
+        tmp_path, monkeypatch, deferred_masks, selected):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
     kwargs = inputs(tmp_path)
@@ -62,6 +63,8 @@ def test_marble_assets_survive_missing_source_geometry_without_an_automatic_prov
     for name in ("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND", "BLUEPRINT_WEBSITE_GEOMETRY_RESULT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", "/legacy-mapanything-weights")
+    if selected is not None:
+        monkeypatch.setenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND", selected)
     def unexpected(**_):
         pytest.fail("pending native geometry must not invoke a provider or compiler")
     monkeypatch.setattr("blueprint_pipeline.website_scene_geometry.run_website_scene_geometry", unexpected)
@@ -69,12 +72,15 @@ def test_marble_assets_survive_missing_source_geometry_without_an_automatic_prov
     monkeypatch.setattr(handoff, "compile_website_scene_preparation", unexpected)
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result["status"] == "needs_input"
-    assert result["blockers"] == ["website_native_source_geometry_required", "website_source_registration_required"]
+    assert result["blockers"] == ["website_source_camera_depth_registration_required"]
     assert result["visual_reconstruction_ready"] is True
     assert result["geometry_controller_invoked"] is False
     assert result["provider_mutation_performed"] is False
     assert result["simulator_ready"] is False
     assert "atlas_pose_inputs_path" not in result
+    assert result["native_geometry_requirements"]["mapanything_required"] is False
+    assert result["native_geometry_requirements"]["atlas_required"] is False
+    assert result["native_geometry_requirements"]["measured_scale"] == "unknown"
     base = json.loads(__import__("pathlib").Path(result["base_scene_path"]).read_text())
     assert base["world_id"] == "world-1" and base["operation_id"] == "op-1"
     assert base["splat_digest"] == _sha256_file(tmp_path / "pipeline/world.ply")
@@ -112,7 +118,7 @@ def test_held_or_changed_inputs_do_not_enter_scene_construction(tmp_path, monkey
 @pytest.mark.parametrize("backend,retained_result,expected", [
     (None, None, None), ("mapanything", None, "mapanything"),
     (None, "/retained-source-geometry.json", "mapanything"),
-    ("atlas", "/retained-source-geometry.json", "atlas"),
+    ("atlas", "/retained-source-geometry.json", None),
 ])
 def test_geometry_controller_runs_only_after_visual_world_and_assets_are_ready(
         tmp_path, monkeypatch, backend, retained_result, expected):
@@ -140,7 +146,7 @@ def test_geometry_controller_runs_only_after_visual_world_and_assets_are_ready(
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert __import__("pathlib").Path(result["base_scene_path"]).is_file()
     if expected is None:
-        assert result["blockers"] == ["website_native_source_geometry_required", "website_source_registration_required"]
+        assert result["blockers"] == ["website_source_camera_depth_registration_required"]
         assert calls == [] and result["geometry_controller_invoked"] is False
     else:
         assert result["blockers"] == ["geometry_capacity_pending"]
@@ -237,6 +243,24 @@ def test_terminal_world_failure_enters_only_authorized_development_seed(tmp_path
     assert handoff.prepare_website_scene_handoff(**kwargs)['blockers'] == ['website_reconstruction_pending']
     assert called == []
     monkeypatch.setenv(ENV, json.dumps([context['context_digest']]))
+    monkeypatch.delenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND")
+    monkeypatch.delenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT", raising=False)
+    pending = handoff.prepare_website_scene_handoff(**kwargs)
+    assert pending["visual_reconstruction_ready"] is False and called == []
+    assert pending["native_geometry_requirements"]["available_scene_assets"] == "development_fixture_seed"
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND", "mapanything")
+    plan = tmp_path / 'pipeline' / 'fixture-plan.json'
+    write_json(plan, {"targets": [{"target_id": "support"}]})
+    kwargs['clean_plate'].update(task_masks={"deferred_target_ids": ["support"]},
+                                 source_frames={"digest": "source"}, removal_plan_path=str(plan))
+    def unresolved_support(**_):
+        raise ValueError('fixture_support_pending')
+    monkeypatch.setattr('blueprint_pipeline.website_task_masks.complete_retained_static_task_masks',
+                        unresolved_support)
+    held = handoff.prepare_website_scene_handoff(**kwargs)
+    assert held['blockers'] == ['fixture_support_pending'] and called == []
+    assert held['visual_reconstruction_ready'] is False
+    kwargs['clean_plate']['task_masks'] = {}
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result['blockers'] == ['geometry_pending'] and len(called) == 1
     assert result['captured_scene_reconstruction']['status'] == 'failed'

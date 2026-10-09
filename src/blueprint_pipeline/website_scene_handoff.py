@@ -119,17 +119,25 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 "operation_id": provider_run.get("provider_run_id"), "world_id": assets["world_id"],
             }
         write_json(root / "base_scene.json", base)
-        result["base_scene_path"] = str(root / "base_scene.json")
+        result.update(base_scene_path=str(root / "base_scene.json"),
+                      visual_reconstruction_ready=not failed_fixture)
         if clean_plate.get("source_geometry") is None:
-            geometry_backend = os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND") or (
-                "mapanything" if os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT") else None)
+            selected = os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND")
+            geometry_backend = "mapanything" if (selected == "mapanything" or (
+                not selected and os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT"))) else None
             if geometry_backend is None:
                 # Marble assets remain useful while exact native source poses
                 # and mask registration are missing. Atlas is unavailable;
                 # neither geometry nor deferred mask work is automatic.
                 result.update(status="needs_input", visual_reconstruction_ready=not failed_fixture,
-                    blockers=["website_native_source_geometry_required", "website_source_registration_required"],
-                    geometry_controller_invoked=False, provider_mutation_performed=False)
+                    blockers=["website_source_camera_depth_registration_required"],
+                    geometry_controller_invoked=False, provider_mutation_performed=False, geometry_backend=None,
+                    native_geometry_requirements={
+                        "source_aligned_depth_and_camera_poses": "required_for_mask_lifting_and_scene_registration",
+                        "measured_scale": "unknown", "provider_scale": base["scale_authority"],
+                        "available_scene_assets": ("development_fixture_seed" if failed_fixture
+                                                   else "verified_marble_splat_and_collider"),
+                        "mapanything_required": False, "atlas_required": False})
                 result["digest"] = canonical_digest(result, digest_field="digest")
                 write_json(handoff_path, result)
                 return result
@@ -140,7 +148,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 raise ValueError("website_source_video_outside_capture")
             result.pop("provider_mutation_performed", None)
             if (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
-                result["visual_reconstruction_ready"] = True
+                result["visual_reconstruction_ready"] = not failed_fixture
                 result["deferred_masks_controller_invoked"] = True
                 plan_path = Path(clean_plate["removal_plan_path"])
                 if not plan_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
@@ -155,18 +163,6 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 output_root=Path(clean_plate["stage_manifest_path"]).parent / "source_geometry",
                 capture_id=context["capture_id"], task_context=context, task_masks=clean_plate["task_masks"],
                 backend=geometry_backend)
-            if geometry.get("status") == "pending" and geometry.get("backend") == "atlas":
-                # Unposed RGB preparation is useful without MapAnything. The
-                # admitted Atlas pose/depth operation and final scene assets
-                # remain separate proof; never pass pending RGB into native
-                # geometry/mask lifting or quietly allocate a GPU instead.
-                result.update(status="needs_input", visual_reconstruction_ready=not failed_fixture,
-                    blockers=geometry["blockers"], geometry_backend="atlas",
-                    geometry_controller_invoked=False, provider_mutation_performed=False,
-                    atlas_pose_inputs_path=str(Path(clean_plate["stage_manifest_path"]).parent
-                                               / "source_geometry" / "atlas_pose_inputs.json"))
-                write_json(root / "handoff.json", result)
-                return result
             masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
             write_json(root / "task_masks.geometry.json", masks)
             clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}

@@ -48,7 +48,13 @@ publishes the finished visual world through the existing website callback.
 Only an explicitly selected MapAnything handoff requests that worker and lifts the retained SAM
 tracks into estimated geometry. Without retained source geometry or an explicitly selected geometry backend,
 the production handoff first retains the verified Marble base scene and then
-records missing native source geometry/registration. It invokes neither Atlas,
+records `website_source_camera_depth_registration_required`. The native compiler
+needs original-source aligned depth, intrinsics and camera poses to lift the task
+masks and register the door/rack to the room; Marble's splat, coarse collider and
+estimated scale do not establish that alignment. Missing measured scale stays
+unknown. Atlas settings do not enable a current production handoff; its component
+helpers remain separate future compatibility. A legacy weights path alone does
+not select the production MapAnything controller. It invokes neither Atlas,
 MapAnything nor deferred mask completion automatically. A missing geometry result
 holds native construction, while the published visual world remains available. No second
 tracking purchase is needed for this binding.
