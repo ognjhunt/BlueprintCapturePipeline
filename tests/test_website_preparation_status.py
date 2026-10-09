@@ -234,6 +234,15 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
     # Existing captured-member fixture, explicitly fake download/staging seam;
     # actual owner validation, lease, handoff refusal and final ledger execute.
     monkeypatch.setattr(listener, "stage_handoff_capture", lambda *args, **kwargs: root)
+    # Synthetic current assessment admission only. The real worker still
+    # reaches the original reconstruction refusal; no providers execute.
+    monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", lambda **kwargs: {
+        "assessment_preparation_proposal": {"schema_version": "site_assessment_preparation_proposal.v1",
+            "request_id": owner["request_id"], "capture_id": owner["capture_id"],
+            "job_id": "advisory-" + "a" * 64, "run_id": "site-assessment-synthetic",
+            "source_key": "sha256:" + "b" * 64, "context_digest": "c" * 64, "packet_sha256": "d" * 64,
+            "questions_pending": True, "scope": "scene_preparation_only",
+            "robot_suitability_verified": False, "physical_trial_authorized": False}})
     runner_calls = []
     def held(**kwargs):
         assert kwargs["pipeline_lane"] == "qualification" and kwargs["run_evaluation_prep"] is False
