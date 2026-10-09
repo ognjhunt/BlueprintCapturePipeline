@@ -18,6 +18,74 @@ from .task_evaluation_scene_retirement_access import (
 )
 
 
+def _native_capture_path(path):
+    from . import task_evaluation_scene_retirement_access as access
+    if not path.is_relative_to(access._CAPTURE_STORAGE_ROOT):
+        return False
+    parts = path.relative_to(access._CAPTURE_STORAGE_ROOT).parts
+    return len(parts) == 5 and parts[1] == 'scenes' and parts[3] == 'captures'
+
+
+@contextmanager
+def _capture_admission(path, *, required=False, birth=False):
+    """Fence authentic native evidence without enabling retirement authority.
+
+    An installed enabled policy keeps its existing admission. Otherwise only
+    the fixed native capture namespace can use the already-declared stores.
+    Missing legacy evidence stays legacy; partial or unsafe evidence refuses.
+    """
+    from . import task_evaluation_scene_retirement_access as access
+
+    policy = _policy()
+    if policy is None and not Path(path).is_absolute():
+        _require(not required, 'scene_capture_native_path_invalid')
+        yield None
+        return
+    path = _canonical(str(path))
+    if policy is not None:
+        if _native_capture_path(path):
+            _require(policy['coordinator_path'] == str(access._CAPTURE_STATE_ROOT / 'coordinator')
+                     and policy['generation_store'] == str(access._CAPTURE_STATE_ROOT / 'generations'),
+                     'scene_capture_birth_policy_storage_mismatch')
+        lifetime = scene_access() if birth else scene_access(path)
+        with lifetime:
+            _require(_policy() == policy, 'scene_capture_birth_policy_changed')
+            yield policy
+            _require(_policy() == policy, 'scene_capture_birth_policy_changed')
+        return
+    native = _native_capture_path(path)
+    _require(native or not required, 'scene_capture_native_path_invalid')
+    store = access._CAPTURE_STATE_ROOT / 'generations'
+    if not native:
+        yield None
+        return
+    coordinator = access._CAPTURE_STATE_ROOT / 'coordinator'
+    with _opened(access._CAPTURE_STATE_ROOT, directory=True, protected=True), \
+            _opened(coordinator, directory=True, protected=True) as (fence, fence_info), \
+            _opened(store, directory=True) as (_, store_info):
+        _require(stat.S_IMODE(fence_info.st_mode) == 0o755
+                 and (store_info.st_uid, store_info.st_gid) == access._service_identity()
+                 and stat.S_IMODE(store_info.st_mode) == 0o700,
+                 'scene_capture_birth_storage_unsafe')
+        try:
+            fcntl.flock(fence, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SceneRetirementAccessError('scene_retirement_generation_unavailable') from exc
+        _require(_policy() is None, 'scene_capture_birth_policy_changed')
+        with _opened(access._CAPTURE_STORAGE_ROOT, directory=True) as (_, root_info):
+            _require((root_info.st_uid, root_info.st_gid) == access._service_identity()
+                     and not root_info.st_mode & 0o022,
+                     'scene_capture_parent_root_unsafe')
+            configuration = {
+                'generation_store': str(store), 'coordinator_path': str(coordinator),
+                'roots': [{'root': str(access._CAPTURE_STORAGE_ROOT), 'device': root_info.st_dev}],
+            }
+        if not birth:
+            access._admit(configuration, (path,))
+        yield configuration
+        _require(_policy() is None, 'scene_capture_birth_policy_changed')
+
+
 def _raw_reference(value):
     _require(type(value) is dict and set(value) == {'path', 'sha256', 'size_bytes'})
     _require(type(value['size_bytes']) is int and 0 < value['size_bytes'] <= 65536)
@@ -279,7 +347,7 @@ def _prepare_capture_parent(path, rows):
         current /= part
 
 
-def birth_capture_member(path, *, observation, membership_selector, membership_raw, now=None, expected_purpose=None, require_policy=False):
+def birth_capture_member(path, *, observation, membership_selector, membership_raw, now=None, expected_purpose=None, require_policy=False, require_authenticated_birth=False):
     """Birth a selected website capture before its first ledger or payload write.
 
     The caller acquires ``observation`` through the signed original-owner read
@@ -289,11 +357,12 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
     policy = _policy()
     if policy is None:
         _require(not require_policy, 'scene_capture_birth_policy_unavailable')
-        return None
+        if not require_authenticated_birth:
+            return None
     path = _canonical(str(path))
-    rows = [row for row in policy['roots'] if path.is_relative_to(Path(row['root']))]
-    _require(rows, 'scene_retirement_birth_outside_roots')
-    with scene_access():
+    with _capture_admission(path, required=True, birth=True) as policy:
+        rows = [row for row in policy['roots'] if path.is_relative_to(Path(row['root']))]
+        _require(rows, 'scene_retirement_birth_outside_roots')
         from .capture_original_owner_observer import validate_observation
         from .capture_delivery_membership import validate_capture_delivery_membership
 
@@ -366,6 +435,7 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
                              and prior_delivery['producer_delivery']['raw_video'] != delivery['raw_video'],
                              'scene_capture_generation_unavailable')
                 elif path.exists() or path.is_symlink():
+                    _require(not require_authenticated_birth, 'scene_capture_target_occupied')
                     return None  # Prebirth/legacy target is never adopted.
                 _require(not path.exists() and not path.is_symlink(),
                          'scene_capture_target_occupied')
@@ -423,14 +493,17 @@ def capture_birth_source_projection(path, *, expected_purpose=None):
     An absent native generation returns None for the existing legacy caller.
     An incomplete enrolled generation refuses instead of becoming legacy.
     """
+    return _capture_birth_source_projection(path, expected_purpose=expected_purpose)
+
+
+def _capture_birth_source_projection(path, *, expected_purpose=None, historical_input=False):
     _require(expected_purpose in {None, 'scene_preparation'}, 'scene_capture_observation_purpose_invalid')
-    policy = _policy()
-    if policy is None:
-        return None
-    path = _canonical(str(path))
-    store = Path(policy['generation_store'])
-    key = hashlib.sha256(str(path).encode()).hexdigest()
-    with scene_access():
+    with _capture_admission(path) as policy:
+        if policy is None:
+            return None
+        path = _canonical(str(path))
+        key = hashlib.sha256(str(path).encode()).hexdigest()
+        store = Path(policy['generation_store'])
         try:
             state = _read(store / (key + '.json'))
         except FileNotFoundError:
@@ -455,7 +528,11 @@ def capture_birth_source_projection(path, *, expected_purpose=None):
             capture_id=owner['capture_id'],
             marker_generation=state['pinned_marker']['generation'],
             now_epoch=owner['observed_at_epoch'],
-            expected_purpose=state.get('capture_observation_purpose') if expected_purpose == 'scene_preparation' else None)
+            # Only the selected-byte reader inherits the purpose authenticated
+            # at birth. Public source projection retains its explicit purpose
+            # contract; current execution/removal admission is separate.
+            expected_purpose=state.get('capture_observation_purpose')
+            if historical_input or expected_purpose == 'scene_preparation' else None)
         delivery = _raw_reference(state['birth_delivery_raw_ref'])
         _require(delivery.get('schema_version') == 'capture_birth_delivery.v1'
                  and delivery.get('producer_delivery') == owner['producer_delivery']
@@ -516,7 +593,7 @@ def _capture_birth_input(path, relative_path):
         and '\\' not in relative_path and '\x00' not in relative_path),
              'scene_capture_input_kind_invalid')
     root = Path(path)
-    source = capture_birth_source_projection(root)
+    source = _capture_birth_source_projection(root, historical_input=True)
     if source is None:
         return root / relative_path, None
     reference = source['source_membership_raw_ref']
@@ -539,7 +616,7 @@ def capture_birth_input_bytes(path, relative_path, *, expected_path=None):
     The returned immutable snapshot cannot race a caller reopening a replaced
     path. Legacy captures retain their ordinary file read behavior.
     """
-    with scene_access(path):
+    with _capture_admission(path):
         selected, row = _capture_birth_input(path, relative_path)
         _require(expected_path is None or selected == Path(expected_path),
                  'scene_capture_selected_input_mismatch')
@@ -565,7 +642,7 @@ def _capture_birth_selected_bytes(selected, row):
 
 def capture_birth_input_path(path, relative_path):
     """Return a verified location for identity/URI use, never a read capability."""
-    with scene_access(path):
+    with _capture_admission(path):
         selected, row = _capture_birth_input(path, relative_path)
         if row is not None:
             _capture_birth_selected_bytes(selected, row)
@@ -585,7 +662,7 @@ def read_selected_capture_input_bytes(path):
             and path.parents[3].name == 'captures'
             and path.parents[5].name == 'scenes'):
         root = path.parents[2]
-        with scene_access(root):
+        with _capture_admission(root):
             selected, row = _capture_birth_input(root, path.name)
             _require(row is not None and selected == path,
                      'scene_capture_selected_input_mismatch')

@@ -13,7 +13,7 @@ from .capture_original_owner_observer import CaptureOwnerObservationError, OWNER
 from .capture_delivery_membership import load_selected_capture_membership
 from .task_evaluation_scene_retirement_access import SceneRetirementAccessError
 from .task_evaluation_scene_retirement_generations import (
-    _prepare_capture_parent, birth_capture_member,
+    _capture_admission, _prepare_capture_parent, birth_capture_member,
 )
 
 
@@ -49,6 +49,13 @@ def _local_matches(path: Path, row: dict) -> bool:
 
 
 def stage_selected_capture(listener, handoff, *, storage_root, storage_client, expected_purpose=None):
+    capture_root = listener._handoff_capture_root(handoff, storage_root=storage_root)
+    with _capture_admission(capture_root, birth=True):
+        return _stage_selected_capture(listener, handoff, storage_root=storage_root,
+                                       storage_client=storage_client, expected_purpose=expected_purpose)
+
+
+def _stage_selected_capture(listener, handoff, *, storage_root, storage_client, expected_purpose=None):
     """Acquire signed owner and exact historical source before capture birth."""
     from .capture_original_owner_observer import load_original_owner_observation
 
@@ -74,7 +81,7 @@ def stage_selected_capture(listener, handoff, *, storage_root, storage_client, e
         born = birth_capture_member(
             capture_root, observation=observation,
             membership_selector=dict(handoff.source_membership_selector),
-            membership_raw=membership_raw, require_policy=True,
+            membership_raw=membership_raw, require_authenticated_birth=True,
             **({'expected_purpose': expected_purpose} if expected_purpose else {}))
     except Exception as error:
         if isinstance(error, CaptureOwnerObservationError) and str(error) in OWNER_OBSERVATION_REASON_CODES:

@@ -54,8 +54,8 @@ class SelectedStorage:
         raise AssertionError("selected staging must not discover mutable latest objects")
 
 
-def staged_capture(tmp_path, monkeypatch, *, withdrawn=False):
-    _, _, root = access_fixture(tmp_path, monkeypatch)
+def staged_capture(tmp_path, monkeypatch, *, withdrawn=False, policy_kind='enabled', purpose=None):
+    access, policy, root = access_fixture(tmp_path, monkeypatch)
     bundle = json.loads((FIXTURES / "capture-delivery-browser-web-bundle.json").read_text())
     assert bundle["synthetic"] is True
     owner = json.loads((FIXTURES / ("capture-delivery-browser-web-owner-revoked.json"
@@ -63,14 +63,25 @@ def staged_capture(tmp_path, monkeypatch, *, withdrawn=False):
     # Refresh only this synthetic observation's test clock. Producer identities,
     # rights and member bytes stay exactly those emitted by the real fixtures.
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    if purpose:
+        from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+        owner['purpose'] = purpose
+        owner['capture_owner'] = None
+        owner['source_projection_digest'] = cross_runtime_canonical_digest({
+            key: owner[key] for key in (*observer._SOURCE_KEYS, 'purpose')})
     owner["observed_at_epoch"] = int(time.time())
     owner["valid_until_epoch"] = owner["observed_at_epoch"] + 60
     owner["observation_digest"] = canonical_digest(owner, digest_field="observation_digest")
     monkeypatch.setattr(observer, "load_original_owner_observation", lambda **_kwargs: owner)
     monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk"))
     handoff = listener.parse_handoff_payload(bundle["published"])
+    if policy_kind != 'enabled':
+        from tests.test_capture_generation_birth import _without_retirement_policy
+        target_path = root / handoff.bucket / 'scenes' / handoff.scene_id / 'captures' / handoff.capture_id
+        _without_retirement_policy(access, policy, target_path, tmp_path, monkeypatch, policy_kind)
     storage = SelectedStorage(bundle)
-    target = listener.stage_handoff_capture(handoff, storage_root=root, storage_client=storage)
+    target = listener.stage_handoff_capture(handoff, storage_root=root, storage_client=storage,
+                                           **({'expected_purpose': purpose} if purpose else {}))
     return root, target, handoff, storage
 
 
@@ -95,8 +106,9 @@ def test_actual_web_owner_fixture_satisfies_strict_consumer_source_digest():
             validate(changed)
 
 
-def test_real_selected_staging_feeds_existing_capture_and_frame_readers(tmp_path, monkeypatch):
-    root, target, handoff, storage = staged_capture(tmp_path, monkeypatch)
+@pytest.mark.parametrize('policy_kind', ['enabled', 'absent', 'disabled'])
+def test_real_selected_staging_feeds_existing_capture_and_frame_readers(tmp_path, monkeypatch, policy_kind):
+    root, target, handoff, storage = staged_capture(tmp_path, monkeypatch, policy_kind=policy_kind)
     context = resolve_local_capture_context(target)
     assert "/deliveries/" in context.descriptor_uri
     assert context.descriptor_path == capture_birth_input_path(target, "capture_descriptor.json")
@@ -141,8 +153,9 @@ def test_actual_selected_descriptor_rechecks_canonical_late_withdrawal_before_pr
 
 
 @pytest.mark.parametrize("damage", ["index_bytes", "descriptor_bytes", "symlink", "missing"])
-def test_selected_input_damage_refuses_canonical_fallback(tmp_path, monkeypatch, damage):
-    _, target, _, _ = staged_capture(tmp_path, monkeypatch)
+@pytest.mark.parametrize('policy_kind', ['enabled', 'absent', 'disabled'])
+def test_selected_input_damage_refuses_canonical_fallback(tmp_path, monkeypatch, damage, policy_kind):
+    _, target, _, _ = staged_capture(tmp_path, monkeypatch, policy_kind=policy_kind)
     relative = "capture_descriptor.json" if damage == "descriptor_bytes" else "frames/index.jsonl"
     selected = capture_birth_input_path(target, relative)
     if damage.endswith("bytes"):
@@ -164,3 +177,53 @@ def test_selected_lookup_rejects_unregistered_or_cross_namespace_paths(tmp_path,
     for relative in ("../other/capture_descriptor.json", "raw/manifest.json", "frames/../index.jsonl", "frames/unknown.tar"):
         with pytest.raises(ValueError):
             capture_birth_input_path(target, relative)
+
+
+def test_preparation_null_owner_historical_members_feed_readers_without_execution_authority(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+
+    _, target, handoff, _ = staged_capture(tmp_path, monkeypatch, policy_kind='absent', purpose='scene_preparation')
+    with pytest.raises(ValueError, match='capture_owner'):
+        generations.capture_birth_source_projection(target)
+    source = generations.capture_birth_source_projection(target, expected_purpose='scene_preparation')
+    assert source['capture_owner_user_id'] is None
+    assert source['capture_observation_purpose'] == 'scene_preparation' and access._policy() is None
+    context = resolve_local_capture_context(target)
+    assert generations.read_selected_capture_input_bytes(context.descriptor_path)
+    assert len(list(iter_frame_payloads(target / 'frames'))) == 5
+    owner = json.loads(Path(source['owner_observation_raw_ref']['path']).read_bytes())
+    with pytest.raises(ValueError, match='capture_owner'):
+        observer.validate_observation(owner, bucket=handoff.bucket, scene_id=handoff.scene_id,
+            capture_id=handoff.capture_id, marker_generation=handoff.source_finalize['generation'],
+            now_epoch=owner['observed_at_epoch'])
+
+
+def test_disabled_selected_read_holds_fixed_fence_through_actual_byte_read(tmp_path, monkeypatch):
+    import fcntl
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+
+    _, target, _, _ = staged_capture(tmp_path, monkeypatch, policy_kind='absent')
+    original = generations._capture_birth_selected_bytes
+    calls = []
+    def checked(selected, row):
+        with access._opened(tmp_path / 'coordinator', directory=True, protected=True) as (fd, _):
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        calls.append(selected)
+        return original(selected, row)
+    monkeypatch.setattr(generations, '_capture_birth_selected_bytes', checked)
+    assert generations.capture_birth_input_bytes(target, 'capture_descriptor.json')
+    assert len(calls) == 1
+
+
+def test_ordinary_relative_capture_keeps_legacy_input_reads_without_native_admission(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+
+    monkeypatch.chdir(tmp_path)
+    root = Path('ordinary-legacy-capture')
+    root.mkdir()
+    (root / 'capture_descriptor.json').write_bytes(b'{"legacy":true}')
+    assert generations.capture_birth_source_projection(root) is None
+    assert generations.capture_birth_input_bytes(root, 'capture_descriptor.json') == b'{"legacy":true}'
