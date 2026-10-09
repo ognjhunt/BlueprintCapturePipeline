@@ -695,7 +695,10 @@ def _claim_job_lease(
         raise PipelineError('capture_delivery_key_invalid')
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     with _locked_job_ledger(capture_root, create=create_capture_root) as ledger:
-        if require_unattempted_delivery and ledger:
+        ledger_path = capture_root / JOB_LEDGER_FILENAME
+        if require_unattempted_delivery and (
+            ledger or ledger_path.exists() or ledger_path.is_symlink()
+        ):
             return "prior_delivery_effects_unresolved", dict(ledger)
         revision = int(ledger.get("revision") or 0)
         status = _string(ledger.get("status"))

@@ -287,6 +287,7 @@ def claim_function(ledger):
         re=re,
         uuid=uuid,
         Path=Path,
+        JOB_LEDGER_FILENAME="pipeline_job_ledger.json",
         _locked_job_ledger=locked,
         _string=lambda v: str(v or ""),
         _attempt_history=lambda listener: listener.get("attempt_history", []),

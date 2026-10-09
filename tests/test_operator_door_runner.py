@@ -712,14 +712,27 @@ def test_provider_output_resume_launches_the_release_module(config: DoorConfig) 
 
 def test_canonical_provenance_is_staged_private_and_not_in_environment(config: DoorConfig) -> None:
     from test_operator_door_requests import _canonical_provenance
+
     text = _canonical_provenance()
     digest = hashlib.sha256(text.encode()).hexdigest()
-    request_id = _spooled(config, {"kind": "deploy", "commit": SHA,
-        "release_provenance_json": text, "release_provenance_sha256": digest})
-    runner = FakeRunner(); process_spool(config, runner=runner)
+    request_id = _spooled(
+        config,
+        {
+            "kind": "deploy",
+            "commit": SHA,
+            "release_provenance_json": text,
+            "release_provenance_sha256": digest,
+        },
+    )
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
     assert _result(config, request_id)["status"] == "launched"
     launch = [call for call in runner.calls if call[0] == "systemd-run"][0]
-    env = dict(part.removeprefix("--setenv=").split("=", 1) for part in launch if part.startswith("--setenv="))
+    env = dict(
+        part.removeprefix("--setenv=").split("=", 1)
+        for part in launch
+        if part.startswith("--setenv=")
+    )
     staged = Path(config.spool_root) / "results" / f"{request_id}.release-provenance.json"
     assert staged.read_bytes() == text.encode()
     assert staged.stat().st_mode & 0o777 == 0o600
@@ -728,15 +741,27 @@ def test_canonical_provenance_is_staged_private_and_not_in_environment(config: D
     assert not any(text in part for part in launch)
 
 
-def test_canonical_provenance_cannot_replace_existing_results_symlink(config: DoorConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_canonical_provenance_cannot_replace_existing_results_symlink(config: DoorConfig) -> None:
     from test_operator_door_requests import _canonical_provenance
-    import operator_door.spool_runner as spool
-    text = _canonical_provenance(); digest = hashlib.sha256(text.encode()).hexdigest()
-    request_id = _spooled(config, {"kind": "deploy", "commit": SHA,
-        "release_provenance_json": text, "release_provenance_sha256": digest})
-    victim = Path(config.state_root) / "victim"; victim.write_text("preserve")
-    (Path(config.spool_root) / "results" / f"{request_id}.release-provenance.json").symlink_to(victim)
-    runner = FakeRunner(); process_spool(config, runner=runner)
+
+    text = _canonical_provenance()
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    request_id = _spooled(
+        config,
+        {
+            "kind": "deploy",
+            "commit": SHA,
+            "release_provenance_json": text,
+            "release_provenance_sha256": digest,
+        },
+    )
+    victim = Path(config.state_root) / "victim"
+    victim.write_text("preserve")
+    (Path(config.spool_root) / "results" / f"{request_id}.release-provenance.json").symlink_to(
+        victim
+    )
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
     assert victim.read_text() == "preserve"
     assert not any(call[0] == "systemd-run" for call in runner.calls)
     assert _result(config, request_id)["status"] != "launched"

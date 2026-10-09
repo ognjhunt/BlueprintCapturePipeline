@@ -384,51 +384,104 @@ def test_unit_completion_requires_the_same_observed_invocation():
 
 
 def _canonical_provenance() -> str:
-    return json.dumps({"schema_version": "blueprint.deploy_release_provenance.v1",
-        "status": "verified", "git_sha": SHA, "workflow_name": "Full Test Lane",
-        "workflow_path": ".github/workflows/full-test-lane.yml",
-        "job_name": "Full pytest lane on CPU runner", "run_id": 123,
-        "collection": {"test_count": 42},
-        "claim_boundary": {"canonical_full_lane_verified": True}}, indent=2) + "\n"
+    return (
+        json.dumps(
+            {
+                "schema_version": "blueprint.deploy_release_provenance.v1",
+                "status": "verified",
+                "git_sha": SHA,
+                "workflow_name": "Full Test Lane",
+                "workflow_path": ".github/workflows/full-test-lane.yml",
+                "job_name": "Full pytest lane on CPU runner",
+                "run_id": 123,
+                "collection": {"test_count": 42},
+                "claim_boundary": {"canonical_full_lane_verified": True},
+            },
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def test_canonical_provenance_preserves_exact_artifact_bytes() -> None:
     text = _canonical_provenance()
     digest = hashlib.sha256(text.encode()).hexdigest()
-    body = {"kind": "deploy", "commit": SHA, "release_provenance_json": text,
-        "release_provenance_sha256": digest}
+    body = {
+        "kind": "deploy",
+        "commit": SHA,
+        "release_provenance_json": text,
+        "release_provenance_sha256": digest,
+    }
     assert validate_request(body) == {**body, "wait_for_idle": True}
     assert required_scope("deploy") == "deploy"
 
 
-@pytest.mark.parametrize("mutation", ["missing_hash", "missing_bytes", "hash", "wrong_source",
-    "iteration", "claim", "boolean_run", "zero_tests", "invalid_json", "oversize", "surrogate"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_hash",
+        "missing_bytes",
+        "hash",
+        "wrong_source",
+        "iteration",
+        "claim",
+        "boolean_run",
+        "zero_tests",
+        "invalid_json",
+        "oversize",
+        "surrogate",
+    ],
+)
 def test_canonical_provenance_rejects_unbound_or_unverified_artifact(mutation: str) -> None:
     text = _canonical_provenance()
     value = json.loads(text)
-    if mutation == "wrong_source": value["git_sha"] = "f" * 40
-    if mutation == "iteration": value["status"] = "iteration"
-    if mutation == "claim": value["claim_boundary"]["canonical_full_lane_verified"] = False
-    if mutation == "boolean_run": value["run_id"] = True
-    if mutation == "zero_tests": value["collection"]["test_count"] = 0
+    if mutation == "wrong_source":
+        value["git_sha"] = "f" * 40
+    if mutation == "iteration":
+        value["status"] = "iteration"
+    if mutation == "claim":
+        value["claim_boundary"]["canonical_full_lane_verified"] = False
+    if mutation == "boolean_run":
+        value["run_id"] = True
+    if mutation == "zero_tests":
+        value["collection"]["test_count"] = 0
     text = json.dumps(value)
-    if mutation == "invalid_json": text = "{"
-    if mutation == "oversize": text += " " * 16384
-    if mutation == "surrogate": text += "\ud800"
+    if mutation == "invalid_json":
+        text = "{"
+    if mutation == "oversize":
+        text += " " * 16384
+    if mutation == "surrogate":
+        text += "\ud800"
     digest = hashlib.sha256(text.encode(errors="surrogatepass")).hexdigest()
-    body = {"kind": "deploy", "commit": SHA, "release_provenance_json": text,
-        "release_provenance_sha256": "0" * 64 if mutation == "hash" else digest}
-    if mutation == "missing_hash": body.pop("release_provenance_sha256")
-    if mutation == "missing_bytes": body.pop("release_provenance_json")
-    with pytest.raises(RequestRefused): validate_request(body)
+    body = {
+        "kind": "deploy",
+        "commit": SHA,
+        "release_provenance_json": text,
+        "release_provenance_sha256": "0" * 64 if mutation == "hash" else digest,
+    }
+    if mutation == "missing_hash":
+        body.pop("release_provenance_sha256")
+    if mutation == "missing_bytes":
+        body.pop("release_provenance_json")
+    with pytest.raises(RequestRefused):
+        validate_request(body)
 
 
 def _selected_request() -> dict:
-    return {"kind": "selected-handoff", "mode": "inspect", "bucket": "fixture-bucket",
-        "scene_id": "site-owned-fixture", "capture_id": "walkthrough-owned-fixture",
-        "marker_generation": "123", "handoff_generation": "456", "receipt_generation": "789",
-        "handoff_sha256": "sha256:" + "a" * 64, "handoff_size_bytes": 100,
-        "receipt_sha256": "sha256:" + "b" * 64, "receipt_size_bytes": 100}
+    return {
+        "kind": "selected-handoff",
+        "mode": "inspect",
+        "bucket": "fixture-bucket",
+        "scene_id": "site-owned-fixture",
+        "capture_id": "walkthrough-owned-fixture",
+        "marker_generation": "123",
+        "handoff_generation": "456",
+        "receipt_generation": "789",
+        "handoff_sha256": "sha256:" + "a" * 64,
+        "handoff_size_bytes": 100,
+        "receipt_sha256": "sha256:" + "b" * 64,
+        "receipt_size_bytes": 100,
+    }
 
 
 def test_selected_handoff_is_exact_bounded_operation_under_existing_operate_scope() -> None:
@@ -438,9 +491,23 @@ def test_selected_handoff_is_exact_bounded_operation_under_existing_operate_scop
     assert required_scope("selected-handoff") == "operate"
 
 
-@pytest.mark.parametrize("changed", [{"mode": []}, {"mode": "shell"}, {"capture_id": "../other"},
-    {"scene_id": "site-other"}, {"marker_generation": "0"}, {"handoff_generation": True},
-    {"handoff_sha256": "a" * 64}, {"receipt_size_bytes": True}, {"receipt_size_bytes": 65537},
-    {"bucket": "fixture-bucket/other"}, {"command": "id"}, {"provider_override": "fake"}])
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"mode": []},
+        {"mode": "shell"},
+        {"capture_id": "../other"},
+        {"scene_id": "site-other"},
+        {"marker_generation": "0"},
+        {"handoff_generation": True},
+        {"handoff_sha256": "a" * 64},
+        {"receipt_size_bytes": True},
+        {"receipt_size_bytes": 65537},
+        {"bucket": "fixture-bucket/other"},
+        {"command": "id"},
+        {"provider_override": "fake"},
+    ],
+)
 def test_selected_handoff_rejects_invalid_or_widened_selector(changed: dict) -> None:
-    with pytest.raises(RequestRefused): validate_request({**_selected_request(), **changed})
+    with pytest.raises(RequestRefused):
+        validate_request({**_selected_request(), **changed})
