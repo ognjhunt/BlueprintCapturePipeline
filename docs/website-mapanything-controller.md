@@ -1,13 +1,49 @@
-# Website geometry controller
+# Optional MapAnything geometry controller
 
-ADP-009B / public day 14. A confirmed website task now sends its retained
-original frames to the existing admitted Vast reconstruction worker. Geometry
-is estimated; it never becomes measured scale or physical evidence.
+ADP-009B / public day 14. MapAnything is an explicit optional backend, selected
+with `backend="mapanything"`, `BLUEPRINT_WEBSITE_GEOMETRY_BACKEND=mapanything`,
+or the existing explicit `BLUEPRINT_MAPANYTHING_MODEL_PATH` or
+`BLUEPRINT_WEBSITE_GEOMETRY_RESULT` compatibility routes. CPU frame preparation and the default Atlas handoff need no MapAnything
+installation, weights, or GPU allocation. Geometry remains estimated; it never
+becomes measured scale or physical evidence.
+
+Source sampling is independent of provider capacity. The preparation CLI accepts
+`--maximum-frames`; Python callers accept `maximum_frames`, and the service may
+set `BLUEPRINT_WEBSITE_SOURCE_MAXIMUM_FRAMES`. The effective default stays16.
+The requested count is bound into new artifact identity; the unchanged default
+can verify/reuse legacy inputs without decoding again. Hidden reconstruction
+holdouts retain their existing split semantics. Source sample count, held-out
+count, planned provider inputs, and actual provider inputs are separate fields.
+
+The default route records `atlas_pose_inputs.json` as **pending**, with zero API
+mutation. The admitted producer must supply project asset references, source
+disclosure/spend authority, and the actual `images2PosedRGBD` operation. A
+retained `atlas_posed_rgbd_result.json` uses `website_atlas_pose_result.v1`, a
+canonical `digest`, the exact source/input `binding`, the documented pose task
+`endpoint`, and real completed `operation`. The adapter validates the returned
+frame count and RGB/depth/camera bundles and records `atlas_posed_rgbd_handoff.json`.
+Explicit `target_cameras` and an optional `prompt` additionally prepare
+`atlas_generation_inputs.json` for `atlasGenerate` without
+resizing pixels, relabeling axes, assuming measured scale, or making a request.
+Context views retain their returned grid; target cameras must use Atlas's
+1280 by 720 grid. Returned pose frame count does not establish provider input
+usage, which remains unknown until the admitted producer supplies its receipt.
+It does not treat generated posed views as final scene assets. Admitted API
+dispatch, final splat/collider assets, and exact native mask/pixel/geometry
+binding remain required; these are typed pending states rather than a fallback
+MapAnything rental. No nonexistent world/mesh endpoint is substituted.
+
+The current Marble1.1Plus adapter retains its own8-image contract. That limit
+does not constrain the Atlas context adapter, which has no invented100-image
+cap. Atlas operation limits must be read separately from its current API schema.
+See [images2PosedRGBD](https://atlas-beta.worldlabs.ai/docs/images-to-posed-images),
+[cameras and posed images](https://atlas-beta.worldlabs.ai/docs/cameras-and-posed-images),
+and [API reference](https://atlas-beta.worldlabs.ai/docs/api-reference).
 
 Visual delivery precedes that GPU job. CPU frame decoding, Gemini analysis,
 hosted SAM tracking and image editing prepare Marble's input. The provider
 publishes the finished visual world through the existing website callback.
-Only then does the scene handoff request MapAnything and lift the retained SAM
+Only an explicitly selected MapAnything handoff requests that worker and lifts the retained SAM
 tracks into estimated geometry. A missing GPU or geometry result holds native
 construction, while the published visual world remains available. No second
 tracking purchase is needed for this binding.

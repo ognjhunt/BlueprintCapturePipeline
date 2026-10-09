@@ -129,6 +129,80 @@ def test_website_geometry_uses_original_views_and_reuses_bound_estimates(geometr
         geometry.run_website_scene_geometry(**kwargs)
 
 
+def test_default_atlas_handoff_needs_no_checkpoint_or_inference(geometry_case, monkeypatch):
+    kwargs, calls = geometry_case
+    for name in ("BLUEPRINT_MAPANYTHING_MODEL_PATH", "BLUEPRINT_WEBSITE_GEOMETRY_RESULT",
+                 "BLUEPRINT_WEBSITE_GEOMETRY_BACKEND"):
+        monkeypatch.delenv(name, raising=False)
+    result = geometry.run_website_scene_geometry(**kwargs)
+    assert result["status"] == "pending"
+    assert result["backend"] == "atlas"
+    assert result["actual_provider_input_count"] == 0
+    assert result["provider_mutation_performed"] is False
+    assert result["heldout_pixels_included"] is False
+    assert result["metric_measurement_proven"] is False
+    assert result["blockers"] == ["website_atlas_admitted_pose_operation_required"]
+    assert all("geometry_path" not in row for row in result["frames"])
+    assert geometry.run_website_scene_geometry(**kwargs) == result
+    assert not calls
+
+
+def test_atlas_pose_result_cannot_switch_source_binding(geometry_case, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    kwargs, calls = geometry_case
+    monkeypatch.delenv("BLUEPRINT_MAPANYTHING_MODEL_PATH")
+    pending = geometry.run_website_scene_geometry(**kwargs)
+    pose = {"schema_version": "website_atlas_pose_result.v1", "endpoint": pending["endpoint"],
+            "binding": {**pending["binding"], "source_video_digest": "sha256:" + "0" * 64},
+            "operation": {"id": "synthetic-operation", "done": True}}
+    pose["digest"] = canonical_digest(pose, digest_field="digest")
+    (kwargs["output_root"] / "atlas_posed_rgbd_result.json").write_text(json.dumps(pose))
+    with pytest.raises(ValueError, match="website_atlas_pose_result_binding_mismatch"):
+        geometry.run_website_scene_geometry(**kwargs)
+    assert not (kwargs["output_root"] / "atlas_generation_inputs.json").exists()
+    assert not calls
+
+
+@pytest.mark.parametrize("include_targets", [False, True])
+def test_completed_atlas_pose_does_not_require_generation_or_imply_native_geometry(
+        geometry_case, monkeypatch, include_targets):
+    from copy import deepcopy
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    kwargs, calls = geometry_case
+    monkeypatch.delenv("BLUEPRINT_MAPANYTHING_MODEL_PATH")
+    pending = geometry.run_website_scene_geometry(**kwargs)
+    # Synthetic returned bundle; this is not a real provider receipt or usage.
+    camera = {"intrinsics": {"width": 640, "height": 480, "fx": 500, "fy": 500,
+                             "cx": 320, "cy": 240},
+              "extrinsics": {"coordinateSystem": "rdf", "position": [0, 0, 0],
+                             "quaternion": [0, 0, 0, 1]}}
+    pose = {"schema_version": "website_atlas_pose_result.v1", "endpoint": pending["endpoint"],
+            "binding": pending["binding"],
+            "operation": {"id": "synthetic-pose", "done": True,
+                          "response": {"frames": [
+                              {"imageAsset": {"assetId": f"synthetic-rgb-{i}"},
+                               "depth": {"depthAsset": {"assetId": f"synthetic-depth-{i}"}},
+                               "camera": deepcopy(camera)} for i in range(2)]}}}
+    if include_targets:
+        target = deepcopy(camera)
+        target["intrinsics"].update(width=1280, height=720)
+        pose["target_cameras"] = [target]
+    pose["digest"] = canonical_digest(pose, digest_field="digest")
+    (kwargs["output_root"] / "atlas_posed_rgbd_result.json").write_text(json.dumps(pose))
+    result = geometry.run_website_scene_geometry(**kwargs)
+    assert result["status"] == "pending" and result["posed_rgbd_available"] is True
+    assert result["native_geometry_available"] is False
+    assert result["actual_provider_input_count"] is None
+    assert result["returned_pose_frame_count"] == 2
+    assert ("generation_request" in result) is include_targets
+    assert (kwargs["output_root"] / ("atlas_generation_inputs.json" if include_targets
+                                     else "atlas_posed_rgbd_handoff.json")).is_file()
+    assert geometry.run_website_scene_geometry(**kwargs) == result
+    assert not calls
+
+
 def test_cpu_preparation_needs_no_checkpoint_and_exports_only_candidate_views(geometry_case, monkeypatch):
     kwargs, calls = geometry_case
     monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", "/missing-model")
@@ -152,7 +226,9 @@ def test_visual_source_frames_do_not_infer_or_invent_geometry(geometry_case, mon
     assert frames["geometry_input_digest"] == inputs["digest"]
 
 
-def test_worker_inputs_and_outputs_survive_host_path_changes(geometry_case, tmp_path, monkeypatch):
+@pytest.mark.parametrize("local_model_configured", [True, False])
+def test_worker_inputs_and_outputs_survive_host_path_changes(geometry_case, tmp_path, monkeypatch,
+                                                           local_model_configured):
     import shutil
 
     kwargs, calls = geometry_case
@@ -166,7 +242,10 @@ def test_worker_inputs_and_outputs_survive_host_path_changes(geometry_case, tmp_
     shutil.move(worker_output, received)
     shutil.rmtree(worker_inputs)
     monkeypatch.setenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT", str(received / "source_geometry.json"))
-    monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", "/missing-model")
+    if local_model_configured:
+        monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", "/missing-model")
+    else:
+        monkeypatch.delenv("BLUEPRINT_MAPANYTHING_MODEL_PATH")
     result = geometry.run_website_scene_geometry(**kwargs)
     assert result["binding"]["input_digest"] == inputs["digest"]
     assert len(calls) == 1
