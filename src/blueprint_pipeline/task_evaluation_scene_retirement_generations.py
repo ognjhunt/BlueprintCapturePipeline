@@ -279,7 +279,7 @@ def _prepare_capture_parent(path, rows):
         current /= part
 
 
-def birth_capture_member(path, *, observation, membership_selector, membership_raw, now=None, expected_purpose=None):
+def birth_capture_member(path, *, observation, membership_selector, membership_raw, now=None, expected_purpose=None, require_policy=False):
     """Birth a selected website capture before its first ledger or payload write.
 
     The caller acquires ``observation`` through the signed original-owner read
@@ -288,6 +288,7 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
     """
     policy = _policy()
     if policy is None:
+        _require(not require_policy, 'scene_capture_birth_policy_unavailable')
         return None
     path = _canonical(str(path))
     rows = [row for row in policy['roots'] if path.is_relative_to(Path(row['root']))]

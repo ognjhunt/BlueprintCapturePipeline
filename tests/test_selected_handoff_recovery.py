@@ -500,3 +500,43 @@ def test_membership_preflight_uses_same_current_owner_and_parsed_handoff(tmp_pat
     assert len(seen) == 1 and seen[0]["handoff"].source_membership_selector
     assert seen[0]["observation"]["producer_delivery"]["kind"] == "website_browser_capture_delivery"
     assert not calls
+
+
+@pytest.mark.parametrize("reason", [
+    "scene_capture_birth_policy_unavailable", "private response token=secret", None, 17,
+])
+def test_native_staging_reason_is_bounded_and_keeps_unknown_charge_accounting(tmp_path, monkeypatch, reason):
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    s, _, c, listener, owner, ret, admit, _, _ = fixture(tmp_path)
+    s["mode"] = "dispatch"
+    listener.process_handoff_payload = lambda *a, **kw: {
+        "status": "capture_source_membership_unavailable_retryable",
+        "queue_disposition": "retryable", "staging_reason": reason,
+    }
+    result = recover_selected_handoff(
+        s, storage_root=tmp_path, client=c, listener=listener,
+        owner_reader=owner, retirement_reader=ret, admission_reader=admit,
+        membership_reader=lambda **kw: None,
+    )
+    assert result["status"] == "blocked"
+    assert result["native_status"] == "capture_source_membership_unavailable_retryable"
+    assert result["provider_dispatch_performed"].startswith("unknown")
+    assert "no assertion of zero prior provider charges" in result["accounting"]
+    if reason == "scene_capture_birth_policy_unavailable":
+        assert result["staging_reason"] == reason
+    else:
+        assert "staging_reason" not in result
+    assert "secret" not in json.dumps(result)
+
+
+def test_selected_staging_recovery_refuses_partial_local_state_before_native_call(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    root = tmp_path / "capture"
+    root.mkdir()
+    retained = root / "partial-staging.pending"
+    retained.write_bytes(b"retained partial staging")
+    before = retained.read_bytes()
+    result, calls, _, _ = run(tmp_path, lambda s, o, listener: s.update(mode="dispatch"))
+    assert result["status"] == "blocked" and not calls
+    assert result["blockers"] == ["selected_handoff_existing_state_requires_reconciliation"]
+    assert retained.read_bytes() == before
