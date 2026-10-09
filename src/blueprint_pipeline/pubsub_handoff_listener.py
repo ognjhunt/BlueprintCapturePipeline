@@ -688,6 +688,7 @@ def _claim_job_lease(
     create_capture_root: bool = True,
     retired_ended_payload_sha256s: Sequence[str] = (),
     retired_ended_producer_delivery_keys: Sequence[str] = (),
+    expected_assessment_resume: Mapping[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if producer_delivery_key is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", producer_delivery_key) is None:
         raise PipelineError('capture_delivery_key_invalid')
@@ -695,6 +696,17 @@ def _claim_job_lease(
     with _locked_job_ledger(capture_root, create=create_capture_root) as ledger:
         revision = int(ledger.get("revision") or 0)
         status = _string(ledger.get("status"))
+        if expected_assessment_resume is not None and (
+            type(expected_assessment_resume.get("revision")) is not int
+            or ledger.get("revision") != expected_assessment_resume["revision"]
+            or status != "failed_retryable"
+            or ledger.get("last_error") != "website_control_scene-sponsorship_http_409:website_assessment_preparation_pending"
+            or not isinstance(expected_assessment_resume.get("record"), Mapping)
+            or ledger.get("assessment_resume") != expected_assessment_resume.get("record")
+            or expected_assessment_resume["record"].get("source_payload_sha256") != payload_sha256
+            or expected_assessment_resume["record"].get("producer_delivery_key") != producer_delivery_key
+        ):
+            return "assessment_resume_changed", dict(ledger)
         if status == "corrupt":
             return "corrupt", dict(ledger)
         if producer_delivery_key is not None and ledger and ledger.get('producer_delivery_key') != producer_delivery_key:
@@ -1525,11 +1537,11 @@ def _finish_terminal_authority_ending(
 
 
 @scene_participant('storage_root')
-def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None) -> dict[str, Any]:
+def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None, expected_assessment_resume: Mapping[str, Any] | None=None) -> dict[str, Any]:
     import sys
     from .pubsub_handoff_scene_operations import _process_handoff_payload_body
     try:
-        return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest)
+        return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest, expected_assessment_resume=expected_assessment_resume)
     finally:
         # Separate durable wake-up only; never let delivery reopen or fail processing.
         try:
