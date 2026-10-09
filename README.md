@@ -36,6 +36,16 @@ are not independent roadmap authority.
 
 ## Product Boundary
 
+Capture and assessment prepare a reusable task environment, scenarios, scoring
+definitions, and robot-team setup requirements. They stop before policy
+execution, measured scores, or performance recommendations. A robot team must
+separately request evaluation and bind its hardware, policy, sensors, and
+embodiment constraints to the shared job. `blueprint-run-robot-eval-job` and the
+authenticated team evaluation route preserve that later capability; capture
+delivery never consumes the evaluation inbox. Registered Franka/G1 profiles
+remain configurations, while mobile manipulator and wheeled humanoid setup
+requirements remain unresolved until concrete supported bindings exist.
+
 Blueprint has one customer-facing product: a **Task Evaluation Run**.
 
 | Term | Meaning |

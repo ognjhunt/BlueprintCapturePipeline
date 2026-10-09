@@ -14232,3 +14232,30 @@ def test_live_robot_eval_closure_surfaces_sc3_protocol_without_gating(
     ] is True
     assert "sc3_eval_protocol" not in manifest["gate_order"]
     assert not any("sc3" in blocker for blocker in manifest["blockers"])
+
+
+@pytest.mark.parametrize("legacy_request", [
+    {"source": {"system": "BlueprintCapturePipeline.auto_stage"}},
+    {"proof_boundary": {"capture_handoff_driven_request": True}},
+    {"policy_package": {"high_level_skill_trace": {
+        "source_type": "capture_handoff_default_sim_only_policy"}}},
+])
+def test_historical_capture_requests_cannot_enter_evaluation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_request: dict,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    inbox = tmp_path / "inbox"
+    source = inbox / "historical-capture.json"
+    _write_json(source, {"queue_contract": orchestrator_module.ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
+                         "job_request": {"job_id": "historical-capture", **legacy_request}})
+    with pytest.raises(ValueError, match="separate_team_evaluation_required"):
+        build_robot_eval_job(capture_root=capture_root, job_id="historical-capture",
+                             job_request=source)
+    monkeypatch.setattr(orchestrator_module, "build_robot_eval_job",
+                        lambda **kwargs: pytest.fail("historical capture must not execute"))
+    result = run_robot_eval_job_request_inbox(capture_root=capture_root, inbox_dir=inbox)
+    assert result["processed_count"] == 0
+    assert result["quarantined_request_count"] == 1
+    assert source.is_file()
+    quarantine = result["quarantined_requests"][0]
+    assert "separate_team_evaluation_required" in quarantine["error_message"]

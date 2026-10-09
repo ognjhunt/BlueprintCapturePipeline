@@ -1145,3 +1145,29 @@ def test_website_preparation_finishes_only_at_its_native_outbox(tmp_path, monkey
     else:
         with pytest.raises(PipelineError, match="website_native_intake_pending"):
             q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+
+
+def test_shared_task_constraints_survive_capture_scope_ingestion(tmp_path: Path) -> None:
+    from blueprint_pipeline.evaluation_prep_stage import _build_task_anchor_manifest
+
+    metadata = {
+        "task_statement": "Manipulate dishwasher door and upper/lower racks",
+        "assumptions": ["Dimensions estimated from video"],
+        "missing_measurements": ["door hinge torque", "rack travel force"],
+        "allowed_environmental_changes": {"dish_loading": False, "wash_cycle": False},
+        "starting_conditions": {"door": "closed"},
+        "success_criteria": {"door": "open to supplied target", "racks": "extend"},
+    }
+    scope = q._build_task_scope_record(
+        descriptor=_descriptor(metadata=metadata), completeness_status="sufficient",
+        task_targets_payload={"tasks": [{"task_id": "door", "target_object_ids": ["door"]}]},
+    )
+    anchors = _build_task_anchor_manifest(
+        capture_root=tmp_path / "scenes" / "scene-1" / "captures" / "capture-1",
+        handoff={}, scope_record=scope, task_run_entries=[], object_geometry_manifest={},
+    )
+    task = anchors["tasks"][0]
+    for key in ("assumptions", "missing_measurements", "allowed_environmental_changes",
+                "starting_conditions", "success_criteria"):
+        assert task[key] == metadata[key]
+    assert task["success_criteria_authority"] == "supplied_unverified_task_criteria"

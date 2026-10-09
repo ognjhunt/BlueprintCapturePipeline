@@ -565,6 +565,62 @@ def known_robot_ids() -> List[str]:
     return sorted(_REGISTRY)
 
 
+def preparation_robot_profiles() -> List[Dict[str, object]]:
+    """Separate reusable task requirements from an unresolved team binding.
+
+    Registered profiles supply configuration references, never execution proof.
+    Mobile classes without a concrete registered profile retain requirements;
+    they do not inherit Franka actions or acquire invented policy adapters.
+    """
+    common = ["robot_asset", "policy_adapter", "action_observation_contract",
+              "sensor_calibration", "gripper_and_hand_geometry", "collision_geometry"]
+    classes = {
+        "fixed_arm": ["mounting_pose", "reach_envelope", "gripper",
+                      "collision_and_access_constraints"],
+        "humanoid": ["stance", "balance_limits", "whole_body_clearance",
+                     "permitted_stepping", "one_or_two_hand_use"],
+        "mobile_manipulator": ["approach_pose", "base_positioning", "navigation_clearance",
+                               "base_footprint", "arm_reach"],
+        "wheeled_humanoid": ["base_translation_and_turning_clearance", "base_footprint",
+                             "stability_limits", "torso_and_arm_reach", "one_or_two_hand_use",
+                             "coordinated_base_upper_body_movement_permitted"],
+    }
+    rows: List[Dict[str, object]] = []
+    covered = set()
+    for robot_id in known_robot_ids():
+        profile = get_robot_profile(robot_id)
+        if profile.claim_boundaries.get("profile_is_a_conformance_fixture_not_a_supported_product_embodiment"):
+            continue
+        kind = profile.embodiment_type
+        if kind == "fixed_base_single_arm_manipulator":
+            kind = "fixed_arm"
+        if kind not in classes:
+            continue
+        covered.add(kind)
+        rows.append({
+            "id": profile.robot_id, "robot_profile_id": profile.robot_id,
+            "display_name": profile.robot_id.replace("_", " ").title(),
+            "embodiment_type": kind,
+            "registered_embodiment_type": profile.embodiment_type,
+            "registered_profile": robot_embodiment_pack_contract(profile),
+            "action_space": dict(profile.action_interface),
+            "observation_cameras": [dict(rig, id=rig["camera_id"]) for rig in profile.camera_rigs],
+            "runtime_support": "registered_configuration_requires_team_binding",
+        })
+    for kind in classes.keys() - covered:
+        rows.append({"id": kind + "_requirements", "robot_profile_id": None,
+                     "display_name": kind.replace("_", " ").title(), "embodiment_type": kind,
+                     "registered_profile": None, "action_space": None, "observation_cameras": [],
+                     "runtime_support": "requirements_only_no_registered_adapter_or_asset"})
+    for row in rows:
+        required = common + classes[str(row["embodiment_type"])]
+        row.update(required_setup=required, setup_bindings={key: None for key in required},
+                   unresolved_bindings=required, setup_status="team_inputs_required",
+                   execution_ready=False, allowed_policy_adapters=[], default_policy_adapter=None,
+                   claim_boundary="setup_requirements_and_profile_configuration_not_execution_evidence")
+    return sorted(rows, key=lambda row: str(row["id"]))
+
+
 class UnknownRobotProfileError(KeyError):
     """Raised when a caller names an unregistered robot profile.
 

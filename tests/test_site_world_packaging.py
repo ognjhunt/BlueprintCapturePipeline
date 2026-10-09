@@ -502,6 +502,11 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
         ),
         encoding="utf-8",
     )
+    automation = capture_root / "pipeline" / "simulation_automation"
+    automation.mkdir(parents=True, exist_ok=True)
+    for name in ("normalized_simulator_attempt_trace", "site_eval_calibration_report",
+                 "site_eval_director_proof_boundary"):
+        (automation / f"{name}.json").write_text(json.dumps({"simulator_execution_proven": True}))
     evaluation = run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
     pipeline_root = capture_root / "pipeline"
@@ -652,10 +657,14 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
         manifest["artifacts"]["robot_rights_packet"]
         == "../robot_eval_dataset/rights_packet.json"
     )
-    assert (
-        manifest["artifacts"]["recorded_trace_eval_report"]
-        == "../robot_eval_dataset/recorded_trace_eval_report.json"
-    )
+    for key in ("normalized_simulator_attempt_trace", "site_eval_calibration_report",
+                "site_eval_director_proof_boundary"):
+        assert key not in manifest["artifacts"]
+        assert key in manifest["retained_evaluation_evidence"]
+        assert f"{key}_uri" not in evaluation["site_package_manifest"]["artifacts"]
+    assert summary["site_eval_director_simulator_execution_proven"] is False
+    assert "recorded_trace_eval_report" not in manifest["artifacts"]
+    assert "recorded_trace_eval_report" in manifest["retained_evaluation_evidence"]
     assert (
         manifest["artifacts"]["robot_team_test_submission_modalities"]
         == "../robot_eval_dataset/robot_team_test_submission_modalities.json"
@@ -696,10 +705,7 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
         evaluation["site_package_manifest"]["artifacts"]["robot_rights_packet_uri"]
         == "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/robot_eval_dataset/rights_packet.json"
     )
-    assert (
-        evaluation["site_package_manifest"]["artifacts"]["recorded_trace_eval_report_uri"]
-        == "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/robot_eval_dataset/recorded_trace_eval_report.json"
-    )
+    assert "recorded_trace_eval_report_uri" not in evaluation["site_package_manifest"]["artifacts"]
     assert robot_eval_manifest["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert robot_eval_manifest["claim_boundary"]["simulator_execution_proven"] is False
     assert robot_eval_site_card["schema_version"] == "real_site_robot_eval_site_card.v0.1"

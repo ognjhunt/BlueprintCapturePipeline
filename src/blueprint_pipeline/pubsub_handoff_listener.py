@@ -443,7 +443,7 @@ def _stage_control_plane_input(
         overwrite=overwrite,
         staged_inputs_path=staged_inputs_path,
     )
-    if result.get("status") != "staged_for_control_plane":
+    if result.get("status") != "preparation_recorded":
         blockers = result.get("input_blockers") or result.get("blockers") or []
         raise PipelineError(
             "Pub/Sub handoff could not stage control-plane input: "

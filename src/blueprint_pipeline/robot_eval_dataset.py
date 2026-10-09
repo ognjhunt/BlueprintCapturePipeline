@@ -23,7 +23,7 @@ from .robot_eval_dataset_artifacts import (
     robot_eval_result_artifact_paths,
     validate_and_write_robot_eval_cards,
 )
-from .scene_placement.robot_profile import DEFAULT_ROBOT_ID, get_robot_profile
+from .scene_placement.robot_profile import DEFAULT_ROBOT_ID, get_robot_profile, preparation_robot_profiles
 
 ROBOT_EVAL_DATASET_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v1"
 ROBOT_EVAL_DATASET_V01_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v0.1"
@@ -1819,7 +1819,22 @@ def _task_library(
                         or task.get("sourceArtifact")
                         or "pipeline/evaluation_prep/task_anchor_manifest.json"
                     ),
-                    "success_criteria": _success_criteria(task_category),
+                    "success_criteria": task.get("success_criteria") or _success_criteria(task_category),
+                    "success_criteria_authority": task.get("success_criteria_authority") or (
+                        "supplied_unverified_task_criteria" if task.get("success_criteria")
+                        else "proposal_requires_task_owner_confirmation"),
+                    "job_definition": {
+                        "scene_geometry_source": "pipeline/evaluation_prep/geometry_bundle_manifest.json",
+                        "task_objects": target_objects,
+                        "articulations": _string_list(task.get("articulation_required_ids")),
+                        "goal": task.get("goal_definition") or (task.get("success_criteria")
+                            if task.get("success_criteria_authority") != "review_criteria_only_not_task_success" else None),
+                        "starting_conditions": task.get("starting_conditions") or task.get("start_state"),
+                        "allowed_environmental_changes": task.get("allowed_environmental_changes"),
+                        "assumptions": task.get("assumptions", []),
+                        "missing_measurements": task.get("missing_measurements", []),
+                        "physical_properties_authority": "source_provenance_required_not_inferred_from_geometry",
+                    },
                     "required_evidence": [
                         "robot_pov_evidence",
                         "human_demo_evidence",
@@ -1832,6 +1847,7 @@ def _task_library(
     tasks = sorted(tasks, key=lambda item: item["task_id"])
     return {
         "schema_version": ROBOT_TASK_LIBRARY_SCHEMA_VERSION,
+        "artifact_purpose": "shared_task_definitions",
         "generated_at": generated_at,
         "task_count": len(tasks),
         "tasks": tasks,
@@ -2007,6 +2023,8 @@ def _scenario_library(
             scenarios.append(
                 {
                     "scenario_id": scenario_id,
+                    "shared_scenario_id": f"scenario_{_stable_slug(task_id, fallback='task')}",
+                    "robot_setup_reference": robot_profile_id,
                     "scenario_type": "real_site_robot_task_eval",
                     "task_id": task_id,
                     "robot_profile_id": robot_profile_id,
@@ -2055,6 +2073,20 @@ def _scenario_library(
     scenarios = sorted(scenarios, key=lambda item: item["scenario_id"])
     return {
         "schema_version": SCENARIO_LIBRARY_SCHEMA_VERSION,
+        "canonical_definition_field": "shared_scenarios",
+        "shared_scenarios": [
+            {"scenario_id": f"scenario_{_stable_slug(task['task_id'], fallback='task')}",
+             "task_id": task["task_id"],
+             "task_definition_reference": "robot_task_library.json#" + task["task_id"],
+             "starting_conditions": _mapping(task.get("job_definition")).get("starting_conditions"),
+             "goal": _mapping(task.get("job_definition")).get("goal"),
+             "allowed_environmental_changes": _mapping(task.get("job_definition")).get("allowed_environmental_changes"),
+             "scoring_definition_reference": "scoring_methodology.json",
+             "status": "prepared_definition_requires_owner_review"}
+            for task in tasks
+        ],
+        "robot_setup_requirements": preparation_robot_profiles(),
+        "legacy_scenarios_are_robot_bindings_not_separate_worlds": True,
         "generated_at": generated_at,
         "scenario_count": len(scenarios),
         "scenarios": scenarios,
@@ -2146,6 +2178,8 @@ def _scenario_family_library(
         )
     return {
         "schema_version": SCENARIO_FAMILY_LIBRARY_SCHEMA_VERSION,
+        "shared_variation_definitions": variation_definitions,
+        "variation_authority": "proposals_require_owner_review_and_allowed_environmental_changes",
         "generated_at": generated_at,
         "family_count": len(families),
         "variation_profile": {
@@ -2635,6 +2669,7 @@ def _task_thresholds(
                 "task_category": _string(task.get("task_category")),
                 "threshold_profile_id": threshold_profile_id,
                 "threshold_source": "repo_default_site_task_template",
+                "confirmation_status": "proposal_only_not_customer_confirmed",
                 "buyer_override_allowed": True,
                 "buyer_override_schema": dict(TASK_THRESHOLD_BUYER_OVERRIDE_SCHEMA),
                 "buyer_override_status": "not_supplied",
@@ -4460,6 +4495,7 @@ def build_real_site_robot_eval_dataset(
     task_anchor_manifest: Optional[Mapping[str, Any]] = None,
     site_world_spec: Optional[Mapping[str, Any]] = None,
     hosted_session_runtime_manifest: Optional[Mapping[str, Any]] = None,
+    evaluate_recorded_evidence: bool = False,
 ) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     pipeline_dir = context.pipeline_root
@@ -4522,6 +4558,11 @@ def build_real_site_robot_eval_dataset(
     robot_team_submission_input = _read_optional_mapping(
         pipeline_dir / "robot_eval_inputs" / "robot_team_test_submission_manifest.json"
     )
+    # Preparation may discover retained evidence, but never scores it implicitly.
+    # The separate explicit recorded-evidence evaluation reuses this same job.
+    if not evaluate_recorded_evidence:
+        recorded_trace_input = {}
+        actual_outcome_input = {}
 
     generated_at = _deterministic_generated_at(
         task_anchor,
@@ -4609,6 +4650,12 @@ def build_real_site_robot_eval_dataset(
         source_artifacts=source_artifacts,
         generated_at=generated_at,
     )
+    if not evaluate_recorded_evidence:
+        recorded_trace_eval_report.update(
+            artifact_purpose="evaluation_preparation", status="not_requested",
+            blockers=["separate_team_evaluation_required"],
+            metrics={key: None for key in recorded_trace_eval_report["metrics"]},
+        )
     prediction_vs_actual_summary = _prediction_vs_actual_summary(
         ledger=ledger,
         actual_outcome_input=actual_outcome_input,
@@ -4734,6 +4781,13 @@ def build_real_site_robot_eval_dataset(
             "../simulation_automation/cpu_simulator_preflight_manifest.json"
         ),
     }
+    retained_evaluation_evidence = {}
+    if not evaluate_recorded_evidence:
+        for name in ("recorded_trace_eval_report", "policy_eval_report", "prediction_vs_actual_summary"):
+            filename = output_paths.pop(name)
+            previous = _read_optional_mapping(robot_eval_dir / filename)
+            if previous and previous.get("artifact_purpose") != "evaluation_preparation":
+                retained_evaluation_evidence[name] = filename
     publication_readiness = _publication_readiness(
         dataset_state=dataset_state,
         dataset_statuses=dataset_statuses,
@@ -4836,6 +4890,15 @@ def build_real_site_robot_eval_dataset(
             ],
         },
     }
+    manifest.update(
+        artifact_purpose="recorded_evidence_evaluation" if evaluate_recorded_evidence else "evaluation_preparation",
+        robot_policy_execution_performed=False,
+        evaluation_status="recorded_evidence_requested" if evaluate_recorded_evidence else "separate_team_evaluation_required",
+        shared_task_definitions="robot_task_library.json",
+        shared_scenario_definitions="scenario_library.json#shared_scenarios",
+        robot_setup_requirements="scenario_library.json#robot_setup_requirements",
+        retained_evaluation_evidence=retained_evaluation_evidence,
+    )
     manifest["deterministic_fingerprint"] = _sha_payload(
         {
             "scene_id": manifest["scene_id"],
@@ -4897,31 +4960,41 @@ def build_real_site_robot_eval_dataset(
     )
     write_json(robot_eval_dir / "failure_taxonomy.json", failure_taxonomy)
     write_json(robot_eval_dir / "prediction_outcome_ledger.json", ledger)
-    write_json(robot_eval_dir / "prediction_vs_actual_summary.json", prediction_vs_actual_summary)
+    prediction_vs_actual_summary["artifact_purpose"] = manifest["artifact_purpose"]
+    summary_path = robot_eval_dir / "prediction_vs_actual_summary.json"
+    if evaluate_recorded_evidence or not summary_path.exists():
+        write_json(summary_path, prediction_vs_actual_summary)
     write_json(robot_eval_dir / "scoring_methodology.json", scoring_methodology)
     write_json(robot_eval_dir / "task_thresholds.json", task_thresholds)
     write_json(robot_eval_dir / "publication_readiness.json", publication_readiness)
-    write_json(robot_eval_dir / "recorded_trace_eval_report.json", recorded_trace_eval_report)
-    write_json(robot_eval_dir / "policy_eval_report.json", recorded_trace_eval_report)
+    for filename in ("recorded_trace_eval_report.json", "policy_eval_report.json"):
+        path = robot_eval_dir / filename
+        # Preparation cannot replace performance evidence from an earlier run.
+        if evaluate_recorded_evidence or not path.exists():
+            write_json(path, recorded_trace_eval_report)
     write_json(robot_eval_dir / "rights_packet.json", rights_packet)
     write_json(robot_eval_dir / "rights_ledger.json", rights_ledger)
     write_text(robot_eval_dir / "eval_methodology_summary.md", methodology_summary)
     write_json(manifest_path, manifest)
     write_json(legacy_manifest_path, manifest)
 
+    result_paths = robot_eval_result_artifact_paths(
+        robot_eval_dir, manifest_path=manifest_path, legacy_manifest_path=legacy_manifest_path,
+    )
+    if not evaluate_recorded_evidence:
+        for key in ("prediction_vs_actual_summary_path", "recorded_trace_eval_report_path"):
+            result_paths.pop(key, None)
+
     return {
         "schema_version": "real_site_robot_eval_dataset_result.v1",
+        "artifact_purpose": manifest["artifact_purpose"],
         "capture_root": str(context.capture_root),
         "status": dataset_state,
         "dataset_statuses": dataset_statuses,
         "recorded_trace_eval_status": recorded_trace_eval_report["status"],
         "prediction_vs_actual_status": prediction_vs_actual_summary["status"],
         "rights_packet_status": rights_packet["status"],
-        **robot_eval_result_artifact_paths(
-            robot_eval_dir,
-            manifest_path=manifest_path,
-            legacy_manifest_path=legacy_manifest_path,
-        ),
+        **result_paths,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -4931,10 +5004,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Build repo-local real-site robot evaluation dataset artifacts"
     )
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
+    parser.add_argument("--evaluate-recorded-evidence", action="store_true",
+                        help="Explicitly score retained team traces/outcomes as a separate evaluation")
     args = parser.parse_args(argv)
 
     try:
-        result = build_real_site_robot_eval_dataset(capture_root=args.capture_root)
+        result = build_real_site_robot_eval_dataset(capture_root=args.capture_root,
+            evaluate_recorded_evidence=args.evaluate_recorded_evidence)
     except Exception as exc:
         print(f"[robot-eval-dataset] FAILED: {exc}")
         return 1

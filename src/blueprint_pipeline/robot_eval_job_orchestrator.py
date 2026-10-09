@@ -910,8 +910,19 @@ def _read_job_request(job_request: str | Path | Mapping[str, Any]) -> Dict[str, 
     if payload.get("queue_contract") == ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT and isinstance(
         payload.get("job_request"), Mapping
     ):
-        return dict(payload["job_request"])
-    return dict(payload)
+        payload = payload["job_request"]
+    request = dict(payload)
+    source = _mapping(request.get("source"))
+    proof = _mapping(request.get("proof_boundary"))
+    skill = _mapping(_mapping(request.get("policy_package")).get("high_level_skill_trace"))
+    # Previously synthesized capture requests may still be queued at deployment.
+    # Preserve them via the existing quarantine path; only explicit team requests
+    # can proceed to resource admission, policy binding, or simulator execution.
+    if (source.get("system") == "BlueprintCapturePipeline.auto_stage"
+            or proof.get("capture_handoff_driven_request") is True
+            or skill.get("source_type") == "capture_handoff_default_sim_only_policy"):
+        raise ValueError("separate_team_evaluation_required_for_capture_handoff")
+    return request
 
 
 ACTUAL_OUTCOME_REQUEST_KEYS = (

@@ -157,6 +157,45 @@
       }
     },
     "configured_scene_bundle": {"$ref": "#/$defs/reference"},
+    "evaluation_preparation": {
+      "type": "object",
+      "required": [
+        "artifact_purpose",
+        "status",
+        "robot_evaluation_performed",
+        "measured_scores",
+        "performance_recommendations",
+        "shared_job",
+        "robot_setup_requirements",
+        "execution_ready"
+      ],
+      "properties": {
+        "artifact_purpose": {
+          "const": "evaluation_preparation"
+        },
+        "status": {
+          "const": "prepared_for_separate_team_evaluation"
+        },
+        "robot_evaluation_performed": {
+          "const": false
+        },
+        "measured_scores": {
+          "type": "null"
+        },
+        "performance_recommendations": {
+          "type": "null"
+        },
+        "shared_job": {
+          "type": "object"
+        },
+        "robot_setup_requirements": {
+          "type": "array"
+        },
+        "execution_ready": {
+          "const": false
+        }
+      }
+    },
     "task_template": {
       "type": "object",
       "required": ["identity", "definition", "success_criteria", "execution"],
