@@ -263,14 +263,8 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                     capture_root=capture_root, observation=observation,
                     producer_delivery_key=producer_delivery_key, payload_digest=digest,
                     allow_resume=safe_to_arm(attempt_count, previous_history, ledger.get('recovered_expired_lease')))
-            robot_eval_job_request = _listener._resolve_staged_handoff_path(handoff.robot_eval_job_request_uri, handoff=handoff, capture_root=staged_capture_root, storage_root=storage_root, expect_directory=False)
-            robot_eval_request_inbox = _listener._resolve_staged_handoff_path(handoff.robot_eval_request_inbox_uri, handoff=handoff, capture_root=staged_capture_root, storage_root=storage_root, expect_directory=True)
-            if robot_eval_job_request is not None:
-                run_kwargs['robot_eval_job_request'] = str(robot_eval_job_request)
-            if robot_eval_request_inbox is not None:
-                run_kwargs['robot_eval_request_inbox'] = str(robot_eval_request_inbox)
-            if robot_eval_job_request is not None or robot_eval_request_inbox is not None:
-                run_kwargs.update({'robot_eval_job_id': handoff.robot_eval_job_id, 'robot_eval_provisioner': handoff.robot_eval_provisioner or 'fixture_local', 'robot_eval_simulator': handoff.robot_eval_simulator or 'fixture', 'robot_eval_evaluation_substrate': handoff.robot_eval_evaluation_substrate, 'robot_eval_budget_usd': handoff.robot_eval_budget_usd, 'allow_robot_eval_gpu_provisioning': False, 'allow_robot_eval_simulator_execution': False})
+            # Capture delivery prepares the site/task package. Retained team
+            # requests are consumed only by the separate explicit evaluation action.
             if stage_control_plane and (not website_capture):
                 failure_stage = 'control_plane_staging'
                 if control_plane_manifest_path is None:
@@ -297,7 +291,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         raise
     completed_at = _listener.utc_now_iso()
     control_plane_staging_status = str(control_plane_staging.get('status') or '') or None if control_plane_staging else None
-    control_plane_staging_path = str((control_plane_staging.get('webapp_staging') or {}).get('target_path') or '') or None if control_plane_staging else None
+    control_plane_staging_path = str((control_plane_staging.get('candidate') or {}).get('path') or '') or None if control_plane_staging else None
     disposition, result_blockers = _listener._handoff_result_disposition(result)
     terminal_success = disposition == 'terminal_success'
     output_commit = _listener._write_output_commit(capture_root, scene_id=handoff.scene_id, capture_id=handoff.capture_id, attempt_count=attempt_count, result=result) if terminal_success else None

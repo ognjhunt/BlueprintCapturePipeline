@@ -444,83 +444,14 @@ def test_live_pipeline_intake_service_helper_edges(
 
 def test_capture_handoff_blocker_edges(tmp_path: Path) -> None:
     capture_root = _capture_root(tmp_path)
-    payload = {
-        "scene_id": "other-scene",
-        "capture_id": "other-capture",
-        "requested_outputs": ["task_evaluation_run"],
-    }
-    envelope, audit = service._capture_handoff_to_webapp_request(
-        payload=payload, capture_root=capture_root
+    audit = service._capture_handoff_preparation_audit(
+        payload={"scene_id": "other-scene", "capture_id": "other-capture"},
+        capture_root=capture_root,
     )
-
-    assert envelope is None
     assert "capture_handoff_scene_id_mismatch" in audit["blockers"]
     assert "capture_handoff_capture_id_mismatch" in audit["blockers"]
     assert "capture_handoff_missing_site_submission_id" in audit["blockers"]
-
-
-def test_capture_handoff_rejects_dataset_older_than_upload_complete(
-    tmp_path: Path,
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    _seed_robot_eval_dataset_cards(capture_root)
-    _write_json(
-        capture_root / "raw" / "capture_upload_complete.json",
-        {
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "upload_completed_at": "2999-01-01T00:00:00Z",
-            "upload_run_id": "upload-run-newer-than-dataset",
-        },
-    )
-
-    envelope, audit = service._capture_handoff_to_webapp_request(
-        payload=_capture_handoff(),
-        capture_root=capture_root,
-    )
-
-    assert envelope is None
-    assert "robot_eval_dataset_stale_for_capture_upload_complete" in audit["blockers"]
-
-
-def test_capture_handoff_job_id_changes_for_distinct_upload_marker(
-    tmp_path: Path,
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    _write_json(
-        capture_root / "raw" / "capture_upload_complete.json",
-        {
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "upload_completed_at": "2026-01-01T00:00:00Z",
-            "upload_run_id": "upload-run-1",
-        },
-    )
-    _seed_robot_eval_dataset_cards(capture_root)
-
-    first, first_audit = service._capture_handoff_to_webapp_request(
-        payload=_capture_handoff(),
-        capture_root=capture_root,
-    )
-
-    _write_json(
-        capture_root / "raw" / "capture_upload_complete.json",
-        {
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "upload_completed_at": "2026-01-01T00:00:00Z",
-            "upload_run_id": "upload-run-2",
-        },
-    )
-    second, second_audit = service._capture_handoff_to_webapp_request(
-        payload=_capture_handoff(),
-        capture_root=capture_root,
-    )
-
-    assert first is not None
-    assert second is not None
-    assert first_audit["job_id"] != second_audit["job_id"]
-    assert first["job_request"]["job_id"] != second["job_request"]["job_id"]
+    assert audit["converted_to_job_request"] is False
 
 
 def test_trigger_control_plane_edges(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1071,7 +1002,7 @@ def test_live_pipeline_capture_upload_intake_returns_typed_fail_closed_blockers(
     }
 
 
-def test_capture_handoff_blocked_after_conversion_and_main(
+def test_capture_handoff_does_not_use_evaluation_conversion_and_main(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1092,8 +1023,8 @@ def test_capture_handoff_blocked_after_conversion_and_main(
         headers={"x-blueprint-intake-token": "token"},
     )
 
-    assert response.status_code == 202
-    assert response.json()["capture_handoff"]["converted_to_job_request"] is True
+    assert response.status_code == 200
+    assert response.json()["capture_handoff"]["converted_to_job_request"] is False
 
     calls: dict[str, object] = {}
     monkeypatch.setitem(
@@ -1919,46 +1850,30 @@ def test_live_pipeline_intake_service_translates_and_idempotently_retries_decisi
     assert request["proof_boundary"]["translation_proves_decision"] is False
 
 
-def test_live_pipeline_intake_service_converts_capture_handoff_to_webapp_request(
-    tmp_path: Path, monkeypatch
+def test_capture_handoff_records_preparation_without_evaluation_dispatch(
+    tmp_path: Path, monkeypatch,
 ) -> None:
     capture_root = _capture_root(tmp_path)
     _seed_robot_eval_dataset_cards(capture_root)
     manifest_path = _control_manifest(tmp_path, capture_root)
     monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
     monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE", "true")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/capture-handoffs",
-        json=_capture_handoff(),
+    monkeypatch.setattr(service, "_trigger_control_plane",
+                        lambda: pytest.fail("capture must not trigger evaluation"))
+    monkeypatch.setattr(service, "build_live_pipeline_input_intake",
+                        lambda **kwargs: pytest.fail("capture must not stage evaluation"))
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/capture-handoffs", json=_capture_handoff(),
         headers={"authorization": "Bearer test-intake-token"},
     )
-
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["status"] == "staged_for_control_plane"
+    assert payload["status"] == "preparation_recorded"
     assert payload["accepted"] is True
-    assert payload["capture_handoff"]["converted_to_job_request"] is True
-    assert payload["capture_handoff"]["dataset_selection"]["task_id"] == "scene_anchor_geometry_0"
-    target_path = Path(payload["webapp_staging"]["target_path"])
-    assert target_path.is_file()
-    envelope = json.loads(target_path.read_text(encoding="utf-8"))
-    job_request = envelope["job_request"]
-    assert envelope["source_kind"] == "capture_pipeline_handoff"
-    assert job_request["source_kind"] == "capture_pipeline_handoff"
-    assert job_request["robot_profile"] == {"robot_profile_id": "unitree_g1"}
-    assert job_request["requested_tasks"] == [
-        {
-            "task_id": "scene_anchor_geometry_0",
-            "scenario_ids": ["scenario_scene_anchor_geometry_0_unitree_g1"],
-        }
-    ]
-    assert job_request["source"]["pipeline_handoff_uri"].endswith("pipeline_handoff.json")
-    assert job_request["policy_package"]["high_level_skill_trace"]["ordered_skill_sequence"] == [
-        "walk_to_target"
-    ]
+    assert payload["capture_handoff"]["converted_to_job_request"] is False
+    assert payload["trigger"]["performed"] is False
+    assert "webapp_staging" not in payload
+    assert json.loads(Path(payload["candidate"]["path"]).read_text()) == _capture_handoff()
 
 
 def test_capture_handoff_dataset_selection_defaults_unspecified_robot_to_franka(
@@ -2017,14 +1932,13 @@ def test_capture_handoff_can_stage_per_request_capture_root(
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["status"] == "staged_for_control_plane"
-    target_path = Path(payload["webapp_staging"]["target_path"])
-    staged = json.loads(target_path.read_text(encoding="utf-8"))
-    assert staged["job_request"]["site_package"]["capture_root"] == str(request_capture_root)
-    assert staged["job_request"]["source"]["selection_state"]["scene_id"] == "scene-2"
+    assert payload["status"] == "preparation_recorded"
+    assert payload["capture_handoff"]["capture_root"] == str(request_capture_root)
+    assert payload["capture_handoff"]["scene_id"] == "scene-2"
+    assert "webapp_staging" not in payload
 
 
-def test_live_pipeline_intake_service_blocks_capture_handoff_without_robot_eval_request(
+def test_capture_handoff_preparation_does_not_require_a_robot_eval_request(
     tmp_path: Path, monkeypatch
 ) -> None:
     capture_root = _capture_root(tmp_path)
@@ -2046,11 +1960,12 @@ def test_live_pipeline_intake_service_blocks_capture_handoff_without_robot_eval_
         headers={"authorization": "Bearer test-intake-token"},
     )
 
-    assert response.status_code == 202, response.text
+    assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["status"] == "blocked"
-    assert payload["accepted"] is False
-    assert "capture_handoff:capture_handoff_robot_eval_not_requested" in payload["input_blockers"]
+    assert payload["status"] == "preparation_recorded"
+    assert payload["accepted"] is True
+    assert payload["robot_evaluation_performed"] is False
+    assert payload["input_blockers"] == []
 
 
 def test_live_pipeline_intake_service_ignores_caller_root_and_uses_server_mapping(

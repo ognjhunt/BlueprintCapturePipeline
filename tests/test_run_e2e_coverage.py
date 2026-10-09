@@ -250,7 +250,8 @@ def test_retry_rematerializes_restaged_descriptor_before_resuming_pipeline(
         assert json.loads(qa_path.read_text()) == qa
         if calls["pipeline"] == 1:
             raise PipelineError("retryable preparation failure")
-        return {"status": "completed", "lanes": ["current"]}
+        return {"status": "completed", "lanes": ["current"],
+                "artifact_purpose": "evaluation_preparation", "robot_evaluation_performed": False}
 
     monkeypatch.setattr(run_e2e, "build_capture_preflight_report", lambda _root: {"status": "ready"})
     monkeypatch.setattr(run_e2e, "materialize_capture_bundle", materialize)
@@ -286,7 +287,8 @@ def test_run_end_to_end_resumes_completed_stage_snapshots(completed_capture_supe
 
     def fake_pipeline(**kwargs):
         calls["pipeline"] += 1
-        return {"status": "completed", "lanes": [kwargs["lane"]]}
+        return {"status": "completed", "lanes": [kwargs["lane"]],
+                "artifact_purpose": "evaluation_preparation", "robot_evaluation_performed": False}
 
     def fake_review(**_kwargs):
         calls["review"] += 1
@@ -348,6 +350,20 @@ def test_run_end_to_end_resumes_completed_stage_snapshots(completed_capture_supe
         stage_ledger["stages"]["agent_review"]["result_snapshot"]["provider_token"] == "<redacted>"
     )
 
+    # A historical completed result may have dispatched an evaluation. Rebuild its
+    # projection while retaining the separately verified completed stages.
+    stage_ledger["stages"]["capture_pipeline"]["result_snapshot"].pop("artifact_purpose")
+    Path(second["run_e2e_stage_ledger_path"]).write_text(json.dumps(stage_ledger))
+    monkeypatch.setattr(run_e2e, "run_capture_pipeline", fake_pipeline)
+    third = run_e2e.run_end_to_end(
+        capture_root=str(capture_root), provider="openai",
+        run_agent_review_stage=True, resume_completed_stages=True,
+    )
+    assert third["pipeline_status"] == "completed"
+    assert calls == {"preflight": 1, "pipeline": 2, "review": 1}
+    fresh_ledger = json.loads(Path(third["run_e2e_stage_ledger_path"]).read_text())
+    assert fresh_ledger["stages"]["capture_pipeline"].get("resume_used", False) is False
+
 
 def test_run_end_to_end_reruns_only_supervisor_when_inference_profile_changes(
     monkeypatch: pytest.MonkeyPatch,
@@ -363,7 +379,8 @@ def test_run_end_to_end_reruns_only_supervisor_when_inference_profile_changes(
 
     def fake_pipeline(**kwargs):
         calls["pipeline"] += 1
-        return {"status": "completed", "lanes": [kwargs["lane"]]}
+        return {"status": "completed", "lanes": [kwargs["lane"]],
+                "artifact_purpose": "evaluation_preparation", "robot_evaluation_performed": False}
 
     def fake_supervisor(**kwargs):
         calls["supervisor"] += 1

@@ -12,6 +12,46 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def test_preparation_retains_shared_job_requirements_and_does_not_score_retained_traces(tmp_path):
+    root = _build_capture_root(tmp_path)
+    _write_eval_inputs(root)
+    anchor = root / "pipeline/evaluation_prep/task_anchor_manifest.json"
+    payload = json.loads(anchor.read_text())
+    payload["tasks"][0].update(
+        task_text="Manipulate dishwasher door and upper/lower racks",
+        task_category="open_close", articulation_required_ids=["door", "upper_rack", "lower_rack"],
+        starting_conditions={"door": "closed"},
+        allowed_environmental_changes=None, missing_measurements=["door_force", "rack_travel"],
+        assumptions=["dimensions_estimated_from_video"], goal_definition={"door_and_racks": "open_and_close"})
+    _write_json(anchor, payload)
+    _write_recorded_trace_fixture(root)
+    result = build_real_site_robot_eval_dataset(capture_root=root)
+    output = root / "pipeline/robot_eval_dataset"
+    tasks = json.loads((output / "robot_task_library.json").read_text())
+    scenarios = json.loads((output / "scenario_library.json").read_text())
+    report = json.loads((output / "recorded_trace_eval_report.json").read_text())
+    job = tasks["tasks"][0]["job_definition"]
+    assert job["missing_measurements"] == ["door_force", "rack_travel"]
+    assert job["allowed_environmental_changes"] is None
+    assert len(scenarios["shared_scenarios"]) == 1
+    assert {row["embodiment_type"] for row in scenarios["robot_setup_requirements"]} == {
+        "fixed_arm", "humanoid", "mobile_manipulator", "wheeled_humanoid"}
+    assert all(row["execution_ready"] is False for row in scenarios["robot_setup_requirements"])
+    wheeled = next(row for row in scenarios["robot_setup_requirements"] if row["embodiment_type"] == "wheeled_humanoid")
+    assert wheeled["registered_profile"] is None
+    assert "coordinated_base_upper_body_movement_permitted" in wheeled["unresolved_bindings"]
+    assert report["status"] == "not_requested" and report["attempts"] == []
+    assert all(value is None for value in report["metrics"].values())
+    assert result["artifact_purpose"] == "evaluation_preparation"
+    assert "recorded_trace_eval_report_path" not in result
+    assert "prediction_vs_actual_summary_path" not in result
+    # Preparing again cannot replace an earlier separately requested score.
+    scored = {"artifact_purpose": "recorded_evidence_evaluation", "immutable_evidence": "retained"}
+    _write_json(output / "recorded_trace_eval_report.json", scored)
+    build_real_site_robot_eval_dataset(capture_root=root)
+    assert json.loads((output / "recorded_trace_eval_report.json").read_text()) == scored
+
+
 def _build_capture_root(tmp_path: Path) -> Path:
     capture_root = tmp_path / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-1"
     _write_json(
@@ -707,7 +747,7 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert manifest["annotation_backlog_count"] > 0
     assert manifest["task_ontology_count"] == 10
     assert manifest["scenario_family_count"] == 1
-    assert manifest["recorded_trace_eval_status"] == "blocked_missing_recorded_trace"
+    assert manifest["recorded_trace_eval_status"] == "not_requested"
     assert manifest["prediction_vs_actual_status"] == "blocked_missing_actuals"
     assert manifest["rights_packet_status"] == "review_required"
     assert manifest["robot_team_test_submission_modality_count"] == 6
@@ -716,9 +756,7 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     )
     assert manifest["output_artifacts"]["rights_packet"] == "rights_packet.json"
     assert manifest["output_artifacts"]["task_ontology_v1"] == "task_ontology_v1.json"
-    assert manifest["output_artifacts"]["recorded_trace_eval_report"] == (
-        "recorded_trace_eval_report.json"
-    )
+    assert "recorded_trace_eval_report" not in manifest["output_artifacts"]
     assert manifest["output_artifacts"]["task_thresholds"] == "task_thresholds.json"
     assert manifest["output_artifacts"]["publication_readiness"] == (
         "publication_readiness.json"
@@ -943,7 +981,7 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
         "world_model_uncertainty",
         "sim_vs_real_calibration_score",
     }
-    assert recorded_report["status"] == "blocked_missing_recorded_trace"
+    assert recorded_report["status"] == "not_requested"
     assert recorded_report["proof_boundary"]["simulator_execution_proven"] is False
     assert recorded_report == policy_report
     assert prediction_summary["status"] == "blocked_missing_actuals"
@@ -1307,7 +1345,7 @@ def test_robot_eval_dataset_scores_recorded_action_trace_fixture_without_claim_u
     _write_review_sources(capture_root)
     _write_recorded_trace_fixture(capture_root)
 
-    result = build_real_site_robot_eval_dataset(capture_root=capture_root)
+    result = build_real_site_robot_eval_dataset(capture_root=capture_root, evaluate_recorded_evidence=True)
     robot_eval_root = capture_root / "pipeline" / "robot_eval_dataset"
     manifest = json.loads(
         (robot_eval_root / "real_site_robot_eval_dataset_manifest.json").read_text(

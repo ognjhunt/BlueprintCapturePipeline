@@ -723,6 +723,28 @@ def publish_configured_scene_revision(
     )
     scene = request["scene"]
     task = request["task"]
+    from .scene_placement.robot_profile import preparation_robot_profiles
+    from .task_evaluation_policy_run_contract import REQUIRED_FAMILIES
+    preparation = {
+        "artifact_purpose": "evaluation_preparation",
+        "status": "prepared_for_separate_team_evaluation",
+        "robot_evaluation_performed": False,
+        "measured_scores": None,
+        "performance_recommendations": None,
+        "shared_job": {key: dict(task[key]) for key in
+                       ("identity", "definition", "success_criteria", "execution")},
+        "scoring_authority": "prepared_definition_not_customer_confirmed_criteria",
+        "scenario_requirements": [
+            {"family": family, "parameters": None, "status": "bounds_and_owner_review_required"}
+            for family in REQUIRED_FAMILIES
+        ],
+        "allowed_environmental_changes": None,
+        "environmental_change_authority": "task_owner_confirmation_required",
+        "physical_properties_authority": "retain_definition_provenance_and_missing_measurements",
+        "robot_setup_requirements": preparation_robot_profiles(),
+        "execution_ready": False,
+        "next_action": "explicit_robot_team_evaluation_with_bound_robot_policy_and_scenarios",
+    }
     revision: dict[str, Any] = {
         "schema_version": "task_evaluation_configured_scene_revision.v1",
         "status": "configured",
@@ -840,6 +862,7 @@ def publish_configured_scene_revision(
                 else {}
             ),
         },
+        "evaluation_preparation": preparation,
         "presentation": {
             "task_thumbnail": {
                 key: published["task_thumbnail"][key]
@@ -945,6 +968,9 @@ def publish_configured_scene_revision(
         },
         "presentation": dict(revision["presentation"]),
         "evaluation_preparation_binding": {
+            "artifact_purpose": "evaluation_preparation",
+            "robot_evaluation_performed": False,
+            "robot_setup_requirements": preparation["robot_setup_requirements"],
             "scene_mode": "reuse_configured_revision",
             "construction_mode": "reuse_configured_scene",
             "task_binding_mode": "reuse_configured_template",

@@ -580,7 +580,7 @@ def test_rights_field_and_main_cover_cli_success_failure_and_module_guard(
     monkeypatch.setattr(
         red,
         "build_real_site_robot_eval_dataset",
-        lambda *, capture_root: {
+        lambda *, capture_root, evaluate_recorded_evidence=False: {
             "manifest_path": f"{capture_root}/manifest.json",
             "status": "capture_grounded_review_ready",
         },
@@ -627,7 +627,7 @@ def test_rights_packet_carries_revocation_and_revenue_share_review(
     assert rights_packet["revenue_share_review"]["required_before_paid_reuse_or_resale"] is True
     assert rights_packet["revenue_share_review"]["revenue_share_commitment_made"] is False
 
-    def _raise_failure(*, capture_root: str) -> dict[str, object]:
+    def _raise_failure(*, capture_root: str, evaluate_recorded_evidence=False) -> dict[str, object]:
         raise RuntimeError(f"bad capture: {capture_root}")
 
     monkeypatch.setattr(red, "build_real_site_robot_eval_dataset", _raise_failure)

@@ -2021,13 +2021,12 @@ def _build_task_scope_record(
     for blocker in object_index_runtime_blockers or []:
         if blocker not in blockers:
             blockers.append(blocker)
-    success_criteria = [
-        str(item).strip()
-        for item in metadata.get("success_criteria", [])
-        if str(item).strip()
-    ] if isinstance(metadata.get("success_criteria"), list) else []
+    context = metadata.get("site_task_context") if isinstance(metadata.get("site_task_context"), Mapping) else {}
+    success_criteria = metadata.get("success_criteria", context.get("success_criteria"))
+    criteria_authority = "supplied_unverified_task_criteria"
     if not success_criteria:
         success_criteria = ["Identify the task zone, key objects, and blockers well enough for buyer review."]
+        criteria_authority = "review_criteria_only_not_task_success"
     scope_status = "scoped" if target_object_ids or tasks else "needs_clarification"
     return {
         "schema_version": "v1",
@@ -2056,6 +2055,10 @@ def _build_task_scope_record(
         "assumptions": assumptions,
         "blockers": blockers,
         "success_criteria": success_criteria,
+        "success_criteria_authority": criteria_authority,
+        **{key: metadata[key] for key in
+           ("goal_definition", "starting_conditions", "start_state", "allowed_environmental_changes", "missing_measurements")
+           if key in metadata},
         "task_hypothesis_status": metadata.get("task_hypothesis_status"),
         "task_hypothesis_confidence": metadata.get("task_hypothesis_confidence"),
     }

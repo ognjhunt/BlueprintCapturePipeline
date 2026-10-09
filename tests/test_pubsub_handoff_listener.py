@@ -270,7 +270,7 @@ def test_process_handoff_stages_capture_and_runs_e2e(tmp_path: Path) -> None:
     assert (capture_root / "pipeline_handoff.json").is_file()
 
 
-def test_process_handoff_threads_robot_eval_request_without_live_spend(
+def test_process_handoff_retains_robot_eval_request_for_separate_action(
     tmp_path: Path,
 ) -> None:
     prefix = "scenes/scene-1/captures/capture-1"
@@ -314,22 +314,10 @@ def test_process_handoff_threads_robot_eval_request_without_live_spend(
     assert result["status"] == "retryable_blocked"
     assert result["queue_disposition"] == "retryable"
     assert staged_request.is_file()
-    assert calls == [
-        {
-            "capture_root": str(capture_root),
-            "provider": "openai",
-            "run_evaluation_prep": True,
-            "resume_completed_stages": True,
-            "robot_eval_job_request": str(staged_request),
-            "robot_eval_job_id": "customer-job-1",
-            "robot_eval_provisioner": "runpod",
-            "robot_eval_simulator": "mujoco",
-            "robot_eval_evaluation_substrate": "wam",
-            "robot_eval_budget_usd": 5.0,
-            "allow_robot_eval_gpu_provisioning": False,
-            "allow_robot_eval_simulator_execution": False,
-        }
-    ]
+    assert calls == [{
+        "capture_root": str(capture_root), "provider": "openai",
+        "run_evaluation_prep": True, "resume_completed_stages": True,
+    }]
     ledger = json.loads(
         (capture_root / "pipeline_job_ledger.json").read_text(encoding="utf-8")
     )
@@ -358,7 +346,7 @@ def test_process_handoff_threads_robot_eval_request_without_live_spend(
     assert len(calls) == 2
 
 
-def test_process_handoff_stages_control_plane_inbox_without_running_e2e(
+def test_process_handoff_records_preparation_without_staging_evaluation(
     tmp_path: Path,
 ) -> None:
     prefix = "scenes/scene-1/captures/capture-1"
@@ -413,21 +401,17 @@ def test_process_handoff_stages_control_plane_inbox_without_running_e2e(
     assert result["status"] == "processed"
     assert result["run_e2e"]["status"] == "skipped"
     assert calls == []
-    assert result["control_plane_staging"]["status"] == "staged_for_control_plane"
-    assert len(staged_requests) == 1
-    staged = json.loads(staged_requests[0].read_text(encoding="utf-8"))
-    job_request = staged["job_request"]
-    assert staged["source_kind"] == "capture_pipeline_handoff"
-    assert job_request["site_package"]["capture_root"] == str(capture_root.resolve())
-    assert job_request["source"]["selection_state"]["task_id"] == "scene_anchor_geometry_0"
-    assert job_request["owner_system"]["site_submission_id"] == "site-submission-scene-1"
-    ledger = json.loads(
-        (capture_root / "pipeline_job_ledger.json").read_text(encoding="utf-8")
-    )
+    assert result["control_plane_staging"]["status"] == "preparation_recorded"
+    assert staged_requests == []
+    record = result["control_plane_staging"]
+    assert record["capture_handoff"]["capture_root"] == str(capture_root.resolve())
+    assert record["capture_handoff"]["converted_to_job_request"] is False
+    assert record["trigger"]["performed"] is False
+    ledger = json.loads((capture_root / "pipeline_job_ledger.json").read_text())
     assert ledger["status"] == "completed"
     assert ledger["run_e2e_status"] == "skipped"
-    assert ledger["control_plane_staging_status"] == "staged_for_control_plane"
-    assert ledger["control_plane_staging_path"] == str(staged_requests[0])
+    assert ledger["control_plane_staging_status"] == "preparation_recorded"
+    assert ledger["control_plane_staging_path"] == record["candidate"]["path"]
 
 
 def test_redelivered_completed_handoff_is_idempotent(tmp_path: Path) -> None:

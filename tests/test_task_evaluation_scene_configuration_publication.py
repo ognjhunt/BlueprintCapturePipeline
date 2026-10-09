@@ -303,6 +303,14 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
     assert revision["robot_team_interface"][
         "configuration_run_executed_episode"
     ] is False
+    prepared = revision["evaluation_preparation"]
+    assert prepared["shared_job"]["definition"] == revision["task_template"]["definition"]
+    assert prepared["shared_job"]["success_criteria"] == revision["task_template"]["success_criteria"]
+    assert prepared["robot_evaluation_performed"] is False
+    assert prepared["measured_scores"] is None
+    assert prepared["execution_ready"] is False
+    assert {row["embodiment_type"] for row in prepared["robot_setup_requirements"]} == {
+        "fixed_arm", "humanoid", "mobile_manipulator", "wheeled_humanoid"}
     assert result["full_byte_service_account_readback_passed"] is True
     assert result["configured_scene_revision_reference"]["uri"].startswith(
         "s3://blueprint-production-inputs/"

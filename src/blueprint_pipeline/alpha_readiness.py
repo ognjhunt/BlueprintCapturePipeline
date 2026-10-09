@@ -1969,16 +1969,10 @@ def sync_webapp_evaluation_prep(
 
     delivery_artifact_uri = (
         _present_value(
-            signed_access_manifest,
-            "artifact_uri",
-            "post_training_data_package_uri",
-            "package_uri",
+            signed_access_manifest, "artifact_uri", "post_training_data_package_uri", "package_uri",
         )
         or _present_value(
-            delivery_manifest,
-            "artifact_uri",
-            "post_training_data_package_uri",
-            "package_uri",
+            delivery_manifest, "artifact_uri", "post_training_data_package_uri", "package_uri",
         )
         or _artifact_if_exists("archives/post_training_data_package.tar.gz")
     )
@@ -2073,6 +2067,11 @@ def sync_webapp_evaluation_prep(
         if value
     }
     evaluation_readiness = {
+        "artifact_purpose": "evaluation_preparation",
+        "robot_evaluation_performed": False,
+        "evaluation_status": "separate_team_evaluation_required",
+        "measured_scores": None,
+        "performance_recommendations": None,
         "capture_source": descriptor.capture_source,
         "capture_modality": descriptor.capture_modality,
         "device_alpha_profile_status": alpha_summary.get("device_alpha_profile", {}).get("status"),

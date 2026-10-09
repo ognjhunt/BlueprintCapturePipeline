@@ -432,6 +432,8 @@ def _mark_run_e2e_stage(
     if resume_used:
         entry["resume_used"] = True
         entry["resumed_at"] = now
+    else:
+        entry.pop("resume_used", None)
     if error is not None:
         entry["error_type"] = type(error).__name__
         entry["error"] = str(error)
@@ -698,6 +700,10 @@ def run_end_to_end(
                 stage=stage,
                 input_binding_digest=input_binding_digest,
             )
+            if stage in {"capture_pipeline", "evaluation_prep"} and isinstance(resumed_result, Mapping):
+                if (resumed_result.get("artifact_purpose") != "evaluation_preparation"
+                        or resumed_result.get("robot_evaluation_performed") is not False):
+                    resumed_result = None
             if resumed_result is not None:
                 _mark_run_e2e_stage(
                     stage_ledger,

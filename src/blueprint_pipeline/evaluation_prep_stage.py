@@ -316,96 +316,9 @@ def _default_task_text(scope_record: Mapping[str, Any], handoff: Mapping[str, An
 
 
 def _default_robot_profiles() -> List[Dict[str, Any]]:
-    return [
-        {
-            "id": "mobile_manipulator_rgb_v1",
-            "display_name": "Mobile manipulator",
-            "embodiment_type": "mobile_manipulator",
-            "action_space": {
-                "name": "ee_delta_pose_gripper",
-                "dim": 7,
-                "labels": [
-                    "base_x",
-                    "base_y",
-                    "base_yaw",
-                    "ee_x",
-                    "ee_y",
-                    "ee_z",
-                    "gripper",
-                ],
-            },
-            "observation_cameras": [
-                {"id": "head_rgb", "role": "head", "required": True, "default_enabled": True},
-                {"id": "wrist_rgb", "role": "wrist", "required": False, "default_enabled": True},
-                {"id": "site_context_rgb", "role": "context", "required": False, "default_enabled": True},
-            ],
-            "base_semantics": "holonomic_mobile_base",
-            "gripper_semantics": "parallel_jaw_gripper",
-            "urdf_uri": None,
-            "usd_uri": None,
-            "allowed_policy_adapters": ["openvla_oft", "pi05", "dreamzero"],
-            "default_policy_adapter": "openvla_oft",
-        },
-        {
-            "id": "humanoid_dual_camera_v1",
-            "display_name": "Humanoid",
-            "embodiment_type": "humanoid",
-            "action_space": {
-                "name": "whole_body_delta_pose_gripper",
-                "dim": 7,
-                "labels": [
-                    "body_x",
-                    "body_y",
-                    "body_yaw",
-                    "hand_x",
-                    "hand_y",
-                    "hand_z",
-                    "gripper",
-                ],
-            },
-            "observation_cameras": [
-                {"id": "head_rgb", "role": "head", "required": True, "default_enabled": True},
-                {"id": "left_wrist_rgb", "role": "wrist_left", "required": False, "default_enabled": True},
-                {"id": "right_wrist_rgb", "role": "wrist_right", "required": False, "default_enabled": True},
-                {"id": "site_context_rgb", "role": "context", "required": False, "default_enabled": True},
-            ],
-            "base_semantics": "bipedal_base",
-            "gripper_semantics": "multi_finger_gripper",
-            "urdf_uri": None,
-            "usd_uri": None,
-            "allowed_policy_adapters": ["openvla_oft", "dreamzero"],
-            "default_policy_adapter": "openvla_oft",
-        },
-        {
-            "id": "fixed_arm_cell_v1",
-            "display_name": "Fixed arm cell",
-            "embodiment_type": "fixed_arm",
-            "action_space": {
-                "name": "joint_delta_gripper",
-                "dim": 7,
-                "labels": [
-                    "joint_1",
-                    "joint_2",
-                    "joint_3",
-                    "joint_4",
-                    "joint_5",
-                    "joint_6",
-                    "gripper",
-                ],
-            },
-            "observation_cameras": [
-                {"id": "cell_rgb", "role": "head", "required": True, "default_enabled": True},
-                {"id": "wrist_rgb", "role": "wrist", "required": False, "default_enabled": True},
-                {"id": "site_context_rgb", "role": "context", "required": False, "default_enabled": False},
-            ],
-            "base_semantics": "fixed_base",
-            "gripper_semantics": "parallel_jaw_gripper",
-            "urdf_uri": None,
-            "usd_uri": None,
-            "allowed_policy_adapters": ["openvla_oft", "pi05"],
-            "default_policy_adapter": "pi05",
-        },
-    ]
+    from .scene_placement.robot_profile import preparation_robot_profiles
+
+    return preparation_robot_profiles()
 
 
 def _hosted_session_runtime_claim_boundary() -> Dict[str, Any]:
@@ -633,6 +546,17 @@ def _build_task_anchor_manifest(
                 provenance=provenance,
             )
         )
+
+    scoped_tasks = {
+        str(item.get("task_id") or ""): item
+        for item in scope_record.get("tasks", []) if isinstance(item, Mapping)
+    }
+    for task in tasks:
+        source = {**scope_record, **scoped_tasks.get(task["task_id"], {})}
+        for key in ("goal_definition", "success_criteria", "success_criteria_authority", "starting_conditions", "start_state",
+                    "allowed_environmental_changes", "assumptions", "missing_measurements"):
+            if key in source:
+                task[key] = source[key]
 
     manifest_provenance = build_provenance_record(
         grounding_level="reconstructed" if tasks else "inferred",
@@ -3298,6 +3222,11 @@ def _build_site_normalization_package(
     return {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
+        "artifact_purpose": "evaluation_preparation",
+        "robot_evaluation_performed": False,
+        "evaluation_status": "separate_team_evaluation_required",
+        "measured_scores": None,
+        "performance_recommendations": None,
         "site_submission_id": str(normalized_handoff.get("site_submission_id") or ""),
         "opportunity_id": str(normalized_handoff.get("opportunity_id") or context.scene_id),
         "scene_id": context.scene_id,
@@ -4363,27 +4292,20 @@ def run_evaluation_prep_stage(
         "cosmos_training_export_status": cosmos_training_export.get("status"),
         "cosmos_lora_training_status": cosmos_training_run.get("status"),
         "simulation_automation_status": simulation_automation_surface.get("status"),
-        "simulation_automation_simulator_execution_proven": simulation_automation_surface.get(
-            "simulator_execution_proven"
-        ),
-        "simulation_automation_rank_fidelity_result_proven": simulation_automation_surface.get(
-            "rank_fidelity_result_proven"
-        ),
-        "site_eval_director_status": site_eval_director_surface.get("status"),
-        "site_eval_director_simulator_execution_proven": site_eval_director_surface.get(
-            "simulator_execution_proven"
-        ),
-        "site_eval_director_rank_fidelity_result_proven": site_eval_director_surface.get(
-            "rank_fidelity_result_proven"
-        ),
-        "robot_eval_job_status": robot_eval_job_surface.get("status"),
-        "robot_eval_job_count": robot_eval_job_surface.get("job_count"),
-        "robot_eval_job_simulator_execution_proven": robot_eval_job_surface.get(
-            "simulator_execution_proven"
-        ),
-        "robot_eval_job_rank_fidelity_result_proven": robot_eval_job_surface.get(
-            "rank_fidelity_result_proven"
-        ),
+        "simulation_automation_simulator_execution_proven": False,
+        "simulation_automation_rank_fidelity_result_proven": False,
+        "site_eval_director_status": "not_requested",
+        "site_eval_director_simulator_execution_proven": False,
+        "site_eval_director_rank_fidelity_result_proven": False,
+        "robot_eval_job_status": "not_requested",
+        "robot_eval_job_count": 0,
+        "robot_eval_job_simulator_execution_proven": False,
+        "robot_eval_job_rank_fidelity_result_proven": False,
+        "retained_evaluation_evidence": {
+            "robot_eval_jobs": robot_eval_job_surface,
+            "site_eval_director": site_eval_director_surface,
+            "simulation_automation": simulation_automation_surface,
+        },
         "export_bundle_status": launchable_export_bundle.get("status"),
         "site_world_status": site_world_health.get("status"),
         "geometry_conditioning_status": geometry_conditioning_status,
@@ -4467,6 +4389,11 @@ def run_evaluation_prep_stage(
     manifest = {
         "schema_version": "v1",
         "generated_at": utc_now_iso(),
+        "artifact_purpose": "evaluation_preparation",
+        "robot_evaluation_performed": False,
+        "evaluation_status": "separate_team_evaluation_required",
+        "measured_scores": None,
+        "performance_recommendations": None,
         "site_submission_id": str(normalized_handoff.get("site_submission_id") or ""),
         "opportunity_id": str(normalized_handoff.get("opportunity_id") or ""),
         "scene_id": context.scene_id,
@@ -5011,6 +4938,28 @@ def run_evaluation_prep_stage(
         **dict(site_eval_director_surface.get("artifact_uris") or {}),
         **dict(robot_eval_job_surface.get("artifact_uris") or {}),
     }
+    # Retained team performance belongs to its original explicit evaluation,
+    # never to this preparation's artifact or proof inventory.
+    evidence_keys = {
+        "recorded_trace_eval_report", "policy_eval_report", "prediction_vs_actual_summary",
+        "normalized_simulator_attempt_trace", "failure_labels", "site_eval_prediction_outcome_ledger",
+        "site_eval_calibration_report", "learned_facility_breakage_library", "updated_eval_cards",
+        "site_eval_director_run_manifest", "site_eval_director_proof_boundary",
+        "simulator_execution_manifest", "training_orchestration_manifest",
+        "simulation_automation_proof_boundary", "simulation_automation_agent_decision_ledger",
+    }
+    retained_artifacts = {
+        key: value for key, value in manifest["artifacts"].items()
+        if key in evidence_keys or key.startswith("robot_eval_job_")
+    }
+    manifest["retained_evaluation_evidence"] = retained_artifacts
+    manifest["artifacts"] = {
+        key: value for key, value in manifest["artifacts"].items() if key not in retained_artifacts
+    }
+    shared_artifact_uris = {
+        key: value for key, value in shared_artifact_uris.items()
+        if key.removesuffix("_uri") not in evidence_keys and not key.startswith("robot_eval_job_")
+    }
     site_package_manifest = build_site_package_manifest(
         scene_id=context.scene_id,
         capture_id=context.capture_id,
@@ -5095,6 +5044,8 @@ def run_evaluation_prep_stage(
         "capture_root": str(context.capture_root),
         "manifest_path": str(manifest_path),
         "status": legacy_status,
+        "artifact_purpose": "evaluation_preparation",
+        "robot_evaluation_performed": False,
         "canonical_package_status": canonical_package_status,
         "site_package_manifest": site_package_manifest,
         "hosted_review_readiness": hosted_review_readiness,
