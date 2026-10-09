@@ -71,10 +71,10 @@ _SCOPES = {
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
     # The API and privileged spool reader share this exact request allowlist.
-    # Production provenance uses the existing deploy operation. An unrelated
-    # upgrade must preserve this installed five-operation admission profile.
+    # Production provenance uses the existing deploy operation. The owner also
+    # approved receipt-bound single-handoff dispatch; inspection stays refused.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
-               if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold"}}
+               if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -329,6 +329,8 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             normalized["bucket"] = bucket
         return normalized
     if kind == "selected-handoff":
+        if DISPATCHER_HOLD_ONLY and body.get("mode") != "dispatch":
+            raise RequestRefused("selected_handoff_dispatch_only")
         fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation",
                   "handoff_generation", "handoff_sha256", "handoff_size_bytes", "receipt_generation",
                   "receipt_sha256", "receipt_size_bytes"}
