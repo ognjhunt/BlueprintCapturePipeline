@@ -7,6 +7,7 @@ discard completed preparation or label the scene simulator-ready.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -98,7 +99,9 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result["geometry_controller_invoked"] = True
             geometry = run_website_scene_geometry(source_video=video,
                 output_root=Path(clean_plate["stage_manifest_path"]).parent / "source_geometry",
-                capture_id=context["capture_id"], task_context=context, task_masks=clean_plate["task_masks"])
+                capture_id=context["capture_id"], task_context=context, task_masks=clean_plate["task_masks"],
+                backend=os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND") or (
+                    "mapanything" if os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT") else "atlas"))
             if geometry.get("status") == "pending" and geometry.get("backend") == "atlas":
                 # Unposed RGB preparation is useful without MapAnything. The
                 # admitted Atlas pose/depth operation and final scene assets
