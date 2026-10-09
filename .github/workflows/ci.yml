@@ -866,6 +866,25 @@ jobs:
           printf '%s\n' 'compose-config-ok' \
             > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/compose-config.ok"
 
+      - name: Configure public Docker Hub cache on the disposable runner
+        run: |
+          set -euo pipefail
+          sudo python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('/etc/docker/daemon.json')
+          config = json.loads(path.read_text()) if path.exists() else {}
+          mirrors = config.setdefault('registry-mirrors', [])
+          if 'https://mirror.gcr.io' not in mirrors:
+              mirrors.append('https://mirror.gcr.io')
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_text(json.dumps(config) + '\n')
+          PY
+          sudo systemctl restart docker
+          docker info --format '{{json .RegistryConfig.Mirrors}}' | \
+            python3 -c 'import json, sys; assert "https://mirror.gcr.io" in [v.rstrip("/") for v in json.load(sys.stdin)]'
+
       - name: Build production and development targets
         run: |
           set -euo pipefail
