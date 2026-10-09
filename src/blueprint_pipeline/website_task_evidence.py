@@ -28,6 +28,7 @@ def prepare_website_task_descriptor(*, descriptor: CaptureDescriptor, capture_ro
     context = load_task_context(
         request_id=str(descriptor.site_submission_id or descriptor.metadata.get("site_submission_id") or ""),
         scene_id=descriptor.scene_id, capture_id=descriptor.capture_id,
+        purpose="scene_preparation",
     )
     write_json(pipeline_dir / "website_task_context.json", context)
     evidence = ingest_website_task_evidence(task_context=context, bucket=bucket,
@@ -71,7 +72,7 @@ def ingest_website_task_evidence(*, task_context: Mapping[str, Any], output_root
                                  bucket: str | None = None) -> dict[str, Any]:
     """Only immutable source photos become retained observations. Never buys a model call."""
     context = validate_website_task_context(task_context, request_id=task_context["request_id"],
-        scene_id=task_context["scene_id"], capture_id=task_context["capture_id"])
+        scene_id=task_context["scene_id"], capture_id=task_context["capture_id"], purpose="scene_preparation")
     if context.get("capture_rights", {}).get("derived_scene_generation_allowed") is not True:
         raise ValueError("website_item_consent_not_granted")
     prefix = f"scenes/{context['scene_id']}/items/"

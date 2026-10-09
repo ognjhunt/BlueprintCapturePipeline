@@ -55,7 +55,15 @@ def validate_controller_binding(binding):
     # This is only the entry check. The controller still runs its complete
     # current authority, failure-class, retry, spend and provider-zero checks.
     consent = intent.get("request", {}).get("consent", {})
-    if consent.get("spend_authorized") is not True or consent.get("task_confirmed") is not True:
+    from ..website_preparation_contracts import preparation_consent_valid
+    from ..website_preparation_authority import require_retained_preparation_authority
+    if consent.get("task_confirmed") is False:
+        try:
+            require_retained_preparation_authority(request=intent["request"], queue_root=config["intent_root"], now=time.time())
+        except (ValueError, OSError, KeyError, TypeError):
+            raise AgentExecutionError("agent_recovery_owner_authority_missing") from None
+    if consent.get("spend_authorized") is not True or not (
+            consent.get("task_confirmed") is True or preparation_consent_valid(intent.get("request", {}))):
         raise AgentExecutionError("agent_recovery_owner_authority_missing")
     link_raw = _read_private(Path(binding.preparation_link_path))
     link = json.loads(link_raw)

@@ -5,7 +5,6 @@ The existing authenticated owner intent, release and allocator own dispatch.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from .task_evaluation_scene_retirement_access import scene_participant, birth_scene_member
@@ -14,20 +13,10 @@ from .task_evaluation_public_scene_attempt_factory import record, RELEASE_SCHEMA
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
 from .task_evaluation_scene_progression_state import require, safe_path
 from . import task_evaluation_scene_intake as intake
-
-
-def binding_root(config=None):
-    config = config or {}
-    configured = config.get("website_source_binding_root") or os.getenv("BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT")
-    if configured:
-        return safe_path(configured)
-    intent_root = config.get("intent_root") or os.getenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT")
-    require(bool(intent_root), "website_scene_intake_root_missing")
-    return safe_path(Path(intent_root).parent / "website-source-bindings")
-
-
-def _index_path(root, request):
-    return root / (cross_runtime_canonical_digest(request)[7:] + ".json")
+from .website_scene_source_registry_paths import (
+    binding_root as binding_root,
+    _index_path as _index_path,
+)
 
 
 def _selected_capture_source(preparation_path, preparation, context):
@@ -37,7 +26,7 @@ def _selected_capture_source(preparation_path, preparation, context):
         return None
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
 
-    source = capture_birth_source_projection(preparation_file.parents[2])
+    source = capture_birth_source_projection(preparation_file.parents[2], expected_purpose="scene_preparation")
     if source is None:
         return None
     rights_digest = cross_runtime_canonical_digest(source['capture_rights'])

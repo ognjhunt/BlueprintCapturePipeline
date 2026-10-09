@@ -125,6 +125,10 @@ def reopen_scene_intent(reference, *, now=None):
     effective_execution_budget(path.parent, intent)
     require(request["consent"]["accepted_by"] == request["owner"]["user_id"],
             "scene_owner_actor_mismatch")
+    if request["consent"]["task_confirmed"] is False:
+        from .website_preparation_authority import require_retained_preparation_authority
+        moment = require_retained_preparation_authority(request=request, queue_root=root, now=moment)
+        require(moment < effective_execution_expiry(path.parent, intent), "scene_owner_authority_expired")
     return intent
 
 
@@ -184,9 +188,11 @@ def validate_task_scene_owner(task, *, provider_terms_path=None, now=None):
             and owner.get("accepted_on") == datetime.fromtimestamp(
                 consent["accepted_at_epoch"], timezone.utc).isoformat(),
             "scene_owner_authority_mismatch")
+    from .website_preparation_contracts import preparation_consent_valid
     require(consent["private_processing_authorized"] is True
             and consent["provider_training_authorized"] is False
-            and consent["task_confirmed"] is True and consent["spend_authorized"] is True
+            and (consent["task_confirmed"] is True or preparation_consent_valid(request))
+            and consent["spend_authorized"] is True
             and "openai" in request["execution"]["allowed_providers"], "scene_owner_review_not_authorized")
     if provider_terms_path is not None:
         from .task_evaluation_scene_provider_terms import validate_review_terms_binding

@@ -210,7 +210,6 @@ def construction_rights_admission(*, preparation: Mapping[str, Any], task_contex
     if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
             or task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
             or preparation["binding"]["task_context_digest"] != task_context["context_digest"]
-            or task_context.get("confirmed") is not True
             or task_context.get("capture_rights", {}).get("derived_scene_generation_allowed") is not True):
         raise ValueError("website_construction_rights_context_invalid")
     from .website_development_test import environment, enabled
@@ -220,6 +219,10 @@ def construction_rights_admission(*, preparation: Mapping[str, Any], task_contex
     if preparation.get("status") != "intake_ready" or preparation.get("blockers"):
         raise ValueError("website_construction_preparation_not_ready")
     request = validate_request(preparation["intake_request"], now=now)
+    if task_context.get("confirmed") is not True:
+        from .website_preparation_contracts import validate_preparation_request
+        validate_preparation_request(request=request, task_context=task_context,
+            authority=preparation.get("website_preparation_authority") or {}, now=now)
     consent = request["consent"]
     value = {"schema_version": "website_native_rights_admission.v1",
              # The authoring drivers read these four fields at the top level

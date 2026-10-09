@@ -105,6 +105,12 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
              "issuer_not_authorized")
     moment = datetime.now(timezone.utc).timestamp() if now is None else now
     request = validate_request(value, now=moment)
+    if request["consent"]["task_confirmed"] is False:
+        from .website_preparation_authority import require_retained_preparation_authority
+        try:
+            moment = require_retained_preparation_authority(request=request, queue_root=queue_root, now=moment)
+        except (ValueError, OSError, KeyError, TypeError):
+            raise SceneIntakeError("scene_intake_preparation_authority_invalid") from None
     root = _root(Path(queue_root))
     # Tenant plus user plus idempotency key: another owner cannot alias this intent.
     identity = canonical_digest({"owner": request["owner"], "submission_id": request["submission_id"]})
@@ -150,6 +156,14 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         directory = root / intent_id
         _require(not directory.is_symlink(), "record_unsafe")
         intent = _read(directory / "intent.json", "intent_digest")
+        if intent["request"]["consent"]["task_confirmed"] is False:
+            trusted = {item.strip() for item in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if item.strip()}
+            _require(intent.get("authenticated_issuer") in trusted, "issuer_not_authorized")
+            from .website_preparation_authority import require_retained_preparation_authority
+            try:
+                moment = require_retained_preparation_authority(request=intent["request"], queue_root=root, now=moment)
+            except (ValueError, OSError, KeyError, TypeError):
+                raise SceneIntakeError("scene_intake_preparation_authority_invalid") from None
         execution = intent["request"]["execution"]
         budget = effective_execution_budget(directory, intent)
         _require(not (directory / "revoked.json").exists(), "authority_revoked")

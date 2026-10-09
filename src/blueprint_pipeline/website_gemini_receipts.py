@@ -37,7 +37,7 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
     Local flock and exclusive durable intent cover restarts on this worker.
     """
     validate_website_task_context(task_context, request_id=task_context["request_id"],
-        scene_id=task_context["scene_id"], capture_id=task_context["capture_id"])
+        scene_id=task_context["scene_id"], capture_id=task_context["capture_id"], purpose="scene_preparation")
     request = {"binding": dict(binding), "task_context_digest": task_context["context_digest"],
                "maximum_cost_usd": maximum_cost_usd}
     digest = canonical_digest(request)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -84,15 +85,19 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any])
                  and type(before.get("attempt_count")) is int and before["attempt_count"] > 0)
         _require(all(before.get(key) == selected[key] for key in
                      ("scene_id", "capture_id", "producer_delivery_key", "source_payload_sha256")))
-        birth = capture_birth_source_projection(root)
+        birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
         _require(type(birth) is dict)
         _require(all(birth.get(key) == selected[key] for key in ("request_id", "scene_id", "capture_id")))
         _require(birth.get("delivery_key") == selected["producer_delivery_key"])
         delivery = _read(Path(birth["birth_delivery_raw_ref"]["path"]))
+        purpose = birth.get("capture_observation_purpose")
+        if purpose not in {None, "scene_preparation"}:
+            raise ValueError("website_preparation_purpose_invalid")
         _require(delivery["source_finalize"]["generation"] == selected["completion_marker_generation"])
         owner = load_original_owner_observation(bucket=delivery["source_finalize"]["bucket"], scene_id=selected["scene_id"],
-            capture_id=selected["capture_id"], marker_generation=selected["completion_marker_generation"])
-        _require(owner["capture_owner"]["user_id"] == birth["capture_owner_user_id"])
+            capture_id=selected["capture_id"], marker_generation=selected["completion_marker_generation"],
+            **({"expected_purpose": purpose} if purpose else {}))
+        _require((owner["capture_owner"] or {}).get("user_id") == birth["capture_owner_user_id"])
         _require(owner["producer_delivery"] == delivery["producer_delivery"])
         _require(owner["producer_delivery"]["delivery_key"] == selected["producer_delivery_key"])
         _require(owner["producer_delivery"]["raw_video"]["generation"] == birth["raw_video"]["generation"])
@@ -101,10 +106,14 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any])
         # authority; historical birth alone grants no current consent.
         _require(read_consent_state(root)["state"] != "revoked")
         retained = validate_website_task_context(_retained_context(root), request_id=selected["request_id"],
-                         scene_id=selected["scene_id"], capture_id=selected["capture_id"])
+                         scene_id=selected["scene_id"], capture_id=selected["capture_id"], purpose=purpose)
         current = load_current_website_task_context(request_id=selected["request_id"],
-                        scene_id=selected["scene_id"], capture_id=selected["capture_id"])
+                        scene_id=selected["scene_id"], capture_id=selected["capture_id"],
+                        **({"purpose": purpose} if purpose else {}))
         _require(retained["context_digest"] == current["context_digest"] == selected["task_context_digest"])
+        if current.get("confirmed") is False:
+            from .website_task_context import load_website_scene_sponsorship
+            load_website_scene_sponsorship(task_context=current, now=time.time(), create=False)
         state_code = {"processing": ("preparing", "preparation_in_progress"),
                       "failed_retryable": ("failed_retryable", "preparation_retryable_failure"),
                       "retryable_blocked": ("awaiting_inputs", "preparation_inputs_pending"),
@@ -146,7 +155,7 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
     from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     root = _root(capture_root)
-    birth = capture_birth_source_projection(root)
+    birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
     if not birth:
         return
     context = _retained_context(root)

@@ -106,6 +106,7 @@ def _gcs_row(value: Any, *, object_name: str | None = None, video: bool = False)
 def validate_observation(
     value: Any, *, bucket: str, scene_id: str, capture_id: str,
     marker_generation: str, now_epoch: int | None = None,
+    expected_purpose: str | None = None,
 ) -> dict[str, Any]:
     """Validate the complete bounded projection against the delivered selector."""
     if not _generation(marker_generation):
@@ -116,7 +117,11 @@ def validate_observation(
     if (not _identifier(request_id, max_length=120)
             or scene_id != f"site-{request_id}" or not _identifier(bucket)):
         _refuse("capture_owner_capture_identity_invalid")
-    value = _object(value, _RESPONSE_KEYS)
+    if expected_purpose not in {None, "scene_preparation"}:
+        _refuse("capture_owner_purpose_invalid")
+    value = _object(value, _RESPONSE_KEYS | ({"purpose"} if expected_purpose else set()))
+    if expected_purpose and value.get("purpose") != expected_purpose:
+        _refuse("capture_owner_purpose_mismatch")
     raw_prefix = f"scenes/{scene_id}/captures/{capture_id}/raw"
     if (value["schema_version"] != "website_capture_owner_observation.v1"
             or any(value[key] != expected for key, expected in (
@@ -124,10 +129,11 @@ def validate_observation(
                 ("capture_id", capture_id), ("bucket", bucket),
                 ("raw_prefix_uri", f"gs://{bucket}/{raw_prefix}")))):
         _refuse("capture_owner_identity_mismatch")
-    owner = _object(value["capture_owner"], {"user_id", "basis"})
-    if (not _identifier(owner["user_id"])
-            or owner["basis"] != "inboundRequests.account_owner_uid"):
-        _refuse("capture_owner_identity_invalid")
+    if not (expected_purpose == "scene_preparation" and value["capture_owner"] is None):
+        owner = _object(value["capture_owner"], {"user_id", "basis"})
+        if (not _identifier(owner["user_id"])
+                or owner["basis"] != "inboundRequests.account_owner_uid"):
+            _refuse("capture_owner_identity_invalid")
     source = _object(value["source_document"], {"collection", "document_id", "update_time"})
     update_time = _object(source["update_time"], {"seconds", "nanoseconds"})
     if (source["collection"] != "inboundRequests" or source["document_id"] != request_id
@@ -193,7 +199,7 @@ def validate_observation(
         _refuse("capture_owner_observation_stale")
     if (not _sha(value["source_projection_digest"])
             or value["source_projection_digest"] != cross_runtime_canonical_digest({
-                key: value[key] for key in _SOURCE_KEYS
+                key: value[key] for key in (*_SOURCE_KEYS, *(("purpose",) if expected_purpose else ()))
             })
             or not _sha(value["observation_digest"])
             or value["observation_digest"] != cross_runtime_canonical_digest(
@@ -219,6 +225,7 @@ def load_original_owner_observation(
     *, bucket: str, scene_id: str, capture_id: str, marker_generation: str,
     remaining_timeout_ms: int = 10_000,
     include_response_bytes: bool = False,
+    expected_purpose: str | None = None,
 ) -> dict[str, Any] | tuple[dict[str, Any], int]:
     """One signed read through the installed Pipeline sync credential and API origin."""
     if not _integer(remaining_timeout_ms, 1, 10_000):
@@ -235,10 +242,14 @@ def load_original_owner_observation(
         parsed = urlsplit(validated_https_sync_url(configured))
         origin = f"{parsed.scheme}://{parsed.netloc}"
         token = load_pipeline_sync_token()
-        body = json.dumps({"request_id": request_id, "scene_id": scene_id,
+        if expected_purpose not in {None, "scene_preparation"}:
+            _refuse("capture_owner_purpose_invalid")
+        payload = {"request_id": request_id, "scene_id": scene_id,
                            "completion_marker_generation": marker_generation,
-                           "remaining_timeout_ms": remaining_timeout_ms},
-                          separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+                           "remaining_timeout_ms": remaining_timeout_ms}
+        if expected_purpose:
+            payload["purpose"] = expected_purpose
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         if len(body) > 4096:
             _refuse("capture_owner_request_too_large")
         response = safe_request(
@@ -254,7 +265,7 @@ def load_original_owner_observation(
                            object_pairs_hook=_unique_pairs, parse_constant=_invalid_constant)
         validated = validate_observation(value, bucket=bucket, scene_id=scene_id,
                                          capture_id=capture_id,
-                                         marker_generation=marker_generation)
+                                         marker_generation=marker_generation, expected_purpose=expected_purpose)
         return (validated, len(response.body)) if include_response_bytes else validated
     except CaptureOwnerObservationError:
         raise

@@ -145,7 +145,8 @@ def test_dispatch_preserves_exact_bytes_and_uses_native_initial_claim(tmp_path, 
     raw, kwargs = calls[0]
     assert raw == next(iter(objects.values()))
     assert kwargs == dict(
-        storage_root=tmp_path, provider="openai", require_unattempted_delivery=True
+        storage_root=tmp_path, provider="openai", require_unattempted_delivery=True,
+        expected_preparation_purpose="scene_preparation",
     )
     assert result["provider_dispatch_performed"].startswith("unknown")
 

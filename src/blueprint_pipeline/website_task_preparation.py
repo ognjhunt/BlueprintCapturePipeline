@@ -600,7 +600,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         if value.get(field) != canonical_digest(value, digest_field=field):
             raise ValueError("website_preparation_input_digest_mismatch")
     if task_context.get("confirmed") is not True:
-        raise ValueError("website_preparation_task_not_confirmed")
+        from .website_preparation_contracts import validate_preparation_authority
+        validate_preparation_authority(task_context=task_context, authority=spend, now=now)
     if task_masks.get("source_geometry_digest") != source_geometry["digest"]:
         raise ValueError("website_preparation_geometry_binding_mismatch")
     request_id, capture_id = str(task_context["request_id"]), str(task_context["capture_id"])
@@ -958,7 +959,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                           else "unregistered_object_local_estimated_visible_bounds" if independent_object
                           else "registered_partial_visible_bounds_from_estimated_source_geometry"),
         construction_constraints={
-            "confirmed_task": task_context["description"],
+            **({"confirmed_task": task_context["description"]} if task_context.get("confirmed") is True else
+               {"task_description": task_context["description"], "task_confirmed": False,
+                "task_confirmed_at": task_context.get("confirmed_at")}),
             "operator_answers": task_context.get("operator_answers") or {},
             "operator_task_details": task_context.get("operator_task_details") or {},
             "owner_success_criteria": task_context.get("success_criteria"),
@@ -1083,6 +1086,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "schema_version": SCHEMA_VERSION, "status": "needs_input" if blockers else "intake_ready",
         "blockers": blockers, "claim_ceiling": CLAIM_CEILING,
         "owner_success_criteria": owner_targets,
+        **({"website_preparation_authority": dict(spend)} if task_context.get("confirmed") is False else {}),
         **({"authoring_provider_terms_reference": terms} if authoring_provider == "anthropic" and
             isinstance(terms, str) else {}),
         "binding": {"task_context_digest": task_context["context_digest"], "task_masks_digest": task_masks["digest"],

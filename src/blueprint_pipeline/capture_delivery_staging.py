@@ -31,7 +31,7 @@ def _local_matches(path: Path, row: dict) -> bool:
         return False
 
 
-def stage_selected_capture(listener, handoff, *, storage_root, storage_client):
+def stage_selected_capture(listener, handoff, *, storage_root, storage_client, expected_purpose=None):
     """Acquire signed owner and exact historical source before capture birth."""
     from .capture_original_owner_observer import load_original_owner_observation
 
@@ -39,7 +39,8 @@ def stage_selected_capture(listener, handoff, *, storage_root, storage_client):
         raise listener.PipelineError('capture_original_birth_unavailable')
     observation = load_original_owner_observation(
         bucket=handoff.bucket, scene_id=handoff.scene_id, capture_id=handoff.capture_id,
-        marker_generation=handoff.source_finalize['generation'])
+        marker_generation=handoff.source_finalize['generation'],
+        **({'expected_purpose': expected_purpose} if expected_purpose else {}))
     client = storage_client or listener.storage.Client()
     membership_raw, membership, selected = load_selected_capture_membership(
         storage_client=client, handoff=handoff, observation=observation)
@@ -47,7 +48,8 @@ def stage_selected_capture(listener, handoff, *, storage_root, storage_client):
     born = birth_capture_member(
         capture_root, observation=observation,
         membership_selector=dict(handoff.source_membership_selector),
-        membership_raw=membership_raw)
+        membership_raw=membership_raw,
+        **({'expected_purpose': expected_purpose} if expected_purpose else {}))
     if born is None:
         raise listener.PipelineError('capture_original_birth_unavailable')
     selector = handoff.source_membership_selector
