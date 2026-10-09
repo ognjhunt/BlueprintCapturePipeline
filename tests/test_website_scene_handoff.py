@@ -50,6 +50,40 @@ def test_collected_world_drives_preparation_but_never_invents_execution(tmp_path
     assert json.loads((tmp_path / "pipeline/website_scene_preparation/handoff.json").read_text()) == result
 
 
+@pytest.mark.parametrize("deferred_masks", [False, True])
+def test_marble_assets_survive_missing_source_geometry_without_an_automatic_provider(
+        tmp_path, monkeypatch, deferred_masks):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    kwargs = inputs(tmp_path)
+    kwargs["clean_plate"]["source_geometry"] = None
+    kwargs["clean_plate"]["task_masks"] = {
+        "deferred_target_ids": ["support"] if deferred_masks else []}
+    for name in ("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND", "BLUEPRINT_WEBSITE_GEOMETRY_RESULT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", "/legacy-mapanything-weights")
+    def unexpected(**_):
+        pytest.fail("pending native geometry must not invoke a provider or compiler")
+    monkeypatch.setattr("blueprint_pipeline.website_scene_geometry.run_website_scene_geometry", unexpected)
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.complete_retained_static_task_masks", unexpected)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", unexpected)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "needs_input"
+    assert result["blockers"] == ["website_native_source_geometry_required", "website_source_registration_required"]
+    assert result["visual_reconstruction_ready"] is True
+    assert result["geometry_controller_invoked"] is False
+    assert result["provider_mutation_performed"] is False
+    assert result["simulator_ready"] is False
+    assert "atlas_pose_inputs_path" not in result
+    base = json.loads(__import__("pathlib").Path(result["base_scene_path"]).read_text())
+    assert base["world_id"] == "world-1" and base["operation_id"] == "op-1"
+    assert base["splat_digest"] == _sha256_file(tmp_path / "pipeline/world.ply")
+    assert base["collision_mesh_digest"] == _sha256_file(tmp_path / "pipeline/collider.glb")
+    assert base["meters_per_unit"] is None and base["up_axis"] == "-Y"
+    assert result["digest"] == canonical_digest(result, digest_field="digest")
+    assert json.loads((tmp_path / "pipeline/website_scene_preparation/handoff.json").read_text()) == result
+
+
 @pytest.mark.parametrize("change,reason", [
     ("privacy", "website_scene_preparation_pending"),
     ("pending", "website_reconstruction_pending"),
@@ -76,7 +110,7 @@ def test_held_or_changed_inputs_do_not_enter_scene_construction(tmp_path, monkey
 
 
 @pytest.mark.parametrize("backend,retained_result,expected", [
-    (None, None, "atlas"), ("mapanything", None, "mapanything"),
+    (None, None, None), ("mapanything", None, "mapanything"),
     (None, "/retained-source-geometry.json", "mapanything"),
     ("atlas", "/retained-source-geometry.json", "atlas"),
 ])
@@ -104,11 +138,16 @@ def test_geometry_controller_runs_only_after_visual_world_and_assets_are_ready(
     assert calls == []
     kwargs["provider_run"]["status"] = "ready"
     result = handoff.prepare_website_scene_handoff(**kwargs)
-    assert result["blockers"] == ["geometry_capacity_pending"]
-    assert len(calls) == 1 and calls[0]["task_context"] == kwargs["descriptor"]["metadata"]["site_task_context"]
-    assert calls[0].get("backend") == expected
+    assert __import__("pathlib").Path(result["base_scene_path"]).is_file()
+    if expected is None:
+        assert result["blockers"] == ["website_native_source_geometry_required", "website_source_registration_required"]
+        assert calls == [] and result["geometry_controller_invoked"] is False
+    else:
+        assert result["blockers"] == ["geometry_capacity_pending"]
+        assert len(calls) == 1 and calls[0]["task_context"] == kwargs["descriptor"]["metadata"]["site_task_context"]
+        assert calls[0].get("backend") == expected
+        assert result["geometry_controller_invoked"] is True
     assert kwargs["provider_run"]["status"] == "ready"
-    assert result["geometry_controller_invoked"] is True
 
 
 def test_provider_declared_scale_ground_and_anchor_view_enter_the_base_scene(tmp_path, monkeypatch):
@@ -133,6 +172,7 @@ def test_provider_declared_scale_ground_and_anchor_view_enter_the_base_scene(tmp
 
 @pytest.mark.parametrize("support_ready", [False, True])
 def test_visual_world_survives_deferred_support_and_full_masks_are_required_before_geometry(tmp_path, monkeypatch, support_ready):
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND", "mapanything")
     kwargs = inputs(tmp_path)
     video = tmp_path / "walkthrough.mov"
     video.write_bytes(b"source")
@@ -176,6 +216,7 @@ def test_world_without_declared_scale_leaves_registration_to_estimate(tmp_path, 
 
 
 def test_terminal_world_failure_enters_only_authorized_development_seed(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND", "mapanything")
     from blueprint_pipeline.website_development_test import ENV
     kwargs = inputs(tmp_path)
     context = kwargs['descriptor']['metadata']['site_task_context']

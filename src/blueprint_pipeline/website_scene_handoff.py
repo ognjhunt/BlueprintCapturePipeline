@@ -78,68 +78,6 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                                                     task_context=context)
         if settlement is not None:
             result["reconstruction_settlement"] = settlement
-        if clean_plate.get("source_geometry") is None:
-            from .website_scene_geometry import run_website_scene_geometry
-            from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
-            video = Path(clean_plate.get("input_video_path") or "")
-            if not video.is_file() or not video.resolve().is_relative_to(capture_root.resolve()):
-                raise ValueError("website_source_video_outside_capture")
-            result.pop("provider_mutation_performed", None)
-            if (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
-                result["visual_reconstruction_ready"] = True
-                result["deferred_masks_controller_invoked"] = True
-                plan_path = Path(clean_plate["removal_plan_path"])
-                if not plan_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
-                    raise ValueError("website_scene_removal_plan_outside_capture")
-                masks = complete_retained_static_task_masks(plan=json.loads(plan_path.read_text()),
-                    source_geometry=clean_plate["source_frames"], task_masks=clean_plate["task_masks"],
-                    output_root=plan_path.parent / "task_masks",
-                    view_plan_root=plan_path.parent / "mask_view_plan")
-                clean_plate = {**clean_plate, "task_masks": masks}
-            result["geometry_controller_invoked"] = True
-            geometry = run_website_scene_geometry(source_video=video,
-                output_root=Path(clean_plate["stage_manifest_path"]).parent / "source_geometry",
-                capture_id=context["capture_id"], task_context=context, task_masks=clean_plate["task_masks"],
-                backend=os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND") or (
-                    "mapanything" if os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT") else "atlas"))
-            if geometry.get("status") == "pending" and geometry.get("backend") == "atlas":
-                # Unposed RGB preparation is useful without MapAnything. The
-                # admitted Atlas pose/depth operation and final scene assets
-                # remain separate proof; never pass pending RGB into native
-                # geometry/mask lifting or quietly allocate a GPU instead.
-                result.update(status="needs_input", visual_reconstruction_ready=not failed_fixture,
-                    blockers=geometry["blockers"], geometry_backend="atlas",
-                    geometry_controller_invoked=False, provider_mutation_performed=False,
-                    atlas_pose_inputs_path=str(Path(clean_plate["stage_manifest_path"]).parent
-                                               / "source_geometry" / "atlas_pose_inputs.json"))
-                write_json(root / "handoff.json", result)
-                return result
-            masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
-            write_json(root / "task_masks.geometry.json", masks)
-            clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
-        removal_path = Path(clean_plate["removal_manifest_path"])
-        if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
-            raise ValueError("website_scene_removal_manifest_outside_capture")
-        removal = json.loads(removal_path.read_text())
-        # Each articulated task target needs views of its whole assembly from
-        # the full track, not only the geometry frames. Retained receipts and
-        # decoded frames make a restart free.
-        from .website_assembly_coverage import attach_assembly_coverage
-        source_video = Path(clean_plate.get("input_video_path") or "")
-        masks = attach_assembly_coverage(task_masks=clean_plate["task_masks"],
-            source_geometry=clean_plate["source_geometry"], removal_manifest=removal, task_context=context,
-            source_video=(source_video if source_video.is_file()
-                          and source_video.resolve().is_relative_to(capture_root.resolve()) else None),
-            output_root=root / "assembly_coverage")
-        # Published size and mass of an identified object reach compile before
-        # the builder. An unknown identity or closed agent gate records not_run
-        # and spends nothing; retained receipts make restarts free.
-        from .website_object_spec_research import attach_object_specs
-        masks = attach_object_specs(task_masks=masks, removal_manifest=removal, task_context=context,
-                                    output_root=root / "object_spec")
-        if masks != clean_plate["task_masks"]:
-            write_json(root / "task_masks.coverage.json", masks)
-            clean_plate = {**clean_plate, "task_masks": masks}
         # World Labs exports are OpenCV Y-down, including their GLB meshes:
         # https://docs.worldlabs.ai/marble/export/specs . The world manifest
         # declares an estimated metric factor and ground plane (raw units x
@@ -181,6 +119,80 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 "operation_id": provider_run.get("provider_run_id"), "world_id": assets["world_id"],
             }
         write_json(root / "base_scene.json", base)
+        result["base_scene_path"] = str(root / "base_scene.json")
+        if clean_plate.get("source_geometry") is None:
+            geometry_backend = os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND") or (
+                "mapanything" if os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT") else None)
+            if geometry_backend is None:
+                # Marble assets remain useful while exact native source poses
+                # and mask registration are missing. Atlas is unavailable;
+                # neither geometry nor deferred mask work is automatic.
+                result.update(status="needs_input", visual_reconstruction_ready=not failed_fixture,
+                    blockers=["website_native_source_geometry_required", "website_source_registration_required"],
+                    geometry_controller_invoked=False, provider_mutation_performed=False)
+                result["digest"] = canonical_digest(result, digest_field="digest")
+                write_json(handoff_path, result)
+                return result
+            from .website_scene_geometry import run_website_scene_geometry
+            from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
+            video = Path(clean_plate.get("input_video_path") or "")
+            if not video.is_file() or not video.resolve().is_relative_to(capture_root.resolve()):
+                raise ValueError("website_source_video_outside_capture")
+            result.pop("provider_mutation_performed", None)
+            if (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
+                result["visual_reconstruction_ready"] = True
+                result["deferred_masks_controller_invoked"] = True
+                plan_path = Path(clean_plate["removal_plan_path"])
+                if not plan_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
+                    raise ValueError("website_scene_removal_plan_outside_capture")
+                masks = complete_retained_static_task_masks(plan=json.loads(plan_path.read_text()),
+                    source_geometry=clean_plate["source_frames"], task_masks=clean_plate["task_masks"],
+                    output_root=plan_path.parent / "task_masks",
+                    view_plan_root=plan_path.parent / "mask_view_plan")
+                clean_plate = {**clean_plate, "task_masks": masks}
+            result["geometry_controller_invoked"] = True
+            geometry = run_website_scene_geometry(source_video=video,
+                output_root=Path(clean_plate["stage_manifest_path"]).parent / "source_geometry",
+                capture_id=context["capture_id"], task_context=context, task_masks=clean_plate["task_masks"],
+                backend=geometry_backend)
+            if geometry.get("status") == "pending" and geometry.get("backend") == "atlas":
+                # Unposed RGB preparation is useful without MapAnything. The
+                # admitted Atlas pose/depth operation and final scene assets
+                # remain separate proof; never pass pending RGB into native
+                # geometry/mask lifting or quietly allocate a GPU instead.
+                result.update(status="needs_input", visual_reconstruction_ready=not failed_fixture,
+                    blockers=geometry["blockers"], geometry_backend="atlas",
+                    geometry_controller_invoked=False, provider_mutation_performed=False,
+                    atlas_pose_inputs_path=str(Path(clean_plate["stage_manifest_path"]).parent
+                                               / "source_geometry" / "atlas_pose_inputs.json"))
+                write_json(root / "handoff.json", result)
+                return result
+            masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
+            write_json(root / "task_masks.geometry.json", masks)
+            clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
+        removal_path = Path(clean_plate["removal_manifest_path"])
+        if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
+            raise ValueError("website_scene_removal_manifest_outside_capture")
+        removal = json.loads(removal_path.read_text())
+        # Each articulated task target needs views of its whole assembly from
+        # the full track, not only the geometry frames. Retained receipts and
+        # decoded frames make a restart free.
+        from .website_assembly_coverage import attach_assembly_coverage
+        source_video = Path(clean_plate.get("input_video_path") or "")
+        masks = attach_assembly_coverage(task_masks=clean_plate["task_masks"],
+            source_geometry=clean_plate["source_geometry"], removal_manifest=removal, task_context=context,
+            source_video=(source_video if source_video.is_file()
+                          and source_video.resolve().is_relative_to(capture_root.resolve()) else None),
+            output_root=root / "assembly_coverage")
+        # Published size and mass of an identified object reach compile before
+        # the builder. An unknown identity or closed agent gate records not_run
+        # and spends nothing; retained receipts make restarts free.
+        from .website_object_spec_research import attach_object_specs
+        masks = attach_object_specs(task_masks=masks, removal_manifest=removal, task_context=context,
+                                    output_root=root / "object_spec")
+        if masks != clean_plate["task_masks"]:
+            write_json(root / "task_masks.coverage.json", masks)
+            clean_plate = {**clean_plate, "task_masks": masks}
         authority = metadata.get("website_scene_execution_authority") or {}
         if not all(key in authority for key in ("max_total_spend_usd", "max_paid_attempts", "expires_at_epoch")):
             # Compile geometry even while execution is held. Zero authority
