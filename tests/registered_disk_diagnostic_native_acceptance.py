@@ -10,6 +10,7 @@ import functools
 import grp
 import hashlib
 import json
+import math
 import os
 import pwd
 import re
@@ -20,6 +21,88 @@ from contextlib import contextmanager, ExitStack
 from pathlib import Path
 
 from tests.test_registered_feature_linux import encoded, install_protected_feature, _run_shipped_gc_sandbox
+
+
+
+_PID_OPEN_EVIDENCE = None
+
+
+class PidOpenEvidence:
+    """Test-only retained syscall observations; tokens never establish PID identity."""
+    def __init__(self):
+        self.children, self.tokens, self.observations = {}, {}, []
+        self.truncated = False
+
+    def child_started(self, pid, role):
+        if type(pid) is int and pid > 0 and role in {'foreign_report_reader', 'ordinary_access_probe'}:
+            if len(self.children) < 16 or pid in self.children:
+                self.children[pid] = dict(role=role, reaped=False)
+            else:
+                self.truncated = True
+
+    def child_reaped(self, pid):
+        if pid in self.children:
+            self.children[pid]['reaped'] = True
+
+    def record(self, pid, attempt, scan):
+        if len(self.observations) >= 8:
+            self.truncated = True
+            return
+        elapsed = scan.last - scan.started
+        if not (type(pid) is str and pid.isdecimal() and len(pid) <= 10
+                and type(attempt) is int and 0 <= attempt < 3
+                and type(elapsed) in (int, float) and math.isfinite(elapsed) and 0 <= elapsed < 5):
+            self.truncated = True
+            return
+        number = int(pid)
+        token = self.tokens.setdefault(number, len(self.tokens) + 1)
+        child = self.children.get(number)
+        owned = child is not None and child['reaped'] is False
+        self.observations.append(dict(pid_token=token, attempt=attempt + 1,
+            elapsed_ms=round(elapsed * 1000, 3), ownership='fixture_owned_unreaped_child' if owned else 'UNKNOWN',
+            child_role=child['role'] if owned else None,
+            previous_fixture_child_reaped=child is not None and child['reaped'] is True))
+
+    def packet(self):
+        return dict(observation_phase='caught_pid_open_failure', observations=list(self.observations),
+            truncated=self.truncated, pid_tokens_are_numeric_slots_not_start_identities=True)
+
+
+@contextmanager
+def observe_pid_opens(evidence):
+    """Delegate unchanged syscalls; observe only the exact scanner's caught ENOENT."""
+    from blueprint_pipeline import control_plane_lane_historical_processes as processes
+    original = os.open
+    scanner_code = processes.refuse_historical_process_references.__code__
+    def observed(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except FileNotFoundError as error:
+            try:
+                frame = sys._getframe(1)
+                local = frame.f_locals
+                if (error.errno == 2 and frame.f_code is scanner_code and args
+                        and args[0] == local.get('pid') and kwargs.get('dir_fd') == local.get('proc')):
+                    evidence.record(local['pid'], local['_attempt'], local['scan'])
+            except Exception:
+                evidence.truncated = True
+            raise
+    os.open = observed
+    try:
+        yield
+    finally:
+        os.open = original
+
+
+def _remember_fixture_child(pid, role=None, *, reaped=False):
+    try:
+        if _PID_OPEN_EVIDENCE is not None:
+            if reaped:
+                _PID_OPEN_EVIDENCE.child_reaped(pid)
+            else:
+                _PID_OPEN_EVIDENCE.child_started(pid, role)
+    except Exception:
+        pass  # Diagnostic bookkeeping never controls child lifecycle or acceptance.
 
 
 def _census_reason_evidence(error):
@@ -95,14 +178,33 @@ def failure_evidence(error):
 
 def run_observed(root):
     """Execute unchanged acceptance and preserve the same original failure."""
+    global _PID_OPEN_EVIDENCE
+    previous = _PID_OPEN_EVIDENCE
+    evidence = PidOpenEvidence()
+    _PID_OPEN_EVIDENCE = evidence
     try:
-        return run(root)
+        with observe_pid_opens(evidence):
+            return run(root)
     except Exception as error:
         try:
-            print(json.dumps(failure_evidence(error), sort_keys=True), file=sys.stderr)
+            packet = failure_evidence(error)
+            packet['pid_open_evidence'] = evidence.packet()
+            observed = packet['pid_open_evidence']
+            while len(json.dumps(packet).encode()) > 8192 and observed['observations']:
+                observed['observations'].pop()
+                observed['truncated'] = True
+            if len(json.dumps(packet).encode()) > 8192:
+                # Preserve the original exception projection when even the
+                # empty observer envelope cannot fit; its existing flag records
+                # omitted evidence without adding another unbounded field.
+                del packet['pid_open_evidence']
+                packet['truncated'] = True
+            print(json.dumps(packet, sort_keys=True), file=sys.stderr)
         except Exception:
             pass  # An evidence write cannot replace the original refusal.
         raise
+    finally:
+        _PID_OPEN_EVIDENCE = previous
 
 
 def observe_reference_failures(reference_type, evidence):
@@ -203,6 +305,7 @@ def _ordinary_denied(target, value, account):
         finally:
             os.close(write)
             os._exit(0)
+    _remember_fixture_child(child, 'ordinary_access_probe')
     os.close(write)
     try:
         assert select.select([read], [], [], 10)[0]
@@ -210,6 +313,7 @@ def _ordinary_denied(target, value, account):
     finally:
         os.close(read)
         os.waitpid(child, 0)
+        _remember_fixture_child(child, reaped=True)
     assert {path.name: path.read_bytes() for path in target.iterdir()} == before
 
 
@@ -234,6 +338,7 @@ def _foreign_report_fd(report, account):
             os.close(ready_write)
             os.close(finish_read)
             os._exit(0)
+    _remember_fixture_child(child, 'foreign_report_reader')
     os.close(ready_write)
     os.close(finish_read)
     try:
@@ -249,6 +354,7 @@ def _foreign_report_fd(report, account):
         os.close(finish_write)
         os.close(ready_read)
         os.waitpid(child, 0)
+        _remember_fixture_child(child, reaped=True)
 
 
 def _held_fd_keeps(value, action, pins, report, account):

@@ -9,6 +9,12 @@ import pytest
 from blueprint_pipeline import control_plane_lane_disk_diagnostic_references as references
 from blueprint_pipeline import control_plane_lane_historical_processes as processes
 from tests import registered_disk_diagnostic_native_acceptance as observer
+from tests import test_historical_process_census as census_helpers
+
+
+@pytest.fixture
+def census(tmp_path, monkeypatch):
+    return census_helpers.census.__wrapped__(tmp_path, monkeypatch)
 
 
 def install(monkeypatch, cls):
@@ -209,3 +215,100 @@ def test_exhausted_count_projection_failure_preserves_original_evidence(monkeypa
     result = observer.failure_evidence(error)
     assert result['exceptions'][0]['code'] == 'historical_generation_process_unknown'
     assert 'census_attempt_reasons' not in result['exceptions'][0]
+
+
+
+def test_pid_open_observer_keeps_original_refusal_and_private_tokens(census, monkeypatch):
+    census.failure = lambda pid: (_ for _ in ()).throw(FileNotFoundError(errno.ENOENT, 'PRIVATE_PATH'))
+    evidence = observer.PidOpenEvidence()
+    evidence.child_started(2, 'foreign_report_reader')
+    evidence.child_started(3, 'ordinary_access_probe')
+    evidence.child_reaped(3)
+    with observer.observe_pid_opens(evidence):
+        with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_unknown$'):
+            processes.refuse_historical_process_references(census.manifest, tick=lambda: None)
+    packet = evidence.packet()
+    assert len(packet['observations']) == 6
+    assert [row['attempt'] for row in packet['observations']] == [1, 1, 2, 2, 3, 3]
+    assert [row['pid_token'] for row in packet['observations']] == [1, 2] * 3
+    assert packet['observations'][0]['ownership'] == 'fixture_owned_unreaped_child'
+    assert packet['observations'][0]['child_role'] == 'foreign_report_reader'
+    assert packet['observations'][1]['ownership'] == 'UNKNOWN'
+    assert packet['observations'][1]['previous_fixture_child_reaped'] is True
+    assert all(0 <= row['elapsed_ms'] < 5000 for row in packet['observations'])
+    assert not any(secret in json.dumps(packet) for secret in ['PRIVATE_PATH', 'cmdline', 'environ'])
+
+
+def test_pid_open_observer_failure_keeps_exception_and_restores_open(census, monkeypatch):
+    error = FileNotFoundError(errno.ENOENT, 'PRIVATE_PATH')
+    census.failure = lambda pid: (_ for _ in ()).throw(error)
+    evidence = observer.PidOpenEvidence()
+    monkeypatch.setattr(evidence, 'record', lambda *args: (_ for _ in ()).throw(RuntimeError('SECRET')))
+    original = processes.os.open
+    with observer.observe_pid_opens(evidence):
+        with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_unknown$') as raised:
+            processes.refuse_historical_process_references(census.manifest, tick=lambda: None)
+    assert processes.os.open is original
+    assert raised.value.census_attempt_reasons[0]['pid_open_disappeared'] == 2
+    assert evidence.packet()['truncated'] is True
+    assert not evidence.packet()['observations']
+
+
+def test_pid_open_evidence_is_capped_and_never_promotes_reaped_pid():
+    from types import SimpleNamespace
+    evidence = observer.PidOpenEvidence()
+    evidence.child_started(777, 'foreign_report_reader')
+    evidence.child_reaped(777)
+    for _ in range(10):
+        evidence.record('777', 2, SimpleNamespace(started=4.0, last=4.001))
+    packet = evidence.packet()
+    assert len(packet['observations']) == 8 and packet['truncated'] is True
+    assert all(row['ownership'] == 'UNKNOWN' and row['child_role'] is None for row in packet['observations'])
+    assert '777' not in json.dumps(packet)
+
+
+def test_unrelated_open_error_is_same_object_and_unobserved(monkeypatch):
+    error = FileNotFoundError(errno.ENOENT, 'SECRET_PATH')
+    def original(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(observer.os, 'open', original)
+    evidence = observer.PidOpenEvidence()
+    with observer.observe_pid_opens(evidence):
+        with pytest.raises(FileNotFoundError) as raised:
+            observer.os.open('777', 0, dir_fd=123)
+    assert raised.value is error and evidence.packet()['observations'] == []
+    assert observer.os.open is original
+
+
+def test_combined_failure_projection_stays_bounded_and_keeps_original_error(monkeypatch, capsys):
+    from types import SimpleNamespace
+    evidence = observer.PidOpenEvidence()
+    for index in range(8):
+        evidence.record(str(700 + index), 2, SimpleNamespace(started=0.0, last=.001))
+    name = 'retained_frame_' + 'f' * 48
+    namespace = {'HistoricalProcessError': processes.HistoricalProcessError}
+    code = f"def {name}(depth):\n    if depth: return {name}(depth-1)\n    raise HistoricalProcessError('historical_generation_process_unknown')\n"
+    exec(compile(code, 'retained_source_' + 's' * 96 + '.py', 'exec'), namespace)
+    previous = None
+    for _ in range(8):
+        try:
+            namespace[name](16)
+        except processes.HistoricalProcessError as caught:
+            caught.__context__ = previous
+            previous = caught
+    original_error = previous
+    assert len(json.dumps(observer.failure_evidence(original_error)).encode()) <= 8192
+    def failed_run(root):
+        raise original_error
+    monkeypatch.setattr(observer, 'run', failed_run)
+    monkeypatch.setattr(observer, 'PidOpenEvidence', lambda: evidence)
+    original_open, original_global = observer.os.open, observer._PID_OPEN_EVIDENCE
+    with pytest.raises(processes.HistoricalProcessError) as raised:
+        observer.run_observed(None)
+    raw = capsys.readouterr().err.strip()
+    packet = json.loads(raw)
+    assert len(raw.encode()) <= 8192
+    assert raised.value is original_error
+    assert observer.os.open is original_open and observer._PID_OPEN_EVIDENCE is original_global
+    assert packet['exceptions'] and any(row.get('code') == 'historical_generation_process_unknown' for row in packet['exceptions'])
+    assert packet.get('pid_open_evidence', {}).get('truncated', packet['truncated']) is True
