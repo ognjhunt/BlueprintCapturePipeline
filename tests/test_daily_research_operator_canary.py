@@ -1576,5 +1576,11 @@ def test_qa_correction_origin_guard_rechecks_control_before_provider_post(monkey
     provider.safe, provider.clock = lambda *_: None, lambda: NOW
     # Generic inventory and final fence have separate real-provider race coverage.
     monkeypatch.setattr(canary.FencedProvider, "qa_correction_action_guard", lambda *_: None)
-    with pytest.raises(Refusal, match="authority_changed|budget_authority_changed"):
-        provider.qa_correction_action_guard(canary.DAY, int((NOW + timedelta(seconds=60)).timestamp() * 1000))
+    deadline = int((NOW + timedelta(seconds=60)).timestamp() * 1000)
+    if change == "budget":
+        assert provider.qa_correction_action_guard(canary.DAY, deadline) is None
+        assert row["soft_target_usd"] == 5
+        assert control["config"]["soft_target_usd"] == 7
+    else:
+        with pytest.raises(Refusal, match="authority_changed|budget_authority_changed"):
+            provider.qa_correction_action_guard(canary.DAY, deadline)
