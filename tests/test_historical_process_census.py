@@ -77,11 +77,11 @@ def test_missing_pid_open_requires_a_complete_new_census(census):
     census.failure = exited
     budget = ReferenceCollectionBudget()
     run(census, budget=budget)
-    assert census.inspections == ['1', '1', '3']
-    assert census.opens == ['2', '3']
+    assert census.inspections == ['1', '3', '1', '3']
+    assert census.opens == ['2', '3', '3']
     assert len(census.scans) == 3 and len({id(scan) for scan in census.scans}) == 1
     scan = census.scans[0]
-    assert budget.counts['raw_bytes'] == scan.raw_bytes == 3 * len(b'observed')
+    assert budget.counts['raw_bytes'] == scan.raw_bytes == 4 * len(b'observed')
     assert budget.counts['entries'] == scan.entries == 3 * 4
 
 
@@ -108,8 +108,29 @@ def test_perpetually_missing_pid_refuses_after_three_incomplete_passes(census):
     census.failure = missing
     with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
         run(census)
-    assert census.inspections == ['1'] * 3 and census.opens == ['2'] * 3
+    assert census.inspections == ['1'] * 3 and census.opens == ['2', '3'] * 3
     assert len(census.scans) == 3
+
+
+@pytest.mark.parametrize('transient', ['missing_pid', 'descriptor_churn', 'process_exit'])
+def test_incomplete_pass_cannot_clear_even_when_later_process_is_clear(census, monkeypatch, transient):
+    actual = processes._inspect_process
+    def inspect(scan, directory, pid, *args):
+        if pid == '2' and transient != 'missing_pid':
+            census.inspections.append(pid)
+            cls = processes._DescriptorCensusChanged if transient == 'descriptor_churn' else processes._ProcessExited
+            raise cls('historical_generation_process_unknown')
+        return actual(scan, directory, pid, *args)
+    if transient == 'missing_pid':
+        def missing(pid):
+            if pid == '2':
+                raise FileNotFoundError(errno.ENOENT, 'exited')
+        census.failure = missing
+    monkeypatch.setattr(processes, '_inspect_process', inspect)
+    with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_unknown$'):
+        run(census)
+    assert census.inspections.count('3') == 3
+    assert len(census.scans) == 3 and len({id(scan) for scan in census.scans}) == 1
 
 
 @pytest.mark.parametrize('error', [PermissionError(errno.EACCES, 'hidden'),
@@ -135,6 +156,36 @@ def test_process_channel_unknowns_refuse_without_retry(census, monkeypatch, erro
     monkeypatch.setattr(processes, '_inspect_process', inspect)
     with pytest.raises(processes.HistoricalProcessError, match='process_(view_)?unknown'):
         run(census)
+    assert len(census.scans) == 1
+
+
+@pytest.mark.parametrize('transient', ['missing_pid', 'descriptor_churn', 'process_exit'])
+def test_earlier_transient_cannot_starve_later_conclusive_reference(census, monkeypatch, transient):
+    """Synthetic ordering counterexample; not the retained CI PID/FD cause."""
+    census.snapshots = [['1', '2', '3', '99']] * 3
+    actual = processes._inspect_process
+
+    def inspect(scan, directory, pid, *args):
+        if pid == '2':
+            census.inspections.append(pid)
+            if transient == 'descriptor_churn':
+                raise processes._DescriptorCensusChanged('historical_generation_process_unknown')
+            if transient == 'process_exit':
+                raise processes._ProcessExited('historical_generation_process_unknown')
+        if pid == '3':
+            census.inspections.append(pid)
+            return {'fd'}
+        return actual(scan, directory, pid, *args)
+
+    if transient == 'missing_pid':
+        def missing(pid):
+            if pid == '2':
+                raise FileNotFoundError(errno.ENOENT, 'exited')
+        census.failure = missing
+    monkeypatch.setattr(processes, '_inspect_process', inspect)
+    with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_reference$'):
+        run(census)
+    assert census.inspections[-1] == '3'
     assert len(census.scans) == 1
 
 
@@ -168,7 +219,7 @@ def test_retry_cannot_renew_shared_entry_or_byte_allowance(census, kind):
     with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
         run(census, budget=budget)
     assert budget.failure == 'reference_' + kind + '_limit'
-    assert census.opens == ['2']
+    assert census.opens == ['2', '3']
 
 
 @pytest.fixture
@@ -217,7 +268,7 @@ def descriptor_census(census, monkeypatch):
 
 def test_fd_membership_change_restarts_full_census_and_reinspects_same_process(descriptor_census):
     run(descriptor_census)
-    assert descriptor_census.inspections == ['1', '2', '1', '2', '3']
+    assert descriptor_census.inspections == ['1', '2', '3', '1', '2', '3']
     assert descriptor_census.fd_censuses == 4
     assert len({id(scan) for scan in descriptor_census.scans}) == 1
 
@@ -226,7 +277,7 @@ def test_continual_fd_membership_churn_remains_unknown_after_three_passes(descri
     descriptor_census.churn_forever = True
     with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
         run(descriptor_census)
-    assert descriptor_census.inspections == ['1', '2'] * 3
+    assert descriptor_census.inspections == ['1', '2', '3'] * 3
     assert descriptor_census.fd_censuses == 6
 
 
@@ -252,7 +303,7 @@ def test_new_reference_in_changed_fd_census_is_inspected_on_next_pass(descriptor
     descriptor_census.new_fd_target = selected
     with pytest.raises(processes.HistoricalProcessError, match='process_reference'):
         run(descriptor_census)
-    assert descriptor_census.inspections == ['1', '2', '1', '2']
+    assert descriptor_census.inspections == ['1', '2', '3', '1', '2']
     assert descriptor_census.fd_censuses == 4
 
 
@@ -338,7 +389,7 @@ def test_disappearing_fd_requires_complete_fresh_census_and_same_shared_budget(
     state.operation = operation
     budget = ReferenceCollectionBudget()
     run(state, budget=budget)
-    assert state.inspections == ['1', '2', '1', '2', '3']
+    assert state.inspections == ['1', '2', '3', '1', '2', '3']
     assert state.fd_censuses == 4 and state.failures == [1]
     assert len({id(scan) for scan in state.scans}) == 1
     assert budget.counts['entries'] == state.scans[0].entries > 12
@@ -353,7 +404,7 @@ def test_continually_disappearing_fd_exhausts_original_three_complete_attempts(
     state.operation, state.repeat = operation, True
     with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
         run(state)
-    assert state.inspections == ['1', '2'] * 3
+    assert state.inspections == ['1', '2', '3'] * 3
     assert state.fd_censuses == 6 and state.failures == [1, 3, 5]
 
 
@@ -404,7 +455,7 @@ def test_new_reference_after_fd_disappearance_is_seen_on_fresh_pass(disappearing
     state.replacement = selected
     with pytest.raises(processes.HistoricalProcessError, match='process_reference'):
         run(state)
-    assert state.inspections == ['1', '2', '1', '2'] and state.fd_censuses == 4
+    assert state.inspections == ['1', '2', '3', '1', '2'] and state.fd_censuses == 4
 
 
 @pytest.mark.parametrize('change', ['start_identity', 'namespace', 'missing_stat', 'kernel_proof'])
@@ -488,7 +539,7 @@ def test_fd_disappearance_cannot_renew_original_scan_budget(disappearing_descrip
     monkeypatch.setattr(processes._Scan, 'names', final_names)
     with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
         run(state, budget=budget)
-    assert state.inspections == ['1', '2'] and state.fd_censuses == 2
+    assert state.inspections == (['1', '2', '3'] if limit == 'entries' else ['1', '2']) and state.fd_censuses == 2
     assert len({id(scan) for scan in state.scans}) == 1
 
 
@@ -538,7 +589,7 @@ def test_corroborated_exit_requires_complete_new_census(exiting_process, channel
     state.snapshots = [['1', '2', '3', '99'], ['1', '3', '99'], ['1', '3', '99']]
     budget = ReferenceCollectionBudget()
     run(state, budget=budget)
-    assert state.inspections == ['1', '2', '1', '3']
+    assert state.inspections == ['1', '2', '3', '1', '3']
     assert state.final_reads == 1
     assert len(state.scans) == 3 and len({id(scan) for scan in state.scans}) == 1
     assert budget.counts['entries'] == state.scans[0].entries == 12
@@ -548,7 +599,7 @@ def test_corroborated_exit_requires_complete_new_census(exiting_process, channel
 def test_perpetual_corroborated_exit_exhausts_original_three_passes(exiting_process):
     with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
         run(exiting_process)
-    assert exiting_process.inspections == ['1', '2'] * 3
+    assert exiting_process.inspections == ['1', '2', '3'] * 3
     assert exiting_process.final_reads == 3
 
 
@@ -611,7 +662,7 @@ def test_corroborated_exit_cannot_renew_original_scan_budget(exiting_process, mo
     monkeypatch.setattr(processes._Scan, 'read', current_read)
     with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
         run(exiting_process, budget=budget)
-    assert exiting_process.inspections == (['1', '2', '1'] if kind == 'raw_bytes' else ['1', '2'])
+    assert exiting_process.inspections == (['1', '2'] if kind == 'clock' else ['1', '2', '3'])
     assert exiting_process.final_reads == 1
     if kind != 'clock':
         assert budget.failure == 'reference_' + kind + '_limit'
@@ -711,3 +762,31 @@ def test_actual_exited_user_process_requires_whole_census_restart(monkeypatch):
         if process.poll() is None:
             process.terminate()
         process.wait(timeout=5)
+
+
+def test_exhausted_three_passes_retains_only_fixed_reason_counts(census):
+    def missing(pid):
+        if pid == '2':
+            raise FileNotFoundError(errno.ENOENT, 'exited')
+    census.failure = missing
+    with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_unknown$') as raised:
+        run(census)
+    assert type(raised.value) is processes.HistoricalProcessError
+    assert raised.value.census_attempt_reasons == tuple({
+        'pid_open_disappeared': 1, 'descriptor_membership_changed': 0,
+        'corroborated_process_exit': 0, 'pid_census_changed': 0,
+    } for _ in range(3))
+    assert len(census.scans) == 3
+
+
+def test_exhaustion_evidence_attachment_failure_preserves_original_refusal(census, monkeypatch):
+    def missing(pid):
+        if pid == '2':
+            raise FileNotFoundError(errno.ENOENT, 'exited')
+    def refused_attribute(error, name, value):
+        raise ValueError('projection unavailable')
+    census.failure = missing
+    monkeypatch.setattr(processes.HistoricalProcessError, '__setattr__', refused_attribute)
+    with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_unknown$'):
+        run(census)
+    assert len(census.scans) == 3

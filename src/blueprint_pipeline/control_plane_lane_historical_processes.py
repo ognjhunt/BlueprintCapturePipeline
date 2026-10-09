@@ -391,7 +391,11 @@ def refuse_historical_process_references(manifest, *, tick, restore_bounds=None,
         # Discard that incomplete pass, never the process: only a fresh complete
         # stable census may clear references. Keep the same clock, counters,
         # mount observations and shared budget across all bounded attempts.
+        attempt_reasons = []
         for _attempt in range(3):
+            incomplete = False
+            reasons = dict(pid_open_disappeared=0, descriptor_membership_changed=0,
+                           corroborated_process_exit=0, pid_census_changed=0)
             names = [name for name in scan.names(proc, 10000) if name.isdigit()]
             _require(len(names) <= 4096)
             for pid in names:
@@ -402,21 +406,38 @@ def refuse_historical_process_references(manifest, *, tick, restore_bounds=None,
                     directory = os.open(pid, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                                         dir_fd=proc)
                 except FileNotFoundError:
-                    break
+                    reasons['pid_open_disappeared'] += 1
+                    incomplete = True
+                    continue
                 try:
                     channels = _inspect_process(scan, directory, pid, target, identities, namespaces,
                                                 host_namespace[2], root_identity)
                     _require(not channels, 'process_reference')
-                except (_DescriptorCensusChanged, _ProcessExited):
-                    break
+                except (_DescriptorCensusChanged, _ProcessExited) as error:
+                    reason = ('descriptor_membership_changed' if isinstance(error, _DescriptorCensusChanged)
+                              else 'corroborated_process_exit')
+                    reasons[reason] += 1
+                    # This pass can never clear, but a later process may hold
+                    # a conclusive reference. Do not starve that refusal behind
+                    # unrelated transient churn. Fatal unknowns still propagate.
+                    incomplete = True
                 finally:
                     os.close(directory)
-            else:
+            if not incomplete:
                 after = [name for name in scan.names(proc, 10000) if name.isdigit()]
                 if after == names:
                     scan.tick()
                     return
-        _require(False)
+                reasons['pid_census_changed'] = 1
+            attempt_reasons.append(reasons)
+        # Fixed categories/counts only: preserve why the existing three-pass
+        # refusal exhausted without retaining PID, path, FD or channel contents.
+        error = HistoricalProcessError('historical_generation_process_unknown')
+        try:
+            error.census_attempt_reasons = tuple(attempt_reasons)
+        except Exception:
+            pass  # Diagnostic attachment cannot replace the original refusal.
+        raise error
     except HistoricalProcessError:
         raise
     except (OSError, ValueError, OverflowError):

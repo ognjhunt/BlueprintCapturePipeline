@@ -162,3 +162,50 @@ def test_event_and_serialized_bounds_do_not_limit_original_execution(monkeypatch
         value.guard()
     assert raised.value is error and not evidence['records']
     assert len(json.dumps(evidence).encode()) <= 16384
+
+
+def test_exhausted_census_counts_survive_retained_cause_without_new_reads():
+    error = processes.HistoricalProcessError('historical_generation_process_unknown')
+    rows = tuple({'pid_open_disappeared': 0, 'descriptor_membership_changed': 1,
+                  'corroborated_process_exit': 0, 'pid_census_changed': 0} for _ in range(3))
+    error.census_attempt_reasons = rows
+    selected = unknown()
+    selected.__context__ = error
+    value = observer.failure_evidence(selected)
+    assert value['exceptions'][1]['census_attempt_reasons'] == list(rows)
+    assert value['observation_phase'] == 'post_unwind'
+    assert value['exceptions'][1]['code'] == 'historical_generation_process_unknown'
+
+
+@pytest.mark.parametrize('invalid', ['foreign_type', 'foreign_code', 'private_key', 'bool',
+                                    'negative', 'oversize_count', 'oversize_rows', 'zero_reasons'])
+def test_exhausted_census_projection_refuses_untrusted_or_unbounded_metadata(invalid):
+    error = processes.HistoricalProcessError('historical_generation_process_unknown')
+    rows = tuple({'pid_open_disappeared': 0, 'descriptor_membership_changed': 1,
+                  'corroborated_process_exit': 0, 'pid_census_changed': 0} for _ in range(3))
+    if invalid == 'foreign_type':
+        error = ValueError('historical_generation_process_unknown')
+    if invalid == 'foreign_code':
+        error = processes.HistoricalProcessError('historical_generation_process_reference')
+    if invalid == 'private_key':
+        rows[0]['private_path'] = 'PRIVATE-PATH-SENTINEL'
+    if invalid in {'bool', 'negative', 'oversize_count', 'zero_reasons'}:
+        for row in rows:
+            row['descriptor_membership_changed'] = {'bool': True, 'negative': -1,
+                'oversize_count': 4097, 'zero_reasons': 0}[invalid]
+    if invalid == 'oversize_rows':
+        rows = rows * 2
+    error.census_attempt_reasons = rows
+    result = observer.failure_evidence(error)
+    assert 'census_attempt_reasons' not in result['exceptions'][0]
+    assert 'PRIVATE-PATH-SENTINEL' not in json.dumps(result)
+
+
+def test_exhausted_count_projection_failure_preserves_original_evidence(monkeypatch):
+    def unavailable(error):
+        raise ValueError('projection unavailable')
+    monkeypatch.setattr(observer, '_census_reason_evidence', unavailable)
+    error = processes.HistoricalProcessError('historical_generation_process_unknown')
+    result = observer.failure_evidence(error)
+    assert result['exceptions'][0]['code'] == 'historical_generation_process_unknown'
+    assert 'census_attempt_reasons' not in result['exceptions'][0]

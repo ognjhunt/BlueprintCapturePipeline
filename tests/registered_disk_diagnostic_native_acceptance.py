@@ -22,6 +22,24 @@ from pathlib import Path
 from tests.test_registered_feature_linux import encoded, install_protected_feature, _run_shipped_gc_sandbox
 
 
+def _census_reason_evidence(error):
+    """Bounded retained fixed counts only; no host read or process selectors."""
+    from blueprint_pipeline.control_plane_lane_historical_processes import HistoricalProcessError
+    if type(error) is not HistoricalProcessError or error.args != ('historical_generation_process_unknown',):
+        return None
+    rows = getattr(error, 'census_attempt_reasons', None)
+    keys = {'pid_open_disappeared', 'descriptor_membership_changed',
+            'corroborated_process_exit', 'pid_census_changed'}
+    if type(rows) is not tuple or len(rows) != 3 or any(
+        type(row) is not dict or set(row) != keys
+        or any(type(value) is not int or not 0 <= value <= 4096 for value in row.values())
+        or row['pid_census_changed'] not in (0, 1)
+        or not 1 <= sum(row.values()) <= 4096 for row in rows
+    ):
+        return None
+    return [dict(row) for row in rows]
+
+
 def failure_evidence(error):
     """Read retained contexts only after failure; never observe or alter the host.
 
@@ -43,6 +61,12 @@ def failure_evidence(error):
                 r'(?:experiment_|historical_generation_|reference_|owner_target_)[a-z0-9_]{1,80}',
                 selected.args[0]):
             row['code'] = selected.args[0]
+        try:
+            reasons = _census_reason_evidence(selected)
+            if reasons is not None:
+                row['census_attempt_reasons'] = reasons
+        except Exception:
+            pass  # Evidence projection cannot replace the original refusal.
         if isinstance(selected, OSError) and type(selected.errno) is int:
             row['errno'] = selected.errno
         traceback = selected.__traceback__
