@@ -65,23 +65,26 @@ def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
         operation = pose.get("operation")
         if not isinstance(operation, Mapping):
             raise ValueError("website_atlas_pose_operation_not_succeeded")
-        body = atlas_generate_from_pose_operation(operation=operation,
-            expected_frame_count=len(frames), target_cameras=pose.get("target_cameras") or [],
-            prompt=pose.get("prompt"))
+        posed_context = _atlas_posed_context(operation=operation, expected_frame_count=len(frames))
         context = {**result, "pose_operation_id": operation["id"],
-                   "pose_result_digest": pose["digest"], "generation_endpoint": "/api/v2/tasks:atlasGenerate",
-                   "generation_request": body, "posed_rgbd_available": True,
+                   "pose_result_digest": pose["digest"], "posed_rgbd_available": True,
                    # A returned bundle proves output count, not provider input
                    # usage. Preserve unknown input usage until the producer
                    # supplies its actual admitted operation receipt.
                    "actual_provider_input_count": None,
-                   "returned_pose_frame_count": len(body["contextFrames"]),
+                   "returned_pose_frame_count": len(posed_context),
                    "native_geometry_available": False,
-                   "blockers": ["website_atlas_admitted_generation_operation_required",
-                                "website_atlas_final_scene_assets_required",
+                   "blockers": ["website_atlas_final_scene_assets_required",
                                 "website_atlas_native_geometry_binding_required"]}
+        if pose.get("target_cameras") is not None:
+            body = atlas_generate_from_pose_operation(operation=operation,
+                expected_frame_count=len(frames), target_cameras=pose["target_cameras"],
+                prompt=pose.get("prompt"))
+            context.update(generation_endpoint="/api/v2/tasks:atlasGenerate", generation_request=body)
+            context["blockers"].insert(0, "website_atlas_admitted_generation_operation_required")
         context["digest"] = canonical_digest(context, digest_field="digest")
-        context_path = output_root / "atlas_generation_inputs.json"
+        context_path = output_root / ("atlas_generation_inputs.json" if "generation_request" in context
+                                      else "atlas_posed_rgbd_handoff.json")
         if context_path.is_file():
             if json.loads(context_path.read_text()) != context:
                 raise ValueError("website_atlas_generation_input_identity_conflict")
@@ -91,11 +94,9 @@ def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
     return result
 
 
-def atlas_generate_from_pose_operation(*, operation: Mapping[str, Any],
-                                       expected_frame_count: int,
-                                       target_cameras: Sequence[Mapping[str, Any]],
-                                       prompt: str | None = None) -> dict[str, Any]:
-    """Use images2PosedRGBD's returned bundle unchanged; build, never submit.
+def _atlas_posed_context(*, operation: Mapping[str, Any], expected_frame_count: int,
+                         target_cameras: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Validate the returned bundle and any explicitly requested target grid.
 
     The caller owns operation/source admission. This is a generation payload,
     not native source geometry, a splat, a collider, or measured metric evidence.
@@ -105,13 +106,11 @@ def atlas_generate_from_pose_operation(*, operation: Mapping[str, Any],
     if (operation.get("done") is not True or operation.get("error") is not None
             or not isinstance(operation.get("id"), str) or not operation["id"].strip()):
         raise ValueError("website_atlas_pose_operation_not_succeeded")
-    if prompt is not None and not isinstance(prompt, str):
-        raise ValueError("website_atlas_generation_prompt_invalid")
     response = operation.get("response")
     frames = response.get("frames") if isinstance(response, Mapping) else None
     if (isinstance(expected_frame_count, bool) or not isinstance(expected_frame_count, int)
             or expected_frame_count < 1 or not isinstance(frames, list)
-            or len(frames) != expected_frame_count or not target_cameras):
+            or len(frames) != expected_frame_count):
         raise ValueError("website_atlas_pose_frames_invalid")
 
     def camera_grid(camera: Mapping[str, Any]) -> tuple[int, int]:
@@ -159,9 +158,24 @@ def atlas_generate_from_pose_operation(*, operation: Mapping[str, Any],
                         "camera": deepcopy(frame["camera"]), "depth": depth})
     if len(grids) != 1:
         raise ValueError("website_atlas_context_grid_mismatch")
-    for camera in target_cameras:
-        if camera_grid(camera) != (1280, 720):
-            raise ValueError("website_atlas_target_grid_invalid")
+    if target_cameras is not None:
+        if not target_cameras:
+            raise ValueError("website_atlas_pose_frames_invalid")
+        for camera in target_cameras:
+            if camera_grid(camera) != (1280, 720):
+                raise ValueError("website_atlas_target_grid_invalid")
+    return context
+
+
+def atlas_generate_from_pose_operation(*, operation: Mapping[str, Any],
+                                       expected_frame_count: int,
+                                       target_cameras: Sequence[Mapping[str, Any]],
+                                       prompt: str | None = None) -> dict[str, Any]:
+    """Build, never submit, from the unchanged returned bundle and explicit cameras."""
+    if prompt is not None and not isinstance(prompt, str):
+        raise ValueError("website_atlas_generation_prompt_invalid")
+    context = _atlas_posed_context(operation=operation, expected_frame_count=expected_frame_count,
+                                  target_cameras=target_cameras)
     return {"contextFrames": context, "targetCameras": deepcopy(list(target_cameras)), "prompt": prompt}
 
 #: A pre-generation 402 buys nothing and settles at $0, so each one admits one

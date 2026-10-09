@@ -20,9 +20,10 @@ mutation. The admitted producer must supply project asset references, source
 disclosure/spend authority, and the actual `images2PosedRGBD` operation. A
 retained `atlas_posed_rgbd_result.json` uses `website_atlas_pose_result.v1`, a
 canonical `digest`, the exact source/input `binding`, the documented pose task
-`endpoint`, real completed `operation`, and explicit `target_cameras`/optional
-`prompt`. The adapter validates the returned frame count and RGB/depth/camera
-bundles and prepares `atlas_generation_inputs.json` for `atlasGenerate` without
+`endpoint`, and real completed `operation`. The adapter validates the returned
+frame count and RGB/depth/camera bundles and records `atlas_posed_rgbd_handoff.json`.
+Explicit `target_cameras` and an optional `prompt` additionally prepare
+`atlas_generation_inputs.json` for `atlasGenerate` without
 resizing pixels, relabeling axes, assuming measured scale, or making a request.
 Context views retain their returned grid; target cameras must use Atlas's
 1280 by 720 grid. Returned pose frame count does not establish provider input
