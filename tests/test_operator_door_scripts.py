@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import stat
@@ -148,6 +149,69 @@ def test_main_deploy_runs_the_target_commits_deploy_tool(env: dict[str, str]) ->
     assert any("worktree remove --force" in call for call in calls)
     assert outcome["receipt"].endswith(f"iteration_{SHA[:12]}_door.json")
     assert (Path(env["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").exists()
+
+
+@pytest.fixture()
+def canonical_env(env: dict[str, str]) -> dict[str, str]:
+    # Fixed names only: provider/auth environment must never reach subprocesses
+    # or appear in a canonical test's assertion fixture repr.
+    return {key: value for key, value in env.items()
+            if key.startswith(("DOOR_", "STUB_")) or key in {"PATH", "HOME", "TMPDIR"}}
+
+
+def test_canonical_deploy_uses_provenance_and_preserves_controls(canonical_env: dict[str, str]) -> None:
+    env = canonical_env
+    provenance = Path(env["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.release-provenance.json"
+    payload = json.dumps({"schema_version": "blueprint.deploy_release_provenance.v1",
+                          "git_sha": SHA, "status": "verified"}).encode()
+    provenance.write_bytes(payload)
+    provenance.chmod(0o600)
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID,
+                              DOOR_WAIT_FOR_IDLE="0", DOOR_RELEASE_PROVENANCE_FILE=str(provenance),
+                              DOOR_RELEASE_PROVENANCE_SHA256=hashlib.sha256(payload).hexdigest())
+    assert rc == 0 and outcome["status"] == "deployed"
+    tool = _tool_call(calls)
+    assert f"--release-provenance {provenance}" in tool
+    assert "--iteration" not in tool and "--canary" not in tool
+    assert "--preserve-configured-controls-state" in tool
+    assert outcome["receipt"].endswith(f"production_{SHA[:12]}_door.json")
+    assert any("merge-base --is-ancestor " + SHA + " origin/main" in call for call in calls)
+
+
+@pytest.mark.parametrize("case", ["missing_file", "missing_hash", "wrong_path", "bad_hash", "hash_mismatch",
+                                  "oversized", "empty", "symlink", "wrong_mode"])
+def test_canonical_deploy_refuses_invalid_staged_bytes_before_git(canonical_env: dict[str, str], case: str) -> None:
+    env = canonical_env
+    payload = b'{"status":"verified"}'
+    if case == "oversized":
+        payload = b" " * (16 * 1024 + 1)
+    if case == "empty":
+        payload = b""
+    provenance = Path(env["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.release-provenance.json"
+    provenance.write_bytes(payload)
+    provenance.chmod(0o600)
+    digest = hashlib.sha256(payload).hexdigest()
+    overrides = {"DOOR_RELEASE_PROVENANCE_FILE": str(provenance), "DOOR_RELEASE_PROVENANCE_SHA256": digest}
+    if case == "missing_file":
+        overrides.pop("DOOR_RELEASE_PROVENANCE_FILE")
+    if case == "missing_hash":
+        overrides.pop("DOOR_RELEASE_PROVENANCE_SHA256")
+    if case == "wrong_path":
+        overrides["DOOR_RELEASE_PROVENANCE_FILE"] = str(provenance.parent / "other.json")
+    if case == "bad_hash":
+        overrides["DOOR_RELEASE_PROVENANCE_SHA256"] = "invalid"
+    if case == "hash_mismatch":
+        overrides["DOOR_RELEASE_PROVENANCE_SHA256"] = "0" * 64
+    if case == "wrong_mode":
+        provenance.chmod(0o644)
+    if case == "symlink":
+        original = provenance.with_suffix(".original")
+        provenance.rename(original)
+        provenance.symlink_to(original)
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID,
+                              DOOR_WAIT_FOR_IDLE="0", **overrides)
+    assert rc == 2 and outcome["code"] == "release_provenance_transport_invalid"
+    assert not any(call.startswith(("git ", "venv-python ")) for call in calls)
 
 
 def test_main_deploy_of_an_unmerged_commit_is_refused(env: dict[str, str]) -> None:

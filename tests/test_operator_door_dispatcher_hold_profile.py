@@ -30,7 +30,12 @@ def test_profile_fences_api_schema_and_privileged_spool_reader(tmp_path):
 from pathlib import Path
 from operator_door import requests as r
 from operator_door import status
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}
+assert r.required_scope("selected-handoff") == "operate"
+# No arbitrary new operation: incomplete selected bodies remain refused.
+try: r.validate_request({"kind":"selected-handoff", "mode":"dispatch"})
+except r.RequestRefused as e: assert e.code == "selected_handoff_fields_invalid"
+else: raise AssertionError("unbound selected dispatch admitted")
 assert status.DISPATCHER_HOLD_ONLY is True
 assert status._SCOPES == r._SCOPES
 assert r.required_scope("door-upgrade") == "deploy"

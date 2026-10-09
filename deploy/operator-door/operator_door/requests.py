@@ -66,12 +66,16 @@ _SCOPES = {
     "legacy-owner-census": "operate",
     # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
     "provider-output-resume": "operate",
+    "selected-handoff": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
     # The API and privileged spool reader share this exact request allowlist.
+    # Selected processing narrows the existing operate ability to start the
+    # whole listener: one receipt-bound current-owner delivery, with normal
+    # processing/provider controls. It cannot release a hold or enable a timer.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
-               if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold"}}
+               if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -118,6 +122,48 @@ def _commit(body: dict[str, Any]) -> str:
     if not isinstance(commit, str) or not _COMMIT.fullmatch(commit):
         raise RequestRefused("commit_invalid")
     return commit
+
+
+
+def _release_provenance(body: dict[str, Any], commit: str) -> dict[str, str]:
+    """Carry exact official bytes, never a caller-controlled host path.
+
+    This repeats the installer's source/shape admission, not issuer authentication.
+    The authenticated deploy caller must obtain the official workflow artifact.
+    The installer revalidates these bytes before a canonical installation.
+    """
+    fields = ("release_provenance_json", "release_provenance_sha256")
+    if not any(field in body for field in fields):
+        return {}
+    text, digest = (body.get(field) for field in fields)
+    if not isinstance(text, str) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise RequestRefused("release_provenance_invalid")
+    try:
+        payload = text.encode("utf-8")
+    except UnicodeError as error:
+        raise RequestRefused("release_provenance_invalid") from error
+    if not 1 <= len(payload) <= 16 * 1024:
+        raise RequestRefused("release_provenance_invalid")
+    if hashlib.sha256(payload).hexdigest() != digest:
+        raise RequestRefused("release_provenance_hash_mismatch")
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError) as error:
+        raise RequestRefused("release_provenance_invalid") from error
+    collection = value.get("collection") if isinstance(value, dict) else None
+    claim = value.get("claim_boundary") if isinstance(value, dict) else None
+    if not (isinstance(value, dict)
+            and value.get("schema_version") == "blueprint.deploy_release_provenance.v1"
+            and value.get("status") == "verified" and value.get("git_sha") == commit
+            and value.get("workflow_name") == "Full Test Lane"
+            and value.get("workflow_path") == ".github/workflows/full-test-lane.yml"
+            and value.get("job_name") == "Full pytest lane on CPU runner"
+            and type(value.get("run_id")) is int and value["run_id"] > 0
+            and isinstance(collection, dict) and type(collection.get("test_count")) is int
+            and collection["test_count"] > 0 and isinstance(claim, dict)
+            and claim.get("canonical_full_lane_verified") is True):
+        raise RequestRefused("release_provenance_mismatch")
+    return dict(zip(fields, (text, digest)))
 
 
 def _hold_unit(unit: Any) -> str:
@@ -173,11 +219,14 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("owner_consent_options_invalid")
         return {"kind": kind, "consent_id": consent_id, "expected_sha256": digest, "expected_size_bytes": size}
     if kind == "deploy":
-        _only(body, ("kind", "commit", "wait_for_idle"))
+        _only(body, ("kind", "commit", "wait_for_idle",
+                     "release_provenance_json", "release_provenance_sha256"))
         wait = body.get("wait_for_idle", True)
         if not isinstance(wait, bool):
             raise RequestRefused("wait_for_idle_invalid")
-        return {"kind": kind, "commit": _commit(body), "wait_for_idle": wait}
+        commit = _commit(body)
+        return {"kind": kind, "commit": commit, "wait_for_idle": wait,
+                **_release_provenance(body, commit)}
     if kind == "unit":
         if body.get("action") == "repair-notifier-binding":
             _only(body, ("kind", "unit", "action", "expected_postcheck_sha256", "expected_source_commit"))
@@ -280,6 +329,29 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
                 raise RequestRefused("bucket_invalid")
             normalized["bucket"] = bucket
         return normalized
+    if kind == "selected-handoff":
+        fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation",
+                  "handoff_generation", "handoff_sha256", "handoff_size_bytes", "receipt_generation",
+                  "receipt_sha256", "receipt_size_bytes"}
+        if set(body) != fields or type(body["mode"]) is not str or body["mode"] not in {"inspect", "dispatch"}:
+            raise RequestRefused("selected_handoff_fields_invalid")
+        if not isinstance(body["bucket"], str) or not _BUCKET.fullmatch(body["bucket"]):
+            raise RequestRefused("selected_handoff_bucket_invalid")
+        for field in ("scene_id", "capture_id"):
+            if not isinstance(body[field], str) or not _SCENE_ID.fullmatch(body[field]):
+                raise RequestRefused("selected_handoff_identity_invalid")
+        if (not body["capture_id"].startswith("walkthrough-")
+                or body["scene_id"] != "site-" + body["capture_id"].removeprefix("walkthrough-")):
+            raise RequestRefused("selected_handoff_identity_invalid")
+        for field in ("marker_generation", "handoff_generation", "receipt_generation"):
+            if type(body[field]) is not str or not re.fullmatch(r"[1-9][0-9]{0,19}", body[field]):
+                raise RequestRefused("selected_handoff_generation_invalid")
+        for role in ("handoff", "receipt"):
+            if (type(body[role + "_size_bytes"]) is not int or not 0 < body[role + "_size_bytes"] <= 65536
+                    or type(body[role + "_sha256"]) is not str
+                    or not _LEASE_DIGEST.fullmatch(body[role + "_sha256"])):
+                raise RequestRefused("selected_handoff_object_selector_invalid")
+        return dict(body)
     if kind == "provider-output-resume":
         _only(body, ("kind", "run", "attempt", "ingest"))
         run, attempt, ingest = body.get("run"), body.get("attempt"), body.get("ingest", False)
