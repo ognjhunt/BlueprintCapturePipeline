@@ -73,7 +73,8 @@ def test_observer_refuses_wrong_generation_and_rights():
 
 
 @pytest.mark.parametrize("purpose", [None, "scene_preparation"])
-def test_selected_delivery_refuses_before_lease_when_owner_api_missing(tmp_path: Path, monkeypatch, purpose):
+@pytest.mark.parametrize("error_kind", ["typed", "generic", "unsafe_typed"])
+def test_selected_delivery_refuses_before_lease_when_owner_api_missing(tmp_path: Path, monkeypatch, purpose, error_kind):
     from blueprint_pipeline import pubsub_handoff_listener as listener
     from blueprint_pipeline import capture_original_owner_observer as observer
 
@@ -81,7 +82,11 @@ def test_selected_delivery_refuses_before_lease_when_owner_api_missing(tmp_path:
 
     def unavailable(**_kwargs):
         calls.append(_kwargs)
-        raise ValueError("capture_owner_unavailable")
+        if error_kind == "typed":
+            raise observer.CaptureOwnerObservationError("capture_owner_purpose_mismatch")
+        if error_kind == "unsafe_typed":
+            raise observer.CaptureOwnerObservationError("private response token=secret")
+        raise ValueError("private response token=secret")
 
     monkeypatch.setattr(observer, "load_original_owner_observation", unavailable)
     payload = {"bucket": "capture-bucket", "scene_id": "site-req-1",
@@ -95,6 +100,9 @@ def test_selected_delivery_refuses_before_lease_when_owner_api_missing(tmp_path:
                                                run_e2e=lambda **_: pytest.fail("ran"),
                                                expected_preparation_purpose=purpose)
     assert result["queue_disposition"] == "retryable"
+    assert result["owner_observation_reason"] == ("capture_owner_purpose_mismatch" if error_kind == "typed"
+                                                   else "capture_owner_response_unavailable")
+    assert "private" not in json.dumps(result) and "secret" not in json.dumps(result)
     assert calls[0].get("expected_purpose") == purpose
     assert not (tmp_path / "capture-bucket" / "scenes" / "site-req-1" / "captures" /
                 "walkthrough-req-1").exists()

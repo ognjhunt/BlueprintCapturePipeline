@@ -370,12 +370,18 @@ def test_actual_native_body_propagates_initial_only_guard_before_processing(tmp_
     import sys
     from blueprint_pipeline.pubsub_handoff_scene_operations import _process_handoff_payload_body
 
+    from blueprint_pipeline.capture_original_owner_observer import (
+        CaptureOwnerObservationError, OWNER_OBSERVATION_REASON_CODES,
+    )
+
     # Consumer boundary with synthetic authority lookup, same selected membership,
     # and actual claim code; no disk locks/provider/database are represented.
     monkeypatch.setitem(
         sys.modules,
         "blueprint_pipeline.capture_original_owner_observer",
         SimpleNamespace(
+            CaptureOwnerObservationError=CaptureOwnerObservationError,
+            OWNER_OBSERVATION_REASON_CODES=OWNER_OBSERVATION_REASON_CODES,
             load_original_owner_observation=lambda **kw: {
                 "observation_digest": "fixture",
                 "producer_delivery": {"delivery_key": "sha256:" + "a" * 64},
@@ -436,13 +442,15 @@ def test_actual_native_body_propagates_initial_only_guard_before_processing(tmp_
     assert claims[0]["require_unattempted_delivery"] is True
 
 
-def test_native_denial_is_visible_as_blocked_not_operator_success(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reason", ["capture_owner_purpose_mismatch", "private response token=secret", None])
+def test_native_denial_is_visible_as_blocked_not_operator_success(tmp_path, monkeypatch, reason):
     monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
     s, o, c, listener, owner, ret, admit, _, _ = fixture(tmp_path)
     s["mode"] = "dispatch"
     listener.process_handoff_payload = lambda *a, **kw: {
         "status": "prior_delivery_effects_unresolved",
         "queue_disposition": "retryable",
+        "owner_observation_reason": reason,
     }
     result = recover_selected_handoff(
         s,
@@ -459,6 +467,11 @@ def test_native_denial_is_visible_as_blocked_not_operator_success(tmp_path, monk
         and result["native_status"] == "prior_delivery_effects_unresolved"
     )
     assert result["provider_dispatch_performed"].startswith("unknown")
+    if reason == "capture_owner_purpose_mismatch":
+        assert result["owner_observation_reason"] == reason
+    else:
+        assert "owner_observation_reason" not in result
+    assert "secret" not in json.dumps(result)
 
 
 def test_unavailable_membership_blocks_inspection_and_dispatch(tmp_path, monkeypatch):

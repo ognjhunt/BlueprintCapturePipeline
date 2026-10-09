@@ -659,6 +659,7 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
     selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
     selected.add_argument("--dispatch", action="store_true", help="invoke only the existing admission-fenced native handler")
+    selected.add_argument("--resume-request", help="recover one matching retained failure before native lease creation")
     _add_wait(selected, 2 * 3600 + 600)
     request = commands.add_parser("request")
     request.add_argument("id")
@@ -743,9 +744,13 @@ def run(args: argparse.Namespace) -> int:
         if not 0 < len(raw) <= 4096:
             raise DoorError(2, "selected_handoff_selector_file_invalid")
         body = json.loads(raw)
-        if not isinstance(body, dict) or "kind" in body or "mode" in body or "operation_key" in body:
+        if not isinstance(body, dict) or any(key in body for key in ("kind", "mode", "operation_key", "resume_request_id")):
             raise DoorError(2, "selected_handoff_selector_file_invalid")
         body.update(kind="selected-handoff", mode="dispatch" if args.dispatch else "inspect")
+        if args.resume_request:
+            if not args.dispatch:
+                raise DoorError(2, "selected_handoff_resume_requires_dispatch")
+            body["resume_request_id"] = args.resume_request
         if not args.operation_key:
             args.operation_key = "selected-handoff-" + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
         return _submit(body, args)

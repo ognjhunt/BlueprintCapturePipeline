@@ -505,3 +505,22 @@ def test_waiting_on_selected_handoff_reports_command_outcome(
     code, output = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
     assert code == expected
     assert json.loads(output)["outcome"] == outcome
+
+
+def test_selected_handoff_cli_links_explicit_recovery_and_keeps_selector_plain(door):
+    from tests.test_operator_door_requests import _selected_request
+    body = {key: value for key, value in _selected_request().items() if key not in {"kind", "mode"}}
+    selector = door["base"] / "selected-resume.json"
+    selector.write_text(json.dumps(body))
+    prior = "20261009T154718Z-selected-handoff-9ef60661"
+    args = ["selected-handoff", "--selector-file", str(selector), "--resume-request", prior]
+    assert _run(*args)[0] == 2
+    assert not list((door["state"] / "requests" / "pending").iterdir())
+    code, output = _run(*args, "--dispatch")
+    assert code == 0
+    request_id = json.loads(output)["id"]
+    request = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())["request"]
+    assert request == {**body, "kind": "selected-handoff", "mode": "dispatch", "resume_request_id": prior}
+    assert json.loads(_run(*args, "--dispatch")[1])["id"] == request_id
+    selector.write_text(json.dumps({**body, "resume_request_id": prior}))
+    assert _run(*args, "--dispatch")[0] == 2

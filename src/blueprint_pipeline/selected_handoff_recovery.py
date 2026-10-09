@@ -246,6 +246,11 @@ def recover_selected_handoff(
                 native_status=native.get("status"),
                 native_disposition=native.get("queue_disposition"),
             )
+            from .capture_original_owner_observer import OWNER_OBSERVATION_REASON_CODES
+
+            reason = native.get("owner_observation_reason")
+            if type(reason) is str and reason in OWNER_OBSERVATION_REASON_CODES:
+                result["owner_observation_reason"] = reason
             if (
                 native.get("status") != "processed"
                 or native.get("queue_disposition") != "terminal_success"

@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import secrets
+import stat
 import tempfile
 import time
 from collections.abc import Callable
@@ -206,8 +207,9 @@ def _canary_root(config: DoorConfig) -> str:
 
 
 def _selected_handoff_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    selection = {key: value for key, value in request.items() if key != "resume_request_id"}
     return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-            "DOOR_SERVICE_USER": "blueprint", "DOOR_SELECTED_HANDOFF_REQUEST": json.dumps(request, sort_keys=True)}
+            "DOOR_SERVICE_USER": "blueprint", "DOOR_SELECTED_HANDOFF_REQUEST": json.dumps(selection, sort_keys=True)}
 
 
 def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
@@ -323,9 +325,91 @@ def _stage_release_provenance(config: DoorConfig, request_id: str, request: dict
             "DOOR_RELEASE_PROVENANCE_SHA256": request["release_provenance_sha256"]}
 
 
+def _recovery_json(directory_fd: int, name: str) -> dict[str, Any]:
+    """Read retained root evidence without trusting paths or permissive JSON."""
+    def pairs(items):
+        document = {}
+        for key, value in items:
+            if key in document:
+                raise ValueError("duplicate key")
+            document[key] = value
+        return document
+
+    def nonfinite(_value):
+        raise ValueError("nonfinite value")
+
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o022 or info.st_nlink != 1 or not 0 < info.st_size <= 16384):
+                raise ValueError("untrusted evidence")
+            raw = stream.read(16385)
+        if not 0 < len(raw) <= 16384:
+            raise ValueError("unbounded evidence")
+        document = json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite)
+        if not isinstance(document, dict):
+            raise ValueError("invalid document")
+        return document
+    except (OSError, ValueError) as error:
+        raise RequestRefused("selected_handoff_recovery_evidence_invalid") from error
+
+
+def _stage_selected_recovery(config: DoorConfig, request_id: str, request: dict[str, Any]) -> None:
+    """Consume one linked successor for a proven preclaim failure, before launch."""
+    if request["kind"] != "selected-handoff" or "resume_request_id" not in request:
+        return
+    prior = request["resume_request_id"]
+    if prior == request_id:
+        raise RequestRefused("selected_handoff_recovery_self_reference")
+    results = Path(config.spool_root) / "results"
+    selection = {key: value for key, value in request.items() if key != "resume_request_id"}
+    digest = hashlib.sha256(json.dumps(selection, sort_keys=True).encode()).hexdigest()
+    try:
+        directory_fd = os.open(results, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise RequestRefused("selected_handoff_recovery_evidence_invalid") from error
+    try:
+        info = os.fstat(directory_fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise RequestRefused("selected_handoff_recovery_evidence_invalid")
+        outcome = _recovery_json(directory_fd, f"{prior}.outcome.json")
+        native = _recovery_json(directory_fd, f"{prior}.selected-handoff.json")
+        if (outcome.get("schema") != "blueprint_operator_door_outcome.v1"
+                or outcome.get("status") != "failed" or outcome.get("code") != "selected_handoff_blocked"
+                or type(outcome.get("exit_code")) is not int or outcome["exit_code"] != 1
+                or outcome.get("result") != str(results / f"{prior}.selected-handoff.json")
+                or native.get("schema_version") != "selected_handoff_recovery.v1"
+                or native.get("mode") != "dispatch" or native.get("status") != "blocked"
+                or native.get("native_status") != "capture_owner_observation_unavailable_retryable"
+                or native.get("native_disposition") != "retryable"
+                or native.get("source_membership_verified") is not True
+                or native.get("current_admission_verified") is not True
+                or native.get("selector_sha256") != digest
+                or native.get("blockers") != ["selected_handoff_native_admission_or_result_blocked"]):
+            raise RequestRefused("selected_handoff_recovery_not_preclaim_failure")
+        marker = {"schema": "blueprint_selected_handoff_recovery.v1", "prior_request_id": prior,
+                  "request_id": request_id, "selector_sha256": digest, "created_at": _now()}
+        try:
+            fd = os.open(f"{prior}.selected-handoff-recovery.json",
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+        except FileExistsError as error:
+            raise RequestRefused("selected_handoff_recovery_already_consumed") from error
+        # Never remove this marker after a write/launch failure: admission is uncertain.
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(marker, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) -> list[str]:
     """Only the values the request's own kind defines, each already validated."""
 
+    _stage_selected_recovery(config, request_id, request)
     values = {
         "DOOR_REQUEST_ID": request_id,
         "DOOR_RESULTS_DIR": str(Path(config.spool_root) / "results"),
@@ -616,6 +700,8 @@ def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, reque
     _write_result(results, request_id, {"status": "accepted", **unit_identity})
     try:
         outcome = _act(config, runner, request_id, request, document["requested_by"])
+    except RequestRefused as refusal:
+        outcome = {"status": "refused", "code": refusal.code}
     except Exception as error:  # noqa: BLE001 - record, never crash the oneshot
         outcome = {"status": "unknown", "code": f"runner_error:{type(error).__name__}"}
     _write_result(results, request_id, {**unit_identity, **outcome})

@@ -97,7 +97,9 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     producer_delivery_key = None
     prior_retired = None
     if handoff.source_finalize is not None:
-        from .capture_original_owner_observer import load_original_owner_observation
+        from .capture_original_owner_observer import (
+            CaptureOwnerObservationError, OWNER_OBSERVATION_REASON_CODES, load_original_owner_observation,
+        )
 
         try:
             observation = load_original_owner_observation(
@@ -106,13 +108,17 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                 marker_generation=handoff.source_finalize['generation'],
                 **({'expected_purpose': expected_preparation_purpose} if expected_preparation_purpose else {}),
             )
-        except Exception:
+        except Exception as error:
+            reason = (str(error) if isinstance(error, CaptureOwnerObservationError)
+                      and str(error) in OWNER_OBSERVATION_REASON_CODES
+                      else "capture_owner_response_unavailable")
             _listener.logger.warning('pubsub_handoff.capture_owner_observation_unavailable',
                                      extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id})
             return {'schema_version': 'v1', 'status': 'capture_owner_observation_unavailable_retryable',
                     'queue_disposition': 'retryable', 'bucket': handoff.bucket,
                     'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                     'capture_root': str(capture_root),
+                    'owner_observation_reason': reason,
                     'blockers': ['capture_owner_observation_unavailable']}
         _listener.logger.info('pubsub_handoff.capture_owner_observed',
                               extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
