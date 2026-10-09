@@ -369,6 +369,9 @@ def _terminal(state: dict[str, Any]) -> bool | None:
     if observed.get("status") in {"observed_completed", "observed_failed"}:
         return observed["status"] == "observed_completed"
     if outcome:
+        if (state.get("request") or {}).get("kind") == "selected-handoff" and outcome.get("status") == "completed":
+            # This proves the bounded command returned, not downstream job completion.
+            return type(outcome.get("exit_code")) is int and outcome["exit_code"] == 0
         return outcome.get("status") in _TERMINAL_OK
     status = result.get("status")
     if status == "done":

@@ -478,3 +478,30 @@ def test_selected_handoff_cli_refuses_oversized_input_and_read_only_actor(
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run("selected-handoff", "--selector-file", str(selector), "--dispatch")[0] == 3
     assert not list((door["state"] / "requests" / "pending").iterdir())
+
+
+@pytest.mark.parametrize("dispatch", [False, True])
+@pytest.mark.parametrize("status,exit_code,expected", [("completed", 0, 0), ("completed", 1, 1), ("failed", 0, 1)])
+def test_waiting_on_selected_handoff_reports_command_outcome(
+    door: dict[str, Any], dispatch: bool, status: str, exit_code: int, expected: int
+) -> None:
+    from tests.test_operator_door_requests import _selected_request
+
+    body = _selected_request()
+    body.pop("kind")
+    body.pop("mode")
+    selector = door["base"] / "selected-wait.json"
+    selector.write_text(json.dumps(body))
+    args = ["selected-handoff", "--selector-file", str(selector)]
+    if dispatch:
+        args.append("--dispatch")
+    accepted, output = _run(*args)
+    assert accepted == 0
+    request_id = json.loads(output)["id"]
+    root = door["state"] / "requests"
+    (root / "pending" / f"{request_id}.json").rename(root / "completed" / f"{request_id}.json")
+    outcome = {"status": status, "exit_code": exit_code}
+    (root / "results" / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
+    code, output = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+    assert code == expected
+    assert json.loads(output)["outcome"] == outcome
