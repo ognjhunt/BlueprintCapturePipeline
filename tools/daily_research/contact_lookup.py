@@ -259,6 +259,14 @@ def holds_title(text, title):
     return bool(wanted) and set(wanted) <= set(title_words(text))
 
 
+def corporate_referral_title(title):
+    """The existing corporate-role exception permits an unknown referral, never site responsibility."""
+    words = set(title_words(title))
+    return bool((words & {"owner", "president", "director", "vp", "coo"}
+                 or holds_title(title, "chief operating officer"))
+                and not words & {"site", "facility", "plant", "production", "warehouse"})
+
+
 def on_domain(domain, operator_domains):
     """True for an operator domain or a subdomain of one."""
     domain = _text(domain).lower().rstrip(".")
@@ -1273,9 +1281,7 @@ def site_responsibility(site, person):
                     or state and address.get("state") and state != address["state"]
                     or place.get("country") and ss.normalized(place["country"]) not in
                     {"us", "usa", "united states", "united states of america"})
-    corporate = bool((set(title.split()) & {"owner", "president", "director", "vp", "coo"}
-                      or holds_title(title, "chief operating officer"))
-                     and not set(title.split()) & {"site", "facility", "plant", "production", "warehouse"})
+    corporate = corporate_referral_title(title)
     return {"site_key": site["site_key"], "status": "unknown",
             "route": "hold" if role_mismatch or mismatch and not corporate else "corporate_referral",
             "reason": "target_site_location_mismatch" if mismatch else "target_site_responsibility_unproven",
