@@ -167,7 +167,7 @@ def test_workflow_retains_committed_baseline_when_collection_fails(tmp_path: Pat
     uv = bin_dir / "uv"
     uv.write_text("#!/bin/sh\nexit 2\n")
     uv.chmod(0o755)
-    env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}
+    env = {"PATH": str(bin_dir) + os.pathsep + os.defpath}
     for step in steps[:collection_index]:
         script = step.get("run", "")
         if "cp .github/full-test-lane-duration-baseline.json" in script:
