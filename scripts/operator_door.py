@@ -12,6 +12,7 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py pull <host path> <local path>    # file, or directory as an archive
     python3 scripts/operator_door.py journal blueprint-task-evaluation-scene-progression.service -n 200
     python3 scripts/operator_door.py deploy <sha on main> --wait
+    python3 scripts/operator_door.py deploy <sha on main> --release-provenance receipt.json --release-provenance-sha256 <hex> --wait
     python3 scripts/operator_door.py unit start blueprint-pubsub-handoff-listener.timer
     python3 scripts/operator_door.py hold blueprint-scene-progression.timer --owner alice --reason "inspection" --for 2h
     python3 scripts/operator_door.py release-hold blueprint-scene-progression.timer
@@ -57,6 +58,7 @@ MAX_CHECKED_PULL_BYTES = 16 * 1024 * 1024
 CHECKED_PULL_CHUNK_BYTES = 1024 * 1024
 MAX_CHECKED_PULL_REQUESTS = 4096
 MAX_CHECKED_HTTP_ERROR_BYTES = 4096
+MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
@@ -412,6 +414,31 @@ def _submit(body: dict[str, Any], args: argparse.Namespace) -> int:
     return _wait(accepted["id"], timeout=args.timeout, poll=args.poll)
 
 
+def _deploy_provenance(args: argparse.Namespace) -> dict[str, str]:
+    """Transport exact locally verified official bytes, without claiming issuer verification."""
+    path = args.release_provenance
+    digest = args.release_provenance_sha256
+    if path is None and digest is None:
+        return {}
+    if not path or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise DoorError(2, "release_provenance_options_invalid")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RELEASE_PROVENANCE_BYTES:
+                raise ValueError("invalid provenance file")
+            payload = stream.read(MAX_RELEASE_PROVENANCE_BYTES + 1)
+        if not payload or len(payload) > MAX_RELEASE_PROVENANCE_BYTES or hashlib.sha256(payload).hexdigest() != digest:
+            raise ValueError("invalid provenance bytes")
+        text = payload.decode("utf-8")
+        if not isinstance(json.loads(text, parse_constant=_invalid_json_constant), dict):
+            raise ValueError("invalid provenance object")
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        raise DoorError(2, "release_provenance_invalid") from None
+    return {"release_provenance_json": text, "release_provenance_sha256": digest}
+
+
 def _size(value: Any) -> str:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return "-"
@@ -573,6 +600,8 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     deploy = commands.add_parser("deploy", help="deploy a commit that is on origin/main")
     deploy.add_argument("commit")
     deploy.add_argument("--no-wait-for-idle", action="store_true")
+    deploy.add_argument("--release-provenance", help="official locally verified UTF-8 receipt; absent means iteration deploy")
+    deploy.add_argument("--release-provenance-sha256", help="expected exact receipt SHA-256 (64 lowercase hex)")
     _add_wait(deploy, 3 * 3600)
     upgrade = commands.add_parser("upgrade-door")
     upgrade.add_argument("commit")
@@ -682,7 +711,7 @@ def run(args: argparse.Namespace) -> int:
         return _submit({"kind": "release-hold", "unit": args.unit}, args)
     elif command == "deploy":
         return _submit({"kind": "deploy", "commit": args.commit,
-                        "wait_for_idle": not args.no_wait_for_idle}, args)
+                        "wait_for_idle": not args.no_wait_for_idle, **_deploy_provenance(args)}, args)
     elif command == "upgrade-door":
         return _submit({"kind": "door-upgrade", "commit": args.commit}, args)
     elif command == "retire-scene-workspace":

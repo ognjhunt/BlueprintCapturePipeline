@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import sys
@@ -207,6 +208,74 @@ def test_deploy_spools_a_request_and_request_shows_it(door: dict[str, Any]) -> N
     assert spooled["request"] == {"kind": "deploy", "commit": SHA, "wait_for_idle": False}
     code, out = _run("request", request_id)
     assert code == 0 and json.loads(out)["state"] == "pending"
+
+
+def test_canonical_deploy_client_preserves_verified_provenance_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = ('{\n "schema_version": "blueprint.deploy_release_provenance.v1",'
+               ' "git_sha": "' + SHA + '", "status": "verified"\n}\n').encode()
+    provenance = tmp_path / "official-provenance.json"
+    provenance.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    submitted = []
+    monkeypatch.setattr(client, "_submit", lambda body, args: submitted.append(body) or 0)
+    assert _run("deploy", SHA, "--release-provenance", str(provenance),
+                "--release-provenance-sha256", digest)[0] == 0
+    assert submitted == [{"kind": "deploy", "commit": SHA, "wait_for_idle": True,
+                          "release_provenance_json": payload.decode(), "release_provenance_sha256": digest}]
+
+
+@pytest.mark.parametrize("case", ["missing_hash", "missing_file", "bad_hash", "hash_mismatch",
+                                  "oversized", "invalid_json", "array", "invalid_utf8", "symlink"])
+def test_canonical_deploy_client_refuses_invalid_transport_before_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    payload = b'{"status":"verified"}'
+    if case == "oversized":
+        payload = b" " * (16 * 1024 + 1)
+    if case == "invalid_json":
+        payload = b"{"
+    if case == "array":
+        payload = b"[]"
+    if case == "invalid_utf8":
+        payload = b"\xff"
+    provenance = tmp_path / "receipt.json"
+    provenance.write_bytes(payload)
+    if case == "symlink":
+        link = tmp_path / "receipt-link.json"
+        link.symlink_to(provenance)
+        provenance = link
+    digest = hashlib.sha256(payload).hexdigest()
+    if case == "bad_hash":
+        digest = "invalid"
+    if case == "hash_mismatch":
+        digest = "0" * 64
+    args = ["deploy", SHA]
+    if case != "missing_file":
+        args += ["--release-provenance", str(provenance)]
+    if case != "missing_hash":
+        args += ["--release-provenance-sha256", digest]
+    submitted = []
+    monkeypatch.setattr(client, "_submit", lambda body, args: submitted.append(body) or 0)
+    assert _run(*args)[0] == 2
+    assert submitted == []
+
+
+def test_canonical_deploy_still_requires_deploy_scope(
+    door: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A valid request must reach the scope check rather than fail schema admission.
+    payload = json.dumps({"schema_version": "blueprint.deploy_release_provenance.v1",
+                          "status": "verified", "git_sha": SHA, "workflow_name": "Full Test Lane",
+                          "workflow_path": ".github/workflows/full-test-lane.yml",
+                          "job_name": "Full pytest lane on CPU runner", "run_id": 123,
+                          "collection": {"test_count": 42},
+                          "claim_boundary": {"canonical_full_lane_verified": True}}).encode()
+    provenance = tmp_path / "receipt.json"
+    provenance.write_bytes(payload)
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
+    assert _run("deploy", SHA, "--release-provenance", str(provenance),
+                "--release-provenance-sha256", hashlib.sha256(payload).hexdigest())[0] == 3
+    assert not list((door["state"] / "requests" / "pending").iterdir())
 
 
 def test_unit_and_upgrade_requests(door: dict[str, Any]) -> None:
