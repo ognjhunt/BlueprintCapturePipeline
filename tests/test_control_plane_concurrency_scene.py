@@ -78,6 +78,7 @@ def test_scene_keys_produce_distinct_immutable_scene_identity(tmp_path):
 @pytest.mark.slow
 def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
+    from blueprint_pipeline import task_evaluation_stage_replay as replay
     from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
 
     usage = namedtuple("Usage", "total used free")(200 * 1024**3, 50 * 1024**3, 150 * 1024**3)
@@ -88,6 +89,9 @@ def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_pa
         return reserve_control_plane_disk(role, **kwargs, disk_usage=lambda _: usage)
 
     monkeypatch.setattr(worker, "reserve_control_plane_disk", measured_test_reservation)
+    # Bind before patching the shared module, and restore this captured alias
+    # too: activation's lazy import must not retain fixture capacity afterward.
+    monkeypatch.setattr(replay, "reserve_control_plane_disk", measured_test_reservation)
     from blueprint_pipeline import control_plane_disk_budget as budget
 
     monkeypatch.setattr(budget, "reserve_control_plane_disk", measured_test_reservation)
