@@ -346,12 +346,23 @@ def test_arena_result_ingest_consumes_review_required_vision_command_output(
     assert vision["claim_boundary"]["vision_model_labeling_performed"] is True
 
 
-def test_openai_rollout_vision_labeler_fails_closed_without_gate_key_or_keyframes(
+@pytest.mark.parametrize(("model", "missing_key"), [
+    (None, "missing_anthropic_api_key"),
+    ("gpt-6-sol", "missing_openai_api_key"),
+])
+def test_rollout_vision_labeler_fails_closed_without_gate_key_or_keyframes(
     tmp_path: Path,
     monkeypatch,
+    model,
+    missing_key,
 ) -> None:
     monkeypatch.delenv("BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY_FILE", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ROLLOUT_VISION_OPENAI_MODEL", raising=False)
+    monkeypatch.setattr("blueprint_pipeline.rollout_vision_label_openai._openai_label",
+                        lambda **kwargs: pytest.fail("blocked labeling must not attempt inference"))
     _write_json(
         tmp_path / "failure_labels.json",
         {
@@ -378,11 +389,11 @@ def test_openai_rollout_vision_labeler_fails_closed_without_gate_key_or_keyframe
         },
     )
 
-    result = build_openai_rollout_vision_labels(output_dir=tmp_path)
+    result = build_openai_rollout_vision_labels(output_dir=tmp_path, model=model)
 
     assert result["status"] == "blocked_review_required"
     assert "missing_env_BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING" in result["blockers"]
-    assert "missing_openai_api_key" in result["blockers"]
+    assert missing_key in result["blockers"]
     assert "missing_visual_evidence_keyframes" in result["blockers"]
     assert result["label_count"] == 0
     assert result["public_claim_upgrade_allowed"] is False

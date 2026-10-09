@@ -186,12 +186,14 @@ def test_rollout_vision_retains_usage_before_malformed_output(
 def test_build_openai_rollout_vision_labels_blocked_and_completed(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv(vision.GATE_ENV, raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY_FILE", raising=False)
     monkeypatch.delenv(vision.MODEL_ENV, raising=False)
 
     blocked = vision.build_openai_rollout_vision_labels(output_dir=tmp_path)
     assert blocked["status"] == "blocked_review_required"
     assert blocked["blockers"] == sorted(
-        ["missing_failure_labels", "missing_openai_api_key", f"missing_env_{vision.GATE_ENV}"]
+        ["missing_failure_labels", "missing_anthropic_api_key", f"missing_env_{vision.GATE_ENV}"]
     )
     assert (tmp_path / vision.OUTPUT_FILENAME).is_file()
 
@@ -255,6 +257,6 @@ def test_rollout_vision_main_reports_status(monkeypatch, tmp_path: Path, capsys)
     assert vision.main(["--output-dir", str(tmp_path)]) == 0
 
 
-def test_rollout_vision_defaults_to_luna_xhigh() -> None:
-    assert vision.DEFAULT_MODEL == "gpt-6-luna"
+def test_rollout_vision_defaults_to_haiku_with_legacy_effort_retained() -> None:
+    assert vision.DEFAULT_MODEL == "claude-haiku-5-5"
     assert vision.OPENAI_REASONING_EFFORT == "xhigh"

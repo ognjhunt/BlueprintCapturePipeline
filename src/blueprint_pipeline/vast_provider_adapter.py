@@ -641,6 +641,15 @@ def _runtime_secret_file_values(
     for name, unresolved in sorted(paths.items()):
         if re.fullmatch(r"[A-Z][A-Z0-9_]{1,120}_FILE", str(name or "")) is None:
             raise ValueError("invalid_vast_runtime_secret_file_name")
+        if name == "ANTHROPIC_API_KEY_FILE":
+            # Native Claude requires an absolute, no-follow, private file.
+            # Do not resolve away a symlink before its native validation.
+            from .claude_native_transport import ClaudeAuthoringBlocked, _scoped_key
+            try:
+                values[name] = _scoped_key(unresolved)
+            except ClaudeAuthoringBlocked:
+                raise ValueError(f"invalid_vast_runtime_secret_file:{name}") from None
+            continue
         path = Path(unresolved).expanduser().resolve()
         if (
             path.is_symlink()
@@ -8583,7 +8592,7 @@ def run_vast_provider_adapter(
                 provider_runtime_environment=provider_runtime_environment,
             )
             private_startup_env: dict[str, str] = {}
-            if provider_bundle_kind == "task_evaluation_scene_configuration":
+            if provider_bundle_kind == "task_evaluation_scene_configuration" or runtime_secret_values:
                 probe_env, private_startup_env = (
                     _scene_configuration_startup_environments(probe_env)
                 )

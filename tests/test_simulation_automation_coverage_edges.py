@@ -95,20 +95,20 @@ def test_sdk_agent_adapters_report_gate_and_execution_failures(
 
     agents_blocked = sa.AgentsSdkCodexMCPAdapter(
         agents_sdk_available=False,
-        openai_api_key="",
+        anthropic_api_key="",
         live_env_allowed=False,
         allow_live_operator=False,
     ).build_ledger(plan_context=plan_context)
     assert {
         "missing_openai_agents_sdk",
-        "missing_openai_api_key",
+        "missing_anthropic_api_key",
         "missing_cli_allow_live_agents_sdk_operator",
         f"missing_env_{sa.LIVE_AGENTS_SDK_ENV}",
     }.issubset(set(agents_blocked["operator_ledger"]["blockers"]))
 
     agents_runtime = sa.AgentsSdkCodexMCPAdapter(
         agents_sdk_available=True,
-        openai_api_key="sk-test",
+        anthropic_api_key="sk-test",
         live_env_allowed=True,
         allow_live_operator=True,
         executor=raise_runtime,
@@ -118,7 +118,7 @@ def test_sdk_agent_adapters_report_gate_and_execution_failures(
 
     agents_exception = sa.AgentsSdkCodexMCPAdapter(
         agents_sdk_available=True,
-        openai_api_key="sk-test",
+        anthropic_api_key="sk-test",
         live_env_allowed=True,
         allow_live_operator=True,
         executor=raise_value,
