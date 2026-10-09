@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from test_selected_handoff_recovery import claim_function
+from tests.test_selected_handoff_recovery import claim_function
 
 
 def read_ledger(capture_root):

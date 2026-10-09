@@ -711,7 +711,7 @@ def test_provider_output_resume_launches_the_release_module(config: DoorConfig) 
 
 
 def test_canonical_provenance_is_staged_private_and_not_in_environment(config: DoorConfig) -> None:
-    from test_operator_door_requests import _canonical_provenance
+    from tests.test_operator_door_requests import _canonical_provenance
 
     text = _canonical_provenance()
     digest = hashlib.sha256(text.encode()).hexdigest()
@@ -742,7 +742,7 @@ def test_canonical_provenance_is_staged_private_and_not_in_environment(config: D
 
 
 def test_canonical_provenance_cannot_replace_existing_results_symlink(config: DoorConfig) -> None:
-    from test_operator_door_requests import _canonical_provenance
+    from tests.test_operator_door_requests import _canonical_provenance
 
     text = _canonical_provenance()
     digest = hashlib.sha256(text.encode()).hexdigest()

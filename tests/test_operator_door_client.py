@@ -439,7 +439,7 @@ def test_historical_unit_acceptance_is_not_objective_completion():
 def test_selected_handoff_cli_defaults_to_inspect_and_dispatch_requires_flag(
     door: dict[str, Any], dispatch: bool
 ) -> None:
-    from test_operator_door_requests import _selected_request
+    from tests.test_operator_door_requests import _selected_request
 
     body = _selected_request()
     body.pop("kind")
@@ -465,7 +465,7 @@ def test_selected_handoff_cli_defaults_to_inspect_and_dispatch_requires_flag(
 def test_selected_handoff_cli_refuses_oversized_input_and_read_only_actor(
     door: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from test_operator_door_requests import _selected_request
+    from tests.test_operator_door_requests import _selected_request
 
     selector = door["base"] / "selected.json"
     selector.write_text(" " * 4097)
