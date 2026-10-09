@@ -572,3 +572,121 @@ def test_retired_status_collects_delivery_keys_from_current_and_history():
                                    'producer_delivery_key': old}]}
     assert retention.ended_producer_delivery_keys(ledger) == {old, current}
     assert listener._ended_delivery_keys(ledger) == {old, current}
+
+
+@pytest.mark.parametrize("policy_kind", ["absent", "disabled"])
+def test_required_capture_birth_policy_refuses_before_writes_and_preserves_optional_call(
+        tmp_path, monkeypatch, policy_kind):
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+    from blueprint_pipeline.task_evaluation_scene_retirement_access import SceneRetirementAccessError
+
+    access, policy, target, owner, selector, raw = _fixture(
+        tmp_path, monkeypatch, prepare_parent=False)
+    if policy_kind == "absent":
+        access._INSTALLED_POLICY.unlink()
+        monkeypatch.delenv("BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE")
+    else:
+        policy["enabled"] = False
+        _sealed_file(access._INSTALLED_POLICY, policy, "policy_digest", mode=0o644)
+    stores = Path(policy["generation_store"])
+    before = sorted((p.name, p.read_bytes()) for p in stores.iterdir())
+    assert generations.birth_capture_member(
+        target, observation=owner, membership_selector=selector, membership_raw=raw) is None
+    with pytest.raises(SceneRetirementAccessError, match="^scene_capture_birth_policy_unavailable$"):
+        generations.birth_capture_member(
+            target, observation=owner, membership_selector=selector, membership_raw=raw,
+            require_policy=True)
+    assert not target.exists() and not target.parent.exists()
+    assert sorted((p.name, p.read_bytes()) for p in stores.iterdir()) == before
+
+
+@pytest.mark.parametrize("phase,reason", [
+    ("owner", "capture_staging_owner_observation_unavailable"),
+    ("typed_owner", "capture_owner_rights_not_admitted"),
+    ("unsafe_typed_owner", "capture_staging_owner_observation_unavailable"),
+    ("membership", "capture_staging_membership_unavailable"),
+    ("policy", "scene_capture_birth_policy_unavailable"),
+    ("birth", "capture_original_birth_refused"),
+    ("typed_birth_owner", "capture_owner_rights_not_admitted"),
+    ("unsafe_typed_birth_owner", "capture_original_birth_refused"),
+    ("generic", "capture_staging_unavailable"),
+    ("unsafe_typed", "capture_staging_unavailable"),
+])
+def test_selected_staging_failure_reason_is_safe_and_preclaim(tmp_path, monkeypatch, phase, reason):
+    from blueprint_pipeline import capture_delivery_staging as staging
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+    from blueprint_pipeline.task_evaluation_scene_retirement_access import SceneRetirementAccessError
+
+    _, _, target, owner, selector, raw = _fixture(tmp_path, monkeypatch, prepare_parent=False)
+    member = json.loads(raw)
+    payload = {'bucket': owner['bucket'], 'scene_id': owner['scene_id'],
+               'capture_id': owner['capture_id'], 'raw_prefix_uri': owner['raw_prefix_uri'],
+               'source_finalize': {**member['source_finalize'], 'event_id': 'evt-1',
+                                   'event_source': 'storage'},
+               'source_membership_selector': selector}
+    observations = []
+    def read_owner(**kwargs):
+        observations.append(kwargs)
+        if phase in {"owner", "typed_owner", "unsafe_typed_owner"} and len(observations) == 2:
+            if phase == "typed_owner":
+                raise observer.CaptureOwnerObservationError("capture_owner_rights_not_admitted")
+            error = (observer.CaptureOwnerObservationError if phase == "unsafe_typed_owner" else RuntimeError)
+            raise error("private response token=secret")
+        return owner
+    monkeypatch.setattr(observer, 'load_original_owner_observation', read_owner)
+    monkeypatch.setattr(retention, 'retired_capture_status', lambda **_: None)
+    def membership(**kwargs):
+        if phase == "membership":
+            raise RuntimeError("private source token=secret")
+        return raw, member, []
+    monkeypatch.setattr(staging, 'load_selected_capture_membership', membership)
+    if phase == "policy":
+        monkeypatch.setattr(generations, '_policy', lambda: None)
+    if phase in {"birth", "typed_birth_owner", "unsafe_typed_birth_owner"}:
+        def refused(*args, **kwargs):
+            if phase == "typed_birth_owner":
+                raise observer.CaptureOwnerObservationError("capture_owner_rights_not_admitted")
+            error = (observer.CaptureOwnerObservationError if phase == "unsafe_typed_birth_owner"
+                     else SceneRetirementAccessError)
+            raise error("private birth token=secret")
+        monkeypatch.setattr(staging, 'birth_capture_member', refused)
+    if phase in {"generic", "unsafe_typed"}:
+        def unavailable(*args, **kwargs):
+            error = staging.CaptureStagingError if phase == "unsafe_typed" else RuntimeError
+            raise error("private staging token=secret")
+        monkeypatch.setattr(listener, 'stage_handoff_capture', unavailable)
+    monkeypatch.setattr(listener, '_claim_job_lease', lambda *a, **kw: pytest.fail("claimed"))
+    monkeypatch.setattr(listener, 'download_with_reservation', lambda *a, **kw: pytest.fail("downloaded"))
+    monkeypatch.setattr(listener.storage, 'Client', lambda: pytest.fail('constructed live client'))
+    result = listener.process_handoff_payload(
+        payload, storage_root=target.parents[4], provider='openai', storage_client=object(),
+        run_e2e=lambda **_: pytest.fail('ran'))
+    assert result['status'] == 'capture_source_membership_unavailable_retryable'
+    assert result['queue_disposition'] == 'retryable' and result['staging_reason'] == reason
+    assert "secret" not in json.dumps(result) and "private" not in json.dumps(result)
+    assert not target.exists()
+
+
+def test_incomplete_capture_birth_with_absent_workspace_is_not_adopted(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_retirement_access import SceneRetirementAccessError
+
+    _, policy, target, owner, selector, raw = _fixture(tmp_path, monkeypatch)
+    born = generations.birth_capture_member(
+        target, observation=owner, membership_selector=selector, membership_raw=raw)
+    target.rmdir()  # Hermetic interrupted-birth simulation, never production cleanup.
+    key = hashlib.sha256(str(target).encode()).hexdigest() + '.json'
+    state = Path(policy['generation_store']) / key
+    born['state'] = 'birth'
+    born['state_digest'] = canonical_digest(born, digest_field='state_digest')
+    state.write_text(json.dumps(born))
+    before = state.read_bytes()
+    with pytest.raises(SceneRetirementAccessError, match='scene_capture_generation_unavailable'):
+        generations.birth_capture_member(
+            target, observation=owner, membership_selector=selector, membership_raw=raw,
+            require_policy=True)
+    assert not target.exists() and state.read_bytes() == before

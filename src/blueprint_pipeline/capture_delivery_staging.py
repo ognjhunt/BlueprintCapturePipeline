@@ -8,10 +8,27 @@ import secrets
 import stat
 from pathlib import Path
 
+from .common import PipelineError
+from .capture_original_owner_observer import CaptureOwnerObservationError, OWNER_OBSERVATION_REASON_CODES
 from .capture_delivery_membership import load_selected_capture_membership
+from .task_evaluation_scene_retirement_access import SceneRetirementAccessError
 from .task_evaluation_scene_retirement_generations import (
     _prepare_capture_parent, birth_capture_member,
 )
+
+
+STAGING_REASON_CODES = frozenset({
+    'capture_staging_owner_observation_unavailable',
+    'capture_staging_membership_unavailable',
+    'scene_capture_birth_policy_unavailable',
+    'capture_original_birth_refused',
+    'capture_original_birth_unavailable',
+    'capture_staging_unavailable',
+}) | OWNER_OBSERVATION_REASON_CODES
+
+
+class CaptureStagingError(PipelineError):
+    """A bounded refusal reason, never source, owner or provider exception text."""
 
 
 def _local_matches(path: Path, row: dict) -> bool:
@@ -36,22 +53,39 @@ def stage_selected_capture(listener, handoff, *, storage_root, storage_client, e
     from .capture_original_owner_observer import load_original_owner_observation
 
     if handoff.source_membership_selector is None:
-        raise listener.PipelineError('capture_original_birth_unavailable')
-    observation = load_original_owner_observation(
-        bucket=handoff.bucket, scene_id=handoff.scene_id, capture_id=handoff.capture_id,
-        marker_generation=handoff.source_finalize['generation'],
-        **({'expected_purpose': expected_purpose} if expected_purpose else {}))
-    client = storage_client or listener.storage.Client()
-    membership_raw, membership, selected = load_selected_capture_membership(
-        storage_client=client, handoff=handoff, observation=observation)
+        raise CaptureStagingError('capture_original_birth_unavailable')
+    try:
+        observation = load_original_owner_observation(
+            bucket=handoff.bucket, scene_id=handoff.scene_id, capture_id=handoff.capture_id,
+            marker_generation=handoff.source_finalize['generation'],
+            **({'expected_purpose': expected_purpose} if expected_purpose else {}))
+    except Exception as error:
+        if isinstance(error, CaptureOwnerObservationError) and str(error) in OWNER_OBSERVATION_REASON_CODES:
+            raise
+        raise CaptureStagingError('capture_staging_owner_observation_unavailable') from error
+    try:
+        client = storage_client or listener.storage.Client()
+        membership_raw, membership, selected = load_selected_capture_membership(
+            storage_client=client, handoff=handoff, observation=observation)
+    except Exception as error:
+        raise CaptureStagingError('capture_staging_membership_unavailable') from error
     capture_root = listener._handoff_capture_root(handoff, storage_root=storage_root)
-    born = birth_capture_member(
-        capture_root, observation=observation,
-        membership_selector=dict(handoff.source_membership_selector),
-        membership_raw=membership_raw,
-        **({'expected_purpose': expected_purpose} if expected_purpose else {}))
+    try:
+        born = birth_capture_member(
+            capture_root, observation=observation,
+            membership_selector=dict(handoff.source_membership_selector),
+            membership_raw=membership_raw, require_policy=True,
+            **({'expected_purpose': expected_purpose} if expected_purpose else {}))
+    except Exception as error:
+        if isinstance(error, CaptureOwnerObservationError) and str(error) in OWNER_OBSERVATION_REASON_CODES:
+            raise
+        reason = ('scene_capture_birth_policy_unavailable'
+                  if isinstance(error, SceneRetirementAccessError)
+                  and str(error) == 'scene_capture_birth_policy_unavailable'
+                  else 'capture_original_birth_refused')
+        raise CaptureStagingError(reason) from error
     if born is None:
-        raise listener.PipelineError('capture_original_birth_unavailable')
+        raise CaptureStagingError('capture_original_birth_unavailable')
     selector = handoff.source_membership_selector
     previous = listener._read_optional_json_object(
         capture_root / listener.STAGING_MANIFEST_FILENAME)

@@ -382,7 +382,15 @@ def _stage_selected_recovery(config: DoorConfig, request_id: str, request: dict[
                 or outcome.get("result") != str(results / f"{prior}.selected-handoff.json")
                 or native.get("schema_version") != "selected_handoff_recovery.v1"
                 or native.get("mode") != "dispatch" or native.get("status") != "blocked"
-                or native.get("native_status") != "capture_owner_observation_unavailable_retryable"
+                # Both native returns occur before _claim_job_lease. Staging
+                # can leave local birth/data state, so the successor still
+                # refuses nonempty workspaces and requires an unattempted
+                # delivery; this proof does not assert zero prior charges.
+                or type(native.get("native_status")) is not str
+                or native["native_status"] not in {
+                    "capture_owner_observation_unavailable_retryable",
+                    "capture_source_membership_unavailable_retryable",
+                }
                 or native.get("native_disposition") != "retryable"
                 or native.get("source_membership_verified") is not True
                 or native.get("current_admission_verified") is not True

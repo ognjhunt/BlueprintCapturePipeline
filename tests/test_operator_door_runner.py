@@ -770,15 +770,15 @@ def test_canonical_provenance_cannot_replace_existing_results_symlink(config: Do
 _PRIOR_SELECTED = "20261009T154718Z-selected-handoff-9ef60661"
 
 
-def _preclaim_evidence(config):
+def _preclaim_evidence(config, *, native_status="capture_owner_observation_unavailable_retryable", prior=_PRIOR_SELECTED):
     from tests.test_operator_door_requests import _selected_request
 
     selection = {**_selected_request(), "mode": "dispatch"}
     results = Path(config.spool_root) / "results"
-    native_path = results / f"{_PRIOR_SELECTED}.selected-handoff.json"
-    outcome_path = results / f"{_PRIOR_SELECTED}.outcome.json"
+    native_path = results / f"{prior}.selected-handoff.json"
+    outcome_path = results / f"{prior}.outcome.json"
     native = {"schema_version": "selected_handoff_recovery.v1", "mode": "dispatch", "status": "blocked",
-              "native_status": "capture_owner_observation_unavailable_retryable", "native_disposition": "retryable",
+              "native_status": native_status, "native_disposition": "retryable",
               "source_membership_verified": True, "current_admission_verified": True,
               "selector_sha256": hashlib.sha256(json.dumps(selection, sort_keys=True).encode()).hexdigest(),
               "blockers": ["selected_handoff_native_admission_or_result_blocked"],
@@ -789,14 +789,18 @@ def _preclaim_evidence(config):
     native_path.chmod(0o640)
     outcome_path.write_text(json.dumps(outcome))
     outcome_path.chmod(0o600)
-    return {**selection, "resume_request_id": _PRIOR_SELECTED}, native_path, outcome_path
+    return {**selection, "resume_request_id": prior}, native_path, outcome_path
 
 
 @pytest.mark.parametrize("launch_rc", [0, 1])
-def test_selected_preclaim_recovery_is_linked_exclusive_and_keeps_original_evidence(config, monkeypatch, launch_rc):
+@pytest.mark.parametrize("native_status", [
+    "capture_owner_observation_unavailable_retryable",
+    "capture_source_membership_unavailable_retryable",
+])
+def test_selected_preclaim_recovery_is_linked_exclusive_and_keeps_original_evidence(config, monkeypatch, launch_rc, native_status):
     import operator_door.spool_runner as module
 
-    body, native_path, outcome_path = _preclaim_evidence(config)
+    body, native_path, outcome_path = _preclaim_evidence(config, native_status=native_status)
     before = (native_path.read_bytes(), outcome_path.read_bytes())
     syncs = []
     real_fsync = os.fsync
@@ -827,7 +831,7 @@ def test_selected_preclaim_recovery_is_linked_exclusive_and_keeps_original_evide
 
 
 @pytest.mark.parametrize("mutation", [
-    "schema", "completed", "postlease", "unknown", "hash", "admission", "membership", "disposition", "mode",
+    "schema", "completed", "postlease", "unknown", "status_list", "status_dict", "hash", "admission", "membership", "disposition", "mode",
     "blockers", "outcome_schema", "outcome_status", "outcome_code", "outcome_exit_bool", "outcome_path",
     "missing", "symlink", "writable", "oversize", "duplicate", "nonfinite", "foreign_owner", "self",
 ])
@@ -837,6 +841,7 @@ def test_selected_preclaim_recovery_refuses_untrusted_or_ineligible_evidence(con
     outcome = json.loads(outcome_path.read_text())
     changes = {"schema": ("schema_version", "wrong"), "completed": ("status", "native_handler_returned"),
                "postlease": ("native_status", "provider_failed_retryable"), "unknown": ("native_status", "unknown"),
+               "status_list": ("native_status", []), "status_dict": ("native_status", {}),
                "hash": ("selector_sha256", "0" * 64), "admission": ("current_admission_verified", False),
                "membership": ("source_membership_verified", False), "disposition": ("native_disposition", "terminal_success"),
                "mode": ("mode", "inspect"), "blockers": ("blockers", [])}
@@ -883,3 +888,31 @@ def test_selected_preclaim_recovery_refuses_untrusted_or_ineligible_evidence(con
     assert not any(call[0] == "systemd-run" for call in runner.calls)
     assert _result(config, request_id)["status"] == "refused"
     assert not (native_path.parent / f"{_PRIOR_SELECTED}.selected-handoff-recovery.json").exists()
+
+
+def test_selected_staging_recovery_links_failed_successor_without_resetting_history(config):
+    body, original_native, original_outcome = _preclaim_evidence(config)
+    original_bytes = (original_native.read_bytes(), original_outcome.read_bytes())
+    first_id = _spooled(config, body)
+    process_spool(config, runner=FakeRunner())
+    original_marker = original_native.parent / f"{_PRIOR_SELECTED}.selected-handoff-recovery.json"
+    marker_bytes = original_marker.read_bytes()
+    successor_body, failed_native, failed_outcome = _preclaim_evidence(
+        config, prior=first_id, native_status="capture_source_membership_unavailable_retryable")
+    failed_bytes = (failed_native.read_bytes(), failed_outcome.read_bytes())
+    second_id = _spooled(config, successor_body)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert any(call[0] == "systemd-run" for call in runner.calls)
+    new_marker_path = failed_native.parent / f"{first_id}.selected-handoff-recovery.json"
+    new_marker = json.loads(new_marker_path.read_bytes())
+    assert new_marker["prior_request_id"] == first_id and new_marker["request_id"] == second_id
+    assert original_marker.read_bytes() == marker_bytes
+    assert (original_native.read_bytes(), original_outcome.read_bytes()) == original_bytes
+    assert (failed_native.read_bytes(), failed_outcome.read_bytes()) == failed_bytes
+    duplicate_id = _spooled(config, successor_body)
+    runner.calls.clear()
+    process_spool(config, runner=runner)
+    assert not any(call[0] == "systemd-run" for call in runner.calls)
+    assert _result(config, duplicate_id)["code"] == "selected_handoff_recovery_already_consumed"
+    assert json.loads(new_marker_path.read_bytes()) == new_marker
