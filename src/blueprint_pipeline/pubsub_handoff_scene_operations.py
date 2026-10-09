@@ -104,6 +104,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                 bucket=handoff.bucket, scene_id=handoff.scene_id,
                 capture_id=handoff.capture_id,
                 marker_generation=handoff.source_finalize['generation'],
+                **({'expected_purpose': expected_preparation_purpose} if expected_preparation_purpose else {}),
             )
         except Exception:
             _listener.logger.warning('pubsub_handoff.capture_owner_observation_unavailable',

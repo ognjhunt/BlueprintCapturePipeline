@@ -1,7 +1,7 @@
 #!/bin/bash
 # One exact original envelope; no subscription/timer/grant changes.
 set -euo pipefail
-umask 077
+umask 022
 . "$(dirname "$0")/door-common.sh"
 door_init_request selected-handoff
 : "${DOOR_VENV_PYTHON:?}" "${DOOR_CONTROL_PLANE_REPO:?}" "${DOOR_SELECTED_HANDOFF_REQUEST:?}" "${DOOR_SERVICE_USER:?}"
@@ -28,15 +28,20 @@ export BLUEPRINT_PIPELINE_REPO="$PWD"
 # does not activate workers or run the guard's unrelated reconciliation.
 mode="$(python3 -c 'import json,os; print(json.loads(os.environ["DOOR_SELECTED_HANDOFF_REQUEST"])["mode"])')"
 if [ "$mode" = dispatch ]; then
-  setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all -- env PYTHONPATH=src \
-    "$DOOR_VENV_PYTHON" -m blueprint_pipeline.production_runtime_env_guard > /dev/null \
-    || door_fail selected_handoff_runtime_admission_failed
+  (
+    umask 077
+    setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all -- env PYTHONPATH=src \
+      "$DOOR_VENV_PYTHON" -m blueprint_pipeline.production_runtime_env_guard > /dev/null
+  ) || door_fail selected_handoff_runtime_admission_failed
 fi
 result="$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.selected-handoff.json"
 set +e
-setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all -- env PYTHONPATH=src \
-  "$DOOR_VENV_PYTHON" -m blueprint_pipeline.selected_handoff_recovery \
-  --request-json "$DOOR_SELECTED_HANDOFF_REQUEST" > "$result.tmp"
+(
+  umask 077
+  setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all -- env PYTHONPATH=src \
+    "$DOOR_VENV_PYTHON" -m blueprint_pipeline.selected_handoff_recovery \
+    --request-json "$DOOR_SELECTED_HANDOFF_REQUEST" > "$result.tmp"
+)
 rc=$?
 set -e
 chgrp blueprint-door "$result.tmp"; chmod 0640 "$result.tmp"; mv "$result.tmp" "$result"
