@@ -205,6 +205,20 @@ def _canary_root(config: DoorConfig) -> str:
     return str(Path(config.control_plane_state) / "task-evaluation-policy-canaries")
 
 
+def _selected_handoff_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_SERVICE_USER": "blueprint", "DOOR_SELECTED_HANDOFF_REQUEST": json.dumps(request, sort_keys=True)}
+
+
+def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
+    writable = str(Path(config.spool_root) / "results")
+    if request["mode"] == "dispatch":
+        writable += " /var/lib/blueprint"
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes",
+            "UMask=0077", f"ReadWritePaths={writable}")
+
+
 def _output_resume_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
               "DOOR_CANARY_ROOT": _canary_root(config), "DOOR_RUN": request["run"],
@@ -280,6 +294,9 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
                                            lambda request: hashlib.sha256(request["scene_id"].encode("utf-8"))
                                            .hexdigest()[:12], _restore_environment, _retire_properties),
     # Promotion reads and writes up to one archive's bytes to B2 and back: at most 2 h.
+    "selected-handoff": _LaunchSpec("blueprint-operator-door-selected-handoff", "door-selected-handoff.sh",
+                                      "2h", lambda request: hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()[:12],
+                                      _selected_handoff_environment, _selected_handoff_properties),
     "provider-output-resume": _LaunchSpec("blueprint-operator-door-output-resume", "door-provider-output-resume.sh",
                                           "2h", lambda request: hashlib.sha256(
                                               f"{request['run']}/{request['attempt']}".encode("utf-8"))
@@ -291,6 +308,21 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
 }
 
 
+
+def _stage_release_provenance(config: DoorConfig, request_id: str, request: dict[str, Any]) -> dict[str, str]:
+    if request["kind"] != "deploy" or "release_provenance_json" not in request:
+        return {}
+    destination = Path(config.spool_root) / "results" / f"{request_id}.release-provenance.json"
+    # Exclusive creation refuses an existing file or symlink rather than replacing it.
+    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(request["release_provenance_json"].encode("utf-8"))
+        stream.flush()
+        os.fsync(stream.fileno())
+    return {"DOOR_RELEASE_PROVENANCE_FILE": str(destination),
+            "DOOR_RELEASE_PROVENANCE_SHA256": request["release_provenance_sha256"]}
+
+
 def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) -> list[str]:
     """Only the values the request's own kind defines, each already validated."""
 
@@ -298,6 +330,7 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) ->
         "DOOR_REQUEST_ID": request_id,
         "DOOR_RESULTS_DIR": str(Path(config.spool_root) / "results"),
         **_LAUNCHES[request["kind"]].environment(config, request),
+        **_stage_release_provenance(config, request_id, request),
     }
     return [f"--setenv={key}={value}" for key, value in values.items()]
 
