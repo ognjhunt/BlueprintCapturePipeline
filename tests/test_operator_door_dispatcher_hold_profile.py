@@ -28,14 +28,19 @@ def test_profile_fences_api_schema_and_privileged_spool_reader(tmp_path):
     package_root = _profile_package(tmp_path)
     script = '''
 from pathlib import Path
+import hashlib, json
 from operator_door import requests as r
 from operator_door import status
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}
-assert r.required_scope("selected-handoff") == "operate"
-# No arbitrary new operation: incomplete selected bodies remain refused.
-try: r.validate_request({"kind":"selected-handoff", "mode":"dispatch"})
-except r.RequestRefused as e: assert e.code == "selected_handoff_fields_invalid"
-else: raise AssertionError("unbound selected dispatch admitted")
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold"}
+commit = "a" * 40
+payload = json.dumps({"schema_version":"blueprint.deploy_release_provenance.v1",
+    "status":"verified", "git_sha":commit, "workflow_name":"Full Test Lane",
+    "workflow_path":".github/workflows/full-test-lane.yml", "job_name":"Full pytest lane on CPU runner",
+    "run_id":1, "collection":{"test_count":1}, "claim_boundary":{"canonical_full_lane_verified":True}})
+body = {"kind":"deploy", "commit":commit, "release_provenance_json":payload,
+        "release_provenance_sha256":hashlib.sha256(payload.encode()).hexdigest()}
+assert r.validate_request(body) == {**body, "wait_for_idle":True}
+assert r.required_scope("deploy") == "deploy"
 assert status.DISPATCHER_HOLD_ONLY is True
 assert status._SCOPES == r._SCOPES
 assert r.required_scope("door-upgrade") == "deploy"
@@ -51,7 +56,7 @@ for action in ("stop", "restart"):
     try: r.validate_request({"kind":"unit","unit":"blueprint-gpu-spend-guard.timer","action":action})
     except r.RequestRefused as e: assert e.code == "unit_safety_critical"
     else: raise AssertionError("baseline safety restriction changed")
-for kind in ("retire-scene-workspace", "restore-scene-workspace", "retire-scene", "restore-scene", "lane-scratch", "owner-census-decision", "legacy-owner-census", "provider-output-resume"):
+for kind in ("selected-handoff", "retire-scene-workspace", "restore-scene-workspace", "retire-scene", "restore-scene", "lane-scratch", "owner-census-decision", "legacy-owner-census", "provider-output-resume"):
     for call in (lambda: r.required_scope(kind), lambda: r.validate_request({"kind":kind})):
         try: call()
         except r.RequestRefused as e: assert e.code == "kind_unknown"

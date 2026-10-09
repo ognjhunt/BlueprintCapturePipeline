@@ -71,11 +71,10 @@ _SCOPES = {
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
     # The API and privileged spool reader share this exact request allowlist.
-    # Selected processing narrows the existing operate ability to start the
-    # whole listener: one receipt-bound current-owner delivery, with normal
-    # processing/provider controls. It cannot release a hold or enable a timer.
+    # Production provenance uses the existing deploy operation. An unrelated
+    # upgrade must preserve this installed five-operation admission profile.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
-               if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}}
+               if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
