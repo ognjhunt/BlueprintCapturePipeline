@@ -312,3 +312,26 @@ def test_combined_failure_projection_stays_bounded_and_keeps_original_error(monk
     assert observer.os.open is original_open and observer._PID_OPEN_EVIDENCE is original_global
     assert packet['exceptions'] and any(row.get('code') == 'historical_generation_process_unknown' for row in packet['exceptions'])
     assert packet.get('pid_open_evidence', {}).get('truncated', packet['truncated']) is True
+
+
+@pytest.mark.parametrize(('changed', 'selected', 'expected'), [
+    (['tests/registered_disk_diagnostic_native_acceptance.py'], [], True),
+    (['tests/test_registered_feature_linux.py'], [], True),
+    ([], ['tests/test_registered_feature_linux.py::test_actual_registered_disk_diagnostic_delete_offload_and_restore'], True),
+    (['src/blueprint_pipeline/control_plane_lane_disk_diagnostic.py'], [], True),
+    (['tests/test_diagnostic_native_reference_observer.py'], [], False),
+    ([], [], False),
+])
+def test_native_linux_gate_requires_changed_diagnostic_fixture(tmp_path, monkeypatch, changed, selected, expected):
+    from pathlib import Path
+    workflow = (Path(__file__).parents[1] / '.github/workflows/ci.yml').read_text()
+    start = workflow.index('      - name: Require native Linux proof when its acceptance test is selected')
+    section = workflow[start:workflow.index('      - name: Require real scene startup proof', start)]
+    script = section.split("python3 - <<'PYTHON'\n", 1)[1].rsplit('          PYTHON', 1)[0]
+    script = '\n'.join(line[10:] if line.startswith('          ') else line for line in script.splitlines())
+    plan, output = tmp_path / 'plan.json', tmp_path / 'output.txt'
+    plan.write_text(json.dumps({'changed_files': changed, 'selected_tests': selected}))
+    monkeypatch.setenv('IMPACT_PLAN', str(plan))
+    monkeypatch.setenv('GITHUB_OUTPUT', str(output))
+    exec(compile(script, 'retained_native_gate_workflow', 'exec'), {})
+    assert output.read_text() == 'required=' + str(expected).lower() + '\n'

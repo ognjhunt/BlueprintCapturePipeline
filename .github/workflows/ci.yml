@@ -57,7 +57,8 @@ jobs:
           native_tests = {"tests/test_registered_feature_linux.py", "tests/test_legacy_owner_linux.py",
                           "tests/test_historical_generation_linux.py"}
           required = bool(native_tests.intersection(changed)) or any(row.split("::", 1)[0] in native_tests for row in selected)
-          native_sources = {"src/blueprint_pipeline/control_plane_lane_disk_diagnostic.py",
+          native_sources = {"tests/registered_disk_diagnostic_native_acceptance.py",
+                            "src/blueprint_pipeline/control_plane_lane_disk_diagnostic.py",
                             "src/blueprint_pipeline/control_plane_lane_experiment_archive.py",
                             "src/blueprint_pipeline/s3_compatible_transport.py"}
           required = required or bool(native_sources.intersection(changed))
