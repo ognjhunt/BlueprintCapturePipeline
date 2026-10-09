@@ -48,7 +48,10 @@ def _setup(monkeypatch, tmp_path):
 
     def capture(**_kwargs):
         calls["capture"] += 1
-        return {"status": "completed", "lanes": ["qualification"]}
+        return {
+            "status": "completed", "lanes": ["qualification"],
+            "artifact_purpose": "evaluation_preparation", "robot_evaluation_performed": False,
+        }
 
     monkeypatch.setattr(run_e2e, "run_capture_pipeline", capture)
     return root, calls

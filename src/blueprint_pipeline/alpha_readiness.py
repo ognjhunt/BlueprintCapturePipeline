@@ -1969,16 +1969,10 @@ def sync_webapp_evaluation_prep(
 
     delivery_artifact_uri = (
         _present_value(
-            signed_access_manifest,
-            "artifact_uri",
-            "post_training_data_package_uri",
-            "package_uri",
+            signed_access_manifest, "artifact_uri", "post_training_data_package_uri", "package_uri",
         )
         or _present_value(
-            delivery_manifest,
-            "artifact_uri",
-            "post_training_data_package_uri",
-            "package_uri",
+            delivery_manifest, "artifact_uri", "post_training_data_package_uri", "package_uri",
         )
         or _artifact_if_exists("archives/post_training_data_package.tar.gz")
     )

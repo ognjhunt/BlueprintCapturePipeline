@@ -21,6 +21,9 @@ from .local_capture import resolve_local_capture_context
 from .robot_eval_dataset_artifacts import (
     ROBOT_EVAL_DATASET_MANIFEST_COMPATIBILITY_ALIAS,
     robot_eval_result_artifact_paths,
+    robot_eval_dataset_output_paths,
+    robot_eval_methodology_summary,
+    write_robot_eval_reports,
     validate_and_write_robot_eval_cards,
 )
 from .scene_placement.robot_profile import DEFAULT_ROBOT_ID, get_robot_profile, preparation_robot_profiles
@@ -4435,59 +4438,6 @@ def _dataset_statuses(
     return [status for status in FAIL_CLOSED_STATUSES if status in set(statuses)]
 
 
-def _methodology_summary(
-    *,
-    manifest: Mapping[str, Any],
-    task_library: Mapping[str, Any],
-    scenario_library: Mapping[str, Any],
-    ledger: Mapping[str, Any],
-) -> str:
-    statuses = ", ".join(_string_list(manifest.get("dataset_statuses")))
-    task_count = int(task_library.get("task_count") or 0)
-    scenario_count = int(scenario_library.get("scenario_count") or 0)
-    record_count = int(ledger.get("record_count") or 0)
-    return "\n".join(
-        [
-            "# Real-Site Robot Evaluation Dataset Methodology",
-            "",
-            "Status: repo-local deterministic contract. No live provider jobs, simulator runs, "
-            "model downloads, sends, payments, deployments, or public-claim upgrades were performed.",
-            "",
-            "## Scope",
-            "",
-            "This dataset layer defines robot tasks, scenario records, evidence requirements, "
-            "failure labels, and prediction-vs-actual ledger fields for one capture-backed site "
-            "package. It is advisory until actual robot POV, human demo, action-log, rights/privacy, "
-            "and outcome evidence exists.",
-            "",
-            "## Current Counts",
-            "",
-            f"- Tasks: {task_count}",
-            f"- Scenarios: {scenario_count}",
-            f"- Prediction/outcome records: {record_count}",
-            f"- Dataset statuses: {statuses}",
-            "",
-            "## Evaluation Method",
-            "",
-            "1. Define task records from `evaluation_prep/task_anchor_manifest.json`.",
-            "2. Pair each task with available robot profiles to form scenario records.",
-            "3. Attach local review sources such as simready, Marble, or Cosmos preflight as "
-            "prediction inputs only.",
-            "4. Require robot POV, human-demo, action-log, and actual-outcome records before "
-            "calibration or operational conclusions.",
-            "5. Use `failure_taxonomy.json` IDs for every failed or ambiguous attempt.",
-            "6. Keep WebApp display advisory-only unless owner-system proof supports a stronger "
-            "request-scoped claim.",
-            "",
-            "## Blocked Claim Boundary",
-            "",
-            "This artifact does not prove simulator execution, generated-world rank fidelity, off-scope validation, "
-            "provider execution, or deployment outcomes.",
-            "",
-        ]
-    )
-
-
 def build_real_site_robot_eval_dataset(
     *,
     capture_root: str | Path,
@@ -4747,47 +4697,9 @@ def build_real_site_robot_eval_dataset(
         generated_at=generated_at,
     )
 
-    output_paths = {
-        "robot_eval_dataset_manifest": "robot_eval_dataset_manifest.json",
-        "site_card": "site_card.json",
-        "task_cards": "task_cards.json",
-        "scenario_cards": "scenario_cards.json",
-        "eval_cards": "eval_cards.json",
-        "annotation_backlog": "annotation_backlog.json",
-        "proof_boundaries": "proof_boundaries.json",
-        "legacy_real_site_robot_eval_dataset_manifest": "real_site_robot_eval_dataset_manifest.json",
-        "robot_task_library": "robot_task_library.json",
-        "task_ontology_v1": "task_ontology_v1.json",
-        "scenario_library": "scenario_library.json",
-        "scenario_family_library": "scenario_family_library.json",
-        "robot_pov_evidence_requirements": "robot_pov_evidence_requirements.json",
-        "human_demo_evidence_requirements": "human_demo_evidence_requirements.json",
-        "robot_eval_inputs_evidence_contract": "robot_eval_inputs_evidence_contract.json",
-        "robot_team_test_submission_modalities": "robot_team_test_submission_modalities.json",
-        "failure_taxonomy": "failure_taxonomy.json",
-        "prediction_outcome_ledger": "prediction_outcome_ledger.json",
-        "prediction_vs_actual_summary": "prediction_vs_actual_summary.json",
-        "scoring_methodology": "scoring_methodology.json",
-        "task_thresholds": "task_thresholds.json",
-        "publication_readiness": "publication_readiness.json",
-        "recorded_trace_eval_report": "recorded_trace_eval_report.json",
-        "policy_eval_report": "policy_eval_report.json",
-        "rights_packet": "rights_packet.json",
-        "rights_ledger": "rights_ledger.json",
-        "eval_methodology_summary": "eval_methodology_summary.md",
-        "cpu_preflight_scorecard": "../simulation_automation/cpu_preflight_scorecard.json",
-        "episode_spec_manifest": "../simulation_automation/episode_spec_manifest.json",
-        "cpu_simulator_preflight_manifest": (
-            "../simulation_automation/cpu_simulator_preflight_manifest.json"
-        ),
-    }
-    retained_evaluation_evidence = {}
-    if not evaluate_recorded_evidence:
-        for name in ("recorded_trace_eval_report", "policy_eval_report", "prediction_vs_actual_summary"):
-            filename = output_paths.pop(name)
-            previous = _read_optional_mapping(robot_eval_dir / filename)
-            if previous and previous.get("artifact_purpose") != "evaluation_preparation":
-                retained_evaluation_evidence[name] = filename
+    output_paths, retained_evaluation_evidence = robot_eval_dataset_output_paths(
+        robot_eval_dir, evaluate_recorded_evidence=evaluate_recorded_evidence,
+    )
     publication_readiness = _publication_readiness(
         dataset_state=dataset_state,
         dataset_statuses=dataset_statuses,
@@ -4929,11 +4841,11 @@ def build_real_site_robot_eval_dataset(
             "rights_privacy": rights_privacy,
         }
     )
-    methodology_summary = _methodology_summary(
-        manifest=manifest,
-        task_library=task_library,
-        scenario_library=scenario_library,
-        ledger=ledger,
+    methodology_summary = robot_eval_methodology_summary(
+        dataset_statuses=_string_list(manifest.get("dataset_statuses")),
+        task_count=int(task_library.get("task_count") or 0),
+        scenario_count=int(scenario_library.get("scenario_count") or 0),
+        record_count=int(ledger.get("record_count") or 0),
     )
 
     manifest_path = robot_eval_dir / "robot_eval_dataset_manifest.json"
@@ -4961,17 +4873,14 @@ def build_real_site_robot_eval_dataset(
     write_json(robot_eval_dir / "failure_taxonomy.json", failure_taxonomy)
     write_json(robot_eval_dir / "prediction_outcome_ledger.json", ledger)
     prediction_vs_actual_summary["artifact_purpose"] = manifest["artifact_purpose"]
-    summary_path = robot_eval_dir / "prediction_vs_actual_summary.json"
-    if evaluate_recorded_evidence or not summary_path.exists():
-        write_json(summary_path, prediction_vs_actual_summary)
+    write_robot_eval_reports(
+        robot_eval_dir, prediction_vs_actual_summary=prediction_vs_actual_summary,
+        recorded_trace_eval_report=recorded_trace_eval_report,
+        evaluate_recorded_evidence=evaluate_recorded_evidence,
+    )
     write_json(robot_eval_dir / "scoring_methodology.json", scoring_methodology)
     write_json(robot_eval_dir / "task_thresholds.json", task_thresholds)
     write_json(robot_eval_dir / "publication_readiness.json", publication_readiness)
-    for filename in ("recorded_trace_eval_report.json", "policy_eval_report.json"):
-        path = robot_eval_dir / filename
-        # Preparation cannot replace performance evidence from an earlier run.
-        if evaluate_recorded_evidence or not path.exists():
-            write_json(path, recorded_trace_eval_report)
     write_json(robot_eval_dir / "rights_packet.json", rights_packet)
     write_json(robot_eval_dir / "rights_ledger.json", rights_ledger)
     write_text(robot_eval_dir / "eval_methodology_summary.md", methodology_summary)
@@ -4980,11 +4889,8 @@ def build_real_site_robot_eval_dataset(
 
     result_paths = robot_eval_result_artifact_paths(
         robot_eval_dir, manifest_path=manifest_path, legacy_manifest_path=legacy_manifest_path,
+        evaluate_recorded_evidence=evaluate_recorded_evidence,
     )
-    if not evaluate_recorded_evidence:
-        for key in ("prediction_vs_actual_summary_path", "recorded_trace_eval_report_path"):
-            result_paths.pop(key, None)
-
     return {
         "schema_version": "real_site_robot_eval_dataset_result.v1",
         "artifact_purpose": manifest["artifact_purpose"],
