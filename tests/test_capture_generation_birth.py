@@ -101,6 +101,20 @@ def _next_delivery(owner, membership_raw, *, new_video):
     return owner, selector, encoded
 
 
+def _without_retirement_policy(access, policy, target, tmp_path, monkeypatch, policy_kind):
+    """Reuse the existing birth fixture with the first-install fixed namespace."""
+    monkeypatch.setattr(access, '_CAPTURE_STORAGE_ROOT', target.parents[4])
+    monkeypatch.setattr(access, '_CAPTURE_STATE_ROOT', tmp_path)
+    Path(policy['coordinator_path']).rename(tmp_path / 'coordinator')
+    policy['coordinator_path'] = str(tmp_path / 'coordinator')
+    if policy_kind == 'absent':
+        access._INSTALLED_POLICY.unlink()
+        monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
+    else:
+        policy['enabled'] = False
+        _sealed_file(access._INSTALLED_POLICY, policy, 'policy_digest', mode=0o644)
+
+
 def test_capture_birth_retains_original_proofs_before_empty_target(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
 
@@ -366,13 +380,16 @@ def test_retired_capture_requires_new_raw_delivery_and_marker(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize('terminal', [False, True])
+@pytest.mark.parametrize('policy_kind', ['enabled', 'absent', 'disabled'])
 def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
-        tmp_path, monkeypatch, terminal):
+        tmp_path, monkeypatch, terminal, policy_kind):
     from blueprint_pipeline import capture_original_owner_observer as observer
     from blueprint_pipeline import pubsub_handoff_listener as listener
 
-    _, policy, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch,
+    access, policy, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch,
                                                                     prepare_parent=False)
+    if policy_kind != 'enabled':
+        _without_retirement_policy(access, policy, target, tmp_path, monkeypatch, policy_kind)
     membership = json.loads(membership_raw)
     contents = {
         owner['completion_marker']['object_name']: b'{"done":true}',
@@ -616,7 +633,6 @@ def test_selected_staging_failure_reason_is_safe_and_preclaim(tmp_path, monkeypa
     from blueprint_pipeline import capture_delivery_staging as staging
     from blueprint_pipeline import capture_original_owner_observer as observer
     from blueprint_pipeline import pubsub_handoff_listener as listener
-    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
     from blueprint_pipeline import website_scene_workspace_retention as retention
     from blueprint_pipeline.task_evaluation_scene_retirement_access import SceneRetirementAccessError
 
@@ -644,7 +660,9 @@ def test_selected_staging_failure_reason_is_safe_and_preclaim(tmp_path, monkeypa
         return raw, member, []
     monkeypatch.setattr(staging, 'load_selected_capture_membership', membership)
     if phase == "policy":
-        monkeypatch.setattr(generations, '_policy', lambda: None)
+        def policy_refused(*args, **kwargs):
+            raise SceneRetirementAccessError('scene_capture_birth_policy_unavailable')
+        monkeypatch.setattr(staging, 'birth_capture_member', policy_refused)
     if phase in {"birth", "typed_birth_owner", "unsafe_typed_birth_owner"}:
         def refused(*args, **kwargs):
             if phase == "typed_birth_owner":
@@ -690,3 +708,133 @@ def test_incomplete_capture_birth_with_absent_workspace_is_not_adopted(tmp_path,
             target, observation=owner, membership_selector=selector, membership_raw=raw,
             require_policy=True)
     assert not target.exists() and state.read_bytes() == before
+
+
+@pytest.mark.parametrize('policy_kind', ['absent', 'disabled'])
+def test_authenticated_birth_without_retirement_preserves_evidence_and_conflicts(
+        tmp_path, monkeypatch, policy_kind):
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+
+    access, policy, target, owner, selector, raw = _fixture(tmp_path, monkeypatch, prepare_parent=False)
+    _without_retirement_policy(access, policy, target, tmp_path, monkeypatch, policy_kind)
+    assert generations.birth_capture_member(target, observation=owner,
+        membership_selector=selector, membership_raw=raw) is None
+    with pytest.raises(ValueError, match='scene_capture_birth_policy_unavailable'):
+        generations.birth_capture_member(target, observation=owner,
+            membership_selector=selector, membership_raw=raw, require_policy=True)
+    assert not target.parent.exists()
+    born = generations.birth_capture_member(target, observation=owner,
+        membership_selector=selector, membership_raw=raw, require_authenticated_birth=True)
+    assert generations.birth_capture_member(target, observation=owner,
+        membership_selector=selector, membership_raw=raw, require_authenticated_birth=True) == born
+    assert generations.capture_birth_source_projection(target)['generation_id'] == born['generation_id']
+    assert access._policy() is None and list(target.iterdir()) == []
+    newer, new_selector, new_raw = _next_delivery(owner, raw, new_video=True)
+    with pytest.raises(ValueError, match='scene_capture_active_delivery_conflict'):
+        generations.birth_capture_member(target, observation=newer,
+            membership_selector=new_selector, membership_raw=new_raw, require_authenticated_birth=True)
+    state = Path(policy['generation_store']) / (hashlib.sha256(str(target).encode()).hexdigest() + '.json')
+    assert json.loads(state.read_bytes()) == born
+    retired = dict(born, state='retired', state_sequence=born['state_sequence'] + 1)
+    _sealed_file(state, retired, 'state_digest', mode=0o600)
+    with pytest.raises(ValueError, match='scene_retirement_generation_unavailable'):
+        generations.capture_birth_source_projection(target)
+    target.rmdir()  # Disposable retirement simulation; retained producer proofs stay intact.
+    with pytest.raises(ValueError):
+        generations.birth_capture_member(target, observation=owner,
+            membership_selector=selector, membership_raw=raw, require_authenticated_birth=True)
+    assert not target.exists() and Path(born['owner_observation_raw_ref']['path']).is_file()
+
+
+@pytest.mark.parametrize('fault', ['coordinator_missing', 'store_missing', 'store_mode',
+                                   'store_link', 'owner', 'membership', 'occupied', 'path'])
+def test_disabled_authenticated_birth_refuses_unproved_inputs_before_birth(tmp_path, monkeypatch, fault):
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+
+    access, policy, target, owner, selector, raw = _fixture(tmp_path, monkeypatch)
+    _without_retirement_policy(access, policy, target, tmp_path, monkeypatch, 'absent')
+    store = Path(policy['generation_store'])
+    if fault == 'coordinator_missing':
+        (tmp_path / 'coordinator').rmdir()
+    elif fault == 'store_missing':
+        store.rmdir()
+    elif fault == 'store_mode':
+        store.chmod(0o777)
+    elif fault == 'store_link':
+        store.rename(tmp_path / 'other-store')
+        store.symlink_to(tmp_path / 'other-store', target_is_directory=True)
+    elif fault == 'owner':
+        owner['capture_rights']['consent_revoked'] = True
+    elif fault == 'membership':
+        raw += b' '
+    elif fault == 'occupied':
+        target.mkdir()
+        (target / 'existing').write_bytes(b'retained')
+    elif fault == 'path':
+        target = tmp_path / 'outside-native'
+    before = sorted((p.name, p.read_bytes()) for p in store.iterdir()) if store.exists() else []
+    with pytest.raises((ValueError, OSError)):
+        generations.birth_capture_member(target, observation=owner,
+            membership_selector=selector, membership_raw=raw, require_authenticated_birth=True)
+    if fault == 'occupied':
+        key = hashlib.sha256(str(target).encode()).hexdigest()
+        assert [(p.name, p.read_bytes()) for p in store.iterdir()] == [(key + '.lock', b'')]
+    else:
+        assert sorted((p.name, p.read_bytes()) for p in store.iterdir()) == before if store.exists() else not before
+    if fault == 'occupied':
+        assert (target / 'existing').read_bytes() == b'retained'
+    else:
+        assert not target.exists()
+    if fault in {'coordinator_missing', 'store_missing', 'store_mode', 'store_link'}:
+        with pytest.raises((ValueError, OSError)):
+            generations.capture_birth_source_projection(target)
+
+
+def test_disabled_birth_and_payload_processing_hold_fixed_shared_fence(tmp_path, monkeypatch):
+    import fcntl
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import pubsub_handoff_scene_operations as operations
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+
+    access, policy, target, owner, selector, raw = _fixture(tmp_path, monkeypatch, prepare_parent=False)
+    _without_retirement_policy(access, policy, target, tmp_path, monkeypatch, 'absent')
+    with access._opened(
+            tmp_path / 'coordinator', directory=True, protected=True) as (fd, _):
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match='scene_retirement_generation_unavailable'):
+            generations.birth_capture_member(target, observation=owner,
+                membership_selector=selector, membership_raw=raw, require_authenticated_birth=True)
+    member = json.loads(raw)
+    payload = {'bucket': owner['bucket'], 'scene_id': owner['scene_id'],
+        'capture_id': owner['capture_id'], 'raw_prefix_uri': owner['raw_prefix_uri'],
+        'source_finalize': {**member['source_finalize'], 'event_id': 'evt-1', 'event_source': 'storage'},
+        'source_membership_selector': selector}
+    def body(*args, **kwargs):
+        with access._opened(tmp_path / 'coordinator', directory=True, protected=True) as (fd, _):
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert not target.exists()
+        return {'status': 'fixture_body_only'}
+    monkeypatch.setattr(operations, '_process_handoff_payload_body', body)
+    result = listener.process_handoff_payload(payload, storage_root=target.parents[4], provider='local')
+    assert result['status'] == 'fixture_body_only' and not target.exists()
+
+
+def test_native_policy_cannot_rebind_fixed_birth_evidence_or_switch_mid_admission(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+
+    access, policy, target, _, _, _ = _fixture(tmp_path, monkeypatch, prepare_parent=False)
+    _without_retirement_policy(access, policy, target, tmp_path, monkeypatch, 'disabled')
+    policy['enabled'] = True
+    policy['coordinator_path'] = str(tmp_path / 'foreign-coordinator')
+    _sealed_file(access._INSTALLED_POLICY, policy, 'policy_digest', mode=0o644)
+    with pytest.raises(ValueError, match='scene_capture_birth_policy_storage_mismatch'):
+        with access.exclusive_scene_access():
+            pytest.fail('alternate native fence admitted')
+    policy['enabled'] = False
+    policy['coordinator_path'] = str(tmp_path / 'coordinator')
+    _sealed_file(access._INSTALLED_POLICY, policy, 'policy_digest', mode=0o644)
+    with pytest.raises(ValueError, match='scene_capture_birth_policy_changed'):
+        with generations._capture_admission(target, required=True, birth=True):
+            policy['enabled'] = True
+            _sealed_file(access._INSTALLED_POLICY, policy, 'policy_digest', mode=0o644)

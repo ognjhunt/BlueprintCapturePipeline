@@ -1617,6 +1617,92 @@ def _install_retention_plan_reader_access(root: Path, *, owner_gid: int) -> dict
             "reader_gid": observed.st_gid, "mode": "0750", "file_permissions_changed": False}
 
 
+def _install_scene_retirement_stores(*, root_prefix: str | Path | None = None) -> dict[str, Any]:
+    """Provision only the disabled stores already declared by first installation.
+
+    Existing authority/data is verified, never reowned or repaired. No policy,
+    consent, generation, cleanup flag or new privileged operation is issued.
+    """
+    from blueprint_pipeline.task_evaluation_scene_retirement_access import (
+        _close_owned, _identity, _open_owned, _opened,
+    )
+
+    ids = _service_account_ids(DEFAULT_SERVICE_ACCOUNT)
+    if ids is None:
+        raise ControlPlaneDeployError("deploy_scene_retirement_store_account_missing")
+    service_uid, service_gid = ids
+    root = Path('/var/lib/blueprint/scene-retirement')
+    if root_prefix is not None:
+        root = Path(root_prefix) / root.relative_to('/')
+    rows = [(root / relative if relative else root, mode,
+             service_uid if service else _SCENE_RUNTIME_OWNER, service_gid)
+            for relative, mode, service in (
+                ('', 0o755, False), ('coordinator', 0o755, False),
+                ('generations', 0o700, True), ('journals', 0o700, False),
+                ('journals/processes', 0o700, False), ('journals/retired', 0o700, False),
+                ('journals.metadata', 0o750, False), ('consents', 0o700, False))]
+    error = 'deploy_scene_retirement_store_unsafe'
+    def require(value):
+        if not value:
+            raise ControlPlaneDeployError(error)
+    def verify(path, mode, uid, gid):
+        with _opened(path, directory=True) as (_, info):
+            require((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (uid, gid, mode))
+    try:
+        # Complete preflight precedes the first write. The fixed parent must
+        # already be protected; this step never creates arbitrary ancestry.
+        with _opened(root.parent, directory=True, protected=True):
+            pass
+        existing = set()
+        for path, mode, uid, gid in rows:
+            try:
+                verify(path, mode, uid, gid)
+            except FileNotFoundError:
+                continue
+            existing.add(path)
+        created = []
+        for path, mode, uid, gid in rows:
+            if path in existing:
+                verify(path, mode, uid, gid)
+                continue
+            with _opened(path.parent, directory=True, protected=True) as (parent, parent_info):
+                expected = _identity(parent_info)
+                require(_identity(os.fstat(parent)) == expected)
+                os.mkdir(path.name, mode, dir_fd=parent)
+                # Only the directory created by this invocation can be chowned.
+                before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                require(stat.S_ISDIR(before.st_mode) and before.st_uid == os.geteuid())
+                fd, info = _open_owned(path.name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=parent)
+                owned = _identity(info)
+                try:
+                    require(owned == _identity(before))
+                    require(_identity(os.fstat(parent)) == expected)
+                    os.fchown(fd, uid, gid)
+                    require(_identity(os.fstat(fd)) == owned
+                            and _identity(os.stat(path.name, dir_fd=parent, follow_symlinks=False)) == owned)
+                    os.fchmod(fd, mode)
+                    named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+                    require(_identity(named)[:2] == owned[:2]
+                            and stat.S_IMODE(named.st_mode) == mode)
+                    owned = _identity(named)
+                    info = os.fstat(fd)
+                    require(_identity(info) == owned
+                            and (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (uid, gid, mode))
+                    require(_identity(os.stat(path.name, dir_fd=parent, follow_symlinks=False)) == owned
+                            and _identity(os.fstat(parent)) == expected)
+                    os.fsync(fd)
+                    require(_identity(os.fstat(parent)) == expected)
+                    os.fsync(parent)
+                finally:
+                    require(_close_owned(fd, owned) is None)
+            verify(path, mode, uid, gid)
+            created.append({'path': str(path), 'owner_uid': uid, 'owner_gid': gid, 'mode': f'{mode:04o}'})
+        return {'status': 'ready', 'created': created, 'created_count': len(created),
+                'verified_count': len(rows), 'authority_issued': False, 'cleanup_enabled': False}
+    except (OSError, ValueError) as exc:
+        raise ControlPlaneDeployError(error) from exc
+
+
 def _install_unit_sandbox_paths(
     *,
     release_path: str | Path,
@@ -4434,6 +4520,7 @@ def deploy_control_plane_commit(
         scene_retirement_runtime = _prepare_scene_retirement_runtime(
             source_repo=source, source_commit=source_commit
         )
+        scene_retirement_stores = _install_scene_retirement_stores()
         _mark_stage("release_staged")
         # Record what this deploy really stages (the release checkout it created
         # and the runtime trees it provisions) as the deploy role's footprint.
@@ -4669,6 +4756,7 @@ def deploy_control_plane_commit(
         "disk_reservation_estimate": disk_reservation_estimate,
         "disk_reservation_runtime": disk_reservation_runtime,
         "scene_retirement_runtime": scene_retirement_runtime,
+        "scene_retirement_stores": scene_retirement_stores,
         "surfaces": [
             {"name": name, "path": str(path), "head": observed[name]}
             for name, path in sorted(surfaces.items())

@@ -1291,6 +1291,8 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_quiesce_active_path_units": lambda _before: [],
         "stage_task_evaluation_control_plane_release": lambda **_kwargs: staged,
         "_install_unit_sandbox_paths": lambda **_kwargs: [],
+        "_install_scene_retirement_stores": lambda: {"status": "test_host_step_stub",
+            "authority_issued": False, "cleanup_enabled": False},
         "provision_production_cad_skill_sources": lambda _root: runtime_sources,
         "validate_splat_render_prerequisites": lambda **_kwargs: {"entrypoints": entrypoints},
         "_provision_scene_configuration_from_release": lambda **_kwargs: {"environment": {}},
@@ -2546,6 +2548,9 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
             "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False,
         }),
     )
+    monkeypatch.setattr(deploy, "_install_scene_retirement_stores",
+        lambda: (assert_lock_held("scene_retirement_disabled_stores") or {
+            "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False}))
     monkeypatch.setattr(
         deploy,
         "_restart_units",
@@ -2620,6 +2625,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert observed == [
         "path_quiesce",
         "scene_retirement_runtime_prepare",
+        "scene_retirement_disabled_stores",
         "restart",
         "runtime_probe",
         "path_activation",
@@ -3230,6 +3236,8 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
     monkeypatch.setattr(deploy, "_prepare_scene_retirement_runtime", lambda **_kwargs: {
         "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False,
     })
+    monkeypatch.setattr(deploy, "_install_scene_retirement_stores", lambda: {
+        "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False})
     watcher = "blueprint-scene-object-discovery.path"
     restored: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -4288,3 +4296,87 @@ def test_main_runtime_failure_retains_static_diagnostic_without_changing_blocker
     assert blocked["runtime_diagnostic"] == {"phase": "build_sdk", "reason": "deadline"}
     assert blocked["provider_mutation_performed"] is False
     assert "private-canary" not in text
+
+
+def _disabled_store_fixture(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    host = tmp_path / 'host'
+    (host / 'var/lib/blueprint').mkdir(parents=True)
+    monkeypatch.setattr(access, '_POLICY_UID', os.getuid())
+    monkeypatch.setattr(deploy, '_SCENE_RUNTIME_OWNER', os.getuid())
+    monkeypatch.setattr(deploy, '_service_account_ids', lambda _: (os.getuid(), os.getgid()))
+    return host, host / 'var/lib/blueprint/scene-retirement'
+
+
+def test_canonical_deploy_provisions_only_declared_disabled_stores_and_preserves_records(tmp_path, monkeypatch):
+    host, root = _disabled_store_fixture(tmp_path, monkeypatch)
+    root.mkdir(mode=0o755)
+    (root / 'journals').mkdir(mode=0o700)
+    (root / 'journals/processes').mkdir(mode=0o700)
+    record = root / 'journals/processes/existing.json'
+    record.write_bytes(b'{"retained":"original"}')
+    before = record.stat()
+    receipt = deploy._install_scene_retirement_stores(root_prefix=host)
+    assert receipt['created_count'] == 5 and receipt['verified_count'] == 8
+    assert receipt['authority_issued'] is False and receipt['cleanup_enabled'] is False
+    expected = {'': 0o755, 'coordinator': 0o755, 'generations': 0o700, 'journals': 0o700,
+        'journals/processes': 0o700, 'journals/retired': 0o700, 'journals.metadata': 0o750, 'consents': 0o700}
+    for relative, mode in expected.items():
+        info = (root / relative).stat()
+        assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (os.getuid(), os.getgid(), mode)
+    assert not list((root / 'generations').iterdir()) and not list((root / 'consents').iterdir())
+    assert record.read_bytes() == b'{"retained":"original"}'
+    assert (record.stat().st_dev, record.stat().st_ino, record.stat().st_mtime_ns) == (
+        before.st_dev, before.st_ino, before.st_mtime_ns)
+    again = deploy._install_scene_retirement_stores(root_prefix=host)
+    assert again['created_count'] == 0 and again['verified_count'] == 8
+    assert not list(host.rglob('*policy*'))
+
+
+@pytest.mark.parametrize('fault', ['mode', 'link', 'file', 'ancestor'])
+def test_disabled_store_complete_preflight_refuses_unsafe_existing_paths_before_writes(tmp_path, monkeypatch, fault):
+    host, root = _disabled_store_fixture(tmp_path, monkeypatch)
+    root.mkdir(mode=0o755)
+    store = root / 'generations'
+    if fault == 'link':
+        outside = tmp_path / 'retained'
+        outside.mkdir()
+        (outside / 'record').write_bytes(b'retained')
+        store.symlink_to(outside, target_is_directory=True)
+    elif fault == 'file':
+        store.write_bytes(b'retained')
+    else:
+        store.mkdir(mode=0o777 if fault == 'mode' else 0o700)
+        (store / 'record').write_bytes(b'retained')
+    if fault == 'ancestor':
+        root.parent.chmod(0o777)
+    with pytest.raises(deploy.ControlPlaneDeployError, match='deploy_scene_retirement_store_unsafe'):
+        deploy._install_scene_retirement_stores(root_prefix=host)
+    assert not (root / 'coordinator').exists() and not (root / 'journals').exists()
+    assert store.read_bytes() == b'retained' if fault == 'file' else (store / 'record').read_bytes() == b'retained'
+
+
+def test_disabled_store_provision_never_closes_or_mutates_foreign_first_open_token(tmp_path, monkeypatch):
+    host, root = _disabled_store_fixture(tmp_path, monkeypatch)
+    foreign = tmp_path / 'retained-directory'
+    foreign.mkdir(mode=0o755)
+    original_open, original_close = os.open, os.close
+    foreign_fd = original_open(foreign, os.O_RDONLY | os.O_DIRECTORY)
+    before = os.fstat(foreign_fd)
+    adopted = []
+    def redirected(name, flags, *args, **kwargs):
+        if name == 'coordinator' and (root / 'coordinator').exists():
+            adopted.append(name)
+            return foreign_fd
+        return original_open(name, flags, *args, **kwargs)
+    monkeypatch.setattr(os, 'open', redirected)
+    try:
+        with pytest.raises(deploy.ControlPlaneDeployError, match='deploy_scene_retirement_store_unsafe'):
+            deploy._install_scene_retirement_stores(root_prefix=host)
+        after = os.fstat(foreign_fd)
+        assert adopted == ['coordinator']
+        assert (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid) == (
+            after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_gid)
+        assert not (root / 'generations').exists()
+    finally:
+        original_close(foreign_fd)

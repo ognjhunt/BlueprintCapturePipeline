@@ -19,6 +19,10 @@ from pathlib import Path
 from .decision_evidence_contracts import canonical_digest
 
 _INSTALLED_POLICY = Path('/etc/blueprint/scene-retirement-policy.json')
+# First-install locations for authentic native capture evidence. Enabling a
+# retirement policy cannot redirect that evidence or its shared lifetime fence.
+_CAPTURE_STORAGE_ROOT = Path('/var/lib/blueprint/pubsub-handoffs')
+_CAPTURE_STATE_ROOT = Path('/var/lib/blueprint/scene-retirement')
 _POLICY_UID = 0
 _SERVICE_IDENTITY = None
 _MAX_JSON_BYTES = 64 * 1024
@@ -215,6 +219,13 @@ def _policy():
         _require(type(row['device']) is int and row['device'] >= 0)
     for field in ('coordinator_path', 'generation_store', 'journal_store'):
         _canonical(value[field])
+    if value['enabled'] and any(
+            Path(row['root']).is_relative_to(_CAPTURE_STORAGE_ROOT)
+            or _CAPTURE_STORAGE_ROOT.is_relative_to(Path(row['root']))
+            for row in value['roots']):
+        _require(value['coordinator_path'] == str(_CAPTURE_STATE_ROOT / 'coordinator')
+                 and value['generation_store'] == str(_CAPTURE_STATE_ROOT / 'generations'),
+                 'scene_capture_birth_policy_storage_mismatch')
     return value if value['enabled'] else None
 
 
