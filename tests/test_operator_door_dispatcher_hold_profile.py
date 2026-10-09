@@ -28,11 +28,46 @@ def test_profile_fences_api_schema_and_privileged_spool_reader(tmp_path):
     package_root = _profile_package(tmp_path)
     script = '''
 from pathlib import Path
+import hashlib, json
+from types import SimpleNamespace
+from unittest.mock import Mock
 from operator_door import requests as r
 from operator_door import status
+from operator_door.config import DoorConfig
+from operator_door.spool_runner import _process_one
 assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}
+commit = "a" * 40
+payload = json.dumps({"schema_version":"blueprint.deploy_release_provenance.v1",
+    "status":"verified", "git_sha":commit, "workflow_name":"Full Test Lane",
+    "workflow_path":".github/workflows/full-test-lane.yml", "job_name":"Full pytest lane on CPU runner",
+    "run_id":1, "collection":{"test_count":1}, "claim_boundary":{"canonical_full_lane_verified":True}})
+body = {"kind":"deploy", "commit":commit, "release_provenance_json":payload,
+        "release_provenance_sha256":hashlib.sha256(payload.encode()).hexdigest()}
+assert r.validate_request(body) == {**body, "wait_for_idle":True}
+assert r.required_scope("deploy") == "deploy"
+selected = {"kind":"selected-handoff", "mode":"dispatch", "bucket":"fixture-bucket",
+    "scene_id":"site-fixture", "capture_id":"walkthrough-fixture", "marker_generation":"1",
+    "handoff_generation":"2", "handoff_sha256":"sha256:"+"a"*64, "handoff_size_bytes":1,
+    "receipt_generation":"3", "receipt_sha256":"sha256:"+"b"*64, "receipt_size_bytes":1}
 assert r.required_scope("selected-handoff") == "operate"
-# No arbitrary new operation: incomplete selected bodies remain refused.
+assert r.validate_request(selected) == selected
+assert r.validate_request_id("20261009T000000Z-selected-handoff-0123abcd")
+try: r.validate_request({**selected, "mode":"inspect"})
+except r.RequestRefused as e: assert e.code == "selected_handoff_dispatch_only"
+else: raise AssertionError("mutating inspection admitted through restricted profile")
+config = DoorConfig(state_root=str(Path.cwd() / "state"))
+spool = Path(config.spool_root)
+for name in ("processing", "completed", "results"):
+    (spool / name).mkdir(parents=True)
+request_id = "20261009T000000Z-selected-handoff-0123abcd"
+claimed = spool / "processing" / (request_id + ".json")
+claimed.write_text(json.dumps({"schema":r.SCHEMA, "id":request_id, "requested_by":"fixture",
+    "request":{**selected, "mode":"inspect"}}))
+runner = SimpleNamespace(run=Mock(side_effect=AssertionError("inspection launched")))
+_process_one(config, runner, claimed, request_id)
+runner.run.assert_not_called()
+refused = json.loads((spool / "results" / (request_id + ".json")).read_text())
+assert refused["status"] == "refused" and refused["code"] == "selected_handoff_dispatch_only"
 try: r.validate_request({"kind":"selected-handoff", "mode":"dispatch"})
 except r.RequestRefused as e: assert e.code == "selected_handoff_fields_invalid"
 else: raise AssertionError("unbound selected dispatch admitted")

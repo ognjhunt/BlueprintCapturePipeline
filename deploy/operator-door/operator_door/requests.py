@@ -71,9 +71,8 @@ _SCOPES = {
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
     # The API and privileged spool reader share this exact request allowlist.
-    # Selected processing narrows the existing operate ability to start the
-    # whole listener: one receipt-bound current-owner delivery, with normal
-    # processing/provider controls. It cannot release a hold or enable a timer.
+    # Production provenance uses the existing deploy operation. The owner also
+    # approved receipt-bound single-handoff dispatch; inspection stays refused.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -330,6 +329,8 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             normalized["bucket"] = bucket
         return normalized
     if kind == "selected-handoff":
+        if DISPATCHER_HOLD_ONLY and body.get("mode") != "dispatch":
+            raise RequestRefused("selected_handoff_dispatch_only")
         fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation",
                   "handoff_generation", "handoff_sha256", "handoff_size_bytes", "receipt_generation",
                   "receipt_sha256", "receipt_size_bytes"}
