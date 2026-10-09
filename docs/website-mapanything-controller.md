@@ -3,8 +3,9 @@
 ADP-009B / public day 14. MapAnything is an explicit optional backend, selected
 with `backend="mapanything"`, `BLUEPRINT_WEBSITE_GEOMETRY_BACKEND=mapanything`,
 or the existing explicit `BLUEPRINT_MAPANYTHING_MODEL_PATH` or
-`BLUEPRINT_WEBSITE_GEOMETRY_RESULT` compatibility routes. CPU frame preparation and the default Atlas handoff need no MapAnything
-installation, weights, or GPU allocation. Geometry remains estimated; it never
+`BLUEPRINT_WEBSITE_GEOMETRY_RESULT` compatibility routes. CPU frame preparation needs no MapAnything
+installation, weights, or GPU allocation. The current production reconstruction
+route uses Marble; Atlas access is unavailable and is not a default prerequisite. Geometry remains estimated; it never
 becomes measured scale or physical evidence.
 
 Source sampling is independent of provider capacity. The preparation CLI accepts
@@ -15,8 +16,9 @@ can verify/reuse legacy inputs without decoding again. Hidden reconstruction
 holdouts retain their existing split semantics. Source sample count, held-out
 count, planned provider inputs, and actual provider inputs are separate fields.
 
-The default route records `atlas_pose_inputs.json` as **pending**, with zero API
-mutation. The admitted producer must supply project asset references, source
+The explicit Atlas component route records `atlas_pose_inputs.json` as **pending**,
+with zero API mutation. It is preparation for a future available backend, not
+the current production handoff. The admitted producer must supply project asset references, source
 disclosure/spend authority, and the actual `images2PosedRGBD` operation. A
 retained `atlas_posed_rgbd_result.json` uses `website_atlas_pose_result.v1`, a
 canonical `digest`, the exact source/input `binding`, the documented pose task
@@ -44,8 +46,17 @@ Visual delivery precedes that GPU job. CPU frame decoding, Gemini analysis,
 hosted SAM tracking and image editing prepare Marble's input. The provider
 publishes the finished visual world through the existing website callback.
 Only an explicitly selected MapAnything handoff requests that worker and lifts the retained SAM
-tracks into estimated geometry. A missing GPU or geometry result holds native
-construction, while the published visual world remains available. No second
+tracks into estimated geometry. Without retained source geometry or an explicitly selected geometry backend,
+the production handoff first retains the verified Marble base scene and then
+records `website_source_camera_depth_registration_required`. The native compiler
+needs original-source aligned depth, intrinsics and camera poses to lift the task
+masks and register the door/rack to the room; Marble's splat, coarse collider and
+estimated scale do not establish that alignment. Missing measured scale stays
+unknown. Atlas settings do not enable a current production handoff; its component
+helpers remain separate future compatibility. A legacy weights path alone does
+not select the production MapAnything controller. It invokes neither Atlas,
+MapAnything nor deferred mask completion automatically. A missing geometry result
+holds native construction, while the published visual world remains available. No second
 tracking purchase is needed for this binding.
 
 The service deployment supplies `BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE`, the
