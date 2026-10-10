@@ -27,7 +27,7 @@ TEMPLATE_FILES = {
 # these reviewed release bytes while preflight still checks the unchanged saved
 # template's original discovery inventory. No live template mutation is needed.
 FILES = dict(TEMPLATE_FILES)
-FILES['blueprint-evidence-qualification/SKILL.md'] = (11213, '9fc47ee2c08d9fe107c004ddf556957563faaa1a2ab9a31278f5f8db769c4110')
+FILES['blueprint-evidence-qualification/SKILL.md'] = (12472, '63287046b08198ff3975184c1629df2ada9059753af31328c2e2a6deeaaacaef')
 FILES['blueprint-evidence-qualification/references/prospect-contract.md'] = (2226, '39571718234ce2f7536a56f6e8440183536c259bf9b4e9a0d54944cc9aaaf6b3')
 
 
