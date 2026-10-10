@@ -1154,14 +1154,24 @@ def _gc_sandbox_main(selected):
     _TargetFiles.read_bytes = _retain_native_limit(_TargetFiles.read_bytes, native_limit_failures)
     _ReferenceFiles.read_bytes = _retain_native_limit(_ReferenceFiles.read_bytes, native_limit_failures)
     from blueprint_pipeline.control_plane_lane_disk_diagnostic_references import DiagnosticReferences
-    from tests.registered_disk_diagnostic_native_acceptance import observe_reference_failures
+    from tests.registered_disk_diagnostic_native_acceptance import (
+        PidOpenEvidence, observe_pid_opens, observe_reference_failures,
+    )
     native_reference_failures = {'records': [], 'truncated': False}
     observe_reference_failures(DiagnosticReferences, native_reference_failures)
-    report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(),
-        pins_root=Path(selection['pins']), apply=True, ack=RUN_ACK,
-        lane_scratch_roots=(settings['lane_scratch_work_root'], settings['lane_scratch_inputs_root']),
-        lane_scratch_enabled=True, _experiment_config_path=root / 'door.json',
-        now=time.time if selection['realtime'] else lambda: selection['now'])
+    pid_open_evidence = PidOpenEvidence()
+    try:
+        with observe_pid_opens(pid_open_evidence):
+            report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(),
+                pins_root=Path(selection['pins']), apply=True, ack=RUN_ACK,
+                lane_scratch_roots=(settings['lane_scratch_work_root'], settings['lane_scratch_inputs_root']),
+                lane_scratch_enabled=True, _experiment_config_path=root / 'door.json',
+                now=time.time if selection['realtime'] else lambda: selection['now'])
+    finally:
+        try:
+            native_reference_failures['pid_open_evidence'] = pid_open_evidence.packet()
+        except Exception:
+            pass  # Diagnostic projection never replaces the original GC refusal.
     outcomes = report['registered_experiments']['outcomes']
     chosen = next((row for row in outcomes if row['action_id'] == selection['action_id']), None)
     if chosen is None:
