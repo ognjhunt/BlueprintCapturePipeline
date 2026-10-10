@@ -1617,6 +1617,34 @@ def _install_retention_plan_reader_access(root: Path, *, owner_gid: int) -> dict
             "reader_gid": observed.st_gid, "mode": "0750", "file_permissions_changed": False}
 
 
+def _scene_retirement_store_diagnostic(value: Any) -> dict[str, Any] | None:
+    """Project only fixed store names and bounded metadata, never error text."""
+    if not isinstance(value, dict):
+        return None
+    allowed = {
+        'store': {'parent', 'root', 'coordinator', 'generations', 'journals',
+                  'journals/processes', 'journals/retired', 'journals.metadata', 'consents'},
+        'phase': {'preflight_parent', 'verify_existing', 'create_parent',
+                  'create_directory', 'configure_created', 'verify_created'},
+        'reason': {'metadata_mismatch', 'identity_changed', 'path_access_validation', 'io'},
+    }
+    if any(type(value.get(key)) is not str or value[key] not in choices
+           for key, choices in allowed.items()):
+        return None
+    result = {key: value[key] for key in allowed}
+    for key in ('expected', 'observed'):
+        metadata = value.get(key)
+        if (isinstance(metadata, dict)
+                and all(type(metadata.get(field)) is int and 0 <= metadata[field] < 2**32 - 1
+                        for field in ('uid', 'gid'))
+                and type(metadata.get('mode')) is str and len(metadata['mode']) == 4
+                and all(char in '01234567' for char in metadata['mode'])):
+            result[key] = {field: metadata[field] for field in ('uid', 'gid', 'mode')}
+    if type(value.get('errno')) is int and 0 < value['errno'] < 4096:
+        result['errno'] = value['errno']
+    return result
+
+
 def _install_scene_retirement_stores(*, root_prefix: str | Path | None = None) -> dict[str, Any]:
     """Provision only the disabled stores already declared by first installation.
 
@@ -1642,12 +1670,21 @@ def _install_scene_retirement_stores(*, root_prefix: str | Path | None = None) -
                 ('journals/processes', 0o700, False), ('journals/retired', 0o700, False),
                 ('journals.metadata', 0o750, False), ('consents', 0o700, False))]
     error = 'deploy_scene_retirement_store_unsafe'
-    def require(value):
+    phase, store = 'preflight_parent', 'parent'
+    def refuse(reason, **metadata):
+        failure = ControlPlaneDeployError(error)
+        failure.store_diagnostic = _scene_retirement_store_diagnostic(
+            {'phase': phase, 'store': store, 'reason': reason, **metadata})
+        return failure
+    def require(value, reason='identity_changed', **metadata):
         if not value:
-            raise ControlPlaneDeployError(error)
+            raise refuse(reason, **metadata)
     def verify(path, mode, uid, gid):
         with _opened(path, directory=True) as (_, info):
-            require((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (uid, gid, mode))
+            require((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (uid, gid, mode),
+                    'metadata_mismatch', expected={'uid': uid, 'gid': gid, 'mode': f'{mode:04o}'},
+                    observed={'uid': info.st_uid, 'gid': info.st_gid,
+                              'mode': f'{stat.S_IMODE(info.st_mode):04o}'})
     try:
         # Complete preflight precedes the first write. The fixed parent must
         # already be protected; this step never creates arbitrary ancestry.
@@ -1655,6 +1692,7 @@ def _install_scene_retirement_stores(*, root_prefix: str | Path | None = None) -
             pass
         existing = set()
         for path, mode, uid, gid in rows:
+            phase, store = 'verify_existing', str(path.relative_to(root)) if path != root else 'root'
             try:
                 verify(path, mode, uid, gid)
             except FileNotFoundError:
@@ -1662,18 +1700,23 @@ def _install_scene_retirement_stores(*, root_prefix: str | Path | None = None) -
             existing.add(path)
         created = []
         for path, mode, uid, gid in rows:
+            store = str(path.relative_to(root)) if path != root else 'root'
             if path in existing:
+                phase = 'verify_existing'
                 verify(path, mode, uid, gid)
                 continue
+            phase = 'create_parent'
             with _opened(path.parent, directory=True, protected=True) as (parent, parent_info):
                 expected = _identity(parent_info)
                 require(_identity(os.fstat(parent)) == expected)
+                phase = 'create_directory'
                 os.mkdir(path.name, mode, dir_fd=parent)
                 # Only the directory created by this invocation can be chowned.
                 before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
                 require(stat.S_ISDIR(before.st_mode) and before.st_uid == os.geteuid())
                 fd, info = _open_owned(path.name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=parent)
                 owned = _identity(info)
+                phase = 'configure_created'
                 try:
                     require(owned == _identity(before))
                     require(_identity(os.fstat(parent)) == expected)
@@ -1695,12 +1738,16 @@ def _install_scene_retirement_stores(*, root_prefix: str | Path | None = None) -
                     os.fsync(parent)
                 finally:
                     require(_close_owned(fd, owned) is None)
+            phase = 'verify_created'
             verify(path, mode, uid, gid)
             created.append({'path': str(path), 'owner_uid': uid, 'owner_gid': gid, 'mode': f'{mode:04o}'})
         return {'status': 'ready', 'created': created, 'created_count': len(created),
                 'verified_count': len(rows), 'authority_issued': False, 'cleanup_enabled': False}
     except (OSError, ValueError) as exc:
-        raise ControlPlaneDeployError(error) from exc
+        if isinstance(exc, ControlPlaneDeployError) and getattr(exc, 'store_diagnostic', None):
+            raise
+        raise refuse('io' if isinstance(exc, OSError) else 'path_access_validation',
+                     errno=getattr(exc, 'errno', None)) from exc
 
 
 def _install_unit_sandbox_paths(
@@ -5181,6 +5228,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
         if isinstance(exc, UntrustedDeploySourceError):
             blocked["remedy"] = exc.remedy
+        if str(exc) == 'deploy_scene_retirement_store_unsafe':
+            store_diagnostic = _scene_retirement_store_diagnostic(getattr(exc, 'store_diagnostic', None))
+            if store_diagnostic is not None:
+                blocked['store_diagnostic'] = store_diagnostic
         diagnostic = getattr(exc, "runtime_diagnostic", None)
         if (str(exc) == "deploy_scene_retirement_runtime_unproven" and isinstance(diagnostic, dict)
                 and diagnostic.get("phase") in {"retained_installer", "authenticate_installer", "execute_installer", "verify_result",
