@@ -2487,6 +2487,87 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
     ]
 
 
+@pytest.mark.parametrize("change", [
+    "none", "cheaper", "missing_ask", "machine", "compute", "storage",
+    "download", "upload", "missing_download", "nan_upload", "stale_create",
+    "create_disk",
+])
+def test_vast_preflight_offer_and_all_fees_remain_bound_at_create(tmp_path, monkeypatch, change):
+    from blueprint_pipeline.vast_provider_adapter import _offer_summary
+
+    approved_raw = {
+        "ask_contract_id": 7, "machine_id": 77, "gpu_name": "L40S", "gpu_ram": 48000,
+        "dph_base": 0.8, "storage_cost": 0.2, "disk_space": 300,
+        "inet_down_cost": 0.001, "inet_up_cost": 0.002,
+    }
+    approved = _offer_summary(approved_raw, disk_gb=140, require_requested_disk_price=True)
+    live = dict(approved_raw)
+    if change == "cheaper":
+        live["dph_base"] = 0.7
+    elif change == "missing_ask":
+        live["ask_contract_id"] = 8
+    elif change == "machine":
+        live["machine_id"] = 78
+    elif change == "compute":
+        live["dph_base"] = 0.9
+    elif change == "storage":
+        live["storage_cost"] = 0.3
+    elif change == "download":
+        live["inet_down_cost"] = 0.002
+    elif change == "upload":
+        live["inet_up_cost"] = 0.003
+    elif change == "missing_download":
+        del live["inet_down_cost"]
+    elif change == "nan_upload":
+        live["inet_up_cost"] = float("nan")
+    calls = []
+
+    def fake_api_json(*, method, path, **kwargs):
+        calls.append((method, path))
+        if method == "POST":
+            # A cheaper alternative must never replace the approved ask.
+            return 200, {"offers": [live, {**approved_raw, "ask_contract_id": 8, "dph_base": 0.1}]}
+        assert path == "/asks/7/"
+        return (409, {}) if change == "stale_create" else (200, {"new_contract": 42})
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "test-key")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    request = _with_prelaunch_guard(VastRenderProvider().build_request(_spec(), tmp_path))
+    request["approved_offer"] = approved
+    if change == "create_disk":
+        request["create_payload"]["disk"] += 1
+    result = VastRenderProvider().launch(tmp_path, request)
+    if change in {"none", "cheaper"}:
+        assert result["status"] == "launched"
+        assert calls == [("POST", "/bundles/"), ("PUT", "/asks/7/")]
+    else:
+        assert result["status"] == "blocked" and result["allocation_created"] is False
+        expected = [("POST", "/bundles/")]
+        if change == "create_disk":
+            expected = []
+        if change == "stale_create":
+            expected.append(("PUT", "/asks/7/"))
+        assert calls == expected
+        assert not (tmp_path / "started_vast_instance_id.txt").exists()
+    assert request["approved_offer"] == approved
+
+
+@pytest.mark.parametrize("invalid", [None, True, -1, float("nan"), float("inf")])
+def test_vast_invalid_approved_fee_blocks_before_provider_calls(tmp_path, monkeypatch, invalid):
+    from blueprint_pipeline.vast_provider_adapter import _offer_summary
+
+    approved = _offer_summary({"id": 7, "machine_id": 77, "dph_base": 0.8,
+        "storage_cost": 0.2, "inet_down_cost": 0, "inet_up_cost": 0},
+        disk_gb=140, require_requested_disk_price=True)
+    approved["provider_download_cost_per_gb_usd"] = invalid
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: pytest.fail("credentials reached"))
+    request = _with_prelaunch_guard(VastRenderProvider().build_request(_spec(), tmp_path))
+    request["approved_offer"] = approved
+    result = VastRenderProvider().launch(tmp_path, request)
+    assert result["blockers"] == ["vast_approved_offer_invalid"]
+    assert result["allocation_created"] is False and result["spend_occurred"] is False
+
+
 # ----------------------------- availability reflects secrets -----------------------------
 
 def test_availability_reflects_secret_presence(tmp_path: Path, monkeypatch) -> None:

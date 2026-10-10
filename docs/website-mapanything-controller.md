@@ -7,6 +7,9 @@ or the existing explicit `BLUEPRINT_MAPANYTHING_MODEL_PATH` or
 installation, weights, or GPU allocation. The current production reconstruction
 route uses Marble; Atlas access is unavailable and is not a default prerequisite. Geometry remains estimated; it never
 becomes measured scale or physical evidence.
+An unconfirmed task context must retain the typed `scene_preparation` purpose,
+identity and digest. Preparation preserves `confirmed=false` and customer
+criteria; it grants no spending authority.
 
 Source sampling is independent of provider capacity. The preparation CLI accepts
 `--maximum-frames`; Python callers accept `maximum_frames`, and the service may
@@ -68,7 +71,10 @@ an upload field or a per-capture command. The profile has:
 - `worker_image_digest`: the pinned container image reference, including digest.
 - `maximum_cost_usd`, `max_hourly_rate_usd`, `hard_ttl_seconds`, and
   `minimum_gpu_ram_mb`: the bounded worker limits. The TTL is 120–3600 seconds;
-  its maximum hourly cost must fit the cap.
+  its maximum hourly cost must fit the cap. The TTL bounds the independent
+  watchdog from arming, rounded down to whole minutes. The immutable worker
+  TTL reserves 120 seconds within that budget for controller preflight; delayed
+  allocation fails the existing watchdog deadline check.
 - `runtime_files`: four objects with absolute `path` and `sha256:`-prefixed
   `digest`: the Pipeline wheel for that release, the pinned blueprint-contracts
   wheel, the pinned MapAnything wheel, and the hash-locked dependency file.

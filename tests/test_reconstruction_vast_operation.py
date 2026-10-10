@@ -38,7 +38,7 @@ def _grant():
     )
 
 
-def _bound_request() -> dict:
+def _bound_request(preflight=None) -> dict:
     value = {
         "schema_version": "reconstruction_gpu_canary_request.v1",
         "operation": "pose_canary",
@@ -62,7 +62,7 @@ def _bound_request() -> dict:
         "proof_effect": "none",
         "request_digest": D[0],
         "bound_provider": "vast",
-        "bound_preflight_digest": D[6],
+        "bound_preflight_digest": canonical_digest(_preflight() if preflight is None else preflight),
         "bound_checkout_source_commit": SHA,
         "bound_checkout_clean": True,
         "provider_mutation_authorized": True,
@@ -217,6 +217,47 @@ def _validator(**_kwargs):
     return _validated_output()
 
 
+@pytest.mark.parametrize("operation", ["pose_canary", "website_mapanything"])
+@pytest.mark.parametrize("change", ["ask", "fee", "remove_offer"])
+def test_admitted_offer_snapshot_cannot_change_before_provider_access(tmp_path, operation, change):
+    preflight = _preflight()
+    preflight["selected_offer"] = {
+        "ask_contract_id": 7, "machine_id": 77, "disk_gb": 120,
+        "compute_hourly_rate_usd": 0.55, "storage_hourly_rate_usd": 0.03,
+        "hourly_rate_usd": 0.58, "provider_download_cost_per_gb_usd": 0.001,
+        "provider_upload_cost_per_gb_usd": 0.002,
+    }
+    request, receipt = _bound_request(preflight), _bundle_receipt()
+    request["operation"] = receipt["operation"] = operation
+    request["expected_runtime_result_schema"] = vast_operation._EXPECTED_RESULTS[operation]
+    if operation == "website_mapanything":
+        receipt["artifact_members"].extend({
+            "archive_path": f"inputs/runtime{index}.whl" if index < 3 else "inputs/dependencies.lock",
+            "digest": D[0], "bytes": 1,
+            "role": "worker_wheel" if index < 3 else "worker_dependencies",
+        } for index in range(4))
+        receipt["artifact_member_count"] = len(receipt["artifact_members"])
+    request["bound_request_digest"] = canonical_digest(request, digest_field="bound_request_digest")
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    if change == "ask":
+        preflight["selected_offer"]["ask_contract_id"] += 1
+    elif change == "fee":
+        preflight["selected_offer"]["provider_download_cost_per_gb_usd"] += 1
+    else:
+        del preflight["selected_offer"]
+    provider = _Provider()
+    provider.billable_inventory = lambda **kwargs: pytest.fail("provider reached")
+    with pytest.raises(ReconstructionVastOperationError, match="preflight_digest_mismatch"):
+        run_reconstruction_vast_operation(bound_request=request, bundle_receipt=receipt,
+            preflight=preflight, job_dir=tmp_path,
+            input_bundle_get_url="https://objects.example/input",
+            input_receipt_get_url="https://objects.example/receipt",
+            output_bundle_put_url="https://objects.example/put",
+            output_bundle_get_url="https://objects.example/get",
+            provider=provider, paid_resource_admission_grant=_grant())
+    assert provider.requests == []
+
+
 def test_operation_retrieves_validates_then_tears_down_and_replays_offline(
     tmp_path: Path,
 ) -> None:
@@ -224,8 +265,14 @@ def test_operation_retrieves_validates_then_tears_down_and_replays_offline(
     times = iter([1000.0, 1001.0, 1002.0])
     preflight = _preflight()
     preflight["capacity_request"] = {"excluded_machine_ids": [123]}
+    preflight["selected_offer"] = {
+        "ask_contract_id": 7, "machine_id": 77, "disk_gb": 120,
+        "compute_hourly_rate_usd": 0.55, "storage_hourly_rate_usd": 0.03,
+        "hourly_rate_usd": 0.58, "provider_download_cost_per_gb_usd": 0.001,
+        "provider_upload_cost_per_gb_usd": 0.002,
+    }
     result = run_reconstruction_vast_operation(
-        bound_request=_bound_request(),
+        bound_request=_bound_request(preflight),
         bundle_receipt=_bundle_receipt(),
         preflight=preflight,
         job_dir=tmp_path,
@@ -242,6 +289,7 @@ def test_operation_retrieves_validates_then_tears_down_and_replays_offline(
         watchdog_validator=lambda _watchdog, _now, _ttl: True,
     )
     assert provider.specs[0].excluded_machine_ids == (123,)
+    assert provider.requests[0]["approved_offer"] == preflight["selected_offer"]
     assert result["status"] == "completed"
     assert result["operation_result_status"] == "succeeded"
     assert result["output_retrieved_before_teardown"] is True
@@ -265,7 +313,7 @@ def test_operation_retrieves_validates_then_tears_down_and_replays_offline(
     assert teardown["output_retrieved_before_teardown"] is True
     replay = replay_reconstruction_vast_operation(
         job_dir=tmp_path,
-        bound_request=_bound_request(),
+        bound_request=_bound_request(preflight),
         output_validator=_validator,
     )
     assert replay["status"] == "replay_verified"
@@ -531,7 +579,7 @@ def test_missing_output_checks_provider_exit_and_tears_down_before_ttl(tmp_path,
     preflight = _preflight()
     preflight["watchdog"]["watchdog_out_dir"] = str(tmp_path / "watchdog")
     result = run_reconstruction_vast_operation(
-        bound_request=_bound_request(), bundle_receipt=_bundle_receipt(), preflight=preflight,
+        bound_request=_bound_request(preflight), bundle_receipt=_bundle_receipt(), preflight=preflight,
         job_dir=tmp_path, input_bundle_get_url="https://objects.example/input",
         input_receipt_get_url="https://objects.example/receipt",
         output_bundle_put_url="https://objects.example/put", output_bundle_get_url="https://objects.example/get",

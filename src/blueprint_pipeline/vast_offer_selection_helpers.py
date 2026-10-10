@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -80,3 +81,39 @@ def version_at_least(value: Any, minimum: str) -> bool:
         return False
     width = max(len(observed), len(required))
     return observed + (0,) * (width - len(observed)) >= required + (0,) * (width - len(required))
+
+
+def _approved_vast_offer_matches(approved: Any, observed: Any = None) -> bool:
+    """Retain the preflight ask and every mandatory price before a paid create."""
+    if not isinstance(approved, Mapping):
+        return False
+    for key in ("ask_contract_id", "machine_id", "disk_gb"):
+        if type(approved.get(key)) is not int or approved[key] <= 0:
+            return False
+    prices = (
+        "compute_hourly_rate_usd", "storage_hourly_rate_usd", "hourly_rate_usd",
+        "provider_download_cost_per_gb_usd", "provider_upload_cost_per_gb_usd",
+    )
+    for key in prices:
+        value = approved.get(key)
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            return False
+    if approved["compute_hourly_rate_usd"] <= 0 or not math.isclose(
+        approved["hourly_rate_usd"],
+        approved["compute_hourly_rate_usd"] + approved["storage_hourly_rate_usd"],
+        rel_tol=1e-12, abs_tol=1e-12,
+    ):
+        return False
+    if observed is None:
+        return True
+    if not isinstance(observed, Mapping):
+        return False
+    for key in ("ask_contract_id", "machine_id", "disk_gb"):
+        if type(observed.get(key)) is not int or observed[key] != approved[key]:
+            return False
+    for key in prices:
+        value = observed.get(key)
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or value < 0 or value > approved[key]):
+            return False
+    return True

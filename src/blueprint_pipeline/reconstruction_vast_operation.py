@@ -20,6 +20,7 @@ from .canonical_3dgs_transport import (
 from .canonical_3dgs_vast_output import validate_canonical_3dgs_vast_output_bundle
 from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec
+from .vast_offer_selection_helpers import _approved_vast_offer_matches
 from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
@@ -434,6 +435,15 @@ def run_reconstruction_vast_operation(
             ["reconstruction_vast_operation_execution_bounds_invalid"]
         )
     transport_bytes = receipt.get("transport_bundle_bytes")
+    if request.get("bound_preflight_digest") != canonical_digest(preflight):
+        raise ReconstructionVastOperationError(
+            ["reconstruction_vast_operation_preflight_digest_mismatch"]
+        )
+    approved_offer = preflight.get("selected_offer")
+    if (operation == "website_mapanything" or approved_offer is not None) and not _approved_vast_offer_matches(approved_offer):
+        raise ReconstructionVastOperationError(
+            ["reconstruction_vast_operation_approved_offer_invalid"]
+        )
     if canonical_splatfacto and (
         isinstance(transport_bytes, bool)
         or not isinstance(transport_bytes, int)
@@ -577,6 +587,8 @@ def run_reconstruction_vast_operation(
             excluded_machine_ids=tuple(preflight.get("capacity_request", {}).get("excluded_machine_ids", [])),
         )
         provider_request = provider.build_request(spec, root)
+        if approved_offer is not None:
+            provider_request["approved_offer"] = dict(approved_offer)
         provider_request["prelaunch_spend_guard"] = {
             "schema_version": "reconstruction_gpu_prelaunch_spend_guard.v1",
             "required_before_provider_launch": True,
