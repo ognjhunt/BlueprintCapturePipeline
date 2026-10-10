@@ -19,7 +19,8 @@ from .canonical_3dgs_transport import (
 )
 from .canonical_3dgs_vast_output import validate_canonical_3dgs_vast_output_bundle
 from .decision_evidence_contracts import canonical_digest
-from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec, _approved_vast_offer_matches
+from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec
+from .vast_offer_selection_helpers import _approved_vast_offer_matches
 from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
