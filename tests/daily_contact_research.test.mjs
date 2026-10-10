@@ -93,6 +93,37 @@ test('allowlist strips private queue fields and creates no separate-session auth
   assert.equal(context.separateSessionsAuthorized,false);assert.equal(context.tasks[0].secret,undefined);
   assert.deepEqual(await contactResearchContext(f.store,DAY),context);
 });
+test('retried contacts rotate behind fresh work beyond the former four-document prefix',async()=>{
+  const f=fixture();f.records.delete(`${ROOT}/contactResearchRuns/${DAY}`);f.records.delete(`${CONTACT}/${f.task.requestId}`);
+  const makeTask=i=>{const publication={...f.task.publication,prospectId:`fixture-${i}`};return {...f.task,publication,requestId:digest({publication,sourceDigest:f.task.sourceDigest})};};
+  const tasks=Array.from({length:8},(_,i)=>makeTask(i));
+  tasks.forEach((task,i)=>f.records.set(`${CONTACT}/${task.requestId}`,{task,state:'pending',attempts:i<3?50:0,requestedAt:NOW-1000+i, ...(i<3?{completedAt:NOW}: {})}));
+  const first=await contactResearchContext(f.store,DAY);
+  assert.deepEqual(first.tasks.map(t=>t.requestId),tasks.slice(3,6).map(t=>t.requestId));
+  // Completing/requeueing a batch moves it behind still-waiting work. Saved
+  // daily input stays immutable even as the queue changes.
+  for(const task of first.tasks){const r=f.records.get(`${CONTACT}/${task.requestId}`);r.attempts++;r.completedAt=NOW+1;}
+  assert.deepEqual(await contactResearchContext(f.store,DAY),first);
+  const next=await contactResearchContext(f.store,'2026-10-05');
+  assert.deepEqual(next.tasks.slice(0,2).map(t=>t.requestId),tasks.slice(6,8).map(t=>t.requestId));
+  assert.equal(next.tasks[2].maxAgentAttempts,2);
+  const retry=f.records.get(`${CONTACT}/${next.tasks[2].requestId}`);
+  assert.equal(retry.attempts,50);assert.equal(retry.state,'pending');
+});
+test('malformed leading contacts do not hide eligible pending requests',async()=>{
+  const f=fixture();f.records.delete(`${ROOT}/contactResearchRuns/${DAY}`);f.records.delete(`${CONTACT}/${f.task.requestId}`);
+  for(let i=0;i<5;i++)f.records.set(`${CONTACT}/malformed-${i}`,{state:'pending',attempts:0,task:{}});
+  f.records.set(`${CONTACT}/${f.task.requestId}`,{task:f.task,state:'pending',attempts:500});
+  const context=await contactResearchContext(f.store,DAY);
+  assert.deepEqual(context.tasks,[f.task]);
+  assert.equal(f.records.get(`${CONTACT}/${f.task.requestId}`).attempts,500);
+});
+test('queue history overflow refuses explicitly without creating an incomplete context',async()=>{
+  const f=fixture();f.records.delete(`${ROOT}/contactResearchRuns/${DAY}`);f.records.delete(`${CONTACT}/${f.task.requestId}`);
+  for(let i=0;i<10001;i++)f.records.set(`${CONTACT}/overflow-${i}`,{state:'pending',attempts:0,task:{}});
+  await assert.rejects(()=>contactResearchContext(f.store,DAY),/contact_research_queue_history_limit/);
+  assert.equal(f.records.has(`${ROOT}/contactResearchRuns/${DAY}`),false);
+});
 test('restart finishes exact saved terminal bytes without a provider create, and settled result is idempotent',async()=>{
   const f=fixture(),blob=f.saveRow();
   assert.equal(f.records.get(`${CONTACT}/${f.task.requestId}`).state,'running');
