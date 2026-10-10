@@ -50,9 +50,17 @@ export async function contactResearchContext(store,day) {
     store.budgetGate(control,{...control.config,search_provider:'perplexity-fast-v1'});
     const saved=await tx.get(ref);
     if(saved.exists) return saved.data().context;
-    const rows=await tx.get(store.db.collection(CONTACT).where('state','==','pending').limit(4));
-    const tasks=rows.docs.map(s=>({task:publicContactResearchTask(s.data()?.task),attempts:s.data()?.attempts}))
-      .filter(r=>r.task&&Number.isInteger(r.attempts)&&r.attempts>=0).slice(0,3).map(r=>r.task);
+    // Scan within the existing host history envelope; a four-document prefix
+    // lets persistent retries hide every later request. FIFO by latest queue
+    // activity rotates requeued work without resetting counts or imposing a cap.
+    const rows=await tx.get(store.db.collection(CONTACT).where('state','==','pending').limit(10001));
+    if(rows.docs.length>10000) fail('contact_research_queue_history_limit');
+    const queuedAt=r=>Math.max(...['requestedAt','completedAt'].map(k=>
+      Number.isSafeInteger(r[k])&&r[k]>=0?r[k]:0));
+    const tasks=rows.docs.map(s=>{const r=s.data();return {task:publicContactResearchTask(r?.task),attempts:r?.attempts,queuedAt:queuedAt(r)};})
+      .filter(r=>r.task&&Number.isSafeInteger(r.attempts)&&r.attempts>=0)
+      .sort((a,b)=>a.queuedAt-b.queuedAt||a.task.requestId.localeCompare(b.task.requestId))
+      .slice(0,3).map(r=>r.task);
     if(!tasks.length) return null;
     const context={version:'blueprint.contact-research-input.v1',date:day,tasks,separateSessionsAuthorized:false,
       sendsAuthorized:false,budget:'existing_daily_research_allocation'};
