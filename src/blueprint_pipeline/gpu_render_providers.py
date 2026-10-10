@@ -1786,6 +1786,42 @@ def run_vast_ssh_control(
         "raw_remote_output_recorded": False,
     }
 
+def _approved_vast_offer_matches(approved: Any, observed: Any = None) -> bool:
+    """Retain the preflight ask and every mandatory price before a paid create."""
+    if not isinstance(approved, Mapping):
+        return False
+    for key in ("ask_contract_id", "machine_id", "disk_gb"):
+        if type(approved.get(key)) is not int or approved[key] <= 0:
+            return False
+    prices = (
+        "compute_hourly_rate_usd", "storage_hourly_rate_usd", "hourly_rate_usd",
+        "provider_download_cost_per_gb_usd", "provider_upload_cost_per_gb_usd",
+    )
+    for key in prices:
+        value = approved.get(key)
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            return False
+    if approved["compute_hourly_rate_usd"] <= 0 or not math.isclose(
+        approved["hourly_rate_usd"],
+        approved["compute_hourly_rate_usd"] + approved["storage_hourly_rate_usd"],
+        rel_tol=1e-12, abs_tol=1e-12,
+    ):
+        return False
+    if observed is None:
+        return True
+    if not isinstance(observed, Mapping):
+        return False
+    for key in ("ask_contract_id", "machine_id", "disk_gb"):
+        if type(observed.get(key)) is not int or observed[key] != approved[key]:
+            return False
+    for key in prices:
+        value = observed.get(key)
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or value < 0 or value > approved[key]):
+            return False
+    return True
+
+
 class VastRenderProvider(GpuRenderProvider):
     name = "vast"
 
@@ -2165,6 +2201,14 @@ class VastRenderProvider(GpuRenderProvider):
             )
         except PaidResourceAdmissionBlocked as exc:
             return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
+        approved_offer = request.get("approved_offer")
+        if "approved_offer" in request and (
+            not _approved_vast_offer_matches(approved_offer)
+            or type(_mapping(request.get("create_payload")).get("disk")) is not int
+            or request["create_payload"]["disk"] != approved_offer["disk_gb"]
+        ):
+            return {"status": "blocked", "blockers": ["vast_approved_offer_invalid"],
+                    "allocation_created": False, "spend_occurred": False}
         key = self._key()
         if not key:
             return {"status": "blocked", "blockers": ["vast_api_key_missing"], "allocation_created": False, "spend_occurred": False}
@@ -2267,7 +2311,11 @@ class VastRenderProvider(GpuRenderProvider):
                 "spend_occurred": False,
             }
         remaining = list(offers)
-        last_blocker = "no_vast_offer_matching_rate_and_gpu_memory"
+        if approved_offer is not None:
+            remaining = [offer for offer in remaining
+                         if _offer_id(offer) == approved_offer["ask_contract_id"]]
+        last_blocker = ("vast_approved_offer_unavailable_or_changed" if approved_offer is not None
+                        else "no_vast_offer_matching_rate_and_gpu_memory")
         for _try in range(maximum_create_attempts):
             selection_kwargs = {
                 "max_hourly_rate": max_rate,
@@ -2289,6 +2337,8 @@ class VastRenderProvider(GpuRenderProvider):
             selection_kwargs.update(geolocation_selection_kwargs(request))
             offer = _select_offer(remaining, **selection_kwargs)
             if not offer:
+                break
+            if approved_offer is not None and not _approved_vast_offer_matches(approved_offer, offer):
                 break
             ask_id = offer.get("ask_contract_id")
             # ``_select_offer`` returns a sanitized summary, not the original
