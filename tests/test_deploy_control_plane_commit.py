@@ -4298,8 +4298,49 @@ def test_main_runtime_failure_retains_static_diagnostic_without_changing_blocker
     assert "private-canary" not in text
 
 
+@pytest.mark.parametrize('invalid_field', [None, 'store', 'phase', 'reason'])
+def test_main_store_failure_projects_only_bounded_diagnostic(tmp_path, monkeypatch, capsys, invalid_field):
+    _stub_main_break_glass_notes(monkeypatch, tmp_path)
+    diagnostic = {'phase': 'verify_existing', 'store': 'generations', 'reason': 'metadata_mismatch',
+                  'expected': {'uid': 1001, 'gid': 1002, 'mode': '0700', 'private': 'private-canary'},
+                  'observed': {'uid': 0, 'gid': 1002, 'mode': '0755'}, 'private': 'private-canary'}
+    if invalid_field:
+        diagnostic[invalid_field] = 'private-canary'
+    def refused(**kwargs):
+        error = deploy.ControlPlaneDeployError('deploy_scene_retirement_store_unsafe')
+        error.store_diagnostic = diagnostic
+        raise error
+    monkeypatch.setattr(deploy, 'deploy_control_plane_commit', refused)
+    assert deploy.main(_cli_args(tmp_path, tmp_path)) == 2
+    text = capsys.readouterr().out
+    blocked = json.loads(text)
+    assert blocked['blockers'] == ['deploy_scene_retirement_store_unsafe']
+    assert blocked['provider_mutation_performed'] is False
+    assert 'private-canary' not in text
+    if invalid_field:
+        assert 'store_diagnostic' not in blocked
+    else:
+        assert blocked['store_diagnostic'] == {
+            'phase': 'verify_existing', 'store': 'generations', 'reason': 'metadata_mismatch',
+            'expected': {'uid': 1001, 'gid': 1002, 'mode': '0700'},
+            'observed': {'uid': 0, 'gid': 1002, 'mode': '0755'}}
+
+
 def _disabled_store_fixture(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    # Some cloud sandboxes map the real / and sticky /tmp owner to nobody.
+    # Model these two host ancestors as root-owned without changing any inode,
+    # mode or descriptor check, or normalizing the store paths under test.
+    ancestors = {(path.stat().st_dev, path.stat().st_ino) for path in (Path('/'), Path('/tmp'))}
+    original_open = access._open_owned
+    def opened(*args, **kwargs):
+        fd, info = original_open(*args, **kwargs)
+        if (info.st_dev, info.st_ino) in ancestors:
+            fields = list(info)
+            fields[4] = 0
+            info = os.stat_result(fields)
+        return fd, info
+    monkeypatch.setattr(access, '_open_owned', opened)
     host = tmp_path / 'host'
     (host / 'var/lib/blueprint').mkdir(parents=True)
     monkeypatch.setattr(access, '_POLICY_UID', os.getuid())
@@ -4311,6 +4352,7 @@ def _disabled_store_fixture(tmp_path, monkeypatch):
 def test_canonical_deploy_provisions_only_declared_disabled_stores_and_preserves_records(tmp_path, monkeypatch):
     host, root = _disabled_store_fixture(tmp_path, monkeypatch)
     root.mkdir(mode=0o755)
+    root.chmod(0o755)
     (root / 'journals').mkdir(mode=0o700)
     (root / 'journals/processes').mkdir(mode=0o700)
     record = root / 'journals/processes/existing.json'
@@ -4337,6 +4379,7 @@ def test_canonical_deploy_provisions_only_declared_disabled_stores_and_preserves
 def test_disabled_store_complete_preflight_refuses_unsafe_existing_paths_before_writes(tmp_path, monkeypatch, fault):
     host, root = _disabled_store_fixture(tmp_path, monkeypatch)
     root.mkdir(mode=0o755)
+    root.chmod(0o755)
     store = root / 'generations'
     if fault == 'link':
         outside = tmp_path / 'retained'
@@ -4347,13 +4390,64 @@ def test_disabled_store_complete_preflight_refuses_unsafe_existing_paths_before_
         store.write_bytes(b'retained')
     else:
         store.mkdir(mode=0o777 if fault == 'mode' else 0o700)
+        store.chmod(0o777 if fault == 'mode' else 0o700)
         (store / 'record').write_bytes(b'retained')
     if fault == 'ancestor':
         root.parent.chmod(0o777)
-    with pytest.raises(deploy.ControlPlaneDeployError, match='deploy_scene_retirement_store_unsafe'):
+    with pytest.raises(deploy.ControlPlaneDeployError, match='deploy_scene_retirement_store_unsafe') as refusal:
         deploy._install_scene_retirement_stores(root_prefix=host)
+    diagnostic = refusal.value.store_diagnostic
+    assert diagnostic['store'] == ('parent' if fault == 'ancestor' else 'generations')
+    assert diagnostic['phase'] == ('preflight_parent' if fault == 'ancestor' else 'verify_existing')
+    assert diagnostic['reason'] == ('metadata_mismatch' if fault == 'mode' else 'path_access_validation')
+    if fault == 'mode':
+        assert diagnostic['expected'] == {'uid': os.getuid(), 'gid': os.getgid(), 'mode': '0700'}
+        assert diagnostic['observed'] == {'uid': os.getuid(), 'gid': os.getgid(),
+                                         'mode': f'{stat.S_IMODE(store.stat().st_mode):04o}'}
+    assert str(host) not in json.dumps(diagnostic)
     assert not (root / 'coordinator').exists() and not (root / 'journals').exists()
     assert store.read_bytes() == b'retained' if fault == 'file' else (store / 'record').read_bytes() == b'retained'
+
+
+def test_disabled_store_io_diagnostic_omits_private_error_path_and_preserves_denial(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    host, root = _disabled_store_fixture(tmp_path, monkeypatch)
+    def denied(*args, **kwargs):
+        raise PermissionError(errno.EACCES, 'private-canary-error', '/private-canary-path')
+    monkeypatch.setattr(access, '_opened', denied)
+    with pytest.raises(deploy.ControlPlaneDeployError, match='deploy_scene_retirement_store_unsafe') as refusal:
+        deploy._install_scene_retirement_stores(root_prefix=host)
+    assert refusal.value.store_diagnostic == {
+        'phase': 'preflight_parent', 'store': 'parent', 'reason': 'io', 'errno': errno.EACCES}
+    assert not root.exists()
+    assert 'private-canary' not in json.dumps(refusal.value.store_diagnostic)
+
+
+@pytest.mark.parametrize('field,index', [('uid', 4), ('gid', 5)])
+def test_disabled_store_reports_exact_acquired_owner_mismatch_before_writes(tmp_path, monkeypatch, field, index):
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    host, root = _disabled_store_fixture(tmp_path, monkeypatch)
+    root.mkdir(mode=0o755)
+    root.chmod(0o755)
+    store = root / 'generations'
+    store.mkdir(mode=0o700)
+    original_opened = access._opened
+    @contextlib.contextmanager
+    def observed(path, **kwargs):
+        with original_opened(path, **kwargs) as (fd, info):
+            if path == store:
+                fields = list(info)
+                fields[index] += 1
+                info = os.stat_result(fields)
+            yield fd, info
+    monkeypatch.setattr(access, '_opened', observed)
+    with pytest.raises(deploy.ControlPlaneDeployError, match='deploy_scene_retirement_store_unsafe') as refusal:
+        deploy._install_scene_retirement_stores(root_prefix=host)
+    expected = {'uid': os.getuid(), 'gid': os.getgid(), 'mode': '0700'}
+    assert refusal.value.store_diagnostic == {
+        'phase': 'verify_existing', 'store': 'generations', 'reason': 'metadata_mismatch',
+        'expected': expected, 'observed': {**expected, field: expected[field] + 1}}
+    assert not (root / 'coordinator').exists() and not (root / 'journals').exists()
 
 
 def test_disabled_store_provision_never_closes_or_mutates_foreign_first_open_token(tmp_path, monkeypatch):
