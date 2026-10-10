@@ -1,7 +1,7 @@
 """Adaptive discovery instructions and conservative, explicitly estimated costs.
 
-No provider, credentials, sink writes or scheduling. The daily $1 soft target is
-separate from the explicitly authorized one-time test ceiling.
+No provider, credentials, sink writes or scheduling. Costs are reporting data;
+original source, time and resource boundaries remain.
 """
 import hashlib
 import json
@@ -249,7 +249,7 @@ def instructions(target_usd=1):
         "open primary operator and product sources, follow gaps and contradictions, and reuse reviewed "
         "knowledge. There is no two-search/two-open or three-candidate quality cap. Stop when material "
         "questions are answered at a stated evidence scope, next sources add little value, access is "
-        "blocked, or the admitted time/spend envelope closes. Before stopping, revisit underexplored "
+        "blocked, or the admitted time envelope closes. Before stopping, revisit underexplored "
         "supported task families and unresolved strong leads; judge marginal returns across the stated "
         "breadth, not one family's query sequence. Retain every defensible prospect within the "
         "resource envelope; explain unresolved coverage and interruptions. There is no minimum or maximum "
@@ -258,8 +258,7 @@ def instructions(target_usd=1):
         "Blueprint agents own research QA and publication under the existing approvals. No outreach, "
         "drafts, purchases, credentials, subagents, new models/providers, installs, sandbox networking "
         "or direct external writes. Native web_search only. "
-        f"The total model/search/hosted-environment research target is ${target_usd}; model token "
-        "estimates are not a hard total-dollar cap. Record actual search query/page counts, branches, "
+        "Blueprint adds no dollar budget or call quota. Record actual usage, costs, search query/page counts, branches, "
         "rejections, source failures and stopping reason in coverage. "
     )
 

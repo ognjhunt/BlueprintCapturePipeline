@@ -181,7 +181,7 @@ def test_real_dispatch_commits_claim_and_does_not_reacquire_lease(runtime, monke
     assert entry["state"] == "receipt_retained" and entry["findall_id"] == RUN_ID
     assert json.loads(ledger.read_bytes(entry["receipt_file"]))["unknown"] == {"unchanged": [1, 2]}
     output = reply(runtime)[1]
-    assert output["findall_id"] == RUN_ID and output["reserved_micros"] == 1_000_000
+    assert output["findall_id"] == RUN_ID and output["reserved_micros"] == 400_000
     assert output["billing_verified"] is False and output["evidence_scope"] == "discovery_only"
 
 
@@ -267,7 +267,7 @@ def test_post_response_store_failure_keeps_known_id_and_claim_in_caller(runtime,
     respond(runtime, action())
     event, output = reply(runtime)
     assert event["success"] is False and output["state"] == "submission_unresolved"
-    assert output["findall_id"] == RUN_ID and output["reserved_micros"] == 1_000_000
+    assert output["findall_id"] == RUN_ID and output["reserved_micros"] == 400_000
     assert next(iter(row[owner.SUBMISSIONS_FIELD].values()))["state"] == "submission_unresolved"
     monkeypatch.setattr(ledger, "get", original)
     respond(runtime, action())
@@ -429,33 +429,21 @@ def test_create_debits_its_whole_maximum_through_the_canonical_exact_grant(runti
     assert isinstance(grant, PaidResourceAdmissionGrant) and grant.resource_class == "parallel_findall"
     assert grant.allocation_binding_digest == entry["allocation_binding_digest"] == binding["allocation_binding_digest"]
     assert findall_claims(runtime[1]) == [{"source": "findall", "operation_sha256": next(iter(
-        runtime[1].get(DAY)[owner.SUBMISSIONS_FIELD])), "reserved_micros": 4_000_000}]
+        runtime[1].get(DAY)[owner.SUBMISSIONS_FIELD])), "reserved_micros": 400_000}]
     status = allocation.diagnostic(runtime[1].get(DAY), runtime[3]["control"], now=NOW)
-    assert status["reserved_micros"] == 4_000_000 and status["remaining_micros"] == 6_000_000
+    assert status["reserved_micros"] == 400_000 and status["remaining_micros"] is None
 
 
 def test_exa_and_findall_together_never_exceed_the_one_owner_limit(runtime):
     row, ledger, client, state, _ = runtime
-    # An Exa claim already holds $4 of the $10 run allowance.
-    row["exa_expansion"] = {"cap_micros": 4_000_000, "intent_sha256": "e" * 64, "state": "submission_unresolved"}
+    row["exa_expansion"] = {"cap_micros": 40_000_000, "intent_sha256": "e" * 64, "state": "submission_unresolved"}
     ledger.put(row)
-    respond(runtime, action(cid="call_over_per_start", cost="5.50"))
-    output = reply(runtime)[1]
-    assert output["reason"] == "paid_expansion_cap_exceeds_per_start_maximum"
-    assert (output["remaining_micros"], output["max_start_micros"]) == (6_000_000, 5_000_000)
-    respond(runtime, action(cid="call_first", cost="5.00"))
+    respond(runtime, action(cid="call_above_old_limit", arguments={**SPEC, "match_limit": 1000}))
     assert reply(runtime)[1]["ok"] is True and client.posts == 1
-    respond(runtime, action(cid="call_over_remaining", cost="2.00"))
-    output = reply(runtime)[1]
-    assert output["reason"] == "paid_expansion_cap_exceeds_remaining"
-    assert (output["remaining_micros"], output["max_start_micros"]) == (1_000_000, 1_000_000)
-    assert output["claim_created"] is False and client.posts == 1
-    respond(runtime, action(cid="call_fits", cost="1.00"))
-    assert reply(runtime)[1]["ok"] is True and client.posts == 2
     found = allocation.claims(ledger.get(DAY))
-    assert sum(claim["reserved_micros"] for claim in found) == 10_000_000
-    assert allocation.problem(row["paid_expansion_grant"], found, 1_000_000, NOW, control=state["control"],
-                              source="exa") == "paid_expansion_cap_exceeds_remaining"
+    assert found[0]["reserved_micros"] == 40_000_000
+    assert found[1]["reserved_micros"] == 30_250_000
+    assert allocation.diagnostic(ledger.get(DAY), state["control"], now=NOW)["remaining_micros"] is None
 
 
 @pytest.mark.parametrize(("change", "code"), [
@@ -465,7 +453,6 @@ def test_exa_and_findall_together_never_exceed_the_one_owner_limit(runtime):
     ({"commit": "d" * 40}, "paid_expansion_source_commit_changed"),
     ({"stopped": True}, "findall_stopped"),
     ({"later": 1200}, "findall_original_deadline_exhausted"),
-    ({"limit": "3.00", "cost": "2.00", "grant_limit": "3.00"}, "paid_expansion_cap_exceeds_per_start_maximum"),
 ])
 def test_every_refusal_is_actionable_and_starts_nothing(runtime, change, code):
     row, ledger, client, state, _ = runtime
@@ -508,8 +495,8 @@ def test_an_uncertain_create_holds_its_reservation_without_replay(runtime):
     event, output = reply(runtime)
     assert event["success"] is False and output["state"] == "submission_unresolved"
     assert output["findall_id"] is None and output["replay_permitted"] is False
-    assert findall_claims(ledger)[0]["reserved_micros"] == 3_000_000
-    assert allocation.diagnostic(ledger.get(DAY), state["control"], now=NOW)["remaining_micros"] == 7_000_000
+    assert findall_claims(ledger)[0]["reserved_micros"] == 400_000
+    assert allocation.diagnostic(ledger.get(DAY), state["control"], now=NOW)["remaining_micros"] is None
     client.post_error = False
     respond(runtime, action(cid="call_uncertain", cost="3.00"))  # A repoll never restarts it.
     assert client.posts == 1
@@ -517,12 +504,11 @@ def test_an_uncertain_create_holds_its_reservation_without_replay(runtime):
 
 def test_price_and_format_problems_are_named_before_any_claim(runtime):
     respond(runtime, action(cid="call_cheap", arguments={**SPEC, "match_limit": 50, "maximum_cost_usd": "1.00"}))
-    output = reply(runtime)[1]
-    assert output["reason"] == "findall_spend_ceiling_below_estimated_cost"
-    assert output["estimated_maximum_cost_usd"] == "1.75"
+    assert reply(runtime)[1]["ok"] is True and reply(runtime)[1]["reserved_micros"] == 1_750_000
     respond(runtime, action(cid="call_format", cost="$1"))
-    assert json.loads(runtime[3]["replies"][-1]["error"]) == {"code": "findall_maximum_cost_usd_invalid"}
-    assert runtime[2].posts == 0 and owner.SUBMISSIONS_FIELD not in runtime[1].get(DAY)
+    assert reply(runtime)[1]["ok"] is True and runtime[2].posts == 2
+    entries = list(runtime[1].get(DAY)[owner.SUBMISSIONS_FIELD].values())
+    assert [entry["prepared"]["maximum_cost_usd"] for entry in entries] == ["1.75", "0.4"]
 
 
 # --- Production wiring ----------------------------------------------------------------------
@@ -616,7 +602,7 @@ def test_a_run_still_active_at_the_deadline_is_cancelled_once(runtime):
     # One result read, after the cancel, keeps the matches; a second pass reads nothing more.
     assert [kind for kind, _ in client.reads] == ["status", "status", "result"]
     assert json.loads(ledger.read_bytes(record["result_receipt"]["file"]))["candidates"][0]["status"] == "matched"
-    assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000  # Cancellation is not a refund.
+    assert findall_claims(ledger)[0]["reserved_micros"] == 400_000  # Cancellation is not a refund.
     assert not findall.settlement_due(ledger.get(DAY), state["now"])
 
 
@@ -638,7 +624,7 @@ def test_a_completed_run_needs_no_cancel_and_an_unknown_id_stays_reserved(runtim
     # A run found terminal keeps one free result snapshot; an unknown ID has nothing to read.
     assert client.reads.count(("result", RUN_ID)) == 1 and "result_receipt" in records["call_create"]
     assert "result_receipt" not in records["call_uncertain"]
-    assert sorted(claim["reserved_micros"] for claim in findall_claims(ledger)) == [1_000_000, 2_000_000]
+    assert sorted(claim["reserved_micros"] for claim in findall_claims(ledger)) == [400_000, 400_000]
 
 
 def test_failed_cancels_are_bounded_and_the_reservation_stays_held(runtime):
@@ -654,7 +640,7 @@ def test_failed_cancels_are_bounded_and_the_reservation_stays_held(runtime):
     assert client.cancels == [RUN_ID] * findall.MAX_CANCEL_ATTEMPTS
     assert record["state"] == "cancel_attempts_exhausted" and record["cancel_error"] == "findall_transport_failed"
     assert ("result", RUN_ID) not in client.reads and "result_receipt" not in record  # Never cancelled or terminal.
-    assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000
+    assert findall_claims(ledger)[0]["reserved_micros"] == 400_000
 
 
 def test_runner_settles_at_research_end_and_never_without_a_client(runtime):
@@ -709,11 +695,11 @@ def test_post_commit_authority_loss_never_posts_and_never_releases_claim(runtime
             respond(runtime, action(cost="2.00"))
     else:
         respond(runtime, action(cost="2.00"))
-    assert client.posts == 0
-    assert findall_claims(ledger)[0]["reserved_micros"] == 2_000_000
-    assert next(iter(ledger.get(DAY)[findall.SUBMISSIONS_FIELD].values()))["state"] == "submission_unresolved"
+    assert client.posts == (1 if change == "limit" else 0)
+    assert findall_claims(ledger)[0]["reserved_micros"] == 400_000
+    assert next(iter(ledger.get(DAY)[findall.SUBMISSIONS_FIELD].values()))["state"] == ("receipt_retained" if change == "limit" else "submission_unresolved")
     event = json.loads(ledger.read_bytes(ledger.get(DAY)["application_tool_calls"]["call_create"]["result_file"]))
-    assert event["success"] is False
+    assert event["success"] is (change == "limit")
 
 
 @pytest.mark.parametrize("change", ["brake", "source", "commit", "expiry", "limit", "stop"])
@@ -740,10 +726,13 @@ def test_running_row_cancels_on_fresh_paid_authority_loss(runtime, change):
     runner.ledger, runner.api, runner.clock = ledger, api, lambda: state["now"]
     with ledger.lock():
         runner.settle_findall(row)
+    if change == "limit":
+        assert client.cancels == [] and findall.SETTLEMENTS_FIELD not in ledger.get(DAY)
+        return
     assert row["state"] == "running" and client.cancels == [RUN_ID]
     record = next(iter(ledger.get(DAY)[findall.SETTLEMENTS_FIELD].values()))
     assert record["state"] == "terminal" and record["reason"] not in {"research_ended", "original_research_deadline"}
-    assert findall_claims(ledger)[0]["reserved_micros"] == 2_000_000
+    assert findall_claims(ledger)[0]["reserved_micros"] == 400_000
 
 
 def findall_writes(ledger, monkeypatch):
@@ -829,7 +818,7 @@ def test_a_result_above_the_retention_limit_is_refused_fast_with_no_writes_and_t
     assert writes == [] and findall.READS_FIELD not in ledger.get(DAY)  # Nothing stored.
     # The provider run stays recorded with its whole reservation, so a later recovery can read it.
     assert next(iter(ledger.get(DAY)[owner.SUBMISSIONS_FIELD].values())) == entry
-    assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000
+    assert findall_claims(ledger)[0]["reserved_micros"] == 400_000
     assert elapsed < 10 and client.reads.count(("result", RUN_ID)) == 1
 
 
@@ -848,13 +837,14 @@ def test_findall_tool_schemas_carry_no_pattern_keyword():
     result = next(tool for tool in definitions if tool["name"] == findall.RESULT)
     assert result["parameters"]["properties"]["receipt_sha256"] == {"type": "string"}
     create = next(tool for tool in definitions if tool["name"] == findall.CREATE)
-    assert create["parameters"]["properties"]["maximum_cost_usd"] == {"type": "string"}  # Host-validated.
+    assert "maximum_cost_usd" not in create["parameters"]["properties"]
 
 
 def test_instructions_recommend_small_first_requests_one_read_and_receipt_paging():
     text = findall.instructions()
     assert "match_limit of about 50" in text and "two base requests of 150" not in text and "$4.75" not in text
-    assert "one base request of 50 matches has a listed estimate of $1.75" in text and "leaving $8.25" in text
+    assert "no dollar allowance, per-start ceiling or call quota" in text
+    assert "remaining allowance" not in text
     assert "Poll blueprint_findall_status until the run is no longer active before reading its result" in text
     assert "Read each completed run's result once" in text and "receipt_sha256 and page" in text
     assert "including non-matches, so it is much larger than match_limit suggests" in text
@@ -966,7 +956,7 @@ def test_settlement_reads_the_result_only_after_the_cancel_and_exports_it(runtim
     receipt = record["result_receipt"]
     assert receipt in record["receipts"] and "-tool-findall-settle-result-" in receipt["file"]
     assert json.loads(ledger.read_bytes(receipt["file"])) == original_result(RUN_ID)
-    assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000  # No refund semantics.
+    assert findall_claims(ledger)[0]["reserved_micros"] == 400_000  # No refund semantics.
     findall.validate_snapshot_exports(stored, ledger.read_bytes)
     assert {key: receipt[key] for key in ("file", "sha256", "bytes")} in findall.receipt_refs(stored)
 
@@ -1028,7 +1018,7 @@ def test_a_failed_settlement_result_read_is_recorded_and_never_blocks_the_cancel
     assert record["result_observation_error"] == code and "result_receipt" not in record
     assert not any("-settle-result-" in ref["file"] for ref in record["receipts"])
     assert (record.get("result_snapshot_bytes", 0) > owner.MAX_SNAPSHOT_BYTES) is (failure == "too_large")
-    assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000
+    assert findall_claims(ledger)[0]["reserved_micros"] == 400_000
     assert not findall.settlement_due(ledger.get(DAY), state["now"])
 
 

@@ -29,12 +29,12 @@ export function publicContactResearchTask(t) {
     ||p.sourceDigest!==t.sourceDigest||!['runKey','candidateKey','researchQaReference','sheetsId','sheetsProspectId','prospectId'].every(k=>typeof p[k]==='string'&&p[k].length>0&&p[k].length<=1200)
     ||!['organization','site','location','task'].every(k=>typeof t[k]==='string'&&t[k].trim()&&t[k].length<=1200)
     ||!safeUrl(t.organizationUrl)||!Array.isArray(t.sourceUrls)||t.sourceUrls.length>16
-    ||t.maxAgentAttempts!==2||t.scope!=='existing_daily_research_budget_and_tools_no_new_session_or_send') return null;
+    ||(t.maxAgentAttempts!==null && (!Number.isInteger(t.maxAgentAttempts)||t.maxAgentAttempts<1))||t.scope!=='existing_daily_research_budget_and_tools_no_new_session_or_send') return null;
   const task={version:t.version,requestId:t.requestId,sourceDigest:t.sourceDigest,
     publication:Object.fromEntries(['date','runKey','candidateKey','packetDigest','rawArtifactDigest','sourceDigest','qaArtifactDigest','researchQaReference','sheetsId','sheetsProspectId','prospectId'].map(k=>[k,p[k]])),
     organization:t.organization,organizationUrl:t.organizationUrl,site:t.site,location:t.location,task:t.task,
     sourceUrls:t.sourceUrls.filter(safeUrl),preference:['relevant_professional_person','appropriate_team_inbox','general_business_inbox'],
-    maxAgentAttempts:2,scope:t.scope};
+    maxAgentAttempts:t.maxAgentAttempts,scope:t.scope};
   return digest({publication:task.publication,sourceDigest:task.sourceDigest})===task.requestId?task:null;
 }
 
@@ -52,7 +52,7 @@ export async function contactResearchContext(store,day) {
     if(saved.exists) return saved.data().context;
     const rows=await tx.get(store.db.collection(CONTACT).where('state','==','pending').limit(4));
     const tasks=rows.docs.map(s=>({task:publicContactResearchTask(s.data()?.task),attempts:s.data()?.attempts}))
-      .filter(r=>r.task&&Number.isInteger(r.attempts)&&r.attempts>=0&&r.attempts<2).slice(0,3).map(r=>r.task);
+      .filter(r=>r.task&&Number.isInteger(r.attempts)&&r.attempts>=0).slice(0,3).map(r=>r.task);
     if(!tasks.length) return null;
     const context={version:'blueprint.contact-research-input.v1',date:day,tasks,separateSessionsAuthorized:false,
       sendsAuthorized:false,budget:'existing_daily_research_allocation'};
@@ -69,7 +69,7 @@ export async function claimContactResearch(store,tx,day,metadata) {
     ||pythonDigest(context)!==metadata.contact_research_digest||context.date!==day) fail('contact_research_input_changed');
   const requests=await Promise.all(context.tasks.map(t=>tx.get(store.db.doc(`${CONTACT}/${t.requestId}`))));
   if(requests.some((s,i)=>s.data()?.state!=='pending'||digest(publicContactResearchTask(s.data()?.task))!==digest(context.tasks[i])
-    ||!Number.isInteger(s.data()?.attempts)||s.data().attempts<0||s.data().attempts>=2)) fail('contact_research_request_changed');
+    ||!Number.isInteger(s.data()?.attempts)||s.data().attempts<0)) fail('contact_research_request_changed');
   for(const s of requests) tx.set(s.ref,{state:'running',attempts:s.data().attempts+1,
     nativeRunKey:`blueprint-researcher:${day}`,inputDigest:metadata.contact_research_digest},{merge:true});
 }
@@ -168,7 +168,7 @@ export async function verifyContactResearchDiscovery(store,task,proof) {
   const context=await boundContext(store,row),record=(await store.db.doc(`${CONTACT}/${task.requestId}`).get()).data();
   if(!context.tasks.some(t=>digest(t)===digest(task))||record?.state!=='sources_ready'
     ||record.nativeRunKey!==row.run_key||record.inputDigest!==row.metadata.contact_research_digest
-    ||![1,2].includes(record.attempts)||digest(record.task)!==digest(task)||digest(record.discovery)!==digest(proof)) fail('contact_research_source_changed');
+    ||!Number.isInteger(record.attempts)||record.attempts<1||digest(record.task)!==digest(task)||digest(record.discovery)!==digest(proof)) fail('contact_research_source_changed');
   const sources=await nativeSources(store,row,task);
   if(!sources.length||digest(proof.sources)!==digest(sources)||(await ref.get()).data()?.blob!==current.blob) fail('contact_research_receipt_changed');
   return proof;
@@ -192,7 +192,7 @@ export async function finishContactResearch(store,row,rowBlob) {
         ||old.state!=='running'||digest(publicContactResearchTask(old.task))!==digest(task)) return;
       const discovery=sources.length?{version:'blueprint.contact-research-discovery.v1',requestId:task.requestId,sourceDigest:task.sourceDigest,
         run:{date:row.date,runKey:row.run_key,rowBlob,rawArtifactDigest:row.raw_output_digest,qaArtifactDigest:row.qa.artifact_digest},sources}:null;
-      tx.set(ref,{state:discovery?'sources_ready':old.attempts<2?'pending':'exhausted',
+      tx.set(ref,{state:discovery?'sources_ready':'pending',
         reason:discovery?'agent_researched_operator_sources_ready':ready?'no_additional_verified_operator_source':'native_contact_research_attempt_incomplete',
         ...(discovery?{discovery}:{}),lastRunRef:current.ref.path,lastRowBlob:rowBlob,completedAt:store.clock(),sent:false},{merge:true});
     });

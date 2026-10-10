@@ -648,7 +648,8 @@ def test_approved_recurring_target_is_pinned_not_forced_to_legacy_one_dollar(fix
     runner, api, _ = fixture
     runner.config["soft_target_usd"] = 2
     row = runner.start_or_resume()
-    assert row["soft_target_usd"] == 2 and "$2" in api.payloads[0]["input"]
+    assert row["soft_target_usd"] == 2 and "$2" not in api.payloads[0]["input"]
+    assert "no dollar budget or call quota" in api.payloads[0]["input"]
     runner.config["soft_target_usd"] = 4
     assert runner.start_or_resume(allow_create=False)["soft_target_usd"] == 2
 

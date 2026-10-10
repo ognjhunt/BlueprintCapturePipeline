@@ -243,15 +243,15 @@ def test_company_store_keeps_float_intent_claim_irreversible_and_exports_native_
         render.export_snapshot(Missing(), DAY, tmp_path / "bad-export")
 
 
-def test_below_minimum_start_never_builds_an_authenticated_context(fixture):
-    """The cap pre-check needs no allocation read, key or MCP catalog call."""
+def test_legacy_cap_does_not_skip_live_authority_context(fixture):
+    """A legacy number no longer preempts the required authority context."""
     _, api, ledger, row = setup(fixture)
     contexts = []
-    api.expansion_context = lambda row, name: contexts.append(name) or {"unavailable_reason": "should_not_be_reached"}
+    api.expansion_context = lambda row, name: contexts.append(name) or {"unavailable_reason": "synthetic_binding_unavailable"}
     api.actions = [action(row, args={**ARGS, "max_cost_micros": 500_000})]
     respond(api, ledger, row)
     outcome = json.loads(api.result_events[-1][1]["output"])
-    assert outcome["reason"] == "expansion_cap_below_ultra_minimum" and contexts == []
+    assert outcome["reason"] == "synthetic_binding_unavailable" and contexts == [expansion.START]
     assert "exa_expansion" not in ledger.get(DAY)
 
 
@@ -268,7 +268,7 @@ def test_grant_is_frozen_across_a_mid_run_amount_change_and_the_next_run_uses_th
     assert result["run_id"] == "agent_run_synthetic"
     assert ledger.get(DAY)["exa_expansion"]["intent"]["grant"] == first
     status = expansion.allocation_diagnostic(ledger.get(DAY), ledger.control, now=NOW)
-    assert (status["limit_micros"], status["reserved_micros"], status["remaining_micros"]) == (10_000_000, 5_000_000, 5_000_000)
+    assert (status["limit_micros"], status["reserved_micros"], status["remaining_micros"]) == (10_000_000, None, None)
     row = ledger.get(DAY)
     row.update(state="completed", cleanup_required=False)
     ledger.put(row)
@@ -332,7 +332,7 @@ def test_fenced_context_and_final_admit_apply_the_live_brake_and_release_fence(f
     provider, _ = fenced(live)
     context = provider.expansion_context(row, expansion.START)
     assert context["unavailable_reason"] == "expansion_worker_exa_binding_missing" and context["control"] == live
-    assert context["allocation_status"]["remaining_micros"] == 10_000_000
+    assert context["allocation_status"]["remaining_micros"] is None
     braked = company_control(row, owner_control(enabled=False))
     assert fenced(braked)[0].expansion_context(row, expansion.START)["unavailable_reason"] == (
         "expansion_remaining_all_in_allocation_unverified")
@@ -346,15 +346,13 @@ def test_fenced_context_and_final_admit_apply_the_live_brake_and_release_fence(f
         provider.expansion_admit(legacy, "research")
 
 
-def test_company_store_debits_claims_against_the_frozen_grant_and_live_fences(render_context):
+def test_company_store_preserves_frozen_authority_and_live_fences_without_dollar_gate(render_context):
     _, _, ledger, bridge, _ = render_context
     first = company_direction(bridge, "10.00")
     row = granted_row(first)
     running = {**row, "state": "running"}
     with ledger.lock():
         ledger.put(row)  # The durable intent binds the frozen grant.
-        with pytest.raises(Refusal, match="paid_expansion_reservation_exceeds_grant"):
-            ledger.put({**running, "exa_expansion": claim_for(row, 6_000_000)})
         with pytest.raises(Refusal, match="paid_expansion_grant_required"):
             ledger.put({**running, "exa_expansion": claim_for(row, grant=False)})
         with pytest.raises(Refusal, match="paid_expansion_grant_already_bound"):
@@ -363,8 +361,8 @@ def test_company_store_debits_claims_against_the_frozen_grant_and_live_fences(re
             ledger.put({key: value for key, value in running.items() if key != "paid_expansion_grant"})
     raised = company_direction(bridge, "30.00")  # A raised amount waits for the next run.
     with ledger.lock():
-        ledger.put({**running, "exa_expansion": claim_for(row, 5_000_000)})
-        assert ledger.get(DAY)["exa_expansion"]["cap_micros"] == 5_000_000
+        ledger.put({**running, "exa_expansion": claim_for(row, 6_000_000)})
+        assert ledger.get(DAY)["exa_expansion"]["cap_micros"] == 6_000_000
         with pytest.raises(Refusal, match="paid_expansion_grant_not_admitted"):
             ledger.put(granted_row(first, "2026-10-01"))  # A new intent freezes the current direction only.
         following = granted_row(raised, "2026-10-01")
@@ -385,20 +383,20 @@ def test_company_store_debits_claims_against_the_frozen_grant_and_live_fences(re
 
 
 @pytest.mark.parametrize("amount", ["6.00", "1.00"])
-def test_company_store_refuses_a_new_claim_after_live_allowance_decreases(render_context, amount):
+def test_company_store_retains_claim_after_legacy_amount_decreases(render_context, amount):
     _, _, ledger, bridge, _ = render_context
     first = company_direction(bridge, "30.00")
     row = granted_row(first)
     with ledger.lock():
         ledger.put(row)
     company_direction(bridge, amount)
-    with ledger.lock(), pytest.raises(Refusal, match="paid_expansion_reservation_exceeds_grant"):
+    with ledger.lock():
         ledger.put({**row, "state": "running", "exa_expansion": claim_for(row, 5_000_000)})
-    assert not ledger.get(DAY).get("exa_expansion")
+    assert ledger.get(DAY)["exa_expansion"] == claim_for(row, 5_000_000)
 
 
 @pytest.mark.parametrize("amount, cap", [("6.00", 5_000_000), ("1.00", 5_000_000), ("6.00", 3_000_000)])
-def test_final_pre_post_admission_rechecks_live_cap_without_double_debit(render_context, amount, cap):
+def test_final_pre_post_admission_keeps_authority_without_dollar_gate(render_context, amount, cap):
     _, _, ledger, bridge, _ = render_context
     first = company_direction(bridge, "30.00")
     row = granted_row(first)
@@ -410,11 +408,8 @@ def test_final_pre_post_admission_rechecks_live_cap_without_double_debit(render_
     provider, _ = fenced(lower)
     # Isolate paid allocation; the real Store above already owns and fences the row.
     provider.tool_admit = lambda row, phase: None
-    if cap == 3_000_000:
-        provider.expansion_admit(pending, "research")
-    else:
-        with pytest.raises(Refusal, match="expansion_allocation_changed_before_submission"):
-            provider.expansion_admit(pending, "research")
+    provider.expansion_admit(pending, "research")
+    assert ledger.get(DAY)["exa_expansion"] == pending["exa_expansion"]
 
 
 @pytest.mark.parametrize("code", ["paid_expansion_grant_not_admitted", "firestore_create_not_admitted"])

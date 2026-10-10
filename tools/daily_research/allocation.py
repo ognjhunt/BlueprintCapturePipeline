@@ -1,24 +1,8 @@
-"""Owner-directed paid expansion allowance: the single producer and arbiter.
+"""Owner-directed paid research sources with immutable authority and usage records.
 
-The owner sets one combined per-run USD limit for paid expansion sources (Exa
-and Parallel FindAll) as a content-addressed direction record. Company control
-carries it top-level as ``control.paid_expansion = {enabled, current: {sha256,
-version, uri, direction}}``: config keys stay allowlisted and older packages
-ignore it. The runner freezes one grant per daily row under its lease before the
-durable intent (``grant``); every paid start is admitted only by ``problem``
-with its ``source`` ("exa" or "findall").
-A frozen grant is the run's upper bound: live control can only tighten it (the
-brake, a changed release, a lower current amount or a removed source apply at
-once), while a higher amount waits for the next run's grant.
-Durable claims are the debits and an unknown cost holds its whole reservation:
-an Exa claim reserves its native cap and each FindAll claim (row
-``parallel_findall_submissions``) its prepared request's whole
-``maximum_cost_usd``. Exa and FindAll together never exceed the one limit.
-A direction whose ``sources`` omits a source admits none of its starts. The owner
-command writes every supported source, so re-running ``set`` after a release
-that adds one enables it.
-This allowance is host-reserved and separate from the research soft target.
-Standard library only; the worker never reads object storage.
+Direction and grant dollar fields remain readable for historical signed records.
+They do not limit admission. Live source, expiry, brake and release fences remain;
+durable claims retain provider costs, estimates and unknown exposure without replay.
 """
 import hashlib
 import re
@@ -29,14 +13,14 @@ from tools.daily_research.runner import AGENT, MAX_ADAPTIVE_RUNTIME_SECONDS, PRO
 DIRECTION = "blueprint.research-paid-expansion-direction.v1"
 GRANT = "blueprint.research-paid-expansion-grant.v1"
 STATUS = "blueprint.research-paid-expansion-status.v1"
-HARD_CEILING_MICROS = 100_000_000  # $100.00 per run; a typo above it refuses instead of spending.
+
 FLOOR_MICROS = 1_000_000  # $1.00
-PER_START_CEILING_MICROS = 50_000_000
-AMOUNT = re.compile(r"[1-9][0-9]{0,2}(\.[0-9]{2})?")  # ASCII digits only, like the bridge
+
+AMOUNT = re.compile(r"[1-9][0-9]*(\.[0-9]{2})?")  # ASCII digits only, like the bridge
 SOURCES = ("exa", "findall")  # Mirrored by the bridge's PAID_SOURCES.
 # FindAll claims live in the owner journal field parallel_findall_owner.SUBMISSIONS_FIELD.
 FINDALL_FIELD = "parallel_findall_submissions"
-FINDALL_AMOUNT = re.compile(r"(0|[1-9][0-9]{0,2})(\.[0-9]{1,2})?")  # USD, at most cents, like the bridge
+FINDALL_AMOUNT = re.compile(r"(0|[1-9][0-9]*)(\.[0-9]{1,2})?")  # USD, at most cents, like the bridge
 BUCKET = "blueprint-8c1ca.appspot.com"
 OBJECT_PREFIX = "operations/research/paid-expansion/"
 SCOPE = {"project_id": PROJECT, "agent_id": AGENT, "firestore_root": "blueprintDailyResearch/sites-first",
@@ -55,21 +39,21 @@ CODE = re.compile(r"paid_expansion_[a-z_]{1,80}")
 
 
 def micros(amount):
-    """Exact integer microdollars for an owner amount such as "10.00" within $1–$100, else None."""
+    """Exact integer microdollars for an owner amount such as "10.00" as historical reporting data, else None."""
     if not isinstance(amount, str) or not AMOUNT.fullmatch(amount):
         return None
     whole, _, cents = amount.partition(".")
     value = int(whole) * 1_000_000 + int(cents or "0") * 10_000
-    return value if FLOOR_MICROS <= value <= HARD_CEILING_MICROS else None
+    return value if 0 < value <= 2**53 - 1 else None
 
 
 def findall_micros(amount):
-    """Exact integer microdollars of a FindAll ``maximum_cost_usd`` such as "2.5" (above $0, at most $100), else None."""
+    """Exact integer microdollars of a FindAll ``maximum_cost_usd`` such as "2.5" (above $0), else None."""
     if not isinstance(amount, str) or not FINDALL_AMOUNT.fullmatch(amount):
         return None
     whole, _, cents = amount.partition(".")
     value = int(whole) * 1_000_000 + int(cents.ljust(2, "0")) * 10_000
-    return value if 0 < value <= HARD_CEILING_MICROS else None
+    return value if 0 < value <= 2**53 - 1 else None
 
 
 def usd(value):
@@ -78,8 +62,8 @@ def usd(value):
 
 
 def per_start_max(limit_micros):
-    """Half the run limit for one start, clamped to $1–$50 ($10→$5, $20→$10, $30→$15)."""
-    return min(max(limit_micros // 2, FLOOR_MICROS), PER_START_CEILING_MICROS)
+    """Reproduce legacy signed metadata only; this value never gates new work."""
+    return None if limit_micros is None else min(max(limit_micros // 2, FLOOR_MICROS), 50_000_000)
 
 
 def digest(direction):
@@ -105,7 +89,7 @@ def direction_problem(direction):
     try:
         if not isinstance(direction, dict) or set(direction) != FIELDS or direction["schema_version"] != DIRECTION:
             return "paid_expansion_direction_invalid"
-        if micros(direction["per_run_limit_usd"]) is None:
+        if direction["per_run_limit_usd"] is not None and micros(direction["per_run_limit_usd"]) is None:
             return "paid_expansion_limit_invalid"
         if direction["scope"] != SCOPE:
             return "paid_expansion_scope_mismatch"
@@ -203,8 +187,8 @@ def granted(value):
     try:
         limit, start = value["limit_micros"], value["per_start_max_micros"]
         if (value["state"] != "granted" or set(value) != GRANT_FIELDS
-                or type(limit) is not int or not FLOOR_MICROS <= limit <= HARD_CEILING_MICROS
-                or type(start) is not int or start != per_start_max(limit)
+                or limit is not None and (type(limit) is not int or limit <= 0)
+                or start != per_start_max(limit)
                 or not isinstance(value["sources"], list) or not set(value["sources"]) <= set(SOURCES)
                 or value["grant_id"] != grant_id(value["direction_sha256"], value["run_key"])
                 or datetime.fromisoformat(value["valid_until"]).tzinfo is None):
@@ -243,19 +227,17 @@ def standing(value, control, now, *, source="exa"):
 
 
 def effective_limit(value, control):
-    """The frozen limit, lowered by a smaller verified current direction; never raised."""
-    entry, _ = current(control)
-    live = micros(entry["direction"]["per_run_limit_usd"]) if entry else None
-    return value["limit_micros"] if live is None else min(value["limit_micros"], live)
+    """No Blueprint dollar limit; retained legacy amounts are reporting data."""
+    return
 
 
 def claims(row):
-    """This run's durable paid claims. Each debits its whole reserved cap: nothing is
-    released without a provider-reported terminal cost, and none is pinned yet.
+    """Retain this run's durable claims as accounting data without admission ceilings.
 
-    An Exa claim reserves its native cap. A FindAll claim reserves its prepared
-    request's whole maximum_cost_usd whatever its state (unresolved, created,
-    cancelled or completed); a malformed claim makes every debit unknowable."""
+    Historical Exa caps and FindAll exact-request estimates remain recorded in
+    every state. New uncapped Exa starts and malformed claims stay unknown.
+    Integer amounts must remain exactly representable in the existing JS bridge.
+    """
     found = []
     exa = row.get("exa_expansion") if isinstance(row, dict) else None
     if exa:
@@ -271,40 +253,29 @@ def claims(row):
 
 
 def headroom(value, found, limit_micros=None):
-    """Remaining allowance and largest admissible start under ``limit_micros`` (default the
-    frozen limit); None amounts when a debit is unknowable."""
-    limit = value["limit_micros"] if limit_micros is None else min(limit_micros, value["limit_micros"])
+    """Report retained reservations, including unknowns, without a dollar ceiling."""
     reserved = 0
     for claim in found:
         amount = claim.get("reserved_micros") if isinstance(claim, dict) else None
         if type(amount) is not int or amount <= 0:
-            return {"reserved_micros": None, "remaining_micros": None, "max_start_micros": None}
+            reserved = None
+            break
         reserved += amount
-    remaining = max(0, limit - reserved)
-    return {"reserved_micros": reserved, "remaining_micros": remaining,
-            "max_start_micros": min(remaining, per_start_max(limit))}
+    return {"reserved_micros": reserved, "remaining_micros": None, "max_start_micros": None}
 
 
 def problem(value, found, cap_micros, now, *, control, source="exa"):
     """None when a paid start of ``cap_micros`` is admitted; otherwise a named refusal.
 
-    Remaining is the effective limit (the frozen grant, lowered by a smaller
-    current direction) minus every existing durable claim's reserved cap for this
-    run. This replaces the v1 all-in snapshot predicate.
+    Source authority, brake, expiry and release identity are still required.
+    Historical dollar metadata and retained exposure never become a new ceiling.
     """
     code = standing(value, control, now, source=source)
     if code:
         return code
-    limit = effective_limit(value, control)
-    room = headroom(value, found, limit)
-    if room["remaining_micros"] is None:
-        return "paid_expansion_claims_unverified"
-    if type(cap_micros) is not int or cap_micros <= 0:
+    if cap_micros is not None and (type(cap_micros) is not int or cap_micros <= 0):
         return "paid_expansion_cap_invalid"
-    if cap_micros > room["remaining_micros"]:
-        return "paid_expansion_cap_exceeds_remaining"
-    if cap_micros > per_start_max(limit):
-        return "paid_expansion_cap_exceeds_per_start_maximum"
+
     return None
 
 
@@ -319,7 +290,7 @@ def diagnostic(row, control=None, *, now=None):
         result["reasons"].append(code)
         return result
     result.update({key: value[key] for key in ("version", "direction_sha256", "limit_micros", "per_start_max_micros", "valid_until")})
-    limit = value["limit_micros"] if control is None else effective_limit(value, control)
+    limit = effective_limit(value, control)
     result.update(headroom(value, claims(row), limit), effective_limit_micros=limit)
     if control is not None:
         code = standing(value, control, now or datetime.now(timezone.utc))

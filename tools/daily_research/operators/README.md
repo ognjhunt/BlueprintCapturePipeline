@@ -1,5 +1,8 @@
 # Scoped research operator commands
 
+> Owner direction, 2026-10-09: application dollar budgets and arbitrary call-count gates are retired. Historical dollar fields and capped requests remain immutable accounting and request-binding data. New research keeps the original source, scope, expiry, release, idempotency, byte and time constraints, and actual provider limits. This source change grants no activation, paid run or send authority. Older numeric allowance descriptions below are historical and do not govern admission.
+
+
 Code and instructions are maintained in Blueprint's GitHub repository. Firestore
 is the durable research ledger; provider IDs are provenance. Operator commands
 must use an exact reviewed Git commit and the exact installed standalone package.
@@ -1149,7 +1152,7 @@ library only. Nothing sends, drafts or writes a CRM; the founder sends every ema
 ```bash
 OUT=/PRIVATE/site-screen-out-dir   # The site-screen out dir: durable, outside every Git work tree, never /tmp.
 KEYS=/PRIVATE/fullenrich.env       # One line: FULLENRICH_API_KEY=...
-SPEND="--owner-reference owner-decision-contact-provider-lookup-20261005 --max-credits 50 --max-calls 100"
+SPEND="--owner-reference owner-decision-contact-provider-lookup-20261005"
 SEARCH="--person-search owner-decision-provider-sourced-person-20261005"  # Optional: provider_sourced people.
 PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py lookup --out "$OUT" $SPEND --key-file "$KEYS" $SEARCH
 PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py lookup --out "$OUT" $SPEND --key-file "$KEYS" $SEARCH --apply

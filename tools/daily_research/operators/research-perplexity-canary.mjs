@@ -72,7 +72,7 @@ export class CanaryChannel {
     if (!BASELINE) fail('canary_baseline_not_selected');
     const ref=this.db.doc(BASELINE.root), snap=await ref.get(), budget=snap.exists?snap.data():null;
     if (budget && (!isDeepStrictEqual(budget.baseline,BASELINE_SCOPE)
-      || !Array.isArray(budget.attempts) || budget.attempts.length>1000)) fail('canary_baseline_binding_invalid');
+      || !Array.isArray(budget.attempts))) fail('canary_baseline_binding_invalid');
     if (budget?.attempts.some((a,i)=>a.number!==i+1 || !/^\d{4}-\d{2}-\d{2}$/.test(a.date)
       || a.test_id!==`baseline-20261002-attempt-${String(i+1).padStart(4,'0')}`
       || a.root!==`${ROOT}/canaries/${a.test_id}`

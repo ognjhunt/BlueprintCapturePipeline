@@ -218,9 +218,7 @@ def admission(row, control, now, path="daily_qa"):
 
 
 
-# Retained evidence is read within a budget: research and QA tool results are capped at
-# search.MAX_CALLS (500), plus a few FindAll snapshots. Spent, the evidence is unavailable.
-EVIDENCE_MAX_READS = 600
+# Retained evidence reads use the existing elapsed-time guard, without a count quota.
 EVIDENCE_MAX_SECONDS = 60
 # The shadow runs after publication completed and is skipped with a recorded code when less than
 # this remains before the run's absolute QA and publication deadline.
@@ -252,7 +250,7 @@ def shadow_file(row):
 
 
 def read_budget():
-    return verification.ReadBudget(EVIDENCE_MAX_READS, EVIDENCE_MAX_SECONDS)
+    return verification.ReadBudget(None, EVIDENCE_MAX_SECONDS)
 
 
 def shadow_skipped(row, code, now):

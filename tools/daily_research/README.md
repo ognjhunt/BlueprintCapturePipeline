@@ -3,17 +3,17 @@
 The selected production search default is Perplexity Search API Fast, called by
 the existing Sol agent through application function tools. The disabled profile
 and exact binding/recovery/evidence contract are in [SEARCH.md](SEARCH.md).
-Existing admitted native-search rows and the failed October 1 intent retain
-their original guards; shipping this adapter does not activate or reset them.
+Existing admitted rows and the failed October 1 intent retain their identities,
+source authority and deadlines; shipping source does not activate or reset them.
 
 The selected profile retains **all defensible new commercial site/task
 opportunities** within a defined run scope. Count is never the stopping rule;
 report actual coverage, unresolved branches and evidence-based or interrupted
 stopping reasons.
 See [ADAPTIVE.md](ADAPTIVE.md) for the disabled daily opt-in, evidence/duplicate
-rules and separate one-time test preparation. Legacy native rows keep their historical $1 soft total planning target. The new
-profile stays disabled until an explicit recurring budget is chosen. Existing
-legacy rows retain their admitted guards.
+rules and separate one-time test preparation. Legacy dollar fields remain
+historical reporting data. The profile stays disabled until the existing
+recurring source and scheduling authority are explicitly adopted.
 
 **2026-09-30 Render route:** the selected deployment is the existing Render
 worker plus existing Firestore, using the recovered adapter. See
@@ -35,8 +35,8 @@ This runbook supersedes the earlier controller/operator-door deployment route.
 The package exporter copies only an explicit research-file allowlist from an
 immutable commit. It never installs units, enables a schedule, transfers a key,
 calls a provider or copies private CRM/knowledge inputs. No GPU packages are
-required. The recurring authorization is a **$1/run soft total model/search/sandbox
-target**, approximately $30/month at target; no monetary hard cap is enforced.
+required. Recurring authorization still binds source, owner, scope and expiry.
+Blueprint adds no application dollar budget or call quota; actual usage and unknown exposure remain recorded.
 
 ## Route and current readiness
 
@@ -339,3 +339,20 @@ required research, QA, publication or recovery step. Any replacement agent must
 be able to consume code, manifests and exports without them. Preserve existing
 approval, privacy, one-create, publication and cleanup safeguards. Scoped
 operator commands are documented in [operators/README.md](operators/README.md).
+
+### Application budgets retired (owner direction, 2026-10-09)
+
+Research adds no dollar allowance, per-start ceiling, tool-call quota or contact
+lookup credit/call ceiling. Historical signed directions, grants, request bindings,
+reservations and unknown exposure remain unchanged and readable; their dollar
+fields are reporting data. New Exa Ultra requests omit `budget`, and the actual
+provider schema must accept that request. FindAll retains the exact chosen
+request's versioned provider price estimate in its legacy `maximum_cost_usd`
+binding; it adds no dollar input or comparison restricting the agent's chosen
+request. Actual usage remains separate from estimates and unknown costs.
+
+Source permissions, opt-outs, no-send controls, release identity, original expiry,
+provider-imposed limits, byte bounds, deadlines and duplicate-effect protections
+still apply. This source change activates no worker and authorizes no provider run.
+The contact recovery queue retains historical `maxAgentAttempts` metadata but no
+longer refuses a third distinct daily attempt solely for its attempt count.

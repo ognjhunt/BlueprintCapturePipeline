@@ -116,7 +116,7 @@ def test_apply_writes_object_then_swaps_control_and_reads_both_back(fixture):
     assert shown["firestore_writes"] == shown["object_writes"] == shown["provider_calls"] == 0
 
 
-@pytest.mark.parametrize("amount", ["200", "1000", "10.0", "0.50", "100.01", "$10", "1e1", "10.000", "", "ten"])
+@pytest.mark.parametrize("amount", ["2e2", "1_000", "10.0", "0.50", "100.001", "$10", "1e1", "10.000", "", "ten"])
 def test_typo_amounts_refuse_before_any_write(fixture, amount):
     bridge, objects, _ = fixture
     with pytest.raises(Refusal, match="paid_expansion_limit_invalid"):
@@ -276,7 +276,7 @@ def test_cli_defaults_to_dry_run_and_apply_flag_is_required(fixture, capsys):
 
 
 def test_raising_the_amount_through_set_reaches_the_next_runs_exa_start(fixture, tmp_path):
-    """The owner's one number binds: $10 to $30 needs no code change and lifts the next run to $15 per start."""
+    """Historical signed amounts remain immutable but do not cap the next request."""
     bridge, objects, _ = fixture
     setting(bridge, objects, "10.00")
     ledger = FirestoreLedger(bridge)
@@ -285,7 +285,8 @@ def test_raising_the_amount_through_set_reaches_the_next_runs_exa_start(fixture,
     assert (first["limit_micros"], first["per_start_max_micros"]) == (10_000_000, 5_000_000)
     setting(bridge, objects, "30.00", now=NOW + timedelta(minutes=5))
     raised = ledger.paid_expansion_control()
-    assert allocation.effective_limit(first, raised) == 10_000_000  # The run in progress stays frozen.
+    assert allocation.effective_limit(first, raised) is None
+    assert first["limit_micros"] == 10_000_000  # The signed record stays frozen.
     day = datetime(2026, 10, 5, 12, 1, tzinfo=timezone.utc)
     row = {"date": "2026-10-05", "run_key": "blueprint-researcher:2026-10-05", "session_id": "sess_synthetic",
            "turn_id": "turn_synthetic", "state": "running", "started_at": day.isoformat(),
@@ -298,10 +299,10 @@ def test_raising_the_amount_through_set_reaches_the_next_runs_exa_start(fixture,
     store.put(row)
     transport = Transport(store, row)
     options = {"transport": transport, "control": raised, "tool_schema": SCHEMA, "now": day + timedelta(seconds=30)}
-    refused = expansion.execute(expansion.START, {**ARGS, "max_cost_micros": 15_000_001}, row, store, **options)
-    assert refused["reason"] == "expansion_cap_exceeds_per_start_maximum" and refused["max_start_micros"] == 15_000_000
-    admitted = expansion.execute(expansion.START, {**ARGS, "max_cost_micros": 15_000_000}, row, store, **options)
-    assert admitted["run_id"] == "agent_run_synthetic" and transport.starts[0]["budget"]["maxCostDollars"] == 15.0
+    admitted = expansion.execute(expansion.START, {**ARGS, "max_cost_micros": 15_000_001}, row, store, **options)
+    assert admitted["run_id"] == "agent_run_synthetic" and "budget" not in transport.starts[0]
+    replay = expansion.execute(expansion.START, ARGS, row, store, **options)
+    assert replay["run_id"] == admitted["run_id"] and len(transport.starts) == 1
 
 
 def test_a_rollback_that_drops_the_control_copy_keeps_one_audit_chain(fixture, tmp_path):

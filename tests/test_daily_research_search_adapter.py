@@ -705,32 +705,16 @@ def budget_reply(reply):
     return reply["success"] is False and error["code"] == "research_tool_budget_exhausted" and "final output" in error["guidance"]
 
 
-def test_call_budget_fails_soft_reserves_qa_and_keeps_a_hard_stop(monkeypatch):
-    monkeypatch.setattr(search, "MAX_CALLS", 3)
-    monkeypatch.setattr(search, "QA_RESERVED_CALLS", 1)
-    monkeypatch.setattr(search, "BUDGET_GRACE_CALLS", 2)
+def test_calls_continue_past_old_count_ceiling_within_byte_limits():
     value, ledger = row(), MemoryLedger()
     api = ToolAPI(ledger)
-    respond(value, [action()], ledger, api)
-    respond(value, [action(cid="call_2")], ledger, api)
-    # Research may not use QA's reserved share: it is told to finish instead of being cancelled.
-    respond(value, [action(cid="call_3")], ledger, api)
-    assert len(api.executions) == 2 and budget_reply(api.replies[-1][1])
-    # QA still has its reserve, then gets the same fail-soft reply at the shared ceiling.
-    respond(value, [action(cid="call_4", tid="turn_qa")], ledger, api, phase="qa")
-    assert len(api.executions) == 3 and api.replies[-1][1]["success"] is True
-    respond(value, [action(cid="call_5", tid="turn_qa")], ledger, api, phase="qa")
-    assert len(api.executions) == 3 and budget_reply(api.replies[-1][1])
-    # A replay of a budget reply returns the same retained bytes and executes nothing.
-    respond(value, [action(cid="call_5", tid="turn_qa")], ledger, api, phase="qa")
-    assert len(api.executions) == 3 and api.replies[-1] == api.replies[-2]
-    # Each phase has its own grace replies; after them, the hard ceiling still refuses.
-    respond(value, [action(cid="call_6", tid="turn_qa")], ledger, api, phase="qa")
-    assert len(api.executions) == 3 and budget_reply(api.replies[-1][1])
-    with pytest.raises(Refusal, match="^research_tool_evidence_resource_ceiling$"):
-        respond(value, [action(cid="call_7", tid="turn_qa")], ledger, api, phase="qa")
-    assert {call["phase"] for call in value["application_tool_calls"].values()} == {"research", "qa"}
-    assert value["application_tool_usage"]["attempted_search_requests"] == 3
+    for number in range(501):
+        respond(value, [action(cid=f"call_{number}")], ledger, api)
+    assert len(api.executions) == 501
+    assert all(reply[1]["success"] is True for reply in api.replies)
+    respond(value, [action(cid="call_500")], ledger, api)
+    assert len(api.executions) == 501 and api.replies[-1] == api.replies[-2]
+    assert value["application_tool_usage"]["attempted_search_requests"] == 501
 
 
 def time_reply(reply):
@@ -742,7 +726,6 @@ def test_research_is_told_to_finish_before_its_time_runs_out(monkeypatch):
     """2026-10-06: research ran into the hard time guard mid-search and lost the day's output. Inside the last
     quarter of a short window (at most WRAP_UP_SECONDS), each new research call gets a recorded finish-now reply
     instead of executing; it never turns into the budget refusal, and QA keeps its own time."""
-    monkeypatch.setattr(search, "BUDGET_GRACE_CALLS", 1)
     value, ledger = row(), MemoryLedger()  # A 60-second research window: its last 15 seconds are wrap-up time.
     api = ToolAPI(ledger)
     respond(value, [action()], ledger, api, clock=lambda: NOW + timedelta(seconds=44))
@@ -759,23 +742,19 @@ def test_research_is_told_to_finish_before_its_time_runs_out(monkeypatch):
     assert len(api.executions) == 2 and api.replies[-1][1]["success"] is True
 
 
-def test_research_grace_replies_do_not_use_up_qa_grace(monkeypatch):
-    monkeypatch.setattr(search, "MAX_CALLS", 3)
-    monkeypatch.setattr(search, "QA_RESERVED_CALLS", 1)
-    monkeypatch.setattr(search, "BUDGET_GRACE_CALLS", 1)
+def test_storage_replies_have_no_fixed_grace_count(monkeypatch):
     value, ledger = row(), MemoryLedger()
     api = ToolAPI(ledger)
     respond(value, [action()], ledger, api)
-    respond(value, [action(cid="call_2")], ledger, api)
-    respond(value, [action(cid="call_3")], ledger, api)
-    assert budget_reply(api.replies[-1][1])
-    with pytest.raises(Refusal, match="^research_tool_evidence_resource_ceiling$"):
-        respond(value, [action(cid="call_4")], ledger, api)
-    # Research used all of its grace replies. QA keeps its reserve and its own grace reply.
-    respond(value, [action(cid="call_5", tid="turn_qa")], ledger, api, phase="qa")
-    assert len(api.executions) == 3 and api.replies[-1][1]["success"] is True
-    respond(value, [action(cid="call_6", tid="turn_qa")], ledger, api, phase="qa")
-    assert len(api.executions) == 3 and budget_reply(api.replies[-1][1])
+    used = sum(call["result_bytes"] for call in value["application_tool_calls"].values())
+    monkeypatch.setattr(search, "MAX_EVIDENCE", used + search.QA_RESERVED_EVIDENCE +
+                        2 * search.MAX_RESPONSE + 20000)
+    for number in range(25):
+        respond(value, [action(cid=f"storage_{number}")], ledger, api)
+        assert budget_reply(api.replies[-1][1])
+    assert len(api.executions) == 1
+    respond(value, [action(cid="qa", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 2 and api.replies[-1][1]["success"] is True
 
 
 def repair_row():
@@ -789,17 +768,14 @@ def repair_row():
     return value
 
 
-def test_validation_repair_keeps_the_qa_call_reserve(monkeypatch):
-    monkeypatch.setattr(search, "MAX_CALLS", 2)
-    monkeypatch.setattr(search, "QA_RESERVED_CALLS", 1)
+def test_validation_repair_has_no_call_reserve_quota():
     value, ledger = repair_row(), MemoryLedger()
     api = ToolAPI(ledger)
     respond(value, [action()], ledger, api)
-    # Repair runs before QA, so like research it may not use QA's reserved share.
     respond(value, [action(cid="call_2", tid="turn_repair")], ledger, api, phase="repair")
-    assert len(api.executions) == 1 and budget_reply(api.replies[-1][1])
     respond(value, [action(cid="call_3", tid="turn_qa")], ledger, api, phase="qa")
-    assert len(api.executions) == 2 and api.replies[-1][1]["success"] is True
+    assert len(api.executions) == 3
+    assert all(reply[1]["success"] is True for reply in api.replies)
 
 
 def test_byte_budget_fails_soft_and_includes_prior_research_during_qa(monkeypatch):

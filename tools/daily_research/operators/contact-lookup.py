@@ -1,7 +1,7 @@
 """Owner command for the contact lookup (FullEnrich) of a site-screen out dir.
 
-lookup is a dry run unless --apply. With --apply it pins the owner reference, a FullEnrich credit ceiling and a call
-limit on first use (a later run may only lower them), journals every call before sending it, starts one work-email
+lookup is a dry run unless --apply. With --apply it pins the owner reference without application credit or call
+ceilings, journals every call before sending it, starts one work-email
 enrichment per named, current person the contact stage proved by a quote, and reads the results (reads are not billed)
 for up to --wait-seconds; a later run reads the rest and never sends a lookup twice. A people search on the operator's
 domain for the deciding roles runs only with --person-search naming the owner decision
@@ -44,8 +44,8 @@ def main(argv=None, *, environ=None, transport=None, monotonic=time.monotonic, s
     spender = commands.add_parser("lookup", help="Look up work emails; a dry run unless --apply")
     spender.add_argument("--out", required=True, type=Path, help="The site-screen out dir (durable and private)")
     spender.add_argument("--owner-reference", required=True, help="The owner decision the first --apply pins")
-    spender.add_argument("--max-credits", required=True, help="FullEnrich credit ceiling for this out dir; never above the pin")
-    spender.add_argument("--max-calls", required=True, type=int, help="Paid call limit for this out dir; never above the pin")
+    spender.add_argument("--max-credits", help="Deprecated compatibility argument; no application credit ceiling")
+    spender.add_argument("--max-calls", type=int, help="Deprecated compatibility argument; no application call ceiling")
     spender.add_argument("--key-file", required=True, type=Path, help="KEY=VALUE file holding FULLENRICH_API_KEY")
     spender.add_argument("--person-search", metavar="OWNER_DECISION",
                          help="Allow a provider_sourced person; must be " + contact_lookup.PERSON_SEARCH_DECISION)

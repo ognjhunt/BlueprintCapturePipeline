@@ -49,16 +49,11 @@ MAX_RECORD = 7_000_000  # Below the existing Firestore 8 MiB blob boundary.
 MAX_CALL_RECORDS = 1_000_000  # Leave room for packet, QA and delivery plans.
 MAX_INTENT = 1_000_000
 MAX_PACKET = 500_000
-MAX_CALLS = 500  # Resource ceiling, never a quality quota; shared research+QA.
-# Research and its validation repair stop short of a share reserved for QA's source
-# verification, so a long research phase cannot starve QA. At its budget a tool call
-# gets a fixed reply that tells the agent to finish its output; the session is not
-# cancelled. A hard refusal remains after BUDGET_GRACE_CALLS such replies in a phase.
-QA_RESERVED_CALLS = 50
+# Reserve retained evidence bytes for QA, without limiting the number of calls.
+# Small calls may continue while the serialized records and evidence fit.
 QA_RESERVED_EVIDENCE = 1_000_000
-BUDGET_GRACE_CALLS = 20
 BUDGET_EXHAUSTED = {"code": "research_tool_budget_exhausted",
-                    "guidance": "This run's tool budget for this phase is used up. Do not call more tools. "
+                    "guidance": "This run's retained evidence storage for this phase is full. Do not call more tools. "
                                 "Write the final output now from the evidence already retained, and record "
                                 "the remaining promising branches as unresolved for the next run."}
 # The last stretch of research (at most a quarter of its window) is for writing the output: the hard time guard
@@ -154,7 +149,7 @@ def delegated_research_instructions():
     return (" You remain the lead researcher: read company history and the robot capability directory, form "
             "several hypotheses, choose Perplexity fast discovery and decide which substantial investigations "
             "to delegate through the available MCP research tools. The delegated tools can create paid work; "
-            "their presence does not create spending or disclosure authority. Use only the retained allocation "
+            "their presence does not create spending or disclosure authority. Use only the retained source authority "
             "and current deadline, and pass only information authorized for those providers. "
             "Use Exa agent_run with effort=ultra when the authenticated current tool schema advertises it; "
             "a running result's id is observed with runId on the SAME run. previousRunId starts a NEW follow-up "
@@ -168,8 +163,7 @@ def delegated_research_instructions():
             "Retain its identifier and pending state instead of creating another task. Find All is not "
             "advertised by this verified MCP catalog: report that comparison as unavailable, do not guess "
             "a tool or substitute a raw API call. "
-            "Do not guess cost-control fields. If a tool actually advertises maxCostDollars, set it within "
-            "the remaining retained allocation; otherwise its budget is a soft target, not a hard cap. "
+            "Do not add application cost-control fields or call quotas. Preserve provider-imposed limits and actual usage reporting. "
             "Unknown acknowledgment, timeout or missing output is not permission to start a duplicate job. "
             "Keep returned reports, citations, run IDs, usage and cost receipts. Native MCP provider charges "
             "are not measured by Blueprint's Perplexity meter or OpenAI token usage: missing charges remain "
@@ -585,18 +579,11 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             # A recorded event escapes its JSON output again, so one result can reach about
             # twice MAX_RESPONSE. Phases before QA stop that far short of QA's share.
             before_qa = phase in {"research", "repair"}
-            reserve_calls = QA_RESERVED_CALLS if before_qa else 0
             reserve_bytes = QA_RESERVED_EVIDENCE + MAX_RESPONSE if before_qa else 0
-            # Fail-soft replies are bounded separately and never use a real call's share.
-            executed = sum(c.get("budget_exhausted") is not True for c in calls.values())
-            exhausted = (executed >= MAX_CALLS - reserve_calls
-                         or used >= MAX_EVIDENCE - reserve_bytes - MAX_RESPONSE - 20000)
+            exhausted = used >= MAX_EVIDENCE - reserve_bytes - MAX_RESPONSE - 20000
             # Near the end of research every new call is told to finish; that is never a refusal.
             time_up = wrap_up_at is not None and clock().timestamp() >= wrap_up_at
-            # Each phase has its own grace replies, so research cannot use up QA's.
-            grace = sum(c.get("budget_exhausted") is True and not c.get("time_up") and c.get("phase") == phase
-                        for c in calls.values())
-            if exhausted and (grace >= BUDGET_GRACE_CALLS or used >= MAX_EVIDENCE - 20000):
+            if exhausted and used >= MAX_EVIDENCE - 20000:
                 raise Refusal("research_tool_evidence_resource_ceiling")
             prior = {"request_digest": digest(binding), "request": binding, "phase": phase, "attempted": False}
             if exhausted or time_up:
@@ -652,7 +639,7 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                             result = expansion.execute(action["name"], action.get("arguments"), row, ledger,
                                 phase=phase, now=clock(), admit=lambda current: api.expansion_admit(current, phase), **context)
                         elif action["name"] in findall_names:
-                            # Admission is the shared paid expansion allowance (findall.py).
+                            # Admission requires the immutable paid source authority (findall.py).
                             result = (findall_handler.execute(action, row=row, phase=phase)
                                       if findall_handler is not None else findall.unavailable(action["name"]))
                         else:

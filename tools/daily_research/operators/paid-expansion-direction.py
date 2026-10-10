@@ -1,10 +1,10 @@
-"""Owner command for the combined per-run paid expansion allowance (Exa and Parallel FindAll).
+"""Owner command for the immutable paid expansion source authority (Exa and Parallel FindAll).
 
 show: control and audit reads only. set/disable are dry runs unless --apply.
 Apply writes only the content-addressed, create-only direction object (set) and
 control.paid_expansion through the fenced compare-and-swap bridge op, then reads
-both back. The amount is data: $10 to $20 or $30 is one command, with no code
-change, redeploy or package. No provider, model, session, CRM or send.
+both back. Legacy amount fields remain reporting data and do not gate admission.
+No provider, model, session, CRM or send.
 """
 import argparse
 import base64
@@ -67,7 +67,9 @@ def utc(value):
 
 
 def amount(value):
-    """Owner input such as 20 or 20.00, normalized to two decimals within the $1–$100 code ceiling."""
+    """Optional legacy reporting amount, normalized to exact two-decimal dollars."""
+    if value is None:
+        return None
     text = value + ".00" if isinstance(value, str) and value.isdigit() else value
     if allocation.micros(text) is None:
         raise Refusal("paid_expansion_limit_invalid")
@@ -246,7 +248,7 @@ def main(argv=None, *, bridge_factory=Bridge, objects_factory=BridgeObjects, clo
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("show")
     setter = commands.add_parser("set")
-    setter.add_argument("--per-run-usd", required=True, help="Combined per-run limit, $1.00-$100.00, e.g. 20.00")
+    setter.add_argument("--per-run-usd", help="Deprecated historical metadata; no application dollar limit")
     setter.add_argument("--approval-reference", required=True)
     setter.add_argument("--approved-by", default="owner")
     setter.add_argument("--reason", default="Owner per-run paid expansion allowance")
