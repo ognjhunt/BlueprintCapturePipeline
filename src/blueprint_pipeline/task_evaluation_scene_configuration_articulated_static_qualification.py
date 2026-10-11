@@ -226,8 +226,11 @@ def _passive_joint_findings(prim: Any, row: Mapping[str, Any], planned: Mapping[
         authored_axis = [float(v) for v in prim.GetCustomDataByKey("blueprint:graphAxis")]
     except (TypeError, ValueError):
         authored_axis = []
-    rotation = UsdPhysics.Joint(prim).GetLocalRot0Attr().Get()
+    rotation, rotation1 = UsdPhysics.Joint(prim).GetLocalRot0Attr().Get(), UsdPhysics.Joint(prim).GetLocalRot1Attr().Get()
     quaternion = [rotation.GetReal(), *rotation.GetImaginary()] if rotation is not None else [1.0, 0.0, 0.0, 0.0]
+    other = [rotation1.GetReal(), *rotation1.GetImaginary()] if rotation1 is not None else [1.0, 0.0, 0.0, 0.0]
+    if not _close_sequence([float(v) for v in quaternion], [float(v) for v in other]):
+        findings.append("replacement_passive_joint_frames_disagree:" + name)
     # The token is in the joint frame; its rotation gives the signed asset-frame direction.
     slide = (list(Gf.Rotation(Gf.Quatd(quaternion[0], Gf.Vec3d(*quaternion[1:]))).TransformDir(Gf.Vec3d(*token)))
              if token is not None else None)
@@ -236,7 +239,10 @@ def _passive_joint_findings(prim: Any, row: Mapping[str, Any], planned: Mapping[
         findings.append("replacement_passive_joint_axis_mismatch:" + name)
     friction = (planned or {}).get("passive_friction")
     unit = "angular" if row["joint_type"] == "revolute" else "linear"
-    if friction is not None and any(
+    # PhysX reads the friction efforts only through the applied joint-axis schema.
+    schemas = prim.GetMetadata("apiSchemas")
+    applied = list(schemas.GetAppliedItems()) if schemas is not None else []
+    if planned is None or friction is None or f"PhysxJointAxisAPI:{unit}" not in applied or any(
             prim.GetAttribute(f"physxJointAxis:{unit}:{attribute}").Get() is None
             or not math.isclose(float(prim.GetAttribute(f"physxJointAxis:{unit}:{attribute}").Get()),
                                 float(friction[key]), rel_tol=1e-5, abs_tol=1e-6)
