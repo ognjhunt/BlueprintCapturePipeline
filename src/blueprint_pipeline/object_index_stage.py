@@ -1531,9 +1531,14 @@ def _write_descriptor_updates(
     descriptor: CaptureDescriptor,
     object_index_uri: Optional[str],
     *,
+    capture_root: Optional[Path] = None,
     run_fingerprint: Optional[str] = None,
     current_usable_object_count: Optional[int] = None,
 ) -> None:
+    if capture_root is not None and descriptor_path.parent.parent == capture_root / "deliveries":
+        # A selected delivery's descriptor is verified birth evidence and stays
+        # byte-identical; derived/object_index/current.json records this run.
+        return
     payload = descriptor.to_dict()
     payload["object_index_uri"] = object_index_uri
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
@@ -1639,6 +1644,7 @@ def _published_run_result(
         context.descriptor_path,
         descriptor,
         object_index_uri,
+        capture_root=context.capture_root,
         run_fingerprint=run_root.name,
         current_usable_object_count=object_count,
     )
@@ -1688,6 +1694,7 @@ def _canonicalize_legacy_index(
             context.descriptor_path,
             descriptor,
             object_index_uri,
+            capture_root=context.capture_root,
             run_fingerprint=f"capture_raw:{fingerprint}",
             current_usable_object_count=len(loaded),
         )
