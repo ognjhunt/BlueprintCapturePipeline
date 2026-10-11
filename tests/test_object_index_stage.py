@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
+import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +15,7 @@ from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.ios_manifest import IOSManifest
 from blueprint_pipeline.local_capture import LocalCaptureContext
 from blueprint_pipeline import object_index_stage as oi
+from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
 from blueprint_pipeline.object_index_stage import _existing_index_is_reusable
 from blueprint_pipeline.object_index_artifacts import resolve_current_object_index_artifacts
 
@@ -499,6 +503,55 @@ def test_object_index_runs_are_immutable_raw_preserving_and_clear_stale_current_
     assert invalid["object_index_path"] is None
     assert invalid["objects"] == []
     assert "current_run_member_set_or_hash_mismatch" in invalid["blockers"]
+
+
+def test_selected_delivery_descriptor_stays_byte_identical_while_the_pointer_records_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root, context = _capture_tree(tmp_path)
+    selected = capture_root / "deliveries" / ("a" * 64) / "capture_descriptor.json"
+    selected.parent.mkdir(parents=True)
+    selected.write_bytes(context.descriptor_path.read_bytes() + b"\n")
+    before = selected.read_bytes()
+    context = replace(context, descriptor_path=selected)
+    # Birth membership for the selected descriptor, as in test_selected_capture_readers.
+    row = {"size_bytes": len(before), "sha256": "sha256:" + hashlib.sha256(before).hexdigest()}
+    monkeypatch.setattr(generations, "_capture_birth_input", lambda path, relative: (
+        (selected, row) if relative == "capture_descriptor.json" else (Path(path) / relative, None)))
+
+    @contextmanager
+    def unit_descriptor(path):
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            yield fd, os.fstat(fd)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(generations, "_opened", unit_descriptor)
+    keyframe = _keyframe(tmp_path, 0)
+    monkeypatch.setattr(oi, "resolve_local_capture_context", lambda _capture_root: context)
+    monkeypatch.setattr(oi, "build_capture_enrichment_runner", lambda **_kwargs: None)
+    monkeypatch.setattr(oi, "_sample_keyframes", lambda **_kwargs: [keyframe])
+    monkeypatch.setattr(oi, "_extract_keyframe_images", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(oi, "_resolve_video_path", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(oi, "_command_from_env", lambda name: f"{name} command")
+    monkeypatch.setattr(oi, "_backend_preflight_status",
+                        lambda backend_name, command_template: {"status": "ready", "support_level": "required"})
+    monkeypatch.setattr(oi, "_copy_crop", lambda _frame, path, _bbox: path.write_bytes(b"crop"))
+    detections = [{"frame_index": 0, "label": "Dishwasher", "score": 0.9, "bbox": [0, 0, 10, 10]}]
+    monkeypatch.setattr(oi, "_run_backend_command", lambda backend_name, **_kwargs: {
+        "status": "ok", "backend": backend_name,
+        "payload": {"detections": detections if backend_name == "yolo_world" else []}})
+
+    built = oi.run_object_index_stage(capture_root=capture_root)
+    reused = oi.run_object_index_stage(capture_root=capture_root)
+
+    assert built["status"] == "built" and reused["status"] == "reused_immutable_run"
+    assert reused["run_fingerprint"] == built["run_fingerprint"]
+    assert selected.read_bytes() == before
+    pointer = json.loads((context.pipeline_root / "derived" / "object_index" / "current.json").read_text())
+    assert pointer["status"] == "ready" and pointer["object_index_uri"] == built["object_index_uri"]
 
 
 def test_run_object_index_stage_stamps_unrecognized_environment_default_bank(
