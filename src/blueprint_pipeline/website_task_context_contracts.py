@@ -16,10 +16,11 @@ from .decision_evidence_contracts import canonical_digest
 def admits_scene_preparation(value: Mapping[str, Any] | None) -> bool:
     """A site-confirmed task, or the assessment-proposed task of a preparation run.
 
-    The WebApp grants ``scene_preparation`` authority only for an admitted
-    assessment proposal, so building the scene that proposal describes needs no
-    second human click. Site confirmation still gates what commits the site:
-    success thresholds, sharing and physical trials.
+    This only stops a site click from gating scene preparation. It grants no
+    spend: paid calls still need the loaded sponsorship (issued for an admitted
+    assessment proposal) and a reservation bound to this task context. Site
+    confirmation still gates what commits the site: success thresholds,
+    sharing and physical trials.
     """
     return bool(value) and (value.get("confirmed") is True or (
         value.get("purpose") == "scene_preparation" and value.get("confirmed") is False))
