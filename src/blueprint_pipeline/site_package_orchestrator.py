@@ -4767,13 +4767,10 @@ def run_qualification_pipeline(
             if isinstance(descriptor.depth_conditioning, Mapping)
             else {}
         )
-        # Browser deliveries carry no requested outputs (raw bundles default to
-        # preview_simulation). A loaded scene_preparation sponsorship is itself
-        # the request for the reviewed scene preview it funds.
-        sponsored_scene_preparation = website_capture and (
-            ((descriptor.metadata or {}).get("website_scene_execution_authority") or {}).get("purpose")
-            == "scene_preparation")
-        preview_requested_for_worldlabs = sponsored_scene_preparation or any(
+        # Browser deliveries carry no requested outputs; a loaded scene_preparation
+        # sponsorship is itself the request for the scene preview it funds.
+        from .website_task_context_contracts import sponsors_scene_preparation
+        preview_requested_for_worldlabs = (website_capture and sponsors_scene_preparation(descriptor.metadata)) or any(
             str(value or "").strip().lower() in {"preview_simulation", "preview"}
             for value in descriptor.requested_outputs
         )
@@ -5299,9 +5296,7 @@ def run_qualification_pipeline(
         )
 
         preview_provider_name = str(os.getenv("BLUEPRINT_PREVIEW_PROVIDER") or "world_labs").strip()
-        # The same request rule that ran preparation; a sponsored website
-        # preparation must reach Marble, not stop after paid upstream work.
-        preview_requested = preview_requested_for_worldlabs
+        preview_requested = preview_requested_for_worldlabs  # the rule that ran paid preparation reaches Marble
         preview_input_ready = bool(worldlabs_input.get("output_video_uri") or worldlabs_input.get("prepared_views")) and str(worldlabs_input.get("status") or "").strip().lower() == "ready"
         provider_run = (
             run_preview_provider(
