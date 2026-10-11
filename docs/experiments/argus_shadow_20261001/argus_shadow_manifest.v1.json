@@ -11,7 +11,7 @@
     "size_bytes": 3695
   },
   "current_grader_kind": "adp_deterministic",
-  "current_grader_commit": "35f5c9ad43f84aa053aa7616a63a9aa4f6e32a61",
+  "current_grader_commit": "9cf0e298bf33280379a320240be005f28a480c3f",
   "current_grader_sources": [
     {
       "path": "src/blueprint_pipeline/adp_task_scoring.py",
@@ -35,8 +35,8 @@
     },
     {
       "path": "src/blueprint_pipeline/adp_articulated_task_success_contract.py",
-      "sha256": "sha256:083fdb59be189882f4a36308a36db4fb64fab29b627b30f2966dec015c0e4727",
-      "size_bytes": 18907
+      "sha256": "sha256:eddd48ca1b072c1a521f55cd32403923c3973a9c04444f520b3c3052da512553",
+      "size_bytes": 19072
     },
     {
       "path": "src/blueprint_pipeline/task_evaluation_surface_target.py",
@@ -74,7 +74,7 @@
   "episodes": [],
   "external_execution_authorized": false,
   "production_grader_switch_authorized": false,
-  "manifest_digest": "sha256:6178d8cf836e49d880d963757fd4a2a24b07e4ea14738a08a17ec0d6fd1dbca4",
+  "manifest_digest": "sha256:504bd317b629052cde3fb1620f5e8c6ad7afa28c36ceb3862fb926f08b2fefb4",
   "argus_model": "openai/gpt-6.1-sol",
   "paid_execution_status": "deferred_billing_incident_no_new_paid_approval_requested",
   "evidence_inventories": [

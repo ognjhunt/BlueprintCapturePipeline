@@ -64,3 +64,22 @@ def test_hinged_appliance_bounds_follow_each_planned_part_role() -> None:
         "assembly_plan_family_mismatch": {}}
     legacy = {key: value for key, value in configuration.items() if key != "assembly_family"}
     assert set(expected_articulated_physics_bounds(legacy, plan)) == {"carcass", "drawer"}
+
+
+def test_dishwasher_rack_slides_are_admitted_only_as_undriven_passive_joints() -> None:
+    from blueprint_pipeline.articulation_graph_contract import validate_articulation_graph
+    from blueprint_pipeline.task_evaluation_scene_configuration_articulated_replacement_result import (
+        non_target_joints_admitted,
+    )
+    from blueprint_pipeline.task_object_articulated_packaging import (
+        articulation_graph_from_plan, plan_articulated_assembly,
+    )
+    from tests.test_articulated_hinged_door_appliance import dishwasher
+
+    joints = validate_articulation_graph(articulation_graph_from_plan(plan_articulated_assembly(dishwasher())))["joints"]
+    assert sorted(row["joint_id"] for row in joints if row["role"] == "passive") == ["lower_rack_slide", "upper_rack_slide"]
+    assert non_target_joints_admitted(joints)
+    servoed = [{**row, "drive": {**row["drive"], "stiffness": 50.0}} if row["role"] == "passive" else row for row in joints]
+    assert not non_target_joints_admitted(servoed)
+    undeclared = [{**row, "role": "locked"} if row["role"] == "passive" else row for row in joints]
+    assert not non_target_joints_admitted(undeclared)

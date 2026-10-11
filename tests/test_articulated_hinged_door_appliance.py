@@ -120,7 +120,27 @@ def test_dishwasher_plans_hollow_body_bottom_hinged_door_and_fixed_racks_inside_
     target = next(row for row in graph["joints"] if row["role"] == "target")
     assert target["joint_type"] == "revolute" and target["limits"] == [0.0, 1.4]
     assert graph["success_predicate"]["joint_intervals"][TARGET_JOINT_ID] == [0.84, 1.4]
-    assert sorted(row["joint_type"] for row in graph["joints"]) == ["fixed", "fixed", "fixed", "revolute"]
+    assert sorted(row["joint_type"] for row in graph["joints"]) == ["fixed", "prismatic", "prismatic", "revolute"]
+    slides = {row["joint_id"]: row for row in graph["joints"] if row["role"] == "passive"}
+    rack_depth = plan["parts"]["lower_rack"]["dimensions_m"][0]
+    assert sorted(slides) == ["lower_rack_slide", "upper_rack_slide"]
+    for joint_id, row in slides.items():
+        assert row["joint_type"] == "prismatic" and row["parent_link_id"] == "body" and row["axis"] == [1.0, 0.0, 0.0]
+        assert row["limits"] == pytest.approx([0.0, 0.75 * rack_depth], abs=1e-5) and row["reset_position"] == 0.0
+        assert row["drive"]["stiffness"] == 0.0 and row["drive"]["damping"] == 5.0
+    assert {row["travel_authority"] for row in plan["auxiliary_joints"]} == {"template_prior"}
+    # Part requests carry construction_assumptions verbatim; they stay as before so bought parts are reused.
+    assert "interior_parts_fixed_closed_not_sliding" in plan["construction_assumptions"]
+    assert not any("slide" in note for note in plan["construction_assumptions"])
+    mechanism = plan["mechanism_assumptions"]
+    assert "racks_slide_passively_along_+X_travel_is_template_prior" in mechanism
+    assert "rack_slide_friction_is_template_prior_not_measured" in mechanism
+    assert "cutlery_basket_stays_in_tub_when_lower_rack_slides" in mechanism
+    # The bought part's request text is unchanged, so a retained rack part is reused.
+    assert "; held fixed inside the tub, not a task part." in plan["parts"]["upper_rack"]["description"]
+    for row in plan["auxiliary_joints"]:
+        assert row["passive_friction"]["basis"] == "estimated_unobserved_joint_resistance_prior"
+        assert row["passive_friction"]["physical_measurement_proven"] is False
 
 
 @pytest.mark.parametrize("hinge, axis, token, anchor_y", [("left", [0.0, 0.0, -1.0], "Z", -0.3),
@@ -382,7 +402,18 @@ def test_dishwasher_packages_one_passive_revolute_door_and_passes_static_qualifi
     receipt, bounds = _package(tmp_path, plan)
     stage = Usd.Stage.Open(receipt["asset"]["path"])
     revolute = [p for p in stage.Traverse() if p.IsA(UsdPhysics.RevoluteJoint)]
-    assert len(revolute) == 1 and not [p for p in stage.Traverse() if p.IsA(UsdPhysics.PrismaticJoint)]
+    slides = {p.GetName(): p for p in stage.Traverse() if p.IsA(UsdPhysics.PrismaticJoint)}
+    assert len(revolute) == 1 and sorted(slides) == ["lower_rack_slide", "upper_rack_slide"]
+    for row in plan["auxiliary_joints"]:
+        slide = slides[row["joint_id"]]
+        assert slide.GetCustomDataByKey("blueprint:jointRole") == "passive"
+        assert [UsdPhysics.PrismaticJoint(slide).GetLowerLimitAttr().Get(),
+                UsdPhysics.PrismaticJoint(slide).GetUpperLimitAttr().Get()] == pytest.approx(row["limits_m"])
+        linear = UsdPhysics.DriveAPI(slide, "linear")
+        assert linear.GetStiffnessAttr().Get() == 0.0 and linear.GetDampingAttr().Get() == pytest.approx(5.0)
+        assert "PhysxJointAxisAPI:linear" in slide.GetMetadata("apiSchemas").GetAppliedItems()
+        assert slide.GetAttribute("physxJointAxis:linear:staticFrictionEffort").Get() == pytest.approx(4.0)
+        assert slide.GetAttribute("physxJointAxis:linear:dynamicFrictionEffort").Get() == pytest.approx(2.0)
     joint = UsdPhysics.RevoluteJoint(revolute[0])
     assert joint.GetAxisAttr().Get() == plan["task_joint"]["usd_axis"]
     assert joint.GetUpperLimitAttr().Get() == pytest.approx(math.degrees(1.4))
@@ -403,7 +434,7 @@ def test_dishwasher_packages_one_passive_revolute_door_and_passes_static_qualifi
     assert np.allclose(np.array(joint.GetLocalPos0Attr().Get()) + body_rest, anchor, atol=1e-6)
     assert np.allclose(np.array(joint.GetLocalPos1Attr().Get()) + door_rest, anchor, atol=1e-6)
     fixed = sorted(p.GetName() for p in stage.Traverse() if p.IsA(UsdPhysics.FixedJoint))
-    assert fixed == ["cutlery_basket_fixed", "lower_rack_fixed", "upper_rack_fixed"]
+    assert fixed == ["cutlery_basket_fixed"]
     carried = json.loads(stage.GetPrimAtPath("/Asset/links/door").GetCustomDataByKey(REQUIRED_PARTS_ATTRIBUTE))
     assert carried == {"brand_label": "brand_label", "control_panel": "control_panel", "door_inner": "inner_liner",
                        "door_outer": "outer_skin", "handle": "handle"}
@@ -601,8 +632,9 @@ def test_dishwasher_passes_native_import_structure_and_seals_a_radian_reset(tmp_
     root = "/World/Placement/Replacement"
     assert set(structure["link_physics_readback"]) == {"body", "door", "upper_rack", "lower_rack", "cutlery_basket"}
     assert structure["settle_measured_body_prim_path"] == root + "/links/body"
-    assert sorted(structure["fixed_joint_prim_paths"]) == [
-        root + f"/joints/{name}_fixed" for name in ("cutlery_basket", "lower_rack", "upper_rack")]
+    assert sorted(structure["fixed_joint_prim_paths"]) == [root + "/joints/cutlery_basket_fixed"]
+    assert structure["task_joint"]["passive_joint_prim_paths"] == [
+        root + f"/joints/{name}_slide" for name in ("lower_rack", "upper_rack")]
     joint = structure["task_joint"]
     assert joint["task_joint_type"] == "revolute" and joint["task_joint_axis"] == token
     assert joint["task_joint_limits"] == pytest.approx([0.0, 1.4], abs=1e-6)  # radians, read from USD degrees
@@ -677,9 +709,9 @@ def test_revolute_task_freezes_radian_thresholds_and_a_door_handle_grasp(tmp_pat
     assert affordance["pull_follows_arc_about_axis_asset_root"] == plan["task_joint"]["axis_asset_frame"]
     assert spec["movement_epsilon"] == pytest.approx(0.014, abs=1e-6)
     contract, arena = materialize_contract_and_plan(case, adapted, tmp_path)
-    assert contract["task_sample_binding"]["native_coordinate_joint_ids"] == [TARGET_JOINT_ID]
-    assert sorted(contract["task_sample_binding"]["fixed_joint_ids"]) == [
-        "cutlery_basket_fixed", "lower_rack_fixed", "upper_rack_fixed"]
+    assert sorted(contract["task_sample_binding"]["native_coordinate_joint_ids"]) == sorted(
+        [TARGET_JOINT_ID, "lower_rack_slide", "upper_rack_slide"])
+    assert sorted(contract["task_sample_binding"]["fixed_joint_ids"]) == ["cutlery_basket_fixed"]
     assert arena["interaction_link_native_body_name"] == "door"
     assert arena["gpu_collision_qualification"]["status"] == "qualified"
 
@@ -698,7 +730,9 @@ def test_revolute_success_scores_in_radians(tmp_path):
     assert criteria["opening"]["success_interval"] == pytest.approx([0.84, 1.4])
     assert criteria["opening"]["joint_hard_limits"] == pytest.approx([0.0, 1.4])
     assert criteria["reset"]["tolerance"] == 0.02 and criteria["hold"]["maximum_settled_target_speed"] == 0.03
-    fixed = ["cutlery_basket_fixed", "lower_rack_fixed", "upper_rack_fixed"]
+    # Passive rack slides may move with the robot; only fixed parts are locked.
+    assert criteria["locked_joints"]["joint_ids"] == ["cutlery_basket_fixed"]
+    fixed = ["cutlery_basket_fixed", "lower_rack_slide", "upper_rack_slide"]
 
     def episode(angles, *, start=0.0):
         positions = [start, *angles]
