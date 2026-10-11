@@ -437,6 +437,18 @@ def test_analysis_fail_closed_without_gate():
     assert plan["authority_boundary"]["authorizes_person_pixel_removal"] is False
 
 
+@pytest.mark.parametrize("task_context, admitted", [
+    ({"description": "Open the dishwasher door", "confirmed": True}, True),
+    ({"description": "Open the dishwasher door", "confirmed": False, "purpose": "scene_preparation"}, True),
+    ({"description": "Open the dishwasher door", "confirmed": False}, False),
+    (None, False),
+])
+def test_analysis_admits_a_confirmed_or_preparation_task_only(task_context, admitted):
+    plan = analyze_removal_targets(video_path=None, task_context=task_context)
+    assert plan["status"] == "blocked"  # gate env and video still missing: no provider call
+    assert ("confirmed_task_context_required" in plan["blockers"]) is not admitted
+
+
 def test_stage_gate_off_blocks_without_provider_call(tmp_path, monkeypatch):
     monkeypatch.setenv(FLAG_ENV, "1")  # stage enabled, analysis gate still off
     capture_root = _make_capture(tmp_path)
