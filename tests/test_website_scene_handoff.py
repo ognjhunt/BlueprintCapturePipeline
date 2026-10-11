@@ -156,6 +156,43 @@ def test_geometry_controller_runs_only_after_visual_world_and_assets_are_ready(
     assert kwargs["provider_run"]["status"] == "ready"
 
 
+@pytest.mark.parametrize("authority,profile,backend,expected", [
+    ({"purpose": "scene_preparation"}, "/release/website-mapanything/profile.json", None, "mapanything"),
+    ({"purpose": "scene_preparation"}, None, None, None),
+    ({"purpose": "scene_preparation"}, "/release/website-mapanything/profile.json", "atlas", None),
+    ({"max_total_spend_usd": 5}, "/release/website-mapanything/profile.json", None, None),
+    (None, "/release/website-mapanything/profile.json", None, None),
+])
+def test_sponsored_preparation_takes_the_release_mapanything_route(
+        tmp_path, monkeypatch, authority, profile, backend, expected):
+    monkeypatch.delenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT", raising=False)
+    for name, value in (("BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE", profile),
+                        ("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND", backend)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    kwargs = inputs(tmp_path)
+    if authority is not None:
+        kwargs["descriptor"]["metadata"]["website_scene_execution_authority"] = authority
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"source")
+    kwargs["clean_plate"].update(source_geometry=None, input_video_path=str(video),
+        stage_manifest_path=str(tmp_path / "pipeline/clean_plate/stage.json"))
+    calls = []
+    def dispatch(**kw):
+        calls.append(kw)
+        raise ValueError("geometry_capacity_pending")
+    monkeypatch.setattr("blueprint_pipeline.website_scene_geometry.run_website_scene_geometry", dispatch)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    if expected is None:
+        assert calls == [] and result["geometry_controller_invoked"] is False
+        assert result["blockers"] == ["website_source_camera_depth_registration_required"]
+    else:
+        assert [call.get("backend") for call in calls] == [expected]
+        assert result["blockers"] == ["geometry_capacity_pending"]
+
+
 def test_provider_declared_scale_ground_and_anchor_view_enter_the_base_scene(tmp_path, monkeypatch):
     kwargs = inputs(tmp_path)
     pipeline = tmp_path / "pipeline"

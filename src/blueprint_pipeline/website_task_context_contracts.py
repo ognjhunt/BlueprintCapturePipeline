@@ -26,6 +26,11 @@ def admits_scene_preparation(value: Mapping[str, Any] | None) -> bool:
         value.get("purpose") == "scene_preparation" and value.get("confirmed") is False))
 
 
+def sponsors_scene_preparation(metadata: Mapping[str, Any] | None) -> bool:
+    """A loaded scene_preparation sponsorship requests the scene preview and geometry it funds."""
+    return ((metadata or {}).get("website_scene_execution_authority") or {}).get("purpose") == "scene_preparation"
+
+
 def validate_website_task_context(
     value: Mapping[str, Any], *, request_id: str, scene_id: str, capture_id: str,
     purpose: str | None = None,

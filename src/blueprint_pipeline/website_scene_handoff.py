@@ -123,8 +123,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                       visual_reconstruction_ready=not failed_fixture)
         if clean_plate.get("source_geometry") is None:
             selected = os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND")
-            geometry_backend = "mapanything" if (selected == "mapanything" or (
-                not selected and os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT"))) else None
+            # A scene_preparation sponsorship funds the geometry its compile
+            # needs. With Atlas unavailable, that route is the release's pinned
+            # MapAnything profile; unsponsored captures keep waiting.
+            from .website_task_context_contracts import sponsors_scene_preparation
+            sponsored_geometry = bool(os.getenv("BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE")) and sponsors_scene_preparation(metadata)
+            geometry_backend = "mapanything" if (selected == "mapanything" or (not selected and (
+                os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT") or sponsored_geometry))) else None
             if geometry_backend is None:
                 # Marble assets remain useful while exact native source poses
                 # and mask registration are missing. Atlas is unavailable;
