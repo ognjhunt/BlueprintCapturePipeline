@@ -13385,7 +13385,7 @@ def test_fake_and_agents_sdk_agent_adapters_write_advisory_plans(
         job_id="job-agents-sdk-blocked",
         agent_adapter=AgentsSdkRobotEvalJobAdapter(
             agents_sdk_available=False,
-            openai_api_key="",
+            anthropic_api_key="",
             live_env_allowed=False,
             allow_live_operator=False,
         ),
@@ -13413,7 +13413,7 @@ def test_fake_and_agents_sdk_agent_adapters_write_advisory_plans(
     assert agents_plan["status"] == "blocked"
     assert agents_plan["blockers"] == [
         "missing_openai_agents_sdk",
-        "missing_openai_api_key",
+        "missing_anthropic_api_key",
         "missing_cli_allow_live_agent_operator",
         "missing_env_BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS",
     ]
@@ -13436,7 +13436,7 @@ def test_agents_sdk_robot_eval_live_operator_logs_decisions_without_proof_upgrad
         job_id="job-agents-sdk-live",
         agent_adapter=AgentsSdkRobotEvalJobAdapter(
             agents_sdk_available=True,
-            openai_api_key="sk-test",
+            anthropic_api_key="sk-test",
             live_env_allowed=True,
             allow_live_operator=True,
             executor=lambda _prompt, _context: {

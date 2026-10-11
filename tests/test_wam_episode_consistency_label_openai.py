@@ -51,6 +51,8 @@ def test_openai_wam_episode_consistency_blocks_without_gate_or_key(
 ) -> None:
     monkeypatch.delenv(consistency_labeler.GATE_ENV, raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY_FILE", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY_FILE", str(tmp_path / "missing-openai-key"))
     monkeypatch.setenv(
         "BLUEPRINT_OPENAI_API_KEY_FILE",
@@ -64,7 +66,7 @@ def test_openai_wam_episode_consistency_blocks_without_gate_or_key(
 
     assert result["status"] == "blocked"
     assert f"missing_env_{consistency_labeler.GATE_ENV}" in result["blockers"]
-    assert "missing_openai_api_key_or_key_file" in result["blockers"]
+    assert "missing_anthropic_api_key_or_key_file" in result["blockers"]
     serialized = json.dumps(result, sort_keys=True)
     assert "secret-openai-key" not in serialized
 
@@ -171,6 +173,6 @@ def test_openai_wam_episode_consistency_uses_responses_without_writing_secret(
     assert "secret-openai-key" not in serialized
 
 
-def test_openai_consistency_labeler_defaults_to_luna_xhigh() -> None:
-    assert consistency_labeler.DEFAULT_MODEL == "gpt-6-luna"
+def test_openai_consistency_labeler_defaults_to_haiku_with_legacy_effort_retained() -> None:
+    assert consistency_labeler.DEFAULT_MODEL == "claude-haiku-5-5"
     assert consistency_labeler.OPENAI_REASONING_EFFORT == "xhigh"

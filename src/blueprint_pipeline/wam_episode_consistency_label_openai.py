@@ -1,4 +1,4 @@
-"""OpenAI-backed episode consistency labels for WAM-generated rollout videos.
+"""Haiku-backed episode consistency labels for WAM-generated rollout videos.
 
 The command consumes ``wam_episode_consistency_request.json`` and writes
 ``wam_episode_consistency.command.json``. Labels are external judgments over a
@@ -13,22 +13,24 @@ import base64
 import json
 import os
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from .common import ensure_dir, utc_now_iso, write_json
-from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
+from .haiku_vision_judge import MODEL as HAIKU_MODEL
+from .haiku_vision_judge import anthropic_key, judge_json, replacement_model
 from .openai_prompt_cache import (
     cache_policy_evidence,
     direct_prompt_cache_request,
     stable_judge_developer_prefix,
     usage_and_cost_receipt,
 )
-
+from .openai_successor_models import OPENAI_REASONING_EFFORT
 
 GATE_ENV = "BLUEPRINT_ALLOW_OPENAI_WAM_EPISODE_CONSISTENCY"
 MODEL_ENV = "BLUEPRINT_OPENAI_WAM_EPISODE_CONSISTENCY_MODEL"
-DEFAULT_MODEL = OPENAI_TEXT_MODEL
+DEFAULT_MODEL = HAIKU_MODEL
 DEFAULT_OUTPUT_FILENAME = "wam_episode_consistency.command.json"
 # Five frames per episode cannot localise when a rollout diverged; it can
 # only characterise its end state.  Raised so consistency labels carry
@@ -242,13 +244,9 @@ def _openai_score_one(
     rollout: Mapping[str, Any],
     frames: Sequence[Mapping[str, Any]],
     expected_reuse_count: int = 0,
+    audit_root: Path | None = None,
     provider_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    try:
-        from openai import OpenAI
-    except ImportError as exc:  # pragma: no cover - depends on optional env
-        raise RuntimeError("missing_openai_package") from exc
-
     purpose = (
             "You are an external evaluator, not the WAM. Judge whether sampled "
             "frames from a generated world-model rollout are forward/inverse "
@@ -288,38 +286,50 @@ def _openai_score_one(
         if image_url:
             content.append({"type": "input_image", "image_url": image_url})
 
-    client = OpenAI(api_key=api_key)
     stable_prefix = stable_judge_developer_prefix(
         purpose=purpose,
         output_contract=output_contract,
         claim_boundary="generated_video_trace_consistency_not_physical_or_rank_fidelity_proof",
         contract_version="wam-episode-consistency-v2",
     )
-    policy, cache_request = direct_prompt_cache_request(
-        model=model,
-        family="wam_episode_consistency_label",
-        contract_version="wam-episode-consistency-v2",
-        stable_developer_prefix=stable_prefix,
-        output_schema=output_contract,
-        dynamic_input=[{"role": "user", "content": content}],
-        reasoning_effort=OPENAI_REASONING_EFFORT,
-        expected_reuse_count=expected_reuse_count,
-        expected_reuse_probability=1.0 if expected_reuse_count > 0 else 0.0,
-        dynamic_suffix_fields=("task", "rollout", "trace", "sampled_video_frames"),
-    )
-    response = client.responses.create(
-        model=model,
-        max_output_tokens=800,
-        reasoning={"effort": OPENAI_REASONING_EFFORT},
-        **cache_request,
-    )
-    provider_call = {
-        "cache_policy": cache_policy_evidence(policy),
-        "usage": usage_and_cost_receipt(response, model=model),
-    }
-    if provider_calls is not None:
-        provider_calls.append(provider_call)
-    payload = _parse_json_text(_string(getattr(response, "output_text", "")) or "{}")
+    if model == HAIKU_MODEL:
+        if audit_root is None:
+            raise RuntimeError("haiku_audit_root_required")
+        payload, provider_call = judge_json(system=stable_prefix, content=content,
+            api_key=api_key, audit_root=audit_root, capability="wam_episode_consistency_label")
+        if provider_calls is not None:
+            provider_calls.append(provider_call)
+    else:
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - optional legacy provider
+            raise RuntimeError("missing_openai_package") from exc
+        client = OpenAI(api_key=api_key)
+        policy, cache_request = direct_prompt_cache_request(
+            model=model,
+            family="wam_episode_consistency_label",
+            contract_version="wam-episode-consistency-v2",
+            stable_developer_prefix=stable_prefix,
+            output_schema=output_contract,
+            dynamic_input=[{"role": "user", "content": content}],
+            reasoning_effort=OPENAI_REASONING_EFFORT,
+            expected_reuse_count=expected_reuse_count,
+            expected_reuse_probability=1.0 if expected_reuse_count > 0 else 0.0,
+            dynamic_suffix_fields=("task", "rollout", "trace", "sampled_video_frames"),
+        )
+        response = client.responses.create(
+            model=model,
+            max_output_tokens=800,
+            reasoning={"effort": OPENAI_REASONING_EFFORT},
+            **cache_request,
+        )
+        provider_call = {
+            "cache_policy": cache_policy_evidence(policy),
+            "usage": usage_and_cost_receipt(response, model=model),
+        }
+        if provider_calls is not None:
+            provider_calls.append(provider_call)
+        payload = _parse_json_text(_string(getattr(response, "output_text", "")) or "{}")
     if isinstance(payload.get("rollout_checks"), list) and payload["rollout_checks"]:
         first = payload["rollout_checks"][0]
         payload = dict(first) if isinstance(first, Mapping) else payload
@@ -342,9 +352,9 @@ def _openai_score_one(
             ref for ref in (frame.get("evidence_ref") for frame in frames) if ref
         ],
         "provider_call": provider_call,
-        "label_source": "openai_wam_episode_consistency_judge",
+        "label_source": "anthropic_wam_episode_consistency_judge" if model == HAIKU_MODEL else "openai_wam_episode_consistency_judge",
         "model": model,
-        "reasoning_effort": OPENAI_REASONING_EFFORT,
+        "reasoning_effort": "medium" if model == HAIKU_MODEL else OPENAI_REASONING_EFFORT,
         "visual_evidence_used": bool(frames),
         "action_trace_evidence_used": True,
         "sampled_frame_count": len(frames),
@@ -375,7 +385,7 @@ def build_openai_wam_episode_consistency_labels(
     ).resolve()
     ensure_dir(resolved_output.parent)
     request = _load_json(resolved_input)
-    model_name = _string(model or os.getenv(MODEL_ENV)) or DEFAULT_MODEL
+    model_name = replacement_model(_string(model or os.getenv(MODEL_ENV)) or DEFAULT_MODEL)
     frame_limit = max_frames or int(
         _string(os.getenv("BLUEPRINT_OPENAI_WAM_EPISODE_CONSISTENCY_MAX_FRAMES"))
         or DEFAULT_MAX_FRAMES
@@ -390,9 +400,9 @@ def build_openai_wam_episode_consistency_labels(
     provider_calls: list[dict[str, Any]] = []
     if not _truthy(os.getenv(GATE_ENV)):
         blockers.append(f"missing_env_{GATE_ENV}")
-    api_key, api_key_source = _api_key()
+    api_key, api_key_source = anthropic_key() if model_name == HAIKU_MODEL else _api_key()
     if not api_key:
-        blockers.append("missing_openai_api_key_or_key_file")
+        blockers.append("missing_anthropic_api_key_or_key_file" if model_name == HAIKU_MODEL else "missing_openai_api_key_or_key_file")
     rollouts = [
         dict(item)
         for item in request.get("rollouts", []) or []
@@ -436,20 +446,21 @@ def build_openai_wam_episode_consistency_labels(
                         rollout=rollout,
                         frames=frames,
                         expected_reuse_count=max(0, len(rollouts) - 1),
+                        **({"audit_root": resolved_output.parent} if model_name == HAIKU_MODEL else {}),
                         provider_calls=provider_calls,
                     )
                 )
-            except Exception as exc:  # pragma: no cover - live provider behavior
-                blockers.append(_provider_error_blocker(exc))
+            except Exception as exc:  # noqa: BLE001 - normalize provider failures without private bodies
+                blockers.append("anthropic_labeling_failed" if model_name == HAIKU_MODEL else _provider_error_blocker(exc))
                 break
 
     manifest = {
         "schema_version": "wam_episode_consistency.command.v1",
         "generated_at": utc_now_iso(),
         "status": "completed" if checks and not blockers else "blocked",
-        "provider": "openai_wam_episode_consistency_judge",
+        "provider": "anthropic_wam_episode_consistency_judge" if model_name == HAIKU_MODEL else "openai_wam_episode_consistency_judge",
         "model": model_name,
-        "reasoning_effort": OPENAI_REASONING_EFFORT,
+        "reasoning_effort": "medium" if model_name == HAIKU_MODEL else OPENAI_REASONING_EFFORT,
         "api_key_configured": bool(api_key_source),
         "blockers": sorted(set(blockers)),
         "rollout_check_count": len(checks),

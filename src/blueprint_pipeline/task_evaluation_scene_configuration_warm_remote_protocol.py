@@ -15,6 +15,8 @@ BASE_RUNTIME_ROOT = (
     "/workspace/task_evaluation_scene_configuration_provider_bundle/provider_runtime"
 )
 _FIXED_FORBIDDEN_ENV_NAMES = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_API_KEY_FILE",
     "OPENAI_API_KEY",
     "OPENAI_API_KEY_FILE",
     "OPENAI_ADMIN_API_KEY_FILE",

@@ -183,6 +183,79 @@ def _install_common_create_harness(
     monkeypatch.setattr(runner, "_api_json", fake_api_json)
 
 
+@pytest.mark.parametrize("source_on_poll", ["available", "missing", "rotated"])
+def test_native_secret_staging_is_private_and_artifacts_are_redacted(tmp_path, monkeypatch, source_on_poll):
+    import base64
+
+    from blueprint_pipeline import vast_provider_adapter as adapter
+    raw = "offline-native-credential-fixture"
+    encoded = base64.b64encode(raw.encode()).decode()
+    source = tmp_path / "native"
+    source.write_text(raw + "\n")
+    source.chmod(0o600)
+    _install_common_create_harness(monkeypatch, create_response={
+        "new_contract": 909, "native_debug": raw, "native_encoded": encoded,
+    })
+    captured = {}
+    def capture_payload(**kwargs):
+        captured.update(kwargs)
+        return adapter._create_payload(**kwargs)
+    monkeypatch.setattr(runner, "_create_payload", capture_payload)
+    monkeypatch.setattr(runner, "_probe_env", adapter._probe_env)
+    monkeypatch.setattr(runner, "_redact_runtime_value", adapter._redact_runtime_value)
+    monkeypatch.setattr(runner, "_create_request_summary", adapter._create_request_summary)
+    job = tmp_path / "job"
+    manifest = runner.create_async_vast_wam_run(
+        job_dir=job, bundle_path=_write_bundle(tmp_path / "bundle"),
+        public_base_url="https://public.example", allow_paid_vast_launch=True,
+        token_file=tmp_path / "fixture-token", secret_env_file=tmp_path / "fixture.env",
+        session_budget_ledger=tmp_path / "fixture-budget.json",
+        runtime_secret_file_paths={"ANTHROPIC_API_KEY_FILE": source},
+        paid_resource_admission_grant=_paid_grant(), generated_at="now",
+    )
+    assert manifest["instance_id"] == 909
+    name = adapter.VAST_RUNTIME_SECRET_BOOTSTRAP_PREFIX + "ANTHROPIC_API_KEY_FILE"
+    assert name not in captured["env"]
+    assert captured["private_startup_env"][name] == encoded
+    source_missing_on_poll = source_on_poll != "available"
+    if source_on_poll == "missing":
+        source.unlink()
+    elif source_on_poll == "rotated":
+        source.write_text("replacement-offline-native-fixture\n")
+    _install_poll_harness(monkeypatch, heartbeat_text="", output_zip_inspection={
+        "zip_present": False, "runtime_result_present": False, "runtime_result": {},
+        "mp4_validation": {}, "video_smoke_proven": False,
+    })
+    # The fresh process has no retained in-memory key; exercise the real redactor.
+    monkeypatch.setattr(runner, "_redact_runtime_value", adapter._redact_runtime_value)
+    monkeypatch.setattr(runner, "_instance_status", lambda _payload: raw)
+    calls = []
+    def fresh_logs(**kwargs):
+        assert not source_missing_on_poll, "unredactable provider logs must not be fetched"
+        text = adapter._redact_runtime_value(raw + " " + encoded, kwargs["secret_values"])
+        Path(kwargs["output_log_path"]).write_text(text)
+        return {"status": "completed", "output_log_path": str(kwargs["output_log_path"])}
+    def fresh_api(**kwargs):
+        calls.append(kwargs["method"])
+        if kwargs["method"] == "GET":
+            return 200, {"actual_status": raw, "native_debug": raw, "native_encoded": encoded}
+        return 200, {"success": True, "native_debug": raw, "native_encoded": encoded}
+    monkeypatch.setattr(runner, "_request_logs_and_fetch", fresh_logs)
+    monkeypatch.setattr(runner, "_api_json", fresh_api)
+    polled = runner.poll_async_vast_wam_run(job_dir=job, teardown=True, generated_at="later")
+    assert polled["private_provider_bodies_withheld"] is source_missing_on_poll
+    assert polled["teardown_performed"] is True and "DELETE" in calls
+    assert polled["continuing_spend_from_this_run"] is False
+    assert polled["status"] == "blocked"  # absent execution markers never prove completion
+    monkeypatch.setattr(runner, "_api_gate_blockers", lambda **kwargs: [])
+    destroyed = runner.destroy_async_vast_wam_run(job_dir=job, generated_at="standalone")
+    assert destroyed["continuing_spend_from_this_run"] is False
+    for path in job.rglob("*"):
+        if path.is_file():
+            content = path.read_bytes()
+            assert raw.encode() not in content and encoded.encode() not in content, path.name
+
+
 def test_async_provider_urls_and_blocked_result(tmp_path: Path) -> None:
     bundle_url, output_url, token_status = runner._provider_urls(
         "https://public.example",

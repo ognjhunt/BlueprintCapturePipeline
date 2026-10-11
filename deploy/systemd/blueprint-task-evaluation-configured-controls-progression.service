@@ -74,6 +74,8 @@ Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
+# Native Haiku calls inherit ANTHROPIC_API_KEY_FILE from this existing interface.
+# No native file path is presumed; native preflight fails closed without it.
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 # Shared owner-store identity (scene-intake root + trusted clients) so scene_store()
 # resolves the persistent owner (Spec C). Materialized by the scene-preparation

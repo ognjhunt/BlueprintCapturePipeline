@@ -51,6 +51,7 @@ def test_images_and_structured_output_are_preserved_without_external_fetch():
         {"type": "input_image", "image_url": "data:image/png;base64," + png}]}], output_schema=schema)
     sent = messages.calls[0]
     assert sent["model"] == "claude-opus-5-5" and sent["max_tokens"] == 1200
+    assert sent["inference_geo"] == "us"
     assert sent["messages"][0]["content"][1]["source"] == {
         "type": "base64", "media_type": "image/png", "data": png}
     assert sent["output_config"]["format"]["schema"] == schema.json_schema()

@@ -10,7 +10,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from blueprint_pipeline import wam_generated_video_success_label_openai as openai_labeler
 
-
 RUNTIME_SIGNING_PRIVATE_KEY_FILE_ENV = (
     "BLUEPRINT_WAM_SUCCESS_LABEL_RUNTIME_SIGNING_PRIVATE_KEY_FILE"
 )
@@ -83,6 +82,8 @@ def test_openai_wam_success_labeler_blocks_without_gate_or_key(
     monkeypatch.delenv(openai_labeler.GATE_ENV, raising=False)
     monkeypatch.delenv(openai_labeler.SHARED_GATE_ENV, raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY_FILE", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY_FILE", str(tmp_path / "missing-openai-key"))
     monkeypatch.setenv("BLUEPRINT_OPENAI_API_KEY_FILE", str(tmp_path / "missing-openai-key"))
 
@@ -96,7 +97,7 @@ def test_openai_wam_success_labeler_blocks_without_gate_or_key(
         f"missing_env_{openai_labeler.GATE_ENV}_or_{openai_labeler.SHARED_GATE_ENV}"
         in result["blockers"]
     )
-    assert "missing_openai_api_key_or_key_file" in result["blockers"]
+    assert "missing_anthropic_api_key_or_key_file" in result["blockers"]
     assert "secret-openai-key" not in json.dumps(result, sort_keys=True)
 
 
@@ -118,6 +119,7 @@ def test_openai_wam_success_labeler_blocks_taskless_generic_request(
 
     result = openai_labeler.build_openai_wam_success_labels(
         input_path=input_path,
+        model="gpt-6-sol",
         output_path=tmp_path / "out.json",
     )
 
@@ -217,6 +219,6 @@ def test_openai_wam_success_labeler_uses_responses_without_writing_secret(
     assert "secret-openai-key" not in output.read_text(encoding="utf-8")
 
 
-def test_openai_success_labeler_defaults_to_luna_xhigh() -> None:
-    assert openai_labeler.DEFAULT_MODEL == "gpt-6-luna"
+def test_openai_success_labeler_defaults_to_haiku_with_legacy_effort_retained() -> None:
+    assert openai_labeler.DEFAULT_MODEL == "claude-haiku-5-5"
     assert openai_labeler.OPENAI_REASONING_EFFORT == "xhigh"

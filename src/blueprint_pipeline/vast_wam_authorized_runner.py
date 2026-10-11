@@ -242,6 +242,7 @@ def run_vast_wam_authorized_runner(
     public_base_url: str | None = None,
     token_file: str | Path | None = None,
     secret_env_file: str | Path | None = None,
+    runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     provider_bundle_url_file: str | Path | None = None,
     provider_output_put_url_file: str | Path | None = None,
     provider_output_get_url_file: str | Path | None = None,
@@ -507,6 +508,7 @@ def run_vast_wam_authorized_runner(
                     forward_hf_token=forward_hf_token,
                     paid_resource_admission_grant=paid_resource_admission_grant,
                     pre_provider_mutation_hook=pre_provider_mutation_hook,
+                    runtime_secret_file_paths=runtime_secret_file_paths,
                 )
                 if watchdog_handle:
                     instance_ids = [

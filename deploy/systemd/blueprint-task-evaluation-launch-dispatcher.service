@@ -132,6 +132,8 @@ Environment=PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL=https://tryblueprint.io/a
 Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PUBLICATION_READINESS_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-publication-readiness
 Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token
 Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
+# Native Haiku calls inherit ANTHROPIC_API_KEY_FILE from this existing interface.
+# No native file path is presumed; native preflight fails closed without it.
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 # Shared owner-store identity (scene-intake root + trusted clients) so
 # scene_policy_binding.scene_store() can resolve the persistent owner of a

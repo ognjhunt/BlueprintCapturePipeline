@@ -889,7 +889,7 @@ def test_simulation_live_sdk_operators_log_commands_without_proof_mutation(
         capture_root=capture_root,
         agent_adapter=AgentsSdkCodexMCPAdapter(
             agents_sdk_available=True,
-            openai_api_key="sk-test",
+            anthropic_api_key="sk-test",
             live_env_allowed=True,
             allow_live_operator=True,
             executor=lambda _prompt, _context: {

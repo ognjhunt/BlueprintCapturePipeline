@@ -1,4 +1,4 @@
-"""OpenAI-backed success labels for WAM-generated rollout videos.
+"""Haiku-backed success labels for WAM-generated rollout videos.
 
 The command consumes ``wam_success_label_request.json`` and writes
 ``wam_success_labels.command.json``. Labels are semantic judgments over sampled
@@ -14,17 +14,20 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from .common import ensure_dir, utc_now_iso, write_json
-from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
+from .haiku_vision_judge import MODEL as HAIKU_MODEL
+from .haiku_vision_judge import anthropic_key, judge_json, replacement_model
 from .openai_prompt_cache import (
     cache_policy_evidence,
     direct_prompt_cache_request,
     stable_judge_developer_prefix,
     usage_and_cost_receipt,
 )
+from .openai_successor_models import OPENAI_REASONING_EFFORT
 from .wam_generated_video_success_label_gemini import (
     _bool_or_none,
     _confidence_or_none,
@@ -35,11 +38,10 @@ from .wam_generated_video_success_label_gemini import (
     attach_success_label_runtime_attestation,
 )
 
-
 GATE_ENV = "BLUEPRINT_ALLOW_OPENAI_WAM_SUCCESS_LABELING"
 SHARED_GATE_ENV = "BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING"
 MODEL_ENV = "BLUEPRINT_OPENAI_WAM_SUCCESS_LABEL_MODEL"
-DEFAULT_MODEL = OPENAI_TEXT_MODEL
+DEFAULT_MODEL = HAIKU_MODEL
 DEFAULT_OUTPUT_FILENAME = "wam_success_labels.command.json"
 # Matches the Gemini success judge: five frames characterise an end state but
 # cannot localise when a rollout diverged.
@@ -196,13 +198,9 @@ def _openai_label_one(
     video_path: Path,
     frames: Sequence[Mapping[str, Any]],
     expected_reuse_count: int = 0,
+    audit_root: Path | None = None,
     provider_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    try:
-        from openai import OpenAI
-    except ImportError as exc:  # pragma: no cover - depends on optional env
-        raise RuntimeError("missing_openai_package") from exc
-
     task_record = _rollout_task_prompt_record(request, rollout)
     task_prompt = _string(task_record.get("task_prompt"))
     success_criteria = _task_success_criteria(
@@ -242,38 +240,50 @@ def _openai_label_one(
         if image_url:
             content.append({"type": "input_image", "image_url": image_url})
 
-    client = OpenAI(api_key=api_key)
     stable_prefix = stable_judge_developer_prefix(
         purpose=PROMPT_INSTRUCTION,
         output_contract=output_contract,
         claim_boundary="generated_video_semantic_label_not_physical_robot_proof",
         contract_version="wam-generated-video-success-v2",
     )
-    policy, cache_request = direct_prompt_cache_request(
-        model=model,
-        family="wam_generated_video_success_label",
-        contract_version="wam-generated-video-success-v2",
-        stable_developer_prefix=stable_prefix,
-        output_schema=output_contract,
-        dynamic_input=[{"role": "user", "content": content}],
-        reasoning_effort=OPENAI_REASONING_EFFORT,
-        expected_reuse_count=expected_reuse_count,
-        expected_reuse_probability=1.0 if expected_reuse_count > 0 else 0.0,
-        dynamic_suffix_fields=("task", "rollout", "trace", "sampled_video_frames"),
-    )
-    response = client.responses.create(
-        model=model,
-        max_output_tokens=900,
-        reasoning={"effort": OPENAI_REASONING_EFFORT},
-        **cache_request,
-    )
-    provider_call = {
-        "cache_policy": cache_policy_evidence(policy),
-        "usage": usage_and_cost_receipt(response, model=model),
-    }
-    if provider_calls is not None:
-        provider_calls.append(provider_call)
-    payload = _parse_json_text(_string(getattr(response, "output_text", "")) or "{}")
+    if model == HAIKU_MODEL:
+        if audit_root is None:
+            raise RuntimeError("haiku_audit_root_required")
+        payload, provider_call = judge_json(system=stable_prefix, content=content,
+            api_key=api_key, audit_root=audit_root, capability="wam_generated_video_success_label")
+        if provider_calls is not None:
+            provider_calls.append(provider_call)
+    else:
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - optional legacy provider
+            raise RuntimeError("missing_openai_package") from exc
+        client = OpenAI(api_key=api_key)
+        policy, cache_request = direct_prompt_cache_request(
+            model=model,
+            family="wam_generated_video_success_label",
+            contract_version="wam-generated-video-success-v2",
+            stable_developer_prefix=stable_prefix,
+            output_schema=output_contract,
+            dynamic_input=[{"role": "user", "content": content}],
+            reasoning_effort=OPENAI_REASONING_EFFORT,
+            expected_reuse_count=expected_reuse_count,
+            expected_reuse_probability=1.0 if expected_reuse_count > 0 else 0.0,
+            dynamic_suffix_fields=("task", "rollout", "trace", "sampled_video_frames"),
+        )
+        response = client.responses.create(
+            model=model,
+            max_output_tokens=900,
+            reasoning={"effort": OPENAI_REASONING_EFFORT},
+            **cache_request,
+        )
+        provider_call = {
+            "cache_policy": cache_policy_evidence(policy),
+            "usage": usage_and_cost_receipt(response, model=model),
+        }
+        if provider_calls is not None:
+            provider_calls.append(provider_call)
+        payload = _parse_json_text(_string(getattr(response, "output_text", "")) or "{}")
     if isinstance(payload.get("labels"), list) and payload["labels"]:
         first = payload["labels"][0]
         payload = dict(first) if isinstance(first, Mapping) else payload
@@ -321,9 +331,9 @@ def _openai_label_one(
         "criterion_results": criterion_results,
         "evidence_refs": evidence_refs,
         "provider_call": provider_call,
-        "label_source": "openai_generated_video_frame_judge",
+        "label_source": "anthropic_generated_video_frame_judge" if model == HAIKU_MODEL else "openai_generated_video_frame_judge",
         "model": model,
-        "reasoning_effort": OPENAI_REASONING_EFFORT,
+        "reasoning_effort": "medium" if model == HAIKU_MODEL else OPENAI_REASONING_EFFORT,
         "visual_evidence_used": bool(frames),
         "sampled_frame_count": len(frames),
         "human_review_required": False,
@@ -354,7 +364,7 @@ def build_openai_wam_success_labels(
     ).resolve()
     ensure_dir(resolved_output.parent)
     request = _load_json(resolved_input)
-    model_name = _string(model or os.getenv(MODEL_ENV)) or DEFAULT_MODEL
+    model_name = replacement_model(_string(model or os.getenv(MODEL_ENV)) or DEFAULT_MODEL)
     frame_limit = max_frames or int(
         _string(os.getenv("BLUEPRINT_OPENAI_WAM_SUCCESS_MAX_FRAMES")) or DEFAULT_MAX_FRAMES
     )
@@ -368,9 +378,9 @@ def build_openai_wam_success_labels(
     provider_calls: list[dict[str, Any]] = []
     if not (_truthy(os.getenv(GATE_ENV)) or _truthy(os.getenv(SHARED_GATE_ENV))):
         blockers.append(f"missing_env_{GATE_ENV}_or_{SHARED_GATE_ENV}")
-    api_key, api_key_source = _api_key()
+    api_key, api_key_source = anthropic_key() if model_name == HAIKU_MODEL else _api_key()
     if not api_key:
-        blockers.append("missing_openai_api_key_or_key_file")
+        blockers.append("missing_anthropic_api_key_or_key_file" if model_name == HAIKU_MODEL else "missing_openai_api_key_or_key_file")
     rollouts = [
         dict(item) for item in request.get("rollouts", []) or [] if isinstance(item, Mapping)
     ][:max_rollouts]
@@ -448,20 +458,21 @@ def build_openai_wam_success_labels(
                         video_path=video_path,
                         frames=frames,
                         expected_reuse_count=max(0, len(rollouts) - 1),
+                        **({"audit_root": resolved_output.parent} if model_name == HAIKU_MODEL else {}),
                         provider_calls=provider_calls,
                     )
                 )
-            except Exception as exc:  # pragma: no cover - live provider behavior
-                blockers.append(_provider_error_blocker(exc))
+            except Exception as exc:  # noqa: BLE001 - normalize provider failures without private bodies
+                blockers.append("anthropic_labeling_failed" if model_name == HAIKU_MODEL else _provider_error_blocker(exc))
                 break
 
     manifest = {
         "schema_version": "wam_success_labels.command.v1",
         "generated_at": utc_now_iso(),
         "status": "completed" if labels and not blockers else "blocked",
-        "provider": "openai",
+        "provider": "anthropic" if model_name == HAIKU_MODEL else "openai",
         "model": model_name,
-        "reasoning_effort": OPENAI_REASONING_EFFORT,
+        "reasoning_effort": "medium" if model_name == HAIKU_MODEL else OPENAI_REASONING_EFFORT,
         "prompt_template_sha256": PROMPT_TEMPLATE_SHA256,
         "api_key_configured": bool(api_key_source),
         "blockers": sorted(set(blockers)),

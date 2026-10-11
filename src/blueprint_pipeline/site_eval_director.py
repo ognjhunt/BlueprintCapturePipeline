@@ -27,7 +27,6 @@ from .agent_operator_runtime import (
     OperatorExecutor,
     OperatorRunConfig,
     blocked_operator_ledger,
-    codex_cli_path as resolve_codex_cli_path,
     completed_operator_ledger,
     env_truthy,
     external_action_gates,
@@ -36,10 +35,14 @@ from .agent_operator_runtime import (
     run_codex_cli_operator,
     run_codex_sdk_operator,
 )
+from .agent_operator_runtime import (
+    codex_cli_path as resolve_codex_cli_path,
+)
 from .common import ensure_dir, read_json_any, write_json
+from .haiku_agents_sdk import MODEL as HAIKU_MODEL
+from .haiku_agents_sdk import sdk_runtime_evidence, sdk_runtime_selection
 from .local_capture import resolve_local_capture_context
 from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
-
 
 SCENARIO_EXECUTION_PLAN_SCHEMA_VERSION = "site_eval_scenario_execution_plan.v1"
 TASK_SIMULATION_REQUESTS_SCHEMA_VERSION = "site_eval_task_simulation_requests.v1"
@@ -145,9 +148,10 @@ class AgentsSdkSiteEvalDirectorAdapter:
 
     agents_sdk_available: bool | None = None
     openai_api_key: str | None = None
+    anthropic_api_key: str | None = None
     live_env_allowed: bool | None = None
     allow_live_operator: bool = False
-    model: str = OPENAI_TEXT_MODEL
+    model: str = HAIKU_MODEL
     reasoning_effort: str = OPENAI_REASONING_EFFORT
     executor: OperatorExecutor | None = None
 
@@ -157,11 +161,8 @@ class AgentsSdkSiteEvalDirectorAdapter:
             if self.agents_sdk_available is not None
             else bool(self.executor is not None) or _module_available(("agents", "openai_agents"))
         )
-        api_key_present = bool(
-            _string(self.openai_api_key)
-            if self.openai_api_key is not None
-            else _string(os.getenv("OPENAI_API_KEY"))
-        )
+        model, provider, api_key_present = sdk_runtime_selection(self.model,
+            openai_api_key=self.openai_api_key, anthropic_api_key=self.anthropic_api_key)
         env_allowed = (
             bool(self.live_env_allowed)
             if self.live_env_allowed is not None
@@ -171,7 +172,7 @@ class AgentsSdkSiteEvalDirectorAdapter:
         if not agents_available:
             blockers.append("missing_openai_agents_sdk")
         if not api_key_present:
-            blockers.append("missing_openai_api_key")
+            blockers.append(f"missing_{provider}_api_key")
         if not self.allow_live_operator:
             blockers.append("missing_cli_allow_live_agents_sdk_operator")
         if not env_allowed:
@@ -185,7 +186,8 @@ class AgentsSdkSiteEvalDirectorAdapter:
                 live_output = run_agents_sdk_operator(
                     OperatorRunConfig(
                         adapter="openai_agents_sdk_site_eval_director",
-                        model=self.model,
+                        model=model,
+                        anthropic_api_key=self.anthropic_api_key,
                         reasoning_effort=self.reasoning_effort,
                         prompt=_agents_sdk_site_eval_prompt(plan_context),
                         plan_context=plan_context,
@@ -235,7 +237,8 @@ class AgentsSdkSiteEvalDirectorAdapter:
             "operator_ledger": operator_ledger,
             "request": {
                 "purpose": "site_eval_workflow_coordination_live_operator",
-                "model": self.model,
+                "model": model,
+                "provider": provider,
                 "reasoning_effort": self.reasoning_effort,
                 "capture_root": str(plan_context.get("capture_root") or ""),
                 "scenario_execution_plan": "scenario_execution_plan.json",
@@ -258,13 +261,8 @@ class AgentsSdkSiteEvalDirectorAdapter:
                 ],
             },
             "attempted_commands": [],
-            "evidence": {
-                "openai_agents_sdk_available": bool(agents_available),
-                "openai_api_key_present": api_key_present,
-                "cli_allow_live_operator": self.allow_live_operator,
-                LIVE_AGENTS_SDK_ENV: env_allowed,
-                **external_action_gates(),
-            },
+            "evidence": sdk_runtime_evidence(model, api_key_present, agents_available,
+                self.allow_live_operator, env_allowed),
             "proof_effect": proof_effect(
                 deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
             ),
