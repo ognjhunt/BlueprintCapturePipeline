@@ -17,6 +17,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
+from .website_task_context_contracts import admits_scene_preparation
 
 # Multi-image Marble 1.1 Plus: 100 + 1500 + at most 1500 credits.
 # https://docs.worldlabs.ai/api/pricing (verified 2026-09-19); no HQ mesh export.
@@ -439,7 +440,7 @@ def validate_website_prepared_views(*, descriptor: Mapping[str, Any], capture_ro
     task_digest = sha256(json.dumps(task_context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if (clean_plate.get("status") not in {"noop", "objects_removed"}
             or clean_plate.get("privacy_verified") is not True
-            or task_context.get("confirmed") is not True
+            or not admits_scene_preparation(task_context)
             or preparation.get("status") != "ready" or not 2 <= len(frames) <= 8
             or preparation.get("task_context_sha256") != task_digest):
         raise ValueError("website_prepared_images_required")

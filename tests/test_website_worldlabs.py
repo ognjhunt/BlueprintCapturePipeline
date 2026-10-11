@@ -13,7 +13,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.provider_preview import WorldLabsPreviewProvider
 from blueprint_pipeline import provider_preview
-from blueprint_pipeline.website_worldlabs import submit_website_prepared_views
+from blueprint_pipeline.website_worldlabs import submit_website_prepared_views, validate_website_prepared_views
 
 
 @pytest.mark.parametrize("mutation", [None, "depth", "context_grid", "target_grid", "pending"])
@@ -61,8 +61,8 @@ def _grant(admission):
                                            expected_schema_version="paid_lane_admission.v1")
 
 
-def _descriptor(tmp_path):
-    task = {"description": "Move the blue box to the tray", "confirmed": True}
+def _descriptor(tmp_path, task=None):
+    task = task or {"description": "Move the blue box to the tray", "confirmed": True}
     frames = []
     (tmp_path / "pipeline").mkdir()
     for index in range(2):
@@ -132,6 +132,21 @@ def test_invalid_preparation_cannot_call_worldlabs(tmp_path, bad):
         submit_website_prepared_views(descriptor=descriptor, capture_root=tmp_path,
                                       api_request=lambda *_a, **_k: pytest.fail("must not call provider"),
                                       upload=lambda *_a, **_k: pytest.fail("must not upload"))
+
+
+@pytest.mark.parametrize("task, admitted", [
+    ({"description": "Open the dishwasher door", "confirmed": False, "purpose": "scene_preparation"}, True),
+    ({"description": "Open the dishwasher door", "confirmed": False}, False),
+    ({"description": "Open the dishwasher door", "confirmed": None, "purpose": "scene_preparation"}, False),
+])
+def test_marble_admits_an_unconfirmed_task_only_for_an_admitted_preparation_run(tmp_path, task, admitted):
+    descriptor = _descriptor(tmp_path, task=task)
+    if admitted:
+        paths, _binding = validate_website_prepared_views(descriptor=descriptor, capture_root=tmp_path)
+        assert len(paths) == 2
+    else:
+        with pytest.raises(ValueError, match="website_prepared_images_required"):
+            validate_website_prepared_views(descriptor=descriptor, capture_root=tmp_path)
 
 
 def test_uncertain_purchase_is_not_repeated(tmp_path):

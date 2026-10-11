@@ -43,6 +43,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from .common import sha256_file, utc_now_iso
 from .clean_plate_removal_response_schema import RESPONSE_SCHEMA
+from .website_task_context_contracts import admits_scene_preparation
 
 GATE_ENV = "BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS"
 MODEL_ENV = "BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL"
@@ -608,7 +609,7 @@ def _analyze_removal_targets(
     processing_mode = processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING)
 
     blockers: list[str] = []
-    if not task_context or task_context.get("confirmed") is not True or not _string(task_context.get("description")):
+    if not admits_scene_preparation(task_context) or not _string(task_context.get("description")):
         blockers.append("confirmed_task_context_required")
     if not _truthy(os.getenv(GATE_ENV)):
         blockers.append(f"missing_env_{GATE_ENV}")
