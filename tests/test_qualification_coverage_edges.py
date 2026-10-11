@@ -951,6 +951,35 @@ def test_website_preparation_skips_legacy_privacy_video_and_geometry(tmp_path, m
     assert calls[0]["worldlabs_input"]["status"] == "awaiting_prepared_images"
 
 
+@pytest.mark.parametrize("sponsorship, enabled", [
+    ({"sponsor": "blueprint", "purpose": "scene_preparation"}, True),
+    ({"sponsor": "blueprint"}, False),
+])
+def test_browser_delivery_without_requested_outputs_prepares_only_a_sponsored_scene(tmp_path, monkeypatch, sponsorship, enabled):
+    # Real browser deliveries carry requested_outputs == []; only a scene_preparation grant requests the preview.
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _write_descriptor(storage_root, _descriptor(
+        capture_source="unknown", capture_modality="video_only", requested_outputs=[],
+        metadata={"capture_entry_source": "browser_self_capture", "capture_rights": {"derived_scene_generation_allowed": True}}))
+    _patch_pipeline_side_effects(monkeypatch)
+    monkeypatch.setattr(q, "load_current_website_task_context", _confirmed_website_task)
+    monkeypatch.setattr(q, "load_website_scene_sponsorship", lambda **_: dict(sponsorship))
+    for name in ("run_privacy_postprocess", "infer_capture_fidelity_review", "_prepare_worldlabs_input_video", "build_geometry_stage_contract"):
+        monkeypatch.setattr(q, name, lambda **_: pytest.fail("website must not enter a legacy media stage"))
+    calls = []
+
+    def prepare(**kwargs):
+        calls.append(kwargs)
+        return {"status": "blocked", "mode": "analysis_blocked", "privacy_status": "pending_website_review",
+                "privacy_verified": False, "blockers": ["website_preparation_probe"]}
+
+    monkeypatch.setattr(q, "run_clean_plate_stage", prepare)
+    with pytest.raises(PipelineError, match="website_preparation_probe"):
+        q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+    assert calls[0]["policy"].enabled is enabled
+    assert calls[0]["worldlabs_input"]["status"] == ("awaiting_prepared_images" if enabled else "not_requested")
+
+
 def test_run_qualification_pipeline_disabled_preflight_and_llm_outputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

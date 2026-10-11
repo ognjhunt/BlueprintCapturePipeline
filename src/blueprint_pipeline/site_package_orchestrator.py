@@ -4767,7 +4767,13 @@ def run_qualification_pipeline(
             if isinstance(descriptor.depth_conditioning, Mapping)
             else {}
         )
-        preview_requested_for_worldlabs = any(
+        # Browser deliveries carry no requested outputs (raw bundles default to
+        # preview_simulation). A loaded scene_preparation sponsorship is itself
+        # the request for the reviewed scene preview it funds.
+        sponsored_scene_preparation = website_capture and (
+            ((descriptor.metadata or {}).get("website_scene_execution_authority") or {}).get("purpose")
+            == "scene_preparation")
+        preview_requested_for_worldlabs = sponsored_scene_preparation or any(
             str(value or "").strip().lower() in {"preview_simulation", "preview"}
             for value in descriptor.requested_outputs
         )
