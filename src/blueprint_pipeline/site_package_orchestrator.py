@@ -5299,7 +5299,6 @@ def run_qualification_pipeline(
         )
 
         preview_provider_name = str(os.getenv("BLUEPRINT_PREVIEW_PROVIDER") or "world_labs").strip()
-        requested_outputs = set(descriptor.requested_outputs or [])
         # The same request rule that ran preparation; a sponsored website
         # preparation must reach Marble, not stop after paid upstream work.
         preview_requested = preview_requested_for_worldlabs
