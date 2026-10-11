@@ -220,6 +220,23 @@ def _passive_joint_findings(prim: Any, row: Mapping[str, Any]) -> list[str]:
             stiffness = UsdPhysics.DriveAPI(prim, axis).GetStiffnessAttr().Get()
             if stiffness is not None and float(stiffness) > 0.0:
                 findings.append("replacement_passive_joint_position_servo_forbidden:" + name)
+    token = {"X": [1.0, 0.0, 0.0], "Y": [0.0, 1.0, 0.0], "Z": [0.0, 0.0, 1.0]}.get(
+        str(typed.GetAxisAttr().Get() or "").upper())
+    try:
+        authored_axis = [float(v) for v in prim.GetCustomDataByKey("blueprint:graphAxis")]
+    except (TypeError, ValueError):
+        authored_axis = []
+    if (token is None or not _close_sequence(authored_axis, list(row["axis"]))
+            or not _close_sequence(token, [abs(float(v)) for v in row["axis"]])):
+        findings.append("replacement_passive_joint_axis_mismatch:" + name)
+    drive_axis = "angular" if row["joint_type"] == "revolute" else "linear"
+    expected_damping = float(row["drive"]["damping"])
+    if row["joint_type"] == "revolute":
+        expected_damping = math.radians(expected_damping)  # USD angular damping is per degree
+    damping = (UsdPhysics.DriveAPI(prim, drive_axis).GetDampingAttr().Get()
+               if prim.HasAPI(UsdPhysics.DriveAPI, drive_axis) else None)
+    if not math.isclose(0.0 if damping is None else float(damping), expected_damping, rel_tol=1e-5, abs_tol=1e-7):
+        findings.append("replacement_passive_joint_damping_mismatch:" + name)
     if prim.GetCustomDataByKey("blueprint:jointRole") != "passive":
         findings.append("replacement_passive_joint_role_mismatch:" + name)
     return findings

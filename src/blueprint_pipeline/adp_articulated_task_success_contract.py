@@ -75,9 +75,11 @@ def compatibility_articulated_success_criteria(task_spec: Mapping[str, Any]) -> 
     spec = validate_articulated_task_spec(task_spec)
     target = str(spec["target_joint_id"])
     interval = [float(value) for value in spec["target_success_interval_rad"]]
+    # Passive joints (dishwasher racks) may move with the robot; the scorer
+    # enforces only "locked" joints, so the contract must say the same.
     locked = sorted(
         joint_id for joint_id, role in (spec.get("joint_roles") or {}).items()
-        if role != "target"
+        if role not in {"target", "passive"}
     )
     return {
         "target_joint": {"joint_id": target, "joint_ids": list(spec["target_joint_ids"])},

@@ -80,6 +80,10 @@ UPPER_RACK_FLOOR_FRACTION_OF_TUB = 0.55
 # prior on the planned rack depth, never a measurement of the captured unit.
 SLIDING_RACK_SLOTS = ("lower_rack", "upper_rack")
 RACK_EXTENSION_FRACTION_OF_DEPTH = 0.75
+# Roller/rail breakaway so a rack does not creep on a jolted, unanchored body;
+# a robot pull overcomes it easily. Template prior, never measured.
+RACK_SLIDE_STATIC_FRICTION_N = 4.0
+RACK_SLIDE_DYNAMIC_FRICTION_N = 2.0
 MINIMUM_APPLIANCE_DEPTH_TO_WIDTH = 0.4
 # Every family template places its fixed interior and feature parts from
 # construction priors. 2026-09-27 website capture: those priors must say so,
@@ -677,14 +681,14 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
                 or (slot == "upper_rack" and "third_tray" in slots.values() and upper_z + rack_h > tray_z)):
             raise AssetAuthoringError("articulated_interior_geometry_infeasible:" + part_id)
         label = next(row["label"] for row in rows["interior"] if row["part_id"] == part_id)
-        held = ("slides out of the tub along +X on its rails, not the task part" if slot in SLIDING_RACK_SLOTS
-                else "held fixed inside the tub, not a task part")
+        # The part request (and its digest, which reuses a bought part) is
+        # unchanged; a rack's slide lives only in auxiliary_joints.
         interior_parts[part_id] = {
             "link_role": "fixed_interior", "dimensions_m": [round(v, 5) for v in size],
             "features": {"link": _box([0.0, 0.0, size[2] / 2], size)},
             "description": (f"{label}. {text}: {round(size[0], 4)} m deep x {round(size[1], 4)} m wide x "
                             f"{round(size[2], 4)} m tall overall, open top with thin slotted or wire walls and floor; "
-                            f"{held}.")}
+                            "held fixed inside the tub, not a task part.")}
         interior_links.append({"link_id": part_id, "part_id": part_id, "is_root": False,
                                "semantic_role": "fixed_interior", "rest_translation_m": [round(v, 5) for v in rest]})
     auxiliary_joints = [{
@@ -694,9 +698,14 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
         "travel_authority": TEMPLATE_PRIOR_BASIS,
         "drive": {"drive_type": "none", "stiffness": 0.0, "damping": PASSIVE_JOINT_DAMPING_N_S_PER_M,
                   "maximum_force": 0.0, "implementation": "passive_force_damper", "damping_units": "N_s_per_m"},
+        "passive_friction": {"static_effort": RACK_SLIDE_STATIC_FRICTION_N,
+                             "dynamic_effort": RACK_SLIDE_DYNAMIC_FRICTION_N, "units": "N",
+                             "basis": "estimated_unobserved_joint_resistance_prior",
+                             "prior": TEMPLATE_PRIOR_BASIS, "physical_measurement_proven": False},
     } for part_id, slot in sorted(slots.items()) if slot in SLIDING_RACK_SLOTS]
     interior_assumptions = (["interior_parts_fixed_closed_not_sliding"] if not auxiliary_joints else [
         "racks_slide_passively_along_+X_travel_is_template_prior",
+        "rack_slide_friction_is_template_prior_not_measured",
         *(["other_interior_parts_fixed_closed_not_sliding"] if len(slots) > len(auxiliary_joints) else []),
         *(["cutlery_basket_stays_in_tub_when_lower_rack_slides"]
           if {"cutlery_basket", "lower_rack"} <= set(slots.values()) else [])])
@@ -1573,6 +1582,12 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
             drive.CreateDampingAttr().Set(float(aux["drive"]["damping"]))
             drive.CreateTargetPositionAttr().Set(0.0)
             prim.SetCustomDataByKey("blueprint:driveImplementation", aux["drive"]["implementation"])
+            friction = aux["passive_friction"]
+            prim.AddAppliedSchema("PhysxJointAxisAPI:linear")
+            for key, attribute in (("static_effort", "staticFrictionEffort"), ("dynamic_effort", "dynamicFrictionEffort")):
+                prim.CreateAttribute(f"physxJointAxis:linear:{attribute}", Sdf.ValueTypeNames.Float,
+                                     custom=False).Set(float(friction[key]))
+            prim.SetCustomDataByKey("blueprint:passiveFrictionBasis", friction["basis"])
             drive_row = {"declared_drive_type": "none", "usd_drive_authored": True, "usd_drive_type": "force",
                          "implementation": aux["drive"]["implementation"], "stiffness": 0.0,
                          "damping": float(aux["drive"]["damping"])}

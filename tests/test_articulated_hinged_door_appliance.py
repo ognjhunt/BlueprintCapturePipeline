@@ -133,7 +133,12 @@ def test_dishwasher_plans_hollow_body_bottom_hinged_door_and_fixed_racks_inside_
     assert "racks_slide_passively_along_+X_travel_is_template_prior" in assumptions
     assert "cutlery_basket_stays_in_tub_when_lower_rack_slides" in assumptions
     assert "interior_parts_fixed_closed_not_sliding" not in assumptions
-    assert "slides out of the tub" in plan["parts"]["upper_rack"]["description"]
+    assert "rack_slide_friction_is_template_prior_not_measured" in assumptions
+    # The bought part's request text is unchanged, so a retained rack part is reused.
+    assert "; held fixed inside the tub, not a task part." in plan["parts"]["upper_rack"]["description"]
+    for row in plan["auxiliary_joints"]:
+        assert row["passive_friction"]["basis"] == "estimated_unobserved_joint_resistance_prior"
+        assert row["passive_friction"]["physical_measurement_proven"] is False
 
 
 @pytest.mark.parametrize("hinge, axis, token, anchor_y", [("left", [0.0, 0.0, -1.0], "Z", -0.3),
@@ -404,6 +409,9 @@ def test_dishwasher_packages_one_passive_revolute_door_and_passes_static_qualifi
                 UsdPhysics.PrismaticJoint(slide).GetUpperLimitAttr().Get()] == pytest.approx(row["limits_m"])
         linear = UsdPhysics.DriveAPI(slide, "linear")
         assert linear.GetStiffnessAttr().Get() == 0.0 and linear.GetDampingAttr().Get() == pytest.approx(5.0)
+        assert "PhysxJointAxisAPI:linear" in slide.GetMetadata("apiSchemas").GetAppliedItems()
+        assert slide.GetAttribute("physxJointAxis:linear:staticFrictionEffort").Get() == pytest.approx(4.0)
+        assert slide.GetAttribute("physxJointAxis:linear:dynamicFrictionEffort").Get() == pytest.approx(2.0)
     joint = UsdPhysics.RevoluteJoint(revolute[0])
     assert joint.GetAxisAttr().Get() == plan["task_joint"]["usd_axis"]
     assert joint.GetUpperLimitAttr().Get() == pytest.approx(math.degrees(1.4))
@@ -720,6 +728,8 @@ def test_revolute_success_scores_in_radians(tmp_path):
     assert criteria["opening"]["success_interval"] == pytest.approx([0.84, 1.4])
     assert criteria["opening"]["joint_hard_limits"] == pytest.approx([0.0, 1.4])
     assert criteria["reset"]["tolerance"] == 0.02 and criteria["hold"]["maximum_settled_target_speed"] == 0.03
+    # Passive rack slides may move with the robot; only fixed parts are locked.
+    assert criteria["locked_joints"]["joint_ids"] == ["cutlery_basket_fixed"]
     fixed = ["cutlery_basket_fixed", "lower_rack_slide", "upper_rack_slide"]
 
     def episode(angles, *, start=0.0):
