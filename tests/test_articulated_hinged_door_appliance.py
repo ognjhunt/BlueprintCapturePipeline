@@ -129,11 +129,13 @@ def test_dishwasher_plans_hollow_body_bottom_hinged_door_and_fixed_racks_inside_
         assert row["limits"] == pytest.approx([0.0, 0.75 * rack_depth], abs=1e-5) and row["reset_position"] == 0.0
         assert row["drive"]["stiffness"] == 0.0 and row["drive"]["damping"] == 5.0
     assert {row["travel_authority"] for row in plan["auxiliary_joints"]} == {"template_prior"}
-    assumptions = plan["construction_assumptions"]
-    assert "racks_slide_passively_along_+X_travel_is_template_prior" in assumptions
-    assert "cutlery_basket_stays_in_tub_when_lower_rack_slides" in assumptions
-    assert "interior_parts_fixed_closed_not_sliding" not in assumptions
-    assert "rack_slide_friction_is_template_prior_not_measured" in assumptions
+    # Part requests carry construction_assumptions verbatim; they stay as before so bought parts are reused.
+    assert "interior_parts_fixed_closed_not_sliding" in plan["construction_assumptions"]
+    assert not any("slide" in note for note in plan["construction_assumptions"])
+    mechanism = plan["mechanism_assumptions"]
+    assert "racks_slide_passively_along_+X_travel_is_template_prior" in mechanism
+    assert "rack_slide_friction_is_template_prior_not_measured" in mechanism
+    assert "cutlery_basket_stays_in_tub_when_lower_rack_slides" in mechanism
     # The bought part's request text is unchanged, so a retained rack part is reused.
     assert "; held fixed inside the tub, not a task part." in plan["parts"]["upper_rack"]["description"]
     for row in plan["auxiliary_joints"]:

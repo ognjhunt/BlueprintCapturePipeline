@@ -193,9 +193,9 @@ def _development_hypothesis_findings(
     return []
 
 
-def _passive_joint_findings(prim: Any, row: Mapping[str, Any]) -> list[str]:
+def _passive_joint_findings(prim: Any, row: Mapping[str, Any], planned: Mapping[str, Any] | None) -> list[str]:
     """A declared passive joint moves within finite limits, resets closed and is never servoed."""
-    from pxr import UsdPhysics
+    from pxr import Gf, UsdPhysics
 
     name = prim.GetName()
     expected = {"prismatic": UsdPhysics.PrismaticJoint, "revolute": UsdPhysics.RevoluteJoint}.get(row["joint_type"])
@@ -226,9 +226,22 @@ def _passive_joint_findings(prim: Any, row: Mapping[str, Any]) -> list[str]:
         authored_axis = [float(v) for v in prim.GetCustomDataByKey("blueprint:graphAxis")]
     except (TypeError, ValueError):
         authored_axis = []
-    if (token is None or not _close_sequence(authored_axis, list(row["axis"]))
-            or not _close_sequence(token, [abs(float(v)) for v in row["axis"]])):
+    rotation = UsdPhysics.Joint(prim).GetLocalRot0Attr().Get()
+    quaternion = [rotation.GetReal(), *rotation.GetImaginary()] if rotation is not None else [1.0, 0.0, 0.0, 0.0]
+    # The token is in the joint frame; its rotation gives the signed asset-frame direction.
+    slide = (list(Gf.Rotation(Gf.Quatd(quaternion[0], Gf.Vec3d(*quaternion[1:]))).TransformDir(Gf.Vec3d(*token)))
+             if token is not None else None)
+    if (slide is None or not _close_sequence(authored_axis, list(row["axis"]))
+            or not _close_sequence([float(v) for v in slide], list(row["axis"]))):
         findings.append("replacement_passive_joint_axis_mismatch:" + name)
+    friction = (planned or {}).get("passive_friction")
+    unit = "angular" if row["joint_type"] == "revolute" else "linear"
+    if friction is not None and any(
+            prim.GetAttribute(f"physxJointAxis:{unit}:{attribute}").Get() is None
+            or not math.isclose(float(prim.GetAttribute(f"physxJointAxis:{unit}:{attribute}").Get()),
+                                float(friction[key]), rel_tol=1e-5, abs_tol=1e-6)
+            for key, attribute in (("static_effort", "staticFrictionEffort"), ("dynamic_effort", "dynamicFrictionEffort"))):
+        findings.append("replacement_passive_joint_friction_mismatch:" + name)
     drive_axis = "angular" if row["joint_type"] == "revolute" else "linear"
     expected_damping = float(row["drive"]["damping"])
     if row["joint_type"] == "revolute":
@@ -416,7 +429,8 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
             continue
         passive = passive_rows.get(prim.GetName())
         if passive is not None:
-            findings.extend(_passive_joint_findings(prim, passive))
+            planned = next((row for row in plan.get("auxiliary_joints") or [] if row["joint_id"] == prim.GetName()), None)
+            findings.extend(_passive_joint_findings(prim, passive, planned))
             continue
         if not prim.IsA(UsdPhysics.FixedJoint):
             findings.append("replacement_non_target_joint_not_fixed:" + prim.GetName())

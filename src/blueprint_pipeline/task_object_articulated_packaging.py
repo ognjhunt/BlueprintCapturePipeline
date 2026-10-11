@@ -703,12 +703,14 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
                              "basis": "estimated_unobserved_joint_resistance_prior",
                              "prior": TEMPLATE_PRIOR_BASIS, "physical_measurement_proven": False},
     } for part_id, slot in sorted(slots.items()) if slot in SLIDING_RACK_SLOTS]
-    interior_assumptions = (["interior_parts_fixed_closed_not_sliding"] if not auxiliary_joints else [
+    # Part requests carry construction_assumptions verbatim (and their digest
+    # reuses a bought part), so the slides are stated here instead.
+    mechanism_assumptions = [] if not auxiliary_joints else [
         "racks_slide_passively_along_+X_travel_is_template_prior",
         "rack_slide_friction_is_template_prior_not_measured",
-        *(["other_interior_parts_fixed_closed_not_sliding"] if len(slots) > len(auxiliary_joints) else []),
+        "interior_parts_fixed_closed_not_sliding_describes_part_geometry_not_rack_joints",
         *(["cutlery_basket_stays_in_tub_when_lower_rack_slides"]
-          if {"cutlery_basket", "lower_rack"} <= set(slots.values()) else [])])
+          if {"cutlery_basket", "lower_rack"} <= set(slots.values()) else [])]
     # Positive rotation opens the door outward (+X); a negative axis uses a
     # 180 degree joint frame about X so the USD axis token stays Y or Z.
     axis, token, rotation = {"bottom": ([0.0, 1.0, 0.0], "Y", [1.0, 0.0, 0.0, 0.0]),
@@ -748,7 +750,7 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
             f"wall_thickness_m={t}", f"door_thickness_m={door_t}", f"back_clearance_m={APPLIANCE_BACK_CLEARANCE_M}",
             f"kickplate_height_m={base}", f"control_panel_height_m={panel_h}", f"handle_protrusion_m={hp}",
             f"handle_section_m={s}", f"rack_height_fraction_of_tub={RACK_HEIGHT_FRACTION_OF_TUB}",
-            *interior_assumptions, "handle_modelled_as_bar_grasp_feature",
+            "interior_parts_fixed_closed_not_sliding", "handle_modelled_as_bar_grasp_feature",
             "door_counterbalance_spring_not_modelled_only_viscous_damping", "body_treated_as_grounded_base",
             "unobserved_surfaces_are_generated_candidate_geometry",
         ],
@@ -799,6 +801,7 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
                                  "maximum_force": 0.0, "implementation": "passive_torque_damper",
                                  "damping_units": "N_m_s_per_rad"}},
         "auxiliary_joints": auxiliary_joints,
+        **({"mechanism_assumptions": mechanism_assumptions} if mechanism_assumptions else {}),
         "interior_cavities": [tub],
         "cavity_collision_approximation": CAVITY_COLLISION_WALL_BOXES,
         "required_parts": [{**row, **placed[row["part_id"]]} for row in contract["required_parts"]],
