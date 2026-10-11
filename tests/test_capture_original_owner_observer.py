@@ -109,7 +109,7 @@ def test_selected_delivery_refuses_before_lease_when_owner_api_missing(tmp_path:
 
 
 @pytest.mark.parametrize("purpose", [None, "scene_preparation"])
-def test_native_signed_owner_read_keeps_unclaimed_preparation_scope(tmp_path, monkeypatch, purpose):
+def test_native_signed_owner_read_admits_unclaimed_capture_only_in_preparation_scope(tmp_path, monkeypatch, purpose):
     from types import SimpleNamespace
     from blueprint_pipeline import pubsub_handoff_listener as listener
     from blueprint_pipeline import capture_original_owner_observer as observer
@@ -139,8 +139,44 @@ def test_native_signed_owner_read_keeps_unclaimed_preparation_scope(tmp_path, mo
     result = listener.process_handoff_payload(payload, storage_root=tmp_path, provider="openai",
         expected_preparation_purpose=purpose, run_e2e=lambda **_: pytest.fail("ran"))
     assert calls[0].get("purpose") == purpose
-    assert result["status"] == ("capture_original_birth_unavailable_retryable" if purpose
-                                else "capture_owner_observation_unavailable_retryable")
+    # The plain read refuses an unclaimed owner; the listener then reads in preparation scope.
+    assert [call.get("purpose") for call in calls[1:2]] == (["scene_preparation"] if purpose is None else [])
+    assert result["status"] == "capture_original_birth_unavailable_retryable"
+    assert not (tmp_path / "capture-bucket").exists()
+
+
+def test_native_owner_read_never_moves_a_claimed_capture_into_preparation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import capture_original_owner_observer as observer
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://tryblueprint.io/api/internal/pipeline/sync")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "fixture-secret")
+    calls = []
+
+    def respond(_url, **kwargs):
+        command = json.loads(kwargs["data"])
+        calls.append(command)
+        if not command.get("purpose"):
+            return SimpleNamespace(status=503, body=b"{}")
+        value = observation()  # claimed owner-1
+        value["purpose"] = command["purpose"]
+        value["source_projection_digest"] = cross_runtime_canonical_digest({
+            key: value[key] for key in (*observer._SOURCE_KEYS, "purpose")})
+        value["observation_digest"] = cross_runtime_canonical_digest(value, digest_field="observation_digest")
+        return SimpleNamespace(status=200, body=json.dumps(value).encode())
+
+    monkeypatch.setattr(observer, "safe_request", respond)
+    payload = {"bucket": "capture-bucket", "scene_id": "site-req-1", "capture_id": "walkthrough-req-1",
+               "raw_prefix_uri": "gs://capture-bucket/scenes/site-req-1/captures/walkthrough-req-1/raw",
+               "source_finalize": {"bucket": "capture-bucket",
+                                   "object_name": "scenes/site-req-1/captures/walkthrough-req-1/raw/capture_upload_complete.json",
+                                   "generation": "17000000000000000001", "event_id": "evt-1", "event_source": "storage"}}
+    result = listener.process_handoff_payload(payload, storage_root=tmp_path, provider="openai",
+                                              run_e2e=lambda **_: pytest.fail("ran"))
+    assert [call.get("purpose") for call in calls] == [None, "scene_preparation"]
+    assert result["status"] == "capture_owner_observation_unavailable_retryable"
+    assert result["owner_observation_reason"] == "capture_owner_response_unavailable"
     assert not (tmp_path / "capture-bucket").exists()
 
 

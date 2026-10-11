@@ -101,13 +101,31 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             CaptureOwnerObservationError, OWNER_OBSERVATION_REASON_CODES, load_original_owner_observation,
         )
 
-        try:
-            observation = load_original_owner_observation(
+        def observe(purpose):
+            return load_original_owner_observation(
                 bucket=handoff.bucket, scene_id=handoff.scene_id,
                 capture_id=handoff.capture_id,
                 marker_generation=handoff.source_finalize['generation'],
-                **({'expected_purpose': expected_preparation_purpose} if expected_preparation_purpose else {}),
+                **({'expected_purpose': purpose} if purpose else {}),
             )
+
+        try:
+            try:
+                observation = observe(expected_preparation_purpose)
+            except Exception as plain_refusal:
+                if expected_preparation_purpose is not None:
+                    raise
+                # An unclaimed site is admitted only for Blueprint-funded scene
+                # preparation, so the plain read refuses it by design. Continue
+                # in that scope only when the preparation read itself proves
+                # there is no claimed owner; anything else keeps the original refusal.
+                try:
+                    candidate = observe('scene_preparation')
+                except Exception:
+                    candidate = None
+                if candidate is None or candidate.get('capture_owner') is not None:
+                    raise plain_refusal
+                observation, expected_preparation_purpose = candidate, 'scene_preparation'
         except Exception as error:
             reason = (str(error) if isinstance(error, CaptureOwnerObservationError)
                       and str(error) in OWNER_OBSERVATION_REASON_CODES
