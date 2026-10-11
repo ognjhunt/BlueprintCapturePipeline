@@ -8,7 +8,8 @@ receipt and graph, and no physics authority granted by authoring.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_configuration_adapters import (
@@ -50,6 +51,16 @@ def expected_articulated_physics_bounds(configuration, plan) -> dict:
                 "fixed_interior": "fixed_part_mass_kg_bounds"}
     return {part_id: {**shared, "mass_kg": required_output.get(role_key.get(spec.get("link_role"), ""))}
             for part_id, spec in parts.items() if isinstance(spec, Mapping)}
+
+
+def non_target_joints_admitted(joints: Sequence[Mapping[str, Any]]) -> bool:
+    """Every non-target joint is fixed, except declared passive joints (e.g.
+    dishwasher racks), which may move with the robot but are never driven."""
+    return all(
+        row["joint_type"] == "fixed" if row["role"] != "passive"
+        else (row["joint_type"] in {"prismatic", "revolute"} and row["drive"]["drive_type"] == "none"
+              and row["drive"]["stiffness"] == 0.0)
+        for row in joints if row["role"] != "target")
 
 
 def verify_articulated_replacement_result(
@@ -141,7 +152,7 @@ def verify_articulated_replacement_result(
         or target_joints[0]["limits"] != [float(v) for v in mechanism.get("joint_limits") or []]
         or target_joints[0]["drive"]["drive_type"] != "none"
         or target_joints[0]["drive"]["stiffness"] != 0.0
-        or any(row["joint_type"] != "fixed" for row in articulation["joints"] if row["role"] != "target")
+        or not non_target_joints_admitted(articulation["joints"])
         or graph.get("task_joint_prim_path") != completion.get("task_joint_prim_path")
         or graph.get("fixed_base_body_prim_path") != completion.get("fixed_base_body_prim_path")
         or graph.get("physics_bounds") != expected_bounds

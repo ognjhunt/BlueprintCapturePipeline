@@ -164,6 +164,9 @@ def _receipt_mechanism(receipt: Mapping[str, Any]) -> dict[str, Any]:
     roots = [row["link_id"] for row in graph["links"] if row["is_root"]]
     targets = [row for row in graph["joints"] if row["role"] == "target"]
     target = targets[0] if len(targets) == 1 else {}
+    # Passive joints (dishwasher racks) move, are declared by the graph, hang
+    # from the root and are never the task joint.
+    passive = [row for row in graph["joints"] if row["role"] == "passive"]
     axis = [float(value) for value in target.get("axis") or [0.0, 0.0, 0.0]]
     index = max(range(3), key=lambda i: abs(axis[i]))
     if (len(roots) != 1 or len(targets) != 1 or len(links) < 2
@@ -173,7 +176,9 @@ def _receipt_mechanism(receipt: Mapping[str, Any]) -> dict[str, Any]:
             or declared.get("joint_id") != target["joint_id"]
             or declared.get("joint_type") != target["joint_type"]
             or any(row["joint_type"] != "fixed" or row["parent_link_id"] != roots[0]
-                   for row in graph["joints"] if row["role"] != "target")
+                   for row in graph["joints"] if row["role"] not in {"target", "passive"})
+            or any(row["joint_type"] not in _TASK_JOINT_TYPES or row["parent_link_id"] != roots[0]
+                   for row in passive)
             or not math.isclose(abs(axis[index]), 1.0, abs_tol=1e-6)
             or any(abs(axis[i]) > 1e-6 for i in range(3) if i != index)):
         raise RuntimeError("scene_configuration_native_import_mechanism_invalid")
@@ -185,7 +190,8 @@ def _receipt_mechanism(receipt: Mapping[str, Any]) -> dict[str, Any]:
         # Joint frames rotate only by 180 degrees about X, so the USD token is
         # the axis-aligned direction of the graph axis.
         "task_joint_usd_axis": "XYZ"[index],
-        "fixed_joint_count": len(graph["joints"]) - 1,
+        "fixed_joint_count": len(graph["joints"]) - 1 - len(passive),
+        "passive_joint_ids": frozenset(row["joint_id"] for row in passive),
         "reset_tolerance": float(target["reset_tolerance"]),
     }
 
@@ -261,7 +267,7 @@ def _articulated_structure_observation(
     joints = [prim for prim in prims if prim.IsA(usd_physics.Joint)]
     expected_joint_paths = sorted(_imported_path(path) for path in expected["joint_prim_paths"])
     if (sorted(str(prim.GetPath()) for prim in joints) != expected_joint_paths
-            or len(joints) != mechanism["fixed_joint_count"] + 1):
+            or len(joints) != mechanism["fixed_joint_count"] + 1 + len(mechanism["passive_joint_ids"])):
         raise RuntimeError("scene_configuration_native_import_joint_set_invalid")
     task = _articulated_joint_observation(stage=stage, usd_physics=usd_physics, root_path=_IMPORTED_ROOT)
     declared_task = static_receipt["task_joint"]
@@ -295,6 +301,10 @@ def _articulated_structure_observation(
         raise RuntimeError("scene_configuration_native_import_task_joint_body_invalid")
     for row in static_receipt["articulation_graph"]["joints"]:
         if row["role"] == "target":
+            continue
+        if row["role"] == "passive":
+            if _imported_path("/Asset/joints/" + row["joint_id"]) not in task["passive_joint_prim_paths"]:
+                raise RuntimeError("scene_configuration_native_import_passive_joint_invalid")
             continue
         fixed_path = _imported_path("/Asset/joints/" + row["joint_id"])
         fixed_prim = stage.GetPrimAtPath(fixed_path)
@@ -389,10 +399,11 @@ def _articulated_repeat_matches_static(
                 return False
         joint = row["task_joint"]
         task = receipt["task_joint"]
+        passive_ids = _receipt_mechanism(receipt)["passive_joint_ids"]
         expected_fixed_paths = sorted(
             _imported_path(path)
             for path in receipt["observed_structure"]["joint_prim_paths"]
-            if path != task["prim_path"]
+            if path != task["prim_path"] and PurePosixPath(path).name not in passive_ids
         )
         if (joint["task_joint_name"] != task["joint_id"]
                 or joint["task_joint_reset_position"] != task["reset_position"]
@@ -481,9 +492,22 @@ def _articulated_joint_observation(
         and prim.IsA(usd_physics.Joint)
     ]
     movable = [prim for prim in joints if not prim.IsA(usd_physics.FixedJoint)]
-    if len(movable) != 1:
+    targets = [prim for prim in movable if prim.GetCustomDataByKey("blueprint:jointRole") in {None, "target"}]
+    passive = [prim for prim in movable if prim.GetCustomDataByKey("blueprint:jointRole") == "passive"]
+    if len(targets) != 1 or len(targets) + len(passive) != len(movable):
         raise RuntimeError("scene_configuration_native_import_single_task_joint_required")
-    joint = movable[0]
+    for prim in passive:
+        # A passive joint may move with the robot, never by itself.
+        typed_passive = (usd_physics.PrismaticJoint(prim) if prim.IsA(usd_physics.PrismaticJoint)
+                         else usd_physics.RevoluteJoint(prim) if prim.IsA(usd_physics.RevoluteJoint) else None)
+        bounds = (typed_passive.GetLowerLimitAttr().Get(), typed_passive.GetUpperLimitAttr().Get()) if typed_passive else ()
+        if (len(bounds) != 2 or any(value is None or not math.isfinite(float(value)) for value in bounds)
+                or float(bounds[0]) >= float(bounds[1])
+                or any(prim.HasAPI(usd_physics.DriveAPI, name)
+                       and float(usd_physics.DriveAPI(prim, name).GetStiffnessAttr().Get() or 0.0) > 0.0
+                       for name in ("linear", "angular"))):
+            raise RuntimeError("scene_configuration_native_import_passive_joint_invalid")
+    joint = targets[0]
     if joint.IsA(usd_physics.PrismaticJoint):
         typed, joint_type = usd_physics.PrismaticJoint(joint), "prismatic"
     elif joint.IsA(usd_physics.RevoluteJoint):
@@ -524,6 +548,7 @@ def _articulated_joint_observation(
         "fixed_joint_prim_paths": sorted(
             str(prim.GetPath()) for prim in joints if prim.IsA(usd_physics.FixedJoint)
         ),
+        "passive_joint_prim_paths": sorted(str(prim.GetPath()) for prim in passive),
         "task_joint_drive_forbidden_verified": True,
     }
 

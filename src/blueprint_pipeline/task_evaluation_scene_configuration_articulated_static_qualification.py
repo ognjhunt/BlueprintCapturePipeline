@@ -193,6 +193,38 @@ def _development_hypothesis_findings(
     return []
 
 
+def _passive_joint_findings(prim: Any, row: Mapping[str, Any]) -> list[str]:
+    """A declared passive joint moves within finite limits, resets closed and is never servoed."""
+    from pxr import UsdPhysics
+
+    name = prim.GetName()
+    expected = {"prismatic": UsdPhysics.PrismaticJoint, "revolute": UsdPhysics.RevoluteJoint}.get(row["joint_type"])
+    if expected is None or not prim.IsA(expected):
+        return ["replacement_passive_joint_type_mismatch:" + name]
+    typed = expected(prim)
+    lower, upper = typed.GetLowerLimitAttr().Get(), typed.GetUpperLimitAttr().Get()
+    findings = []
+    if lower is not None and upper is not None and row["joint_type"] == "revolute":
+        lower, upper = math.radians(float(lower)), math.radians(float(upper))
+    if (lower is None or upper is None or not _finite([lower, upper]) or float(lower) >= float(upper)
+            or not _close_sequence([float(lower), float(upper)], list(row["limits"]))):
+        findings.append("replacement_passive_joint_limits_invalid:" + name)
+        lower = upper = None
+    reset = prim.GetCustomDataByKey("blueprint:resetPosition")
+    if (not isinstance(reset, (int, float)) or isinstance(reset, bool) or lower is None
+            or not float(lower) <= float(reset) <= float(upper)
+            or abs(float(reset) - float(row["reset_position"])) > 1e-9):
+        findings.append("replacement_passive_joint_reset_invalid:" + name)
+    for axis in ("linear", "angular"):
+        if prim.HasAPI(UsdPhysics.DriveAPI, axis):
+            stiffness = UsdPhysics.DriveAPI(prim, axis).GetStiffnessAttr().Get()
+            if stiffness is not None and float(stiffness) > 0.0:
+                findings.append("replacement_passive_joint_position_servo_forbidden:" + name)
+    if prim.GetCustomDataByKey("blueprint:jointRole") != "passive":
+        findings.append("replacement_passive_joint_role_mismatch:" + name)
+    return findings
+
+
 def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mapping[str, Mapping[str, Sequence[float]]],
                   link_parts: Mapping[str, str], plan: Mapping[str, Any]) -> tuple[list[str], dict[str, Any]]:
     try:
@@ -243,7 +275,13 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
     moving = [prim for prim in joints if not prim.IsA(UsdPhysics.FixedJoint)]
     target_rows = [row for row in graph["joints"] if row["role"] == "target"]
     target_row = target_rows[0] if len(target_rows) == 1 else None
-    task_joint = moving[0] if len(moving) == 1 else None
+    # Passive joints (e.g. dishwasher racks) move but are never the task joint;
+    # the graph must declare each one, and nothing else may move.
+    passive_rows = {row["joint_id"]: row for row in graph["joints"] if row["role"] == "passive"}
+    named_moving = {prim.GetName(): prim for prim in moving}
+    task_joint = (named_moving.get(target_row["joint_id"])
+                  if target_row is not None and len(named_moving) == len(moving)
+                  and set(named_moving) == {target_row["joint_id"], *passive_rows} else None)
     task_child: Any = None
     observed_joint: dict[str, Any] = {}
     if task_joint is None or target_row is None:
@@ -358,6 +396,10 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
                 or body_by_path[str(targets1[0])].GetName() != expected["child_link_id"]):
             findings.append("replacement_joint_graph_topology_mismatch:" + prim.GetName())
         if prim is task_joint:
+            continue
+        passive = passive_rows.get(prim.GetName())
+        if passive is not None:
+            findings.extend(_passive_joint_findings(prim, passive))
             continue
         if not prim.IsA(UsdPhysics.FixedJoint):
             findings.append("replacement_non_target_joint_not_fixed:" + prim.GetName())

@@ -75,6 +75,11 @@ RACK_BACK_CLEARANCE_M = 0.02
 RACK_HEIGHT_FRACTION_OF_TUB = 0.22
 LOWER_RACK_FLOOR_CLEARANCE_M = 0.06
 UPPER_RACK_FLOOR_FRACTION_OF_TUB = 0.55
+# Racks run out of the tub toward the open door on rails or rollers. They are
+# passive auxiliary joints next to the one task joint; travel is a template
+# prior on the planned rack depth, never a measurement of the captured unit.
+SLIDING_RACK_SLOTS = ("lower_rack", "upper_rack")
+RACK_EXTENSION_FRACTION_OF_DEPTH = 0.75
 MINIMUM_APPLIANCE_DEPTH_TO_WIDTH = 0.4
 # Every family template places its fixed interior and feature parts from
 # construction priors. 2026-09-27 website capture: those priors must say so,
@@ -672,14 +677,29 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
                 or (slot == "upper_rack" and "third_tray" in slots.values() and upper_z + rack_h > tray_z)):
             raise AssetAuthoringError("articulated_interior_geometry_infeasible:" + part_id)
         label = next(row["label"] for row in rows["interior"] if row["part_id"] == part_id)
+        held = ("slides out of the tub along +X on its rails, not the task part" if slot in SLIDING_RACK_SLOTS
+                else "held fixed inside the tub, not a task part")
         interior_parts[part_id] = {
             "link_role": "fixed_interior", "dimensions_m": [round(v, 5) for v in size],
             "features": {"link": _box([0.0, 0.0, size[2] / 2], size)},
             "description": (f"{label}. {text}: {round(size[0], 4)} m deep x {round(size[1], 4)} m wide x "
                             f"{round(size[2], 4)} m tall overall, open top with thin slotted or wire walls and floor; "
-                            "held fixed inside the tub, not a task part.")}
+                            f"{held}.")}
         interior_links.append({"link_id": part_id, "part_id": part_id, "is_root": False,
                                "semantic_role": "fixed_interior", "rest_translation_m": [round(v, 5) for v in rest]})
+    auxiliary_joints = [{
+        "joint_id": f"{part_id}_slide", "joint_type": "prismatic", "parent_link_id": BODY_LINK_ID,
+        "child_link_id": part_id, "axis_asset_frame": [1.0, 0.0, 0.0], "usd_axis": "X",
+        "limits_m": [0.0, round(RACK_EXTENSION_FRACTION_OF_DEPTH * rack_d, 5)], "reset_position_m": 0.0,
+        "travel_authority": TEMPLATE_PRIOR_BASIS,
+        "drive": {"drive_type": "none", "stiffness": 0.0, "damping": PASSIVE_JOINT_DAMPING_N_S_PER_M,
+                  "maximum_force": 0.0, "implementation": "passive_force_damper", "damping_units": "N_s_per_m"},
+    } for part_id, slot in sorted(slots.items()) if slot in SLIDING_RACK_SLOTS]
+    interior_assumptions = (["interior_parts_fixed_closed_not_sliding"] if not auxiliary_joints else [
+        "racks_slide_passively_along_+X_travel_is_template_prior",
+        *(["other_interior_parts_fixed_closed_not_sliding"] if len(slots) > len(auxiliary_joints) else []),
+        *(["cutlery_basket_stays_in_tub_when_lower_rack_slides"]
+          if {"cutlery_basket", "lower_rack"} <= set(slots.values()) else [])])
     # Positive rotation opens the door outward (+X); a negative axis uses a
     # 180 degree joint frame about X so the USD axis token stays Y or Z.
     axis, token, rotation = {"bottom": ([0.0, 1.0, 0.0], "Y", [1.0, 0.0, 0.0, 0.0]),
@@ -719,7 +739,7 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
             f"wall_thickness_m={t}", f"door_thickness_m={door_t}", f"back_clearance_m={APPLIANCE_BACK_CLEARANCE_M}",
             f"kickplate_height_m={base}", f"control_panel_height_m={panel_h}", f"handle_protrusion_m={hp}",
             f"handle_section_m={s}", f"rack_height_fraction_of_tub={RACK_HEIGHT_FRACTION_OF_TUB}",
-            "interior_parts_fixed_closed_not_sliding", "handle_modelled_as_bar_grasp_feature",
+            *interior_assumptions, "handle_modelled_as_bar_grasp_feature",
             "door_counterbalance_spring_not_modelled_only_viscous_damping", "body_treated_as_grounded_base",
             "unobserved_surfaces_are_generated_candidate_geometry",
         ],
@@ -769,6 +789,7 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
                        "drive": {"drive_type": "none", "stiffness": 0.0, "damping": PASSIVE_HINGE_DAMPING_N_M_S_PER_RAD,
                                  "maximum_force": 0.0, "implementation": "passive_torque_damper",
                                  "damping_units": "N_m_s_per_rad"}},
+        "auxiliary_joints": auxiliary_joints,
         "interior_cavities": [tub],
         "cavity_collision_approximation": CAVITY_COLLISION_WALL_BOXES,
         "required_parts": [{**row, **placed[row["part_id"]]} for row in contract["required_parts"]],
@@ -1499,11 +1520,13 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
     joint_rows = []
     revolute = task_joint["joint_type"] == "revolute"
     root_rest = [float(v) for v in next(row["rest_translation_m"] for row in plan["links"] if row["link_id"] == root_id)]
+    auxiliary = {row["child_link_id"]: row for row in plan.get("auxiliary_joints") or []}
     for link in plan["links"]:
         if link["is_root"]:
             continue
         is_task = link["link_id"] == task_joint["child_link_id"]
-        joint_id = task_joint["joint_id"] if is_task else f"{link['link_id']}_fixed"
+        aux = None if is_task else auxiliary.get(link["link_id"])
+        joint_id = task_joint["joint_id"] if is_task else aux["joint_id"] if aux else f"{link['link_id']}_fixed"
         path = f"{ASSET_ROOT}/joints/{joint_id}"
         rest = [float(v) for v in link["rest_translation_m"]]
         # Joint frames sit at the hinge anchor (a drawer's is its own origin),
@@ -1521,6 +1544,11 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
             joint.CreateAxisAttr("X")
             joint.CreateLowerLimitAttr(limits[0])
             joint.CreateUpperLimitAttr(limits[1])
+        elif aux is not None:
+            joint = UsdPhysics.PrismaticJoint.Define(stage, path)
+            joint.CreateAxisAttr(str(aux["usd_axis"]))
+            joint.CreateLowerLimitAttr(float(aux["limits_m"][0]))
+            joint.CreateUpperLimitAttr(float(aux["limits_m"][1]))
         else:
             joint = UsdPhysics.FixedJoint.Define(stage, path)
         joint.CreateBody0Rel().SetTargets([Sdf.Path(link_paths[root_id])])
@@ -1530,9 +1558,24 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         joint.CreateLocalRot0Attr(rotation)
         joint.CreateLocalRot1Attr(rotation)
         prim = joint.GetPrim()
-        prim.SetCustomDataByKey("blueprint:jointRole", "target" if is_task else "locked")
+        role = "target" if is_task else "passive" if aux else "locked"
+        prim.SetCustomDataByKey("blueprint:jointRole", role)
         prim.SetCustomDataByKey("blueprint:resetPosition", 0.0)
         drive_row: dict[str, Any] = {"declared_drive_type": "none", "usd_drive_authored": False, "implementation": "none"}
+        if aux is not None:
+            # A passive slide: no servo, only the planned viscous damping.
+            prim.SetCustomDataByKey("blueprint:graphAxis", Gf.Vec3d(*aux["axis_asset_frame"]))
+            prim.SetCustomDataByKey("blueprint:declaredDriveType", "none")
+            prim.SetCustomDataByKey("blueprint:travelAuthority", str(aux["travel_authority"]))
+            drive = UsdPhysics.DriveAPI.Apply(prim, "linear")
+            drive.CreateTypeAttr().Set("force")
+            drive.CreateStiffnessAttr().Set(0.0)
+            drive.CreateDampingAttr().Set(float(aux["drive"]["damping"]))
+            drive.CreateTargetPositionAttr().Set(0.0)
+            prim.SetCustomDataByKey("blueprint:driveImplementation", aux["drive"]["implementation"])
+            drive_row = {"declared_drive_type": "none", "usd_drive_authored": True, "usd_drive_type": "force",
+                         "implementation": aux["drive"]["implementation"], "stiffness": 0.0,
+                         "damping": float(aux["drive"]["damping"])}
         if is_task:
             prim.SetCustomDataByKey("blueprint:graphAxis", Gf.Vec3d(*task_joint["axis_asset_frame"]))
             prim.SetCustomDataByKey("blueprint:declaredDriveType", "none")
@@ -1561,10 +1604,10 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
                 drive_row = {"declared_drive_type": "none", "usd_drive_authored": True, "usd_drive_type": "force",
                              "implementation": implementation, "stiffness": 0.0, "damping": damping}
         joint_rows.append({"joint_id": joint_id, "prim_path": path,
-                           "joint_type": task_joint["joint_type"] if is_task else "fixed",
+                           "joint_type": task_joint["joint_type"] if is_task else "prismatic" if aux else "fixed",
                            "parent_link_id": root_id, "child_link_id": link["link_id"],
-                           "role": "target" if is_task else "locked",
-                           "limits": limits if is_task else [0.0, 0.0],
+                           "role": role,
+                           "limits": limits if is_task else [float(v) for v in aux["limits_m"]] if aux else [0.0, 0.0],
                            "reset_position": 0.0, "drive": drive_row})
     # The joints and limits constrain the mechanism; approximate colliders of
     # nested parts must not fight them. Robot contacts are unaffected.
@@ -1587,9 +1630,11 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
     reopened = Usd.Stage.Open(str(asset))
     if reopened is None or not reopened.GetDefaultPrim().HasAPI(UsdPhysics.ArticulationRootAPI):
         raise AssetAuthoringError("authoring_usdz_readback_failed")
-    moving = [p for p in reopened.Traverse() if p.IsA(UsdPhysics.Joint) and not p.IsA(UsdPhysics.FixedJoint)]
+    moving = {p.GetName(): p for p in reopened.Traverse() if p.IsA(UsdPhysics.Joint) and not p.IsA(UsdPhysics.FixedJoint)}
     expected_type = UsdPhysics.RevoluteJoint if revolute else UsdPhysics.PrismaticJoint
-    if (len(moving) != 1 or not moving[0].IsA(expected_type)
+    if (set(moving) != {task_joint["joint_id"], *(row["joint_id"] for row in auxiliary.values())}
+            or not moving[task_joint["joint_id"]].IsA(expected_type)
+            or not all(moving[row["joint_id"]].IsA(UsdPhysics.PrismaticJoint) for row in auxiliary.values())
             or len([p for p in reopened.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)]) != len(link_rows)):
         raise AssetAuthoringError("authoring_usdz_readback_failed")
     observed_parts = {prim.GetName(): json.loads(str(prim.GetCustomDataByKey(REQUIRED_PARTS_ATTRIBUTE) or "{}"))
@@ -1656,11 +1701,22 @@ def articulation_graph_from_plan(plan: Mapping[str, Any], *, opening_fraction: f
     stroke = task_joint_limits(task_joint)[1]
     revolute = task_joint["joint_type"] == "revolute"
     links = [{"link_id": row["link_id"], "is_root": row["is_root"], "semantic_role": row["semantic_role"]} for row in plan["links"]]
+    auxiliary = {row["child_link_id"]: row for row in plan.get("auxiliary_joints") or []}
     joints = []
     for row in plan["links"]:
         if row["is_root"]:
             continue
         is_task = row["link_id"] == task_joint["child_link_id"]
+        aux = None if is_task else auxiliary.get(row["link_id"])
+        if aux is not None:
+            # A passive slide the success predicate never targets; reset closed.
+            joints.append({"joint_id": aux["joint_id"], "parent_link_id": root_link_id(plan),
+                           "child_link_id": row["link_id"], "joint_type": aux["joint_type"], "role": "passive",
+                           "axis": [float(v) for v in aux["axis_asset_frame"]],
+                           "limits": [float(v) for v in aux["limits_m"]], "reset_position": 0.0, "reset_tolerance": 0.005,
+                           "drive": {"drive_type": "none", "stiffness": 0.0, "damping": float(aux["drive"]["damping"]),
+                                     "maximum_force": 0.0}})
+            continue
         joints.append({"joint_id": task_joint["joint_id"] if is_task else f"{row['link_id']}_fixed",
                        "parent_link_id": root_link_id(plan), "child_link_id": row["link_id"],
                        "joint_type": task_joint["joint_type"] if is_task else "fixed",
