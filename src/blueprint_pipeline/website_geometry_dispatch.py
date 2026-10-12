@@ -131,6 +131,8 @@ def _reconcile_concurrent_slot(root: Path) -> str:
         return "not_eligible"
     if not (operation / "reconstruction_vast_operation_execution.json").is_file():
         return "not_eligible"
+    if not (operation / "validated_output_bundle_receipt.json").is_file():
+        return "not_eligible"  # only a retrieved output can be re-verified after another slot's teardown
     return str(reconcile_concurrent_slot_teardown(
         job_dir=operation, bound_request=bound, provider=get_render_provider("vast"))["status"])
 

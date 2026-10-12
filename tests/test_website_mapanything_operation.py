@@ -358,6 +358,8 @@ def test_controller_retries_a_market_miss_on_the_same_release(packet, tmp_path, 
     write_json(first / "dispatch.json", state)
     write_json(retry / "dispatch.json", state)
     write_json(first / "request.json", {"request_digest": DIGEST, "source_commit_sha": SHA})
+    # A real failed attempt keeps its bound request but never retrieved an output receipt.
+    write_json(first / "bound-request.json", {"request_digest": DIGEST})
     provider_zero = {"status": "PASS"}
     provider_zero["provider_zero_digest"] = canonical_digest(provider_zero, digest_field="provider_zero_digest")
     teardown = {"provider_zero_verified": True}
