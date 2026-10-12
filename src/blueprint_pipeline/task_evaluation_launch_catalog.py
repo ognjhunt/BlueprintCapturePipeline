@@ -44,6 +44,7 @@ from .task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     catalog_launch_profile_descriptor,
     validate_launch_profile,
+    validate_public_launch_profile_descriptor,
     verify_profile_immutable_inputs,
 )
 
@@ -89,11 +90,22 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
     Shared with the publisher so the artifact written at publish time and the
     one reconciled at start-up cannot disagree about what the catalog *is*.
     """
+    descriptors, _unjudged = _project_published_profiles(profile_dir)
+    return _catalog_bytes(descriptors)
+
+
+def _project_published_profiles(
+    profile_dir: str | Path,
+) -> tuple[list[dict[str, Any]], set[tuple[str, str]]]:
+    """Every published profile's descriptor, and the ones whose owner state this
+    process could not judge: ``scene_execution_owner_store_missing`` means its
+    environment names no scene-intake owner store, not that the owner is gone."""
     root = Path(profile_dir).expanduser().resolve()
     if not root.is_dir():
         raise LaunchCatalogError(f"profile_dir_missing:{root}")
 
     descriptors: list[dict[str, Any]] = []
+    unjudged: set[tuple[str, str]] = set()
     # One look per input file and per bound path for the whole pass, and one
     # validation of each kind per profile. On 2026-10-12 the 539 published profiles
     # listed 26,015 inputs that are 3,784 distinct files; the pass checked every
@@ -158,6 +170,8 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
             # immutable profile in history and explicitly disable its catalog
             # projection.
             inactive_authority = blockers
+            if "scene_execution_owner_store_missing" in blockers:
+                unjudged.add((str(descriptor["profile_id"]), str(descriptor["profile_digest"])))
         # A profile whose inputs are not on this host cannot start a run here,
         # so serving it as live is the lie. Demote it in the projection rather
         # than refusing the whole catalog: the published bytes stay immutable
@@ -177,7 +191,10 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
             )
             descriptor["execution_admission"] = admission
         descriptors.append(descriptor)
+    return descriptors, unjudged
 
+
+def _catalog_bytes(descriptors: list[dict[str, Any]]) -> bytes:
     if len(descriptors) > PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES:
         raise LaunchCatalogError("published_profile_catalog_profile_limit_exceeded")
     payload = (
@@ -214,9 +231,18 @@ def reconcile_public_catalog(
     profile_dir: str | Path,
     catalog_path: str | Path,
 ) -> dict[str, Any]:
-    """Rebuild the catalog when it disagrees with the published directory."""
+    """Rebuild the catalog when it disagrees with the published directory.
+
+    Every guarded unit reconciles, each from its own environment, and only some
+    name the scene-intake owner store. On 2026-10-12 the served catalog flipped
+    every few minutes: the control-plane guard rewrote each owner-bound profile as
+    ``scene_execution_owner_store_missing`` and the intake and listener guards
+    wrote the real owner state back. A row this process cannot judge therefore
+    keeps the served row for the same profile bytes; every other row, and any row
+    nothing has judged yet, is still written from this pass.
+    """
     catalog = Path(catalog_path).expanduser().resolve()
-    expected = build_catalog_payload(profile_dir)
+    descriptors, unjudged = _project_published_profiles(profile_dir)
 
     try:
         current = catalog.read_bytes()
@@ -225,6 +251,17 @@ def reconcile_public_catalog(
     except OSError as exc:
         raise LaunchCatalogError(f"catalog_unreadable:{catalog}") from exc
 
+    carried = 0
+    if unjudged:
+        served = _served_rows(current, unjudged)
+        for index, row in enumerate(descriptors):
+            key = (str(row["profile_id"]), str(row["profile_digest"]))
+            if key in unjudged and key in served:
+                descriptors[index] = served[key]
+                carried += 1
+    expected = _catalog_bytes(descriptors)
+    owner_state = {"owner_state_unjudged": len(unjudged), "owner_state_carried_forward": carried}
+
     if current == expected:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -232,6 +269,7 @@ def reconcile_public_catalog(
             "catalog_path": str(catalog),
             "profile_ids_added": [],
             "profile_ids_removed": [],
+            **owner_state,
             "provider_mutation_performed": False,
         }
 
@@ -278,8 +316,29 @@ def reconcile_public_catalog(
         "catalog_path": str(catalog),
         "profile_ids_added": sorted(after - before),
         "profile_ids_removed": sorted(before - after),
+        **owner_state,
         "provider_mutation_performed": False,
     }
+
+
+def _served_rows(
+    payload: bytes, wanted: set[tuple[str, str]]
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """The valid served rows for ``wanted`` profile ids and digests; none from unreadable bytes."""
+    try:
+        rows = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(rows, list):
+        return {}
+    served: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = (str(row.get("profile_id")), str(row.get("profile_digest")))
+        if key in wanted and not validate_public_launch_profile_descriptor(row):
+            served[key] = row
+    return served
 
 
 __all__ = [
