@@ -393,6 +393,47 @@ def test_controller_retries_a_market_miss_on_the_same_release(packet, tmp_path, 
         dispatch.dispatch_geometry(**args)
 
 
+def test_each_geometry_retry_reserves_its_own_quote(packet, tmp_path, monkeypatch):
+    """Dishwasher run 2026-10-12 12:45Z: a same-release retry reused the first quote's binding and the
+    WebApp answered already_reserved, which require_paid_resource_admission refuses."""
+    from types import SimpleNamespace
+    from blueprint_pipeline import website_geometry_dispatch as dispatch
+
+    path, _, _ = packet
+    inputs = json.loads(path.read_text())
+    _controller_profile(tmp_path, monkeypatch)
+    output = tmp_path / "geometry"
+    first = output / "controller_geometry"
+    first.mkdir(parents=True)
+    write_json(first / "dispatch.json", {"input_digest": inputs["digest"], "task_context_digest": DIGEST})
+    monkeypatch.setattr(dispatch, "_reuse", lambda root, _inputs: (_ for _ in ()).throw(
+        ValueError("website_mapanything_existing_attempt_requires_reconciliation")))
+    monkeypatch.setattr(dispatch, "_failed_attempt_safe_to_retry", lambda root, **_kw: True)
+    monkeypatch.setattr(dispatch, "settle_prior_website_vast_attempts", lambda **_kw: None)
+    monkeypatch.setattr(dispatch, "load_website_scene_sponsorship", lambda **kw: {
+        "expires_at_epoch": 9_999_999_999, "authority_digest": DIGEST})
+    monkeypatch.setattr(dispatch, "arm_independent_vast_watchdog", lambda **kw: (
+        {"watchdog_pid": 1, "watchdog_deadline_epoch": 9_999_999_999, "watchdog_out_dir": str(tmp_path)}, object()))
+    monkeypatch.setattr(dispatch, "get_render_provider", lambda *_: SimpleNamespace(capacity_preflight=None, billable_inventory=None))
+    monkeypatch.setattr(dispatch, "collect_reconstruction_vast_preflight", lambda **kw: {"status": "verified"})
+    monkeypatch.setattr(dispatch, "close_independent_vast_watchdog", lambda **kw: None)
+    bindings = []
+
+    def reserve(**kwargs):
+        bindings.append(kwargs["binding_digest"])
+        raise ValueError("reservation_captured")
+
+    monkeypatch.setattr(dispatch, "reserve_website_preparation_spend", reserve)
+    with pytest.raises(ValueError, match="reservation_captured"):
+        dispatch.dispatch_geometry(input_manifest=path, output_root=output, task_context={"context_digest": DIGEST},
+                                   source_commit=SHA, allocate=lambda *_a, **_k: pytest.fail("not reached"))
+    profile = dispatch.load_profile(source_commit=SHA)
+    first_binding = canonical_digest({"input_digest": inputs["digest"], "runtime": profile, "task_context_digest": DIGEST})
+    assert bindings == [canonical_digest({"input_digest": inputs["digest"], "runtime": profile,
+                                          "task_context_digest": DIGEST, "attempt_index": 1})]
+    assert bindings[0] != first_binding
+
+
 def test_controller_allows_second_retry_only_after_distinct_release_and_zero_teardown(packet, tmp_path, monkeypatch):
     from blueprint_pipeline import website_geometry_dispatch as dispatch
 

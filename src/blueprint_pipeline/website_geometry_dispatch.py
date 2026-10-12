@@ -174,8 +174,11 @@ def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: 
         profile = load_profile(source_commit=source_commit)
         # Reserve controller preflight time inside the independent wall deadline.
         worker_ttl = max(1, profile["hard_ttl_seconds"] - 120)
+        # Each retry is a separate rental and needs its own quote: the WebApp answers a
+        # repeated binding with already_reserved, which is not an admission.
         binding = canonical_digest({"input_digest": inputs["digest"], "runtime": profile,
-                                    "task_context_digest": task_context["context_digest"]})
+                                    "task_context_digest": task_context["context_digest"],
+                                    **({"attempt_index": attempt_index} if attempt_index else {})})
         authority = load_website_scene_sponsorship(task_context=task_context, now=time.time())
         if authority["expires_at_epoch"] < time.time() + profile["hard_ttl_seconds"] + 120:
             raise ValueError("website_mapanything_sponsorship_expires_before_teardown")
