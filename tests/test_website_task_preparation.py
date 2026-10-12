@@ -742,3 +742,61 @@ def test_unlevelled_prior_from_a_pitched_camera_stays_a_typed_refusal(tmp_path, 
     with pytest.raises(ValueError, match="website_registration_"):
         preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path,
                                                anchor=anchor)
+
+
+def _overstated(anchor, factor=1.58):
+    return {**anchor, "meters_per_unit": anchor["meters_per_unit"] * factor,
+            "ground_plane_offset_m": anchor["ground_plane_offset_m"] * factor}
+
+
+def test_declared_metres_the_footage_floor_refutes_are_rescaled_to_that_floor(tmp_path, monkeypatch):
+    """2026-10-12 website dishwasher: the world declared 1.58x the footage's metres; no anchored pose was clear."""
+    geometry, mesh_path, anchor = _levelled_room_seen_from_a_pitched_camera(tmp_path, monkeypatch, pitch_degrees=30)
+    inflated = _overstated(anchor)
+    with pytest.raises(ValueError, match="website_registration_"):
+        preparation._register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path,
+                                                sample_cap=20000, anchor=inflated, focus_bounds=None)
+    value = preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path,
+                                                   anchor=inflated)
+    correction = value["scale_correction"]
+    assert value["scale_status"] == "source_floor_corrected_anchor"
+    assert correction["basis"] == "source_observed_floor" and correction["physical_scale_measured"] is False
+    assert correction["refused_declared_anchor"].startswith("website_registration_")
+    assert correction["provider_declared_meters_per_unit"] == pytest.approx(1.25 * 1.58)
+    assert correction["provider_declared_ground_offset_m"] == pytest.approx(1.5 * 1.58)
+    assert correction["observed_floor_offset_m"] == pytest.approx(1.5, abs=0.02)
+    assert correction["floor_point_fraction"] >= preparation.FLOOR_SCALE_CORRECTION_MIN_FRACTION
+    assert correction["corrected_meters_per_unit"] == pytest.approx(1.25, rel=0.02)
+    report = value["anchor"]
+    assert report["hypothesis_axis"] == "declared_up" and report["roll_degrees"] == 0
+    assert report["scale_ratio_to_declared"] == pytest.approx(1.0, abs=0.02)
+    assert value["ground_plane"]["checked"] is True and value["runner_up_ratio"] >= 1.2
+
+
+def test_a_faint_footage_floor_never_rescales_a_refused_anchor(tmp_path, monkeypatch):
+    geometry, mesh_path, anchor = _levelled_room_seen_from_a_pitched_camera(tmp_path, monkeypatch, pitch_degrees=30)
+    observed = preparation._observed_floor
+
+    def faint(*args):
+        normal, height, _fraction = observed(*args)
+        return normal, height, preparation.FLOOR_SCALE_CORRECTION_MIN_FRACTION / 3
+    monkeypatch.setattr(preparation, "_observed_floor", faint)
+    with pytest.raises(ValueError, match="website_registration_"):
+        preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path,
+                                               anchor=_overstated(anchor))
+
+
+def test_anchored_world_with_overstated_metres_compiles_at_the_footage_floor_scale(tmp_path):
+    def base(geometry):
+        scene = _anchored_base_scene(tmp_path, geometry)
+        # The fixture's table is 0.5 m below the anchor camera; the world claims 1.6x its metres.
+        return {"base_scene": {**scene, "meters_per_unit": scene["meters_per_unit"] * 1.6,
+                               "ground_plane_offset_m": 0.5 * 1.6}}
+    value = _compile(tmp_path, base)
+    assert value["status"] == "intake_ready", value["blockers"]
+    assert value["registration"]["scale_status"] == "source_floor_corrected_anchor"
+    assert value["registration"]["scale_correction"]["factor"] == pytest.approx(1 / 1.6, rel=0.01)
+    assert value["coordinate_frame"]["declared_meters_per_unit"] == pytest.approx(1 / RUNTIME_SCALE, rel=0.01)
+    assert value["coordinate_frame"]["scale_authority"] == "source_observed_floor_estimate"
+    # The same body as the correctly declared world compiles to.
+    assert value["physics"]["dimensions_m"] == pytest.approx([0.16150833333333348, 0.0331, 0.21939], abs=5e-3)

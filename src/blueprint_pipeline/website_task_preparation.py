@@ -175,8 +175,15 @@ def _observed_declared_ground(source: np.ndarray, camera_to_world: np.ndarray, o
     (below the camera, within the declared-scale tolerance of the declared
     height) for the camera's tilt to be removed; otherwise ``None``.
     """
-    centre, camera_down = camera_to_world[:3, 3], camera_to_world[:3, 1]
+    floor = _observed_floor(source, camera_to_world)
     low, high = (bound * offset_m for bound in ANCHOR_SCALE_RATIO_BOUNDS)
+    # The dominant downward-facing surface is the floor only at the declared height.
+    return floor[0] if floor is not None and low <= floor[1] <= high else None
+
+
+def _observed_floor(source: np.ndarray, camera_to_world: np.ndarray) -> tuple[np.ndarray, float, float] | None:
+    """The dominant downward-facing plane below the camera: (unit downward normal, metres below, point fraction)."""
+    centre, camera_down = camera_to_world[:3, 3], camera_to_world[:3, 1]
     rng = np.random.default_rng(604)
     best, best_count = None, int(0.03 * len(source))
     for _ in range(2000):
@@ -196,8 +203,43 @@ def _observed_declared_ground(source: np.ndarray, camera_to_world: np.ndarray, o
     inliers = source[np.abs((source - best[0]) @ best[1]) <= GROUND_SEARCH_TOLERANCE_M]
     normal = np.linalg.svd(inliers - inliers.mean(axis=0))[2][-1]
     normal = normal if normal @ camera_down >= 0 else -normal
-    # The dominant downward-facing surface is the floor only at the declared height.
-    return normal if low <= float(normal @ (inliers.mean(axis=0) - centre)) <= high else None
+    return normal, float(normal @ (inliers.mean(axis=0) - centre)), len(inliers) / len(source)
+
+
+# A refused declared anchor is rescaled to the footage's floor only when that
+# floor is unmistakable and the rescale is a plausible estimate error.
+FLOOR_SCALE_CORRECTION_MIN_FRACTION = 0.15
+FLOOR_SCALE_CORRECTION_FACTOR_BOUNDS = (0.5, 2.0)
+_FLOOR_CORRECTABLE_REFUSALS = frozenset({
+    "website_registration_ambiguous", "website_registration_anchor_deviation",
+    "website_registration_ground_plane_inconsistent", "website_registration_poor_fit",
+    "website_registration_conflicts_provider_anchor"})
+
+
+def _floor_scale_correction(source_geometry: Mapping[str, Any], anchor: Mapping[str, Any] | None,
+                            refusal: ValueError, *, sample_cap: int) -> dict[str, Any] | None:
+    """The declared metres rescaled to the source's floor, when the footage refutes the declared height."""
+    if anchor is None or str(refusal) not in _FLOOR_CORRECTABLE_REFUSALS:
+        return None
+    offset = anchor.get("ground_plane_offset_m")
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset) or offset <= 0:
+        return None
+    mpu, camera_from_world = _anchor_prior(source_geometry, anchor)
+    source = _sample(_source_points(source_geometry), cap=sample_cap, seed=601)
+    observed = _observed_floor(source, np.linalg.inv(camera_from_world))
+    if observed is None:
+        return None
+    _normal, height, fraction = observed
+    low, high = (bound * float(offset) for bound in ANCHOR_SCALE_RATIO_BOUNDS)
+    factor = height / float(offset)
+    if (low <= height <= high or fraction < FLOOR_SCALE_CORRECTION_MIN_FRACTION
+            or not FLOOR_SCALE_CORRECTION_FACTOR_BOUNDS[0] <= factor <= FLOOR_SCALE_CORRECTION_FACTOR_BOUNDS[1]):
+        return None
+    return {"schema_version": "website_registration_scale_correction.v1", "basis": "source_observed_floor",
+            "refused_declared_anchor": str(refusal), "provider_declared_meters_per_unit": mpu,
+            "provider_declared_ground_offset_m": float(offset), "observed_floor_offset_m": height,
+            "floor_point_fraction": fraction, "factor": factor, "corrected_meters_per_unit": mpu * factor,
+            "physical_scale_measured": False}
 
 
 def _anchor_prior(source_geometry: Mapping[str, Any], anchor: Mapping[str, Any]) -> tuple[float, np.ndarray]:
@@ -222,7 +264,37 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
     frame it was generated from), the prior pose is refined and its deviation
     reported; an unconstrained pose that clearly fits better is a conflict, not
     a silent override. Without it the unconstrained search must be unambiguous.
+
+    A refused anchor whose declared floor height the footage refutes is retried
+    once at the footage's floor. 2026-10-12 website dishwasher: the world
+    declared its first camera 1.79 m above the floor, while 21% of the source
+    points lie on one floor 1.13 m below it, as an earlier world of the same
+    video agreed. Both are estimates, but the floor is observed in this capture.
+    The rescaled anchor must pass every check the declared one faced, and the
+    record keeps both values.
     """
+    try:
+        return _register_source_to_runtime(source_geometry=source_geometry, collision_mesh_path=collision_mesh_path,
+                                           sample_cap=sample_cap, anchor=anchor, focus_bounds=focus_bounds)
+    except ValueError as refusal:
+        correction = _floor_scale_correction(source_geometry, anchor, refusal, sample_cap=sample_cap)
+        if correction is None:
+            raise
+        corrected = {**anchor, "meters_per_unit": correction["corrected_meters_per_unit"],
+                     "ground_plane_offset_m": correction["observed_floor_offset_m"]}
+        try:
+            value = _register_source_to_runtime(source_geometry=source_geometry,
+                collision_mesh_path=collision_mesh_path, sample_cap=sample_cap, anchor=corrected,
+                focus_bounds=focus_bounds)
+        except ValueError:
+            raise refusal from None
+    value.update(scale_status="source_floor_corrected_anchor", scale_correction=correction)
+    return value
+
+
+def _register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_mesh_path: Path,
+                                sample_cap: int, anchor: Mapping[str, Any] | None,
+                                focus_bounds: Mapping[str, Any] | None) -> dict[str, Any]:
     # Refuse a missing declared anchor before decoding every depth map and
     # searching collider poses. A surrogate camera cannot establish the
     # provider's first-view frame.
@@ -658,6 +730,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         blockers.append(str(exc))
         independent_object = True
         up, up_sign, declared_mpu = 2, 1, 1.0
+    correction = registration.get("scale_correction")
+    if correction is not None:
+        # The footage's floor refuted the declared metres; registration was rescaled to it.
+        declared_mpu = float(correction["corrected_meters_per_unit"])
     # With browser video, use MapAnything's estimated metres to scale the
     # generated world. A provider's declared factor is an estimate too, and
     # the two must agree; neither is a physical measurement.
@@ -1098,6 +1174,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     "provider": base_scene.get("provider"), "operation_id": base_scene.get("operation_id")},
         "registration": registration, "coordinate_frame": {"declared_meters_per_unit": mpu,
                                                            "scale_authority": ("model_estimated_object_frame" if independent_object
+                                                                               else "source_observed_floor_estimate" if correction
                                                                                else base_scene.get("scale_authority") or "registration_estimate"),
                                                            "placement_uncertainty_m": (registration.get("task_region") or {}).get("trimmed_rmse_m"),
                                                            "declared_up_axis": "Z" if independent_object else base_scene["up_axis"],
