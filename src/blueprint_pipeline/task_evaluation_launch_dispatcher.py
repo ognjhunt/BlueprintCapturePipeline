@@ -53,7 +53,7 @@ from .launch_immutable_input_writer import (
     write_immutable_launch_record,
     write_exclusive_private_bytes as _write_exclusive_private_bytes,
 )
-from .launch_profile_immutable_inputs import immutable_input_digest
+from .launch_profile_immutable_inputs import observed_input_digest
 from .paid_attempt_authority import (
     JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
     validate_bound_lane_prior_spend,
@@ -778,9 +778,10 @@ def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, An
 def catalog_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, Any]:
     """Return public fields after catalog-safe structural validation only.
 
-    The catalog reconciler must verify the declared immutable inputs before it
-    calls this projection. This helper never authorizes execution; the full
-    public descriptor and every paid-path gate continue to reopen lineage.
+    The catalog reconciler serves this projection live only once the declared
+    immutable inputs and the reopened lineage verify, and demotes it otherwise.
+    This helper never authorizes execution; the full public descriptor and every
+    paid-path gate continue to reopen lineage.
     """
 
     blockers = validate_launch_profile_structure(profile)
@@ -1054,18 +1055,17 @@ def _artifact(path: Path) -> dict[str, Any]:
     }
 
 
-def verify_profile_immutable_inputs(profile: Mapping[str, Any]) -> list[str]:
+def verify_profile_immutable_inputs(profile: Mapping[str, Any], *, observed: dict | None = None) -> list[str]:
     """Verify that every profile-bound local input is a regular, non-symlink file."""
 
     blockers: list[str] = []
     for item in profile.get("immutable_inputs") or []:
         immutable_input = _mapping(item)
         name = str(immutable_input.get("name") or "invalid")
-        raw_path = Path(str(immutable_input.get("path") or "")).expanduser()
-        if raw_path.is_symlink() or not raw_path.is_file():
+        digest = observed_input_digest(Path(str(immutable_input.get("path") or "")).expanduser(), observed)
+        if digest is None:
             blockers.append(f"launch_profile_immutable_input_missing:{name}")
-            continue
-        if immutable_input_digest(raw_path.resolve()) != immutable_input.get("digest"):
+        elif digest != immutable_input.get("digest"):
             blockers.append(f"launch_profile_immutable_input_digest_mismatch:{name}")
     return sorted(set(blockers))
 

@@ -565,17 +565,28 @@ def launch_profile_residency_blockers(
     profile: Mapping[str, Any],
     *,
     roots: Sequence[Path] | None = None,
+    resolved: dict[tuple[str, tuple[Path, ...]], bool] | None = None,
 ) -> list[str]:
-    """Fail closed on a profile that binds another machine's filesystem."""
+    """Fail closed on a profile that binds another machine's filesystem.
+
+    ``resolved`` lets one pass over many profiles resolve each bound path once; the
+    published profiles bind the same few thousand files tens of thousands of times.
+    """
 
     search_roots = tuple(configured_launch_input_roots() if roots is None else roots)
     if not search_roots:
         return []
-    blockers = [
-        f"launch_profile_input_not_host_resident:{name}"
-        for name, path in _profile_bound_paths(profile)
-        if not path_is_host_resident(path, search_roots)
-    ]
+    blockers = []
+    for name, path in _profile_bound_paths(profile):
+        key = (path, search_roots)
+        if resolved is None or key not in resolved:
+            resident = path_is_host_resident(path, search_roots)
+            if resolved is not None:
+                resolved[key] = resident
+        else:
+            resident = resolved[key]
+        if not resident:
+            blockers.append(f"launch_profile_input_not_host_resident:{name}")
     return sorted(set(blockers))
 
 
@@ -598,6 +609,7 @@ def published_profile_residency_report(
         }
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
+    resolved: dict[tuple[str, tuple[Path, ...]], bool] = {}
     for path in sorted(root.glob("*.json")):
         try:
             profile = json.loads(path.read_text(encoding="utf-8"))
@@ -609,7 +621,9 @@ def published_profile_residency_report(
             continue
         admission = profile.get("execution_admission")
         live = bool(isinstance(admission, Mapping) and admission.get("live_enabled"))
-        profile_blockers = launch_profile_residency_blockers(profile, roots=search_roots)
+        profile_blockers = launch_profile_residency_blockers(
+            profile, roots=search_roots, resolved=resolved
+        )
         rows.append(
             {
                 "profile_id": str(profile.get("profile_id") or path.stem),

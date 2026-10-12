@@ -398,3 +398,60 @@ def test_repair_works_on_the_read_only_catalog_publication_installs(
     assert stat.S_IMODE(catalog.stat().st_mode) == 0o440
     assert json.loads(catalog.read_text(encoding="utf-8"))
     assert not list(catalog.parent.glob(".catalog.json.*.tmp"))
+
+
+def test_each_distinct_input_is_checked_once_per_pass(tmp_path, monkeypatch):
+    """2026-10-12: the 539 published profiles list 26,015 inputs that are 3,784 distinct files.
+    Checking every reference made one guard start digest the same file up to 186 times and
+    resolve every bound path once per profile naming it."""
+    from blueprint_pipeline import host_resident_launch_inputs as residency
+    from blueprint_pipeline import launch_profile_immutable_inputs as inputs
+
+    monkeypatch.setenv(residency.LAUNCH_INPUT_ROOTS_ENV, str(tmp_path))
+    for index in range(3):
+        _profile(tmp_path, f"profile-{index}")  # one manifest, named by two input roles
+    digested: list[str] = []
+    resolved: list[str] = []
+    real_digest = inputs.immutable_input_digest
+    real_resident = residency.path_is_host_resident
+    monkeypatch.setattr(
+        inputs, "immutable_input_digest", lambda path: digested.append(path.name) or real_digest(path)
+    )
+    monkeypatch.setattr(
+        residency,
+        "path_is_host_resident",
+        lambda path, roots: resolved.append(Path(path).name) or real_resident(path, roots),
+    )
+    manifests = [f"profile-{index}-source.json" for index in range(3)]
+
+    first = build_catalog_payload(tmp_path / "profiles")
+
+    assert sorted(digested) == manifests
+    assert sorted(resolved) == manifests
+    digested.clear()
+    assert build_catalog_payload(tmp_path / "profiles") == first
+    assert sorted(digested) == manifests  # nothing carries over to the next pass
+
+
+def test_each_profile_is_validated_once_per_pass(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
+
+    _profile(tmp_path, "profile-0")
+    _profile(tmp_path, "profile-1")
+    (tmp_path / "profile-1-source.json").unlink()  # inputs gone: demoted after the structural pass
+    passes: list[tuple[str, bool]] = []
+    real = dispatcher._validate_launch_profile
+
+    def counted(value, *, reopen_external_lineage):
+        passes.append((value["profile_id"], reopen_external_lineage))
+        return real(value, reopen_external_lineage=reopen_external_lineage)
+
+    monkeypatch.setattr(dispatcher, "_validate_launch_profile", counted)
+
+    rows = {row["profile_id"]: row for row in json.loads(build_catalog_payload(tmp_path / "profiles"))}
+
+    assert passes == [("profile-0", False), ("profile-0", True), ("profile-1", False)]
+    assert "launch_profile_immutable_input_missing:source_bundle_manifest" in (
+        rows["profile-1"]["execution_admission"]["blockers"]
+    )
+

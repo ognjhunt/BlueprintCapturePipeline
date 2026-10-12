@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import threading
 
@@ -18,7 +19,9 @@ from blueprint_pipeline import task_evaluation_release_identity as identity
 from blueprint_pipeline import validation_verdict_store as store
 from blueprint_pipeline.task_evaluation_sam31_prefix_evidence import file_records, reuse_verdict
 from blueprint_pipeline.task_evaluation_scene_configuration_submission_inputs import read
-from blueprint_pipeline.validation_file_digests import MINIMUM_BYTES, digest_scope_stats, file_digest_scope
+from blueprint_pipeline.validation_file_digests import (
+    MINIMUM_BYTES, _identity, digest_scope_stats, file_digest_scope, sha256_file, touched_files,
+)
 
 COMMIT = "c" * 40
 
@@ -444,3 +447,125 @@ def test_an_unexpected_dependency_error_refuses_persistence_and_raises_into_no_t
     with ThreadPoolExecutor(max_workers=1) as pool:
         in_worker = store.executed_code_identity(lambda: pool.submit(store.verdict_root).result())
     assert in_owner == in_worker == (store.verdict_root(), None)
+
+
+def _stored_large_verdict(tmp_path, name="moved"):
+    big = tmp_path / "bundle.zip"
+    big.write_bytes(os.urandom(1024) * (MINIMUM_BYTES // 1024 + 1))
+    with touched_files() as consulted:
+        sha256_file(big)
+    assert store.store(name=name, key={"input": str(big)}, files=consulted, verdict="kept") is not None
+    return big, next(store.verdict_root().glob(f"{name}-*.json"))
+
+
+def _move(path):
+    """What a storage migration or a copy does: the same bytes under a new inode and ctime."""
+    copy = path.with_name(path.name + ".copy")
+    copy.write_bytes(path.read_bytes())
+    os.replace(copy, path)
+
+
+def _hash_log(monkeypatch):
+    hashed = []
+    real = store.sha256_file
+    monkeypatch.setattr(store, "sha256_file", lambda path: hashed.append(Path(path).name) or real(path))
+    return hashed
+
+
+def test_a_moved_file_is_rehashed_once_and_its_new_identity_kept(tmp_path, persisted_root, monkeypatch):
+    """2026-10-12: a storage move left 149 of the 151 large launch-input verdicts (11.6 GB) and
+    19,066 prefix-adoption rows (240 GB) on identities that no longer matched. Every lookup
+    re-hashed the bytes, reused the verdict and kept the old identity, so each guard start
+    re-hashed gigabytes in its catalog check."""
+    big, entry = _stored_large_verdict(tmp_path)
+    os.chmod(entry, 0o600)
+    _move(big)
+    hashed = _hash_log(monkeypatch)
+
+    assert store.lookup(name="moved", key={"input": str(big)}) == "kept"
+    assert hashed == ["bundle.zip"]  # a moved identity is re-proven by the bytes
+    rows = json.loads(entry.read_text())["files"]
+    assert [row["identity"] for row in rows] == [list(_identity(big.lstat()))]
+    assert stat.S_IMODE(entry.stat().st_mode) == 0o600
+
+    assert store.lookup(name="moved", key={"input": str(big)}) == "kept"
+    assert hashed == ["bundle.zip"]  # and then by that identity, like any freshly stored verdict
+
+
+def test_changed_bytes_miss_and_leave_the_entry_alone(tmp_path, persisted_root):
+    big, entry = _stored_large_verdict(tmp_path)
+    before = entry.read_bytes()
+    big.write_bytes(os.urandom(1024) * (MINIMUM_BYTES // 1024 + 1))
+
+    assert store.lookup(name="moved", key={"input": str(big)}) is None
+    assert entry.read_bytes() == before
+
+
+def test_small_files_reprove_by_their_bytes_and_never_rewrite_the_entry(tmp_path, persisted_root):
+    small = tmp_path / "receipt.json"
+    small.write_text('{"kind": "receipt"}')
+    with touched_files() as consulted:
+        sha256_file(small)
+    store.store(name="small", key={"k": 1}, files=consulted, verdict="kept")
+    entry = next(persisted_root.glob("small-*.json"))
+    before = entry.read_bytes()
+    _move(small)
+
+    assert store.lookup(name="small", key={"k": 1}) == "kept"
+    assert entry.read_bytes() == before  # always re-hashed, so no identity is worth keeping
+
+
+def test_an_enclosing_verdict_records_the_identity_that_reproved(tmp_path, persisted_root):
+    big, entry = _stored_large_verdict(tmp_path)
+    _move(big)
+
+    with touched_files() as outer:
+        assert store.lookup(name="moved", key={"input": str(big)}) == "kept"
+
+    # An outer verdict stored from these rows must not inherit the identity that no longer holds.
+    assert outer and {tuple(row["identity"]) for row in outer} == {tuple(_identity(big.lstat()))}
+
+
+def test_another_owners_entry_is_reused_but_never_rewritten(tmp_path, persisted_root, monkeypatch):
+    """A root deploy step must not replace a unit's entry with one the unit cannot read."""
+    big, entry = _stored_large_verdict(tmp_path)
+    before = entry.read_bytes()
+    _move(big)
+    owner = entry.stat().st_uid
+    monkeypatch.setattr(store.os, "geteuid", lambda: owner + 1)
+
+    assert store.lookup(name="moved", key={"input": str(big)}) == "kept"
+    assert entry.read_bytes() == before
+
+
+def test_a_refresh_never_overwrites_an_entry_stored_meanwhile(tmp_path, persisted_root, monkeypatch):
+    big, entry = _stored_large_verdict(tmp_path)
+    _move(big)
+    real = store.sha256_file
+
+    def hash_while_another_unit_stores(path):
+        digest = real(path)
+        with touched_files() as consulted:
+            real(big)
+        store.store(name="moved", key={"input": str(big)}, files=consulted, verdict="newer")
+        return digest
+
+    monkeypatch.setattr(store, "sha256_file", hash_while_another_unit_stores)
+
+    assert store.lookup(name="moved", key={"input": str(big)}) == "kept"
+    assert json.loads(entry.read_text())["verdict"] == "newer"
+
+
+def test_an_unwritable_root_still_reuses_a_reproven_verdict(tmp_path, persisted_root, monkeypatch):
+    big, entry = _stored_large_verdict(tmp_path)
+    before = entry.read_bytes()
+    _move(big)
+
+    def refuse(*_args, **_kwargs):
+        raise PermissionError("read-only verdict root")
+
+    monkeypatch.setattr(store.os, "replace", refuse)
+
+    assert store.lookup(name="moved", key={"input": str(big)}) == "kept"
+    assert entry.read_bytes() == before
+    assert not [path for path in persisted_root.iterdir() if path.name.startswith(".")]

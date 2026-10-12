@@ -33,16 +33,17 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .host_resident_launch_inputs import launch_profile_residency_blockers
+from .host_resident_launch_inputs import (
+    configured_launch_input_roots,
+    launch_profile_residency_blockers,
+)
 from .task_evaluation_launch_dispatcher import (
     LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION,
     PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES,
     PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
     TaskEvaluationLaunchError,
     catalog_launch_profile_descriptor,
-    public_launch_profile_descriptor,
     validate_launch_profile,
-    validate_launch_profile_structure,
     verify_profile_immutable_inputs,
 )
 
@@ -93,6 +94,14 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
         raise LaunchCatalogError(f"profile_dir_missing:{root}")
 
     descriptors: list[dict[str, Any]] = []
+    # One look per input file and per bound path for the whole pass, and one
+    # validation of each kind per profile. On 2026-10-12 the 539 published profiles
+    # listed 26,015 inputs that are 3,784 distinct files; the pass checked every
+    # reference and validated each profile two or three times, and it is the
+    # ExecStartPre of every guarded unit.
+    observed: dict[str, str | None] = {}
+    resolved: dict[tuple[str, tuple[Path, ...]], bool] = {}
+    roots = tuple(configured_launch_input_roots())
     for path in sorted(root.glob("*.json")):
         if path.is_symlink():
             # Published profiles are immutable; a symlink lets the bytes behind
@@ -112,16 +121,14 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
         # restored from an image, where none of the inputs a previous host
         # accumulated exist yet. The catalog reconciler is an ExecStartPre for
         # intake, so that is a total outage with no obvious cause.
-        blockers = validate_launch_profile_structure(profile)
-        if blockers:
-            raise LaunchCatalogError(
-                f"published_profile_invalid:{path.name}:" + ",".join(sorted(set(blockers)))
-            )
-        unavailable = verify_profile_immutable_inputs(profile)
-        inactive_authority: list[str] = []
-        if unavailable:
+        try:
+            # The structural pass, and the public fields every outcome below serves.
             descriptor = catalog_launch_profile_descriptor(profile)
-        else:
+        except TaskEvaluationLaunchError as exc:
+            raise LaunchCatalogError(f"published_profile_invalid:{path.name}:{exc}") from exc
+        unavailable = verify_profile_immutable_inputs(profile, observed=observed)
+        inactive_authority: list[str] = []
+        if not unavailable:
             # Once all declared bytes are present and digest-bound, retain the
             # existing fail-closed cross-document validation. An inconsistent
             # or tampered lineage is malformed evidence, not host unavailability.
@@ -146,22 +153,22 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
                     f"published_profile_invalid:{path.name}:"
                     + ",".join(sorted(set(blockers)))
                 )
-            if blockers:
-                # Revoking an owner or cancelling an unstarted attempt is a
-                # normal lifecycle transition, not
-                # corrupted published evidence. Keep the immutable profile in
-                # history and explicitly disable its catalog projection.
-                inactive_authority = blockers
-                descriptor = catalog_launch_profile_descriptor(profile)
-            else:
-                descriptor = public_launch_profile_descriptor(profile)
+            # Revoking an owner or cancelling an unstarted attempt is a normal
+            # lifecycle transition, not corrupted published evidence. Keep the
+            # immutable profile in history and explicitly disable its catalog
+            # projection.
+            inactive_authority = blockers
         # A profile whose inputs are not on this host cannot start a run here,
         # so serving it as live is the lie. Demote it in the projection rather
         # than refusing the whole catalog: the published bytes stay immutable
         # evidence, and one stale profile must not make every other profile
         # unreachable -- the catalog reconciler is an ExecStartPre for intake,
         # so raising here would take the website path down with it.
-        unrunnable = [*unavailable, *inactive_authority, *launch_profile_residency_blockers(profile)]
+        unrunnable = [
+            *unavailable,
+            *inactive_authority,
+            *launch_profile_residency_blockers(profile, roots=roots, resolved=resolved),
+        ]
         if unrunnable:
             admission = dict(descriptor.get("execution_admission") or {})
             admission["live_enabled"] = False
