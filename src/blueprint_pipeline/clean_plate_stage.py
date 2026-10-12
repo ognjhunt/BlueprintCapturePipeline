@@ -474,12 +474,13 @@ def run_clean_plate_stage(
                 generated_ids = {frame["frame_id"] for frame in selected
                                  if frame.get("generated_pixels_present")}
                 # A full-frame edit can remove an unrelated object in one
-                # viewpoint. Exclude only the exact generated view named by
-                # the independent reviewer, then review the whole set again.
+                # viewpoint, and break that view's background with it. Exclude
+                # only the exact generated view named by the independent
+                # reviewer, then review the whole set again.
                 # A missing obstacle in an unedited view cannot be repaired by
                 # discarding model output and remains a blocking finding.
                 if (completion_review.get("status") == "blocked"
-                        and review.get("consistent_background") is True
+                        and isinstance(review.get("consistent_background"), bool)
                         and review.get("unrelated_objects_preserved") is False
                         and unrelated_loss_ids and set(unrelated_loss_ids) <= generated_ids
                         and len(selected) - len(unrelated_loss_ids) >= 2):
