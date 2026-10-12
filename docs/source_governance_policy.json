@@ -1,5 +1,5 @@
 {
-  "baseline_date": "2026-09-10",
+  "baseline_date": "2026-10-11",
   "characterization_tests": {
     "src/blueprint_pipeline/adp009d_control_episode.py": [
       "tests/test_adp009d_control_episode.py"
@@ -442,7 +442,7 @@
   ],
   "max_project_scripts": 175,
   "policy_owner": "@ognjhunt",
-  "review_by": "2026-10-12",
+  "review_by": "2026-12-10",
   "schema_version": "blueprint.source_governance_policy.v1",
   "baseline_adjustment_2026_09_10": {
     "source_commit": "3e6164430915b6023db61959800f1559cc573d83",
