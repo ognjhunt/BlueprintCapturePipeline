@@ -86,6 +86,9 @@ PER_INVOCATION_ENVIRONMENT = frozenset(
 )
 # Kernel pseudo-files are live state, never part of what an import read.
 _PSEUDO_ROOTS = ("/proc/", "/sys/", "/dev/")
+# Memory that /proc/self/maps names like a path: /dev/zero and /dev/shm shared
+# mappings, memfd and SysV segments all read "(deleted)" without being files.
+_NOT_FILE_MAPPINGS = (*_PSEUDO_ROOTS, "/memfd:", "/SYSV")
 _CODE_MODULES = (__name__, "blueprint_pipeline.production_runtime_env_guard")
 _ABSENT = "absent"
 
@@ -174,10 +177,19 @@ def _audit(event: str, args: tuple) -> None:
         _IN_HOOK.busy = False
 
 
+def _module_attribute(module: Any, name: str) -> Any:
+    # Some modules answer every attribute (torch._classes returns an object for
+    # __path__ and __file__) or raise from __getattr__: neither names a file.
+    try:
+        return getattr(module, name, None)
+    except Exception:  # noqa: BLE001 - an attribute that cannot be read is not a path
+        return None
+
+
 def _loaded_module_files() -> set[str]:
     found = set()
     for name in list(sys.modules):
-        origin = getattr(sys.modules.get(name), "__file__", None)
+        origin = _module_attribute(sys.modules.get(name), "__file__")
         if isinstance(origin, str):
             found.add(os.path.abspath(origin))
     return found
@@ -187,10 +199,13 @@ def _resolution_directories() -> set[str]:
     """Every directory whose listing decides how a loaded or missing name resolves."""
     found = {os.path.abspath(entry) if entry else os.getcwd() for entry in sys.path}
     for name in list(sys.modules):
-        module = sys.modules.get(name)
-        for entry in list(getattr(module, "__path__", None) or ()):
-            if isinstance(entry, str):
-                found.add(os.path.abspath(entry))
+        entries = _module_attribute(sys.modules.get(name), "__path__")
+        if entries is None or isinstance(entries, (str, bytes)):
+            continue
+        try:
+            found.update(os.path.abspath(entry) for entry in list(entries) if isinstance(entry, str))
+        except TypeError:
+            continue  # not a package search path (e.g. torch._classes' namespace)
     found.update(os.path.dirname(path) for path in _loaded_module_files())
     return found
 
@@ -207,9 +222,14 @@ def _mapped_files(maps_text: str | None = None) -> set[str] | None:
         parts = line.split(None, 5)
         if len(parts) < 6 or not parts[5].startswith("/"):
             continue
-        if parts[5].endswith(" (deleted)"):
+        path, deleted = parts[5], parts[5].endswith(" (deleted)")
+        if deleted:
+            path = path[: -len(" (deleted)")]
+        if path.startswith(_NOT_FILE_MAPPINGS):
+            continue  # anonymous, shm or memfd memory: never a library on disk
+        if deleted:
             return None  # the process runs bytes no longer at that path
-        found.add(parts[5])
+        found.add(path)
     return found
 
 
@@ -219,13 +239,16 @@ def _capturing() -> Iterator[_Capture]:
     if not _HOOK_INSTALLED:
         sys.addaudithook(_audit)  # permanent by design; inert outside a capture
         _HOOK_INSTALLED = True
-    # Cached listings would let the pass resolve names without listing them.
-    importlib.invalidate_caches()
     capture = _Capture()
-    for path in _loaded_module_files():
-        capture.files[path] = _identity(path)
-    for directory in _resolution_directories():
-        capture.directories[directory] = _listing_sha256(directory)
+    try:
+        # Cached listings would let the pass resolve names without listing them.
+        importlib.invalidate_caches()
+        for path in _loaded_module_files():
+            capture.files[path] = _identity(path)
+        for directory in _resolution_directories():
+            capture.directories[directory] = _listing_sha256(directory)
+    except Exception:  # noqa: BLE001 - never store, but always run the pass
+        capture.unrecordable = True
     previous, _ACTIVE = _ACTIVE, capture
     try:
         yield capture
@@ -411,15 +434,26 @@ def checked_entrypoint_imports(
     *,
     started_ns: int | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Run ``check`` (the import pass), or reuse its unchanged successful verdict."""
-    started = _process_started_ns() if started_ns is None else started_ns
-    key = verdict_key(entrypoints)
-    reused = _reusable(lookup(name=VERDICT_NAME, key=key))
+    """Run ``check`` (the import pass), or reuse its unchanged successful verdict.
+
+    The verdict layer is only a cache: any failure in it runs the full pass and
+    stores nothing, so it can make the guard slower but never stop a unit.
+    """
+    key: dict[str, Any] | None = None
+    try:
+        started = _process_started_ns() if started_ns is None else started_ns
+        key = verdict_key(entrypoints)
+        reused = _reusable(lookup(name=VERDICT_NAME, key=key))
+    except Exception:  # noqa: BLE001 - an unusable cache proves from scratch
+        reused = None
     if reused is not None:
         return {**reused, "verdict_reused": True}, []
     with _capturing() as capture:
         detail, blockers = check()
     recorded = False
-    if not blockers and detail.get("importable") is True:
-        recorded = _store(key, detail, capture, started)
+    if key is not None and not blockers and detail.get("importable") is True:
+        try:
+            recorded = _store(key, detail, capture, started)
+        except Exception:  # noqa: BLE001 - a verdict that cannot be stored is not reused
+            recorded = False
     return {**detail, "verdict_reused": False, "verdict_recorded": recorded}, blockers
