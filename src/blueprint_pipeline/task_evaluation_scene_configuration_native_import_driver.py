@@ -28,6 +28,9 @@ from .task_evaluation_scene_configuration_stage_configuration import (
 
 ADAPTER_ID = "simready_native_import_qualification"
 RUNTIME_RESULT_SCHEMA_VERSION = "task_evaluation_replacement_native_import_result.v1"
+ROBOT_FREE_PROBE_SCHEMA = "scene_configuration_robot_free_success_probe.v1"
+_PROBE_DRIVE_SECONDS = 1.0
+_PROBE_RELEASE_SECONDS = 5.0
 DESTINATION_ASSET_DEPENDENCY_ROLE = "statically_qualified_destination_asset"
 DESTINATION_STATIC_DEPENDENCY_ROLE = "destination_static_qualification_receipt"
 DESTINATION_RUNTIME_RESULT_ROLE = "destination_native_import_runtime_result"
@@ -441,6 +444,79 @@ def _live_joint_position(articulation: Any, joint_name: str) -> float:
     return coordinate
 
 
+def _physics_step(simulation: Any) -> None:
+    try:
+        simulation.step(render=False)
+    except TypeError:
+        simulation.step()
+
+
+def robot_free_probe_plan(static_receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Where the robot-free probe drives the task joint: the middle of its goal interval."""
+
+    graph = static_receipt["articulation_graph"]
+    target = next(row for row in graph["joints"] if row["role"] == "target")
+    lower, upper = (float(value) for value in graph["success_predicate"]["joint_intervals"][target["joint_id"]])
+    return {"target_joint_id": str(target["joint_id"]), "reset_position": float(target["reset_position"]),
+            "success_interval": [lower, upper], "drive_target_position": (lower + upper) / 2.0}
+
+
+def _dof_sample(articulation: Any, names: list[str], *, step_index: int, phase: str) -> dict[str, Any]:
+    positions, velocities = articulation.get_joint_positions(), articulation.get_joint_velocities()
+    if positions is None or velocities is None or len(positions) != len(names) or len(velocities) != len(names):
+        raise RuntimeError("robot_free_probe_readback_unavailable")
+    values = {name: [round(float(positions[i]), 7), round(float(velocities[i]), 7)] for i, name in enumerate(names)}
+    if not all(math.isfinite(value) for pair in values.values() for value in pair):
+        raise RuntimeError("robot_free_probe_readback_nonfinite")
+    return {"step_index": step_index, "phase": phase, "dof": values}
+
+
+def _robot_free_drive_and_release(
+    *, simulation: Any, articulation: Any, joint_name: str, plan: Mapping[str, Any],
+    timestep_seconds: float, first_step_index: int,
+) -> list[dict[str, Any]]:
+    """Ramp the task joint into its goal interval, then let go; physics alone decides where it rests.
+
+    No robot is involved. The ramp phase is recorded as contact, so only the
+    released phase can ever count as success when the trace is scored.
+    """
+
+    import numpy as np  # type: ignore
+
+    names = [str(name) for name in (articulation.dof_names or [])]
+    index = np.array([names.index(joint_name)])
+    start = _live_joint_position(articulation, joint_name)
+    drive_steps = max(1, int(round(_PROBE_DRIVE_SECONDS / timestep_seconds)))
+    release_steps = max(1, int(round(_PROBE_RELEASE_SECONDS / timestep_seconds)))
+    samples: list[dict[str, Any]] = []
+    for step in range(drive_steps + release_steps):
+        if step < drive_steps:
+            target = start + (float(plan["drive_target_position"]) - start) * (step + 1) / drive_steps
+            articulation.set_joint_positions(np.array([target]), joint_indices=index)
+            articulation.set_joint_velocities(np.array([0.0]), joint_indices=index)
+        _physics_step(simulation)
+        samples.append(_dof_sample(articulation, names, step_index=first_step_index + step,
+                                   phase="drive" if step < drive_steps else "release"))
+    return samples
+
+
+def record_robot_free_probe(*, settle: Callable[..., Mapping[str, Any]], asset_path: Path,
+                            duration_seconds: float, static_receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """One extra robot-free run after the qualifying settles; a failure is recorded, never raised."""
+
+    try:
+        observed = settle(asset_path=asset_path, duration_seconds=duration_seconds, timestep_seconds=1.0 / 60.0,
+                          articulated=True, static_receipt=static_receipt,
+                          robot_free_probe=robot_free_probe_plan(static_receipt))
+        probe = dict(observed["robot_free_success_probe"])
+        if probe.get("schema_version") != ROBOT_FREE_PROBE_SCHEMA or probe.get("status") != "recorded":
+            raise RuntimeError("robot_free_probe_observation_invalid")
+        return probe
+    except Exception as exc:  # noqa: BLE001 - the probe never decides import qualification
+        return {"schema_version": ROBOT_FREE_PROBE_SCHEMA, "status": "failed",
+                "error": f"{type(exc).__name__}:{str(exc)[:200]}"}
+
+
 def _subscribe_body_contact_reports(
     *,
     omni_physx: Any,
@@ -560,6 +636,7 @@ def _one_native_settle(
     timestep_seconds: float,
     articulated: bool = False,
     static_receipt: Mapping[str, Any] | None = None,
+    robot_free_probe: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     import omni.physx as omni_physx  # type: ignore
     import omni.usd  # type: ignore
@@ -682,22 +759,27 @@ def _one_native_settle(
     )
     trace: list[list[float]] = []
     joint_trace: list[float] = []
+    probe_samples: list[dict[str, Any]] = []
+    dof_names = [str(name) for name in (articulation.dof_names or [])] if robot_free_probe is not None else []
     step_count = int(math.ceil(duration_seconds / timestep_seconds))
     for _step in range(step_count):
-        try:
-            simulation.step(render=False)
-        except TypeError:
-            simulation.step()
+        _physics_step(simulation)
         position, _rotation = _live_pose(omni_physx, body_path)
         trace.append(position)
         if articulated:
             coordinate = _live_joint_position(articulation, joint_observation["task_joint_name"])
             joint_trace.append(coordinate)
+        if robot_free_probe is not None:
+            probe_samples.append(_dof_sample(articulation, dof_names, step_index=_step, phase="zero_action"))
     final_position, final_rotation = _live_pose(omni_physx, body_path)
     observed_joint = (
         _live_joint_position(articulation, joint_observation["task_joint_name"])
         if articulated else None
     )
+    if robot_free_probe is not None:
+        probe_samples += _robot_free_drive_and_release(
+            simulation=simulation, articulation=articulation, joint_name=joint_observation["task_joint_name"],
+            plan=robot_free_probe, timestep_seconds=timestep_seconds, first_step_index=step_count)
     simulation.stop()
     del contact_subscription
     if callable(clear_instance):
@@ -739,6 +821,13 @@ def _one_native_settle(
         **({"task_joint_trace_digest": canonical_digest(
             {"task_joint_position_m": [round(value, 7) for value in joint_trace]}
         )} if articulated else {}),
+        **({"robot_free_success_probe": {
+            "schema_version": ROBOT_FREE_PROBE_SCHEMA, "status": "recorded", "plan": dict(robot_free_probe),
+            "task_joint_name": joint_observation["task_joint_name"], "timestep_seconds": timestep_seconds,
+            "dof_names": dof_names, "samples": probe_samples,
+            "proof_boundary": {"robot_embodiment_used": False, "scene_context": "replacement_asset_on_ground_plane",
+                               "drive": "kinematic_joint_ramp_then_release", "scored_here": False},
+        }} if robot_free_probe is not None else {}),
     }
 
 
@@ -783,6 +872,11 @@ def _run_native_import(
                 )
                 for _ in range(repeat_count)
             ]
+        if articulated:
+            assert static_receipt is not None
+            observation["robot_free_success_probe"] = record_robot_free_probe(
+                settle=_one_native_settle, asset_path=asset_path, duration_seconds=duration,
+                static_receipt=static_receipt)
         return dict(observation_consumer(observation))
     finally:
         app.close()
@@ -970,6 +1064,7 @@ def execute_native_import_component(
         state_digests: list[str],
         maximum_translation: float,
         maximum_rotation: float,
+        robot_free_probe: Any = None,
     ) -> dict[str, Any]:
         runtime_result: dict[str, Any] = {
             "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
@@ -1026,6 +1121,10 @@ def execute_native_import_component(
             )
             if joint.get("task_joint_type") == "revolute":
                 runtime_result["task_joint_coordinate_units"] = "rad"
+            # Unscored raw evidence for the robot-free readiness checks; it is
+            # never part of import qualification.
+            if isinstance(robot_free_probe, Mapping) and robot_free_probe.get("schema_version") == ROBOT_FREE_PROBE_SCHEMA:
+                runtime_result["robot_free_success_probe"] = dict(robot_free_probe)
         runtime_result["result_digest"] = canonical_digest(
             runtime_result, digest_field="result_digest"
         )
@@ -1070,6 +1169,7 @@ def execute_native_import_component(
                     state_digests=state_digests,
                     maximum_translation=maximum_translation,
                     maximum_rotation=maximum_rotation,
+                    robot_free_probe=observed.get("robot_free_success_probe"),
                 ),
             )
         ]
