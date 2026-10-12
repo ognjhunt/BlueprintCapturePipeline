@@ -92,7 +92,11 @@ def _reuse(root: Path, inputs: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _failed_attempt_safe_to_retry(root: Path, *, source_commit: str) -> bool:
-    """Admit one new release only after the old rental has failed and torn down."""
+    """Admit a new attempt only after the old rental has failed and torn down.
+
+    A rejected output needs a new release; an offer lost before any instance
+    existed (a market miss) may simply be tried again.
+    """
     try:
         request = json.loads((root / "request.json").read_text())
         operation = root / "reconstruction_vast_operation"
@@ -101,12 +105,14 @@ def _failed_attempt_safe_to_retry(root: Path, *, source_commit: str) -> bool:
         teardown = json.loads((operation / "teardown_receipt.json").read_text())
     except (OSError, ValueError, KeyError):
         return False
+    blockers = execution.get("blockers", [])
     return (
-        request.get("source_commit_sha") != source_commit
+        ((request.get("source_commit_sha") != source_commit
+          and "reconstruction_vast_operation_output_not_accepted" in blockers)
+         or "reconstruction_vast_operation_instance_not_created" in blockers)
         and execution.get("status") == "failed"
         and execution.get("request_digest") == request.get("request_digest")
         and execution.get("provider_zero_verified") is True
-        and "reconstruction_vast_operation_output_not_accepted" in execution.get("blockers", [])
         and execution.get("execution_result_digest") == canonical_digest(execution, digest_field="execution_result_digest")
         and execution.get("provider_zero_digest") == provider_zero.get("provider_zero_digest")
         and provider_zero.get("provider_zero_digest") == canonical_digest(provider_zero, digest_field="provider_zero_digest")

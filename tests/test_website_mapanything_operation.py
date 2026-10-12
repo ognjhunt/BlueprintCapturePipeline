@@ -342,6 +342,50 @@ def test_controller_allows_one_new_release_after_verified_failed_rental(packet, 
         dispatch.dispatch_geometry(**args)
 
 
+def test_controller_retries_a_market_miss_on_the_same_release(packet, tmp_path, monkeypatch):
+    """Dishwasher run 2026-10-12: the approved Vast offer vanished before any instance existed."""
+    from blueprint_pipeline import website_geometry_dispatch as dispatch
+
+    path, _, _ = packet
+    inputs = json.loads(path.read_text())
+    output = tmp_path / "geometry"
+    first = output / "controller_geometry"
+    retry = output / "controller_geometry_retry_1"
+    operation_root = first / "reconstruction_vast_operation"
+    operation_root.mkdir(parents=True)
+    retry.mkdir(parents=True)
+    state = {"input_digest": inputs["digest"], "task_context_digest": DIGEST}
+    write_json(first / "dispatch.json", state)
+    write_json(retry / "dispatch.json", state)
+    write_json(first / "request.json", {"request_digest": DIGEST, "source_commit_sha": SHA})
+    provider_zero = {"status": "PASS"}
+    provider_zero["provider_zero_digest"] = canonical_digest(provider_zero, digest_field="provider_zero_digest")
+    teardown = {"provider_zero_verified": True}
+    teardown["teardown_receipt_digest"] = canonical_digest(teardown, digest_field="teardown_receipt_digest")
+    execution = {"status": "failed", "request_digest": DIGEST, "provider_zero_verified": True,
+                 "blockers": ["reconstruction_vast_operation_instance_not_created",
+                              "vast_approved_offer_unavailable_or_changed"],
+                 "provider_zero_digest": provider_zero["provider_zero_digest"],
+                 "teardown_receipt_digest": teardown["teardown_receipt_digest"]}
+    execution["execution_result_digest"] = canonical_digest(execution, digest_field="execution_result_digest")
+    write_json(operation_root / "provider_zero_verification.json", provider_zero)
+    write_json(operation_root / "teardown_receipt.json", teardown)
+    write_json(operation_root / "reconstruction_vast_operation_execution.json", execution)
+    settled = []
+    monkeypatch.setattr(dispatch, "settle_prior_website_vast_attempts", lambda **kw: settled.append(kw))
+    monkeypatch.setattr(dispatch, "_reuse", lambda root, _inputs: (
+        {"status": "estimated", "retry_root": str(root)} if root == retry else
+        (_ for _ in ()).throw(ValueError("website_mapanything_existing_attempt_requires_reconciliation"))))
+    args = dict(input_manifest=path, output_root=output, task_context={"context_digest": DIGEST},
+                source_commit=SHA, allocate=lambda *_a, **_k: pytest.fail("rental already dispatched"))
+    assert dispatch.dispatch_geometry(**args)["retry_root"] == str(retry)
+    execution["provider_zero_verified"] = False
+    execution["execution_result_digest"] = canonical_digest(execution, digest_field="execution_result_digest")
+    write_json(operation_root / "reconstruction_vast_operation_execution.json", execution)
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        dispatch.dispatch_geometry(**args)
+
+
 def test_controller_allows_second_retry_only_after_distinct_release_and_zero_teardown(packet, tmp_path, monkeypatch):
     from blueprint_pipeline import website_geometry_dispatch as dispatch
 
