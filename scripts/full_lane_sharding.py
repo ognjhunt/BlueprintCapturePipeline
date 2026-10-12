@@ -22,12 +22,22 @@ from defusedxml import ElementTree as SafeElementTree
 
 
 COLLECTION_SCHEMA = "blueprint_full_lane_collection.v1"
-BASELINE_SCHEMA = "blueprint.full_lane_duration_baseline.v1"
-PLAN_SCHEMA = "blueprint.full_lane_shard_plan.v1"
+BASELINE_SCHEMA = "blueprint.full_lane_duration_baseline.v2"
+PLAN_SCHEMA = "blueprint.full_lane_shard_plan.v2"
+PLAN_STRATEGY = "lpt_heavy_file_split_serial_shards"
 SHARD_RECEIPT_SCHEMA = "blueprint.full_lane_shard_verification.v1"
 AGGREGATE_SCHEMA = "blueprint.full_lane_shard_aggregate.v1"
 NODEID_PROPERTY = "blueprint_nodeid"
-SHARD_COUNT = 4
+# 2026-10-12: four shards planned against a two-month-old baseline ran
+# 68/51/35/28 minutes and gated every deploy on the slowest. Twelve shards
+# balanced on measured durations finish together in about nineteen minutes.
+SHARD_COUNT = 12
+# Tests at least this slow are recorded individually in the baseline, so a
+# split file schedules its few long tests by their own measured durations.
+HEAVY_TEST_SECONDS = 5.0
+# A file estimated above this share of one shard's mean load is scheduled by
+# node ID; every other file stays whole on one shard.
+SPLIT_SHARE_OF_MEAN_SHARD = 0.5
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -193,6 +203,14 @@ def build_duration_baseline(
     ]
     total_duration = float(outcomes["duration_seconds"])
     test_count = len(outcomes["rows"])
+    heavy_tests = [
+        {
+            "nodeid": str(row["nodeid"]),
+            "duration_seconds": round(float(row["duration_seconds"]), 6),
+        }
+        for row in sorted(outcomes["rows"], key=lambda row: str(row["nodeid"]))
+        if float(row["duration_seconds"]) >= HEAVY_TEST_SECONDS
+    ]
     return {
         "schema_version": BASELINE_SCHEMA,
         "source_repository_sha": source_sha,
@@ -202,8 +220,50 @@ def build_duration_baseline(
         "file_count": len(file_rows),
         "total_duration_seconds": round(total_duration, 6),
         "default_seconds_per_test": round(total_duration / test_count, 9),
+        "heavy_test_threshold_seconds": HEAVY_TEST_SECONDS,
+        "heavy_tests": heavy_tests,
         "files": file_rows,
     }
+
+
+def _validate_heavy_tests(
+    payload: Mapping[str, Any], by_path: Mapping[str, Mapping[str, Any]]
+) -> dict[str, float]:
+    """Return recorded per-test durations, or raise when any row is inconsistent."""
+    if payload.get("heavy_test_threshold_seconds") != HEAVY_TEST_SECONDS:
+        raise FullLaneShardError("duration_baseline_heavy_test_threshold_invalid")
+    raw_rows = payload.get("heavy_tests")
+    if not isinstance(raw_rows, list):
+        raise FullLaneShardError("duration_baseline_heavy_test_invalid")
+    heavy: dict[str, float] = {}
+    per_file: dict[str, float] = defaultdict(float)
+    per_file_count: Counter[str] = Counter()
+    for row in raw_rows:
+        nodeid = str(row.get("nodeid") or "") if isinstance(row, Mapping) else ""
+        duration = row.get("duration_seconds") if isinstance(row, Mapping) else None
+        path = nodeid.split("::", 1)[0]
+        if (
+            "::" not in nodeid
+            or path not in by_path
+            or nodeid in heavy
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(float(duration))
+            or float(duration) < HEAVY_TEST_SECONDS
+        ):
+            raise FullLaneShardError("duration_baseline_heavy_test_invalid")
+        heavy[nodeid] = float(duration)
+        per_file[path] += float(duration)
+        per_file_count[path] += 1
+    for path, seconds in per_file.items():
+        file_row = by_path[path]
+        # A file's recorded tests can never outlast the whole file, and can
+        # never outnumber its tests (rounding is per row, so allow 1 us each).
+        if (
+            seconds > float(file_row["duration_seconds"]) + 1e-6 * per_file_count[path]
+            or per_file_count[path] > int(file_row["test_count"])
+        ):
+            raise FullLaneShardError("duration_baseline_heavy_test_invalid")
+    return heavy
 
 
 def _validate_baseline(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -272,6 +332,7 @@ def _validate_baseline(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         blockers.append("duration_baseline_default_mismatch")
     if blockers:
         raise FullLaneShardError(",".join(sorted(set(blockers))))
+    _validate_heavy_tests(payload, by_path)
     return by_path
 
 
@@ -289,6 +350,7 @@ def build_shard_plan(
         raise FullLaneShardError("shard_count_invalid")
     nodeids = _collection(planned, phase="planned")
     baseline = _validate_baseline(duration_baseline)
+    heavy = _validate_heavy_tests(duration_baseline, baseline)
     default_seconds = duration_baseline.get("default_seconds_per_test")
     if (
         not isinstance(default_seconds, (int, float))
@@ -306,7 +368,7 @@ def build_shard_plan(
         by_file[path].append(nodeid)
     order_index = {path: index for index, path in enumerate(file_order)}
 
-    weighted_files: list[tuple[str, float]] = []
+    file_estimates: dict[str, float] = {}
     for path, rows in by_file.items():
         baseline_row = baseline.get(path)
         if baseline_row is None:
@@ -315,13 +377,37 @@ def build_shard_plan(
             estimate = float(baseline_row["duration_seconds"]) * (
                 len(rows) / int(baseline_row["test_count"])
             )
-        weighted_files.append((path, max(estimate, 0.000001)))
+        file_estimates[path] = max(estimate, 0.000001)
+
+    # One 21-minute file would otherwise set the floor for the whole lane:
+    # schedule a file heavier than half a shard by node ID, with its recorded
+    # long tests at their own measured durations and the rest sharing what is
+    # left of the file's estimate.
+    mean_load = sum(file_estimates.values()) / shard_count
+    split_files = sorted(
+        path
+        for path, estimate in file_estimates.items()
+        if estimate > SPLIT_SHARE_OF_MEAN_SHARD * mean_load and len(by_file[path]) > 1
+    )
+    units: list[tuple[str, str, float]] = []
+    for path, rows in by_file.items():
+        if path not in split_files:
+            units.append(("files", path, file_estimates[path]))
+            continue
+        recorded = {nodeid: heavy[nodeid] for nodeid in rows if nodeid in heavy}
+        light = [nodeid for nodeid in rows if nodeid not in recorded]
+        residual = max(file_estimates[path] - sum(recorded.values()), 0.0)
+        per_light = residual / len(light) if light else 0.0
+        units.extend(
+            ("nodeids", nodeid, max(recorded.get(nodeid, per_light), 0.000001))
+            for nodeid in rows
+        )
 
     shards: list[dict[str, Any]] = [
-        {"index": index, "estimated_duration_seconds": 0.0, "files": []}
+        {"index": index, "estimated_duration_seconds": 0.0, "files": [], "nodeids": []}
         for index in range(shard_count)
     ]
-    for path, estimate in sorted(weighted_files, key=lambda row: (-row[1], row[0])):
+    for kind, unit, estimate in sorted(units, key=lambda row: (-row[2], row[1])):
         target = min(
             shards,
             key=lambda shard: (
@@ -329,13 +415,22 @@ def build_shard_plan(
                 int(shard["index"]),
             ),
         )
-        target["files"].append(path)
+        target[kind].append(unit)
         target["estimated_duration_seconds"] += estimate
 
     for shard in shards:
         shard["files"].sort(key=order_index.__getitem__)
-        expected = [nodeid for path in shard["files"] for nodeid in by_file[path]]
-        shard["file_count"] = len(shard["files"])
+        shard["nodeids"].sort()
+        expected = _assigned_nodeids(
+            planned_nodeids=nodeids, files=shard["files"], split_nodeids=shard["nodeids"]
+        )
+        if not expected:
+            raise FullLaneShardError("shard_plan_empty_shard")
+        shard["run_paths"] = sorted(
+            {*shard["files"], *(nodeid.split("::", 1)[0] for nodeid in shard["nodeids"])},
+            key=order_index.__getitem__,
+        )
+        shard["file_count"] = len(shard["run_paths"])
         shard["expected_test_count"] = len(expected)
         shard["expected_nodeids_sha256"] = _nodeids_digest(expected)
         shard["estimated_duration_seconds"] = round(
@@ -345,7 +440,7 @@ def build_shard_plan(
     core = {
         "schema_version": PLAN_SCHEMA,
         "repository_sha": repository_sha,
-        "strategy": "lpt_file_preserving_serial_shards",
+        "strategy": PLAN_STRATEGY,
         "shard_count": shard_count,
         "planned_test_count": len(nodeids),
         "planned_nodeids_sha256": _nodeids_digest(nodeids),
@@ -354,9 +449,22 @@ def build_shard_plan(
             "source_repository_sha"
         ],
         "duration_baseline_source_run_id": duration_baseline["source_run_id"],
+        "split_files": split_files,
         "shards": shards,
     }
     return {**core, "plan_digest": _canonical_digest(core)}
+
+
+def _assigned_nodeids(
+    *, planned_nodeids: Sequence[str], files: Sequence[str], split_nodeids: Sequence[str]
+) -> list[str]:
+    file_set = set(files)
+    split_set = set(split_nodeids)
+    return [
+        nodeid
+        for nodeid in planned_nodeids
+        if nodeid.split("::", 1)[0] in file_set or nodeid in split_set
+    ]
 
 
 def _plan_expected_nodeids(
@@ -372,11 +480,18 @@ def _plan_expected_nodeids(
     if len(matches) != 1:
         raise FullLaneShardError("shard_plan_index_invalid")
     raw_files = matches[0].get("files")
+    raw_split = matches[0].get("nodeids")
     files = [str(value) for value in raw_files] if isinstance(raw_files, list) else []
-    if not files or len(files) != len(set(files)):
+    split = [str(value) for value in raw_split] if isinstance(raw_split, list) else []
+    if (
+        not (files or split)
+        or len(files) != len(set(files))
+        or len(split) != len(set(split))
+    ):
         raise FullLaneShardError("shard_plan_files_invalid")
-    file_set = set(files)
-    return [nodeid for nodeid in planned_nodeids if nodeid.split("::", 1)[0] in file_set]
+    return _assigned_nodeids(
+        planned_nodeids=planned_nodeids, files=files, split_nodeids=split
+    )
 
 
 def verify_shard(
@@ -617,7 +732,7 @@ def aggregate_shards(
         "schema_version": AGGREGATE_SCHEMA,
         "status": "passed",
         "repository_sha": repository_sha,
-        "strategy": "lpt_file_preserving_serial_shards",
+        "strategy": PLAN_STRATEGY,
         "shard_count": SHARD_COUNT,
         "test_count": len(planned_nodeids),
         "planned_nodeids_sha256": _nodeids_digest(planned_nodeids),
@@ -768,7 +883,7 @@ def _command_aggregate(args: argparse.Namespace) -> int:
                 "schema_version": AGGREGATE_SCHEMA,
                 "status": "blocked",
                 "repository_sha": args.repository_sha,
-                "strategy": "lpt_file_preserving_serial_shards",
+                "strategy": PLAN_STRATEGY,
                 "shard_count": SHARD_COUNT,
                 "blockers": [str(exc)],
             },

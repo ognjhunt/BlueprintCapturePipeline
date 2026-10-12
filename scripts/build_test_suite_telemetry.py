@@ -117,6 +117,7 @@ def build_telemetry(
         "serial",
         "pytest_xdist_loadfile",
         "deterministic_file_preserving_serial_shards",
+        "deterministic_duration_balanced_serial_shards",
     }
     if resolved_strategy not in valid_strategies:
         raise ValueError("parallelization_strategy_invalid")
@@ -268,6 +269,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "serial",
             "pytest_xdist_loadfile",
             "deterministic_file_preserving_serial_shards",
+            "deterministic_duration_balanced_serial_shards",
         ),
     )
     parser.add_argument("--output", type=Path, required=True)

@@ -51,8 +51,15 @@ jobs:
           ' "${RUNNER_TEMP}/promotion-run.json" >/dev/null
           promoted_sha="$(jq -r .head_sha "${RUNNER_TEMP}/promotion-run.json")"
           [[ "${promoted_sha}" =~ ^[0-9a-f]{40}$ ]]
-          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
-          test "${promoted_sha}" = "${current_main}"
+          # Bind the exact tested commit, not main's tip. Requiring the tip let
+          # any merge during the lane (2026-10-12: a docs-only PR) void a green
+          # promotion. The commit must still be on main: identical to it, or an
+          # ancestor main has moved past.
+          on_main="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${promoted_sha}...main" --jq '[.status, .behind_by] | @tsv')"
+          case "${on_main}" in
+            $'identical\t0'|$'ahead\t0') ;;
+            *) echo "::error::Promoted commit ${promoted_sha} is not on main (${on_main})."; exit 1 ;;
+          esac
           printf 'eligible=true\nsha=%s\nrun_url=https://github.com/%s/actions/runs/%s\n' "${promoted_sha}" "${GITHUB_REPOSITORY}" "${PROMOTION_RUN_ID}" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout the admitted immutable source
@@ -80,7 +87,11 @@ jobs:
           uv run --no-project --with defusedxml==0.7.1 python scripts/verify_deploy_release_provenance.py \
             --root "${GITHUB_WORKSPACE}" --expected-sha "${EXPECTED_SHA}" \
             --run-url "${PROMOTION_URL}" --output "${RUNNER_TEMP}/production-deploy-provenance.json"
-          test "${EXPECTED_SHA}" = "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          on_main="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${EXPECTED_SHA}...main" --jq '[.status, .behind_by] | @tsv')"
+          case "${on_main}" in
+            $'identical\t0'|$'ahead\t0') ;;
+            *) echo "::error::Verified commit ${EXPECTED_SHA} left main (${on_main})."; exit 1 ;;
+          esac
 
       - name: Retain verified deployment provenance
         if: steps.promotion.outputs.eligible == 'true'

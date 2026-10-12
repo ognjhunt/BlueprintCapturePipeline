@@ -83,8 +83,14 @@ evidence and does not close `EVID-03`.
 Deploying a Pipeline commit requires `Full Test Lane / Full pytest lane on CPU
 runner` to have passed in a fresh `workflow_dispatch` run with reason
 `production_deployment_promotion` on that exact protected-main commit SHA.
-The lane assigns whole test files deterministically across four independent
-serial shards. Each shard retains its own collection, JUnit, and verification
+The commit only has to remain on `main`; a later merge does not void its
+promotion. The lane plans twelve independent serial shards from measured
+durations (`.github/full-test-lane-duration-baseline.json`): every file stays
+whole on one shard except a file heavier than half a shard, whose tests are
+scheduled by node ID. Every green lane uploads
+`full-test-lane-duration-baseline.refreshed.json` in its `full-test-lane-<run>`
+artifact; when shards drift apart, commit that file as the baseline (and update
+the source run pinned in `tests/test_full_lane_sharding.py`). Each shard retains its own collection, JUnit, and verification
 receipt; the canonical job proves their disjoint union has no duplicates,
 omissions, failures, errors, or skips before rebuilding the existing canonical
 JUnit and `cpu_full.json` artifact. The deploy verifier revalidates every shard
@@ -117,8 +123,9 @@ resolves every exact-SHA build tag through the registry and rejects supplied
 digest mismatches before Terraform can plan.
 
 The deploy gate also rejects dirty or untracked checkout state and requires
-exact `origin/main` parity. It queries the canonical GitHub run, binds the
-repository/workflow/main-push/SHA/conclusion/job/steps, downloads the exact
+the commit to be on freshly fetched `origin/main` (its tip or an ancestor). It
+queries the canonical GitHub run, binds the
+repository/workflow/promotion-dispatch/SHA/conclusion/job/steps, downloads the exact
 unexpired full-lane artifact, and verifies planned versus executed node IDs and
 green zero-skip JUnit outcomes plus the recomputed `cpu_full.json` envelope. A
 URL or operator assertion alone is never deploy evidence;
