@@ -116,7 +116,7 @@ async function boundContext(store,row) {
   return context;
 }
 
-async function nativeSources(store,row,task) {
+export async function nativeSources(store,row,task,{candidateKey=null}={}) {
   const qa=row.qa;
   if(row.state!=='completed'||row.turn_status!=='completed'||!row.turn_id||!row.session_id
     ||qa?.state!=='validated'||qa.turn_status!=='completed'||!qa.turn_id||!hashOK(row.raw_output_digest)
@@ -129,17 +129,37 @@ async function nativeSources(store,row,task) {
   const qaRaw=Buffer.from(await store.fileGet(qaFile),'base64'),qaResult=approvedQaJson(qaRaw,qa.artifact_format_normalization);
   if(sha(artifact)!==row.raw_output_digest||sha(qaRaw)!==qa.artifact_digest
     ||qaResult.schema_version!=='blueprint.research-qa.v1'||qaResult.packet_digest!==row.packet_digest
-    ||qaResult.crm_digest!==qa.crm_digest||qaResult.source_support_verified!==true
+    ||qaResult.crm_digest!==qa.crm_digest||(candidateKey===null&&qaResult.source_support_verified!==true)
     ||qaResult.summary!==row.review.summary) fail('contact_research_run_unverified');
+  // A native lookup may ask a legitimate operator about unresolved robot fit.
+  // Keep the exact per-candidate assessment; this does not grant publication
+  // eligibility or weaken the original qualified contact-recovery path.
+  let nativeUrls=new Set();
+  if(candidateKey!==null) {
+    const checks=qaResult.checks?.filter(c=>c.candidate_key===candidateKey),
+      results=row.review.lead_verification?.results?.filter(r=>r.candidate_key===candidateKey);
+    if(checks?.length!==1||results?.length!==1||checks[0].duplicate===true
+      ||!checks[0].lead_verification||digest(checks[0].lead_verification)!==digest(results[0].assessment))
+      fail('native_contact_assessment_changed');
+    const assessment=checks[0].lead_verification,refs=new Set(['operator','physical_site','site_task']
+      .flatMap(k=>assessment.claims?.[k]?.source_refs||[]));
+    nativeUrls=new Set((assessment.sources||[]).filter(s=>refs.has(s.id)).map(s=>s.url));
+  }
   const start=Date.parse(row.started_at),deadline=start+row.research_runtime_seconds*1000;
   if(!Number.isFinite(start)||!Number.isSafeInteger(row.research_runtime_seconds)||row.research_runtime_seconds<=0
     ||!Number.isFinite(row.remote_completed_at)) fail('contact_research_run_unverified');
-  const calls=Object.entries(row.application_tool_calls||{}).filter(([,c])=>c.success===true
+  let calls=Object.entries(row.application_tool_calls||{}).filter(([,c])=>c.success===true
     &&c.phase==='research'&&c.request?.name==='blueprint_read_source'
     &&operatorUrl(c.request.arguments?.url,task.organizationUrl)).sort((a,b)=>{
-      const rank=c=>/contact|inquir|partnership|leadership|team|people|operations/i.test(c.request.arguments.url)?0:1;
+      const rank=c=>nativeUrls.has(c.request.arguments.url)?-1:
+        /contact|inquir|partnership|leadership|team|people|operations/i.test(c.request.arguments.url)?0:1;
       return rank(a[1])-rank(b[1]);
-    }).slice(0,6),sources=[];
+    });
+  // Qualified recovery keeps its existing bounded selection. Native lookup
+  // must validate final URLs before selecting its six retained pages: the
+  // requested URL can redirect to the exact task page cited by QA.
+  if(candidateKey===null) calls=calls.slice(0,6);
+  const sources=[];
   for(const [callId,call] of calls) {
     if(!/^[A-Za-z0-9_-]{1,200}$/.test(callId)||call.request.call_id!==callId||call.request.turn_id!==row.turn_id
       ||call.result_acknowledged!==true||call.result_file!==`${row.date}-tool-${callId}.json`
@@ -155,9 +175,13 @@ async function nativeSources(store,row,task) {
       ||checked>Math.min(deadline,row.remote_completed_at*1000,store.clock())) fail('contact_research_receipt_changed');
     if(!sources.some(s=>s.url===output.url)) sources.push({url:output.url,callId,resultSha256:call.result_sha256,
       rawSourceSha256:output.raw_sha256,checkedAt:output.checked_at});
-    if(sources.length===3) break;
+    if(candidateKey===null&&sources.length===3) break;
   }
-  return sources;
+  if(candidateKey!==null) sources.sort((a,b)=>{
+    const rank=s=>nativeUrls.has(s.url)?-1:/contact|inquir|partnership|leadership|team|people|operations/i.test(s.url)?0:1;
+    return rank(a)-rank(b);
+  });
+  return sources.slice(0,candidateKey===null?3:6);
 }
 
 /** Read-only verification of saved native bytes, not mutable summary assertions.

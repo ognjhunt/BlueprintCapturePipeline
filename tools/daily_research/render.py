@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tools.daily_research import screen_admission
+from tools.daily_research import screen_admission, native_contact_lookup
 from tools.daily_research.consumer import Consumer, workflow
 from tools.daily_research.firestore import (
     Bridge,
@@ -717,11 +717,17 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                         # Host-owned site-screen admission: only when the daily work is idle, under the lease.
                         admission = screen_admission.step(bridge, now=clock(), root=Path(root)) if (
                             control.get("screen_admission") is not None and not stopped.is_set()) else None
+                        contacts = native_contact_lookup.step(bridge, day) if (
+                            isinstance(control.get("native_contact_lookup"), dict)
+                            and control["native_contact_lookup"].get("enabled") is True and not stopped.is_set()) else None
                     emit(result)
                     if admission is not None:
                         emit(admission)
+                    if contacts is not None:
+                        emit(contacts)
                     retry_at = clock() + timedelta(minutes=5) if cleanup["state"] == "cleanup_pending" or result.get("state") in {
-                        "creation_unresolved", "running", "cancel_pending", "collecting"} or screen_admission.retry(admission) else None
+                        "creation_unresolved", "running", "cancel_pending", "collecting"} or screen_admission.retry(admission) or (
+                            contacts and contacts.get("retry_result_read") is True) else None
                 elif (workflow(control) or control.get("cleanup_policy", {}).get("enabled") is True) and (not retry_at or clock() >= retry_at):
                     with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
                         if workflow(control):
