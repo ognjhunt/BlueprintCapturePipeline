@@ -812,3 +812,121 @@ def test_native_structure_readback_matches_actual_packaged_and_statically_qualif
     assert observed["handle_prim_paths"] == [
         "/World/Placement/Replacement/links/drawer_1/collision/handle"
     ]
+
+
+def _probe_static_receipt() -> dict:
+    return {"articulation_graph": _drawer_graph()}
+
+
+def test_robot_free_probe_drives_to_the_middle_of_the_goal_interval() -> None:
+    plan = driver.robot_free_probe_plan(_probe_static_receipt())
+    assert plan == {"target_joint_id": "task_part_joint", "reset_position": 0.0,
+                    "success_interval": [0.192, 0.32], "drive_target_position": pytest.approx(0.256)}
+
+
+class _ProbeArticulation:
+    dof_names = ["task_part_joint", "rack_slide"]
+
+    def __init__(self) -> None:
+        self.q, self.v = [0.0, 0.01], [0.0, 0.0]
+
+    def get_dof_index(self, name):
+        return self.dof_names.index(name)
+
+    def get_joint_positions(self):
+        return list(self.q)
+
+    def get_joint_velocities(self):
+        return list(self.v)
+
+    def set_joint_positions(self, positions, joint_indices):
+        self.q[int(joint_indices[0])] = float(positions[0])
+
+    def set_joint_velocities(self, velocities, joint_indices):
+        self.v[int(joint_indices[0])] = float(velocities[0])
+
+
+class _ProbeSimulation:
+    def __init__(self) -> None:
+        self.steps = 0
+
+    def step(self, render=False):
+        self.steps += 1
+
+
+def test_robot_free_probe_ramps_as_contact_then_records_the_released_joint() -> None:
+    articulation, simulation = _ProbeArticulation(), _ProbeSimulation()
+    samples = driver._robot_free_drive_and_release(
+        simulation=simulation, articulation=articulation, joint_name="task_part_joint",
+        plan=driver.robot_free_probe_plan(_probe_static_receipt()), timestep_seconds=1.0 / 60.0,
+        first_step_index=180)
+    drive = [row for row in samples if row["phase"] == "drive"]
+    release = [row for row in samples if row["phase"] == "release"]
+    assert (len(drive), len(release), simulation.steps) == (60, 300, 360)
+    assert [row["step_index"] for row in samples] == list(range(180, 540))
+    # Readbacks are sealed at 7 decimals.
+    assert drive[0]["dof"]["task_part_joint"][0] == pytest.approx(0.256 / 60, abs=1e-7)
+    assert drive[-1]["dof"]["task_part_joint"][0] == pytest.approx(0.256)
+    # Released, the joint is left to physics; every DOF is read on every step.
+    assert all(set(row["dof"]) == {"task_part_joint", "rack_slide"} for row in samples)
+
+
+def test_robot_free_probe_failure_is_recorded_and_never_raised() -> None:
+    def failing(**_kwargs):
+        raise RuntimeError("isaac_handle_lost")
+
+    failed = driver.record_robot_free_probe(settle=failing, asset_path=Path("a.usda"), duration_seconds=3.0,
+                                            static_receipt=_probe_static_receipt())
+    assert failed["status"] == "failed" and failed["error"] == "RuntimeError:isaac_handle_lost"
+    recorded = {"schema_version": driver.ROBOT_FREE_PROBE_SCHEMA, "status": "recorded", "samples": []}
+    captured: dict = {}
+
+    def settle(**kwargs):
+        captured.update(kwargs)
+        return {"robot_free_success_probe": recorded}
+
+    assert driver.record_robot_free_probe(settle=settle, asset_path=Path("a.usda"), duration_seconds=3.0,
+                                          static_receipt=_probe_static_receipt()) == recorded
+    assert captured["articulated"] is True
+    assert captured["robot_free_probe"]["drive_target_position"] == pytest.approx(0.256)
+    # The probe runs at the physics rate robot teams are scored at.
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import NATIVE_PHYSICS_FREQUENCY_HZ
+    assert captured["timestep_seconds"] == pytest.approx(1.0 / NATIVE_PHYSICS_FREQUENCY_HZ)
+
+
+@pytest.mark.parametrize("probe,kept", [
+    ({"schema_version": "scene_configuration_robot_free_success_probe.v1", "status": "recorded", "samples": []}, True),
+    ({"schema_version": "scene_configuration_robot_free_success_probe.v1", "status": "failed", "error": "x"}, True),
+    ({"schema_version": "unknown", "status": "recorded"}, False),
+])
+def test_articulated_runtime_result_carries_the_probe_without_changing_qualification(
+        tmp_path: Path, probe: dict, kept: bool) -> None:
+    environment = _articulated_environment(tmp_path)
+
+    def runner(*, observation_consumer, **_kwargs):
+        return observation_consumer({**_articulated_observed(), "robot_free_success_probe": probe})
+
+    result = execute_native_import_component(environment=environment, native_runner=runner)
+    artifact = next(row for row in result["artifacts"] if row["role"] == "native_import_runtime_result")
+    runtime = json.loads(Path(artifact["path"]).read_text())
+    assert runtime["status"] == "qualified" and runtime["native_simulator_import_qualified"] is True
+    assert runtime.get("robot_free_success_probe") == (probe if kept else None)
+    assert runtime["result_digest"] == canonical_digest(runtime, digest_field="result_digest")
+
+
+def test_the_probe_changes_nothing_else_in_the_sealed_runtime_result(tmp_path: Path) -> None:
+    probe = {"schema_version": driver.ROBOT_FREE_PROBE_SCHEMA, "status": "recorded", "samples": [{"x": 1}]}
+
+    def sealed(root: Path, observation: dict) -> dict:
+        def runner(*, observation_consumer, **_kwargs):
+            return observation_consumer(observation)
+
+        root.mkdir()
+        result = execute_native_import_component(environment=_articulated_environment(root), native_runner=runner)
+        artifact = next(row for row in result["artifacts"] if row["role"] == "native_import_runtime_result")
+        return json.loads(Path(artifact["path"]).read_text())
+
+    baseline = sealed(tmp_path / "baseline", _articulated_observed())
+    with_probe = sealed(tmp_path / "probe", {**_articulated_observed(), "robot_free_success_probe": probe})
+    strip = lambda value: {k: v for k, v in value.items() if k not in {"robot_free_success_probe", "result_digest"}}  # noqa: E731
+    assert strip(with_probe) == strip(baseline) and with_probe["robot_free_success_probe"] == probe
