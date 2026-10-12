@@ -63,6 +63,15 @@ DISPOSITIONS = ("remove", "keep")
 REBUILD_INTENTS = ("rebuild_and_compose", "none")
 TASK_EFFECTS = ("manipulated", "static_contact", "static_obstacle", "unrelated", "uncertain", "privacy")
 ARTICULATION_KINDS = ("prismatic", "revolute")
+# A validation failure gets one repair turn with the exact failed rule, never a
+# terminal refusal of a paid answer and never a per-failure script.
+VALIDATION_REPAIR_TURNS = 1
+_REPAIR_RULES = {
+    "removal_analysis_articulation_hint_invalid": (
+        'Only a target whose task_effect is "manipulated" may carry a mechanism hint: its articulation_kind '
+        'must be "prismatic" or "revolute" and its articulated_part must name the moving part. For every other '
+        "target set articulation_kind and articulated_part to empty strings."),
+}
 
 _API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY", "GOOGLE_AI_API_KEY")
 _API_KEY_FILE_ENVS = (
@@ -594,6 +603,50 @@ def _invoke_agentic_video(
     }}
 
 
+def _repair_prompt(prompt: str, previous_text: str, error: str) -> str:
+    located = ""
+    if error == "removal_analysis_articulation_hint_invalid":
+        try:
+            rows = json.loads(previous_text).get("targets") or []
+        except (ValueError, AttributeError):
+            rows = []
+        offending = [
+            {key: row.get(key) for key in ("target_id", "semantic_label", "task_effect",
+                                            "articulation_kind", "articulated_part")}
+            for row in rows if isinstance(row, Mapping)
+            and (_string(row.get("articulation_kind")) or _string(row.get("articulated_part")))
+            and (_string(row.get("articulation_kind")).lower() not in ARTICULATION_KINDS
+                 or not _string(row.get("articulated_part")) or row.get("task_effect") != "manipulated")]
+        located = "Targets that break it: " + json.dumps(offending, sort_keys=True) + "\n"
+    return ("Your JSON answer to the task below failed one validation check.\n"
+            f"Failed check: {error}\n"
+            f"Rule: {_REPAIR_RULES.get(error, 'Fix only what this check requires.')}\n{located}"
+            "Return the complete corrected JSON with every target you reported. Change only what the rule "
+            "requires; keep every other field and target exactly as before.\n\n"
+            f"Original task instructions:\n{prompt}\n\nYour previous JSON answer:\n{previous_text}")
+
+
+def _invoke_text_repair(*, api_key: str, model: str, genai: Any, types: Any, prompt: str,
+                        previous_text: str, error: str) -> dict[str, Any]:
+    """The repair turn: the model's own answer and the exact failed rule; no new media."""
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
+        timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
+    ))
+    response = client.interactions.create(
+        model=model, store=False,
+        input=[{"type": "text", "text": _repair_prompt(prompt, previous_text, error)}],
+        response_format={"type": "text", "mime_type": "application/json", "schema": RESPONSE_SCHEMA},
+        generation_config={"max_output_tokens": 8192, "thinking_level": "low"},
+        timeout=300.0,
+    )
+    if getattr(response, "status", None) != "completed":
+        raise ValueError("gemini_clean_plate_repair_incomplete")
+    return {"text": "\n".join(
+        part.text for step in (getattr(response, "steps", None) or []) if getattr(step, "type", None) == "model_output"
+        for part in (getattr(step, "content", None) or [])
+        if getattr(part, "type", None) == "text" and isinstance(getattr(part, "text", None), str))}
+
+
 def _analyze_removal_targets(
     *,
     video_path: Optional[str | Path],
@@ -673,15 +726,27 @@ def _analyze_removal_targets(
             video_digest=video_digest,
         )
 
+    description = _string((task_context or {}).get("description"))
+    repair: Optional[dict[str, Any]] = None
     try:
-        targets = parse_removal_plan_response(
-            analysis["text"], strict=True,
-            task_description=_string((task_context or {}).get("description")),
-        )
+        targets = parse_removal_plan_response(analysis["text"], strict=True, task_description=description)
     except ValueError as exc:
-        return empty_removal_plan(status="blocked", model=model_name,
-                                  processing=processing_mode, blockers=[str(exc)],
-                                  video_path=resolved_video, video_digest=video_digest)
+        repair = {"turns": VALIDATION_REPAIR_TURNS, "failed_check": str(exc)}
+        try:
+            repaired = _invoke_text_repair(
+                api_key=api_key, model=model_name, genai=genai, types=types,
+                prompt=_video_prompt(processing_mode, task_context or {}),
+                previous_text=analysis["text"], error=str(exc))
+            targets = parse_removal_plan_response(repaired["text"], strict=True, task_description=description)
+        except ValueError as again:
+            return empty_removal_plan(status="blocked", model=model_name, processing=processing_mode,
+                                      blockers=[str(exc), f"validation_repair_failed:{again}"],
+                                      video_path=resolved_video, video_digest=video_digest)
+        except Exception as provider_exc:  # pragma: no cover - live provider behavior
+            return empty_removal_plan(status="blocked", model=model_name, processing=processing_mode,
+                                      blockers=[str(exc), _provider_error_blocker(provider_exc)],
+                                      video_path=resolved_video, video_digest=video_digest)
+        repair["repaired"] = True
     decision_blockers = [
         f"task_target_requires_clarification:{target['target_id']}"
         for target in targets if target.get("task_effect") == "uncertain"
@@ -698,6 +763,8 @@ def _analyze_removal_targets(
         video_digest=video_digest,
     )
     plan["video_processing"] = {**analysis["video_processing"], "duration_seconds": duration}
+    if repair is not None:
+        plan["validation_repair"] = repair
     plan["task_context_sha256"] = hashlib.sha256(json.dumps(dict(task_context or {}), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return plan
 
@@ -726,7 +793,8 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
     binding = {"kind": "task_video_analysis", "model": model_name, "processing": processing_mode,
                "duration_seconds": duration, "fps": STATIC_FPS if processing_mode == "static" else None,
                "source_digest": sha256_file(path), "prompt": prompt,
-               "max_output_tokens": 8192, "thinking_level": "low", "response_schema": RESPONSE_SCHEMA}
+               "max_output_tokens": 8192, "thinking_level": "low", "response_schema": RESPONSE_SCHEMA,
+               "validation_repair_turns": VALIDATION_REPAIR_TURNS}
 
     def preflight():
         if not _truthy(os.getenv(GATE_ENV)) or not _api_key()[0]:
@@ -743,6 +811,9 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
     # metadata and prompt-byte headroom; agentic keeps the full context reservation.
     input_tokens = (math.ceil(duration) * (258 * STATIC_FPS + 32 + 64) + len(prompt.encode()) + len(json.dumps(RESPONSE_SCHEMA)) + 4096
                     if processing_mode == "static" else 1_048_576)
+    # The repair turn resends the instructions and the previous answer, never the video.
+    repair_tokens = len(prompt.encode()) + 4 * 8192 + 4096
     return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
-        maximum_cost_usd=gemini_quote(model=model_name, input_tokens=input_tokens, max_output_tokens=8192),
+        maximum_cost_usd=gemini_quote(model=model_name, input_tokens=input_tokens, max_output_tokens=8192)
+        + VALIDATION_REPAIR_TURNS * gemini_quote(model=model_name, input_tokens=repair_tokens, max_output_tokens=8192),
         preflight=preflight, invoke=invoke)
