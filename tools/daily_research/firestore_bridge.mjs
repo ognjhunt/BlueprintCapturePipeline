@@ -2162,7 +2162,14 @@ export class Store {
     if (this.terminalCollectionReceipt && !['acquire','renew','release','assert_lease','control','read_crm',
       'get','blob_receipt','rows','summary','work_item','active_qa','publish','refresh_crm','put',
       'file_put','file_get','snapshot'].includes(request.op)) refuse('terminal_qa_operation_forbidden');
-    if (typeof request.op==='string' && request.op.startsWith('native_contact_')) return nativeContactOperation(this,request);
+    if (typeof request.op==='string' && request.op.startsWith('native_contact_')) {
+      try {return await nativeContactOperation(this,request);}
+      catch(error) {
+        if(error instanceof Refusal) throw error;
+        refuse(/^(?:native_contact|contact_research)_[a-z_]{1,90}$/.test(error?.message||'')
+          ?error.message:'native_contact_request_unavailable');
+      }
+    }
     switch (request.op) {
       case 'init': {
         const value = request.value;

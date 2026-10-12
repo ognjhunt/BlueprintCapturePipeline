@@ -124,3 +124,9 @@ test('null, partial and non-boolean scopes are rejected without any write; disab
  assert.deepEqual(f.records.get(ROOT).native_contact_lookup,{enabled:false});
  assert.equal(await nativeContactOperation(f.store,{op:'native_contact_scope',context:f.context}),null);
 });
+test('the actual private bridge preserves stable admission errors rather than replacing them with an availability error',async()=>{
+ const {Store}=await import('../tools/daily_research/firestore_bridge.mjs');
+ const f=fixture();
+ await assert.rejects(()=>Store.prototype.dispatch.call(f.store,{op:'native_contact_scope_set',expected_scope_id:null,value:null}),error=>
+  error.constructor.name==='Refusal'&&error.message==='native_contact_scope_invalid');
+});

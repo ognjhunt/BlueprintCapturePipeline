@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from tools.daily_research.firestore import Bridge, FirestoreLedger
@@ -52,9 +53,12 @@ def main():
                         "provider_calls": 0,
                     }
         print(canonical(result))
-    except (OSError, ValueError, Refusal):
+    except (OSError, ValueError, Refusal) as exc:
         # No upstream text, config contents or credentials are command output.
-        print(canonical({"state": "blocked", "error": "native_contact_operator_refused"}))
+        code = str(exc) if isinstance(exc, Refusal) else "native_contact_operator_refused"
+        if not re.fullmatch(r"(?:native_contact|contact_research|firestore)_[a-z_]{1,90}", code):
+            code = "native_contact_operator_refused"
+        print(canonical({"state": "blocked", "error": code}))
         return 1
     finally:
         bridge.close()
