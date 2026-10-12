@@ -16,7 +16,10 @@ A stored verdict is a cache, never evidence. It is reused only when:
 * every file the validator consulted through the evidence readers (``sha256_file`` and
   ``read``) is re-proven: files at or above ``MINIMUM_BYTES`` by full stat identity
   (device, inode, size, nanosecond mtime and kernel-owned ctime, ownership, mode, link
-  count) and re-hashed when that identity moved; smaller files always re-hashed.
+  count) and re-hashed when that identity moved; smaller files always re-hashed. A
+  re-hash that proves the same bytes under a moved identity is kept in the entry: a
+  storage move left 149 of 151 large launch-input verdicts and 240 GB of prefix-adoption
+  rows on identities that no longer held, and every lookup re-hashed them from scratch.
 
 Any unreadable, malformed, foreign or stale entry simply recomputes. Writing is best
 effort: a read-only or missing root disables persistence and changes nothing else.
@@ -35,7 +38,7 @@ import time
 import weakref
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .validation_file_digests import MINIMUM_BYTES, _identity, sha256_file
+from .validation_file_digests import MINIMUM_BYTES, _identity, sha256_file, touched_files
 
 SCHEMA_VERSION = "blueprint_validation_verdict.v1"
 ROOT_ENV = "BLUEPRINT_VALIDATION_VERDICT_ROOT"
@@ -218,20 +221,61 @@ def _code_unchanged(rows) -> bool:
     return True
 
 
-def _unchanged(row) -> bool:
+def _reproven(row) -> dict | None:
+    """``row`` as its file proves now, or ``None`` when the bytes changed.
+
+    A re-hash returns the identity ``sha256_file`` held for the whole read, so an entry
+    that keeps it is exactly as strong as one stored fresh at that moment.
+    """
     path = Path(row["path"])
     try:
         observed = path.lstat()
     except OSError:
-        return False
+        return None
     if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
-        return False
+        return None
     if observed.st_size >= MINIMUM_BYTES and list(_identity(observed)) == list(row["identity"]):
-        return True
+        return row
     try:
-        return sha256_file(path) == row["sha256"]
+        with touched_files() as hashed:
+            digest = sha256_file(path)
     except (OSError, ValueError):
-        return False
+        return None
+    if digest != row["sha256"] or not hashed:
+        return None
+    return {"path": row["path"], "identity": list(hashed[-1]["identity"]), "sha256": digest}
+
+
+def _write_entry(path: Path, value: dict, *, mode: int) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(canonical_json(value) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _keep_reproven_identities(path: Path, read: bytes, value: dict, rows: list[dict]) -> None:
+    """Rewrite a reused entry with the identities its large files re-proved under.
+
+    Best effort, as every write here: only the entry's own owner rewrites it (a root
+    deploy step would leave one the units cannot read), and an entry another process
+    replaced since it was read is left to that process.
+    """
+    try:
+        if path.stat().st_uid != os.geteuid() or path.read_bytes() != read:
+            return
+        refreshed = {key: item for key, item in value.items() if key != "entry_digest"}
+        refreshed["files"] = rows
+        refreshed["entry_digest"] = canonical_digest(refreshed, digest_field="entry_digest")
+        _write_entry(path, refreshed, mode=stat.S_IMODE(path.stat().st_mode))
+    except (OSError, TypeError, ValueError):
+        return
 
 
 def lookup(*, name: str, key, root: Path | None = None, missing=None):
@@ -240,7 +284,8 @@ def lookup(*, name: str, key, root: Path | None = None, missing=None):
     try:
         if path.is_symlink() or not path.is_file():
             return missing
-        value = json.loads(path.read_bytes().decode("utf-8"))
+        read = path.read_bytes()
+        value = json.loads(read.decode("utf-8"))
     except (OSError, ValueError):
         return missing
     if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
@@ -255,13 +300,21 @@ def lookup(*, name: str, key, root: Path | None = None, missing=None):
         return missing
     if not _code_unchanged(value["code"]):
         return missing
-    if not all(isinstance(row, dict) and _unchanged(row) for row in value["files"]):
-        return missing
+    rows = []
+    for row in value["files"]:
+        proven = _reproven(row) if isinstance(row, dict) else None
+        if proven is None:
+            return missing
+        rows.append(proven)
     from .validation_file_digests import record_touched
     for collector in _DEPENDENCIES.get():
         collector.update(row["module"] for row in value["code"])
-    for row in value["files"]:
+    for row in rows:
         record_touched(row["path"], row["identity"], row["sha256"])
+    # A large file re-proven by its bytes keeps the identity it proved under; small
+    # files are re-hashed on every lookup, so their identities are not worth a write.
+    if any(new is not old and new["identity"][2] >= MINIMUM_BYTES for new, old in zip(rows, value["files"])):
+        _keep_reproven_identities(path, read, value, rows)
     return value["verdict"]
 
 
@@ -282,13 +335,7 @@ def store(*, name: str, key, files, verdict, source_commit: str = "", root: Path
         value["entry_digest"] = canonical_digest(value, digest_field="entry_digest")
         path = _entry_path(root or verdict_root(), name, key)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(canonical_json(value) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _write_entry(path, value, mode=0o640)
     except (OSError, TypeError, ValueError):
         return None
     return path
