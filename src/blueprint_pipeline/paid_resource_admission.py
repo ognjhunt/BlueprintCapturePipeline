@@ -12,6 +12,7 @@ PAID_RESOURCE_CLASSES = frozenset(
         "cloud_run_cpu_job",
         "cpu_build",
         "evaluator_api",
+        "fullenrich_work_email",
         "gpu_canary",
         "model_volume",
         "openai_api_candidate",

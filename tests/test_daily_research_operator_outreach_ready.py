@@ -191,7 +191,7 @@ def test_a_direction_pinned_under_rule_v1_1_is_refused_after_the_v1_2_release_br
     still applies to it, and a fresh set from the v1.2 release supersedes it with rule v1.2."""
     old = tmp_path / "old-firestore-bridge.mjs"  # The earlier release's bridge: identical except its rule.
     source = (ROOT / "tools/daily_research/firestore_bridge.mjs").read_text()
-    for name in ("publisher.mjs", "verification-digest.mjs", "contact_research.mjs"):
+    for name in ("publisher.mjs", "verification-digest.mjs", "contact_research.mjs", "native_contact_lookup.mjs"):
         source = source.replace(f"from './{name}'", "from " + json.dumps((ROOT / "tools/daily_research" / name).as_uri()))
     old.write_text(source.replace(f"OR_RULE='{verification.OUTREACH_RULE_VERSION}'",
                                   f"OR_RULE='{verification.LEGACY_OUTREACH_RULE_VERSION}'"))
