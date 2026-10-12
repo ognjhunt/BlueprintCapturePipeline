@@ -156,9 +156,9 @@ def test_second_scene_requires_its_own_preparation_observation_and_identity(tmp_
         subject_identity=DRAWER_DEPTH_PRIOR["subject_identity"]) is website_drawer_depth_prior.PRIOR
 
 
-def packet(tmp_path):
+def packet(tmp_path, *, authoring_backend=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    args, preparation, _ = inputs(tmp_path)
+    args, preparation, _ = inputs(tmp_path, authoring_backend=authoring_backend)
     preparation_path = args["output_root"] / "preparation.json"
     runtime = prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
         source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=tmp_path / "native")
@@ -230,7 +230,7 @@ def test_website_six_stage_inputs_pass_real_preflight_and_need_no_reconstructed_
 @pytest.mark.parametrize("portable", [False, True])
 def test_actual_astra_request_accepts_bound_website_consent_before_gpu(tmp_path, portable):
     from blueprint_pipeline.website_native_inputs import preflight_website_authoring_request
-    envelope, configs = packet(tmp_path)
+    envelope, configs = packet(tmp_path, authoring_backend="astra_cad_blender_v1")
     if portable:
         envelope["stage_configuration_references"] = [
             {"stage_id": stage["stage_id"], **{key: row[key] for key in ("materialized_path", "digest", "size_bytes")}}
@@ -255,7 +255,7 @@ def test_astra_website_disclosure_cannot_substitute_unbound_rights(tmp_path):
 
 def test_cpu_source_preflight_runs_the_actual_authoring_request_contract(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_scene_configuration_astra_driver as driver
-    envelope, configs = packet(tmp_path)
+    envelope, configs = packet(tmp_path, authoring_backend="astra_cad_blender_v1")
     envelope["render_inputs_result"] = materialize_scene_configuration_render_inputs(
         envelope=envelope, stage_one_configuration=configs["stage-1"], output_root=tmp_path / "method-inputs")
     def reject(*args):
@@ -269,7 +269,7 @@ def test_cpu_source_preflight_uses_two_part_authoring_for_drawer(tmp_path, monke
     from blueprint_pipeline import task_evaluation_scene_configuration_astra_driver as driver
     from blueprint_pipeline.website_native_inputs import preflight_website_authoring_request
 
-    envelope, configs = packet(tmp_path)
+    envelope, configs = packet(tmp_path, authoring_backend="astra_cad_blender_v1")
     configs["stage-3"]["schema_version"] = driver.ARTICULATED_AUTHORING_SCHEMA_VERSION
     observed = {}
 
@@ -367,7 +367,7 @@ def test_website_bundle_relocates_and_hydrates_actual_capture_inputs(tmp_path, m
     from scripts.task_evaluation_scene_configuration_provider_runner import _hydrate_envelope
     from tests.astra_toolchain_fixture import astra_toolchain_fixture
     control = tmp_path / "control"
-    envelope, configs = packet(control)
+    envelope, configs = packet(control, authoring_backend="astra_cad_blender_v1")
     render = materialize_scene_configuration_render_inputs(envelope=envelope, stage_one_configuration=configs["stage-1"],
         output_root=control / "method-inputs")
     commit = "a" * 40

@@ -108,7 +108,8 @@ def test_quote_can_reserve_only_when_the_owner_cap_covers_it(tmp_path):
 
 
 @pytest.mark.parametrize("backend,author_cap", [("content_agents", 0.24), ("astra_cad_blender_v1", 5),
-                                               ("astra_cad_blender_v1", 15), ("astra_cad_blender_v1", 25)])
+                                               ("astra_cad_blender_v1", 15), ("astra_cad_blender_v1", 25),
+                                               ("artisan_v1", 15), ("artisan_v1", 80)])
 def test_paid_authority_materialization_and_reopen_use_the_bound_backend(tmp_path, monkeypatch, backend, author_cap):
     from blueprint_pipeline import task_evaluation_scene_configuration_paid_authority as module
     from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import REQUIRED_PARENT_TTL_SECONDS
@@ -116,6 +117,8 @@ def test_paid_authority_materialization_and_reopen_use_the_bound_backend(tmp_pat
     receipt = {"replacement_authoring_backend": backend, "source_commit": "a" * 40,
         "bundle_sha256": "sha256:" + "b" * 64, "portable_construction_envelope_digest": "sha256:" + "c" * 64,
         "toolchain_digest": "sha256:" + "d" * 64, "run_id": "fixture-astra-budget"}
+    if backend == "artisan_v1":
+        receipt["authoring_max_cost_usd"] = author_cap
     receipt_path = tmp_path / "bundle.json"
     receipt_path.write_text(json.dumps(receipt))
     project_path = tmp_path / "project.json"

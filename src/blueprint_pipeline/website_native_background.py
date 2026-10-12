@@ -186,6 +186,7 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
     articulated = third.get("schema_version") == records.ARTICULATED_AUTHORING_SCHEMA_VERSION
     configurations = [first["configuration"], second["configuration"], third,
         records.stage_four_configuration(replacement_identity=identity,
+            authoring_backend=third.get("authoring_backend"),
             dimension_tolerance=third["metric_envelope"]["maximum_dimension_relative_error"], articulated=articulated),
         records.stage_five_configuration(replacement_identity=identity, articulated=articulated), assembly]
     if articulated:

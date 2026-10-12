@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .task_object_authoring_backend import bundle_authoring_cap
 from .native_task_isaaclab_launch import (
     NATIVE_TASK_ARENA_IMAGE as SCENE_CONFIGURATION_PROVIDER_IMAGE,
 )
@@ -292,7 +293,8 @@ def materialize_scene_configuration_paid_authority(
     )
     minimum_external_cap = sum(required_stage_minima.values()) + (
         5.0 if authoring_provider == "anthropic" else 0.0)
-    budget_profile = scene_configuration_budget_profile(receipt.get("replacement_authoring_backend", "content_agents"))
+    budget_profile = scene_configuration_budget_profile(receipt.get("replacement_authoring_backend", "content_agents"),
+        authoring_max_cost_usd=bundle_authoring_cap(receipt))
     diagnostic_budget_blockers = (
         diagnostic_parent_runtime_budget_blockers(
             completed_stage_prefix_count=carried_stage_count,
@@ -307,7 +309,7 @@ def materialize_scene_configuration_paid_authority(
         math.isfinite(external_cap)
         and minimum_external_cap <= external_cap <= budget_profile.external_maximum
         and all(math.isfinite(value) and value >= 0 for value in stage_caps.values())
-        and (budget_profile.backend != "astra_cad_blender_v1"
+        and (budget_profile.backend not in {"astra_cad_blender_v1", "artisan_v1"}
              or stage_caps["content_agents"] <= budget_profile.content_agents_maximum)
         and all(
             stage_caps[name] >= required_minimum
@@ -546,7 +548,8 @@ def validate_scene_configuration_paid_authority(
         errors.append("historical_terminal_evidence_scope_invalid")
     minimum_external_cap = sum(required_stage_minima.values()) + (
         5.0 if authoring_provider == "anthropic" else 0.0)
-    budget_profile = scene_configuration_budget_profile(bundle_receipt.get("replacement_authoring_backend", "content_agents"))
+    budget_profile = scene_configuration_budget_profile(bundle_receipt.get("replacement_authoring_backend", "content_agents"),
+        authoring_max_cost_usd=bundle_authoring_cap(bundle_receipt))
     diagnostic_budget_blockers = (
         diagnostic_parent_runtime_budget_blockers(
             completed_stage_prefix_count=carried_stage_count,
@@ -606,7 +609,7 @@ def validate_scene_configuration_paid_authority(
             float(stage_caps[name]) >= required_minimum
             for name, required_minimum in required_stage_minima.items()
         )
-        and (budget_profile.backend != "astra_cad_blender_v1"
+        and (budget_profile.backend not in {"astra_cad_blender_v1", "artisan_v1"}
              or float(stage_caps["content_agents"]) <= budget_profile.content_agents_maximum)
         and (
             not diagnostic_only

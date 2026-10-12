@@ -1,5 +1,10 @@
 # Astra task-object authoring
 
+October 12, 2026 owner direction replaces this backend for new requests with
+[`artisan_v1`](task_object_artisan_authoring.md). This document describes the
+explicit historical route retained for replay/adoption. Production activation
+of the migration remains on hold until the approved Astra dishwasher submission.
+
 This is the ADP-009 development-only construction dependency for the day-14
 scene rehearsal and day-21 two-policy diagnostic. Completion evidence is a
 retained authoring program, exact-dimension mesh and USDZ, source comparison
@@ -16,9 +21,9 @@ review preserves measured values and labels estimates with ranges and evidence.
 
 ## Production selection and runtime
 
-New task materialization selects `astra_cad_blender_v1` by default and records
-the choice in its immutable stage-three configuration. An explicitly selected
-`content_agents` backend remains available for compatibility. Previously sealed
+Issued Astra configurations record `astra_cad_blender_v1` in their immutable
+stage-three configuration. An explicitly selected `content_agents` backend
+remains available for compatibility. Previously sealed
 stage configurations without the field retain their original execution route;
 old completed stages remain eligible for digest-verified adoption.
 
@@ -33,7 +38,7 @@ creation. Deployment itself grants no model-call or GPU authority.
 
 The existing single-use parent authority still controls spend. An uncompleted
 Astra authoring stage requires a stage allocation of at least USD 5; it is also
-bounded by the parent external-service cap and the USD 15 authoring ceiling.
+bounded by the parent external-service cap and the historical USD 25 profile ceiling.
 The backend does not raise an existing cap. A completed adopted authoring stage
 requires no new authoring allocation. API transport retries are disabled, and
 unpriced failed requests retain their full reservation. Stable instruction

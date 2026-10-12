@@ -399,7 +399,7 @@ def _handler(
             "toolchain_digest": toolchain_digest,
             "construction_envelope": dict(envelope),
         }
-        if configuration.get("authoring_backend") == "astra_cad_blender_v1" and input_path.exists():
+        if configuration.get("authoring_backend") in {"astra_cad_blender_v1", "artisan_v1"} and input_path.exists():
             if (_read(input_path, code="astra_producer_retained_input_invalid") != input_value
                     or _read(dependency_path, code="astra_producer_retained_dependencies_invalid") != list(dependency_results)):
                 raise TaskEvaluationSceneConfigurationStageProducerError("astra_producer_retained_input_changed")
@@ -439,6 +439,21 @@ def _handler(
         log_path = output_root / "stage_producer.log"
         timeout_seconds = _STAGE_TIMEOUTS_SECONDS[identity.adapter_id]
         run_environment[STAGE_DEADLINE_EPOCH_ENV] = str(time.time() + timeout_seconds)
+        if configuration.get("authoring_backend") == "artisan_v1":
+            deadline_path = output_root / "artisan_stage_deadline.v1.json"
+            if deadline_path.exists():
+                retained = _read(deadline_path, code="artisan_stage_deadline_invalid")
+                if retained.get("configuration_sha256") != input_value["configuration_sha256"]:
+                    raise TaskEvaluationSceneConfigurationStageProducerError("artisan_deadline_input_changed")
+            else:
+                retained = {"configuration_sha256": input_value["configuration_sha256"],
+                            "deadline_epoch": float(run_environment[STAGE_DEADLINE_EPOCH_ENV])}
+                deadline_path.write_text(canonical_json(retained) + "\n")
+            remaining = float(retained["deadline_epoch"]) - time.time()
+            if remaining <= 0:
+                raise TaskEvaluationSceneConfigurationStageProducerError("artisan_stage_deadline_exhausted")
+            timeout_seconds = min(timeout_seconds, remaining)
+            run_environment[STAGE_DEADLINE_EPOCH_ENV] = str(retained["deadline_epoch"])
         try:
             completed = runner(
                 [str(executable)],

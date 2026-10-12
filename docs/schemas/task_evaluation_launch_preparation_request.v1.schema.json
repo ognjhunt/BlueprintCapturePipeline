@@ -1186,8 +1186,7 @@
         },
         "hard_cap_usd": {
           "type": "number",
-          "exclusiveMinimum": 0,
-          "maximum": 36.76
+          "exclusiveMinimum": 0
         },
         "hard_ttl_seconds": {
           "type": "integer",
@@ -1217,8 +1216,7 @@
               "properties": {
                 "maximum_cost_usd": {
                   "type": "number",
-                  "minimum": 0,
-                  "maximum": 30.76
+                  "minimum": 0
                 },
                 "maximum_requests": {
                   "type": "integer",
@@ -1246,8 +1244,7 @@
                     },
                     "content_agents": {
                       "type": "number",
-                      "minimum": 0,
-                      "maximum": 25
+                      "minimum": 0
                     }
                   }
                 }
@@ -1255,11 +1252,22 @@
             },
             "anthropic": {
               "type": "object",
-              "required": ["maximum_cost_usd", "maximum_requests"],
+              "required": [
+                "maximum_cost_usd",
+                "maximum_requests"
+              ],
               "additionalProperties": false,
               "properties": {
-                "maximum_cost_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 7},
-                "maximum_requests": {"type": "integer", "minimum": 1, "maximum": 32}
+                "maximum_cost_usd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 7
+                },
+                "maximum_requests": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 32
+                }
               }
             }
           }
@@ -1297,12 +1305,19 @@
       "type": "string",
       "enum": [
         "content_agents",
-        "astra_cad_blender_v1"
+        "astra_cad_blender_v1",
+        "artisan_v1"
       ]
     },
-    "replacement_authoring_model_provider": {"const": "anthropic"},
-    "replacement_authoring_agent_runtime": {"const": "openai_agents_api"},
-    "replacement_authoring_model": {"const": "gpt-6.1-sol"}
+    "replacement_authoring_model_provider": {
+      "const": "anthropic"
+    },
+    "replacement_authoring_agent_runtime": {
+      "const": "openai_agents_api"
+    },
+    "replacement_authoring_model": {
+      "const": "gpt-6.1-sol"
+    }
   },
   "allOf": [
     {
@@ -1571,7 +1586,10 @@
         ],
         "properties": {
           "replacement_authoring_backend": {
-            "const": "astra_cad_blender_v1"
+            "enum": [
+              "astra_cad_blender_v1",
+              "artisan_v1"
+            ]
           }
         }
       },
@@ -1600,6 +1618,47 @@
                         "properties": {
                           "content_agents": {
                             "maximum": 5
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "replacement_authoring_backend"
+        ],
+        "properties": {
+          "replacement_authoring_backend": {
+            "const": "artisan_v1"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "spend": {
+            "properties": {
+              "hard_cap_usd": {
+                "maximum": 36.76
+              },
+              "external_service_caps": {
+                "properties": {
+                  "openai": {
+                    "properties": {
+                      "maximum_cost_usd": {
+                        "maximum": 30.76
+                      },
+                      "stage_max_cost_usd": {
+                        "properties": {
+                          "content_agents": {
+                            "maximum": 25
                           }
                         }
                       }

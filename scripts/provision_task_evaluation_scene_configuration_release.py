@@ -216,17 +216,27 @@ def provision_scene_configuration_release(
     browser_executable: str | Path,
     node_modules_root: str | Path,
     artifixer_root: str | Path,
-    content_agents_root: str | Path,
-    text_to_cad_root: str | Path,
-    multi_agent_cad_root: str | Path,
+    content_agents_root: str | Path | None = None,
+    text_to_cad_root: str | Path | None = None,
+    multi_agent_cad_root: str | Path | None = None,
     readback: Readback,
     readback_actor: str,
     astra_blender_archive_path: str | Path | None = None,
     website_mapanything_template: str | Path | None = None,
+    authoring_backend: str = "artisan_v1",
+    artisan_root: str | Path | None = None,
+    artisan_site_packages_root: str | Path | None = None,
+    artisan_blender_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Publish or reopen the two immutable runtime trees for one release."""
 
     repository = Path(repository_root).expanduser().resolve()
+    if authoring_backend not in {"artisan_v1", "astra_cad_blender_v1", "content_agents"}:
+        raise ValueError("scene_configuration_release_authoring_backend_invalid")
+    if authoring_backend == "artisan_v1" and not all((artisan_root, artisan_site_packages_root, artisan_blender_root)):
+        raise ValueError("scene_configuration_release_artisan_installed_runtime_required")
+    if authoring_backend != "artisan_v1" and not all((content_agents_root, text_to_cad_root, multi_agent_cad_root)):
+        raise ValueError("scene_configuration_release_explicit_legacy_runtime_required")
     runtimes = Path(runtime_root).expanduser().absolute()
     splat_root = runtimes / "splat-render" / source_commit
     toolchain_root = runtimes / "scene-configuration" / source_commit
@@ -258,7 +268,10 @@ def provision_scene_configuration_release(
             root=toolchain_root,
             expected_source_commit=source_commit,
         )
-        if astra_blender_archive_path is not None:
+        if authoring_backend == "artisan_v1":
+            from blueprint_pipeline.task_evaluation_scene_configuration_artisan_runtime import require_toolchain_artisan_runtime
+            require_toolchain_artisan_runtime(toolchain_root)
+        if authoring_backend == "astra_cad_blender_v1" and astra_blender_archive_path is not None:
             from blueprint_pipeline.task_evaluation_scene_configuration_astra_runtime import declared_python_profile
             if declared_python_profile(toolchain_root) != 'astra_asset_authoring':
                 raise ValueError('scene_configuration_existing_toolchain_lacks_requested_astra_runtime')
@@ -285,22 +298,24 @@ def provision_scene_configuration_release(
                 expected_blueprint_commit=source_commit,
                 artifixer_root=artifixer_root,
                 vgg16_weights_path=vgg16_weights,
-                python_runtime_profile=('astra_asset_authoring' if astra_blender_archive_path else 'base'),
+                python_runtime_profile=('artisan_source_validation' if authoring_backend == "artisan_v1" else
+                                        'astra_asset_authoring' if authoring_backend == "astra_cad_blender_v1" and astra_blender_archive_path else 'base'),
                 output_root=component_packages[
                     "artifixer3d_observed_object_removal"
                 ],
             )
-            build_content_agents_scene_configuration_component(
-                repository_root=repository,
-                expected_blueprint_commit=source_commit,
-                content_agents_root=content_agents_root,
-                text_to_cad_root=text_to_cad_root,
-                multi_agent_cad_root=multi_agent_cad_root,
-                blender_archive_path=astra_blender_archive_path,
-                output_root=component_packages[
-                    "content_agents_rigid_replacement"
-                ],
-            )
+            if authoring_backend == "artisan_v1":
+                from scripts.build_task_evaluation_scene_configuration_artisan_component import build_artisan_scene_configuration_component
+                build_artisan_scene_configuration_component(repository_root=repository,
+                    expected_blueprint_commit=source_commit, artisan_root=artisan_root,
+                    site_packages_root=artisan_site_packages_root, blender_root=artisan_blender_root,
+                    output_root=component_packages["content_agents_rigid_replacement"])
+            else:
+                build_content_agents_scene_configuration_component(
+                    repository_root=repository, expected_blueprint_commit=source_commit,
+                    content_agents_root=content_agents_root, text_to_cad_root=text_to_cad_root,
+                    multi_agent_cad_root=multi_agent_cad_root, blender_archive_path=astra_blender_archive_path,
+                    output_root=component_packages["content_agents_rigid_replacement"])
             build_native_import_scene_configuration_component(
                 repository_root=repository,
                 expected_blueprint_commit=source_commit,
@@ -364,10 +379,14 @@ def main() -> int:
     parser.add_argument("--browser-executable", required=True)
     parser.add_argument("--node-modules-root", required=True)
     parser.add_argument("--artifixer-root", required=True)
-    parser.add_argument("--content-agents-root", required=True)
-    parser.add_argument("--text-to-cad-root", required=True)
-    parser.add_argument("--multi-agent-cad-root", required=True)
+    parser.add_argument("--content-agents-root")
+    parser.add_argument("--text-to-cad-root")
+    parser.add_argument("--multi-agent-cad-root")
     parser.add_argument("--astra-blender-archive")
+    parser.add_argument("--authoring-backend", choices=("artisan_v1", "astra_cad_blender_v1", "content_agents"), default="artisan_v1")
+    parser.add_argument("--artisan-root", default=os.getenv("BLUEPRINT_ARTISAN_UPSTREAM_ROOT"))
+    parser.add_argument("--artisan-site-packages-root", default=os.getenv("BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT"))
+    parser.add_argument("--artisan-blender-root", default=os.getenv("BLUEPRINT_ARTISAN_BLENDER_ROOT"))
     parser.add_argument("--website-mapanything-template", default=os.getenv(
         "BLUEPRINT_WEBSITE_MAPANYTHING_DEPLOYMENT_TEMPLATE",
         "/etc/blueprint/website-mapanything-runtime.json"
@@ -397,6 +416,10 @@ def _provision_from_arguments(args: argparse.Namespace, readback: Readback) -> d
         text_to_cad_root=args.text_to_cad_root,
         multi_agent_cad_root=args.multi_agent_cad_root,
         astra_blender_archive_path=args.astra_blender_archive,
+        authoring_backend=getattr(args, "authoring_backend", "artisan_v1"),
+        artisan_root=getattr(args, "artisan_root", None),
+        artisan_site_packages_root=getattr(args, "artisan_site_packages_root", None),
+        artisan_blender_root=getattr(args, "artisan_blender_root", None),
         website_mapanything_template=args.website_mapanything_template,
         readback=readback,
         readback_actor=f"service-account:{args.readback_user}",

@@ -102,7 +102,7 @@ def execute_scene_configuration_stage_chain(
                         stages[:next(i for i, stage in enumerate(stages) if stage["stage_id"] == stage_limit) + 1])
     results: list[dict[str, Any]] = []
     astra_resume = None
-    if any(value.get("authoring_backend") == "astra_cad_blender_v1" for value, _ in configurations.values()):
+    if any(value.get("authoring_backend") in {"astra_cad_blender_v1", "artisan_v1"} for value, _ in configurations.values()):
         from .task_evaluation_astra_stage_resume import bind_same_root_resume
         astra_resume = bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch,
                                             stage_limit=stage_limit)
@@ -146,7 +146,7 @@ def execute_scene_configuration_stage_chain(
                 f"scene_configuration_provider_dependency_invalid:{stage_id}"
             )
         resuming_astra = (astra_resume is not None and stage_output.exists()
-                          and configuration.get("authoring_backend") == "astra_cad_blender_v1")
+                          and configuration.get("authoring_backend") in {"astra_cad_blender_v1", "artisan_v1"})
         stage_output.mkdir(mode=0o750, exist_ok=resuming_astra)
         execution_class = str(stage.get("execution_class") or "")
         if execution_class == "gpu_canary":

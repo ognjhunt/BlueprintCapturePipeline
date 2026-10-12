@@ -175,6 +175,22 @@ def validate_website_authoring_disclosure(*, envelope, configuration, rights):
 def preflight_website_authoring_request(*, envelope, configurations):
     """Run the actual stage-3 request translation on CPU before renting a worker."""
     from .task_evaluation_scene_configuration_source_preflight import _reference
+    stage = envelope["recipe"]["stage_sequence"][2]
+    configuration = configurations[stage["stage_id"]]
+    if configuration.get("authoring_backend") == "artisan_v1":
+        from .task_object_authoring_contracts import build_construction_request, file_record
+        candidate, candidate_path = _reference(envelope, PREFIX + ".candidate")
+        frames = [_reference(envelope, PREFIX + f".frames.{index}")[1]
+                  for index in range(len(envelope["request"]["scene"]["website_native_inputs"]["frames"]))]
+        _, rights_path = _reference(envelope, "scene.rights.admission")
+        validate_website_authoring_disclosure(envelope=envelope, configuration=configuration,
+            rights=json.loads(rights_path.read_text()))
+        stage_input = {"run_id": envelope["run_id"], "source_commit": envelope["expected_production_commit"],
+                       "configuration_sha256": stage["configuration"]["digest"],
+                       "construction_envelope": envelope, "configuration": configuration}
+        return build_construction_request(stage_input,
+            [{"output_artifacts": [{**candidate, "path": str(candidate_path), "role": "source_object_candidate_mesh"}]}],
+            frames, {"source_frames": [file_record(frame) for frame in frames], "input_kind": "retained_website_capture"})
     from .task_evaluation_scene_configuration_astra_driver import (
         ARTICULATED_AUTHORING_SCHEMA_VERSION,
         build_articulated_authoring_requests,

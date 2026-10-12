@@ -1023,6 +1023,17 @@ def execute_content_agents_rigid_replacement(
         ) from exc
     identity = configuration.get("replacement_identity")
     required_output = configuration.get("required_output")
+    if configuration.get("authoring_backend") == "artisan_v1":
+        from .task_object_artisan_candidate import verify_artisan_candidate
+        verify_artisan_candidate(receipt=receipt, graph=graph, asset=asset, configuration=configuration,
+            source_candidate_digest=source_candidate_record["digest"])
+        if receipt["graph_sha256"] != _sha256_and_size(graph_path)[0]:
+            raise TaskEvaluationSceneConfigurationAdapterError("artisan_candidate_graph_bytes_changed")
+        return _stage_result(stage=stage, configuration_path=configuration_path, output_artifacts=[
+            {"role": "replacement_asset", **_copy_artifact(asset, output_root / "replacement_asset.usdz")},
+            {"role": "replacement_authoring_receipt", **_copy_artifact(receipt_path, output_root / "replacement_authoring_receipt.v1.json")},
+            {"role": "replacement_graph_spec", **_copy_artifact(graph_path, output_root / "replacement_graph_spec.v1.json")},
+        ])
     expected_physics_bounds = (
         {
             "mass_kg": required_output.get("mass_kg_bounds"),
@@ -1280,6 +1291,9 @@ def execute_simready_static_rigid_qualification(
     else:
         qualifier = qualify_scene_configuration_rigid_asset_static
         expected_schema = STATIC_QUALIFICATION_SCHEMA_VERSION
+    if authoring.get("backend") == "artisan_v1":
+        from .task_object_artisan_candidate import qualify_artisan_asset_static
+        qualifier = qualify_artisan_asset_static
     qualification = qualifier(
         asset_path=asset,
         graph_spec=graph_spec,

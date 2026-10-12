@@ -8,6 +8,8 @@ the production preparation service after admission.
 
 from __future__ import annotations
 
+from .task_object_authoring_backend import request_authoring_cap
+
 import json
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
@@ -101,7 +103,8 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
     """Validate a request for NEW execution under the current budget contract."""
     from .task_evaluation_retained_preparation_contract import ScenePreparationBudget
     try:
-        profile = scene_configuration_budget_profile(value.get("replacement_authoring_backend", "content_agents"))
+        profile = scene_configuration_budget_profile(value.get("replacement_authoring_backend", "content_agents"),
+            authoring_max_cost_usd=request_authoring_cap(value))
     except (AttributeError, ValueError) as exc:
         raise TaskEvaluationLaunchPreparationContractError("launch_preparation_scene_configuration_backend_invalid") from exc
     budget = ScenePreparationBudget('current_execution', REQUIRED_PARENT_TTL_SECONDS,

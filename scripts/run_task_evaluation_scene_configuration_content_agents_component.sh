@@ -9,4 +9,4 @@ fi
 
 export BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT="$COMPONENT_ROOT"
 exec "$PYTHON_BIN" -m \
-  blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver
+  blueprint_pipeline.task_evaluation_scene_configuration_authoring_driver

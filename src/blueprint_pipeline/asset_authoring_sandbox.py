@@ -23,7 +23,7 @@ class AssetSandboxError(RuntimeError):
 class SandboxedAssetRunner:
     def __init__(self, *, read_roots: Sequence[Path], write_root: Path,
                  executable_roots: Sequence[Path] = (), library_environment=None,
-                 library_executables: Sequence[Path] = ()) -> None:
+                 library_executables: Sequence[Path] = (), write_paths: Sequence[Path] | None = None) -> None:
         self.write_root = Path(write_root).resolve(strict=True)
         self.read_roots = tuple(Path(p).resolve(strict=True) for p in read_roots)
         self.executable_roots = tuple(Path(p).resolve(strict=True) for p in executable_roots)
@@ -31,6 +31,10 @@ class SandboxedAssetRunner:
         if set(self.library_environment) - {'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH'}:
             raise AssetSandboxError('asset_sandbox_library_environment_invalid')
         self.library_executables = tuple(Path(p).resolve(strict=True) for p in library_executables)
+        self.write_paths = None if write_paths is None else tuple(Path(p).resolve(strict=True) for p in write_paths)
+        if self.write_paths is not None and (not self.write_paths or any(
+                not p.is_relative_to(self.write_root) or p == self.write_root for p in self.write_paths)):
+            raise AssetSandboxError('asset_sandbox_write_paths_invalid')
         forbidden = (Path.home(), Path('/'), Path('/etc'), Path('/Users'), Path('/var'))
         if self.write_root in forbidden or any(p in forbidden for p in self.read_roots):
             raise AssetSandboxError('asset_sandbox_root_too_broad')
@@ -123,7 +127,7 @@ class SandboxedAssetRunner:
             from .asset_landlock import run_with_landlock
             return run_with_landlock(argv, roots=roots, write_root=self.write_root,
                 cwd=directory, env=environment, timeout=min(float(timeout), 900),
-                check=check, capture_output=capture_output, text=text)
+                check=check, capture_output=capture_output, text=text, write_paths=self.write_paths)
         loader_keys = {'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'PYTHONPATH'}
         launcher_environment = {k: v for k, v in environment.items() if k not in loader_keys}
         # Authorize the resolved binary above, but preserve its invocation name:
@@ -156,8 +160,9 @@ class SandboxedAssetRunner:
                 '(allow file-read-data (literal "/"))',
                 '(allow file-read* ' + ' '.join('(subpath ' + json.dumps(p) + ')'
                                                for p in readable) + ')',
-                '(allow file-write* (subpath ' + json.dumps(str(self.write_root)) +
-                ') (literal "/dev/null"))',
+                '(allow file-write* ' + ' '.join('(subpath ' + json.dumps(str(p)) + ')'
+                    for p in (self.write_paths if self.write_paths is not None else (self.write_root,)))
+                + ' (literal "/dev/null"))',
             ])
             command = [self.launcher, '-p', profile, *target]
         else:
@@ -180,7 +185,11 @@ class SandboxedAssetRunner:
                 command += ['--ro-bind', str(path), str(path)]
             for root in dict.fromkeys(roots):
                 command += ['--ro-bind', str(root), str(root)]
-            command += ['--bind', str(self.write_root), str(self.write_root),
+            command += ['--ro-bind' if self.write_paths is not None else '--bind', str(self.write_root), str(self.write_root)]
+            if self.write_paths is not None:
+                for path in self.write_paths:
+                    command += ['--bind', str(path), str(path)]
+            command += [
                         '--chdir', str(directory), '--']
             if privileged:
                 # A trusted service creates kernel namespaces where the host

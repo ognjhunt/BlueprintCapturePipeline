@@ -401,11 +401,11 @@ def test_stale_execution_authority_holds_intake(tmp_path):
 
 
 def test_anthropic_authoring_requires_explicit_matching_terms_in_new_authority(tmp_path):
-    missing = _compile(tmp_path, spend={**SPEND, "authoring_provider": "anthropic"})
+    missing = _compile(tmp_path, spend={**SPEND, "replacement_authoring_backend": "astra_cad_blender_v1", "authoring_provider": "anthropic"})
     assert missing["status"] == "needs_input"
     assert "website_anthropic_provider_terms_authority_required" in missing["blockers"]
     terms = "sha256:" + "a" * 64
-    approved = _compile(tmp_path, spend={**SPEND, "authoring_provider": "anthropic",
+    approved = _compile(tmp_path, spend={**SPEND, "replacement_authoring_backend": "astra_cad_blender_v1", "authoring_provider": "anthropic",
         "anthropic_provider_terms_reference": terms})
     assert approved["status"] == "intake_ready", approved["blockers"]
     assert "anthropic" in approved["intake_request"]["execution"]["allowed_providers"]
@@ -562,7 +562,7 @@ def test_source_far_above_support_is_not_snapped_down_to_floor(tmp_path):
     assert result["compose_back"]["pose_world"]["support_snap_runtime_units"] == 0
 
 
-def test_website_task_and_original_frames_reach_existing_astra_request(tmp_path):
+def test_website_task_and_original_frames_reach_artisan_request(tmp_path):
     from blueprint_pipeline.website_native_inputs import preflight_website_authoring_request
     from tests.test_website_native_inputs import packet
     # Exercise the website's complete consent and source bindings, rather than
@@ -572,12 +572,11 @@ def test_website_task_and_original_frames_reach_existing_astra_request(tmp_path)
                   if row["contract_path"] == "scene.source_manifest")
     prepared = json.loads(Path(source["materialized_path"]).read_text())
     request = preflight_website_authoring_request(envelope=envelope, configurations=configs)
-    assert configs["stage-3"]["construction_constraints"]["confirmed_task"] in request.construction_constraints
-    assert "rebuild_only_this_subject" in request.construction_constraints
-    assert request.dimension_authority == "estimated"
-    assert request.physical_review_input.measured.mass_kg is None
-    assert request.source_frames[0].description.startswith("Original website capture frame")
-    assert request.dimensions_m == pytest.approx(prepared["physics"]["dimensions_m"])
+    assert request["construction_constraints"] == configs["stage-3"]["construction_constraints"]
+    assert request["construction_constraints"]["rebuild_only_this_subject"] is True
+    assert request["dimension_authority"] == "estimated"
+    assert request["source_frames"] and request["view_selection"]["omitted"] == []
+    assert request["dimensions_m"] == pytest.approx(prepared["physics"]["dimensions_m"])
 
 
 def _anchored_base_scene(root: Path, source_geometry, *, rotation=np.eye(3), translation=(0.1, 0.05, 0.02),

@@ -167,20 +167,21 @@ def _receipt_mechanism(receipt: Mapping[str, Any]) -> dict[str, Any]:
     # Passive joints (dishwasher racks) move, are declared by the graph, hang
     # from the root and are never the task joint.
     passive = [row for row in graph["joints"] if row["role"] == "passive"]
+    artisan = receipt.get("backend") == "artisan_v1"
     axis = [float(value) for value in target.get("axis") or [0.0, 0.0, 0.0]]
     index = max(range(3), key=lambda i: abs(axis[i]))
     if (len(roots) != 1 or len(targets) != 1 or len(links) < 2
             or links != {row["link_id"] for row in graph["links"]}
             or target["joint_type"] not in _TASK_JOINT_TYPES
-            or target["parent_link_id"] != roots[0]
+            or (not artisan and target["parent_link_id"] != roots[0])
             or declared.get("joint_id") != target["joint_id"]
             or declared.get("joint_type") != target["joint_type"]
-            or any(row["joint_type"] != "fixed" or row["parent_link_id"] != roots[0]
+            or any(row["joint_type"] != "fixed" or (not artisan and row["parent_link_id"] != roots[0])
                    for row in graph["joints"] if row["role"] not in {"target", "passive"})
-            or any(row["joint_type"] not in _TASK_JOINT_TYPES or row["parent_link_id"] != roots[0]
+            or any(row["joint_type"] not in _TASK_JOINT_TYPES or (not artisan and row["parent_link_id"] != roots[0])
                    for row in passive)
-            or not math.isclose(abs(axis[index]), 1.0, abs_tol=1e-6)
-            or any(abs(axis[i]) > 1e-6 for i in range(3) if i != index)):
+            or (not artisan and (not math.isclose(abs(axis[index]), 1.0, abs_tol=1e-6)
+                    or any(abs(axis[i]) > 1e-6 for i in range(3) if i != index)))):
         raise RuntimeError("scene_configuration_native_import_mechanism_invalid")
     return {
         "links": frozenset(links),
@@ -189,7 +190,7 @@ def _receipt_mechanism(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "task_child_link_id": target["child_link_id"],
         # Joint frames rotate only by 180 degrees about X, so the USD token is
         # the axis-aligned direction of the graph axis.
-        "task_joint_usd_axis": "XYZ"[index],
+        "task_joint_usd_axis": str(declared.get("usd_axis") or "XYZ"[index]),
         "fixed_joint_count": len(graph["joints"]) - 1 - len(passive),
         "passive_joint_ids": frozenset(row["joint_id"] for row in passive),
         "reset_tolerance": float(target["reset_tolerance"]),
@@ -253,7 +254,11 @@ def _articulated_structure_observation(
             strict=True,
         )):
             raise RuntimeError("scene_configuration_native_import_link_physics_mismatch")
-        own = sorted(path for path in collision_paths if path.startswith(str(prim.GetPath()) + "/"))
+        if static_receipt.get("backend") == "artisan_v1":
+            from .task_object_artisan_exports import _owner
+            own = sorted(str(c.GetPath()) for c in collisions if _owner(c, usd_physics) == prim)
+        else:
+            own = sorted(path for path in collision_paths if path.startswith(str(prim.GetPath()) + "/"))
         declared = sorted(_imported_path(path) for path in expected_link["collision_prim_paths"])
         if not own or own != declared:
             raise RuntimeError("scene_configuration_native_import_link_collision_mismatch")
@@ -264,6 +269,27 @@ def _articulated_structure_observation(
             "diagonal_inertia_kg_m2": inertia,
             "collision_prim_paths": own,
         }
+        if static_receipt.get("backend") == "artisan_v1":
+            from pxr import UsdShade
+            principal = mass_api.GetPrincipalAxesAttr().Get()
+            axes = [float(principal.GetReal()), *map(float, principal.GetImaginary())]
+            if any(not math.isclose(a, b, abs_tol=1e-6) for a, b in zip(axes, expected_link["principal_axes_wxyz"], strict=True)):
+                raise RuntimeError("scene_configuration_native_import_principal_axes_mismatch")
+            materials = {}
+            for path in own:
+                material, _ = UsdShade.MaterialBindingAPI(stage.GetPrimAtPath(path)).ComputeBoundMaterial(materialPurpose="physics")
+                if not material or not material.GetPrim().HasAPI(usd_physics.MaterialAPI):
+                    raise RuntimeError("scene_configuration_native_import_material_unbound")
+                api = usd_physics.MaterialAPI(material.GetPrim())
+                materials[str(material.GetPath())] = {"path": str(material.GetPath()),
+                    "static_friction": float(api.GetStaticFrictionAttr().Get()),
+                    "dynamic_friction": float(api.GetDynamicFrictionAttr().Get()),
+                    "restitution": float(api.GetRestitutionAttr().Get())}
+            expected_materials = {_imported_path(row["path"]): row for row in expected_link["physics_materials"]}
+            if set(materials) != set(expected_materials) or any(not math.isclose(materials[path][name], expected_materials[path][name], abs_tol=1e-6)
+                    for path in materials for name in ("static_friction", "dynamic_friction", "restitution")):
+                raise RuntimeError("scene_configuration_native_import_material_mismatch")
+            link_readback[link_id].update(principal_axes_wxyz=axes, physics_materials=list(materials.values()))
     joints = [prim for prim in prims if prim.IsA(usd_physics.Joint)]
     expected_joint_paths = sorted(_imported_path(path) for path in expected["joint_prim_paths"])
     if (sorted(str(prim.GetPath()) for prim in joints) != expected_joint_paths
@@ -291,12 +317,26 @@ def _articulated_structure_observation(
     if (axis != mechanism["task_joint_usd_axis"] or authored_axis is None
             or any(not math.isclose(float(authored_axis[i]), graph_axis[i], abs_tol=1e-6) for i in range(3))):
         raise RuntimeError("scene_configuration_native_import_task_axis_mismatch")
+    if static_receipt.get("backend") == "artisan_v1":
+        from pxr import Gf, UsdGeom, Usd
+        cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        joint = usd_physics.Joint(task_prim)
+        parent = list(joint.GetBody0Rel().GetTargets())
+        if len(parent) != 1:
+            raise RuntimeError("scene_configuration_native_import_task_joint_body_invalid")
+        matrix = cache.GetLocalToWorldTransform(stage.GetPrimAtPath(parent[0])) * cache.GetLocalToWorldTransform(stage.GetPrimAtPath(_IMPORTED_ROOT)).GetInverse()
+        direction = Gf.Rotation(Gf.Quatd(joint.GetLocalRot0Attr().Get())).TransformDir(Gf.Vec3d(*{
+            "X": [1, 0, 0], "Y": [0, 1, 0], "Z": [0, 0, 1]}[axis]))
+        actual_axis = list(matrix.TransformDir(direction))
+        if any(not math.isclose(a, b, abs_tol=1e-6) for a, b in zip(actual_axis, graph_axis, strict=True)):
+            raise RuntimeError("scene_configuration_native_import_physical_joint_axis_mismatch")
     if graph_target["child_link_id"] not in link_ids:
         raise RuntimeError("scene_configuration_native_import_task_joint_body_invalid")
     moving_link_path = link_readback[graph_target["child_link_id"]]["prim_path"]
     root_link_path = link_readback[mechanism["root_link_id"]]["prim_path"]
     task_joint = usd_physics.Joint(task_prim)
-    if ([str(path) for path in task_joint.GetBody0Rel().GetTargets()] != [root_link_path]
+    parent_link_path = link_readback[graph_target["parent_link_id"]]["prim_path"]
+    if ([str(path) for path in task_joint.GetBody0Rel().GetTargets()] != [parent_link_path]
             or [str(path) for path in task_joint.GetBody1Rel().GetTargets()] != [moving_link_path]):
         raise RuntimeError("scene_configuration_native_import_task_joint_body_invalid")
     for row in static_receipt["articulation_graph"]["joints"]:

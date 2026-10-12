@@ -791,6 +791,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]
     authoring_provider = spend.get("authoring_provider", "openai")
+    from .task_object_authoring_backend import DEFAULT_BACKEND, AUTHORING_BACKENDS
+    authoring_backend = spend.get("replacement_authoring_backend", DEFAULT_BACKEND)
+    if authoring_backend not in AUTHORING_BACKENDS:
+        raise ValueError("website_authoring_backend_invalid")
     if authoring_provider not in {"openai", "anthropic"}:
         raise ValueError("website_authoring_provider_invalid")
     contract = None
@@ -911,6 +915,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 "schema_version": coverage["schema_version"], "status": "complete", "digest": coverage["digest"],
                 "reference_frame_count": len(coverage["selected_frames"])}
         authoring_configuration = articulated_stage_three_configuration(
+            authoring_backend=authoring_backend,
             scene_id=task_context["scene_id"],
             replacement_identity={"id": "website-subject-" + task_context["context_digest"][7:27], "version": "v1"},
             source_instance_id=subject_entry["target_id"],
@@ -940,6 +945,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     else:
         physics = screen_physics(dimensions_m)
         authoring_configuration = stage_three_configuration(
+            authoring_backend=authoring_backend,
             scene_id=task_context["scene_id"],
             replacement_identity={"id": "website-subject-" + task_context["context_digest"][7:27], "version": "v1"},
             source_instance_id=subject_entry["target_id"],
@@ -975,8 +981,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             "unknown_surfaces": "Generated completion must remain an explicit assumption.",
         },
     )
-    if contract is not None:
-        # Hold what the builder would refuse before anything is bought.
+    if contract is not None and authoring_configuration.get("authoring_backend") == "astra_cad_blender_v1":
+        # Hold what the legacy builder would refuse before anything is bought.
         from .task_object_articulated_packaging import plan_articulated_assembly
         from .task_object_astra_authoring import AssetAuthoringError
         while True:
@@ -1004,6 +1010,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     owner = dict(spend.get("owner") or {})
     consent = dict(spend.get("consent") or {})
     if authoring_provider == "anthropic":
+        if authoring_backend != "astra_cad_blender_v1":
+            raise ValueError("website_artisan_provider_unsupported_explicit_legacy_backend_required")
         # This must come from the website's fresh owner-authorized execution
         # authority. A local key or worker environment cannot opt a scene in.
         terms = spend.get("anthropic_provider_terms_reference")
@@ -1023,6 +1031,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 or spend.get("task_context_digest") != task_context["context_digest"]):
             blockers.append("website_agents_api_signed_authority_required")
         else:
+            if authoring_backend != "astra_cad_blender_v1":
+                raise ValueError("website_artisan_agents_api_unsupported_explicit_legacy_backend_required")
             authoring_configuration.update(authoring_model_provider="openai",
                 authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6.1-sol",
                 agents_api_policy=dict(spend["agents_api_policy"]))

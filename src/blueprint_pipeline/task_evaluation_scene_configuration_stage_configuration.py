@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .task_object_authoring_backend import ARTISAN_BACKEND, ARTISAN_REVISION, ARTISAN_MODELS, AUTHORING_BACKENDS, frozen_authoring_cap, request_authoring_cap
+
 import math
 import re
 from collections.abc import Mapping
@@ -163,7 +165,10 @@ def static_qualification_checks_valid(value: Any) -> bool:
 
     from .task_evaluation_scene_configuration_submission_records import (
         ARTICULATED_STATIC_CHECKS,
+        ARTISAN_ARTICULATED_STATIC_CHECKS,
     )
+    if isinstance(value, Mapping) and set(value) == set(ARTISAN_ARTICULATED_STATIC_CHECKS):
+        return _articulated_check_set_valid(value, ARTISAN_ARTICULATED_STATIC_CHECKS)
 
     if isinstance(value, Mapping) and set(value) == set(ARTICULATED_STATIC_CHECKS):
         return _articulated_check_set_valid(value, ARTICULATED_STATIC_CHECKS)
@@ -407,8 +412,20 @@ def _stage_three_refusal(
 ) -> str | None:
     identity = configuration.get("replacement_identity")
     required = configuration.get("required_output")
-    if configuration.get("authoring_backend", "content_agents") not in {"content_agents", "astra_cad_blender_v1"}:
+    if configuration.get("authoring_backend", "content_agents") not in AUTHORING_BACKENDS:
         return "authoring_backend"
+    if configuration.get("authoring_backend") == ARTISAN_BACKEND:
+        try:
+            cap = frozen_authoring_cap(configuration)
+            requested = request_authoring_cap(envelope.get("request") or {})
+        except (ValueError, KeyError, TypeError):
+            return "authoring_budget"
+        if ((requested is not None and cap != requested)
+                or configuration.get("authoring_models") != ARTISAN_MODELS
+                or configuration.get("authoring_framework", {}).get("revision") != ARTISAN_REVISION
+                or configuration.get("authoring_agent_runtime") is not None
+                or configuration.get("authoring_model_provider", "openai") != "openai"):
+            return "artisan_framework_or_budget_binding"
     authoring_provider = configuration.get("authoring_model_provider", "openai")
     if authoring_provider not in {"openai", "anthropic"}:
         return "authoring_model_provider"
@@ -513,7 +530,8 @@ def _stage_three_refusal(
             or required.get("articulation_root") is not True
             or required.get("single_articulation_root") is not True
             or required.get("task_joint_count") != 1
-            or required.get("non_task_joints_fixed") is not True
+            or required.get("non_task_joints_unactuated" if configuration.get("authoring_backend") == ARTISAN_BACKEND
+                            else "non_task_joints_fixed") is not True
             or required.get("task_part_handle_required") is not True
             or required.get("generated_interior_labelled") is not True
             or required.get("units") != "meters"

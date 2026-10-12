@@ -164,6 +164,7 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
     monkeypatch.setattr(website, "provision_website_geometry_runtime", provision_website)
 
     result = subject.provision_scene_configuration_release(
+        authoring_backend="astra_cad_blender_v1" if astra else "content_agents",
         repository_root=tmp_path / "release",
         source_commit=commit,
         runtime_root=tmp_path / "system-runtimes",

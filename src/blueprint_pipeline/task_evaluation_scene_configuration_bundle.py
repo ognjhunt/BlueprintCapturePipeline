@@ -678,6 +678,9 @@ def build_scene_configuration_provider_bundle(
     try:
         from .task_evaluation_scene_configuration_astra_runtime import declared_python_profile
         python_profile = declared_python_profile(toolchain)
+        if any(value.get("authoring_backend") == "artisan_v1" for value in configuration_values.values()):
+            from .task_evaluation_scene_configuration_artisan_runtime import require_toolchain_artisan_runtime
+            require_toolchain_artisan_runtime(toolchain)
         if (any(value.get("authoring_backend") == "astra_cad_blender_v1"
                 for value in configuration_values.values()) and python_profile != "astra_asset_authoring"):
             raise ValueError("scene_configuration_astra_runtime_not_sealed")
@@ -1113,7 +1116,9 @@ def build_scene_configuration_provider_bundle(
         "provider_python_runtime_required": True,
         "replacement_authoring_backend": next((value["authoring_backend"]
             for value in configuration_values.values()
-            if value.get("authoring_backend") == "astra_cad_blender_v1"), "content_agents"),
+            if value.get("authoring_backend") in {"astra_cad_blender_v1", "artisan_v1"}), "content_agents"),
+        **next(({"authoring_max_cost_usd": value["authoring_budget"]["maximum_cost_usd"]}
+                for value in configuration_values.values() if value.get("authoring_backend") == "artisan_v1"), {}),
         **({"replacement_authoring_model_provider": "anthropic"}
            if any(value.get("authoring_model_provider") == "anthropic"
                   for value in configuration_values.values()) else {}),

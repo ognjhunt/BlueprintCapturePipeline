@@ -15,6 +15,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .task_object_authoring_backend import ARTISAN_BACKEND, new_authoring_budget, positive_cost
+
 
 GPU_STAGE_TIMEOUT_SECONDS: Mapping[str, int] = {
     # One first appearance pass plus one bounded selective repair pass. PR #1361
@@ -88,13 +90,23 @@ class SceneConfigurationBudgetProfile:
         return values
 
 
-def scene_configuration_budget_profile(backend: str = "content_agents") -> SceneConfigurationBudgetProfile:
+def scene_configuration_budget_profile(backend: str = "content_agents", *,
+                                       authoring_max_cost_usd: float | None = None) -> SceneConfigurationBudgetProfile:
     """Select only explicit supported backends; absent old declarations stay legacy."""
     if backend == "content_agents":
         return SceneConfigurationBudgetProfile(backend, MIN_CONTENT_AGENTS_SPEND_USD, 5.0,
             MAX_EXTERNAL_SERVICE_SPEND_USD, MAX_ATTEMPT_SPEND_USD,
             round(MAX_EXTERNAL_SERVICE_SPEND_USD - MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
                   - MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD, 6))
+    if backend == ARTISAN_BACKEND:
+        # An issued request supplies its frozen cap; future environment edits
+        # affect quotes only. Signed owner/project allocations still admit spend.
+        cap = positive_cost(new_authoring_budget()["maximum_cost_usd"]
+                            if authoring_max_cost_usd is None else authoring_max_cost_usd)
+        external = round(MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+                         + MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD + cap, 6)
+        return SceneConfigurationBudgetProfile(backend, min(0.01, cap), cap, external,
+            round(MAX_PROVIDER_COMPUTE_SPEND_USD + external, 6), cap)
     if backend != "astra_cad_blender_v1":
         raise ValueError("scene_configuration_authoring_backend_invalid")
     maximum_external = round(MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
@@ -107,7 +119,7 @@ def scene_configuration_budget_profile(backend: str = "content_agents") -> Scene
 def scene_configuration_budget_profile_contract() -> dict[str, Any]:
     """Cross-runtime profile data; selecting a profile grants no spend authority."""
     profiles = {}
-    for backend in ("content_agents", "astra_cad_blender_v1"):
+    for backend in ("content_agents", "astra_cad_blender_v1", ARTISAN_BACKEND):
         profile = scene_configuration_budget_profile(backend)
         default_external = round(sum(profile.stage_caps().values()), 6)
         profiles[backend] = {"authoring_minimum": profile.content_agents_minimum,
