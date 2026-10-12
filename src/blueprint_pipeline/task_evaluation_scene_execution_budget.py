@@ -1,7 +1,8 @@
 """Append-only cumulative budget grants; historical reservations are never refunded.
 
-The authenticated intake issuer may record delegated owner authority. This API
-changes only cumulative spend/count ceilings, never per-action limits or consent.
+The authenticated intake issuer may record delegated owner authority. A grant
+raises the spend/count ceilings, which also bound any single action; consent
+and every other execution bound stay unchanged.
 """
 from __future__ import annotations
 

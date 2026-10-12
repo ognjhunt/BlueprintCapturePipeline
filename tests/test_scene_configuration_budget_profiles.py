@@ -90,8 +90,8 @@ def test_existing_owner_cap_cannot_be_raised_by_selecting_the_astra_profile(tmp_
     value["execution"]["max_total_spend_usd"] = 12
     intent = stage(tmp_path, value)
     proposed = spend_block("astra_cad_blender_v1")["hard_cap_usd"]
-    # Cumulative grants cannot increase the original per-action ceiling.
-    with pytest.raises(SceneIntakeError, match="attempt_spend_exceeds_original_limit"):
+    # Without an owner grant, the original ceiling bounds a single action.
+    with pytest.raises(SceneIntakeError, match="attempt_spend_exceeds_authorized_limit"):
         attempt(tmp_path, intent, cost=proposed)
     stored = json.loads((tmp_path / intent["intent_id"] / "intent.json").read_text())
     assert stored["request"]["execution"]["max_total_spend_usd"] == 12
