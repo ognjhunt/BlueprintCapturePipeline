@@ -9,8 +9,12 @@ on:
   pull_request:
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A pull request keeps only its newest run. Every push to main runs to
+  # completion in its own group: its supply-chain job is the only producer of
+  # that commit's source attestation, and a newer merge cancelling it left the
+  # commit undeployable (4222a4a8, 2026-10-11).
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.ref, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   impact:

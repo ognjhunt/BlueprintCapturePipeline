@@ -40,6 +40,15 @@ def test_full_fallback_keeps_required_diagnostic_native_gate(tmp_path, monkeypat
 
 ROOT = Path(__file__).resolve().parents[1]
 
+import yaml  # noqa: E402
+
+from blueprint_pipeline.pytest_full_lane_evidence import (  # noqa: E402
+    SHARD_INDEX_ENV,
+    SHARD_PLAN_ENV,
+)
+from scripts.full_lane_sharding import SHARD_COUNT  # noqa: E402
+from scripts.verify_deploy_release_provenance import CANONICAL_SHARD_JOB_NAMES  # noqa: E402
+
 
 def test_full_lane_waits_for_requested_native_acceptance():
     import itertools
@@ -205,16 +214,47 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "blueprint_pipeline.pytest_full_lane_evidence" in workflow
     assert "scripts/full_lane_sharding.py verify-shard" in workflow
     assert "scripts/full_lane_sharding.py aggregate" in workflow
-    assert "shard_index: [0, 1, 2, 3]" in workflow
     assert "fail-fast: false" in workflow
     assert "Full pytest lane on CPU runner" in workflow
     assert "full-test-lane-planned.json" in workflow
     assert "full-test-lane-executed.json" in workflow
     assert '--output-dir "${{ runner.temp }}/blueprint-ci"' in workflow
     assert "scripts/build_test_suite_telemetry.py" in workflow
-    assert "--workers 4" in workflow
-    assert "--strategy deterministic_file_preserving_serial_shards" in workflow
+    assert f"--workers {SHARD_COUNT}" in workflow
+    assert "--strategy deterministic_duration_balanced_serial_shards" in workflow
     assert "test-suite-telemetry.json" in workflow
+
+
+def test_full_lane_runs_every_planned_shard_and_never_queues_another_commit() -> None:
+    source = (ROOT / ".github" / "workflows" / "full-test-lane.yml").read_text(encoding="utf-8")
+    workflow = yaml.load(source, Loader=yaml.BaseLoader)
+    shard = workflow["jobs"]["full-pytest-shard"]
+
+    # One matrix leg per planned shard, named the way provenance verifies it.
+    assert shard["strategy"]["matrix"]["shard_index"] == [str(index) for index in range(SHARD_COUNT)]
+    assert shard["name"] == f"Full pytest shard ${{{{ matrix.shard_index }}}} of {SHARD_COUNT}"
+    assert {f"Full pytest shard {index} of {SHARD_COUNT}" for index in range(SHARD_COUNT)} == (
+        CANONICAL_SHARD_JOB_NAMES
+    )
+    # A balanced shard runs about 15 minutes; a wedged one fails at 45, not 90.
+    assert shard["timeout-minutes"] == "45"
+    run = next(step for step in shard["steps"] if step["name"] == "Run full lane shard")
+    assert ".run_paths[]" in run["run"]
+    assert run["env"][SHARD_PLAN_ENV] == "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-plan.json"
+    assert run["env"][SHARD_INDEX_ENV] == "${{ matrix.shard_index }}"
+    # Every green lane publishes the baseline that would rebalance the next.
+    aggregate = workflow["jobs"]["full-pytest"]["steps"]
+    refresh = next(step for step in aggregate if step["name"] == "Build refreshed shard duration baseline")
+    assert "scripts/full_lane_sharding.py baseline" in refresh["run"]
+    assert "full-test-lane-duration-baseline.refreshed.json" in refresh["run"]
+    assert "if" not in refresh  # only after a green aggregate
+    assert refresh["continue-on-error"] == "true"  # a planning hint never fails the lane
+    # Concurrent commits and the nightly each get their own lane; a lane is
+    # never cancelled or queued behind another commit's.
+    assert workflow["concurrency"]["cancel-in-progress"] == "false"
+    group = workflow["concurrency"]["group"]
+    assert "${{ github.sha }}" in group
+    assert "${{ inputs.reason || 'nightly_integration' }}" in group
 
 
 def test_risk_based_verification_workflows_are_bounded() -> None:
@@ -320,7 +360,18 @@ def test_only_bounded_ci_workflow_runs_for_ordinary_pull_requests() -> None:
         assert "pull_request:" in event_block, workflow_name
         assert 'branches: ["main"]' in event_block, workflow_name
         assert 'branches: ["**"]' not in event_block, workflow_name
-        assert "cancel-in-progress: true" in event_block, workflow_name
+        # A pull request keeps only its newest run. A push to main is never
+        # cancelled: its supply-chain job is the only producer of that commit's
+        # source attestation, so a newer merge would leave it undeployable.
+        assert (
+            "group: ci-${{ github.event_name == 'pull_request' && "
+            "format('pr-{0}', github.event.pull_request.number) || "
+            "format('{0}-{1}', github.ref, github.sha) }}"
+        ) in event_block, workflow_name
+        assert (
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+            in event_block
+        ), workflow_name
 
     for workflow_name in (
         "codeql.yml",

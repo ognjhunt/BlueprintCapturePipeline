@@ -15,6 +15,7 @@ from scripts.verify_deploy_release_provenance import (
 )
 from scripts.build_cpu_full_lane_evidence import build_cpu_full_lane_evidence
 from scripts.full_lane_sharding import (
+    SHARD_COUNT,
     _plan_expected_nodeids,
     aggregate_shards,
     build_duration_baseline,
@@ -81,7 +82,7 @@ def _metadata() -> tuple[
             },
             *[
                 {
-                    "name": f"Full pytest shard {index} of 4",
+                    "name": f"Full pytest shard {index} of {SHARD_COUNT}",
                     "run_attempt": 1,
                     "status": "completed",
                     "conclusion": "success",
@@ -102,7 +103,7 @@ def _metadata() -> tuple[
                         },
                     ],
                 }
-                for index in range(4)
+                for index in range(SHARD_COUNT)
             ],
         ]
     }
@@ -317,7 +318,7 @@ def _write_junit(path: Path, nodeids: list[str]) -> None:
 
 
 def _seed_sharded_artifact(tmp_path: Path) -> list[str]:
-    nodeids = [f"tests/test_{index}.py::test_case" for index in range(4)]
+    nodeids = sorted(f"tests/test_{index:02d}.py::test_case" for index in range(SHARD_COUNT))
     source = tmp_path / "source"
     planned = source / "full-test-lane-planned.json"
     baseline_junit = source / "baseline-junit.xml"
@@ -339,7 +340,7 @@ def _seed_sharded_artifact(tmp_path: Path) -> list[str]:
     )
     _write_json(plan_path, plan)
     shard_root = source / "shard-artifacts"
-    for index in range(4):
+    for index in range(SHARD_COUNT):
         shard_dir = shard_root / f"shard-{index}"
         shard_dir.mkdir(parents=True)
         expected = _plan_expected_nodeids(
@@ -388,10 +389,10 @@ def test_downloaded_artifact_binds_every_shard_to_green_aggregate(
     digest = hashlib.sha256("\n".join(nodeids).encode()).hexdigest()
 
     result = validate_downloaded_artifact(tmp_path, expected_sha=SHA)
-    assert result["test_count"] == 4
+    assert result["test_count"] == SHARD_COUNT
     assert result["skipped_count"] == 0
     assert result["nodeids_sha256"] == digest
-    assert result["shard_count"] == 4
+    assert result["shard_count"] == SHARD_COUNT
 
     cpu_path = tmp_path / "cpu_full.json"
     cpu_bytes = cpu_path.read_bytes()

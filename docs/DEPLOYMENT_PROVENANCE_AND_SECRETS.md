@@ -4,11 +4,11 @@
 Terraform is the sole topology owner. A production deployment is rejected
 unless all of these checks pass:
 
-- the checkout has no tracked or untracked changes and `HEAD` exactly equals
-  freshly fetched `origin/main`;
+- the checkout has no tracked or untracked changes and `HEAD` is on freshly
+  fetched `origin/main` (its tip or an ancestor of it);
 - the supplied GitHub URL identifies this repository's canonical Full Test Lane
-  main-push run at that exact SHA, with a successful canonical job and required
-  collection/run/verification steps;
+  `production_deployment_promotion` run at that exact SHA, with a successful
+  canonical job and required collection/run/verification steps;
 - the downloaded unexpired artifact has identical planned, executed, and JUnit
   node IDs in the same order, no duplicates or substitutions, and zero failures,
   errors, or skips; the `cpu_full.json` envelope and source hashes are recomputed;

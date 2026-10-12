@@ -21,7 +21,10 @@ on:
     - cron: "17 8 * * *"
 
 concurrency:
-  group: full-test-lane-${{ github.workflow }}-${{ github.ref }}
+  # One lane per commit and reason: a promotion never queues behind the
+  # nightly or another commit's lane. Provenance binds the commit a lane
+  # tested, so a newer SHA neither supersedes nor needs to wait for it.
+  group: full-test-lane-${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}-${{ inputs.reason || 'nightly_integration' }}
   # Preserve healthy integration and promotion evidence even when a newer SHA
   # appears. A superseded result remains diagnostic; it is never provenance for
   # the newer SHA.
@@ -29,13 +32,15 @@ concurrency:
 
 jobs:
   full-pytest-shard:
-    name: Full pytest shard ${{ matrix.shard_index }} of 4
+    name: Full pytest shard ${{ matrix.shard_index }} of 12
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # Balanced shards run about fifteen minutes; a wedged one fails here.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        shard_index: [0, 1, 2, 3]
+        # Keep equal to scripts/full_lane_sharding.py SHARD_COUNT.
+        shard_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     env:
       # Full-lane artifacts live only on the disposable GitHub runner and are
       # uploaded with the workflow's explicit retention policy.
@@ -274,11 +279,15 @@ jobs:
         env:
           BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: ${{ runner.temp }}/blueprint-ci/full-test-lane-shard-executed.json
           BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: executed
+          # A file too heavy for one shard is planned by node ID: this shard
+          # collects it whole and drops only the tests another shard owns.
+          BLUEPRINT_FULL_LANE_SHARD_PLAN: ${{ runner.temp }}/blueprint-ci/full-test-lane-shard-plan.json
+          BLUEPRINT_FULL_LANE_SHARD_INDEX: ${{ matrix.shard_index }}
         run: |
           set -euo pipefail
           mapfile -t shard_files < <(
             jq -r --argjson shard "${FULL_TEST_LANE_SHARD_INDEX}" \
-              '.shards[] | select(.index == $shard) | .files[]' \
+              '.shards[] | select(.index == $shard) | .run_paths[]' \
               "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-plan.json"
           )
           if [[ "${#shard_files[@]}" -eq 0 ]]; then
@@ -369,14 +378,28 @@ jobs:
             --repository-sha '${{ github.sha }}' \
             --output "${{ runner.temp }}/blueprint-ci/cpu_full.json"
 
+      # Shards are balanced on .github/full-test-lane-duration-baseline.json.
+      # It went two months stale (12,866 tests planned, 34,524 run) and one
+      # shard took 68 minutes; commit this file from a green promotion run to
+      # rebalance on current measurements.
+      - name: Build refreshed shard duration baseline
+        # A planning hint only: it must never fail the canonical lane.
+        continue-on-error: true
+        run: |
+          uv run python scripts/full_lane_sharding.py baseline \
+            --junit "${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml" \
+            --source-sha '${{ github.sha }}' \
+            --source-run-id '${{ github.run_id }}' \
+            --output "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.refreshed.json"
+
       - name: Build test-suite duration and matrix telemetry
         if: always()
         run: |
           uv run python scripts/build_test_suite_telemetry.py \
             --junit "${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml" \
             --repository-sha '${{ github.sha }}' \
-            --workers 4 \
-            --strategy deterministic_file_preserving_serial_shards \
+            --workers 12 \
+            --strategy deterministic_duration_balanced_serial_shards \
             --output "${{ runner.temp }}/blueprint-ci/test-suite-telemetry.json"
 
       - name: Upload full lane report

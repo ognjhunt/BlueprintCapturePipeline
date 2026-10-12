@@ -26,7 +26,11 @@ if __package__ in {None, ""}:  # Direct ``python scripts/...`` execution.
 
 from scripts.verify_full_lane_collection import verify as verify_full_lane_collection
 from scripts.build_cpu_full_lane_evidence import validate_cpu_full_lane_evidence
-from scripts.full_lane_sharding import FullLaneShardError, validate_sharded_artifact
+from scripts.full_lane_sharding import (
+    SHARD_COUNT,
+    FullLaneShardError,
+    validate_sharded_artifact,
+)
 
 
 RUN_URL_PATTERN = re.compile(r"^/([^/]+)/([^/]+)/actions/runs/([1-9][0-9]*)/?$")
@@ -37,7 +41,6 @@ CANONICAL_PRODUCTION_DISPLAY_TITLE = (
     "Full Test Lane / production_deployment_promotion"
 )
 CANONICAL_JOB_NAME = "Full pytest lane on CPU runner"
-SHARD_COUNT = 4
 CANONICAL_SHARD_JOB_NAMES = {
     f"Full pytest shard {index} of {SHARD_COUNT}" for index in range(SHARD_COUNT)
 }
