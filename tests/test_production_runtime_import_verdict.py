@@ -391,3 +391,63 @@ def test_a_verdict_is_reverified_at_least_hourly(probe: _Probe, monkeypatch: pyt
     monkeypatch.setattr(verdict, "_now", lambda: later)
 
     assert probe.run()[0]["verdict_reused"] is False
+
+
+class _AnswersEverything:
+    """Like torch._classes: any attribute, __path__ and __file__ included, is an object."""
+
+    def __getattr__(self, name: str) -> object:
+        return object()
+
+
+def test_modules_with_unusual_attributes_never_break_the_verdict(
+    probe: _Probe, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-12 promotion lane: torch._classes made the guard's capture raise TypeError."""
+    import types
+
+    answering = types.ModuleType("bp_answers_everything")
+    answering.__getattr__ = lambda name: object()  # PEP 562: __path__ is a non-iterable object
+    refusing = types.ModuleType("bp_refuses_everything")
+
+    def refuse(name: str) -> object:
+        raise RuntimeError(f"no {name}")
+
+    refusing.__getattr__ = refuse
+    monkeypatch.setitem(sys.modules, "bp_answers_everything", answering)
+    monkeypatch.setitem(sys.modules, "bp_refuses_everything", refusing)
+    monkeypatch.setitem(sys.modules, "bp_instance_module", _AnswersEverything())
+
+    assert probe.run()[0]["verdict_recorded"] is True
+    assert probe.run()[0]["verdict_reused"] is True
+
+
+@pytest.mark.parametrize("broken", ["_resolution_directories", "lookup", "_store"])
+def test_a_broken_verdict_layer_falls_back_to_the_full_import_pass(
+    probe: _Probe, monkeypatch: pytest.MonkeyPatch, broken: str
+) -> None:
+    """A cache can only make the guard slower, never stop a unit from starting."""
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("verdict layer broken")
+
+    monkeypatch.setattr(verdict, broken, explode)
+
+    detail, blockers = probe.run()
+
+    assert blockers == [] and detail["importable"] is True
+    assert detail["verdict_reused"] is False and probe.imports == 1
+    if broken != "lookup":  # an unreadable cache may still be refilled by a clean pass
+        assert detail["verdict_recorded"] is False
+
+
+def test_shared_memory_mappings_are_not_libraries() -> None:
+    """Anonymous, shm and memfd mappings read "(deleted)" on Linux; they are no input."""
+    maps = (
+        "7f00-7f01 r-xp 00000000 08:01 1234  /usr/lib/x86_64-linux-gnu/libssl.so.3\n"
+        "7f01-7f02 rw-s 00000000 00:01 77    /dev/zero (deleted)\n"
+        "7f02-7f03 rw-s 00000000 00:19 88    /dev/shm/sem.mp-1a2b (deleted)\n"
+        "7f03-7f04 r-xp 00000000 00:01 99    /memfd:libffi (deleted)\n"
+        "7f04-7f05 rw-s 00000000 00:01 5     /SYSV00000000 (deleted)\n"
+    )
+    assert verdict._mapped_files(maps) == {"/usr/lib/x86_64-linux-gnu/libssl.so.3"}
