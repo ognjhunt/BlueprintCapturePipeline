@@ -2360,6 +2360,39 @@ def _holding_paid_launch_locks(lock_paths: Sequence[str]):
 
 #: A launch holds the gate shared only while taking a slot, so the wait is short.
 PAID_LAUNCH_GATE_WAIT_SECONDS = 120
+DEPLOY_LOCK_NAME = "control-plane-deploy.lock"
+DEPLOY_LOCK_WAIT_SECONDS = 120
+
+
+@contextlib.contextmanager
+def _holding_deploy_lock(state_root: Path, *, sleeper: Any = time.sleep, clock: Any = time.monotonic):
+    """Serialize deploys from every entry point before any watcher moves.
+
+    The paid-launch gate used to be the first thing a deploy took, so a second
+    deploy was refused before it touched a watcher. Draining now stops the
+    progression triggers before that gate, and the iteration and canary
+    wrappers run this tool outside the door's own single-deploy check: without
+    one lock their watcher snapshots could interleave and leave a timer
+    stopped after both deploys succeed. A second deploy waits, then refuses.
+    """
+    lock_path = Path(state_root) / DEPLOY_LOCK_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        deadline = clock() + DEPLOY_LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if clock() >= deadline:
+                    raise ControlPlaneDeployError("deploy_refused_another_deploy_running") from None
+                sleeper(1.0)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 @contextlib.contextmanager
@@ -3088,6 +3121,7 @@ def _restore_path_unit_states_on_deploy_failure(
     installed_units: Sequence[Mapping[str, Any]],
     *,
     door_holds_dir: str | Path = DEFAULT_DOOR_HOLDS_DIR,
+    prior_states: Mapping[str, Mapping[str, str]] | None = None,
 ):
     """Quiesce watchers and restore their exact prior state on any failure.
 
@@ -3101,6 +3135,13 @@ def _restore_path_unit_states_on_deploy_failure(
     """
 
     before = _installed_path_unit_states(installed_units)
+    # A drain stopped some triggers just before this: "it was active before I
+    # stopped it" is their true intent. An inactive drain snapshot adds nothing
+    # and must never override what is observed live.
+    before.update({
+        unit: state for unit, state in (prior_states or {}).items()
+        if state.get("state") == "active"
+    })
     try:
         quiesced = _quiesce_active_path_units(before)
         yield before, quiesced
@@ -3195,6 +3236,129 @@ def _activate_agent_execution(*, expected_commit: str, config_path: str | Path =
     return {"status": "active", "activated": True, "unit": unit, "source_commit": expected_commit,
             "enabled": observed["enabled"], "state": observed["state"], "configuration_adoption": adoption,
             "release_cleanup": cleanup}
+
+
+_DRAINABLE_SERVICE = re.compile(r"blueprint-[A-Za-z0-9_.@-]+\.service")
+
+
+def _systemd_show(unit: str, *properties: str) -> dict[str, str]:
+    argv = ["systemctl", "show", unit]
+    for name in properties:
+        argv += ["-p", name]
+    observed = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=10)
+    return dict(line.split("=", 1) for line in observed.stdout.splitlines() if "=" in line)
+
+
+def _drain_service_units(units: Sequence[str], *, wait_seconds: float) -> dict[str, float]:
+    """With their triggers stopped, let runs already in flight finish first.
+
+    The door waited for every progression service to be idle at the same
+    20-second sample while their timers kept re-arming them (up to 30
+    minutes), and a run could still start between that sample and this
+    deploy's quiesce. Here every trigger is already stopped, so the wait is the
+    remaining time of runs in flight and nothing new starts before the release
+    moves. A trigger still armed would make that wait unbounded: refuse.
+    """
+    deadline = time.monotonic() + max(0.0, float(wait_seconds))
+    drained: dict[str, float] = {}
+    for unit in units:
+        if not _DRAINABLE_SERVICE.fullmatch(unit):
+            raise ControlPlaneDeployError(f"deploy_drain_unit_invalid:{unit}")
+        started = time.monotonic()
+        while True:
+            fields = _systemd_show(unit, "LoadState", "ActiveState", "MainPID", "TriggeredBy")
+            if fields.get("LoadState") == "not-found":
+                break
+            for trigger in fields.get("TriggeredBy", "").split():
+                if _systemd_show(trigger, "ActiveState").get("ActiveState") not in {"inactive", "failed"}:
+                    raise ControlPlaneDeployError(f"deploy_drain_trigger_active:{unit}:{trigger}")
+            if fields.get("ActiveState") in {"inactive", "failed"} and fields.get("MainPID", "0") == "0":
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ControlPlaneDeployError(f"deploy_drain_timeout:{unit}")
+            time.sleep(min(2.0, remaining))
+        drained[unit] = round(time.monotonic() - started, 3)
+    return drained
+
+
+def _restore_drained_triggers(
+    entries: Sequence[Mapping[str, Any]],
+    prior: Mapping[str, Mapping[str, str]],
+    *,
+    door_holds_dir: str | Path,
+    error: BaseException,
+) -> None:
+    """Re-arm the triggers a drain stopped, unless the deploy already restored them."""
+    current = _installed_path_unit_states(entries)
+    pending = [
+        entry for entry in entries
+        if (prior.get(entry["unit"]) or {}).get("state") == "active"
+        and (current.get(entry["unit"]) or {}).get("state") != "active"
+    ]
+    if not pending:
+        return
+    try:
+        with _locked_door_holds(door_holds_dir) as (held_units, _warning):
+            restored = _restore_installed_path_units(
+                pending,
+                before=prior,
+                arm_path_units=False,
+                always_arm_units=(),
+                held_units=held_units,
+                defer_start_verification=True,
+            )
+        _verify_deferred_path_unit_starts(restored, door_holds_dir=door_holds_dir)
+    except Exception as restore_error:
+        raise ControlPlaneDeployError(
+            f"deploy_drain_trigger_restore_failed:{type(error).__name__}:{restore_error}"
+        ) from error
+
+
+@contextlib.contextmanager
+def _draining_service_units(
+    units: Sequence[str],
+    *,
+    wait_seconds: float,
+    installed_units: Sequence[Mapping[str, Any]],
+    door_holds_dir: str | Path,
+):
+    """Stop only these services' triggers, then let their in-flight runs finish.
+
+    Entered before the paid-launch gate and the full watcher quiesce, so the
+    GPU spend guard, billing reconciler and every other watcher stay live while
+    it waits, as they did during the door's old idle poll. Yields each unit's
+    wait and the prior state of the triggers it stopped; the full quiesce
+    records that as their true intent, so the deploy re-arms them. Any failure,
+    while waiting or later in the deploy, re-arms them here.
+    """
+    if not units:
+        yield {}, {}
+        return
+    managed = {str(entry.get("unit") or "") for entry in installed_units}
+    triggers: set[str] = set()
+    for unit in units:
+        if not _DRAINABLE_SERVICE.fullmatch(unit):
+            raise ControlPlaneDeployError(f"deploy_drain_unit_invalid:{unit}")
+        for trigger in _systemd_show(unit, "TriggeredBy").get("TriggeredBy", "").split():
+            if trigger not in managed:
+                # The deploy only restores triggers it installs; stopping any
+                # other could leave it off after a successful deploy.
+                raise ControlPlaneDeployError(f"deploy_drain_trigger_unmanaged:{unit}:{trigger}")
+            triggers.add(trigger)
+    entries = [{"unit": trigger} for trigger in sorted(triggers)]
+    prior = _installed_path_unit_states(entries)
+    try:
+        _quiesce_active_path_units(prior)
+        drained = _drain_service_units(tuple(units), wait_seconds=wait_seconds)
+    except BaseException as drain_error:
+        _restore_drained_triggers(entries, prior, door_holds_dir=door_holds_dir, error=drain_error)
+        raise
+    try:
+        yield drained, prior
+    except BaseException as deployment_error:
+        _restore_drained_triggers(entries, prior, door_holds_dir=door_holds_dir, error=deployment_error)
+        raise
 
 
 def _require_terminal_controls_quiescence(*, wait_seconds: float = 0) -> None:
@@ -4379,6 +4543,8 @@ def deploy_control_plane_commit(
     release_retirement_keep_last: int = DEFAULT_RELEASE_RETIREMENT_KEEP_LAST,
     break_glass_notes_root: str | Path | None = None,
     door_holds_dir: str | Path = DEFAULT_DOOR_HOLDS_DIR,
+    drain_units: Sequence[str] = (),
+    drain_seconds: float = 0,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both.
 
@@ -4539,9 +4705,17 @@ def deploy_control_plane_commit(
     # any later deploy step fails.
     with (
         disk_reservation or contextlib.nullcontext(),
+        _holding_deploy_lock(state),
+        # Before the gate and the full quiesce: only the drained services'
+        # triggers stop while their in-flight runs finish.
+        _draining_service_units(
+            tuple(drain_units), wait_seconds=drain_seconds,
+            installed_units=automation_unit_names, door_holds_dir=door_holds_dir,
+        ) as (drained_units, drained_trigger_states),
         _holding_paid_launch_gate(paid_launch_locks) as paid_runs_in_flight,
         _restore_path_unit_states_on_deploy_failure(
             automation_unit_names, door_holds_dir=door_holds_dir,
+            prior_states=drained_trigger_states,
         ) as (
             automation_unit_states_before,
             quiesced_automation_units,
@@ -4798,6 +4972,7 @@ def deploy_control_plane_commit(
         "release_retirement": release_retirement,
         "unit_sandbox_paths": unit_sandbox_paths,
         "stage_timings_seconds": stage_timings,
+        "drained_units": drained_units,
         "source_commit": commit,
         "disk_reservation": disk_reservation_receipt,
         "disk_reservation_estimate": disk_reservation_estimate,
@@ -5161,6 +5336,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--drain-unit",
+        action="append",
+        default=None,
+        help=(
+            "A blueprint-*.service to let finish after its triggers stop and "
+            "before the release moves. Repeatable; see --drain-seconds."
+        ),
+    )
+    parser.add_argument(
+        "--drain-seconds",
+        type=float,
+        default=0.0,
+        help="Total time --drain-unit services may take to finish runs in flight.",
+    )
+    parser.add_argument(
         "--arm-path-units",
         action="store_true",
         help=(
@@ -5215,6 +5405,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(args.state_root).expanduser() / "disk-reservations"
             ),
             break_glass_notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,
+            drain_units=tuple(args.drain_unit or ()),
+            drain_seconds=args.drain_seconds,
             ),
             "break_glass_note": break_glass_note,
         }, path=args.receipt_out, notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,

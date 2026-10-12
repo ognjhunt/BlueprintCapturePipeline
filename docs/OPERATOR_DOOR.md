@@ -163,13 +163,17 @@ and archives to the same artifact store as the reclaim timer. See
 
 `door-deploy.sh` repeats the deploy the agent lanes ran by hand over SSH:
 
-1. optionally wait (up to 30 minutes) until scene progression and
-   configured-controls progression are idle;
-2. fetch every branch into one long-lived source clone,
+1. fetch every branch into one long-lived source clone,
    `/opt/blueprint/control-plane-config-tools/operator-door-source` (origin is
    GitHub, so the deploy tool's pushed-commit checks see real refs), with the
    door's read-only deploy key;
-3. require the commit to be an ancestor of `origin/main`;
+2. require the commit to be an ancestor of `origin/main`;
+3. with `wait_for_idle` (the default), wait for scene progression and
+   configured-controls progression: a target tool that supports `--drain-unit`
+   stops only those services' own triggers and lets runs already in flight
+   finish (up to 30 minutes) before it takes the paid-launch gate, so nothing
+   new starts before the release moves while the spend guard and every other
+   watcher stay live; an older tool gets the original idle poll;
 4. run the **target commit's** `scripts/deploy_control_plane_commit.py` from a
    throwaway worktree with `--iteration --preserve-configured-controls-state`,
    receipt `deploy-receipts/iteration_<sha12>_door.json`.

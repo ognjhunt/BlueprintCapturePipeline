@@ -15,7 +15,6 @@ import json
 import os
 import shutil
 import stat
-import subprocess
 import tempfile
 import urllib.request
 from collections.abc import Callable
@@ -31,6 +30,7 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     VGG16_WEIGHTS_SIZE_BYTES,
     VGG16_WEIGHTS_SOURCE_URL,
 )
+from blueprint_pipeline.service_account_reader import ServiceAccountReader
 from blueprint_pipeline.task_evaluation_splat_render_runtime import (
     validate_splat_render_runtime,
 )
@@ -349,15 +349,9 @@ def provision_scene_configuration_release(
     }
 
 
-def service_account_readback(user: str) -> Readback:
-    def read(path: Path) -> bytes:
-        return subprocess.run(
-            ["sudo", "-n", "-u", user, "--", "dd", f"if={path}", "status=none"],
-            check=True,
-            capture_output=True,
-        ).stdout
-
-    return read
+def service_account_readback(user: str) -> ServiceAccountReader:
+    """One service-account process reads back every published byte of this release."""
+    return ServiceAccountReader(user)
 
 
 def main() -> int:
@@ -380,7 +374,17 @@ def main() -> int:
         if Path("/etc/blueprint/website-mapanything-runtime.json").exists() else None))
     parser.add_argument("--readback-user", required=True)
     args = parser.parse_args()
-    value = provision_scene_configuration_release(
+    readback = service_account_readback(args.readback_user)
+    try:
+        value = _provision_from_arguments(args, readback)
+    finally:
+        readback.close()
+    print(json.dumps(value, sort_keys=True))
+    return 0
+
+
+def _provision_from_arguments(args: argparse.Namespace, readback: Readback) -> dict[str, Any]:
+    return provision_scene_configuration_release(
         repository_root=args.repository_root,
         source_commit=args.source_commit,
         runtime_root=args.runtime_root,
@@ -394,11 +398,9 @@ def main() -> int:
         multi_agent_cad_root=args.multi_agent_cad_root,
         astra_blender_archive_path=args.astra_blender_archive,
         website_mapanything_template=args.website_mapanything_template,
-        readback=service_account_readback(args.readback_user),
+        readback=readback,
         readback_actor=f"service-account:{args.readback_user}",
     )
-    print(json.dumps(value, sort_keys=True))
-    return 0
 
 
 if __name__ == "__main__":

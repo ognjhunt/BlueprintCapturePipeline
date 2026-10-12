@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from .spend_authority_ledger_migration import (
     reconcile_spend_authority_ledger,
 )
 from .host_resident_launch_inputs import published_profile_residency_report
+from .production_runtime_import_verdict import checked_entrypoint_imports
 from .task_evaluation_launch_catalog import LaunchCatalogError, reconcile_public_catalog
 
 LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
@@ -409,38 +411,67 @@ def build_production_runtime_env_guard(
         if not enabled:
             blockers.append(f"missing_or_false_{name}")
 
-    entrypoints, entrypoint_blockers = _check_control_plane_entrypoints(
-        importlib.import_module if import_module is None else import_module
+    durations: dict[str, float] = {}
+
+    def timed(name: str, check: Callable[[], tuple[Any, list[str]]]) -> Any:
+        started = time.monotonic()
+        try:
+            detail, check_blockers = check()
+        finally:
+            durations[name] = round(time.monotonic() - started, 3)
+        blockers.extend(check_blockers)
+        return detail
+
+    if env is None and import_module is None:
+        # The unit's own start: reuse the import pass while nothing deciding it moved.
+        entrypoints = timed(
+            "control_plane_entrypoints",
+            lambda: checked_entrypoint_imports(
+                CONTROL_PLANE_ENTRYPOINTS,
+                lambda: _check_control_plane_entrypoints(importlib.import_module),
+            ),
+        )
+    else:
+        entrypoints = timed(
+            "control_plane_entrypoints",
+            lambda: _check_control_plane_entrypoints(
+                importlib.import_module if import_module is None else import_module
+            ),
+        )
+
+    ledger = timed(
+        "spend_authority_ledger",
+        lambda: _check_spend_authority_ledger(
+            reconcile_spend_authority_ledger
+            if reconcile_spend_authority is None
+            else reconcile_spend_authority
+        ),
     )
-    blockers.extend(entrypoint_blockers)
 
-    ledger, ledger_blockers = _check_spend_authority_ledger(
-        reconcile_spend_authority_ledger
-        if reconcile_spend_authority is None
-        else reconcile_spend_authority
+    catalog = timed(
+        "launch_profile_catalog",
+        lambda: _check_launch_profile_catalog(
+            _default_catalog_reconciler(source)
+            if reconcile_launch_catalog is None
+            else reconcile_launch_catalog
+        ),
     )
-    blockers.extend(ledger_blockers)
 
-    catalog, catalog_blockers = _check_launch_profile_catalog(
-        _default_catalog_reconciler(source)
-        if reconcile_launch_catalog is None
-        else reconcile_launch_catalog
+    residency = timed(
+        "launch_input_residency",
+        lambda: _check_launch_input_residency(source, residency_report),
     )
-    blockers.extend(catalog_blockers)
 
-    residency, residency_blockers = _check_launch_input_residency(source, residency_report)
-    blockers.extend(residency_blockers)
+    lock_slots = timed("paid_launch_lock_slots", lambda: _check_paid_launch_lock_slots(source))
 
-    lock_slots, lock_slot_blockers = _check_paid_launch_lock_slots(source)
-    blockers.extend(lock_slot_blockers)
-
-    runtime_source, runtime_source_blockers = _check_runtime_source_identity(source)
-    blockers.extend(runtime_source_blockers)
-
-    capture_reconstruction, capture_reconstruction_blockers = (
-        _check_capture_reconstruction_runtime(source)
+    runtime_source = timed(
+        "runtime_source_identity", lambda: _check_runtime_source_identity(source)
     )
-    blockers.extend(capture_reconstruction_blockers)
+
+    capture_reconstruction = timed(
+        "capture_reconstruction_runtime",
+        lambda: _check_capture_reconstruction_runtime(source),
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -456,6 +487,7 @@ def build_production_runtime_env_guard(
         "paid_launch_lock_slots": lock_slots,
         "runtime_source_identity": runtime_source,
         "capture_reconstruction_runtime": capture_reconstruction,
+        "check_durations_seconds": durations,
         "claim_boundary": (
             "This guard verifies production fail-closed runtime posture, that "
             "every control-plane entrypoint imports, that no spend-authority "
@@ -478,7 +510,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.json or report["status"] != "ready":
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
-        print("[production-runtime-env-guard] status=ready")
+        durations = " ".join(
+            f"{name}={seconds}s" for name, seconds in report["check_durations_seconds"].items()
+        )
+        reused = report["control_plane_entrypoints"].get("verdict_reused", False)
+        print(
+            "[production-runtime-env-guard] status=ready "
+            f"import_verdict_reused={str(reused).lower()} {durations}"
+        )
     return 0 if report["status"] == "ready" else 1
 
 

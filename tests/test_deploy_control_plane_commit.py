@@ -4474,3 +4474,294 @@ def test_disabled_store_provision_never_closes_or_mutates_foreign_first_open_tok
         assert not (root / 'generations').exists()
     finally:
         original_close(foreign_fd)
+
+
+class _FakeSystemd:
+    """``systemctl show`` answers for drain tests; every other host command fails."""
+
+    def __init__(self, unit_states: list[dict[str, str]], trigger_state: str = "inactive") -> None:
+        self.unit_states = list(unit_states)
+        self.trigger_state = trigger_state
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, **_kwargs):
+        self.calls.append(list(argv))
+        if argv[:2] != ["systemctl", "show"]:
+            pytest.fail(f"host command {argv}")
+        if argv[2].endswith(".timer"):
+            fields = {"ActiveState": self.trigger_state}
+        else:
+            fields = self.unit_states[0] if len(self.unit_states) == 1 else self.unit_states.pop(0)
+        stdout = "".join(f"{name}={value}\n" for name, value in fields.items())
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+
+def _unit(state: str, pid: str = "0", load: str = "loaded") -> dict[str, str]:
+    return {"LoadState": load, "ActiveState": state, "MainPID": pid,
+            "TriggeredBy": "blueprint-task-evaluation-scene-progression.timer"}
+
+
+def test_drain_waits_only_for_the_run_already_in_flight(monkeypatch) -> None:
+    systemd = _FakeSystemd([_unit("activating", "4242"), _unit("activating", "4242"), _unit("inactive")])
+    monkeypatch.setattr(deploy.subprocess, "run", systemd)
+    monkeypatch.setattr(deploy.time, "sleep", lambda _seconds: None)
+
+    drained = deploy._drain_service_units(
+        ("blueprint-task-evaluation-scene-progression.service",), wait_seconds=1800
+    )
+
+    assert list(drained) == ["blueprint-task-evaluation-scene-progression.service"]
+    assert sum(call[2].endswith(".service") for call in systemd.calls) == 3
+
+
+def test_drain_refuses_while_a_trigger_could_start_another_run(monkeypatch) -> None:
+    monkeypatch.setattr(deploy.subprocess, "run", _FakeSystemd([_unit("inactive")], trigger_state="active"))
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_drain_trigger_active"):
+        deploy._drain_service_units(
+            ("blueprint-task-evaluation-scene-progression.service",), wait_seconds=1800
+        )
+
+
+def test_drain_times_out_instead_of_waiting_forever(monkeypatch) -> None:
+    clock = iter(range(0, 10_000, 100))
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(deploy.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(deploy.subprocess, "run", _FakeSystemd([_unit("activating", "4242")]))
+
+    with pytest.raises(deploy.ControlPlaneDeployError,
+                       match="deploy_drain_timeout:blueprint-task-evaluation-scene-progression.service"):
+        deploy._drain_service_units(
+            ("blueprint-task-evaluation-scene-progression.service",), wait_seconds=300
+        )
+
+
+def test_drain_accepts_an_uninstalled_unit_and_refuses_a_foreign_name(monkeypatch) -> None:
+    monkeypatch.setattr(deploy.subprocess, "run", _FakeSystemd([_unit("inactive", load="not-found")]))
+    assert list(deploy._drain_service_units(("blueprint-absent.service",), wait_seconds=0)) == [
+        "blueprint-absent.service"
+    ]
+    for name in ("sshd.service", "blueprint-x.timer", "blueprint-$(id).service"):
+        with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_drain_unit_invalid"):
+            deploy._drain_service_units((name,), wait_seconds=0)
+
+
+PROGRESSION = "blueprint-task-evaluation-scene-progression.service"
+PROGRESSION_TIMER = "blueprint-task-evaluation-scene-progression.timer"
+
+
+def _drain_harness(monkeypatch, tmp_path, *, trigger=PROGRESSION_TIMER, drain=None):
+    """A deploy whose only live watcher is the progression timer; records each host step."""
+    kwargs = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    order: list[object] = []
+    timer_state = {"state": "active"}
+
+    def unit_states(installed):
+        return {
+            entry["unit"]: {"enabled": "enabled", **timer_state}
+            for entry in installed
+            if entry["unit"] == PROGRESSION_TIMER
+        }
+
+    def quiesce(before):
+        active = sorted(unit for unit, state in before.items() if state.get("state") == "active")
+        order.append(("quiesce", tuple(active)))
+        timer_state["state"] = "inactive"
+        return [{"unit": unit, "state": "inactive"} for unit in active]
+
+    @contextlib.contextmanager
+    def gate(_locks):
+        order.append("gate")
+        yield []
+
+    def restore(installed, *, before, **_kwargs):
+        order.append(("restore", tuple(entry["unit"] for entry in installed),
+                      tuple(sorted(unit for unit, state in before.items() if state.get("state") == "active"))))
+        timer_state["state"] = "active"
+        return []
+
+    monkeypatch.setattr(deploy, "_installed_path_unit_states", unit_states)
+    monkeypatch.setattr(deploy, "_quiesce_active_path_units", quiesce)
+    monkeypatch.setattr(deploy, "_holding_paid_launch_gate", gate)
+    monkeypatch.setattr(deploy, "_restore_installed_path_units", restore)
+    monkeypatch.setattr(deploy, "_verify_deferred_path_unit_starts", lambda *_a, **_k: None)
+    monkeypatch.setattr(deploy, "_systemd_show", lambda unit, *_props: {"TriggeredBy": trigger})
+    monkeypatch.setattr(
+        deploy,
+        "_drain_service_units",
+        drain or (lambda units, *, wait_seconds: order.append(("drain", tuple(units), wait_seconds))
+                  or dict.fromkeys(units, 12.5)),
+    )
+    stage = deploy.stage_task_evaluation_control_plane_release
+    monkeypatch.setattr(
+        deploy, "stage_task_evaluation_control_plane_release",
+        lambda **stage_kwargs: order.append("stage") or stage(**stage_kwargs),
+    )
+    return kwargs, order
+
+
+def test_drain_stops_only_its_triggers_before_the_paid_gate_and_full_quiesce(
+    tmp_path, monkeypatch
+) -> None:
+    kwargs, order = _drain_harness(monkeypatch, tmp_path)
+
+    receipt = deploy.deploy_control_plane_commit(
+        **kwargs, drain_units=(PROGRESSION,), drain_seconds=1800,
+    )
+
+    # The spend guard and every other watcher stay live while runs finish:
+    # only the drained service's own trigger stops before the gate is taken.
+    assert order[:5] == [
+        ("quiesce", (PROGRESSION_TIMER,)),
+        ("drain", (PROGRESSION,), 1800),
+        "gate",
+        # The full quiesce still records the trigger's true prior intent ...
+        ("quiesce", (PROGRESSION_TIMER,)),
+        "stage",
+    ]
+    # ... so the deploy's own restore re-arms it at the end.
+    assert any(step[0] == "restore" and PROGRESSION_TIMER in step[2]
+               for step in order if isinstance(step, tuple))
+    assert receipt["drained_units"] == {PROGRESSION: 12.5}
+
+
+def test_a_failed_drain_restarts_its_triggers_and_never_takes_the_gate(
+    tmp_path, monkeypatch
+) -> None:
+    def timeout(units, *, wait_seconds):
+        raise deploy.ControlPlaneDeployError(f"deploy_drain_timeout:{units[0]}")
+
+    kwargs, order = _drain_harness(monkeypatch, tmp_path, drain=timeout)
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_drain_timeout"):
+        deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    assert "gate" not in order
+    assert order[-1] == ("restore", (PROGRESSION_TIMER,), (PROGRESSION_TIMER,))
+
+
+def test_a_later_deploy_failure_rearms_drained_triggers(tmp_path, monkeypatch) -> None:
+    kwargs, order = _drain_harness(monkeypatch, tmp_path)
+
+    def failing_stage(**_kwargs):
+        order.append("stage")
+        raise deploy.ControlPlaneDeployError("deploy_release_stage_failed")
+
+    monkeypatch.setattr(deploy, "stage_task_evaluation_control_plane_release", failing_stage)
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_release_stage_failed"):
+        deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    restores = [step for step in order if isinstance(step, tuple) and step[0] == "restore"]
+    assert restores and all(PROGRESSION_TIMER in step[2] for step in restores)
+
+
+def test_drain_refuses_a_trigger_the_deploy_does_not_restore(tmp_path, monkeypatch) -> None:
+    kwargs, order = _drain_harness(monkeypatch, tmp_path, trigger="blueprint-unmanaged.timer")
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_drain_trigger_unmanaged"):
+        deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    assert order == []
+
+
+def test_deploy_without_drain_units_never_waits(tmp_path, monkeypatch) -> None:
+    kwargs = _stub_host_deploy(monkeypatch, tmp_path, "e" * 40)
+    monkeypatch.setattr(deploy, "_drain_service_units", lambda *_a, **_k: pytest.fail("drained"))
+
+    receipt = deploy.deploy_control_plane_commit(**kwargs)
+
+    assert receipt["drained_units"] == {}
+
+
+def test_cli_passes_drain_units_and_budget(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(deploy, "_require_trusted_deploy_source", lambda *_args: None)
+    monkeypatch.setattr(
+        deploy, "deploy_control_plane_commit",
+        lambda **kwargs: captured.update(kwargs) or {"status": "deployed", "blockers": []},
+    )
+    monkeypatch.setattr(deploy, "_finalize_deploy_receipt", lambda receipt, **_kwargs: receipt)
+    monkeypatch.setattr(deploy, "_run_deploy_with_signal_cleanup", lambda run: run())
+
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "f" * 40,
+        "--release-root", str(tmp_path / "r"), "--state-root", str(tmp_path / "s"),
+        "--active-link", str(tmp_path / "a"), "--iteration",
+        "--drain-unit", "blueprint-a.service", "--drain-unit", "blueprint-b.service",
+        "--drain-seconds", "1800",
+    ]) == 0
+    assert captured["drain_units"] == ("blueprint-a.service", "blueprint-b.service")
+    assert captured["drain_seconds"] == 1800.0
+
+
+def _try_lock(path: Path) -> bool:
+    import fcntl
+
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return True
+    except BlockingIOError:
+        return False
+    finally:
+        os.close(descriptor)
+
+
+def test_a_concurrent_deploy_refuses_before_touching_any_watcher(tmp_path, monkeypatch) -> None:
+    """The drain moves watchers before the paid gate, so deploys need their own lock."""
+    import fcntl
+
+    kwargs, order = _drain_harness(monkeypatch, tmp_path)
+    monkeypatch.setattr(deploy, "DEPLOY_LOCK_WAIT_SECONDS", 0)
+    lock = Path(kwargs["state_root"]) / deploy.DEPLOY_LOCK_NAME
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_refused_another_deploy_running"):
+            deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+    finally:
+        os.close(holder)
+
+    assert order == []
+
+
+def test_the_deploy_lock_spans_drain_through_release_switch(tmp_path, monkeypatch) -> None:
+    kwargs, order = _drain_harness(monkeypatch, tmp_path)
+    lock = Path(kwargs["state_root"]) / deploy.DEPLOY_LOCK_NAME
+    seen: list[bool] = []
+    drain = deploy._drain_service_units
+    monkeypatch.setattr(
+        deploy, "_drain_service_units",
+        lambda units, *, wait_seconds: seen.append(_try_lock(lock)) or drain(units, wait_seconds=wait_seconds),
+    )
+    monkeypatch.setattr(deploy, "_move_source_checkout", lambda *_args: seen.append(_try_lock(lock)))
+
+    deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    assert seen == [False, False]  # held while draining and while the release moves
+    assert _try_lock(lock)  # released afterwards
+
+
+def test_an_inactive_drain_snapshot_never_overrides_a_live_trigger(monkeypatch) -> None:
+    """Only "it was active before I stopped it" is information a drain adds."""
+    monkeypatch.setattr(
+        deploy, "_installed_path_unit_states",
+        lambda _installed: {PROGRESSION_TIMER: {"enabled": "enabled", "state": "active"}},
+    )
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        deploy, "_quiesce_active_path_units",
+        lambda before: stopped.extend(u for u, s in before.items() if s["state"] == "active") or [],
+    )
+
+    with deploy._restore_path_unit_states_on_deploy_failure(
+        [{"unit": PROGRESSION_TIMER}],
+        prior_states={PROGRESSION_TIMER: {"enabled": "enabled", "state": "inactive"}},
+    ) as (before, _quiesced):
+        pass
+
+    assert before[PROGRESSION_TIMER]["state"] == "active"
+    assert stopped == [PROGRESSION_TIMER]

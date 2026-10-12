@@ -344,9 +344,12 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
         'control_plane_work_dir': control_plane_work_dir, 'control_plane_staged_inputs_path': control_plane_staged_inputs_path,
         'overwrite_control_plane_input': overwrite_control_plane_input})
     from google.cloud import pubsub_v1
+    from .pubsub_retry_deferrals import clear_deferral, record_deferral, wake_older_release_deferrals
     subscriber = pubsub_v1.SubscriberClient()
     subscription_resource = _listener._canonical_subscription_resource(subscription)
     acknowledged = 0
+    # A deploy may have fixed what an older release deferred: end those leases first.
+    wake_older_release_deferrals(storage_root=storage_root, subscriber=subscriber, subscription=subscription_resource, max_delivery_attempts=max_delivery_attempts)
 
     def pulled_one_at_a_time() -> Iterator[Any]:
         for _ in range(max(1, max_messages)):
@@ -368,6 +371,7 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
             _listener.logger.error('pubsub_handoff.permanent_invalid', extra={'message_id': message.message_id, 'error_type': type(exc).__name__, 'error': str(exc), 'queue_disposition': 'permanent_invalid_ack', 'failure_evidence_path': str(evidence_path)})
             acknowledge(received.ack_id)
             acknowledged += 1
+            clear_deferral(storage_root=storage_root, received=received)
             continue
         digest = _listener.payload_sha256(message.data)
         heartbeat = _listener._AckDeadlineHeartbeat(subscriber=subscriber, subscription=subscription_resource, ack_id=received.ack_id, ack_deadline_seconds=ack_deadline_seconds)
@@ -380,6 +384,7 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
                 _listener._write_delivery_evidence(storage_root=storage_root, message=message, received=received, disposition='retry_exhausted_pending_pubsub_dlq', blockers=['handoff_processing_exception'])
             _listener.logger.exception('pubsub_handoff.processing_failed', extra={'message_id': message.message_id, 'queue_disposition': 'retryable_deferred', 'retry_defer_seconds': _listener.RETRY_DEFER_SECONDS, 'delivery_attempt': getattr(received, 'delivery_attempt', None), 'max_delivery_attempts': max_delivery_attempts})
             heartbeat.defer_retry()
+            record_deferral(storage_root=storage_root, subscription=subscription_resource, received=received, payload_digest=digest, lease_seconds=_listener.RETRY_DEFER_SECONDS)
             continue
         if result.get('queue_disposition') == 'retryable' or result.get('status') in _listener._JOB_RETRYABLE_STATUSES:
             delivery_attempt = getattr(received, 'delivery_attempt', None)
@@ -387,8 +392,10 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
                 _listener._write_delivery_evidence(storage_root=storage_root, message=message, received=received, disposition='retry_exhausted_pending_pubsub_dlq', blockers=[str(item) for item in result.get('blockers') or []])
             _listener.logger.warning('pubsub_handoff.retryable_result', extra={'message_id': message.message_id, 'status': result.get('status'), 'blockers': result.get('blockers') or [], 'delivery_attempt': getattr(received, 'delivery_attempt', None), 'max_delivery_attempts': max_delivery_attempts, 'dead_letter_policy_owns_exhausted_delivery': True, 'retry_defer_seconds': _listener.RETRY_DEFER_SECONDS})
             heartbeat.defer_retry()
+            record_deferral(storage_root=storage_root, subscription=subscription_resource, received=received, payload_digest=digest, lease_seconds=_listener.RETRY_DEFER_SECONDS)
             continue
         acknowledge(received.ack_id)
         acknowledged += 1
+        clear_deferral(storage_root=storage_root, received=received)
         _listener._record_acknowledgement(result, subscription=subscription_resource, message=message, received=received, payload_digest=digest)
     return acknowledged
