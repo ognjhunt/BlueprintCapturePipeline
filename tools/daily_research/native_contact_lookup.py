@@ -9,7 +9,9 @@ import hashlib
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from tools.daily_research import contact_lookup as lookup, site_screen as screen, verification
+from tools.daily_research import contact_lookup as lookup
+from tools.daily_research import site_screen as screen
+from tools.daily_research import verification
 from tools.daily_research.runner import Refusal, canonical, digest
 
 INPUT = "blueprint.native-contact-lookup-input.v1"
@@ -281,8 +283,9 @@ def execute(bridge, value, api_key, *, admission, transport=lookup.https):
 
 
 def step(bridge, day, *, api_key=None):
-    from tools.daily_research.firestore import FirestoreLedger
     import os
+
+    from tools.daily_research.firestore import FirestoreLedger
 
     with FirestoreLedger(bridge).lock():
         control = bridge.call("control")

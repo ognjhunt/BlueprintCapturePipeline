@@ -1,26 +1,24 @@
 """Native lookup lifecycle with synthetic evidence and an in-memory durable host; no network."""
 
-from copy import deepcopy
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from blueprint_pipeline import paid_resource_admission as admission
-from tools.daily_research import (
-    native_contact_lookup as native,
-    contact_lookup as lookup,
-    site_screen as screen,
-)
-from tools.daily_research.runner import Refusal, digest
 from tests.daily_research_verification_fixture import assessment
 from tests.test_daily_research_contact_lookup import (
-    FakeFullEnrich,
     FULLENRICH_KEY,
-    searched,
+    FakeFullEnrich,
     profile,
+    searched,
 )
+from tools.daily_research import contact_lookup as lookup
+from tools.daily_research import native_contact_lookup as native
+from tools.daily_research import site_screen as screen
+from tools.daily_research.runner import Refusal, digest
 
 
 def input_value():
