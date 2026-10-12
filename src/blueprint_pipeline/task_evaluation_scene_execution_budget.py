@@ -77,6 +77,51 @@ def extend_scene_execution_budget(*, queue_root: str | Path, intent_id: str, int
     return {'status': 'execution_budget_extended', 'record_path': str(path), **value}
 
 
+
+def main(argv: list[str] | None = None) -> int:
+    """Host operator entry for an owner-approved grant; previews unless --apply.
+
+    Run as the scene service account. The record still binds the intent's own
+    authenticated issuer, as every validator requires, so the authorization
+    reference must name the approving owner and say the grant was issued on the
+    host rather than through the WebApp intake API.
+    """
+    import argparse
+    import json
+
+    from . import task_evaluation_scene_intake as intake
+    from .task_evaluation_scene_intent_contracts import CLIENTS_ENV, ROOT_ENV
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("--intent-id", required=True)
+    parser.add_argument("--owner-user-id", required=True)
+    parser.add_argument("--owner-organization-id", required=True)
+    parser.add_argument("--max-total-spend-usd", type=float, required=True)
+    parser.add_argument("--max-paid-attempts", type=int, required=True)
+    parser.add_argument("--authorization-reference", required=True)
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--ack", default="")
+    args = parser.parse_args(argv)
+    root = intake._root(Path(os.environ[ROOT_ENV]))
+    intent = intake._read(root / args.intent_id / "intent.json", "intent_digest")
+    owner = {"user_id": args.owner_user_id, "organization_id": args.owner_organization_id}
+    _require(intent["request"]["owner"] == owner, "owner_or_revocation_mismatch")
+    preview = {"intent_id": args.intent_id, "issuer": intent["authenticated_issuer"],
+               "current": effective_execution_budget(root / args.intent_id, intent),
+               "requested": _limits({"max_total_spend_usd": args.max_total_spend_usd,
+                                     "max_paid_attempts": args.max_paid_attempts})}
+    if not args.apply:
+        print(json.dumps({"mode": "preview", **preview}, sort_keys=True))
+        return 0
+    trusted = {value.strip() for value in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if value.strip()}
+    result = extend_scene_execution_budget(
+        queue_root=root, intent_id=args.intent_id, intent_digest=intent["intent_digest"], owner=owner,
+        authenticated_client=intent["authenticated_issuer"], trusted_clients=trusted,
+        max_total_spend_usd=args.max_total_spend_usd, max_paid_attempts=args.max_paid_attempts,
+        authorization_reference=args.authorization_reference, ack=args.ack)
+    print(json.dumps({"mode": "applied", **result}, sort_keys=True, default=str))
+    return 0
+
 # Preserve the original import surface while validation lives in pure readers.
 __all__ = [
     'ACK',
@@ -93,3 +138,7 @@ __all__ = [
     'extend_scene_execution_budget',
     'validate_attempt_execution_budget',
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
