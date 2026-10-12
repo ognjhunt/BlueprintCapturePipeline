@@ -102,12 +102,16 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         )
 
         def observe(purpose):
-            return load_original_owner_observation(
+            current = load_original_owner_observation(
                 bucket=handoff.bucket, scene_id=handoff.scene_id,
                 capture_id=handoff.capture_id,
                 marker_generation=handoff.source_finalize['generation'],
                 **({'expected_purpose': purpose} if purpose else {}),
             )
+            if purpose == 'scene_preparation' and capture_root.is_dir():
+                from .capture_original_owner_observer import project_birth_owner_observation
+                return project_birth_owner_observation(capture_root=capture_root, observation=current)[0]
+            return current
 
         try:
             try:

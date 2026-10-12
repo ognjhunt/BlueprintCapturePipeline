@@ -66,6 +66,10 @@ def _stage_selected_capture(listener, handoff, *, storage_root, storage_client, 
             bucket=handoff.bucket, scene_id=handoff.scene_id, capture_id=handoff.capture_id,
             marker_generation=handoff.source_finalize['generation'],
             **({'expected_purpose': expected_purpose} if expected_purpose else {}))
+        root = listener._handoff_capture_root(handoff, storage_root=storage_root)
+        if expected_purpose == 'scene_preparation' and root.is_dir():
+            from .capture_original_owner_observer import project_birth_owner_observation
+            observation = project_birth_owner_observation(capture_root=root, observation=observation)[0]
     except Exception as error:
         if isinstance(error, CaptureOwnerObservationError) and str(error) in OWNER_OBSERVATION_REASON_CODES:
             raise

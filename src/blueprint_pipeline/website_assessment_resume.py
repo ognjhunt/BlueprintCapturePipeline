@@ -11,6 +11,7 @@ import json
 import math
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .common import write_json
@@ -159,6 +160,66 @@ def safe_to_arm(attempt_count, previous_history, recovered_expired_lease):
                 and row["assessment_resume"].get("schema_version") == SCHEMA for row in previous_history))
 
 
+def _blocker_code(exc):
+    """Only fixed, secret-free codes may enter diagnostics, never error text."""
+    from .capture_original_owner_observer import OWNER_OBSERVATION_REASON_CODES
+    from .website_preparation_status import PreparationStatusUnavailable
+    allowed = OWNER_OBSERVATION_REASON_CODES | {
+        "website_preparation_status_unavailable", "website_preparation_original_owner_mismatch",
+        "website_assessment_resume_binding_invalid", "website_preparation_authority_invalid",
+    }
+    if (isinstance(exc, PreparationStatusUnavailable) and exc.blocker_code in allowed
+            and exc.blocker_code != "website_preparation_status_unavailable"):
+        return exc.blocker_code
+    cause = exc.__cause__
+    if isinstance(cause, ValueError) and str(cause) in allowed:
+        return str(cause)
+    if isinstance(exc, ValueError) and str(exc) in allowed:
+        return str(exc)
+    return "website_assessment_resume_check_failed"
+
+
+def _retain_blocker(listener, root, before, code):
+    """Compare and commit diagnostics only; never spend an attempt or rearm work."""
+    from .handoff_job_state import _existing_job_ledger_lock
+    from .website_preparation_status import _root
+    _root(root)
+    _require(not (root / listener.JOB_LEDGER_FILENAME).is_symlink())
+    with _existing_job_ledger_lock(root) as lock_state:
+        if lock_state != "ledger_present":
+            return
+        current = listener._read_job_ledger(root)
+        if current != before or type(current.get("revision")) is not int:
+            return
+        previous = current.get("assessment_resume_blocker")
+        if isinstance(previous, dict) and previous.get("code") == code:
+            return
+        listener._commit_job_ledger(root, {**current, "assessment_resume_blocker": {
+            "code": code, "observed_at": datetime.now(timezone.utc).isoformat()}},
+            previous_revision=current["revision"])
+    listener.logger.warning("pubsub_handoff.assessment_resume_blocked code=%s capture_id=%s",
+                            code, root.name)
+
+
+def _retain_claim(listener, root, before, claim):
+    """Retain a verified guest transition before the existing producer resumes."""
+    from .handoff_job_state import _existing_job_ledger_lock
+    from .capture_original_owner_observer import recorded_guest_claim
+    with _existing_job_ledger_lock(root) as state:
+        _require(state == "ledger_present" and listener._read_job_ledger(root) == before)
+        accepted = recorded_guest_claim(before)
+        if accepted is not None:
+            _require(accepted.get("generation_id") == claim["generation_id"]
+                     and accepted.get("claimant_user_id") == claim["claimant_user_id"])
+            return before
+        history = before.get("attempt_history")
+        _require(type(history) is list and bool(history)
+                 and history[-1].get("assessment_resume") == before["assessment_resume"])
+        return listener._commit_job_ledger(root, {**before, "assessment_resume_claim": claim,
+            "attempt_history": [*history[:-1], {**history[-1], "assessment_resume_claim": claim}]},
+                                           previous_revision=before["revision"])
+
+
 def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args, limit=1):
     """Reuse the existing drain tick, original bytes, leases and source checks."""
     from .website_preparation_status import _read, _root, read_preparation_status
@@ -177,6 +238,8 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
         pivot = keys.index(cursor) + 1
         roots = roots[pivot:] + roots[:pivot]
     for root in roots[:max(0, min(limit, 50))]:
+        before = None
+        parked = False
         try:
             _root(root)
             _require(not (root / listener.JOB_LEDGER_FILENAME).is_symlink())
@@ -185,6 +248,7 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
             if before.get("status") != "failed_retryable" or before.get("last_error") != PENDING_CODE or not record:
                 continue
             counts["pending"] += 1
+            parked = True
             _require(type(record) is dict and set(record) == {"schema_version", "payload_base64",
                 "source_payload_sha256", "producer_delivery_key", "task_context_digest"}
                 and record["schema_version"] == SCHEMA and type(record["payload_base64"]) is str
@@ -199,7 +263,8 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
             # Reuse the actual status reader's complete active birth/membership,
             # fresh owner/video/rights, local consent, immutable current context
             # and unchanged ledger checks; a historical sidecar grants nothing.
-            status = read_preparation_status(capture_root=root, selectors={"request_id": request_id,
+            claims = []
+            status = read_preparation_status(capture_root=root, claim_evidence_sink=claims, selectors={"request_id": request_id,
                 "scene_id": handoff.scene_id, "capture_id": handoff.capture_id,
                 "completion_marker_generation": handoff.source_finalize["generation"],
                 "producer_delivery_key": record["producer_delivery_key"],
@@ -210,6 +275,9 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
                 and _read(Path(birth["birth_delivery_raw_ref"]["path"]))["producer_delivery"]["kind"] == "website_browser_capture_delivery")
             context = context_reader.validate_website_task_context(_read(root / "pipeline" / "website_task_context.json"),
                 request_id=request_id, scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
+            _require(listener._read_job_ledger(root) == before)
+            if claims:
+                before = _retain_claim(listener, root, before, claims[0])
             _proposal_admitted(context_reader.load_website_scene_sponsorship(task_context=context, now=time.time()), context)
             _require(listener._read_job_ledger(root) == before)
             # The SAME successful lease claim consumes the pending field; its
@@ -221,6 +289,20 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
             if result.get("status") in {"processed", "retryable_blocked"}:
                 counts["resumed"] += 1
                 counts["pending"] -= 1
-        except Exception:
-            listener.logger.debug("pubsub_handoff.assessment_resume_pending")
+            else:
+                code = _blocker_code(ValueError(result.get("owner_observation_reason", "")))
+                if code == "website_assessment_resume_check_failed":
+                    code = "website_assessment_resume_handoff_refused"
+                _retain_blocker(listener, root, before, code)
+        except Exception as exc:
+            if str(exc) == PENDING_CODE or isinstance(exc.__cause__, ValueError) and str(exc.__cause__) == PENDING_CODE:
+                continue  # Expected pending admission retains its exact retry semantics.
+            code = _blocker_code(exc)
+            if parked:
+                try:
+                    _retain_blocker(listener, root, before, code)
+                except Exception:
+                    listener.logger.warning("pubsub_handoff.assessment_resume_blocker_unavailable code=%s", code)
+            else:
+                listener.logger.warning("pubsub_handoff.assessment_resume_check_unavailable code=%s", code)
     return counts
