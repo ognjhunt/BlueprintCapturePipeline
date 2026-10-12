@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tools.daily_research import screen_admission, native_contact_lookup
+from tools.daily_research import native_contact_lookup, screen_admission
 from tools.daily_research.consumer import Consumer, workflow
 from tools.daily_research.firestore import (
     Bridge,
