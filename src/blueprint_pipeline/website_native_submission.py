@@ -303,7 +303,9 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     if construction["configurations"][2].get("authoring_agent_runtime") == "openai_agents_api":
         request["replacement_authoring_agent_runtime"] = "openai_agents_api"
         request["replacement_authoring_model"] = "gpt-6.1-sol"
-    require(request["spend"]["hard_cap_usd"] <= intent["request"]["execution"]["max_total_spend_usd"],
+    from .task_evaluation_scene_execution_budget_evidence import effective_execution_budget
+    authorized = effective_execution_budget(Path(task["scene_intent_authority"]["path"]).parent, intent)
+    require(request["spend"]["hard_cap_usd"] <= authorized["max_total_spend_usd"],
             "website_native_construction_budget_exceeds_authority")
     validate_launch_preparation_request(request)
     from .website_native_inputs import validate_website_native_inputs

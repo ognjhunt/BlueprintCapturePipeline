@@ -83,15 +83,25 @@ def test_actual_eleven_holds_counted_with_100_dollar_18_attempt_extension(tmp_pa
     assert intent['request']['execution'] == payload['execution']
 
 
-def test_original_exposure_and_per_action_limit_are_not_reset(tmp_path):
+def test_original_exposure_is_not_reset_and_the_grant_bounds_each_action(tmp_path):
     owner = stage(tmp_path)
     attempt(tmp_path, owner)
     extend(tmp_path, owner, max_total_spend_usd=6, max_paid_attempts=4)
     attempt(tmp_path, owner, 'a2', cost=4, now=201)
     with pytest.raises(ValueError, match='spend_cap_exhausted'):
         attempt(tmp_path, owner, 'a3', cost=1, now=201)
-    with pytest.raises(ValueError, match='attempt_spend_exceeds_original_limit'):
-        attempt(tmp_path, owner, 'a3', cost=5, now=201)
+    with pytest.raises(ValueError, match='attempt_spend_exceeds_authorized_limit'):
+        attempt(tmp_path, owner, 'a3', cost=7, now=201)
+
+
+def test_owner_grant_admits_one_action_above_the_original_ceiling(tmp_path):
+    # The owner approved a higher scene budget so one build quoted above the
+    # original ceiling could run; the grant, not the consent, bounds it.
+    owner = stage(tmp_path)
+    with pytest.raises(ValueError, match='attempt_spend_exceeds_authorized_limit'):
+        attempt(tmp_path, owner, 'build', cost=5, now=201)
+    extend(tmp_path, owner, max_total_spend_usd=6, max_paid_attempts=2)
+    assert attempt(tmp_path, owner, 'build', cost=5, now=201)['maximum_spend_usd'] == 5
 
 
 def test_explicit_grant_can_extend_an_exhausted_32_attempt_history(tmp_path):

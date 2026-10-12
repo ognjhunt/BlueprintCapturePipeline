@@ -169,7 +169,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         _require(not (directory / "revoked.json").exists(), "authority_revoked")
         _require(moment < effective_execution_expiry(directory, intent), "authority_expired")
         _require(provider in execution["allowed_providers"], "provider_not_authorized")
-        _require(maximum_spend_usd <= execution["max_total_spend_usd"], "attempt_spend_exceeds_original_limit")
+        _require(maximum_spend_usd <= budget["max_total_spend_usd"], "attempt_spend_exceeds_authorized_limit")
         attempts = directory / "attempts"
         _require(not attempts.is_symlink(), "record_unsafe")
         attempts.mkdir(mode=0o750, exist_ok=True)
