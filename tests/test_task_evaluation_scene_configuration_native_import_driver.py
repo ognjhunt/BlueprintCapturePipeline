@@ -912,3 +912,21 @@ def test_articulated_runtime_result_carries_the_probe_without_changing_qualifica
     assert runtime["status"] == "qualified" and runtime["native_simulator_import_qualified"] is True
     assert runtime.get("robot_free_success_probe") == (probe if kept else None)
     assert runtime["result_digest"] == canonical_digest(runtime, digest_field="result_digest")
+
+
+def test_the_probe_changes_nothing_else_in_the_sealed_runtime_result(tmp_path: Path) -> None:
+    probe = {"schema_version": driver.ROBOT_FREE_PROBE_SCHEMA, "status": "recorded", "samples": [{"x": 1}]}
+
+    def sealed(root: Path, observation: dict) -> dict:
+        def runner(*, observation_consumer, **_kwargs):
+            return observation_consumer(observation)
+
+        root.mkdir()
+        result = execute_native_import_component(environment=_articulated_environment(root), native_runner=runner)
+        artifact = next(row for row in result["artifacts"] if row["role"] == "native_import_runtime_result")
+        return json.loads(Path(artifact["path"]).read_text())
+
+    baseline = sealed(tmp_path / "baseline", _articulated_observed())
+    with_probe = sealed(tmp_path / "probe", {**_articulated_observed(), "robot_free_success_probe": probe})
+    strip = lambda value: {k: v for k, v in value.items() if k not in {"robot_free_success_probe", "result_digest"}}  # noqa: E731
+    assert strip(with_probe) == strip(baseline) and with_probe["robot_free_success_probe"] == probe
