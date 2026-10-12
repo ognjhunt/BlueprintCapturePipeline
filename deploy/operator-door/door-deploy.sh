@@ -50,25 +50,39 @@ PY
   deploy_options=(--release-provenance "$expected")
 fi
 
-if [ "${DOOR_WAIT_FOR_IDLE:-1}" = "1" ]; then
-  deadline=$((SECONDS + ${DOOR_IDLE_WAIT_SECONDS:-1800}))
-  IFS=, read -r -a idle_units <<<"${DOOR_IDLE_UNITS:-}"
-  while :; do
-    busy=""
-    for unit in ${idle_units[@]+"${idle_units[@]}"}; do
-      state="$(systemctl is-active "$unit" 2>/dev/null || true)"
-      case "$state" in active|activating|deactivating|reloading) busy="$unit" ;; esac
-    done
-    [ -z "$busy" ] && break
-    [ "$SECONDS" -ge "$deadline" ] && door_fail "idle_wait_timeout:$busy"
-    echo "waiting for $busy to go idle"
-    sleep "${DOOR_IDLE_POLL_SECONDS:-20}"
-  done
-fi
-
 door_prepare_source
 door_require_on_main
 door_add_tool
+
+drain_options=()
+if [ "${DOOR_WAIT_FOR_IDLE:-1}" = "1" ]; then
+  IFS=, read -r -a idle_units <<<"${DOOR_IDLE_UNITS:-}"
+  if grep -q -- '"--drain-unit"' "$DOOR_TOOL/scripts/deploy_control_plane_commit.py" 2>/dev/null; then
+    # The target tool stops these units' triggers first and then lets runs
+    # already in flight finish, so no run can start between an idle check and
+    # the release switch, and it never waits for two timers to idle together.
+    for unit in ${idle_units[@]+"${idle_units[@]}"}; do
+      drain_options+=(--drain-unit "$unit")
+    done
+    if [ "${#drain_options[@]}" -gt 0 ]; then
+      drain_options+=(--drain-seconds "${DOOR_IDLE_WAIT_SECONDS:-1800}")
+    fi
+  else
+    # An older tool (for example a rollback target) cannot drain: poll as before.
+    deadline=$((SECONDS + ${DOOR_IDLE_WAIT_SECONDS:-1800}))
+    while :; do
+      busy=""
+      for unit in ${idle_units[@]+"${idle_units[@]}"}; do
+        state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+        case "$state" in active|activating|deactivating|reloading) busy="$unit" ;; esac
+      done
+      [ -z "$busy" ] && break
+      [ "$SECONDS" -ge "$deadline" ] && door_fail "idle_wait_timeout:$busy"
+      echo "waiting for $busy to go idle"
+      sleep "${DOOR_IDLE_POLL_SECONDS:-20}"
+    done
+  fi
+fi
 
 receipt="$DOOR_STATE_ROOT/deploy-receipts/${mode}_${DOOR_COMMIT:0:12}_door.json"
 set +e
@@ -78,7 +92,7 @@ PYTHONDONTWRITEBYTECODE=1 "$DOOR_VENV_PYTHON" "$DOOR_TOOL/scripts/deploy_control
   --release-root /opt/blueprint/task-evaluation-control-plane-releases \
   --state-root "$DOOR_STATE_ROOT" \
   --active-link /opt/blueprint/task-evaluation-control-plane \
-  "${deploy_options[@]}" --preserve-configured-controls-state \
+  "${deploy_options[@]}" ${drain_options[@]+"${drain_options[@]}"} --preserve-configured-controls-state \
   --receipt-out "$receipt"
 rc=$?
 set -e

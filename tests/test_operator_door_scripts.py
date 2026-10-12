@@ -36,7 +36,13 @@ case "${args[0]}" in
   merge-base) exit "${FAKE_ON_MAIN_RC:-0}" ;;
   branch) [ -n "${FAKE_PUSHED:-}" ] && echo "  origin/feature" ;;
   worktree)
-    if [ "${args[1]}" = "add" ]; then mkdir -p "${args[4]}"; else rm -rf "$last"; fi ;;
+    if [ "${args[1]}" = "add" ]; then
+      mkdir -p "${args[4]}"
+      if [ -n "${FAKE_TOOL_DRAINS:-}" ]; then
+        mkdir -p "${args[4]}/scripts"
+        echo 'parser.add_argument("--drain-unit", action="append")' > "${args[4]}/scripts/deploy_control_plane_commit.py"
+      fi
+    else rm -rf "$last"; fi ;;
 esac
 exit 0
 """
@@ -231,7 +237,25 @@ def test_deploy_gives_up_when_units_stay_busy(env: dict[str, str]) -> None:
     rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="1", DOOR_IDLE_WAIT_SECONDS="0",
                               FAKE_BUSY_UNIT="blueprint-a.service", FAKE_BUSY_POLLS="99")
     assert rc == 2 and outcome["code"] == "idle_wait_timeout:blueprint-a.service"
-    assert not any(call.startswith("git ") for call in calls)
+    assert not any(call.startswith("venv-python") for call in calls)
+
+
+def test_deploy_lets_a_draining_tool_stop_triggers_before_waiting(env: dict[str, str]) -> None:
+    """A tool that drains after quiesce replaces the door's racy idle poll."""
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="1",
+                              FAKE_TOOL_DRAINS="1", FAKE_BUSY_UNIT="blueprint-a.service", FAKE_BUSY_POLLS="99")
+    assert rc == 0 and outcome["status"] == "deployed"
+    assert not any("is-active" in call for call in calls)
+    assert ("--drain-unit blueprint-a.service --drain-unit blueprint-b.service --drain-seconds 30"
+            in _tool_call(calls))
+
+
+def test_no_wait_deploy_never_drains(env: dict[str, str]) -> None:
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0",
+                              FAKE_TOOL_DRAINS="1")
+    assert rc == 0 and outcome["status"] == "deployed"
+    assert "--drain-unit" not in _tool_call(calls)
+    assert not any("is-active" in call for call in calls)
 
 
 def test_a_failing_deploy_tool_is_reported(env: dict[str, str]) -> None:
