@@ -85,3 +85,85 @@ def test_without_a_recorded_probe_nothing_is_admitted(probe) -> None:
     receipt = score_robot_free_readiness(task_spec=_spec(), task_joint_bindings=_BINDINGS,
                                          native_import_result=_result(probe))
     assert receipt["status"] == "probe_unavailable" and receipt["learned_policy_evaluation_admitted"] is False
+
+
+def test_the_real_adapted_drawer_contract_scores_its_recorded_probe(tmp_path) -> None:
+    """End to end on CPU: the configured revision's own task spec scores the probe."""
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
+        adapt_articulated_open_close_task_template,
+    )
+    from tests.test_task_evaluation_articulated_open_close_native_adapter import _case
+
+    case = _case(tmp_path)
+    definition = adapt_articulated_open_close_task_template(
+        configured_revision=case["configured"], materialized_references=case["references"],
+    )["native_task_definition"]
+    spec, bindings = definition["task_spec"], definition["task_joint_bindings"]
+    graph = spec["articulation_graph"]
+    target = next(row for row in graph["joints"] if row["role"] == "target")
+    interval = graph["success_predicate"]["joint_intervals"][target["joint_id"]]
+    goal = (interval[0] + interval[1]) / 2
+    dofs = {row["joint_id"]: row["native_joint_name"] for row in bindings if row.get("native_joint_name")}
+
+    def row(step, phase, target_position):
+        values = {name: [float(next(j["reset_position"] for j in graph["joints"] if j["joint_id"] == joint_id)), 0.0]
+                  for joint_id, name in dofs.items()}
+        values[dofs[target["joint_id"]]] = [target_position, 0.0]
+        return {"step_index": step, "phase": phase, "dof": values}
+
+    samples = [row(i, "zero_action", float(target["reset_position"])) for i in range(360)]
+    samples += [row(360 + k, "drive", goal * (k + 1) / 120) for k in range(120)]
+    samples += [row(480 + k, "release", goal) for k in range(600)]
+    probe = {"schema_version": ROBOT_FREE_PROBE_SCHEMA, "status": "recorded", "timestep_seconds": 1.0 / 120.0,
+             "plan": {"target_joint_id": target["joint_id"], "drive_target_position": goal}, "samples": samples}
+    receipt = score_robot_free_readiness(task_spec=spec, task_joint_bindings=bindings,
+                                         native_import_result=_result(probe))
+    assert receipt["checks"] == {"zero_action_not_success": True, "direct_drive_success": True}, receipt
+    assert receipt["probe"]["control_frequency_hz"] == spec["control_frequency_hz"]
+
+
+def test_a_published_revision_is_fetched_adapted_and_scored_by_its_digests(tmp_path) -> None:
+    import copy
+    import hashlib
+    import json
+    from pathlib import Path
+
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
+        adapt_articulated_open_close_task_template,
+    )
+    from blueprint_pipeline.task_evaluation_scene_robot_free_readiness import robot_free_readiness_for_revision
+    from tests.test_task_evaluation_articulated_open_close_native_adapter import NATIVE_IMPORT, _case
+
+    case = _case(tmp_path)
+    graph = adapt_articulated_open_close_task_template(
+        configured_revision=case["configured"], materialized_references=case["references"],
+    )["native_task_definition"]["task_spec"]["articulation_graph"]
+    target = next(row for row in graph["joints"] if row["role"] == "target")
+    goal = sum(graph["success_predicate"]["joint_intervals"][target["joint_id"]]) / 2
+    rows = [{"step_index": i, "phase": "zero_action", "dof": {target["joint_id"]: [0.0, 0.0]}} for i in range(360)]
+    rows += [{"step_index": 360 + k, "phase": "drive", "dof": {target["joint_id"]: [goal * (k + 1) / 120, 0.0]}}
+             for k in range(120)]
+    rows += [{"step_index": 480 + k, "phase": "release", "dof": {target["joint_id"]: [goal, 0.0]}} for k in range(600)]
+    native = {key: value for key, value in case["documents"][NATIVE_IMPORT].items()}
+    native["robot_free_success_probe"] = {"schema_version": ROBOT_FREE_PROBE_SCHEMA, "status": "recorded",
+                                          "timestep_seconds": 1.0 / 120.0, "plan": {"drive_target_position": goal},
+                                          "samples": rows}
+    native["result_digest"] = canonical_digest(native, digest_field="result_digest")
+    payload = (json.dumps(native, sort_keys=True) + "\n").encode()
+    uri = "s3://blueprint-production-inputs/native-with-probe.json"
+    revision = copy.deepcopy(case["configured"])
+    revision["replacement"]["native_import_qualification"] = {
+        "uri": uri, "digest": "sha256:" + hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)}
+    revision["revision_digest"] = ""
+    revision["revision_digest"] = canonical_digest(revision, digest_field="revision_digest")
+    blobs = {row["uri"]: Path(row["materialized_path"]).read_bytes() for row in case["references"].values()}
+    blobs[uri] = payload
+    receipt = robot_free_readiness_for_revision(revision=revision, output_root=tmp_path / "readiness",
+                                                fetcher=lambda reference: blobs[reference["uri"]])
+    assert receipt["status"] == "passed" and receipt["configured_scene_revision_digest"] == revision["revision_digest"]
+    assert receipt["native_import_result_digest"] == native["result_digest"]
+    # A byte that does not match its published digest is refused before any scoring.
+    blobs[uri] = payload + b" "
+    with pytest.raises(Exception, match="fetch_mismatch"):
+        robot_free_readiness_for_revision(revision=revision, output_root=tmp_path / "tampered",
+                                          fetcher=lambda reference: blobs[reference["uri"]])
