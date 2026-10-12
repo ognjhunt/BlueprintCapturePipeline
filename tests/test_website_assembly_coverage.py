@@ -566,3 +566,117 @@ def test_decoder_returns_exact_indices_rotated_upright(tmp_path):
     assert json.loads((next((tmp_path / "out").glob("*/upright_frames.json"))).read_text())["frames"] == result
     assert coverage.decode_upright_frames(video=video, video_digest=_sha256_file(video), rotation=-90,
                                           frames=frames, output_root=tmp_path / "out") == result
+
+
+def test_a_json_syntax_slip_is_repaired_in_one_text_turn():
+    asked = []
+    value, record = coverage._json_answer('{"a": 1 "b": 2}', lambda error: asked.append(error) or '{"a": 1, "b": 2}')
+    assert value == {"a": 1, "b": 2} and record["repaired"] is True and record["turns"] == 1
+    assert "Expecting ',' delimiter" in record["failed_check"] and asked == [record["failed_check"]]
+
+
+def test_a_still_broken_answer_is_retained_as_invalid_never_raised():
+    assert coverage._json_answer('{"a": 1 "b"', lambda error: '{"a": 1 "b"')[0] is None
+
+    def incomplete(error):
+        raise ValueError("website_assembly_coverage_json_repair_incomplete")
+    value, record = coverage._json_answer("{", incomplete)
+    assert value is None and record["repaired"] is False
+    assert record["repair_error"] == "website_assembly_coverage_json_repair_incomplete"
+
+
+def test_valid_json_makes_no_repair_turn():
+    assert coverage._json_answer('{"a": 1}', lambda error: pytest.fail("no repair for valid JSON")) == ({"a": 1}, None)
+
+
+def test_the_classifier_binding_names_its_json_repair_policy(tmp_path, model):
+    calls, _state = model
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    _run(tmp_path, _target(track), geometry)
+    assert calls and all(binding["json_repair_turns"] == 1 for binding in calls)
+
+
+def _fake_genai(monkeypatch, answer):
+    """Stand-in google.genai: the provider calls are faked, the SDK need not be installed."""
+    import sys
+    import types as module_types
+    from types import SimpleNamespace as NS
+    calls = []
+
+    class Models:
+        def generate_content(self, *, model, contents, config):
+            calls.append({"model": model, "contents": contents, "config": config})
+            text, reason = answer(contents)
+            return NS(candidates=[NS(finish_reason=reason)], text=text)
+
+    class Client:
+        def __init__(self, **_):
+            self.models = Models()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    genai, types_module = module_types.ModuleType("google.genai"), module_types.ModuleType("google.genai.types")
+    types_module.HttpOptions = types_module.HttpRetryOptions = types_module.GenerateContentConfig = lambda **k: k
+    types_module.Part = NS(from_bytes=lambda data, mime_type: ("image", len(data)))
+    genai.Client, genai.types = Client, types_module
+    google = sys.modules.get("google") or module_types.ModuleType("google")
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setattr(google, "genai", genai, raising=False)
+    monkeypatch.setitem(sys.modules, "google.genai", genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", types_module)
+    return calls
+
+
+def _real_classifier(tmp_path, monkeypatch, first_answer):
+    """The real retained call and the real invoke, with a stand-in client."""
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as gemini
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", lambda **_: ({"status": "admitted"}, object()))
+    monkeypatch.setattr(gemini, "_api_key", lambda: ("fixture", "fixture"))
+
+    def decode(*, video, video_digest, rotation, frames, output_root):
+        output_root.mkdir(parents=True, exist_ok=True)
+        result = {}
+        for row in frames:
+            path = output_root / f"{row['frame_id']}.png"
+            Image.new("RGB", (WIDTH, HEIGHT), (row["decoded_index"] % 256, 0, 0)).save(path)
+            result[row["frame_id"]] = {"path": str(path), "sha256": _sha256_file(path), "width": WIDTH, "height": HEIGHT}
+        return result
+    monkeypatch.setattr(coverage, "decode_upright_frames", decode)
+
+    def answer(contents):
+        prompt = contents[0]
+        if "is not valid JSON" in prompt:
+            return json.dumps(json.loads(prompt[prompt.rindex("\n\n") + 2:].replace("FIXME", ","))), "STOP"
+        if '{"assembly"' not in prompt:
+            return json.dumps({"frames": []}), "STOP"  # the optional brand read
+        ids = [row["frame_id"] for row in json.loads(prompt[prompt.rindex('{"assembly"'):])["frames"]]
+        return first_answer(json.dumps(_answer({"images": [{"frame_id": i} for i in ids]})))
+
+    calls = _fake_genai(monkeypatch, answer)
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    return _run(tmp_path, _target(track), geometry), calls
+
+
+def test_the_real_classifier_call_repairs_malformed_json_in_the_same_receipt(tmp_path, monkeypatch):
+    # The production slip: a comma missing between two keys, finish_reason STOP.
+    record, calls = _real_classifier(tmp_path, monkeypatch,
+                                     lambda text: (text.replace('", "', '" FIXME "', 1), "STOP"))
+    assert record["status"] == "complete", record.get("blockers")
+    repairs = [call for call in calls if "is not valid JSON" in call["contents"][0]]
+    assert repairs and all(len(call["contents"]) == 1 for call in repairs)  # text only, no images
+    receipts_dir = next((tmp_path / "coverage").rglob("receipts"))
+    stored = [json.loads(path.read_text()) for path in receipts_dir.glob("*.json")]
+    assert stored and all(row["status"] == "completed" for row in stored)
+    assert any(row["result"].get("json_repair", {}).get("repaired") for row in stored)
+
+
+def test_a_cut_off_classification_is_retained_invalid_not_left_uncertain(tmp_path, monkeypatch):
+    record, _calls = _real_classifier(tmp_path, monkeypatch, lambda text: (text[:500], "MAX_TOKENS"))
+    assert record["status"] == "incomplete"
+    assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
+    receipts_dir = next((tmp_path / "coverage").rglob("receipts"))
+    assert all(json.loads(path.read_text())["status"] == "completed" for path in receipts_dir.glob("*.json"))
