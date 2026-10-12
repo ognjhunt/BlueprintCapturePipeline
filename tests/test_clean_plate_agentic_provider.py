@@ -227,3 +227,110 @@ def test_destination_relation_cannot_be_invented_from_movability():
     with pytest.raises(ValueError, match="destination_relation_required"):
         parse_removal_plan_response(json.dumps({"targets": [target]}), strict=True,
                                     task_description="Move the small object")
+
+
+_TASK = {"confirmed": True, "description": "Open the dishwasher door and close it again."}
+
+
+def _door(**overrides):
+    row = {"target_id": "dishwasher", "semantic_label": "dishwasher", "target_class": "movable_object",
+           "target_role": "task_object", "task_effect": "manipulated", "disposition": "remove",
+           "rebuild_intent": "rebuild_and_compose", "confidence": 0.95,
+           "decision_reason": "The task opens this door.", "task_basis_quote": "Open the dishwasher door",
+           "spatial_evidence": [{"timestamp_seconds": 2.0}], "articulation_kind": "revolute",
+           "articulated_part": "dishwasher door"}
+    return {**row, **overrides}
+
+
+def _rack(**overrides):
+    row = {"target_id": "lower_rack", "semantic_label": "lower rack", "target_class": "movable_object",
+           "target_role": "obstacle", "task_effect": "static_obstacle", "disposition": "keep",
+           "rebuild_intent": "none", "decision_reason": "The rack stays inside the tub.",
+           "articulation_kind": "prismatic", "articulated_part": "lower rack"}
+    return {**row, **overrides}
+
+
+def _analysis(tmp_path, monkeypatch, *, first, repaired):
+    import json
+
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+    video = tmp_path / "walkthrough.mp4"
+    video.write_bytes(b"video")
+    monkeypatch.setenv(analysis.GATE_ENV, "1")
+    monkeypatch.setattr(analysis, "_api_key", lambda: ("fixture", "fixture"))
+    monkeypatch.setattr(analysis, "_video_processing", lambda path, mode: ("static", 10.0))
+    monkeypatch.setattr(analysis, "_invoke_agentic_video", lambda **_k: {
+        "text": json.dumps({"targets": first}), "video_processing": {"mode": "static"}})
+    repairs = []
+
+    def repair(**kwargs):
+        repairs.append(kwargs)
+        return {"text": json.dumps({"targets": repaired})}
+
+    monkeypatch.setattr(analysis, "_invoke_text_repair", repair)
+    plan = analysis._analyze_removal_targets(video_path=video, task_context=_TASK)
+    return plan, repairs
+
+
+def test_a_mechanism_hint_on_a_static_target_is_repaired_in_one_turn(tmp_path, monkeypatch):
+    from blueprint_pipeline.clean_plate_removal_analysis_gemini import _repair_prompt
+    plan, repairs = _analysis(tmp_path, monkeypatch, first=[_door(), _rack()],
+                              repaired=[_door(), _rack(articulation_kind="", articulated_part="")])
+    assert plan["status"] == "completed", plan["blockers"]
+    assert plan["validation_repair"] == {"turns": 1, "repaired": True,
+                                         "failed_check": "removal_analysis_articulation_hint_invalid"}
+    assert [row["articulation_kind"] for row in plan["targets"]] == ["revolute", ""]
+    (call,) = repairs
+    assert call["error"] == "removal_analysis_articulation_hint_invalid"
+    prompt = _repair_prompt(call["prompt"], call["previous_text"], call["error"])
+    # Located feedback: only the offending static rack is named, not the door.
+    assert '"target_id": "lower_rack"' in prompt and '"target_id": "dishwasher"' not in prompt.split("Original task")[0]
+
+
+def test_a_repair_that_still_breaks_a_rule_stays_blocked(tmp_path, monkeypatch):
+    plan, repairs = _analysis(tmp_path, monkeypatch, first=[_door(), _rack()], repaired=[_door(), _rack()])
+    assert plan["status"] == "blocked" and len(repairs) == 1
+    assert plan["blockers"] == ["removal_analysis_articulation_hint_invalid",
+                                "validation_repair_failed:removal_analysis_articulation_hint_invalid"]
+
+
+def test_a_valid_first_answer_makes_no_repair_call(tmp_path, monkeypatch):
+    plan, repairs = _analysis(tmp_path, monkeypatch, first=[_door()], repaired=[])
+    assert plan["status"] == "completed" and repairs == [] and "validation_repair" not in plan
+
+
+def test_the_repair_turn_resends_text_only_under_the_same_schema():
+    from blueprint_pipeline.clean_plate_removal_analysis_gemini import RESPONSE_SCHEMA, _invoke_text_repair
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return NS(status="completed", steps=[output('{"targets":[]}')])
+
+    genai = NS(Client=lambda **_: NS(interactions=NS(create=create),
+                                     files=NS(upload=lambda **_: pytest.fail("no media in a repair turn"))))
+    result = _invoke_text_repair(api_key="fake", model=DEFAULT_MODEL, genai=genai,
+                                 types=NS(HttpOptions=NS, HttpRetryOptions=NS), prompt="Find targets.",
+                                 previous_text='{"targets":[{"target_id":"x"}]}', error="removal_analysis_target_invalid")
+    assert result == {"text": '{"targets":[]}'}
+    (call,) = calls
+    assert call["store"] is False and call["response_format"]["schema"] == RESPONSE_SCHEMA
+    assert [item["type"] for item in call["input"]] == ["text"]
+    assert "Failed check: removal_analysis_target_invalid" in call["input"][0]["text"]
+    assert '{"targets":[{"target_id":"x"}]}' in call["input"][0]["text"]
+
+
+def test_the_retained_decision_names_its_repair_policy_and_reserves_for_it(tmp_path, monkeypatch):
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+    from blueprint_pipeline import website_gemini_receipts
+    video = tmp_path / "walkthrough.mp4"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(analysis, "_video_processing", lambda path, mode: ("static", 10.0))
+    captured = {}
+    monkeypatch.setattr(website_gemini_receipts, "retained_gemini_call", lambda **kwargs: captured.update(kwargs) or {})
+    analysis.analyze_removal_targets(video_path=video, output_root=tmp_path / "gemini",
+                                     task_context={**_TASK, "capture_id": "walkthrough-x"})
+    # A decision retained under the no-repair policy is a different request: it is never reused.
+    assert captured["binding"]["validation_repair_turns"] == 1
+    single = website_gemini_receipts.gemini_quote(model=captured["binding"]["model"], input_tokens=1, max_output_tokens=8192)
+    assert captured["maximum_cost_usd"] > 2 * single
