@@ -20,7 +20,8 @@ def _verified_attempt(root: Path, task_context: dict) -> tuple[dict, dict, dict]
     provider_zero = json.loads((operation / "provider_zero_verification.json").read_text())
     if (execution.get("status") not in {"failed", "completed"}
             or execution.get("provider") != "vast"
-            or execution.get("instance_id") is None
+            or (execution.get("instance_id") is None
+                and "reconstruction_vast_operation_instance_not_created" not in execution.get("blockers", []))
             or execution.get("request_digest") != request.get("request_digest")
             or teardown.get("request_digest") != request.get("request_digest")
             or provider_zero.get("request_digest") != request.get("request_digest")
@@ -35,9 +36,10 @@ def _verified_attempt(root: Path, task_context: dict) -> tuple[dict, dict, dict]
             or admission.get("task_context_digest") != task_context.get("context_digest")
             or not str(admission.get("allocation_binding_digest") or "").startswith("sha256:")):
         raise ValueError("website_vast_billing_attempt_binding_invalid")
-    instance_id = str(execution["instance_id"])
-    if not instance_id.isdecimal() or int(instance_id) <= 0:
-        raise ValueError("website_vast_billing_instance_invalid")
+    if execution.get("instance_id") is not None:
+        instance_id = str(execution["instance_id"])
+        if not instance_id.isdecimal() or int(instance_id) <= 0:
+            raise ValueError("website_vast_billing_instance_invalid")
     return admission, execution, teardown
 
 
@@ -106,6 +108,13 @@ def settle_prior_website_vast_attempts(*, output_root: Path, attempted_count: in
     for index in range(attempted_count):
         root = output_root / ("controller_geometry" if index == 0 else f"controller_geometry_retry_{index}")
         admission, execution, teardown = _verified_attempt(root, task_context)
+        if execution.get("instance_id") is None:
+            # A market miss created no instance, so there is no provider charge
+            # to prove. Its quote stays held at its worst case, and is surfaced.
+            write_json(root / "provider_charge_hold.json", {
+                "status": "held_no_instance", "allocation_binding_digest": admission["allocation_binding_digest"],
+                "held_usd": admission["maximum_cost_usd"], "execution_result_digest": execution["execution_result_digest"]})
+            continue
         preflight = json.loads((root / "preflight.json").read_text())
         if (preflight.get("status") != "verified" or
                 preflight.get("preflight_digest") != canonical_digest(preflight, digest_field="preflight_digest")):

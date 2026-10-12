@@ -345,26 +345,27 @@ def test_controller_allows_one_new_release_after_verified_failed_rental(packet, 
 def test_controller_retries_a_market_miss_on_the_same_release(packet, tmp_path, monkeypatch):
     """Dishwasher run 2026-10-12: the approved Vast offer vanished before any instance existed."""
     from blueprint_pipeline import website_geometry_dispatch as dispatch
+    from blueprint_pipeline import website_task_context
 
     path, _, _ = packet
     inputs = json.loads(path.read_text())
     output = tmp_path / "geometry"
     first = output / "controller_geometry"
-    retry = output / "controller_geometry_retry_1"
     operation_root = first / "reconstruction_vast_operation"
     operation_root.mkdir(parents=True)
-    retry.mkdir(parents=True)
-    state = {"input_digest": inputs["digest"], "task_context_digest": DIGEST}
-    write_json(first / "dispatch.json", state)
-    write_json(retry / "dispatch.json", state)
+    write_json(first / "dispatch.json", {"input_digest": inputs["digest"], "task_context_digest": DIGEST})
     write_json(first / "request.json", {"request_digest": DIGEST, "source_commit_sha": SHA})
     # A real failed attempt keeps its bound request but never retrieved an output receipt.
     write_json(first / "bound-request.json", {"request_digest": DIGEST})
-    provider_zero = {"status": "PASS"}
+    write_json(first / "controller_admission.json", {
+        "provider": "vast", "resource_class": "gpu_render", "task_context_digest": DIGEST,
+        "allocation_binding_digest": "sha256:" + "e" * 64, "maximum_cost_usd": 0.5})
+    provider_zero = {"status": "PASS", "request_digest": DIGEST}
     provider_zero["provider_zero_digest"] = canonical_digest(provider_zero, digest_field="provider_zero_digest")
-    teardown = {"provider_zero_verified": True}
+    teardown = {"status": "PASS", "request_digest": DIGEST, "provider_zero_verified": True}
     teardown["teardown_receipt_digest"] = canonical_digest(teardown, digest_field="teardown_receipt_digest")
-    execution = {"status": "failed", "request_digest": DIGEST, "provider_zero_verified": True,
+    execution = {"status": "failed", "provider": "vast", "instance_id": None, "request_digest": DIGEST,
+                 "provider_zero_verified": True,
                  "blockers": ["reconstruction_vast_operation_instance_not_created",
                               "vast_approved_offer_unavailable_or_changed"],
                  "provider_zero_digest": provider_zero["provider_zero_digest"],
@@ -373,14 +374,18 @@ def test_controller_retries_a_market_miss_on_the_same_release(packet, tmp_path, 
     write_json(operation_root / "provider_zero_verification.json", provider_zero)
     write_json(operation_root / "teardown_receipt.json", teardown)
     write_json(operation_root / "reconstruction_vast_operation_execution.json", execution)
-    settled = []
-    monkeypatch.setattr(dispatch, "settle_prior_website_vast_attempts", lambda **kw: settled.append(kw))
-    monkeypatch.setattr(dispatch, "_reuse", lambda root, _inputs: (
-        {"status": "estimated", "retry_root": str(root)} if root == retry else
-        (_ for _ in ()).throw(ValueError("website_mapanything_existing_attempt_requires_reconciliation"))))
-    args = dict(input_manifest=path, output_root=output, task_context={"context_digest": DIGEST},
-                source_commit=SHA, allocate=lambda *_a, **_k: pytest.fail("rental already dispatched"))
-    assert dispatch.dispatch_geometry(**args)["retry_root"] == str(retry)
+    monkeypatch.setattr(website_task_context, "website_webapp_request",
+                        lambda **_kw: pytest.fail("a market miss has no provider charge to settle"))
+    monkeypatch.setattr(dispatch, "_reuse", lambda root, _inputs: (_ for _ in ()).throw(
+        ValueError("website_mapanything_existing_attempt_requires_reconciliation")))
+    monkeypatch.setattr(dispatch, "load_profile", lambda **_kw: (_ for _ in ()).throw(ValueError("next_rental")))
+    args = dict(input_manifest=path, output_root=output,
+                task_context={"context_digest": DIGEST, "capture_id": "c", "request_id": "r", "scene_id": "s"},
+                source_commit=SHA, allocate=lambda *_a, **_k: pytest.fail("rental not reached"))
+    with pytest.raises(ValueError, match="next_rental"):
+        dispatch.dispatch_geometry(**args)
+    hold = json.loads((first / "provider_charge_hold.json").read_text())
+    assert hold["status"] == "held_no_instance" and hold["held_usd"] == 0.5
     execution["provider_zero_verified"] = False
     execution["execution_result_digest"] = canonical_digest(execution, digest_field="execution_result_digest")
     write_json(operation_root / "reconstruction_vast_operation_execution.json", execution)
