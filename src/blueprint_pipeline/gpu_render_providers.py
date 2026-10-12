@@ -2276,8 +2276,18 @@ class VastRenderProvider(GpuRenderProvider):
             }
         remaining = list(offers)
         if approved_offer is not None:
-            remaining = [offer for offer in remaining
-                         if _offer_id(offer) == approved_offer["ask_contract_id"]]
+            approved_id = approved_offer["ask_contract_id"]
+            remaining = [offer for offer in remaining if _offer_id(offer) == approved_id]
+            if not remaining:
+                # A search page can omit an offer that is still for sale; ask for the
+                # approved one directly, under the same constraints.
+                try:
+                    _s, lookup = _api_json(method="POST", path="/bundles/", api_key=key, timeout_seconds=45,
+                                           payload={**search_payload, "ask_contract_id": {"eq": approved_id}})
+                    remaining = [o for o in _offers_from_response(lookup) if _offer_id(o) == approved_id]
+                except Exception:  # noqa: BLE001
+                    remaining = []
+                attempts.append({"approved_offer_direct_lookup_found": bool(remaining)})
         last_blocker = ("vast_approved_offer_unavailable_or_changed" if approved_offer is not None
                         else "no_vast_offer_matching_rate_and_gpu_memory")
         for _try in range(maximum_create_attempts):

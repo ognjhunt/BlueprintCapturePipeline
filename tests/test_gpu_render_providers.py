@@ -2490,7 +2490,7 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
 @pytest.mark.parametrize("change", [
     "none", "cheaper", "missing_ask", "machine", "compute", "storage",
     "download", "upload", "missing_download", "nan_upload", "stale_create",
-    "create_disk",
+    "create_disk", "omitted_from_page",
 ])
 def test_vast_preflight_offer_and_all_fees_remain_bound_at_create(tmp_path, monkeypatch, change):
     from blueprint_pipeline.vast_provider_adapter import _offer_summary
@@ -2524,6 +2524,10 @@ def test_vast_preflight_offer_and_all_fees_remain_bound_at_create(tmp_path, monk
 
     def fake_api_json(*, method, path, **kwargs):
         calls.append((method, path))
+        if method == "POST" and change == "omitted_from_page":
+            # 2026-10-12: Vast's page omitted a still-listed approved ask about half the time.
+            lookup = "ask_contract_id" in (kwargs.get("payload") or {})
+            return 200, {"offers": [live] if lookup else [{**approved_raw, "ask_contract_id": 8}]}
         if method == "POST":
             # A cheaper alternative must never replace the approved ask.
             return 200, {"offers": [live, {**approved_raw, "ask_contract_id": 8, "dph_base": 0.1}]}
@@ -2537,12 +2541,13 @@ def test_vast_preflight_offer_and_all_fees_remain_bound_at_create(tmp_path, monk
     if change == "create_disk":
         request["create_payload"]["disk"] += 1
     result = VastRenderProvider().launch(tmp_path, request)
-    if change in {"none", "cheaper"}:
+    if change in {"none", "cheaper", "omitted_from_page"}:
         assert result["status"] == "launched"
-        assert calls == [("POST", "/bundles/"), ("PUT", "/asks/7/")]
+        lookups = [("POST", "/bundles/")] * (2 if change == "omitted_from_page" else 1)
+        assert calls == lookups + [("PUT", "/asks/7/")]
     else:
         assert result["status"] == "blocked" and result["allocation_created"] is False
-        expected = [("POST", "/bundles/")]
+        expected = [("POST", "/bundles/")] * (2 if change == "missing_ask" else 1)
         if change == "create_disk":
             expected = []
         if change == "stale_create":
