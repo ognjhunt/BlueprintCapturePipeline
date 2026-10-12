@@ -889,6 +889,9 @@ def test_robot_free_probe_failure_is_recorded_and_never_raised() -> None:
                                           static_receipt=_probe_static_receipt()) == recorded
     assert captured["articulated"] is True
     assert captured["robot_free_probe"]["drive_target_position"] == pytest.approx(0.256)
+    # The probe runs at the physics rate robot teams are scored at.
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import NATIVE_PHYSICS_FREQUENCY_HZ
+    assert captured["timestep_seconds"] == pytest.approx(1.0 / NATIVE_PHYSICS_FREQUENCY_HZ)
 
 
 @pytest.mark.parametrize("probe,kept", [

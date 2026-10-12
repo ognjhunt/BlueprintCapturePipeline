@@ -30,6 +30,9 @@ ADAPTER_ID = "simready_native_import_qualification"
 RUNTIME_RESULT_SCHEMA_VERSION = "task_evaluation_replacement_native_import_result.v1"
 ROBOT_FREE_PROBE_SCHEMA = "scene_configuration_robot_free_success_probe.v1"
 _PROBE_DRIVE_SECONDS = 1.0
+# The rate robot teams' episodes are simulated and scored at, so the probe's
+# physics matches theirs and decimates exactly to any admitted control rate.
+_PROBE_PHYSICS_HZ = 120
 _PROBE_RELEASE_SECONDS = 5.0
 DESTINATION_ASSET_DEPENDENCY_ROLE = "statically_qualified_destination_asset"
 DESTINATION_STATIC_DEPENDENCY_ROLE = "destination_static_qualification_receipt"
@@ -505,7 +508,8 @@ def record_robot_free_probe(*, settle: Callable[..., Mapping[str, Any]], asset_p
     """One extra robot-free run after the qualifying settles; a failure is recorded, never raised."""
 
     try:
-        observed = settle(asset_path=asset_path, duration_seconds=duration_seconds, timestep_seconds=1.0 / 60.0,
+        observed = settle(asset_path=asset_path, duration_seconds=duration_seconds,
+                          timestep_seconds=1.0 / _PROBE_PHYSICS_HZ,
                           articulated=True, static_receipt=static_receipt,
                           robot_free_probe=robot_free_probe_plan(static_receipt))
         probe = dict(observed["robot_free_success_probe"])
