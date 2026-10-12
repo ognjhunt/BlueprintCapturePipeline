@@ -218,7 +218,7 @@ def test_website_person_observation_does_not_require_removal(tmp_path, monkeypat
 
 @pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked", "review_repair",
                                         "review_repair_edited", "inconsistent_repair", "inconsistent_unedited",
-                                        "unrelated_loss", "unrelated_unedited"])
+                                        "unrelated_loss", "unrelated_unedited", "unrelated_inconsistent"])
 def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, monkeypatch, fill_result):
     capture_root = _make_capture(tmp_path)
     source = capture_root / "raw/walkthrough.mp4"
@@ -297,6 +297,18 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
             return {"status": "passed", "review": {"consistent_background": True,
                 "task_objects_removed": True, "unrelated_objects_preserved": True,
                 "unrelated_object_loss_frame_ids": [], "remaining_task_object_frame_ids": []}}
+        if fill_result == "unrelated_inconsistent":
+            # Production 2026-10-12: one regenerated view lost an unrelated
+            # object and its background; the rest of the set was clean.
+            ids = [frame["frame_id"] for frame in kwargs["frames"]]
+            if len(ids) == 8:
+                return {"status": "blocked", "review": {"consistent_background": False,
+                    "task_objects_removed": True, "unrelated_objects_preserved": False,
+                    "unrelated_object_loss_frame_ids": ["f1"], "remaining_task_object_frame_ids": []}}
+            assert len(ids) == 7 and "f1" not in ids
+            return {"status": "passed", "review": {"consistent_background": True,
+                "task_objects_removed": True, "unrelated_objects_preserved": True,
+                "unrelated_object_loss_frame_ids": [], "remaining_task_object_frame_ids": []}}
         if fill_result in {"inconsistent_repair", "inconsistent_unedited"}:
             ids = [frame["frame_id"] for frame in kwargs["frames"]]
             if len(ids) == 8:
@@ -341,6 +353,7 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
     assert order == ["analysis", "source_frames", "masks", "mask_preparation"] + (
         [] if fill_result == "unneeded" else ["completion", "review"] +
         (["review", "review"] if fill_result == "unrelated_loss" else
+         ["review"] if fill_result == "unrelated_inconsistent" else
          ["review"] if fill_result == "review_repair" else
          ["diagnosis", "review"] if fill_result == "inconsistent_repair" else
          ["diagnosis"] if fill_result == "inconsistent_unedited" else []))
@@ -353,7 +366,9 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
     assert result["status"] == "objects_removed"
     assert len(result["prepared_views"]["frames"]) == (
         6 if fill_result == "unrelated_loss" else
-        7 if fill_result in {"review_repair", "inconsistent_repair"} else 8)
+        7 if fill_result in {"review_repair", "inconsistent_repair", "unrelated_inconsistent"} else 8)
+    if fill_result == "unrelated_inconsistent":
+        assert result["prepared_views"]["completion_review"]["excluded_unrelated_loss_frame_ids"] == ["f1"]
     if fill_result == "unrelated_loss":
         reviewed = result["prepared_views"]["completion_review"]
         assert reviewed["excluded_unmasked_frame_ids"] == ["f2"]
