@@ -253,7 +253,18 @@ def _rack(**overrides):
 def _analysis(tmp_path, monkeypatch, *, first, repaired):
     import json
 
+    import sys
+    import types as module_types
+
     from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+    # The provider calls are faked below; the SDK itself need not be installed.
+    google = sys.modules.get("google") or module_types.ModuleType("google")
+    genai = module_types.ModuleType("google.genai")
+    genai.types = module_types.ModuleType("google.genai.types")
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setattr(google, "genai", genai, raising=False)
+    monkeypatch.setitem(sys.modules, "google.genai", genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", genai.types)
     video = tmp_path / "walkthrough.mp4"
     video.write_bytes(b"video")
     monkeypatch.setenv(analysis.GATE_ENV, "1")
