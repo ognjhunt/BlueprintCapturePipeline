@@ -5217,7 +5217,42 @@ def _finalize_deploy_receipt(
     return receipt
 
 
+# The operator door launches a deploy with only its validated DOOR_* values, so
+# the one task-object builder setting and ARTISAN's installed roots are read from
+# the root-owned control-plane settings file that every service already loads.
+# One file keeps the deploy's provisioned toolchain and new requests on one builder.
+BUILDER_SETTINGS_FILE = Path("/etc/blueprint/pipeline-control-plane.env")
+BUILDER_SETTING_KEYS = ("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "BLUEPRINT_ARTISAN_UPSTREAM_ROOT",
+                        "BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT", "BLUEPRINT_ARTISAN_BLENDER_ROOT")
+
+
+def builder_settings(path: str | Path | None = None,
+                     environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The builder keys from the process environment, else from the settings file."""
+    path = BUILDER_SETTINGS_FILE if path is None else path
+    environ = os.environ if environ is None else environ
+    values = {key: environ[key] for key in BUILDER_SETTING_KEYS if environ.get(key)}
+    path = Path(path)
+    if len(values) < len(BUILDER_SETTING_KEYS) and path.is_file() and not path.is_symlink():
+        for line in path.read_text().splitlines():
+            key, separator, value = line.partition("=")
+            key = key.strip().removeprefix("export ").strip()
+            if separator and key in BUILDER_SETTING_KEYS and key not in values:
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                if value:
+                    values[key] = value
+    return values
+
+
+def _settings_backend(settings: Mapping[str, str]) -> str:
+    from blueprint_pipeline.task_object_authoring_backend import default_backend
+    return default_backend(settings)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    settings = builder_settings()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-repo", required=True)
     parser.add_argument(
@@ -5312,9 +5347,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--artifixer-source-root", default=DEFAULT_ARTIFIXER_SOURCE_ROOT)
     parser.add_argument("--authoring-backend", choices=("artisan_v1", "astra_cad_blender_v1", "content_agents"), default=None,
                         help="default: BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND (Astra until ARTISAN go-live)")
-    parser.add_argument("--artisan-root", default=os.getenv("BLUEPRINT_ARTISAN_UPSTREAM_ROOT"))
-    parser.add_argument("--artisan-site-packages-root", default=os.getenv("BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT"))
-    parser.add_argument("--artisan-blender-root", default=os.getenv("BLUEPRINT_ARTISAN_BLENDER_ROOT"))
+    parser.add_argument("--artisan-root", default=settings.get("BLUEPRINT_ARTISAN_UPSTREAM_ROOT"))
+    parser.add_argument("--artisan-site-packages-root", default=settings.get("BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT"))
+    parser.add_argument("--artisan-blender-root", default=settings.get("BLUEPRINT_ARTISAN_BLENDER_ROOT"))
     parser.add_argument(
         "--content-agents-source-root", default=DEFAULT_CONTENT_AGENTS_SOURCE_ROOT
     )
@@ -5407,7 +5442,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             content_agents_source_root=args.content_agents_source_root,
             cad_skill_source_root=args.cad_skill_source_root,
             astra_blender_archive_path=args.astra_blender_archive,
-            authoring_backend=args.authoring_backend,
+            authoring_backend=args.authoring_backend or _settings_backend(settings),
             artisan_root=args.artisan_root,
             artisan_site_packages_root=args.artisan_site_packages_root,
             artisan_blender_root=args.artisan_blender_root,
