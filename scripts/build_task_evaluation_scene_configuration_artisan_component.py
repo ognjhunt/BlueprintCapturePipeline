@@ -54,6 +54,27 @@ print(json.dumps({'status':'isolated_upstream_imports_passed','python':platform.
     require(loads(result.stdout)["status"] == "isolated_upstream_imports_passed", "artisan_import_preflight_invalid")
 
 
+def missing_root_dependencies(roots, installed) -> list[str]:
+    """Pinned roots the installed distributions do not satisfy.
+
+    A root pins a public version. Under PEP 440, ``==2.7.1`` is still satisfied
+    by a local label from the package index (torch ``2.7.1+cu128`` from the
+    pinned CUDA index); the lock check above compares exact installed versions.
+    """
+    def name(value):
+        return value.strip().lower().replace("_", "-")
+    versions = {name(key): str(value) for key, value in installed.items()}
+    missing = []
+    for item in roots:
+        if "==" not in item:
+            missing.append(item)
+            continue
+        pinned_name, pinned_version = item.split("==", 1)
+        if versions.get(name(pinned_name), "").split("+", 1)[0] != pinned_version.strip():
+            missing.append(item)
+    return missing
+
+
 def _git(root: Path, *args) -> str:
     return subprocess.run(["git", "-C", str(root), *args], check=True,
                           capture_output=True, text=True).stdout.strip()
@@ -82,8 +103,8 @@ def build_artisan_scene_configuration_component(*, repository_root, expected_blu
     roots = project["project"]["dependencies"] + project["project"]["optional-dependencies"]["usd"]
     require(all((name, version) in locked for name, version in installed.items()
                 if name != "artisan-assets"), "artisan_installed_dependency_not_locked")
-    require(all("==" in item and installed.get(item.split("==")[0]) == item.split("==")[1]
-                for item in roots), "artisan_installed_dependency_incomplete")
+    missing = missing_root_dependencies(roots, installed)
+    require(not missing, "artisan_installed_dependency_incomplete:" + ",".join(missing[:8]))
     version = subprocess.run([str(blender / "blender"), "--version"], capture_output=True,
                              text=True, check=True).stdout.splitlines()[0]
     require(version == "Blender 5.0.0", "artisan_blender_version_invalid")
