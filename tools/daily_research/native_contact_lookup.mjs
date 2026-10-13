@@ -87,8 +87,18 @@ export async function prepareNativeContacts(store,day) {
     if(!assessment||assessment.claims?.operator?.status!=='verified_fact'
       ||assessment.claims?.physical_site?.status!=='verified_fact'
       ||!['verified_fact','inference'].includes(assessment.claims?.site_task?.status)
-      ||result.duplicate===true||result.duplicate_of||assessment.counterevidence?.status==='contradicted') continue;
-    const refs=await nativeSources(store,row,{organizationUrl:candidate.organization_url},{candidateKey:candidate.candidate_key}),sources=[];
+      ||result.duplicate===true||result.duplicate_check?.duplicate===true||result.duplicate_of
+      ||assessment.counterevidence?.status==='contradicted') continue;
+    let refs;
+    try {
+      refs=await nativeSources(store,row,{organizationUrl:candidate.organization_url},{candidateKey:candidate.candidate_key});
+    } catch(error) {
+      // Only authenticated candidate-local duplicate evidence is ineligible.
+      // Changed QA, source receipts or run bindings still refuse the operation.
+      if(error?.message==='native_contact_candidate_duplicate') continue;
+      throw error;
+    }
+    const sources=[];
     for(const ref of refs) {
       const event=JSON.parse(Buffer.from(await store.fileGet(`${day}-tool-${ref.callId}.json`),'base64'));
       const output=JSON.parse(event.output);

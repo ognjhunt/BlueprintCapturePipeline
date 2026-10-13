@@ -58,6 +58,31 @@ test('unpaid native input preparation retains source bytes, original QA, unknown
  const saved=f.records.get(ROOT+'/nativeContactInputs/'+input.input_id);assert.equal(saved.inputDigest,hash(input));
  assert.equal(await nativeContactOperation(f.store,{op:'native_contact_scope',context:{input_id:input.input_id,input_digest:hash(input)}}),null);
 });
+for(const duplicateEvidence of ['cohort','qa']) test(`native preparation skips only an unresolved ${duplicateEvidence} duplicate and retains its valid neighbor`,async()=>{
+ const f=fixture(),original=structuredClone(f.row.packet.candidates[0]);
+ const duplicate={...original,candidate_key:'fixture-duplicate'},assessment=structuredClone(f.row.review.lead_verification.results[0].assessment);
+ assessment.candidate_digest=hash(duplicate);
+ f.row.packet.candidates.unshift(duplicate);
+ f.row.review.lead_verification.results.unshift({candidate_key:duplicate.candidate_key,assessment,
+   ...(duplicateEvidence==='cohort'?{duplicate_check:{duplicate:true}}:{})});
+ const qa=JSON.parse(f.files.get(DAY+'-qa.json'));
+ qa.checks.unshift({candidate_key:duplicate.candidate_key,duplicate:true,lead_verification:assessment});
+ const raw=Buffer.from(json(qa));f.files.set(DAY+'-qa.json',raw);
+ f.row.qa.artifact_digest=f.row.review.qa_artifact_digest=sha(raw);
+ const before=structuredClone(f.row),values=await prepareNativeContacts(f.store,DAY);
+ assert.deepEqual(values.map(v=>v.candidate.candidate_key),[original.candidate_key]);
+ assert.deepEqual(f.row,before);
+ assert.equal([...f.records.keys()].filter(k=>k.startsWith(ROOT+'/nativeContactInputs/')).length,1);
+ assert.equal([...f.records.keys()].some(k=>k.startsWith(ROOT+'/nativeContactCalls/')),false);
+});
+test('a duplicate QA flag never hides changed candidate assessment evidence',async()=>{
+ const f=fixture(),qa=JSON.parse(f.files.get(DAY+'-qa.json'));
+ qa.checks[0].duplicate=true;qa.checks[0].lead_verification.claims.operator.status='unresolved';
+ const raw=Buffer.from(json(qa));f.files.set(DAY+'-qa.json',raw);
+ f.row.qa.artifact_digest=f.row.review.qa_artifact_digest=sha(raw);
+ await assert.rejects(()=>prepareNativeContacts(f.store,DAY),/native_contact_assessment_changed/);
+ assert.equal([...f.records.keys()].some(k=>k.startsWith(ROOT+'/nativeContactInputs/')),false);
+});
 test('a durable intent is claimed once under the current lease and exact FullEnrich scope',async()=>{
  const f=await ready();await nativeContactOperation(f.store,{op:'native_contact_call_append',context:f.context,event:f.event,request:f.request});
  const dispatch={op:'native_contact_dispatch_admission',context:f.context,path:'/api/v2/people/search',body:f.body,body_digest:hash(f.body)};
