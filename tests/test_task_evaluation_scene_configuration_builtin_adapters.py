@@ -1763,7 +1763,8 @@ def _articulated_stage_artifacts(tmp_path):
     authoring_configuration = articulated_stage_three_configuration(
         scene_id="scene-1", replacement_identity=identity, source_instance_id="cabinet",
         authoring_target="three-drawer wood cabinet", source_min=[-0.21, -0.275, 0.0], source_max=[0.21, 0.275, 0.62],
-        dimension_tolerance=0.2, physics_bounds=PHYSICS, mechanism=MECHANISM)
+        # The Astra-packaged assembly above; new requests default to ARTISAN.
+        dimension_tolerance=0.2, physics_bounds=PHYSICS, mechanism=MECHANISM, authoring_backend="astra_cad_blender_v1")
     graph = {"schema_version": "task_evaluation_articulated_replacement_graph.v1", "asset_id": identity["id"],
              "asset_version": identity["version"], "articulation_graph": articulation_graph_from_plan(plan),
              "task_joint_prim_path": completion["task_joint_prim_path"],

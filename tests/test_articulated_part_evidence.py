@@ -35,15 +35,18 @@ def cabinet_frames(digests=("1", "2", "3")):
                view="interior", reason="lower shelf seen through the open door")]
 
 
-def storage_cabinet(frames=None, estimates=None):
-    """A side-hinged storage cabinet: hollow body, one door, two fixed shelves (not an appliance)."""
+def storage_cabinet(frames=None, estimates=None, authoring_backend="astra_cad_blender_v1"):
+    """A side-hinged storage cabinet: hollow body, one door, two fixed shelves (not an appliance).
+
+    Its evidence and plans are the legacy Astra assembly's; new requests default to ARTISAN.
+    """
     mechanism = {"part_label": "cabinet door", "joint_type": "revolute", "estimated_usable_swing_rad": 1.5,
                  "estimated_front_normal_world": [0.0, -1.0, 0.0], "lock_status": "unknown",
                  "travel_authority": "object_prior_estimate"}
     value = articulated_stage_three_configuration(
         scene_id="scene-store", replacement_identity=IDENTITY, source_instance_id="cabinet",
         authoring_target="tall storage cabinet", source_min=[-0.3, -0.25, 0.0], source_max=[0.3, 0.25, 0.9],
-        dimension_tolerance=0.1, physics_bounds=PHYSICS, mechanism=mechanism)
+        dimension_tolerance=0.1, physics_bounds=PHYSICS, mechanism=mechanism, authoring_backend=authoring_backend)
     frames = frames or cabinet_frames()
     seen = {part: [row["frame_id"] for row in frames if part in row["visible_parts"]] for part, _, _ in CABINET_PARTS}
     value.update(assembly_family="hinged_door_appliance", hinge_edge="left", reference_frames=frames,

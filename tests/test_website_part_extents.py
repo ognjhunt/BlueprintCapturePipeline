@@ -494,6 +494,8 @@ def compiled(tmp_path_factory):
 
     root = tmp_path_factory.mktemp("e2e")
     args = _arguments(root)
+    # The pre-purchase placement check is the legacy Astra builder's; new requests default to ARTISAN.
+    args["spend"] = {**args["spend"], "replacement_authoring_backend": "astra_cad_blender_v1"}
     args.update(_cabinet_inputs(root))
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(preparation, "register_source_to_runtime", _fixture_registration)

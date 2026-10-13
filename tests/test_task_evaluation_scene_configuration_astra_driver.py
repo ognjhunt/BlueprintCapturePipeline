@@ -550,7 +550,8 @@ def _articulated_configuration():
         scene_id="scene-1", replacement_identity={"id": "source_cabinet", "version": "v1"},
         source_instance_id="cabinet-1", authoring_target="three-drawer wood cabinet with silver handles",
         source_min=[-0.21, -0.275, 0.0], source_max=[0.21, 0.275, 0.62], dimension_tolerance=0.2,
-        physics_bounds=PHYSICS, mechanism=MECHANISM)
+        # New requests default to ARTISAN; this driver authors the issued legacy route.
+        physics_bounds=PHYSICS, mechanism=MECHANISM, authoring_backend=driver.BACKEND)
 
 
 def test_articulated_configuration_authors_each_part_and_seals_one_assembly(component, retained):

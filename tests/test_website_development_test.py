@@ -74,9 +74,12 @@ def test_development_surface_reaches_real_native_submission_with_separate_identi
     request = json.loads((root / 'scene_configuration_preparation_request.v1.json').read_text())
     assert request['scene']['identity']['id'].endswith('-development')
     assert request['scene']['appearance']['kind'] == 'textured_usd'
-    assert request['replacement_authoring_backend'] == 'astra_cad_blender_v1'
+    assert request['replacement_authoring_backend'] == 'artisan_v1'  # the new-request default
     assert request['spend']['external_service_caps']['openai']['stage_max_cost_usd']['content_agents'] >= 5
-    assert request['spend']['hard_cap_usd'] <= 20
+    # Quoted at the configured ARTISAN cap (BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD) plus provider compute.
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import MAX_PROVIDER_COMPUTE_SPEND_USD
+    from blueprint_pipeline.task_object_authoring_backend import new_authoring_budget
+    assert request['spend']['hard_cap_usd'] == MAX_PROVIDER_COMPUTE_SPEND_USD + new_authoring_budget()['maximum_cost_usd']
     assert 'public_display_authorization' not in request
     task = json.loads((root / 'configuration/task.json').read_text())
     assert task['test_environment']['captured_scene_evaluation_allowed'] is False
