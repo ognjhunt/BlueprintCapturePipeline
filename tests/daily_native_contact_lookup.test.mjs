@@ -186,3 +186,27 @@ test('all valid siblings are prepared together and a later immutable-input confl
  await assert.rejects(()=>prepareNativeContacts(f.store,DAY),/native_contact_input_changed/);
  assert.deepEqual([...f.records],before);
 });
+for(const count of [5,7]) test(`near-document-limit cohort size ${count} has a deterministic atomic byte bound`,async()=>{
+ const f=fixture(),first=f.row.packet.candidates[0],base=f.row.review.lead_verification.results[0].assessment;
+ const checks=[];f.row.packet.candidates=[];f.row.review.lead_verification.results=[];
+ for(let n=0;n<count;n++) {
+  const candidate={...first,candidate_key:'fixture-size-'+n},assessment={...structuredClone(base),candidate_digest:hash(candidate)};
+  f.row.packet.candidates.push(candidate);f.row.review.lead_verification.results.push({candidate_key:candidate.candidate_key,assessment});
+  checks.push({candidate_key:candidate.candidate_key,duplicate:false,lead_verification:assessment});
+ }
+ const qa=JSON.parse(f.files.get(DAY+'-qa.json'));qa.checks=checks;
+ const qaRaw=Buffer.from(json(qa));f.files.set(DAY+'-qa.json',qaRaw);f.row.qa.artifact_digest=f.row.review.qa_artifact_digest=sha(qaRaw);
+ const name=DAY+'-tool-call_fixture.json',event=JSON.parse(f.files.get(name)),output=JSON.parse(event.output);
+ output.text='Synthetic retained source. '+ 'x'.repeat(680000);event.output=json(output);
+ const raw=Buffer.from(json(event)+'\n');f.files.set(name,raw);
+ Object.assign(f.row.application_tool_calls.call_fixture,{result_sha256:sha(raw),result_bytes:raw.length,result_digest:hash(event)});
+ const before=structuredClone([...f.records]);let transactions=0;
+ const transaction=f.store.transaction;f.store.transaction=fn=>{transactions++;return transaction(fn);};
+ if(count===5) {
+  const values=await prepareNativeContacts(f.store,DAY);assert.equal(values.length,5);assert.equal(transactions,1);
+  assert(values.every(input=>Buffer.byteLength(json(input))<700000));
+ } else {
+  await assert.rejects(()=>prepareNativeContacts(f.store,DAY),/native_contact_cohort_resource_limit/);
+  assert.equal(transactions,0);assert.deepEqual([...f.records],before);
+ }
+});

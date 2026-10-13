@@ -114,6 +114,12 @@ export async function prepareNativeContacts(store,day) {
     if(Buffer.byteLength(json(input))>700000) fail('native_contact_input_resource_limit');
     values.push(input);
   }
+  // Reserve more than half of Firestore's 10MiB transaction allowance for
+  // reads, index entries and protocol overhead. Count complete write envelopes
+  // plus bounded per-document overhead before any transaction or input write.
+  const cohortBytes=values.reduce((bytes,input)=>bytes+Buffer.byteLength(json({input,
+    inputDigest:hash(input),preparedAt:store.clock(),sent:false}))+8192,0);
+  if(cohortBytes>4*1024*1024) fail('native_contact_cohort_resource_limit');
   // Validate the whole eligible cohort before creating any approvable input.
   // One transaction also prevents a later conflicting input or changed run
   // from leaving newly created siblings behind a refused preparation.
