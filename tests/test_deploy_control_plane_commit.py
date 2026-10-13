@@ -1036,6 +1036,46 @@ def test_cli_forwards_explicit_controls_state_preservation(tmp_path, monkeypatch
     assert calls[0]["arm_path_units"] is False
 
 
+def test_cli_reads_the_builder_settings_the_door_cannot_pass(tmp_path, monkeypatch):
+    """The operator door gives a deploy only DOOR_* values (2026-10-13 ARTISAN go-live).
+
+    The deploy reads the four builder keys from the control-plane settings file every
+    service loads, so the provisioned toolchain and new requests select one builder.
+    """
+    settings = tmp_path / "pipeline-control-plane.env"
+    settings.write_text("OTHER_SETTING=1\nexport BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND='artisan_v1'\n"
+                        'BLUEPRINT_ARTISAN_UPSTREAM_ROOT="/opt/artisan/source"\n'
+                        "BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT=/opt/artisan/site-packages\n"
+                        "BLUEPRINT_ARTISAN_BLENDER_ROOT=/opt/artisan/blender\n")
+    for key in deploy.BUILDER_SETTING_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(deploy, "BUILDER_SETTINGS_FILE", settings)
+    calls = []
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: True)
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit",
+                        lambda **kwargs: calls.append(kwargs) or {"status": "deployed"})
+    arguments = ["--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+                 "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+                 "--active-link", str(tmp_path / "active")]
+    keys = ("authoring_backend", "artisan_root", "artisan_site_packages_root", "artisan_blender_root")
+    assert deploy.main(arguments) == 0
+    assert {key: calls[0][key] for key in keys} == {
+        "authoring_backend": "artisan_v1", "artisan_root": "/opt/artisan/source",
+        "artisan_site_packages_root": "/opt/artisan/site-packages", "artisan_blender_root": "/opt/artisan/blender"}
+    # A key the process environment names wins over the file.
+    monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "astra_cad_blender_v1")
+    assert deploy.main(arguments) == 0 and calls[1]["authoring_backend"] == "astra_cad_blender_v1"
+    monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND")
+    # A symlinked or absent file is not read: ARTISAN stays switched off.
+    link = tmp_path / "linked.env"
+    link.symlink_to(settings)
+    monkeypatch.setattr(deploy, "BUILDER_SETTINGS_FILE", link)
+    assert deploy.main(arguments) == 0
+    assert calls[2]["authoring_backend"] == "astra_cad_blender_v1" and calls[2]["artisan_root"] is None
+    monkeypatch.setattr(deploy, "BUILDER_SETTINGS_FILE", tmp_path / "absent.env")
+    assert deploy.main(arguments) == 0 and calls[3]["authoring_backend"] == "astra_cad_blender_v1"
+
+
 def test_cli_sigterm_unwinds_deploy_and_restores_signal_handler(tmp_path, monkeypatch, capsys):
     original = signal.getsignal(signal.SIGTERM)
     monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)

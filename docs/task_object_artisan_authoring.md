@@ -22,12 +22,16 @@ A request or configuration that names its backend is never rewritten.
 Go-live, in order:
 
 1. Install the pinned runtime on the production host (see *Reproducible worker
-   and release*) and set `BLUEPRINT_ARTISAN_UPSTREAM_ROOT`,
-   `BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT` and `BLUEPRINT_ARTISAN_BLENDER_ROOT` for
-   the deploy.
-2. Run one retained rigid and one articulated canary, and confirm they are valid.
-3. Set `BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND=artisan_v1` for the deploy runner
-   and for every service environment, then deploy.
+   and release*).
+2. Put all four keys in `/etc/blueprint/pipeline-control-plane.env`:
+   `BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND=artisan_v1`, plus
+   `BLUEPRINT_ARTISAN_UPSTREAM_ROOT`, `BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT` and
+   `BLUEPRINT_ARTISAN_BLENDER_ROOT`. Every service loads that file, and the
+   operator door launches a deploy with only its `DOOR_*` values, so the deploy
+   reads these four keys from the same file. The process environment wins if it
+   names a key. A symlinked file is ignored.
+3. Deploy, then run one rigid and one articulated canary and confirm they are
+   valid. A deploy provisions one builder's toolchain, ARTISAN or Astra, not both.
 
 Rollback is unsetting the setting and deploying again. Issued configurations keep
 their recorded backend.
