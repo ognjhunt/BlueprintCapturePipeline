@@ -87,7 +87,6 @@ export async function prepareNativeContacts(store,day) {
     if(!assessment||assessment.claims?.operator?.status!=='verified_fact'
       ||assessment.claims?.physical_site?.status!=='verified_fact'
       ||!['verified_fact','inference'].includes(assessment.claims?.site_task?.status)
-      ||result.duplicate===true||result.duplicate_check?.duplicate===true||result.duplicate_of
       ||assessment.counterevidence?.status==='contradicted') continue;
     let refs;
     try {

@@ -66,7 +66,7 @@ for(const duplicateEvidence of ['cohort','qa']) test(`native preparation skips o
  f.row.review.lead_verification.results.unshift({candidate_key:duplicate.candidate_key,assessment,
    ...(duplicateEvidence==='cohort'?{duplicate_check:{duplicate:true}}:{})});
  const qa=JSON.parse(f.files.get(DAY+'-qa.json'));
- qa.checks.unshift({candidate_key:duplicate.candidate_key,duplicate:true,lead_verification:assessment});
+ qa.checks.unshift({candidate_key:duplicate.candidate_key,duplicate:duplicateEvidence==='qa',lead_verification:assessment});
  const raw=Buffer.from(json(qa));f.files.set(DAY+'-qa.json',raw);
  f.row.qa.artifact_digest=f.row.review.qa_artifact_digest=sha(raw);
  const before=structuredClone(f.row),values=await prepareNativeContacts(f.store,DAY);
@@ -75,9 +75,14 @@ for(const duplicateEvidence of ['cohort','qa']) test(`native preparation skips o
  assert.equal([...f.records.keys()].filter(k=>k.startsWith(ROOT+'/nativeContactInputs/')).length,1);
  assert.equal([...f.records.keys()].some(k=>k.startsWith(ROOT+'/nativeContactCalls/')),false);
 });
-test('a duplicate QA flag never hides changed candidate assessment evidence',async()=>{
+for(const flag of ['qa','cohort','both']) test(`a ${flag} duplicate flag never hides changed candidate assessment evidence or admits a neighbor`,async()=>{
  const f=fixture(),qa=JSON.parse(f.files.get(DAY+'-qa.json'));
- qa.checks[0].duplicate=true;qa.checks[0].lead_verification.claims.operator.status='unresolved';
+ const neighbor={...f.row.packet.candidates[0],candidate_key:'fixture-valid-neighbor'},assessment=structuredClone(f.row.review.lead_verification.results[0].assessment);
+ assessment.candidate_digest=hash(neighbor);f.row.packet.candidates.push(neighbor);
+ f.row.review.lead_verification.results.push({candidate_key:neighbor.candidate_key,assessment});
+ qa.checks.push({candidate_key:neighbor.candidate_key,duplicate:false,lead_verification:assessment});
+ if(flag!=='qa') f.row.review.lead_verification.results[0].duplicate_check={duplicate:true};
+ qa.checks[0].duplicate=flag!=='cohort';qa.checks[0].lead_verification.claims.operator.status='unresolved';
  const raw=Buffer.from(json(qa));f.files.set(DAY+'-qa.json',raw);
  f.row.qa.artifact_digest=f.row.review.qa_artifact_digest=sha(raw);
  await assert.rejects(()=>prepareNativeContacts(f.store,DAY),/native_contact_assessment_changed/);
