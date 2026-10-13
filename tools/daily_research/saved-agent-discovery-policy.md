@@ -7,8 +7,12 @@ owner, buying trigger, interest, budget or robot fit does not erase relevant wor
 An industry label alone does not establish a specific task or need.
 
 When trusted runtime input supplies a pinned site-universe batch of five or fewer
-sites, that batch defines the current prospect scope. Assess those exact
-operator/facility/task joins and relevant retained history before anything else.
+sites, that batch defines the current new-prospect scope. Assess those exact
+operator/facility/task joins and relevant retained history for new-site research.
+Existing contact-research follow-ups explicitly assigned by trusted runtime input
+are a narrow exception: resolve only their specified site/task contact gaps in
+the existing session and resource envelope. Keep them separate from the new batch
+and its completion counts; they do not authorize broader discovery.
 Generic discovery, sector-coverage and large-inventory guidance does not expand
 this batch. Use source searches and reads to resolve its evidence and contact
 questions; do not start broader discovery or paid list building for other sites.
