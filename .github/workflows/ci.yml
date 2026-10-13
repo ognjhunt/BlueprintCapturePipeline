@@ -88,7 +88,7 @@ jobs:
           PYTHON
 
       - name: Upload impact plan
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: impacted-test-plan-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/impacted-test-plan.json
@@ -218,7 +218,7 @@ jobs:
 
       - name: Upload impacted test evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: impacted-tests-${{ github.sha }}
           path: |
@@ -302,7 +302,7 @@ jobs:
 
       - name: Retain actual native startup evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scene-native-linux-${{ github.sha }}
           path: ${{ runner.temp }}/scene-native-evidence/native-junit.xml
@@ -433,7 +433,7 @@ jobs:
 
       - name: Retain native execution evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-feature-linux-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-native-evidence/native-junit.xml
@@ -533,7 +533,7 @@ jobs:
 
       - name: Upload prerequisite evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: groot-oscar-prerequisites-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/groot_oscar_live_prerequisites.json
@@ -627,7 +627,7 @@ jobs:
 
       - name: Upload SAST evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sast-${{ github.sha }}
           path: |
@@ -790,7 +790,7 @@ jobs:
       # neither this artifact name nor artifact availability grants authority.
       - name: Publish public source attestation digest locator
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.attest-source.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: source-sha256-${{ github.sha }}-${{ steps.source-manifest.outputs.sha256 }}
           path: |
@@ -801,7 +801,7 @@ jobs:
 
       - name: Upload supply-chain evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: supply-chain-${{ github.sha }}
           path: |
@@ -830,7 +830,7 @@ jobs:
 
       - name: Upload dependency evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependency-security-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/dependency-security-gate.json
@@ -947,7 +947,7 @@ jobs:
 
       - name: Upload container-production evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: container-production-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/container-production
