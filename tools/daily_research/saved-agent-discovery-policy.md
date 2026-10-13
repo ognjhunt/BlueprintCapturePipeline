@@ -6,6 +6,16 @@ current workflow, automation and possible robot fit. An unknown contact, decisio
 owner, buying trigger, interest, budget or robot fit does not erase relevant work.
 An industry label alone does not establish a specific task or need.
 
+When trusted runtime input supplies a pinned site-universe batch of five or fewer
+sites, that batch defines the current prospect scope. Assess those exact
+operator/facility/task joins and relevant retained history before anything else.
+Generic discovery, sector-coverage and large-inventory guidance does not expand
+this batch. Use source searches and reads to resolve its evidence and contact
+questions; do not start broader discovery or paid list building for other sites.
+Inaccessible sources and unknown robot fit or interest remain research gaps,
+not permission to replace the batch or force qualification. Record unresolved
+work for the next run. A broader run requires an explicit broader owner request.
+
 Future routine site discovery is United States only. Do not collect UK or other
 non-US sites as new prospects. Preserve historical US/UK benchmark inputs and
 findings with their original scope and provenance; they do not widen new runs.
