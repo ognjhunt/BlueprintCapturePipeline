@@ -674,6 +674,13 @@ def _provision_scene_configuration_from_release(*, repository_root, source_commi
             check=True, capture_output=True, text=True, timeout=1800)
         value = json.loads(result.stdout.strip().splitlines()[-1])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        # The receipt keeps only the code; the operator door captures this
+        # stream, so the builder's own error is not lost (2026-10-13 ARTISAN).
+        detail = getattr(exc, "stderr", None) or getattr(exc, "output", None) or ""
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", "replace")
+        print("scene_configuration_target_release_provision_failed: " + type(exc).__name__
+              + (": " + detail[-4000:] if detail else ""), file=sys.stderr, flush=True)
         raise ValueError("scene_configuration_target_release_provision_failed") from exc
     if (not isinstance(value, dict) or value.get("status") != "ready"
             or value.get("source_commit") != source_commit

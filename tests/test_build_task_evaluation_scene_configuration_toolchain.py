@@ -304,3 +304,28 @@ def test_new_release_shares_regenerated_immutable_payload_after_full_readback(tm
     assert result["shared_immutable_file_count"] == 1
     assert result["shared_immutable_file_bytes"] == payload.stat().st_size
     assert payload.stat().st_ino != installed[1].stat().st_ino
+
+
+def test_per_file_readback_streams_through_a_digest_capable_reader(tmp_path: Path) -> None:
+    """The deploy's reader hashes each file as the service account streams it; nothing is held whole."""
+    from scripts.build_task_evaluation_scene_configuration_toolchain import _readback_digest
+
+    path = tmp_path / "large.so"
+    path.write_bytes(b"x" * 1024)
+
+    class StreamingReader:
+        def __init__(self) -> None:
+            self.digests: list[Path] = []
+
+        def __call__(self, _path: Path) -> bytes:
+            raise AssertionError("per-file verification must not hold the whole file")
+
+        def digest(self, target: Path) -> tuple[int, str]:
+            self.digests.append(target)
+            return 1024, "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+
+    reader = StreamingReader()
+    assert _readback_digest(reader, path) == (1024, "sha256:" + hashlib.sha256(b"x" * 1024).hexdigest())
+    assert reader.digests == [path]
+    # A plain bytes reader (the builder's own CLI and tests) still works.
+    assert _readback_digest(lambda target: target.read_bytes(), path)[0] == 1024

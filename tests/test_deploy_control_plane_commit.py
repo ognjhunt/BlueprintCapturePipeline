@@ -4805,3 +4805,17 @@ def test_an_inactive_drain_snapshot_never_overrides_a_live_trigger(monkeypatch) 
 
     assert before[PROGRESSION_TIMER]["state"] == "active"
     assert stopped == [PROGRESSION_TIMER]
+
+
+def test_a_failed_release_provisioning_prints_its_own_error(tmp_path, capsys):
+    """2026-10-13: the deploy receipt kept only the code and the builder's error was lost."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "provision_task_evaluation_scene_configuration_release.py").write_text(
+        "import sys\nprint('builder exploded: service readback ran out of memory', file=sys.stderr)\nsys.exit(3)\n")
+    with pytest.raises(ValueError, match="scene_configuration_target_release_provision_failed"):
+        deploy._provision_scene_configuration_from_release(
+            repository_root=tmp_path, source_commit="a" * 40, readback_user="blueprint")
+    error = capsys.readouterr().err
+    assert "scene_configuration_target_release_provision_failed: CalledProcessError" in error
+    assert "builder exploded: service readback ran out of memory" in error

@@ -119,3 +119,25 @@ def test_a_reader_that_cannot_start_reports_why(tmp_path: Path) -> None:
 
     assert b"a password is required" in raised.value.stderr
     assert read.closed
+
+
+def test_a_file_larger_than_one_chunk_streams_exact_bytes_and_digest(tmp_path: Path) -> None:
+    """2026-10-13 ARTISAN deploy: whole-file reads of a 1.19 GB library failed the readback."""
+    import hashlib
+
+    body = bytes(range(256)) * (reader_module.CHUNK_BYTES // 256 * 2 + 4099)  # more than two chunks
+    path = tmp_path / "libtorch_like.so"
+    path.write_bytes(body)
+    with _reader() as read:
+        assert read.digest(path) == (len(body), "sha256:" + hashlib.sha256(body).hexdigest())
+        assert read(path) == body
+        assert read.digest(tmp_path / "libtorch_like.so")[0] == len(body)
+
+
+def test_digest_of_an_unreadable_path_fails_and_the_reader_keeps_serving(tmp_path: Path) -> None:
+    present = tmp_path / "present.bin"
+    present.write_bytes(b"served after a refused digest")
+    with _reader() as read:
+        with pytest.raises(subprocess.CalledProcessError):
+            read.digest(tmp_path / "missing.bin")
+        assert read.digest(present)[0] == len(b"served after a refused digest")
