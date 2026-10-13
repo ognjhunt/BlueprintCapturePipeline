@@ -223,7 +223,7 @@ def provision_scene_configuration_release(
     readback_actor: str,
     astra_blender_archive_path: str | Path | None = None,
     website_mapanything_template: str | Path | None = None,
-    authoring_backend: str = "artisan_v1",
+    authoring_backend: str | None = None,
     artisan_root: str | Path | None = None,
     artisan_site_packages_root: str | Path | None = None,
     artisan_blender_root: str | Path | None = None,
@@ -231,6 +231,8 @@ def provision_scene_configuration_release(
     """Publish or reopen the two immutable runtime trees for one release."""
 
     repository = Path(repository_root).expanduser().resolve()
+    from blueprint_pipeline.task_object_authoring_backend import default_backend
+    authoring_backend = authoring_backend or default_backend()  # Astra until ARTISAN go-live
     if authoring_backend not in {"artisan_v1", "astra_cad_blender_v1", "content_agents"}:
         raise ValueError("scene_configuration_release_authoring_backend_invalid")
     if authoring_backend == "artisan_v1" and not all((artisan_root, artisan_site_packages_root, artisan_blender_root)):
@@ -383,7 +385,8 @@ def main() -> int:
     parser.add_argument("--text-to-cad-root")
     parser.add_argument("--multi-agent-cad-root")
     parser.add_argument("--astra-blender-archive")
-    parser.add_argument("--authoring-backend", choices=("artisan_v1", "astra_cad_blender_v1", "content_agents"), default="artisan_v1")
+    parser.add_argument("--authoring-backend", choices=("artisan_v1", "astra_cad_blender_v1", "content_agents"), default=None,
+                        help="default: BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND (Astra until ARTISAN go-live)")
     parser.add_argument("--artisan-root", default=os.getenv("BLUEPRINT_ARTISAN_UPSTREAM_ROOT"))
     parser.add_argument("--artisan-site-packages-root", default=os.getenv("BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT"))
     parser.add_argument("--artisan-blender-root", default=os.getenv("BLUEPRINT_ARTISAN_BLENDER_ROOT"))
@@ -416,7 +419,7 @@ def _provision_from_arguments(args: argparse.Namespace, readback: Readback) -> d
         text_to_cad_root=args.text_to_cad_root,
         multi_agent_cad_root=args.multi_agent_cad_root,
         astra_blender_archive_path=args.astra_blender_archive,
-        authoring_backend=getattr(args, "authoring_backend", "artisan_v1"),
+        authoring_backend=getattr(args, "authoring_backend", None),
         artisan_root=getattr(args, "artisan_root", None),
         artisan_site_packages_root=getattr(args, "artisan_site_packages_root", None),
         artisan_blender_root=getattr(args, "artisan_blender_root", None),

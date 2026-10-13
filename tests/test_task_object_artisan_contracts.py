@@ -7,7 +7,9 @@ from PIL import Image
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.task_object_authoring_backend import ARTISAN_BUDGET_ENV, backend_configuration, frozen_authoring_cap
+from blueprint_pipeline.task_object_authoring_backend import (
+    ARTISAN_BUDGET_ENV, BACKEND_SETTING_ENV, backend_configuration, default_backend, frozen_authoring_cap,
+)
 from blueprint_pipeline.task_object_authoring_contracts import build_construction_request, verify_construction_request, file_record, AuthoringContractError
 from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import stage_three_configuration, spend_block
 from blueprint_pipeline.task_evaluation_launch_preparation_contract import validate_launch_preparation_request
@@ -94,8 +96,9 @@ def test_unsupported_uncapped_or_nonfinite_budget_refuses(value, monkeypatch):
         backend_configuration("artisan_v1")
 
 
-def test_new_default_dispatch_imports_no_legacy_authoring_engine(tmp_path):
+def test_new_default_dispatch_imports_no_legacy_authoring_engine(tmp_path, monkeypatch):
     import subprocess
+    monkeypatch.setenv(BACKEND_SETTING_ENV, "artisan_v1")  # switched on (go-live)
     input_path = tmp_path / "input.json"
     input_path.write_text(json.dumps({"configuration": {"authoring_backend": "artisan_v1"}}))
     code = '''import os,sys
@@ -115,3 +118,67 @@ assert not any('task_object_astra_authoring' in name or 'content_agents_driver' 
             "dynamic_friction_bounds": [0.1, 0.3], "restitution_bounds": [0, 0.1]})
     assert config["authoring_backend"] == "artisan_v1"
     assert canonical_digest(config) != canonical_digest({**config, "authoring_backend": "astra_cad_blender_v1"})
+
+
+def test_one_setting_selects_the_builder_and_artisan_starts_switched_off(monkeypatch):
+    """Owner decision 2026-10-13: ARTISAN is merged but off until its runtime is installed."""
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
+        articulated_stage_three_configuration,
+    )
+    from tests.test_task_object_articulated_packaging import MECHANISM, PHYSICS
+
+    def rigid(**kwargs):
+        return stage_three_configuration(scene_id="scene", replacement_identity={"id": "asset", "version": "v1"},
+            source_instance_id="object", authoring_target="source object", source_min=[0, 0, 0],
+            source_max=[1, 1, 1], dimension_tolerance=0.1, physics_bounds={"mass_kg_bounds": [1, 3],
+                "static_friction_bounds": [0.3, 0.6], "dynamic_friction_bounds": [0.1, 0.3],
+                "restitution_bounds": [0, 0.1]}, **kwargs)
+
+    def articulated(**kwargs):
+        return articulated_stage_three_configuration(scene_id="scene", replacement_identity={"id": "a", "version": "v1"},
+            source_instance_id="cabinet", authoring_target="cabinet", source_min=[-0.21, -0.275, 0.0],
+            source_max=[0.21, 0.275, 0.62], dimension_tolerance=0.2, physics_bounds=PHYSICS, mechanism=MECHANISM,
+            **kwargs)
+
+    monkeypatch.delenv(BACKEND_SETTING_ENV, raising=False)
+    assert default_backend() == "astra_cad_blender_v1"
+    assert rigid()["authoring_backend"] == articulated()["authoring_backend"] == "astra_cad_blender_v1"
+    assert "authoring_budget" not in rigid() and "authoring_framework" not in articulated()
+    monkeypatch.setenv(BACKEND_SETTING_ENV, "artisan_v1")
+    assert rigid()["authoring_backend"] == articulated()["authoring_backend"] == "artisan_v1"
+    assert rigid()["authoring_budget"]["mode"] == "finite_cap"
+    # A named backend is never rewritten by the setting, in either direction.
+    assert rigid(authoring_backend="astra_cad_blender_v1")["authoring_backend"] == "astra_cad_blender_v1"
+    monkeypatch.delenv(BACKEND_SETTING_ENV)
+    assert rigid(authoring_backend="artisan_v1")["authoring_backend"] == "artisan_v1"
+    for value in ("content_agents", "artisan", "ASTRA"):
+        with pytest.raises(ValueError, match="task_object_authoring_backend_setting_invalid"):
+            default_backend({BACKEND_SETTING_ENV: value})
+
+
+def test_deploy_and_release_provisioning_follow_the_one_setting(monkeypatch):
+    """Unnamed, both select Astra; the ARTISAN runtime roots are required only once switched on."""
+    import importlib.util
+    root = Path(__file__).resolve().parents[1] / "scripts"
+    spec = importlib.util.spec_from_file_location("provision_release_for_setting_test",
+                                                  root / "provision_task_evaluation_scene_configuration_release.py")
+    provision = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(provision)
+    monkeypatch.delenv(BACKEND_SETTING_ENV, raising=False)
+    calls = {"repository_root": Path(__file__).resolve().parents[1], "runtime_root": "/nonexistent-runtime-root"}
+    # Switched off: an unnamed backend is Astra, which needs the legacy sources, not ARTISAN's.
+    with pytest.raises(ValueError, match="scene_configuration_release_explicit_legacy_runtime_required"):
+        provision.provision_scene_configuration_release(**calls, **_provision_placeholders())
+    monkeypatch.setenv(BACKEND_SETTING_ENV, "artisan_v1")
+    with pytest.raises(ValueError, match="scene_configuration_release_artisan_installed_runtime_required"):
+        provision.provision_scene_configuration_release(**calls, **_provision_placeholders())
+    deploy_source = (root / "deploy_control_plane_commit.py").read_text()
+    assert 'authoring_backend: str | None = None' in deploy_source
+    assert "authoring_backend = authoring_backend or default_backend()" in deploy_source
+
+
+def _provision_placeholders():
+    # The backend checks run before any of these are read.
+    return {"source_commit": "0" * 40, "node_executable": "/nonexistent/node", "browser_root": "/nonexistent/browser",
+            "browser_executable": "/nonexistent/browser/chrome", "node_modules_root": "/nonexistent/node_modules",
+            "artifixer_root": "/nonexistent/artifixer", "readback": None, "readback_actor": "test"}

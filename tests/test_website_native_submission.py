@@ -96,7 +96,13 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     return kwargs, accepted
 
 
-def test_prepared_capture_materializes_a_publishable_native_request_without_raw_video(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
+def test_prepared_capture_materializes_a_publishable_native_request_without_raw_video(tmp_path, monkeypatch, backend):
+    # Unset, the one builder setting keeps ARTISAN switched off (Astra).
+    if backend == "artisan_v1":
+        monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", backend)
+    else:
+        monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
     kwargs, accepted = setup(tmp_path, monkeypatch)
     preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
     assert "collision_mesh" not in preparation["intake_request"]["source"]
@@ -111,8 +117,8 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
     assert request["scene_intent_digest"] == accepted["intent_digest"]
     caps = request["spend"]["external_service_caps"]["openai"]
-    cap = new_authoring_budget()["maximum_cost_usd"]
-    assert request["replacement_authoring_backend"] == "artisan_v1"
+    cap = new_authoring_budget()["maximum_cost_usd"] if backend == "artisan_v1" else 5
+    assert request["replacement_authoring_backend"] == backend
     assert caps["stage_max_cost_usd"] == {"artifixer_semantic_teacher": 0,
         "artifixer_visual_review": 0, "content_agents": cap}
     assert caps["maximum_cost_usd"] == cap
@@ -148,7 +154,12 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     assert "placement_uncertainty_m" in task and task["physical_world_truth_claimed"] is False
 
 
-def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
+def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_path, monkeypatch, backend):
+    if backend == "artisan_v1":
+        monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", backend)
+    else:
+        monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
     kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True)
     preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
     assert preparation["intake_request"]["task"]["strategy"] == "articulated_open_close"
@@ -161,9 +172,9 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
     assert request["scene_intent_digest"] == accepted["intent_digest"]
     task = request["task"]
     assert task["kind"] == "articulated_manipulation" and task["strategy"] == "articulated_open_close"
-    # The whole ARTISAN stage is quoted at the cap its configuration froze, for every part.
-    cap = new_authoring_budget()["maximum_cost_usd"]
-    assert request["replacement_authoring_backend"] == "artisan_v1"
+    # One stage authors every part: ARTISAN at the cap its configuration froze, Astra at its shared $25 pool.
+    cap = new_authoring_budget()["maximum_cost_usd"] if backend == "artisan_v1" else 25.0
+    assert request["replacement_authoring_backend"] == backend
     assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"] == {
         "artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0, "content_agents": cap}
     assert request["spend"]["hard_cap_usd"] == MAX_PROVIDER_COMPUTE_SPEND_USD + cap
@@ -182,7 +193,8 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
     stages = [json.loads((root / f"configuration/stage_{i}.json").read_text()) for i in range(3, 6)]
     assert stages[0]["schema_version"] == "articulated_replacement_authoring_configuration.v1"
     assert stages[1]["asset_kind"] == stages[2]["asset_kind"] == "articulated_assembly"
-    assert stages[1]["required_checks"]["non_target_joints_unactuated"] is True
+    assert stages[1]["required_checks"]["non_target_joints_unactuated" if backend == "artisan_v1"
+                                         else "non_target_joints_fixed"] is True
     assert stages[2]["required_checks"]["task_joint_drive_forbidden"] is True
     assembly = json.loads((root / "configuration/stage_6.json").read_text())
     assert assembly["replacement"]["asset_kind"] == "articulated_assembly"

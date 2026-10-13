@@ -9,7 +9,7 @@ records are shaped exactly as the deployed validators require.
 
 from __future__ import annotations
 
-from .task_object_authoring_backend import DEFAULT_BACKEND, AUTHORING_BACKENDS, backend_configuration
+from .task_object_authoring_backend import AUTHORING_BACKENDS, backend_configuration, default_backend
 
 import math
 from collections.abc import Mapping, Sequence
@@ -529,8 +529,9 @@ def stage_three_configuration(
     source_max: Sequence[float],
     dimension_tolerance: float,
     physics_bounds: Mapping[str, Sequence[float]],
-    authoring_backend: str = DEFAULT_BACKEND,
+    authoring_backend: str | None = None,
 ) -> dict[str, Any]:
+    authoring_backend = authoring_backend or default_backend()
     if authoring_backend not in AUTHORING_BACKENDS:
         raise ValueError("replacement_authoring_backend_invalid")
     return {
@@ -813,7 +814,7 @@ def articulated_stage_three_configuration(
     dimension_tolerance: float,
     physics_bounds: Mapping[str, Sequence[float]],
     mechanism: Mapping[str, Any],
-    authoring_backend: str = DEFAULT_BACKEND,
+    authoring_backend: str | None = None,
 ) -> dict[str, Any]:
     """Stage-3 configuration for a multi-link assembly with one task joint.
 
@@ -823,6 +824,7 @@ def articulated_stage_three_configuration(
     are generated candidate geometry and must be tagged as such.
     """
 
+    authoring_backend = authoring_backend or default_backend()
     if authoring_backend not in AUTHORING_BACKENDS:
         raise ValueError("replacement_authoring_backend_invalid")
     joint_type = str(mechanism.get("joint_type") or "")

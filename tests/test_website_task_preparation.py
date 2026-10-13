@@ -562,7 +562,8 @@ def test_source_far_above_support_is_not_snapped_down_to_floor(tmp_path):
     assert result["compose_back"]["pose_world"]["support_snap_runtime_units"] == 0
 
 
-def test_website_task_and_original_frames_reach_artisan_request(tmp_path):
+def test_website_task_and_original_frames_reach_artisan_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")  # switched on (go-live)
     from blueprint_pipeline.website_native_inputs import preflight_website_authoring_request
     from tests.test_website_native_inputs import packet
     # Exercise the website's complete consent and source bindings, rather than

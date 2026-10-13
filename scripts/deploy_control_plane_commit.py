@@ -4530,7 +4530,7 @@ def deploy_control_plane_commit(
     content_agents_source_root: str | Path = DEFAULT_CONTENT_AGENTS_SOURCE_ROOT,
     cad_skill_source_root: str | Path = DEFAULT_CAD_SKILL_SOURCE_ROOT,
     astra_blender_archive_path: str | Path | None = BLENDER_INSTALL_ROOT.parent / 'archives' / BLENDER_ARCHIVE_NAME,
-    authoring_backend: str = "artisan_v1",
+    authoring_backend: str | None = None,
     artisan_root: str | Path | None = None,
     artisan_site_packages_root: str | Path | None = None,
     artisan_blender_root: str | Path | None = None,
@@ -4761,6 +4761,9 @@ def deploy_control_plane_commit(
         )
         _mark_stage("unit_sandbox_paths")
         try:
+            # Unnamed: the one builder setting (Astra until ARTISAN go-live).
+            from blueprint_pipeline.task_object_authoring_backend import default_backend
+            authoring_backend = authoring_backend or default_backend()
             cad_sources_by_id = {}
             cad_skill_sources = {"status": "not_required_for_artisan", "sources": []}
             if authoring_backend != "artisan_v1":
@@ -5307,7 +5310,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_SPLAT_RENDER_PREREQUISITE_ROOT,
     )
     parser.add_argument("--artifixer-source-root", default=DEFAULT_ARTIFIXER_SOURCE_ROOT)
-    parser.add_argument("--authoring-backend", choices=("artisan_v1", "astra_cad_blender_v1", "content_agents"), default="artisan_v1")
+    parser.add_argument("--authoring-backend", choices=("artisan_v1", "astra_cad_blender_v1", "content_agents"), default=None,
+                        help="default: BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND (Astra until ARTISAN go-live)")
     parser.add_argument("--artisan-root", default=os.getenv("BLUEPRINT_ARTISAN_UPSTREAM_ROOT"))
     parser.add_argument("--artisan-site-packages-root", default=os.getenv("BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT"))
     parser.add_argument("--artisan-blender-root", default=os.getenv("BLUEPRINT_ARTISAN_BLENDER_ROOT"))

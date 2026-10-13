@@ -791,8 +791,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]
     authoring_provider = spend.get("authoring_provider", "openai")
-    from .task_object_authoring_backend import DEFAULT_BACKEND, AUTHORING_BACKENDS
-    authoring_backend = spend.get("replacement_authoring_backend", DEFAULT_BACKEND)
+    from .task_object_authoring_backend import AUTHORING_BACKENDS, default_backend
+    authoring_backend = spend.get("replacement_authoring_backend") or default_backend()
     if authoring_backend not in AUTHORING_BACKENDS:
         raise ValueError("website_authoring_backend_invalid")
     if authoring_provider not in {"openai", "anthropic"}:

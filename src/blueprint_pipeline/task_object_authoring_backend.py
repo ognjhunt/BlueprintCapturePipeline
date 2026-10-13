@@ -2,6 +2,12 @@
 
 ADP-009 day-14/day-21 owner-directed migration, 2026-10-12. This module
 contains no authoring engine, provider client, or source-measurement inference.
+
+One setting, ``BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND``, selects the builder
+for new requests and for deploys. Owner decision 2026-10-13: ARTISAN is merged
+but switched off (Astra) until its runtime is installed on the production host
+and a retained canary is valid; go-live sets it to ``artisan_v1`` for the
+deploy and every service. Explicit request backends are never rewritten.
 """
 from __future__ import annotations
 
@@ -10,7 +16,9 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-DEFAULT_BACKEND = ARTISAN_BACKEND = "artisan_v1"
+ARTISAN_BACKEND = "artisan_v1"
+BACKEND_SETTING_ENV = "BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND"
+SWITCHED_OFF_BACKEND = "astra_cad_blender_v1"
 LEGACY_BACKENDS = frozenset({"content_agents", "astra_cad_blender_v1"})
 AUTHORING_BACKENDS = LEGACY_BACKENDS | {ARTISAN_BACKEND}
 ARTISAN_REVISION = "ad322b5b31e50bdb84155520f09622c00c6056c3"
@@ -20,6 +28,15 @@ BUDGET_SCHEMA = "task_object_authoring_budget.v1"
 ARTISAN_MODELS = {"provider": "openai", "model": "gpt-6-astra", "thinking": "high",
                   "compaction_model": "gpt-5.6-sol", "image_model": "gpt-6-astra",
                   "image_tool_model": "gpt-image-2.5-sunburst"}
+
+
+def default_backend(environment: Mapping[str, str] | None = None) -> str:
+    """The builder a new request or deploy selects when none is named."""
+    values = os.environ if environment is None else environment
+    value = str(values.get(BACKEND_SETTING_ENV) or SWITCHED_OFF_BACKEND).strip()
+    if value not in {ARTISAN_BACKEND, SWITCHED_OFF_BACKEND}:
+        raise ValueError("task_object_authoring_backend_setting_invalid")
+    return value
 
 
 def positive_cost(value: Any) -> float:

@@ -7,9 +7,35 @@ for the day-14 scene rehearsal and day-21 diagnostic. It does not replace captur
 reconstruction, appearance removal, scene registration, or native evaluation.
 
 This implementation is awaiting runtime rehearsal and production activation.
-Keep it off production until the concurrent, already-approved Astra dishwasher
-build is submitted. Its retries rebuild requests; changing the live default
-during that build would change the backend covered by its approval.
+
+## Switch: merged, off until go-live
+
+Owner decision, October 13, 2026: ARTISAN is merged but **switched off**. One
+setting, `BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND`, selects the builder for new
+requests (`stage_three_configuration`, `articulated_stage_three_configuration`,
+website compile, submission) and for deploys (`deploy_control_plane_commit.py`,
+`provision_task_evaluation_scene_configuration_release.py`). Unset, it is
+`astra_cad_blender_v1`, so deploys and new builds behave exactly as before this
+change. Any value other than `artisan_v1` or `astra_cad_blender_v1` refuses.
+A request or configuration that names its backend is never rewritten.
+
+Go-live, in order:
+
+1. Install the pinned runtime on the production host (see *Reproducible worker
+   and release*) and set `BLUEPRINT_ARTISAN_UPSTREAM_ROOT`,
+   `BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT` and `BLUEPRINT_ARTISAN_BLENDER_ROOT` for
+   the deploy.
+2. Run one retained rigid and one articulated canary, and confirm they are valid.
+3. Set `BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND=artisan_v1` for the deploy runner
+   and for every service environment, then deploy.
+
+Rollback is unsetting the setting and deploying again. Issued configurations keep
+their recorded backend.
+
+At the $15 default (`BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD`), a rigid website
+build quotes $21: $6 of provider compute plus $15. That is above the website's
+default $20 build ceiling. A $14 cap keeps it under $20; otherwise an owner grant
+is needed.
 
 ## Integration map
 

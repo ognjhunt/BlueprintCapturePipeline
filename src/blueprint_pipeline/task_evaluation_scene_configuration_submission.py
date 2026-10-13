@@ -6,7 +6,7 @@ downstream stages. This assembler validates their inputs, not their outcomes.
 
 from __future__ import annotations
 
-from .task_object_authoring_backend import DEFAULT_BACKEND, ARTISAN_BACKEND, frozen_authoring_cap
+from .task_object_authoring_backend import ARTISAN_BACKEND, default_backend, frozen_authoring_cap
 
 import argparse
 import json
@@ -391,9 +391,9 @@ def materialize_scene_configuration_submission(
             source_instance_id=str(task["subject"]["source_instance_id"]),
             authoring_target=task["subject"]["authoring_target"], source_min=lower, source_max=upper,
             dimension_tolerance=tolerance, physics_bounds=task["subject"]["physics_bounds"],
-            authoring_backend=task["subject"].get("authoring_backend", DEFAULT_BACKEND)),
+            authoring_backend=task["subject"].get("authoring_backend") or default_backend()),
         records.stage_four_configuration(replacement_identity=replacement, dimension_tolerance=tolerance,
-                                         authoring_backend=task["subject"].get("authoring_backend", DEFAULT_BACKEND)),
+                                         authoring_backend=task["subject"].get("authoring_backend") or default_backend()),
         records.stage_five_configuration(replacement_identity=replacement),
         records.stage_six_configuration(scene_identity=task["scene_identity"], support_plane=support,
                                        start_center=start, bottom_z=lower[2]),
