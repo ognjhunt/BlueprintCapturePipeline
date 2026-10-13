@@ -200,7 +200,9 @@ def _validate_toolchain(
             or _DIGEST.fullmatch(digest) is None
             or not isinstance(size, int)
             or isinstance(size, bool)
-            or size <= 0
+            # An empty file is legitimate (py.typed, REQUESTED, __init__.py: 675 in
+            # the ARTISAN runtime, 2026-10-13); its digest pins it like any other.
+            or size < 0
             or not isinstance(executable, bool)
         ):
             raise TaskEvaluationSceneConfigurationStageProducerError(
