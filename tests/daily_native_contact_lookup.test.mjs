@@ -160,3 +160,29 @@ test('the actual private bridge preserves stable admission errors rather than re
  await assert.rejects(()=>Store.prototype.dispatch.call(f.store,{op:'native_contact_scope_set',expected_scope_id:null,value:null}),error=>
   error.constructor.name==='Refusal'&&error.message==='native_contact_scope_invalid');
 });
+test('a valid first candidate is not persisted when a later cohort assessment is altered',async()=>{
+ const f=fixture(),later={...f.row.packet.candidates[0],candidate_key:'fixture-later'},assessment=structuredClone(f.row.review.lead_verification.results[0].assessment);
+ assessment.candidate_digest=hash(later);f.row.packet.candidates.push(later);
+ f.row.review.lead_verification.results.push({candidate_key:later.candidate_key,assessment,duplicate_check:{duplicate:true}});
+ const qa=JSON.parse(f.files.get(DAY+'-qa.json')),changed=structuredClone(assessment);
+ changed.claims.operator.status='unresolved';qa.checks.push({candidate_key:later.candidate_key,duplicate:true,lead_verification:changed});
+ const raw=Buffer.from(json(qa));f.files.set(DAY+'-qa.json',raw);f.row.qa.artifact_digest=f.row.review.qa_artifact_digest=sha(raw);
+ const before=structuredClone([...f.records]);
+ await assert.rejects(()=>prepareNativeContacts(f.store,DAY),/native_contact_assessment_changed/);
+ assert.deepEqual([...f.records],before);
+});
+function validPair() {
+ const f=fixture(),second={...f.row.packet.candidates[0],candidate_key:'fixture-second'},assessment=structuredClone(f.row.review.lead_verification.results[0].assessment);
+ assessment.candidate_digest=hash(second);f.row.packet.candidates.push(second);
+ f.row.review.lead_verification.results.push({candidate_key:second.candidate_key,assessment});
+ const qa=JSON.parse(f.files.get(DAY+'-qa.json'));qa.checks.push({candidate_key:second.candidate_key,duplicate:false,lead_verification:assessment});
+ const raw=Buffer.from(json(qa));f.files.set(DAY+'-qa.json',raw);f.row.qa.artifact_digest=f.row.review.qa_artifact_digest=sha(raw);
+ return f;
+}
+test('all valid siblings are prepared together and a later immutable-input conflict creates none',async()=>{
+ const reference=validPair(),inputs=await prepareNativeContacts(reference.store,DAY);assert.equal(inputs.length,2);
+ const f=validPair();f.records.set(ROOT+'/nativeContactInputs/'+inputs[1].input_id,{input:inputs[1],inputDigest:'0'.repeat(64)});
+ const before=structuredClone([...f.records]);
+ await assert.rejects(()=>prepareNativeContacts(f.store,DAY),/native_contact_input_changed/);
+ assert.deepEqual([...f.records],before);
+});

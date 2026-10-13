@@ -112,15 +112,21 @@ export async function prepareNativeContacts(store,day) {
     input.input_id=hash(input);
     // Firestore documents must stay under 1MiB, never silently truncate evidence.
     if(Buffer.byteLength(json(input))>700000) fail('native_contact_input_resource_limit');
-    await store.transaction(async tx=>{
-      store.fence((await tx.get(store.control)).data());
-      const run=await tx.get(store.db.doc(`${ROOT}/runs/${day}`)),ref=inputRef(store,input.input_id),prior=await tx.get(ref);
-      if(run.data()?.blob!==meta.blob) fail('native_contact_run_changed');
-      if(prior.exists&&prior.data().inputDigest!==hash(input)) fail('native_contact_input_changed');
-      if(!prior.exists) tx.create(ref,{input,inputDigest:hash(input),preparedAt:store.clock(),sent:false});
-    });
     values.push(input);
   }
+  // Validate the whole eligible cohort before creating any approvable input.
+  // One transaction also prevents a later conflicting input or changed run
+  // from leaving newly created siblings behind a refused preparation.
+  if(values.length) await store.transaction(async tx=>{
+    store.fence((await tx.get(store.control)).data());
+    const run=await tx.get(store.db.doc(`${ROOT}/runs/${day}`));
+    if(run.data()?.blob!==meta.blob) fail('native_contact_run_changed');
+    const refs=values.map(input=>inputRef(store,input.input_id)),priors=await Promise.all(refs.map(ref=>tx.get(ref)));
+    for(const [index,input] of values.entries())
+      if(priors[index].exists&&priors[index].data().inputDigest!==hash(input)) fail('native_contact_input_changed');
+    for(const [index,input] of values.entries())
+      if(!priors[index].exists) tx.create(refs[index],{input,inputDigest:hash(input),preparedAt:store.clock(),sent:false});
+  });
   return values;
 }
 
