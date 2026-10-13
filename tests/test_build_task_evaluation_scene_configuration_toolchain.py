@@ -27,7 +27,7 @@ def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _component_packages(tmp_path: Path) -> dict[str, Path]:
+def _component_packages(tmp_path: Path, *, empty_file: bool = False) -> dict[str, Path]:
     packages: dict[str, Path] = {}
     for identity in ADMITTED_PRODUCER_IDENTITIES:
         root = tmp_path / "component-packages" / identity.adapter_id
@@ -43,6 +43,12 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
                 "executable": True,
             }
         ]
+        if empty_file and identity.adapter_id == "content_agents_rigid_replacement":
+            marker = root / "py.typed"
+            marker.write_bytes(b"")
+            marker.chmod(0o444)
+            package_files.append({"relative_path": "py.typed", "sha256": _sha256(marker),
+                                  "size_bytes": 0, "executable": False})
         if identity.adapter_id == "artifixer3d_observed_object_removal":
             wheelhouse = root / "python_wheelhouse"
             wheels = wheelhouse / "wheels"
@@ -304,3 +310,43 @@ def test_new_release_shares_regenerated_immutable_payload_after_full_readback(tm
     assert result["shared_immutable_file_count"] == 1
     assert result["shared_immutable_file_bytes"] == payload.stat().st_size
     assert payload.stat().st_ino != installed[1].stat().st_ino
+
+
+def test_per_file_readback_streams_through_a_digest_capable_reader(tmp_path: Path) -> None:
+    """The deploy's reader hashes each file as the service account streams it; nothing is held whole."""
+    from scripts.build_task_evaluation_scene_configuration_toolchain import _readback_digest
+
+    path = tmp_path / "large.so"
+    path.write_bytes(b"x" * 1024)
+
+    class StreamingReader:
+        def __init__(self) -> None:
+            self.digests: list[Path] = []
+
+        def __call__(self, _path: Path) -> bytes:
+            raise AssertionError("per-file verification must not hold the whole file")
+
+        def digest(self, target: Path) -> tuple[int, str]:
+            self.digests.append(target)
+            return 1024, "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+
+    reader = StreamingReader()
+    assert _readback_digest(reader, path) == (1024, "sha256:" + hashlib.sha256(b"x" * 1024).hexdigest())
+    assert reader.digests == [path]
+    # A plain bytes reader (the builder's own CLI and tests) still works.
+    assert _readback_digest(lambda target: target.read_bytes(), path)[0] == 1024
+
+
+def test_an_empty_component_file_publishes_and_validates(tmp_path: Path) -> None:
+    """2026-10-13: the ARTISAN runtime's 675 empty files (py.typed, REQUESTED) refused the toolchain."""
+    commit = "b" * 40
+    output = tmp_path / "runtime" / commit
+    output.parent.mkdir(mode=0o755)
+    build_published_scene_configuration_toolchain(
+        source_commit=commit, output_root=output, readback=lambda path: path.read_bytes(),
+        readback_actor="service-account:test-runner",
+        component_packages=_component_packages(tmp_path, empty_file=True))
+    manifest = validate_scene_configuration_toolchain(root=output, expected_source_commit=commit)
+    empty = [row for row in manifest["files"] if row["size_bytes"] == 0]
+    assert [row["relative_path"].rsplit("/", 1)[-1] for row in empty] == ["py.typed"]
+    assert empty[0]["sha256"] == "sha256:" + hashlib.sha256(b"").hexdigest()

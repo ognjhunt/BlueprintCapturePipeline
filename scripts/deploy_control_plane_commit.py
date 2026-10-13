@@ -654,6 +654,13 @@ class UntrustedDeploySourceError(ControlPlaneDeployError):
         )
 
 
+# ARTISAN's sealed runtime is about 10.8 GB in 39,000 files, and every release proves
+# it byte for byte several times (copy, package digests, service-account readback,
+# validation). On the 4-core control plane under its usual load that ran past the
+# old 30 min limit (2026-10-13). The door gives the whole deploy 3 h.
+SCENE_CONFIGURATION_PROVISION_TIMEOUT_SECONDS = 7200
+
+
 def _provision_scene_configuration_from_release(*, repository_root, source_commit,
         readback_user, **paths) -> dict[str, Any]:
     """Run target-release builders, never modules imported by the old deployer."""
@@ -671,9 +678,17 @@ def _provision_scene_configuration_from_release(*, repository_root, source_commi
                        PYTHONDONTWRITEBYTECODE="1")
     try:
         result = subprocess.run(command, cwd=repository, env=environment,
-            check=True, capture_output=True, text=True, timeout=1800)
+            check=True, capture_output=True, text=True,
+            timeout=SCENE_CONFIGURATION_PROVISION_TIMEOUT_SECONDS)
         value = json.loads(result.stdout.strip().splitlines()[-1])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        # The receipt keeps only the code; the operator door captures this
+        # stream, so the builder's own error is not lost (2026-10-13 ARTISAN).
+        detail = getattr(exc, "stderr", None) or getattr(exc, "output", None) or ""
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", "replace")
+        print("scene_configuration_target_release_provision_failed: " + type(exc).__name__
+              + (": " + detail[-4000:] if detail else ""), file=sys.stderr, flush=True)
         raise ValueError("scene_configuration_target_release_provision_failed") from exc
     if (not isinstance(value, dict) or value.get("status") != "ready"
             or value.get("source_commit") != source_commit

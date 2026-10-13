@@ -4805,3 +4805,39 @@ def test_an_inactive_drain_snapshot_never_overrides_a_live_trigger(monkeypatch) 
 
     assert before[PROGRESSION_TIMER]["state"] == "active"
     assert stopped == [PROGRESSION_TIMER]
+
+
+def test_a_failed_release_provisioning_prints_its_own_error(tmp_path, capsys):
+    """2026-10-13: the deploy receipt kept only the code and the builder's error was lost."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "provision_task_evaluation_scene_configuration_release.py").write_text(
+        "import sys\nprint('builder exploded: service readback ran out of memory', file=sys.stderr)\nsys.exit(3)\n")
+    with pytest.raises(ValueError, match="scene_configuration_target_release_provision_failed"):
+        deploy._provision_scene_configuration_from_release(
+            repository_root=tmp_path, source_commit="a" * 40, readback_user="blueprint")
+    error = capsys.readouterr().err
+    assert "scene_configuration_target_release_provision_failed: CalledProcessError" in error
+    assert "builder exploded: service readback ran out of memory" in error
+
+
+def test_release_provisioning_has_room_for_the_artisan_runtime(tmp_path, monkeypatch):
+    """2026-10-13: provisioning ARTISAN's 10.8 GB runtime ran past the old 30 min limit."""
+    import re
+
+    seen = {}
+
+    def run(command, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(stdout=json.dumps({"status": "ready", "source_commit": "a" * 40,
+                                                  "environment": {}}))
+    monkeypatch.setattr(deploy.subprocess, "run", run)
+    deploy._provision_scene_configuration_from_release(
+        repository_root=tmp_path, source_commit="a" * 40, readback_user="blueprint")
+    door = (REPO_ROOT / "deploy/operator-door/operator_door/spool_runner.py").read_text()
+    door_hours = int(re.search(
+        r'"deploy": _LaunchSpec\("blueprint-operator-door-deploy", "door-deploy.sh", "(\d+)h"', door).group(1))
+    assert seen["timeout"] == deploy.SCENE_CONFIGURATION_PROVISION_TIMEOUT_SECONDS
+    # Room for the runtime, and still inside the door's whole-deploy limit with the
+    # remaining steps' share left over.
+    assert 2 * 3600 <= seen["timeout"] <= door_hours * 3600 - 30 * 60

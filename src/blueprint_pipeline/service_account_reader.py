@@ -8,10 +8,16 @@ privilege transitions per deploy. This reader starts that one account process
 once and serves every path through it. The proof is unchanged: the service
 account opens and reads every byte, and the caller (root) still checks the
 length and digest of exactly the bytes the account read.
+
+Bytes stream in bounded chunks. Reading each file whole held every byte twice
+on the root side and once in the account process; on 2026-10-13 the first
+ARTISAN toolchain (libtorch_cuda.so is 1.19 GB) failed the deploy that way.
+``digest`` hashes the stream without keeping it.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
@@ -20,8 +26,12 @@ from pathlib import Path
 from typing import IO
 
 # Runs as the service account under ``python -I -S``: no site, no environment.
-# Request: 4-byte big-endian length + path bytes. Reply: status byte (0 read,
-# 1 refused) + 8-byte big-endian length + file bytes or the refusal.
+# Request: 4-byte big-endian length + path bytes. Reply: status byte. On 0 (read)
+# the bytes follow as chunks, each a 4-byte big-endian length + bytes, ended by
+# a zero-length chunk. On 1 (refused) an 8-byte big-endian length + the refusal
+# follows. A read error after the first chunk ends the stream with length
+# 0xFFFFFFFF, then the refusal as on 1.
+CHUNK_BYTES = 4 * 1024 * 1024
 _READER = r"""
 import sys
 requests, replies = sys.stdin.buffer, sys.stdout.buffer
@@ -31,13 +41,27 @@ while True:
         break
     path = requests.read(int.from_bytes(head, "big"))
     try:
-        with open(path, "rb") as stream:
-            body, status = stream.read(), b"\0"
+        stream = open(path, "rb")
     except OSError as exc:
-        body, status = repr(exc).encode("utf-8", "replace"), b"\1"
-    replies.write(status + len(body).to_bytes(8, "big") + body)
+        body = repr(exc).encode("utf-8", "replace")
+        replies.write(b"\1" + len(body).to_bytes(8, "big") + body)
+        replies.flush()
+        continue
+    replies.write(b"\0")
+    try:
+        with stream:
+            while True:
+                chunk = stream.read(%d)
+                if not chunk:
+                    break
+                replies.write(len(chunk).to_bytes(4, "big") + chunk)
+        replies.write((0).to_bytes(4, "big"))
+    except OSError as exc:
+        body = repr(exc).encode("utf-8", "replace")
+        replies.write(b"\xff\xff\xff\xff" + len(body).to_bytes(8, "big") + body)
     replies.flush()
-"""
+""" % CHUNK_BYTES
+_FAILED_STREAM = 0xFFFFFFFF
 
 
 def _read_exactly(stream: IO[bytes], count: int) -> bytes:
@@ -82,6 +106,24 @@ class ServiceAccountReader:
         return ["sudo", "-n", "-u", user, "--", python, "-I", "-S", "-c", _READER]
 
     def __call__(self, path: Path) -> bytes:
+        """Every byte the service account read; use ``digest`` for large files."""
+        chunks: list[bytes] = []
+        self._stream(path, chunks.append)
+        return b"".join(chunks)
+
+    def digest(self, path: Path) -> tuple[int, str]:
+        """(length, ``sha256:<hex>``) of the bytes the account read, held one chunk at a time."""
+        hasher, size = hashlib.sha256(), 0
+
+        def consume(chunk: bytes) -> None:
+            nonlocal size
+            hasher.update(chunk)
+            size += len(chunk)
+
+        self._stream(path, consume)
+        return size, "sha256:" + hasher.hexdigest()
+
+    def _stream(self, path: Path, consume) -> None:
         if self.closed:
             raise ValueError("service_account_reader_closed")
         encoded = os.fsencode(Path(path))
@@ -91,7 +133,18 @@ class ServiceAccountReader:
             process.stdin.write(len(encoded).to_bytes(4, "big") + encoded)
             process.stdin.flush()
             status = _read_exactly(process.stdout, 1)
-            body = _read_exactly(process.stdout, int.from_bytes(_read_exactly(process.stdout, 8), "big"))
+            if status != b"\0":
+                refusal = _read_exactly(process.stdout, int.from_bytes(_read_exactly(process.stdout, 8), "big"))
+                # The per-file reader raised CalledProcessError when dd refused.
+                raise subprocess.CalledProcessError(1, ["read", str(path)], stderr=refusal)
+            while True:
+                length = int.from_bytes(_read_exactly(process.stdout, 4), "big")
+                if length == 0:
+                    return
+                if length == _FAILED_STREAM:
+                    refusal = _read_exactly(process.stdout, int.from_bytes(_read_exactly(process.stdout, 8), "big"))
+                    raise subprocess.CalledProcessError(1, ["read", str(path)], stderr=refusal)
+                consume(_read_exactly(process.stdout, length))
         except (BrokenPipeError, EOFError) as exc:
             # Surface why the account process ended (a refused sudo, a missing
             # interpreter), as the per-file reader's dd error did.
@@ -101,10 +154,6 @@ class ServiceAccountReader:
                 self._argv[:5],
                 stderr=reason or b"service_account_reader_exited",
             ) from exc
-        if status != b"\0":
-            # The per-file reader raised CalledProcessError when dd refused.
-            raise subprocess.CalledProcessError(1, ["read", str(path)], stderr=body)
-        return body
 
     def _finish(self) -> bytes:
         """Stop the account process; return what it wrote to stderr (bounded)."""

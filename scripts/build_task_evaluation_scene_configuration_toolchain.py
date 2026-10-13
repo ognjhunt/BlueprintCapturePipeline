@@ -59,6 +59,15 @@ def _sha256_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def _readback_digest(readback: Readback, path: Path) -> tuple[int, str]:
+    """Length and digest of the bytes the service account read, streamed when the reader can."""
+    digest = getattr(readback, "digest", None)
+    if digest is not None:
+        return digest(path)
+    observed = readback(path)
+    return len(observed), _sha256_bytes(observed)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -233,11 +242,8 @@ def build_published_scene_configuration_toolchain(
         staging.chmod(0o755)
         for row in files:
             path = staging / row["relative_path"]
-            observed = readback(path)
-            if (
-                len(observed) != row["size_bytes"]
-                or _sha256_bytes(observed) != row["sha256"]
-            ):
+            observed_size, observed_digest = _readback_digest(readback, path)
+            if observed_size != row["size_bytes"] or observed_digest != row["sha256"]:
                 raise ValueError("scene_configuration_toolchain_service_readback_failed")
         manifest: dict[str, Any] = {
             "schema_version": TOOLCHAIN_SCHEMA_VERSION,
