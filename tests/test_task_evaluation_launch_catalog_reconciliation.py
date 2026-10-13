@@ -398,3 +398,177 @@ def test_repair_works_on_the_read_only_catalog_publication_installs(
     assert stat.S_IMODE(catalog.stat().st_mode) == 0o440
     assert json.loads(catalog.read_text(encoding="utf-8"))
     assert not list(catalog.parent.glob(".catalog.json.*.tmp"))
+
+
+def test_each_distinct_input_is_checked_once_per_pass(tmp_path, monkeypatch):
+    """2026-10-12: the 539 published profiles list 26,015 inputs that are 3,784 distinct files.
+    Checking every reference made one guard start digest the same file up to 186 times and
+    resolve every bound path once per profile naming it."""
+    from blueprint_pipeline import host_resident_launch_inputs as residency
+    from blueprint_pipeline import launch_profile_immutable_inputs as inputs
+
+    monkeypatch.setenv(residency.LAUNCH_INPUT_ROOTS_ENV, str(tmp_path))
+    for index in range(3):
+        _profile(tmp_path, f"profile-{index}")  # one manifest, named by two input roles
+    digested: list[str] = []
+    resolved: list[str] = []
+    real_digest = inputs.immutable_input_digest
+    real_resident = residency.path_is_host_resident
+    monkeypatch.setattr(
+        inputs, "immutable_input_digest", lambda path: digested.append(path.name) or real_digest(path)
+    )
+    monkeypatch.setattr(
+        residency,
+        "path_is_host_resident",
+        lambda path, roots: resolved.append(Path(path).name) or real_resident(path, roots),
+    )
+    manifests = [f"profile-{index}-source.json" for index in range(3)]
+
+    first = build_catalog_payload(tmp_path / "profiles")
+
+    assert sorted(digested) == manifests
+    assert sorted(resolved) == manifests
+    digested.clear()
+    assert build_catalog_payload(tmp_path / "profiles") == first
+    assert sorted(digested) == manifests  # nothing carries over to the next pass
+
+
+def test_each_profile_is_validated_once_per_pass(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
+
+    _profile(tmp_path, "profile-0")
+    _profile(tmp_path, "profile-1")
+    (tmp_path / "profile-1-source.json").unlink()  # inputs gone: demoted after the structural pass
+    passes: list[tuple[str, bool]] = []
+    real = dispatcher._validate_launch_profile
+
+    def counted(value, *, reopen_external_lineage):
+        passes.append((value["profile_id"], reopen_external_lineage))
+        return real(value, reopen_external_lineage=reopen_external_lineage)
+
+    monkeypatch.setattr(dispatcher, "_validate_launch_profile", counted)
+
+    rows = {row["profile_id"]: row for row in json.loads(build_catalog_payload(tmp_path / "profiles"))}
+
+    assert passes == [("profile-0", False), ("profile-0", True), ("profile-1", False)]
+    assert "launch_profile_immutable_input_missing:source_bundle_manifest" in (
+        rows["profile-1"]["execution_admission"]["blockers"]
+    )
+
+
+# A unit whose environment names the scene-intake owner store reaches the real owner
+# state; one without BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT can only report that
+# it has no store to read.
+FULL_VIEW: list[str] = []
+NO_OWNER_STORE = ["scene_execution_owner_store_missing"]
+
+
+def _owner_view(monkeypatch: pytest.MonkeyPatch, blockers: list[str]) -> None:
+    from blueprint_pipeline import task_evaluation_launch_catalog as catalog_module
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import validate_launch_profile
+
+    monkeypatch.setattr(
+        catalog_module,
+        "validate_launch_profile",
+        lambda profile: list(blockers) if profile["profile_id"] == "owner-profile" else validate_launch_profile(profile),
+    )
+
+
+def _rows(catalog: Path) -> dict[str, dict]:
+    return {row["profile_id"]: row for row in json.loads(catalog.read_text(encoding="utf-8"))}
+
+
+def test_a_unit_without_the_owner_store_never_overwrites_an_owner_judgement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-12: the served catalog flipped between two versions every few minutes.
+
+    Every guarded unit reconciles the catalog. The control-plane one-shot does not
+    load task-evaluation-scene-progression.env, so its guard demoted each owner-bound
+    profile as scene_execution_owner_store_missing; the intake and listener guards
+    then wrote the real owner state back.
+    """
+    _profile(tmp_path, "owner-profile")
+    _profile(tmp_path, "plain-profile")
+    catalog = tmp_path / "catalog.json"
+    _owner_view(monkeypatch, FULL_VIEW)
+    reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=catalog)
+    judged = catalog.read_bytes()
+
+    _owner_view(monkeypatch, NO_OWNER_STORE)
+    receipt = reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=catalog)
+
+    assert receipt["status"] == "consistent"
+    assert receipt["owner_state_carried_forward"] == 1
+    assert catalog.read_bytes() == judged
+
+
+def test_a_unit_without_the_owner_store_still_repairs_what_it_can_judge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _profile(tmp_path, "owner-profile")
+    _profile(tmp_path, "plain-profile")
+    catalog = tmp_path / "catalog.json"
+    _owner_view(monkeypatch, FULL_VIEW)
+    reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=catalog)
+    judged = _rows(catalog)["owner-profile"]
+    _profile(tmp_path, "new-profile")  # published after the last full-view reconcile
+
+    _owner_view(monkeypatch, NO_OWNER_STORE)
+    receipt = reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=catalog)
+
+    assert receipt["status"] == "repaired"
+    assert receipt["profile_ids_added"] == ["new-profile"]
+    assert _rows(catalog)["owner-profile"] == judged
+
+
+def test_an_owner_profile_no_full_view_has_judged_is_served_demoted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing to carry forward: a missing catalog, or a profile republished with new bytes."""
+    path = _profile(tmp_path, "owner-profile")
+    catalog = tmp_path / "catalog.json"
+    _owner_view(monkeypatch, NO_OWNER_STORE)
+    assert reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=catalog)["status"] == "repaired"
+    assert "scene_execution_owner_store_missing" in _rows(catalog)["owner-profile"]["execution_admission"]["blockers"]
+
+    _owner_view(monkeypatch, FULL_VIEW)
+    reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=catalog)
+    assert "scene_execution_owner_store_missing" not in (
+        _rows(catalog)["owner-profile"]["execution_admission"]["blockers"]
+    )
+    profile = json.loads(path.read_text(encoding="utf-8"))
+    profile["allocator"]["max_spend_usd"] = 5.0  # republished: a judgement of the old bytes no longer applies
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    path.write_text(json.dumps(profile, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    _owner_view(monkeypatch, NO_OWNER_STORE)
+    receipt = reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=catalog)
+
+    assert receipt["owner_state_carried_forward"] == 0
+    row = _rows(catalog)["owner-profile"]
+    assert row["profile_digest"] == profile["profile_digest"]
+    assert row["execution_admission"]["live_enabled"] is False
+    assert "scene_execution_owner_store_missing" in row["execution_admission"]["blockers"]
+
+
+def test_an_invalid_served_row_is_never_carried_forward(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _profile(tmp_path, "owner-profile")
+    catalog = tmp_path / "catalog.json"
+    _owner_view(monkeypatch, FULL_VIEW)
+    reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=catalog)
+    rows = json.loads(catalog.read_text(encoding="utf-8"))
+    rows[0]["execution_admission"]["live_enabled"] = True  # live while still carrying blockers
+    catalog.write_text(json.dumps(rows), encoding="utf-8")
+
+    _owner_view(monkeypatch, NO_OWNER_STORE)
+    receipt = reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=catalog)
+
+    assert receipt["status"] == "repaired"
+    assert receipt["owner_state_carried_forward"] == 0
+    admission = _rows(catalog)["owner-profile"]["execution_admission"]
+    assert admission["live_enabled"] is False
+    assert "scene_execution_owner_store_missing" in admission["blockers"]
+

@@ -17,7 +17,7 @@ FILES = (
     "capabilities/blueprint-evidence-qualification/SKILL.md",
     "capabilities/blueprint-evidence-qualification/references/prospect-contract.md",
     "capabilities/deep-research/SKILL.md", "capabilities/deep-research/LICENSE",
-    "firestore.py", "firestore_bridge.mjs", "contact_research.mjs", "render.py", "render_worker.mjs", "render.control.example.json",
+    "firestore.py", "firestore_bridge.mjs", "contact_research.mjs", "native_contact_lookup.py", "native_contact_lookup.mjs", "render.py", "render_worker.mjs", "render.control.example.json",
     "config.example.json", "knowledge.config.example.json", "knowledge.v3.config.example.json",
     "daily-research.v2.schema.json", "daily-research.v3.schema.json",
     "knowledge-snapshot.v1.schema.json", "knowledge-refresh-policy.v1.schema.json",
@@ -25,7 +25,7 @@ FILES = (
     "operators/research-oct2-control.py", "operators/research-perplexity-canary.py",
     "operators/research-perplexity-canary.mjs", "operators/paid-expansion-direction.py", "operators/site-universe-backlog.py",
     "operators/outreach-ready-direction.py", "operators/team-universe-evidence.py",
-    "operators/site-screen.py", "operators/contact-lookup.py",
+    "operators/site-screen.py", "operators/contact-lookup.py", "operators/native-contact-lookup.py",
     "operators/README.md",
 )
 PREFIX = "tools/daily_research/"

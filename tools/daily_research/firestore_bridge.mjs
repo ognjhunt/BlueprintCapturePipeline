@@ -6,6 +6,7 @@ import {pathToFileURL} from 'node:url';
 import {livePublisher,publicationVerification,requirePublicationVerification,screenPayloadProblem} from './publisher.mjs';
 import {verificationDigest} from './verification-digest.mjs';
 import {contactResearchContext,claimContactResearch,finishContactResearchSafely} from './contact_research.mjs';
+import {nativeContactOperation} from './native_contact_lookup.mjs';
 
 export const ROOT = 'blueprintDailyResearch/sites-first';
 export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
@@ -2161,6 +2162,14 @@ export class Store {
     if (this.terminalCollectionReceipt && !['acquire','renew','release','assert_lease','control','read_crm',
       'get','blob_receipt','rows','summary','work_item','active_qa','publish','refresh_crm','put',
       'file_put','file_get','snapshot'].includes(request.op)) refuse('terminal_qa_operation_forbidden');
+    if (typeof request.op==='string' && request.op.startsWith('native_contact_')) {
+      try {return await nativeContactOperation(this,request);}
+      catch(error) {
+        if(error instanceof Refusal) throw error;
+        refuse(/^(?:native_contact|contact_research)_[a-z_]{1,90}$/.test(error?.message||'')
+          ?error.message:'native_contact_request_unavailable');
+      }
+    }
     switch (request.op) {
       case 'init': {
         const value = request.value;
@@ -2170,6 +2179,7 @@ export class Store {
         if (Object.hasOwn(value, 'site_universe')) refuse('site_universe_requires_pin_operation');
         if (Object.hasOwn(value, 'outreach_ready')) refuse('outreach_ready_requires_direction_operation');
         if (Object.hasOwn(value, 'screen_admission')) refuse('screen_admission_requires_pin_operation');
+        if (Object.hasOwn(value, 'native_contact_lookup')) refuse('native_contact_requires_scope_operation');
         return this.transaction(async tx => {
           const snap = await tx.get(this.control);
           if (snap.exists) refuse('firestore_control_already_exists');
@@ -2227,6 +2237,8 @@ export class Store {
           refuse('firestore_control_binding_invalid');
         return this.transaction(async tx => {
           const control = (await tx.get(this.control)).data(); this.fence(control);
+          if (Object.hasOwn(value, 'native_contact_lookup') && valueHash(value.native_contact_lookup ?? null) !== valueHash(control.native_contact_lookup ?? null))
+            refuse('native_contact_requires_scope_operation');
           // Only paid_expansion_set, site_universe_set, outreach_ready_set and screen_admission_set write their owner sections;
           // a full replace keeps them.
           if (Object.hasOwn(value, 'paid_expansion') && valueHash(value.paid_expansion ?? null) !== valueHash(control.paid_expansion ?? null))
@@ -2240,11 +2252,13 @@ export class Store {
           if (Object.hasOwn(value, 'team_universe') && valueHash(value.team_universe ?? null) !== valueHash(control.team_universe ?? null)) refuse('team_universe_requires_pin_operation');
           const replacement = {...value}; delete replacement.team_universe; delete replacement.paid_expansion; delete replacement.site_universe; delete replacement.outreach_ready;
           delete replacement.screen_admission;
+          delete replacement.native_contact_lookup;
           tx.set(this.control, {...replacement, cleanup_observation_required:control.cleanup_observation_required===true,
             lease: control.lease, ...(control.team_universe ? {team_universe: control.team_universe} : {}), ...(control.paid_expansion ? {paid_expansion: control.paid_expansion} : {}),
             ...(control.site_universe ? {site_universe: control.site_universe} : {}),
             ...(control.outreach_ready ? {outreach_ready: control.outreach_ready} : {}),
-            ...(control.screen_admission ? {screen_admission: control.screen_admission} : {})}); return true;
+            ...(control.screen_admission ? {screen_admission: control.screen_admission} : {}),
+            ...(control.native_contact_lookup ? {native_contact_lookup: control.native_contact_lookup} : {})}); return true;
         });
       }
       case 'acquire': return this.acquire(request.scope ?? null);

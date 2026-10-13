@@ -657,3 +657,52 @@ Only the next run's duration and QA reserve change; existing rows keep their
 original deadlines. It neither starts a provider nor changes the paid expansion
 allowance, model/search budget, schedule, credentials or sending settings. The
 current intended release setting is 60 minutes total with 15 minutes reserved for QA.
+
+### Native FullEnrich contact lookup
+
+`native_contact_lookup` is absent/disabled by default. It adapts completed native
+research candidates and their exact QA assessments/tool-result bytes to the
+existing contact lookup rules. Unknown fit, workflow, floor currentness and
+interest stay recorded questions; neither a lookup nor its `complete` status
+promotes a lead, authorizes a draft recipient or authorizes a send. Existing
+communications qualification, suppression, recipient and duplicate checks
+remain required.
+
+The private `native_contact_prepare` operation (operator
+`operators/native-contact-lookup.py prepare --date YYYY-MM-DD`) runs under the
+existing release lease and prepares unpaid, immutable evidence inputs. It
+selects operator/site/task source pages before contact pages so the bounded
+batch cannot drop the task proof. These are native receipts; no Parallel run or
+site-screen provider receipt is invented.
+
+Only `native_contact_scope_set`, fenced by the existing release/communications
+lap controls, can change the new owner section. Generic `configure` preserves
+it. An enabled `blueprint.native-contact-lookup-control.v1` names `fullenrich`,
+resource `fullenrich_work_email`, an actual `approval_reference`, exact
+`input_ids` (at most three), authorized `operations` (`work_email` and optionally
+`person_search`), `effective_from`, `expires_at`, explicit `max_calls` and
+`max_credit_quarters`. Its `scope_id` is the Python canonical SHA-256 of those
+fields excluding `scope_id`. These fields specify a grant; this documentation,
+code merge, provider balance or an Exa/FindAll grant does not issue one. Disable
+with exactly `{"enabled": false}`. `set-scope` requires the expected prior scope
+ID; it cannot silently replace another grant.
+
+The already-bound worker `FULLENRICH_API_KEY` stays on the host; none enters the
+hosted research sandbox, result records or status logs. No key is installed or
+transferred by this feature. The original operator's worker refusal remains.
+Before POST, the host rechecks the lease, exact input/source receipts, current
+scope, idle research and reserved allowance, and consumes a one-use dispatch
+claim. The adapter then requires the canonical opaque paid-resource grant with
+that allocation binding. Search reserves up to 1.25 credits (five people);
+work-email enrichment reserves one credit. Conservative reservations are never
+refunded automatically. An uncertain intent is never resubmitted, even under a
+later daily input or replacement scope.
+
+`nativeContactCalls/{company-or-person-call-hash}` retains the original lookup
+journal events globally across dates. Later runs re-fold and requalify these
+results against the new site's retained evidence, reuse known/uncertain call
+identities and GET an already-created enrichment. Sanitized lookup results and
+native provenance are retained on `nativeContactInputs`; raw rejected people,
+personal emails and phones are not lookup journal content. An enabled scope is
+observed by the existing daily scheduler under its normal worker lease. No new
+cron, inference session, sending path or timer is introduced.

@@ -21,6 +21,9 @@ LIMIT_FIELDS = {'max_total_spend_usd', 'max_paid_attempts'}
 # charged against the same per-attempt caps.
 MAX_EXTENDED_PAID_ATTEMPTS = 100
 ATTEMPT_GRANT_FIELD = 'execution_budget_extension_digest'
+# A grant issued on the host says so; intake-API grants carry neither field.
+HOST_OPERATOR_CHANNEL = 'host_operator'
+OPERATOR_FIELDS = {'issuer_channel', 'operator_uid'}
 
 
 def _require(condition: bool, code: str) -> None:
@@ -58,7 +61,10 @@ def _chain(directory: Path, intent: Mapping[str, Any]) -> tuple[dict[str, Any], 
             _safe(path)
             _require(path.is_file() and path.suffix == '.json', 'record_invalid')
             row = intake._read(path, 'extension_digest')
-            _require(set(row) == {'schema_version', 'scope', 'intent_id', 'intent_digest', 'owner',
+            operator = OPERATOR_FIELDS <= set(row)
+            _require(not operator or (row['issuer_channel'] == HOST_OPERATOR_CHANNEL
+                     and type(row['operator_uid']) is int and row['operator_uid'] >= 0), 'record_invalid')
+            _require(set(row) - (OPERATOR_FIELDS if operator else set()) == {'schema_version', 'scope', 'intent_id', 'intent_digest', 'owner',
                 'authenticated_issuer', 'authorization_reference', 'original_limits', 'prior_limits',
                 'limits', 'unchanged_execution_bounds', 'sequence', 'predecessor_digest',
                 'issued_at_epoch', 'provider_mutation_performed', 'historical_reservations_released',

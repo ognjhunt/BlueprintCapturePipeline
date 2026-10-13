@@ -239,6 +239,22 @@ def test_articulated_stage_quote_is_admitted_only_under_a_scene_ceiling_that_cov
     assert request["spend"]["hard_cap_usd"] == 31.0
 
 
+def test_owner_grant_admits_the_articulated_quote_above_the_consented_ceiling(tmp_path, monkeypatch):
+    """$20 consent plus an owner-approved $35 grant admits the one $31 build."""
+    from blueprint_pipeline.task_evaluation_scene_execution_budget import ACK, extend_scene_execution_budget
+    kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20)
+    intent = json.loads(Path(kwargs["task"]["scene_intent_authority"]["path"]).read_text())
+    extend_scene_execution_budget(queue_root=tmp_path / "intents", intent_id=accepted["intent_id"],
+        intent_digest=accepted["intent_digest"], owner=intent["request"]["owner"],
+        authenticated_client="blueprint-webapp", trusted_clients={"blueprint-webapp"}, max_total_spend_usd=35,
+        max_paid_attempts=intent["request"]["execution"]["max_paid_attempts"],
+        authorization_reference="owner_approval:test", ack=ACK)
+    materialize_website_submission(**kwargs)
+    request = json.loads((kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())
+    assert request["spend"]["hard_cap_usd"] == 31.0
+    assert intent["request"]["execution"]["max_total_spend_usd"] == 20
+
+
 def test_development_drawer_fixture_retains_articulated_success_and_identity(tmp_path, monkeypatch):
     from blueprint_pipeline.website_development_test import DRAWER_LABEL
     kwargs, _ = setup(tmp_path, monkeypatch, development=True, articulated=True)

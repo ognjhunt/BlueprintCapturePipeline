@@ -540,3 +540,30 @@ def test_the_served_catalog_demotes_a_profile_this_host_cannot_run(tmp_path, mon
         for blocker in rows["foreign-inputs-profile"]["execution_admission"]["blockers"]
     )
     assert rows[resident["profile_id"]]["execution_admission"]["live_enabled"] is True
+
+
+def test_the_startup_report_resolves_each_bound_path_once(tmp_path, monkeypatch):
+    """Each guard start resolved all 26,015 bound inputs of the published profiles one by
+    one, though they name only 3,784 distinct files."""
+    from blueprint_pipeline import host_resident_launch_inputs as residency
+
+    control_plane = tmp_path / "var-lib-blueprint"
+    job = control_plane / "job"
+    job.mkdir(parents=True)
+    profile_dir = control_plane / "profiles"
+    profile_dir.mkdir()
+    for index in range(3):
+        profile = _profile(bundle_path=str(job / "bundle.zip"), receipt_path=str(job / "receipt.json"))
+        profile["profile_id"] = f"live-{index}"
+        (profile_dir / f"live-{index}.json").write_text(json.dumps(profile), encoding="utf-8")
+    resolved: list[str] = []
+    real = residency.path_is_host_resident
+    monkeypatch.setattr(
+        residency, "path_is_host_resident", lambda path, roots: resolved.append(path) or real(path, roots)
+    )
+
+    report = published_profile_residency_report(profile_dir, roots=[control_plane])
+
+    assert report["status"] == "ready"
+    assert sorted(resolved) == [str(job / "bundle.zip"), str(job / "receipt.json")]
+

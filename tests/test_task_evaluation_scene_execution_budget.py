@@ -83,15 +83,25 @@ def test_actual_eleven_holds_counted_with_100_dollar_18_attempt_extension(tmp_pa
     assert intent['request']['execution'] == payload['execution']
 
 
-def test_original_exposure_and_per_action_limit_are_not_reset(tmp_path):
+def test_original_exposure_is_not_reset_and_the_grant_bounds_each_action(tmp_path):
     owner = stage(tmp_path)
     attempt(tmp_path, owner)
     extend(tmp_path, owner, max_total_spend_usd=6, max_paid_attempts=4)
     attempt(tmp_path, owner, 'a2', cost=4, now=201)
     with pytest.raises(ValueError, match='spend_cap_exhausted'):
         attempt(tmp_path, owner, 'a3', cost=1, now=201)
-    with pytest.raises(ValueError, match='attempt_spend_exceeds_original_limit'):
-        attempt(tmp_path, owner, 'a3', cost=5, now=201)
+    with pytest.raises(ValueError, match='attempt_spend_exceeds_authorized_limit'):
+        attempt(tmp_path, owner, 'a3', cost=7, now=201)
+
+
+def test_owner_grant_admits_one_action_above_the_original_ceiling(tmp_path):
+    # The owner approved a higher scene budget so one build quoted above the
+    # original ceiling could run; the grant, not the consent, bounds it.
+    owner = stage(tmp_path)
+    with pytest.raises(ValueError, match='attempt_spend_exceeds_authorized_limit'):
+        attempt(tmp_path, owner, 'build', cost=5, now=201)
+    extend(tmp_path, owner, max_total_spend_usd=6, max_paid_attempts=2)
+    assert attempt(tmp_path, owner, 'build', cost=5, now=201)['maximum_spend_usd'] == 5
 
 
 def test_explicit_grant_can_extend_an_exhausted_32_attempt_history(tmp_path):
@@ -298,3 +308,45 @@ def test_future_grant_cannot_backdate_a_new_reservation(tmp_path):
     with pytest.raises(ValueError, match='attempt_grant_invalid'):
         attempt(tmp_path, owner, now=199)
     assert not list((tmp_path / owner['intent_id'] / 'attempts').glob('*.json'))
+
+
+def test_operator_command_previews_then_applies_only_an_owner_approved_grant(tmp_path, monkeypatch, capsys):
+    """Dishwasher 2026-10-12: the owner approved $35 for an articulated build quoted at $31."""
+    owner_record = stage(tmp_path, request())
+    directory, intent = loaded(tmp_path, owner_record)
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT', str(tmp_path))
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'webapp')
+    monkeypatch.setattr(budget.time, 'time', lambda: 200)
+    base = ['--intent-id', owner_record['intent_id'], '--owner-user-id', 'u1', '--owner-organization-id', 'org1',
+            '--approved-by', 'u1', '--approval-evidence', 'chat:session-1:2026-10-12T14:45Z',
+            '--max-total-spend-usd', '35', '--max-paid-attempts', '2']
+    assert budget.main(base) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview['mode'] == 'preview' and preview['requested']['max_total_spend_usd'] == 35
+    assert not (directory / budget.DIRECTORY).exists()
+    for refused in (['--apply', '--ack', budget.ACK], ['--apply', '--ack', 'sha256:' + '0' * 64]):
+        with pytest.raises(ValueError, match='not_authorized'):
+            budget.main(base + refused)
+    with pytest.raises(ValueError, match='not_authorized'):
+        budget.main(['--intent-id', '../x', *base[2:]])
+    with pytest.raises(ValueError, match='owner_or_revocation_mismatch'):
+        budget.main([*base[:7], 'someone-else', *base[8:]])
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'other-client')
+    with pytest.raises(ValueError, match='not_authorized'):
+        budget.main(base + ['--apply', '--ack', preview['apply_ack']])
+    assert not (directory / budget.DIRECTORY).exists()
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'webapp')
+    assert budget.main(base + ['--apply', '--ack', preview['apply_ack']]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied['limits'] == {'max_total_spend_usd': 35, 'max_paid_attempts': 2}
+    assert applied['issuer_channel'] == 'host_operator' and applied['operator_uid'] == os.geteuid()
+    assert 'approved_by=u1;evidence=chat:session-1' in applied['authorization_reference']
+    assert budget.effective_execution_budget(directory, intent)['max_total_spend_usd'] == 35
+    record = Path(applied['record_path'])
+    forged = intake._seal({**{k: v for k, v in applied.items() if k not in ('status', 'record_path', 'mode')},
+                           'issuer_channel': 'intake_api'}, 'extension_digest')
+    record.chmod(0o600)
+    record.unlink()
+    (record.parent / (forged['extension_digest'].removeprefix('sha256:') + '.json')).write_text(json.dumps(forged))
+    with pytest.raises(ValueError, match='record_invalid'):
+        budget.effective_execution_budget(directory, intent)

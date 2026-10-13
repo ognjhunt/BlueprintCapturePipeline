@@ -11,14 +11,30 @@ from PIL import Image
 def _runner_module():
     scripts = Path(__file__).resolve().parents[1] / "scripts"
     sys.path.insert(0, str(scripts))
-    spec = importlib.util.spec_from_file_location(
-        "adp_aura_interiorgs_provider_runner_under_test",
-        scripts / "adp_aura_interiorgs_provider_runner.py",
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "adp_aura_interiorgs_provider_runner_under_test",
+            scripts / "adp_aura_interiorgs_provider_runner.py",
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        # Left first on sys.path, scripts/ shadows every later bare import of a
+        # same-named package in this process (scripts/operator_door.py hid the door).
+        sys.path.remove(str(scripts))
     return module
+
+
+def test_loading_the_runner_leaves_sys_path_as_it_was() -> None:
+    """2026-10-12 promotion lane 38272358269, shard 10: this helper left scripts/ first
+    on sys.path, so scripts/operator_door.py shadowed the deploy/operator-door package
+    and 14 scene-retirement bridge tests in the same shard failed to import it."""
+    before = list(sys.path)
+
+    _runner_module()
+
+    assert sys.path == before
 
 
 def test_aura_runner_retains_complete_intermediate_frame_set(tmp_path: Path) -> None:

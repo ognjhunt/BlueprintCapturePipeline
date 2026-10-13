@@ -3671,6 +3671,30 @@ def test_immutable_input_digest_is_reused_by_stat_identity_and_fails_closed_on_c
         "launch_profile_immutable_input_digest_mismatch:bundle"]
 
 
+@pytest.mark.usefixtures("_single_threaded_verdict_persistence")
+def test_a_small_immutable_input_is_hashed_without_a_stored_verdict(tmp_path, monkeypatch):
+    """Below MINIMUM_BYTES the verdict store re-hashes a file on every lookup anyway, so the
+    stored verdict only added an entry read, a parse and a code proof to that same hash."""
+    from blueprint_pipeline import validation_verdict_store
+    from blueprint_pipeline.launch_profile_immutable_inputs import immutable_input_digest
+
+    root = tmp_path / "verdicts"
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(root))
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text('{"kind": "receipt"}')
+
+    def no_store(**_kwargs):
+        raise AssertionError("a small input consulted the verdict store")
+
+    monkeypatch.setattr(validation_verdict_store, "lookup_entry", no_store)
+    monkeypatch.setattr(validation_verdict_store, "store", no_store)
+
+    assert immutable_input_digest(receipt) == "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+    receipt.write_text('{"kind": "changed"}')
+    assert immutable_input_digest(receipt) == "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+    assert not root.exists()
+
+
 def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypatch):
     from blueprint_pipeline import control_plane_registered_reference_gate as gate
     from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget

@@ -51,6 +51,9 @@ CLASSIFIER_REVISION = 3
 # classifier receipts for free. 3: frames a part extent was measured from are seeded.
 SELECTION_REVISION = 3
 CLASSIFIER_MAX_OUTPUT_TOKENS = 8192
+# A JSON syntax error gets one text-only repair turn in the same call, never a
+# receipt left uncertain or a second paid classification.
+JSON_REPAIR_TURNS = 1
 # Classification needs to recognize parts, not read fine texture; the builder
 # still receives the full-resolution frames. Keeps a 12-image request inline.
 CLASSIFIER_LONG_SIDE = 2048
@@ -379,6 +382,28 @@ def validate_classification(value: Any, *, frame_ids: Sequence[str], articulatio
             "frames": frames}
 
 
+def _json_answer(text: str, repair: Callable[[str], str]) -> tuple[Any, dict[str, Any] | None]:
+    """Parse a model answer; on a syntax error ask once for the same content as valid JSON.
+
+    A still-unparseable answer is retained as ``None``, so validation records it
+    as a typed invalid classification instead of raising inside the paid call.
+    """
+    try:
+        return json.loads(text), None
+    except ValueError as exc:
+        error = str(exc)
+    record = {"turns": JSON_REPAIR_TURNS, "failed_check": error}
+    try:
+        return json.loads(repair(error)), {**record, "repaired": True}
+    except ValueError as again:
+        return None, {**record, "repaired": False, "repair_error": str(again)[:200]}
+
+
+def _json_repair_prompt(text: str, error: str) -> str:
+    return (f"Your previous answer below is not valid JSON ({error}). Return exactly the same content as valid "
+            f"JSON. Do not add, remove or change any value.\n\n{text}")
+
+
 def classify_frames(*, target_id: str, assembly_label: str, task_part: str, articulation_kind: str,
                     frames: Sequence[Mapping[str, Any]], task_context: Mapping[str, Any],
                     output_root: Path) -> dict[str, Any]:
@@ -398,6 +423,7 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
         prompt = (PROMPT + (REVOLUTE_PROMPT if articulation_kind == "revolute" else PRISMATIC_PROMPT)
                   + RESPONSE_SHAPE + json.dumps(data, sort_keys=True))
         binding = {"kind": "website_assembly_coverage_classification", "revision": CLASSIFIER_REVISION,
+                   "json_repair_turns": JSON_REPAIR_TURNS,
                    "model": CLASSIFIER_MODEL, "prompt": prompt, "target_id": target_id,
                    "images": [{"frame_id": row["frame_id"], "upright_sha256": row["sha256"],
                                "classifier_copy_sha256": "sha256:" + hashlib.sha256(image).hexdigest()}
@@ -419,14 +445,29 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
                     config=types.GenerateContentConfig(response_mime_type="application/json",
                                                        max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS,
                                                        media_resolution="MEDIA_RESOLUTION_HIGH"))
-            if not response.candidates or response.candidates[0].finish_reason != "STOP":
-                raise ValueError("website_assembly_coverage_classification_incomplete")
-            # Retain malformed answers too; a retry must not buy another answer.
-            return {"classification": json.loads(response.text)}
+                reason = response.candidates[0].finish_reason if response.candidates else None
+                if reason != "STOP":
+                    # Retained as an invalid classification, never left uncertain or bought again.
+                    return {"classification": None, "finish_reason": str(getattr(reason, "value", reason))}
+
+                def repair(error: str) -> str:
+                    fixed = client.models.generate_content(model=CLASSIFIER_MODEL,
+                        contents=[_json_repair_prompt(response.text, error)],
+                        config=types.GenerateContentConfig(response_mime_type="application/json",
+                                                           max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS))
+                    if not fixed.candidates or fixed.candidates[0].finish_reason != "STOP":
+                        raise ValueError("website_assembly_coverage_json_repair_incomplete")
+                    return fixed.text
+                # Retain malformed answers too; a retry must not buy another answer.
+                value, json_repair = _json_answer(response.text, repair)
+            return {"classification": value, **({"json_repair": json_repair} if json_repair else {})}
 
         result = retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
             maximum_cost_usd=gemini_quote(model=CLASSIFIER_MODEL, input_tokens=len(prompt.encode()) + 3168 * len(batch),
-                                         max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS),
+                                         max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS)
+            # The repair turn resends only the previous answer, never the images.
+            + JSON_REPAIR_TURNS * gemini_quote(model=CLASSIFIER_MODEL, input_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS + 1024,
+                                               max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS),
             preflight=preflight, invoke=invoke)
         receipts.append({"binding_digest": canonical_digest(binding), "result_digest": canonical_digest(result)})
         try:
