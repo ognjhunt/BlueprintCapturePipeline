@@ -19,6 +19,7 @@ from urllib.parse import unquote, urlparse
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .task_object_authoring_contracts import AssetAuthoringError as AssetAuthoringError
 from .task_evaluation_scene_configuration_runtime_budget import MAX_ASTRA_AUTHORING_SPEND_USD as MAX_COST_USD
 from .task_evaluation_supervisor.agents_sdk import (
     AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker,
@@ -31,10 +32,6 @@ from .task_object_physical_property_review import (
 
 MODEL = 'gpt-6-astra'
 MAX_AUTHORING_ROUNDS = 2
-
-
-class AssetAuthoringError(RuntimeError):
-    pass
 
 
 class StrictModel(BaseModel):

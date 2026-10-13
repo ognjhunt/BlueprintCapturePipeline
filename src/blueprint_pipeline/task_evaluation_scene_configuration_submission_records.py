@@ -9,6 +9,8 @@ records are shaped exactly as the deployed validators require.
 
 from __future__ import annotations
 
+from .task_object_authoring_backend import AUTHORING_BACKENDS, backend_configuration, default_backend
+
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -125,6 +127,12 @@ ARTICULATED_STATIC_CHECKS = {
     "no_external_unpinned_dependencies": True,
     "no_scripts_or_credentials": True,
 }
+ARTISAN_ARTICULATED_STATIC_CHECKS = {
+    **{key: value for key, value in ARTICULATED_STATIC_CHECKS.items()
+       if key not in {"non_target_joints_fixed", "articulated_body_interior_cavity"}},
+    "non_target_joints_unactuated": True,
+    "declared_interior_cavities_clear_on_collision_geometry": True,
+}
 ARTICULATED_NATIVE_IMPORT_CHECKS = {
     "stage_import": True,
     "articulation_root_enabled": True,
@@ -186,7 +194,8 @@ def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost
     if authoring_provider not in {"openai", "anthropic"} or (authoring_provider == "anthropic"
             and (authoring_backend != "astra_cad_blender_v1" or requires_artifixer)):
         raise ValueError("scene_configuration_authoring_provider_invalid")
-    profile = scene_configuration_budget_profile(authoring_backend)
+    profile = scene_configuration_budget_profile(authoring_backend,
+        authoring_max_cost_usd=authoring_max_cost_usd)
     caps = profile.stage_caps(authoring_max_cost_usd)
     if not requires_artifixer:
         caps["artifixer_semantic_teacher"] = 0.0
@@ -520,9 +529,10 @@ def stage_three_configuration(
     source_max: Sequence[float],
     dimension_tolerance: float,
     physics_bounds: Mapping[str, Sequence[float]],
-    authoring_backend: str = "astra_cad_blender_v1",
+    authoring_backend: str | None = None,
 ) -> dict[str, Any]:
-    if authoring_backend not in {"content_agents", "astra_cad_blender_v1"}:
+    authoring_backend = authoring_backend or default_backend()
+    if authoring_backend not in AUTHORING_BACKENDS:
         raise ValueError("replacement_authoring_backend_invalid")
     return {
         "schema_version": "rigid_replacement_authoring_configuration.v1",
@@ -532,6 +542,7 @@ def stage_three_configuration(
         "source_object_identity": f"publisher-instance-{source_instance_id}",
         "authoring_target": authoring_target,
         "authoring_backend": authoring_backend,
+        **backend_configuration(authoring_backend),
         "appearance_inputs": "digest_bound_derived_views_from_stage_1_only",
         "geometry_support": "publisher_metric_bounds_and_exact_SAGE_target_bounds",
         "metric_envelope": {
@@ -572,12 +583,15 @@ def stage_three_configuration(
 def stage_four_configuration(
     *, replacement_identity: Mapping[str, Any], dimension_tolerance: float,
     articulated: bool = False,
+    authoring_backend: str | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": "replacement_static_qualification_configuration.v1",
         "status": PENDING_STATUS,
         "replacement_identity": dict(replacement_identity),
-        "required_checks": dict(ARTICULATED_STATIC_CHECKS if articulated else STATIC_CHECKS),
+        "required_checks": dict(ARTISAN_ARTICULATED_STATIC_CHECKS if articulated and authoring_backend == "artisan_v1"
+                                else ARTICULATED_STATIC_CHECKS if articulated else STATIC_CHECKS),
+        **({"authoring_backend": authoring_backend} if authoring_backend == "artisan_v1" else {}),
         **({"asset_kind": "articulated_assembly"} if articulated else {}),
         "center_of_mass_must_lie_inside_collision_bounds": True,
         "dimension_tolerance_relative": float(dimension_tolerance),
@@ -800,7 +814,7 @@ def articulated_stage_three_configuration(
     dimension_tolerance: float,
     physics_bounds: Mapping[str, Sequence[float]],
     mechanism: Mapping[str, Any],
-    authoring_backend: str = "astra_cad_blender_v1",
+    authoring_backend: str | None = None,
 ) -> dict[str, Any]:
     """Stage-3 configuration for a multi-link assembly with one task joint.
 
@@ -810,7 +824,8 @@ def articulated_stage_three_configuration(
     are generated candidate geometry and must be tagged as such.
     """
 
-    if authoring_backend not in {"content_agents", "astra_cad_blender_v1"}:
+    authoring_backend = authoring_backend or default_backend()
+    if authoring_backend not in AUTHORING_BACKENDS:
         raise ValueError("replacement_authoring_backend_invalid")
     joint_type = str(mechanism.get("joint_type") or "")
     if joint_type not in {"prismatic", "revolute"}:
@@ -827,6 +842,7 @@ def articulated_stage_three_configuration(
         "source_object_identity": f"publisher-instance-{source_instance_id}",
         "authoring_target": authoring_target,
         "authoring_backend": authoring_backend,
+        **backend_configuration(authoring_backend),
         "appearance_inputs": "digest_bound_derived_views_from_stage_1_only",
         "geometry_support": "publisher_metric_bounds_and_exact_SAGE_target_bounds",
         "metric_envelope": {
@@ -848,7 +864,7 @@ def articulated_stage_three_configuration(
             "travel_authority": str(mechanism.get("travel_authority") or "object_prior_estimate"),
             "joint_limits": [0.0, travel],
             "closed_reset_position": 0.0,
-            "non_task_parts": "fixed_joints_closed",
+            "non_task_parts": "unactuated_with_explicit_roles" if authoring_backend == "artisan_v1" else "fixed_joints_closed",
             "lock_status": str(mechanism.get("lock_status") or "unknown"),
             "passive_dynamics": {
                 "task_joint_drive": "none",
@@ -865,7 +881,7 @@ def articulated_stage_three_configuration(
             "articulation_root": True,
             "single_articulation_root": True,
             "task_joint_count": 1,
-            "non_task_joints_fixed": True,
+            **({"non_task_joints_unactuated": True} if authoring_backend == "artisan_v1" else {"non_task_joints_fixed": True}),
             "task_part_handle_required": True,
             "visual_mesh_separate_from_collision": True,
             "generated_interior_labelled": True,

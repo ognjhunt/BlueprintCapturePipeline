@@ -73,6 +73,7 @@ _REFERENCE_SUFFIXES = ("_FILE", "_ID", "_PATH", "_DIR", "_ROOT")
 _MARKER_NAME = "completed_stage_checkpoint.json"
 _TRANSPORT_NAME = "cpu_prestage_transport.json"
 _BINDING_NAME = "astra_same_run_resume_binding.json"
+_ARTISAN_BINDING_NAME = "artisan_same_run_resume_binding.json"
 
 
 class CpuPrestageError(RuntimeError):
@@ -139,9 +140,9 @@ def prestage_stage_limit(bundle_receipt: Mapping[str, Any], environment: Mapping
     _require(limit in ids, "stage_limit_invalid")
     for stage in stages[: ids.index(limit) + 1]:
         _require(str(stage["adapter"]["id"]) in CPU_ADAPTERS, "stage_limit_includes_gpu_stage")
-    # Only the Astra backend seals same-root checkpoints the paid run adopts.
+    # Both explicit authoring backends seal the same-root checkpoint protocol.
     manifest = _bundle_manifest(Path(str(bundle_receipt["bundle_path"])))
-    _require(manifest.get("replacement_authoring_backend") == "astra_cad_blender_v1", "backend_not_resumable")
+    _require(manifest.get("replacement_authoring_backend") in {"astra_cad_blender_v1", "artisan_v1"}, "backend_not_resumable")
     return limit
 
 
@@ -186,7 +187,7 @@ def validate_stage_prefix_capsule(archive: Path, *, expected_stage_ids: list[str
     for name in names:
         parts = name.split("/")
         _require(parts[0] != "stages" or len(parts) <= 2 or parts[1] in completed, "capsule_member_outside_prefix")
-    _require(f"stages/{_BINDING_NAME}" in names
+    _require(sum(f"stages/{name}" in names for name in (_BINDING_NAME, _ARTISAN_BINDING_NAME)) == 1
              and all(f"stages/{stage_id}/{_MARKER_NAME}" in names for stage_id in ids), "capsule_prefix_incomplete")
     return {**marker, "transport": transport}
 
@@ -385,8 +386,9 @@ def prepare_stage_prefix_before_gpu(
                 expected_ids = [str(row["stage_id"]) for row in chain.get("stage_results") or []]
                 _require(bool(expected_ids) and expected_ids[-1] == stage_limit
                          and len(expected_ids) == int(chain.get("stage_count") or 0), "prefix_results_invalid")
-                binding = _json(output / "stages" / _BINDING_NAME)
-                _require(binding.get("schema_version") == "astra_split_stage_resume_binding.v1"
+                artisan = _bundle_manifest(Path(str(bundle_receipt["bundle_path"]))).get("replacement_authoring_backend") == "artisan_v1"
+                binding = _json(output / "stages" / (_ARTISAN_BINDING_NAME if artisan else _BINDING_NAME))
+                _require(binding.get("schema_version") == ("artisan_split_stage_resume_binding.v1" if artisan else "astra_split_stage_resume_binding.v1")
                          and binding.get("output_root") == str(output / "stages")
                          and binding.get("prefix_stage_limit") == stage_limit
                          and binding.get("parent_deadline_epoch") == deadline, "prefix_binding_invalid")

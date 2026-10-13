@@ -38,6 +38,11 @@ def _python_contract() -> dict[str, Any]:
 
 def declared_python_profile(toolchain_root: str | Path) -> str:
     """Select the closed wheel profile from the already sealed component manifest."""
+    from .task_evaluation_scene_configuration_artisan_runtime import MANIFEST, validate_artisan_runtime
+    package = Path(toolchain_root) / 'components/content_agents_rigid_replacement/package'
+    if (package / MANIFEST).exists():
+        validate_artisan_runtime(package)
+        return 'artisan_source_validation'
     path = Path(toolchain_root) / 'components/content_agents_rigid_replacement/package' / MANIFEST_NAME
     if not path.exists():
         return 'base'

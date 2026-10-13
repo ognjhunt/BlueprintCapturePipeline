@@ -216,7 +216,7 @@ def main() -> int:
     parser.add_argument("--artifixer-root", required=True)
     parser.add_argument("--vgg16-weights-path", required=True)
     parser.add_argument("--output-root", required=True)
-    parser.add_argument("--python-runtime-profile", choices=("base", "astra_asset_authoring"), default="base")
+    parser.add_argument("--python-runtime-profile", choices=("base", "astra_asset_authoring", "artisan_source_validation"), default="base")
     args = parser.parse_args()
     value = build_artifixer_scene_configuration_component(
         repository_root=args.repository_root,

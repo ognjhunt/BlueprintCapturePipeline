@@ -1,0 +1,185 @@
+--- a/pipeline/compiler.py
++++ b/pipeline/compiler.py
+@@ -385,6 +385,9 @@
+     *,
+     sdk_package: str = "sdk",
+ ) -> dict[str, Any]:
++    from blueprint_pipeline.task_object_artisan_hooks import enabled, load_model_globals as confined_load
++    if enabled():
++        return confined_load(script_path, sdk_package=sdk_package)
+     normalize_sdk_package(sdk_package)
+     repo_root = Path(__file__).resolve().parents[1]
+     script_path = script_path.resolve()
+--- a/sdk/runtime/runtime.py
++++ b/sdk/runtime/runtime.py
+@@ -1961,6 +1961,10 @@
+     sdk_package: str = "sdk",
+     preserve_existing_meshes: bool = False,
+ ) -> dict[str, Any]:
++    from blueprint_pipeline.task_object_artisan_hooks import enabled, run_qa_tests as confined_qa
++    if enabled():
++        return confined_qa(model_path, test_code, sdk_package=sdk_package,
++                           preserve_existing_meshes=preserve_existing_meshes)
+     import importlib
+ 
+     from pipeline.compiler import load_model_globals
+--- a/sdk/runtime/blender_author.py
++++ b/sdk/runtime/blender_author.py
+@@ -61,6 +61,10 @@
+     visual_budget: int = DEFAULT_VISUAL_BUDGET,
+     timeout: int = 300,
+ ) -> dict[str, Any]:
++    from blueprint_pipeline.task_object_artisan_hooks import enabled, run_blender_script
++    if enabled():
++        return run_blender_script(script_path, out_name, workspace,
++                                  visual_budget=visual_budget, timeout=timeout)
+     from pipeline.blender.runtime import blender_bin
+ 
+     script_path = Path(script_path)
+--- a/pipeline/harness_sdk.py
++++ b/pipeline/harness_sdk.py
+@@ -10,6 +10,7 @@
+ import re
+ import shutil
+ import subprocess
++from blueprint_pipeline.task_object_artisan_hooks import sandbox_subprocess_run
+ import sys
+ import time
+ from collections.abc import Callable
+@@ -1687,7 +1688,7 @@
+             }
+         )
+         try:
+-            proc = subprocess.run(
++            proc = sandbox_subprocess_run(
+                 [sys.executable, "-m", "sdk.runtime.probe_summary_runner"],
+                 input=request,
+                 capture_output=True,
+@@ -1744,7 +1745,7 @@
+             }
+         )
+         try:
+-            proc = subprocess.run(
++            proc = sandbox_subprocess_run(
+                 [sys.executable, "-m", "pipeline.tools.probe_model.runner"],
+                 input=request,
+                 capture_output=True,
+--- a/pipeline/harness_review.py
++++ b/pipeline/harness_review.py
+@@ -4,6 +4,7 @@
+ import logging
+ import re
+ import subprocess
++from blueprint_pipeline.task_object_artisan_hooks import sandbox_subprocess_run
+ import sys
+ from pathlib import Path
+ from typing import Any
+@@ -763,7 +764,7 @@
+             }
+         )
+         try:
+-            proc = subprocess.run(
++            proc = sandbox_subprocess_run(
+                 [sys.executable, "-m", "pipeline.tools.probe_model.runner"],
+                 input=request,
+                 capture_output=True,
+--- a/sdk/_core/v0/_usd_export.py
++++ b/sdk/_core/v0/_usd_export.py
+@@ -61,7 +61,9 @@
+     robot_path = f"/{robot_name}"
+     robot = UsdGeom.Xform.Define(stage, robot_path)
+     stage.SetDefaultPrim(robot.GetPrim())
+-    UsdPhysics.ArticulationRootAPI.Apply(robot.GetPrim())
++    # A single rigid body is supported by the SDK and needs no fake joint.
++    if compiled_model.articulations:
++        UsdPhysics.ArticulationRootAPI.Apply(robot.GetPrim())
+ 
+     parts_by_name = {p.name: p for p in compiled_model.parts}
+     children_of: dict[str, list[Any]] = {}
+@@ -219,6 +221,11 @@
+ 
+     prim = gprim.GetPrim()
+     if collision:
++        prim.SetCustomDataByKey("blueprint:sourceVisualUid", str(getattr(element, "source_visual_uid", None) or ""))
++    else:
++        prim.SetCustomDataByKey("blueprint:visualUid", str(getattr(element, "visual_uid", None) or ""))
++        prim.SetCustomDataByKey("blueprint:visualName", str(getattr(element, "name", None) or ""))
++    if collision:
+         UsdPhysics.CollisionAPI.Apply(prim)
+         if isinstance(geom, Mesh):
+             mca = UsdPhysics.MeshCollisionAPI.Apply(prim)
+@@ -229,10 +236,11 @@
+             )
+             mca.CreateApproximationAttr(approx)
+     else:
+-        UsdGeom.Gprim(prim).CreatePurposeAttr(UsdGeom.Tokens.guide)
++        UsdGeom.Gprim(prim).CreatePurposeAttr(UsdGeom.Tokens.default_)
+         rgba = _material_rgba(getattr(element, "material", None), ctx.materials_by_name)
+         if rgba is not None:
+             UsdGeom.Gprim(prim).CreateDisplayColorAttr([Gf.Vec3f(*rgba[:3])])
++            UsdGeom.Gprim(prim).CreateDisplayOpacityAttr([float(rgba[3])])
+ 
+ 
+ def _author_mesh_geom(ctx: _Ctx, path: str, geom: Any) -> Any:
+--- a/pipeline/agents/design_harness.py
++++ b/pipeline/agents/design_harness.py
+@@ -2,6 +2,7 @@
+ 
+ import hashlib
+ import json
++import os
+ import logging
+ import time
+ from dataclasses import dataclass, field
+@@ -385,7 +386,8 @@
+             )
+ 
+         joints = bp.get("joints") or []
+-        if not joints:
++        rigid = os.environ.get("BLUEPRINT_ARTISAN_OBJECT_KIND") == "rigid_body" and len(bp.get("parts") or []) == 1
++        if not joints and not rigid:
+             return (
+                 "BLUEPRINT REJECTED: an articulated object needs at least one "
+                 "moving joint (revolute/continuous/prismatic)."
+@@ -399,7 +401,7 @@
+                 f"Use only {sorted(ALLOWED_JOINT_TYPES)} (decompose multi-DOF into a "
+                 "chain of these 1-DOF joints)."
+             )
+-        if not any(str(j.get("type")) in MOVING_JOINT_TYPES for j in joints):
++        if not rigid and not any(str(j.get("type")) in MOVING_JOINT_TYPES for j in joints):
+             return (
+                 "BLUEPRINT REJECTED: every joint is `fixed`; an articulated object "
+                 f"needs at least one MOVING joint ({sorted(MOVING_JOINT_TYPES)})."
+--- a/pipeline/nodes.py
++++ b/pipeline/nodes.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import json
++import os
+ import logging
+ import shutil
+ import time
+@@ -471,9 +472,9 @@
+         mt = manipulation_tasks_check(bp)
+         if support_error is not None:
+             status, reason = "redo", support_error
+-        elif not joints:
++        elif not joints and not (os.environ.get("BLUEPRINT_ARTISAN_OBJECT_KIND") == "rigid_body" and len(bp.get("parts") or []) == 1):
+             status, reason = "redo", "blueprint has no joints"
+-        elif not any(str(j.get("type")) in MOVING_JOINT_TYPES for j in joints):
++        elif joints and not any(str(j.get("type")) in MOVING_JOINT_TYPES for j in joints):
+             status, reason = "redo", "blueprint has no moving joint (every joint is fixed)"
+         elif not g.passed:
+             status, reason = "redo", g.summary
+--- a/pipeline/run.py
++++ b/pipeline/run.py
+@@ -24,6 +24,8 @@
+ 
+     repo_root = Path(state.repo_root)
+     paths = workspace.ensure(repo_root, state.run_id)
++    from blueprint_pipeline.task_object_artisan_hooks import prepare_workspace
++    prepare_workspace(paths["root"])
+     state.references = workspace.stage_references(
+         repo_root, state.run_id, state.references, prompt=state.prompt
+     )

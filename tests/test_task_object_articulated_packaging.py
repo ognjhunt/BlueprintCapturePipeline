@@ -36,7 +36,8 @@ def configuration():
         scene_id="scene-1", replacement_identity={"id": "website-subject-cab", "version": "v1"},
         source_instance_id="cabinet", authoring_target="three-drawer wood cabinet",
         source_min=[-0.21, -0.275, 0.0], source_max=[0.21, 0.275, 0.62], dimension_tolerance=0.2,
-        physics_bounds=PHYSICS, mechanism=MECHANISM)
+        # The legacy Astra assembly these packaging plans describe; new requests default to ARTISAN.
+        physics_bounds=PHYSICS, mechanism=MECHANISM, authoring_backend="astra_cad_blender_v1")
 
 
 def open_front_shell(dimensions, cavities):

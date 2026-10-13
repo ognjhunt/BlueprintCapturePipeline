@@ -908,6 +908,9 @@ def execute_content_agents_component(
         _required_path(values, _INPUT_ENV),
         code="scene_configuration_content_agents_input_invalid",
     )
+    if (stage_input.get("configuration") or {}).get("authoring_backend") == "artisan_v1":
+        from .task_evaluation_scene_configuration_artisan_driver import execute_artisan_component
+        return execute_artisan_component(environment=values, runner=runner, cost_gate_factory=cost_gate_factory)
     if (stage_input.get("configuration") or {}).get("authoring_backend") == "astra_cad_blender_v1":
         from .task_evaluation_scene_configuration_astra_driver import execute_astra_component
         return execute_astra_component(environment=values, runner=runner, cost_gate_factory=cost_gate_factory)

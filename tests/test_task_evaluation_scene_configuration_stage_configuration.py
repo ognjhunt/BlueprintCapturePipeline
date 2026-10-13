@@ -226,7 +226,7 @@ def test_each_stage_refuses_missing_config_before_provider_mutation(
         )
 
 
-def _articulated_map() -> dict[str, dict]:
+def _articulated_map(*, authoring_backend="astra_cad_blender_v1") -> dict[str, dict]:
     from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
         articulated_stage_three_configuration, stage_five_configuration, stage_four_configuration,
     )
@@ -239,6 +239,7 @@ def _articulated_map() -> dict[str, dict]:
                "restitution_bounds": [0.0, 0.2], "joint_friction_bounds": [1.0, 15.0],
                "joint_damping_bounds": [1.0, 30.0]}
     configurations["stage-3"] = articulated_stage_three_configuration(
+        authoring_backend=authoring_backend,
         scene_id=str(third.get("scene_id") or "scene-1"), replacement_identity=third["replacement_identity"], source_instance_id="cabinet-1",
         authoring_target="three-drawer cabinet", source_min=third["metric_envelope"]["minimum_xyz_m"],
         source_max=third["metric_envelope"]["maximum_xyz_m"],
@@ -248,6 +249,13 @@ def _articulated_map() -> dict[str, dict]:
                                                           dimension_tolerance=0.2, articulated=True)
     configurations["stage-5"] = stage_five_configuration(replacement_identity=third["replacement_identity"], articulated=True)
     return configurations
+
+
+def test_artisan_articulated_contract_admits_explicit_unactuated_joint_roles():
+    configurations = _articulated_map(authoring_backend="artisan_v1")
+    assert configurations["stage-3"]["required_output"]["non_task_joints_unactuated"] is True
+    assert "non_task_joints_fixed" not in configurations["stage-3"]["required_output"]
+    validate_immutable_stage_configurations(envelope=_envelope(), configurations=configurations)
 
 
 def test_articulated_stage_configurations_pass_and_refuse_a_driven_task_joint() -> None:

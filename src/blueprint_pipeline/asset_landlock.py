@@ -29,7 +29,8 @@ def _identity(path):
 
 
 def run_with_landlock(
-    argv, *, roots, write_root, cwd, env, timeout, check, capture_output, text, abi_limit=None
+    argv, *, roots, write_root, cwd, env, timeout, check, capture_output, text, abi_limit=None,
+    write_paths=None,
 ):
     """Start a fresh isolated launcher, avoiding preexec_fn in threaded workers."""
     system = [
@@ -48,12 +49,15 @@ def run_with_landlock(
         if Path(p).exists()
     ]
     read = list(dict.fromkeys(Path(p).resolve() for p in [*system, *roots]))
+    if write_paths is not None:
+        read.append(Path(write_root).resolve())
     policy = {
         "read": [_identity(p) for p in read],
         "write": _identity(write_root),
         "cwd": str(cwd),
         "environment": env,
         "abi_limit": abi_limit,
+        "write_paths": None if write_paths is None else [_identity(p) for p in write_paths],
     }
     python = Path("/usr/bin/python3")
     if not python.is_file():
@@ -167,7 +171,8 @@ def _restrict_files(libc, policy):
     try:
         for record in policy["read"]:
             add(record, read)
-        add(policy["write"], writable)
+        for record in (policy["write_paths"] if policy.get("write_paths") is not None else [policy["write"]]):
+            add(record, writable)
         add(_identity("/dev/null"), (1 << 1) | (1 << 2))
         # Current-process metadata and public CPU/memory facts, not other PIDs.
         for path in (

@@ -17,6 +17,7 @@ from .task_evaluation_launch_preparation_contract import (
     launch_preparation_request_digest, validate_launch_preparation_request,
 )
 from .task_evaluation_scene_configuration_runtime_budget import MAX_ASTRA_AUTHORING_SPEND_USD
+from .task_object_authoring_backend import ARTISAN_BACKEND, frozen_authoring_cap
 from .task_evaluation_scene_configuration_submission_inputs import (
     Staging, checked_file, read, release_inputs, require, sha, slug,
 )
@@ -290,9 +291,13 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         # refused at the former $7 quote, so six more parts were never tried.
         # Owner decision 2026-09-28: quote the stage at the full Astra authoring
         # maximum. The separately signed Claude lane keeps its own $7 ceiling.
+        # An ARTISAN stage quotes exactly the cap its configuration froze; the
+        # stage preflight refuses any other quote.
         "spend": records.spend_block(
             construction["configurations"][2]["authoring_backend"],
-            authoring_max_cost_usd=(None if not articulated else 7.0
+            authoring_max_cost_usd=(frozen_authoring_cap(construction["configurations"][2])
+                if construction["configurations"][2]["authoring_backend"] == ARTISAN_BACKEND
+                else None if not articulated else 7.0
                 if construction["configurations"][2].get("authoring_model_provider") == "anthropic"
                 else MAX_ASTRA_AUTHORING_SPEND_USD),
             requires_artifixer=False,

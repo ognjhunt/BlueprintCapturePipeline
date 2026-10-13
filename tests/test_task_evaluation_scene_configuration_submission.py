@@ -386,7 +386,19 @@ def _staged_references(staging: Path, request: dict, namespace: str) -> dict[str
     return rows
 
 
-def test_scene_and_task_objects_become_one_validated_production_submission(tmp_path: Path) -> None:
+@pytest.mark.parametrize("backend,hard_cap,authoring_cap", [
+    # Switched off (unset): the Astra profile's sanctioned cap. Scene 840938 object 219
+    # (2026-09-15) lost a GPU rental projecting $11.47 against a $5.00 shared quote.
+    ("astra_cad_blender_v1", 36.76, 25.0),
+    # Switched on: a new request freezes the editable ARTISAN pool.
+    ("artisan_v1", 26.76, 15.0),
+])
+def test_scene_and_task_objects_become_one_validated_production_submission(
+        tmp_path: Path, monkeypatch, backend, hard_cap, authoring_cap) -> None:
+    if backend == "artisan_v1":
+        monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", backend)
+    else:
+        monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
     fixture = production_fixture(tmp_path)
     result = _materialize(fixture)
     staging = Path(result["staging_root"])
@@ -395,14 +407,9 @@ def test_scene_and_task_objects_become_one_validated_production_submission(tmp_p
     namespace = result["input_namespace"]
     assert namespace == f"adp-new-scene-book-to-tray-841757-{SHA}-20260904T230000Z"
     assert request["run_mode"] == "scene_configuration"
-    assert request["replacement_authoring_backend"] == "astra_cad_blender_v1"
-    # The astra authoring stage asks for the cap the profile already sanctions, not
-    # the shared default quote. Reservations are worst case, and scene 840938 object
-    # 219 (2026-09-15) lost a GPU rental to `agents_sdk_inference_budget_ceiling_exceeded`
-    # at independent_visual_review, projecting $11.47 against $5.00 while actually
-    # spending $1.744056. The hard cap is a reservation ceiling, not spend.
-    assert request["spend"]["hard_cap_usd"] == 36.76
-    assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 25.0
+    assert request["replacement_authoring_backend"] == backend
+    assert request["spend"]["hard_cap_usd"] == hard_cap
+    assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == authoring_cap
     assert request["expected_production_commit"] == SHA
     assert request["task"]["strategy"] == "pick_and_place"
     references = _staged_references(staging, request, namespace)
@@ -690,7 +697,12 @@ def test_submission_rejects_infeasible_friction_before_staging(tmp_path: Path) -
     assert not fixture["staging_root"].exists()
 
 
-def test_submission_accepts_canonical_friction_ceiling_without_changing_it(tmp_path: Path) -> None:
+@pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
+def test_submission_accepts_canonical_friction_ceiling_without_changing_it(tmp_path: Path, monkeypatch, backend) -> None:
+    if backend == "artisan_v1":
+        monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", backend)
+    else:
+        monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
     fixture = production_fixture(tmp_path)
     task = json.loads(fixture["task_request"].read_text())
     task["subject"]["physics_bounds"]["static_friction_bounds"] = [0.2, 1.0]
@@ -701,7 +713,7 @@ def test_submission_accepts_canonical_friction_ceiling_without_changing_it(tmp_p
                      if stage.get("schema_version") == "rigid_replacement_authoring_configuration.v1")
     assert authoring["required_output"]["static_friction_bounds"] == [0.2, 1.0]
     assert authoring["required_output"]["mass_kg_bounds"] == [0.3, 1.2]
-    assert authoring["authoring_backend"] == "astra_cad_blender_v1"
+    assert authoring["authoring_backend"] == backend
 
 
 def test_submission_preserves_explicit_astra_backend_and_exact_dimensions(tmp_path: Path) -> None:

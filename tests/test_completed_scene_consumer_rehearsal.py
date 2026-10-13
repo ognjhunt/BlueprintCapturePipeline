@@ -180,7 +180,9 @@ def test_completed_upload_reaches_execute_only_dispatch_boundary(tmp_path, monke
 
     if source == "website":
         from tests.test_website_native_submission import prepare_website_construction
-        envelope = prepare_website_construction(tmp_path, monkeypatch, development=True)
+        # Dispatch, not authoring, is under test: keep the Astra route the toolchain fixture seals.
+        envelope = prepare_website_construction(tmp_path, monkeypatch, development=True,
+                                                authoring_backend="astra_cad_blender_v1")
     else:
         envelope, _, _, _, _, _ = _prepare(tmp_path, monkeypatch)
     request = envelope["request"]

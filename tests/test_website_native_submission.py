@@ -17,11 +17,14 @@ from blueprint_pipeline.website_scene_runtime_inputs import prepare_website_runt
 from blueprint_pipeline.website_task_preparation import compile_website_scene_preparation
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_website_native_appearance import inputs
+from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import MAX_PROVIDER_COMPUTE_SPEND_USD
+from blueprint_pipeline.task_object_authoring_backend import new_authoring_budget
 from tests.test_task_evaluation_scene_configuration_submission import production_fixture, SHA
 
 
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
-          max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False):
+          max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False,
+          authoring_backend=None):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
@@ -39,6 +42,9 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     args["spend"]["consent"]["accepted_at_epoch"] = now - 1
     if max_total_spend_usd is not None:
         args["spend"]["max_total_spend_usd"] = max_total_spend_usd
+    if authoring_backend is not None:
+        # New requests default to ARTISAN; legacy lanes name their backend explicitly.
+        args["spend"]["replacement_authoring_backend"] = authoring_backend
     if anthropic:
         terms = "sha256:" + "a" * 64
         args["spend"]["authoring_provider"] = "anthropic"
@@ -90,7 +96,13 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     return kwargs, accepted
 
 
-def test_prepared_capture_materializes_a_publishable_native_request_without_raw_video(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
+def test_prepared_capture_materializes_a_publishable_native_request_without_raw_video(tmp_path, monkeypatch, backend):
+    # Unset, the one builder setting keeps ARTISAN switched off (Astra).
+    if backend == "artisan_v1":
+        monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", backend)
+    else:
+        monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
     kwargs, accepted = setup(tmp_path, monkeypatch)
     preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
     assert "collision_mesh" not in preparation["intake_request"]["source"]
@@ -105,10 +117,12 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
     assert request["scene_intent_digest"] == accepted["intent_digest"]
     caps = request["spend"]["external_service_caps"]["openai"]
+    cap = new_authoring_budget()["maximum_cost_usd"] if backend == "artisan_v1" else 5
+    assert request["replacement_authoring_backend"] == backend
     assert caps["stage_max_cost_usd"] == {"artifixer_semantic_teacher": 0,
-        "artifixer_visual_review": 0, "content_agents": 5}
-    assert caps["maximum_cost_usd"] == 5
-    assert request["spend"]["hard_cap_usd"] == 11
+        "artifixer_visual_review": 0, "content_agents": cap}
+    assert caps["maximum_cost_usd"] == cap
+    assert request["spend"]["hard_cap_usd"] == MAX_PROVIDER_COMPUTE_SPEND_USD + cap
     assert request["scene"]["geometry"]["kind"] == "other_derived"
     assert request["scene"]["rights"]["provider_disclosure_scope"] == "derived_only"
     # Project the website permission fields for compatible consumers. Full
@@ -140,7 +154,12 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     assert "placement_uncertainty_m" in task and task["physical_world_truth_claimed"] is False
 
 
-def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
+def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_path, monkeypatch, backend):
+    if backend == "artisan_v1":
+        monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", backend)
+    else:
+        monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
     kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True)
     preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
     assert preparation["intake_request"]["task"]["strategy"] == "articulated_open_close"
@@ -153,10 +172,12 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
     assert request["scene_intent_digest"] == accepted["intent_digest"]
     task = request["task"]
     assert task["kind"] == "articulated_manipulation" and task["strategy"] == "articulated_open_close"
-    # The whole CAD/Blender stage is quoted as one shared $25 pool for every part.
+    # One stage authors every part: ARTISAN at the cap its configuration froze, Astra at its shared $25 pool.
+    cap = new_authoring_budget()["maximum_cost_usd"] if backend == "artisan_v1" else 25.0
+    assert request["replacement_authoring_backend"] == backend
     assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"] == {
-        "artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0, "content_agents": 25.0}
-    assert request["spend"]["hard_cap_usd"] == 31.0
+        "artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0, "content_agents": cap}
+    assert request["spend"]["hard_cap_usd"] == MAX_PROVIDER_COMPUTE_SPEND_USD + cap
     assert "surface_target" not in task and "destination" not in task
     template = json.loads((root / "configuration/task.json").read_text())
     assert template["schema_version"] == "task_evaluation_articulated_open_close_template.v1"
@@ -172,7 +193,8 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
     stages = [json.loads((root / f"configuration/stage_{i}.json").read_text()) for i in range(3, 6)]
     assert stages[0]["schema_version"] == "articulated_replacement_authoring_configuration.v1"
     assert stages[1]["asset_kind"] == stages[2]["asset_kind"] == "articulated_assembly"
-    assert stages[1]["required_checks"]["non_target_joints_fixed"] is True
+    assert stages[1]["required_checks"]["non_target_joints_unactuated" if backend == "artisan_v1"
+                                         else "non_target_joints_fixed"] is True
     assert stages[2]["required_checks"]["task_joint_drive_forbidden"] is True
     assembly = json.loads((root / "configuration/stage_6.json").read_text())
     assert assembly["replacement"]["asset_kind"] == "articulated_assembly"
@@ -180,7 +202,7 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
 
 
 def test_new_signed_website_drawer_can_quote_anthropic_authoring_without_spend(tmp_path, monkeypatch):
-    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, anthropic=True)
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, anthropic=True, authoring_backend="astra_cad_blender_v1")
     materialize_website_submission(**kwargs)
     root = kwargs["staging_root"]
     request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
@@ -202,7 +224,7 @@ def test_new_signed_website_drawer_can_quote_anthropic_authoring_without_spend(t
 
 
 def test_new_signed_website_drawer_selects_sol_managed_runtime_without_spend(tmp_path, monkeypatch):
-    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, agents_api=True)
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, agents_api=True, authoring_backend="astra_cad_blender_v1")
     materialize_website_submission(**kwargs)
     root = kwargs["staging_root"]
     request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
@@ -228,7 +250,8 @@ def test_articulated_stage_quote_is_admitted_only_under_a_scene_ceiling_that_cov
     )
     assert MAX_ASTRA_AUTHORING_SPEND_USD == 25.0
     assert MAX_PROVIDER_COMPUTE_SPEND_USD + MAX_ASTRA_AUTHORING_SPEND_USD == 31.0
-    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=ceiling)
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=ceiling,
+                      authoring_backend="astra_cad_blender_v1")
     if not admitted:
         with pytest.raises(ValueError, match="website_native_construction_budget_exceeds_authority"):
             materialize_website_submission(**kwargs)
@@ -242,7 +265,8 @@ def test_articulated_stage_quote_is_admitted_only_under_a_scene_ceiling_that_cov
 def test_owner_grant_admits_the_articulated_quote_above_the_consented_ceiling(tmp_path, monkeypatch):
     """$20 consent plus an owner-approved $35 grant admits the one $31 build."""
     from blueprint_pipeline.task_evaluation_scene_execution_budget import ACK, extend_scene_execution_budget
-    kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20)
+    kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20,
+                             authoring_backend="astra_cad_blender_v1")
     intent = json.loads(Path(kwargs["task"]["scene_intent_authority"]["path"]).read_text())
     extend_scene_execution_budget(queue_root=tmp_path / "intents", intent_id=accepted["intent_id"],
         intent_digest=accepted["intent_digest"], owner=intent["request"]["owner"],
@@ -293,7 +317,7 @@ def test_publication_rechecks_owner_revocation(tmp_path, monkeypatch):
         _validated_inventory(kwargs["staging_root"], SHA)
 
 
-def prepare_website_construction(tmp_path, monkeypatch, development):
+def prepare_website_construction(tmp_path, monkeypatch, development, authoring_backend=None):
     import os
     import pwd
     from blueprint_pipeline import task_evaluation_scene_progression as engine
@@ -303,7 +327,7 @@ def prepare_website_construction(tmp_path, monkeypatch, development):
     from blueprint_pipeline.task_evaluation_launch_preparation_queue import ensure_launch_preparation_queue_root
     from blueprint_pipeline.website_scene_dispatch import register_website_preparation
     from tests.test_task_evaluation_scene_configuration_submission_publication import Store
-    kwargs, accepted = setup(tmp_path, monkeypatch, development=development)
+    kwargs, accepted = setup(tmp_path, monkeypatch, development=development, authoring_backend=authoring_backend)
     task = kwargs["task"]
     root = tmp_path / "bindings"
     register_website_preparation(preparation_path=task["preparation"]["path"],

@@ -909,6 +909,8 @@ def _website_owned_configuration(base, monkeypatch, policy):
     args['spend'] = copy.deepcopy(args['spend'])
     args['spend']['expires_at_epoch'] = SCENE_SOURCE_EPOCH + 6 * 24 * 60 * 60
     args['spend']['max_paid_attempts'] = 4
+    # Retirement, not authoring, is under test: keep the Astra route these fixtures seal.
+    args['spend']['replacement_authoring_backend'] = 'astra_cad_blender_v1'
     args['spend']['consent']['accepted_at_epoch'] = SCENE_SOURCE_EPOCH - 1
     collider = Path(args['base_scene']['collision_mesh_path'])
     mesh = trimesh.load(collider, force='mesh')

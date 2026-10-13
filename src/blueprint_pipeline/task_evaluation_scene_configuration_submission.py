@@ -6,6 +6,8 @@ downstream stages. This assembler validates their inputs, not their outcomes.
 
 from __future__ import annotations
 
+from .task_object_authoring_backend import ARTISAN_BACKEND, default_backend, frozen_authoring_cap
+
 import argparse
 import json
 import math
@@ -56,7 +58,7 @@ def _authoring_spend_request(authoring_backend: str) -> float | None:
         scene_configuration_budget_profile,
     )
 
-    if authoring_backend != "astra_cad_blender_v1":
+    if authoring_backend not in {"astra_cad_blender_v1", ARTISAN_BACKEND}:
         return None
     return scene_configuration_budget_profile(authoring_backend).content_agents_maximum
 
@@ -389,8 +391,9 @@ def materialize_scene_configuration_submission(
             source_instance_id=str(task["subject"]["source_instance_id"]),
             authoring_target=task["subject"]["authoring_target"], source_min=lower, source_max=upper,
             dimension_tolerance=tolerance, physics_bounds=task["subject"]["physics_bounds"],
-            authoring_backend=task["subject"].get("authoring_backend", "astra_cad_blender_v1")),
-        records.stage_four_configuration(replacement_identity=replacement, dimension_tolerance=tolerance),
+            authoring_backend=task["subject"].get("authoring_backend") or default_backend()),
+        records.stage_four_configuration(replacement_identity=replacement, dimension_tolerance=tolerance,
+                                         authoring_backend=task["subject"].get("authoring_backend") or default_backend()),
         records.stage_five_configuration(replacement_identity=replacement),
         records.stage_six_configuration(scene_identity=task["scene_identity"], support_plane=support,
                                        start_center=start, bottom_z=lower[2]),
@@ -509,7 +512,8 @@ def materialize_scene_configuration_submission(
         "spend": records.spend_block(
             configs[2].get("authoring_backend", "content_agents"),
             authoring_max_cost_usd=(7.0 if configs[2].get("authoring_model_provider") == "anthropic" else
-                _authoring_spend_request(configs[2].get("authoring_backend", "content_agents"))),
+                (frozen_authoring_cap(configs[2]) if configs[2].get("authoring_backend") == ARTISAN_BACKEND
+                 else _authoring_spend_request(configs[2].get("authoring_backend", "content_agents")))),
             requires_artifixer=configs[2].get("authoring_model_provider") != "anthropic",
             authoring_provider=configs[2].get("authoring_model_provider", "openai"),
         ),

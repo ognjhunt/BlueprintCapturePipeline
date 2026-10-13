@@ -4530,6 +4530,10 @@ def deploy_control_plane_commit(
     content_agents_source_root: str | Path = DEFAULT_CONTENT_AGENTS_SOURCE_ROOT,
     cad_skill_source_root: str | Path = DEFAULT_CAD_SKILL_SOURCE_ROOT,
     astra_blender_archive_path: str | Path | None = BLENDER_INSTALL_ROOT.parent / 'archives' / BLENDER_ARCHIVE_NAME,
+    authoring_backend: str | None = None,
+    artisan_root: str | Path | None = None,
+    artisan_site_packages_root: str | Path | None = None,
+    artisan_blender_root: str | Path | None = None,
     configured_controls_autostart_intent_root: str | Path = (
         DEFAULT_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT
     ),
@@ -4757,13 +4761,14 @@ def deploy_control_plane_commit(
         )
         _mark_stage("unit_sandbox_paths")
         try:
-            cad_skill_sources = provision_production_cad_skill_sources(
-                cad_skill_source_root
-            )
-            cad_sources_by_id = {
-                str(row["id"]): str(row["path"])
-                for row in cad_skill_sources["sources"]
-            }
+            # Unnamed: the one builder setting (Astra until ARTISAN go-live).
+            from blueprint_pipeline.task_object_authoring_backend import default_backend
+            authoring_backend = authoring_backend or default_backend()
+            cad_sources_by_id = {}
+            cad_skill_sources = {"status": "not_required_for_artisan", "sources": []}
+            if authoring_backend != "artisan_v1":
+                cad_skill_sources = provision_production_cad_skill_sources(cad_skill_source_root)
+                cad_sources_by_id = {str(row["id"]): str(row["path"]) for row in cad_skill_sources["sources"]}
             prerequisite = validate_splat_render_prerequisites(
                 root=splat_render_prerequisite_root,
                 repository_root=staged_release["release_path"],
@@ -4778,10 +4783,14 @@ def deploy_control_plane_commit(
                 browser_executable=prerequisite_entrypoints["browser"],
                 node_modules_root=prerequisite_entrypoints["node_modules"],
                 artifixer_root=artifixer_source_root,
-                content_agents_root=content_agents_source_root,
-                text_to_cad_root=cad_sources_by_id["text-to-cad"],
-                multi_agent_cad_root=cad_sources_by_id["multi-agent-cad"],
-                astra_blender_archive_path=astra_blender_archive_path,
+                authoring_backend=authoring_backend,
+                artisan_root=artisan_root,
+                artisan_site_packages_root=artisan_site_packages_root,
+                artisan_blender_root=artisan_blender_root,
+                content_agents_root=content_agents_source_root if authoring_backend != "artisan_v1" else None,
+                text_to_cad_root=cad_sources_by_id.get("text-to-cad"),
+                multi_agent_cad_root=cad_sources_by_id.get("multi-agent-cad"),
+                astra_blender_archive_path=astra_blender_archive_path if authoring_backend == "astra_cad_blender_v1" else None,
                 readback_user=DEFAULT_SERVICE_ACCOUNT,
             )
         except (ValueError, ProductionCadSkillSourcesError) as exc:
@@ -5301,6 +5310,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_SPLAT_RENDER_PREREQUISITE_ROOT,
     )
     parser.add_argument("--artifixer-source-root", default=DEFAULT_ARTIFIXER_SOURCE_ROOT)
+    parser.add_argument("--authoring-backend", choices=("artisan_v1", "astra_cad_blender_v1", "content_agents"), default=None,
+                        help="default: BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND (Astra until ARTISAN go-live)")
+    parser.add_argument("--artisan-root", default=os.getenv("BLUEPRINT_ARTISAN_UPSTREAM_ROOT"))
+    parser.add_argument("--artisan-site-packages-root", default=os.getenv("BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT"))
+    parser.add_argument("--artisan-blender-root", default=os.getenv("BLUEPRINT_ARTISAN_BLENDER_ROOT"))
     parser.add_argument(
         "--content-agents-source-root", default=DEFAULT_CONTENT_AGENTS_SOURCE_ROOT
     )
@@ -5393,6 +5407,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             content_agents_source_root=args.content_agents_source_root,
             cad_skill_source_root=args.cad_skill_source_root,
             astra_blender_archive_path=args.astra_blender_archive,
+            authoring_backend=args.authoring_backend,
+            artisan_root=args.artisan_root,
+            artisan_site_packages_root=args.artisan_site_packages_root,
+            artisan_blender_root=args.artisan_blender_root,
             configured_controls_autostart_intent_root=(
                 args.configured_controls_autostart_intent_root
             ),

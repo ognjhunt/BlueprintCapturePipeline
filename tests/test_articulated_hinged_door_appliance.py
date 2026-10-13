@@ -48,14 +48,15 @@ def _frame(frame_id, digest, state, visible, view="front", reason="whole-front c
             "timestamp_seconds": 1.5, "visible_parts": visible, "part_state": state, "view": view, "reason": reason}
 
 
-def dishwasher(hinge="bottom", frames=None):
+def dishwasher(hinge="bottom", frames=None, authoring_backend="astra_cad_blender_v1"):
+    # The legacy Astra assembly these plans describe; new requests default to ARTISAN.
     mechanism = {"part_label": "dishwasher door", "joint_type": "revolute", "estimated_usable_swing_rad": 1.4,
                  "estimated_front_normal_world": [0.0, -1.0, 0.0], "lock_status": "unknown",
                  "travel_authority": "object_prior_estimate"}
     value = articulated_stage_three_configuration(
         scene_id="scene-dw", replacement_identity=IDENTITY, source_instance_id="dishwasher",
         authoring_target="built-in dishwasher", source_min=[-0.3, -0.29, 0.0], source_max=[0.3, 0.29, 0.85],
-        dimension_tolerance=0.1, physics_bounds=PHYSICS, mechanism=mechanism)
+        dimension_tolerance=0.1, physics_bounds=PHYSICS, mechanism=mechanism, authoring_backend=authoring_backend)
     frames = frames or [
         _frame("f_closed", "sha256:" + "1" * 64, "closed",
                ["body_front", "door_outer", "handle", "control_panel", "brand_label", "kickplate", "left_side"]),

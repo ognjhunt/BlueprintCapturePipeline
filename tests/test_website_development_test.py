@@ -74,7 +74,7 @@ def test_development_surface_reaches_real_native_submission_with_separate_identi
     request = json.loads((root / 'scene_configuration_preparation_request.v1.json').read_text())
     assert request['scene']['identity']['id'].endswith('-development')
     assert request['scene']['appearance']['kind'] == 'textured_usd'
-    assert request['replacement_authoring_backend'] == 'astra_cad_blender_v1'
+    assert request['replacement_authoring_backend'] == 'astra_cad_blender_v1'  # ARTISAN switched off
     assert request['spend']['external_service_caps']['openai']['stage_max_cost_usd']['content_agents'] >= 5
     assert request['spend']['hard_cap_usd'] <= 20
     assert 'public_display_authorization' not in request

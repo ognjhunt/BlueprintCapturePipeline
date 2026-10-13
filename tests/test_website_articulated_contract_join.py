@@ -26,8 +26,15 @@ from blueprint_pipeline.website_object_observations import (
 )
 from blueprint_pipeline.website_task_preparation import compile_website_scene_preparation
 from tests.test_website_task_preparation import (
-    CLOSED_FRONT, HEIGHT, WIDTH, _arguments, _assembly_inputs, _depth, _frame, _masks,
+    CLOSED_FRONT, HEIGHT, WIDTH, _arguments as _default_arguments, _assembly_inputs, _depth, _frame, _masks,
 )
+
+
+def _arguments(root, *args, **kwargs):
+    """These plans and briefs are the legacy Astra builder's; new requests default to ARTISAN."""
+    value = _default_arguments(root, *args, **kwargs)
+    value["spend"] = {**value["spend"], "replacement_authoring_backend": "astra_cad_blender_v1"}
+    return value
 
 DISHWASHER_REMOVAL = {"schema_version": "clean_plate_removal_manifest.v1", "entries": [
     {"target_id": "cup-1", "semantic_label": "dishwasher", "task_effect": "manipulated", "disposition": "remove",

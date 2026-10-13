@@ -14,8 +14,10 @@ from tests.test_particlefield_usd import _splat
 from tests.test_website_task_preparation import _arguments
 
 
-def inputs(tmp_path):
+def inputs(tmp_path, *, authoring_backend=None):
     args = _arguments(tmp_path)
+    if authoring_backend is not None:
+        args["spend"] = {**args["spend"], "replacement_authoring_backend": authoring_backend}
     data, _ = _splat(32)
     data.scales[:] = -5  # Small finite Gaussians in a room-sized fixture.
     source = Path(args["base_scene"]["splat_path"])

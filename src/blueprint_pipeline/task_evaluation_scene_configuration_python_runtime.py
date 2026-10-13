@@ -28,10 +28,12 @@ DEFAULT_RUNTIME_PROFILE = "base"
 RUNTIME_PROFILE_ROOTS = {
     "base": ("openai-agents", "usd-core"),
     "astra_asset_authoring": ("openai-agents", "usd-core", "build123d", "langgraph", "trimesh", "pillow", "rfc8785", "jsonschema"),
+    "artisan_source_validation": ("openai-agents", "usd-core", "numpy", "trimesh", "pillow", "rfc8785", "jsonschema"),
 }
 RUNTIME_PROFILE_IMPORTS = {
     "base": (),
     "astra_asset_authoring": ("agents", "pxr.Usd", "build123d", "OCP", "langgraph.graph", "trimesh", "PIL.Image", "rfc8785", "jsonschema"),
+    "artisan_source_validation": ("pxr.Usd", "numpy", "trimesh", "PIL.Image", "rfc8785", "jsonschema"),
 }
 _ASTRA_SOURCE_ROOT = Path(__file__).resolve().parent.parent
 _ASTRA_STAGE_MODULES = ("blueprint_pipeline.astra_cad_skill_runtime",
@@ -39,9 +41,14 @@ _ASTRA_STAGE_MODULES = ("blueprint_pipeline.astra_cad_skill_runtime",
                         "blueprint_pipeline.task_object_astra_authoring",
                         "blueprint_pipeline.task_object_agents_api_stage",
                         "blueprint_pipeline.task_object_simready_packaging")
+_ARTISAN_STAGE_MODULES = ("blueprint_pipeline.task_object_authoring_contracts",
+                          "blueprint_pipeline.task_object_artisan_exports",
+                          "blueprint_pipeline.task_object_artisan_source_validation")
 RUNTIME_PROFILE_PLATFORM_TAGS = {
     "base": ("manylinux_2_17_x86_64", "manylinux2014_x86_64", "manylinux_2_28_x86_64", "manylinux_2_35_x86_64"),
     "astra_asset_authoring": tuple(f"manylinux_2_{minor}_x86_64" for minor in range(17, 36))
+    + ("manylinux2014_x86_64",),
+    "artisan_source_validation": tuple(f"manylinux_2_{minor}_x86_64" for minor in range(17, 36))
     + ("manylinux2014_x86_64",),
 }
 
@@ -133,7 +140,7 @@ def module_origin_admitted(origin: str, *, sealed_roots: Sequence[Path], interpr
 ADMISSION_SOURCE = inspect.getsource(module_origin_admitted)
 
 
-def _validate_astra_imports(root: Path) -> None:
+def _validate_astra_imports(root: Path, *, profile="astra_asset_authoring") -> None:
     # -I/-S prevents accidental satisfaction by the host's installed site packages.
     code = """import importlib, json, pathlib, sys, sysconfig
 from pathlib import Path
@@ -166,8 +173,8 @@ for name, module in list(sys.modules.items()):
 """
     try:
         result = subprocess.run(
-            [sys.executable, "-I", "-S", "-B", "-c", code, str(root), json.dumps(RUNTIME_PROFILE_IMPORTS["astra_asset_authoring"]),
-             str(_ASTRA_SOURCE_ROOT), json.dumps(_ASTRA_STAGE_MODULES)],
+            [sys.executable, "-I", "-S", "-B", "-c", code, str(root), json.dumps(RUNTIME_PROFILE_IMPORTS[profile]),
+             str(_ASTRA_SOURCE_ROOT), json.dumps(_ARTISAN_STAGE_MODULES if profile == "artisan_source_validation" else _ASTRA_STAGE_MODULES)],
             cwd=root, env={"PATH": os.defpath}, capture_output=True, text=True, timeout=300, check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -374,6 +381,8 @@ def materialize_scene_configuration_python_runtime(
                         target.write_bytes(body)
         if profile == "astra_asset_authoring":
             _validate_astra_imports(staging)
+        elif profile == "artisan_source_validation":
+            _validate_astra_imports(staging, profile=profile)
         os.replace(staging, destination)
         for path in sorted(destination.rglob("*")):
             if path.is_symlink():
