@@ -26,6 +26,9 @@ BRIDGE_MODULES = ("asset_authoring_sandbox", "asset_landlock", "task_object_arti
                   "task_object_artisan_sandbox", "task_object_artisan_bridge", "task_object_artisan_metering")
 
 
+PREFLIGHT_TIMEOUT_SECONDS = 300
+
+
 def _runtime_preflight(staging: Path) -> None:
     code = '''import importlib,json,pathlib,platform,sys
 assert sys.version_info[:2] == (3,12) and platform.system() == 'Linux' and platform.machine() == 'x86_64'
@@ -49,7 +52,11 @@ print(json.dumps({'status':'isolated_upstream_imports_passed','python':platform.
 '''
     result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code,
         str(staging / "bridge"), str(staging / "artisan_source"), str(staging / "runtime/site_packages")],
-        cwd=staging, env={"PATH": "/usr/bin:/bin"}, check=True, text=True, capture_output=True, timeout=60)
+        cwd=staging, env={"PATH": "/usr/bin:/bin"}, check=True, text=True, capture_output=True,
+        # A correctness check, not a speed gate: cold imports of a freshly copied
+        # runtime without bytecode (-B) took over 60 s on the 4-core control plane
+        # under load (2026-10-13); they take about 20-25 s warm.
+        timeout=PREFLIGHT_TIMEOUT_SECONDS)
     from json import loads
     require(loads(result.stdout)["status"] == "isolated_upstream_imports_passed", "artisan_import_preflight_invalid")
 

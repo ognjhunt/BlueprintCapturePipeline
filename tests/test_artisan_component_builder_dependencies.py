@@ -1,4 +1,4 @@
-"""ADP-009: the ARTISAN component builder's root-dependency check (2026-10-13 production install)."""
+"""ADP-009: the ARTISAN component builder's install checks (2026-10-13 production install)."""
 import importlib.util
 from pathlib import Path
 
@@ -32,3 +32,20 @@ def test_root_names_compare_normalized():
     builder = _builder()
     assert builder.missing_root_dependencies(["Pillow==11.0.0", "typing_extensions==4.12.2"],
                                              {"pillow": "11.0.0", "typing-extensions": "4.12.2"}) == []
+
+
+def test_the_isolated_import_preflight_tolerates_a_cold_runtime(tmp_path, monkeypatch):
+    """A freshly copied runtime imported without bytecode took over 60 s under load (2026-10-13)."""
+    import json
+    import subprocess
+
+    builder = _builder()
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(
+            {"status": "isolated_upstream_imports_passed"}), stderr="")
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+    builder._runtime_preflight(tmp_path)
+    assert seen["timeout"] == builder.PREFLIGHT_TIMEOUT_SECONDS >= 300
