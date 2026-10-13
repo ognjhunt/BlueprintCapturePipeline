@@ -138,9 +138,11 @@ export async function nativeSources(store,row,task,{candidateKey=null}={}) {
   if(candidateKey!==null) {
     const checks=qaResult.checks?.filter(c=>c.candidate_key===candidateKey),
       results=row.review.lead_verification?.results?.filter(r=>r.candidate_key===candidateKey);
-    if(checks?.length!==1||results?.length!==1||checks[0].duplicate===true
+    if(checks?.length!==1||results?.length!==1
       ||!checks[0].lead_verification||digest(checks[0].lead_verification)!==digest(results[0].assessment))
       fail('native_contact_assessment_changed');
+    if(checks[0].duplicate===true||results[0].duplicate_check?.duplicate===true
+      ||results[0].duplicate===true||results[0].duplicate_of) fail('native_contact_candidate_duplicate');
     const assessment=checks[0].lead_verification,refs=new Set(['operator','physical_site','site_task']
       .flatMap(k=>assessment.claims?.[k]?.source_refs||[]));
     nativeUrls=new Set((assessment.sources||[]).filter(s=>refs.has(s.id)).map(s=>s.url));
