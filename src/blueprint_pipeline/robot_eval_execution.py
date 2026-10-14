@@ -13,6 +13,13 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 
 from . import robot_eval_calibration as _calibration
 from .common import ensure_dir, read_json_any, resolve_gs_uri_to_path, write_json
+from .policy_attempt_success_source import (
+    BLUEPRINT_DEFAULT_TEST_POLICY,
+    SIMULATOR_SCORED,
+    TEAM_REPORTED,
+    attempt_outcome,
+    success_source_summary,
+)
 from .robot_initial_observation import build_initial_observation_source_resolution
 from .core.security_controls import (
     SecurityValidationError,
@@ -2108,6 +2115,7 @@ def _normalize_policy_attempts(
     modality: str,
     observations: Sequence[Mapping[str, Any]],
     generated_at: str,
+    success_source: str,
 ) -> List[Dict[str, Any]]:
     raw_attempts: List[Mapping[str, Any]] = []
     if isinstance(payload, Mapping):
@@ -2147,20 +2155,9 @@ def _normalize_policy_attempts(
     for index, raw in enumerate(raw_attempts or [{}], start=1):
         observation = observations[(index - 1) % len(observations)]
         status = _string(raw.get("status") or raw.get("result") or "completed").lower()
-        success_raw = raw.get("success")
-        success = (
-            None
-            if raw.get("evidence_scope") == "submitted_skill_intent_only"
-            else _boolish(success_raw)
-            if success_raw is not None
-            else status
-            in {
-                "completed",
-                "success",
-                "succeeded",
-                "passed",
-            }
-        )
+        # A finished call is not a task outcome: absent `success` stays unknown,
+        # and a team's own verdict is kept only as `reported_success`.
+        outcome = attempt_outcome(raw, success_source=success_source)
         attempts.append(
             {
                 "attempt_id": _string(raw.get("attempt_id") or raw.get("attemptId"))
@@ -2191,9 +2188,7 @@ def _normalize_policy_attempts(
                 or "robot_team_policy",
                 "target": _string(raw.get("target") or raw.get("targetPoseId")) or None,
                 "status": status,
-                "success": None if raw.get("evidence_scope") in {
-                    "submitted_skill_intent_only", "controlled_policy_execution_without_outcome"
-                } else bool(success),
+                **outcome,
                 "actions": raw.get("actions") if isinstance(raw.get("actions"), list) else [],
                 "skills": raw.get("skills") if isinstance(raw.get("skills"), list) else [],
                 "metrics": _mapping(raw.get("metrics")),
@@ -2631,7 +2626,8 @@ def build_policy_execution_bundle(
             result = controlled_policy_executor(modality=modality, payload=payload,
                 job_request=job_request, job_dir=resolved_job_dir, observations=observations)
             attempts = _normalize_policy_attempts(payload=result, modality=modality,
-                observations=observations, generated_at=generated_at)
+                observations=observations, generated_at=generated_at,
+                success_source=SIMULATOR_SCORED)
             all_attempts.extend(attempts)
             outcome_proven = (result.get("status") == "completed"
                 and result.get("independent_outcome_proven") is True
@@ -2763,6 +2759,13 @@ def build_policy_execution_bundle(
                 modality=modality,
                 observations=observations,
                 generated_at=generated_at,
+                # Only Blueprint's own synthetic policy is not team-supplied here;
+                # an HTTP response, command output or replay is the team's claim.
+                success_source=(
+                    BLUEPRINT_DEFAULT_TEST_POLICY
+                    if default_test_policy and not command_text
+                    else TEAM_REPORTED
+                ),
             )
             if payload_result is not None
             else []
@@ -2826,6 +2829,7 @@ def build_policy_execution_bundle(
         "status": "completed" if all_attempts else "blocked_missing_policy_execution_trace",
         "attempt_count": len(all_attempts),
         "attempts": all_attempts,
+        **success_source_summary(all_attempts),
         **aggregate_coverage,
         "robot_policy_execution_proven": execution_proven,
         "default_test_policy_execution_proven": default_test_execution_proven,
@@ -2852,6 +2856,7 @@ def build_policy_execution_bundle(
         "allow_policy_execution_flag": bool(allow_policy_execution),
         "modality_results": modality_results,
         "attempt_count": len(all_attempts),
+        **success_source_summary(all_attempts),
         **aggregate_coverage,
         "policy_execution_trace_path": "policy_execution_trace.json",
         "reviewable_policy_adapter_modes": [

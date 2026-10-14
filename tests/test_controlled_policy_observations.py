@@ -80,7 +80,7 @@ def test_skill_sequence_is_intent_with_unknown_success(tmp_path):
     )
     attempts = execution._normalize_policy_attempts(
         payload=replay, modality="high_level_skill_trace", observations=[{"observation_id": "obs"}],
-        generated_at="2026-09-28T00:00:00Z",
+        generated_at="2026-09-28T00:00:00Z", success_source=execution.TEAM_REPORTED,
     )
     assert attempts[0]["skills"] == sequence
     assert attempts[0]["actions"] == []
