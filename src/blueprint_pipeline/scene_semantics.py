@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+from .capture_audio_minimization import AudioRemovalError, audio_free_upload_copy
 from .core.optional_dependencies import log_missing_optional_dependency
 
 logger = logging.getLogger(__name__)
@@ -323,11 +324,26 @@ def _gemini_video_analysis_fps() -> float:
     return max(0.1, min(_MAX_GEMINI_VIDEO_ANALYSIS_FPS, fps))
 
 
-def _upload_gemini_video_file(client: Any, raw_video_path: Path, timeout_sec: int) -> Optional[Any]:
+def _upload_gemini_video_file(
+    client: Any,
+    raw_video_path: Path,
+    timeout_sec: int,
+    *,
+    audio_receipts: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Any]:
+    # The provider receives a video-only copy, never the capture file itself:
+    # sound can carry people's conversations and the review does not use it.
+    # No copy that is shown audio-free means no upload at all.
     try:
-        uploaded = client.files.upload(file=str(raw_video_path))
+        with audio_free_upload_copy(raw_video_path) as (upload_path, audio_removal):
+            uploaded = client.files.upload(file=str(upload_path))
+    except AudioRemovalError as exc:
+        logger.info("Gemini video upload skipped; no audio-free copy: %s", exc)
+        return None
     except Exception:
         return None
+    if audio_receipts is not None:
+        audio_receipts.append(audio_removal)
 
     started = time.time()
     current = uploaded
@@ -747,7 +763,8 @@ def _infer_capture_review_with_gemini_video(
         capture_context=capture_context,
     )
     client = genai.Client(api_key=api_key)
-    current = _upload_gemini_video_file(client, raw_video_path, timeout_sec)
+    audio_receipts: List[Dict[str, Any]] = []
+    current = _upload_gemini_video_file(client, raw_video_path, timeout_sec, audio_receipts=audio_receipts)
     if current is None:
         return None
     fps = _gemini_video_analysis_fps()
@@ -797,6 +814,7 @@ def _infer_capture_review_with_gemini_video(
             payload["video_analysis_fps"] = fps
             payload["video_file_name"] = getattr(current, "name", None)
             payload["video_file_uri"] = getattr(current, "uri", None)
+            payload["video_upload_audio_removal"] = audio_receipts[0] if audio_receipts else None
             return payload
     finally:
         _delete_gemini_file(client, current)
@@ -1057,6 +1075,7 @@ def _assemble_capture_fidelity_review(
             "video_analysis_fps": review.get("video_analysis_fps"),
             "video_file_name": review.get("video_file_name"),
             "video_file_uri": review.get("video_file_uri"),
+            "video_upload_audio_removal": review.get("video_upload_audio_removal"),
         },
     }
 

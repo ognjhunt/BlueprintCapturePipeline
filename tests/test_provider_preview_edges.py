@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import provider_preview as pp
+from tests.capture_audio_fakes import VIDEO_ONLY_MARKER, FakeMediaTools
 
 
 class _Response:
@@ -203,6 +204,7 @@ def test_worldlabs_upload_and_submit_edge_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    FakeMediaTools().install(monkeypatch)
     provider = pp.WorldLabsPreviewProvider()
     video = tmp_path / "video.mov"
     video.write_bytes(b"video")
@@ -344,3 +346,40 @@ def test_website_publishes_first_view_before_asset_download_or_simulation(tmp_pa
         capture_root=tmp_path, pipeline_dir=tmp_path)
     assert events[:3] == ["allocate", "publish", "download"]
     assert result["website_visual_publication"] == {"state": "ready", "world_id": "world-visual"}
+
+
+def test_worldlabs_receives_video_only_bytes_never_the_source_soundtrack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Website free-beta privacy minimization: no capture audio reaches the provider."""
+    tools = FakeMediaTools().install(monkeypatch)
+    video = tmp_path / "final_walkthrough.mov"
+    video.write_bytes(b"walkthrough-with-voices")
+    calls: list[str] = []
+    uploaded: list[bytes] = []
+    monkeypatch.setattr(
+        pp,
+        "_worldlabs_api_request",
+        lambda path, **_kwargs: calls.append(path) or {
+            "media_asset": {"media_asset_id": "asset-1"},
+            "upload_info": {"upload_url": "https://upload.example/video"},
+        },
+    )
+    monkeypatch.setattr(pp, "_presigned_upload", lambda *_args, **kwargs: uploaded.append(kwargs["data"]))
+    provider = pp.WorldLabsPreviewProvider()
+
+    proof = provider._upload_video_as_media_asset(str(video), descriptor={}, capture_root=tmp_path)
+
+    assert uploaded == [VIDEO_ONLY_MARKER + b"walkthrough-with-voices"]
+    assert "-an" in tools.ffmpeg_commands()[0]
+    assert proof["audio_removal"]["audio_removed"] is True
+    assert video.read_bytes() == b"walkthrough-with-voices"
+
+    FakeMediaTools(output_audio_streams=1).install(monkeypatch)
+    calls.clear()
+    uploaded.clear()
+    with pytest.raises(RuntimeError, match="worldlabs_video_audio_removal_failed:audio_stream_present_after_encode"):
+        provider._upload_video_as_media_asset(str(video), descriptor={}, capture_root=tmp_path)
+    assert calls == []  # no provider call at all, not even prepare_upload
+    assert uploaded == []

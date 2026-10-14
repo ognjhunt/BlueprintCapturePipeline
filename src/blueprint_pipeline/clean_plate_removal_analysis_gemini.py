@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
+from .capture_audio_minimization import AudioRemovalError, audio_free_upload_copy
 from .common import sha256_file, utc_now_iso
 from .clean_plate_removal_response_schema import RESPONSE_SCHEMA
 from .website_task_context_contracts import admits_scene_preparation
@@ -486,6 +487,9 @@ def validate_removal_plan(plan: Mapping[str, Any]) -> list[str]:
 
 
 def _provider_error_blocker(exc: Exception) -> str:
+    if isinstance(exc, AudioRemovalError):
+        # Nothing was uploaded: the video-only copy could not be made or shown.
+        return "gemini_clean_plate_upload_audio_removal_failed"
     text = f"{type(exc).__name__}: {exc}".lower()
     if "too many tool calls" in text:
         return "gemini_clean_plate_analysis_incomplete_too_many_tool_calls"
@@ -555,7 +559,11 @@ def _invoke_agentic_video(
         timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
     ))
     mime_type = "video/mp4" if video_path.suffix.lower() == ".mp4" else "video/quicktime"
-    uploaded = client.files.upload(file=str(video_path), config={"mime_type": mime_type})
+    # Upload a video-only copy, never the capture file: a workplace walkthrough
+    # can record people talking, and the analysis does not use sound. Raises
+    # before any upload when the copy cannot be shown audio-free.
+    with audio_free_upload_copy(video_path) as (upload_path, audio_removal):
+        uploaded = client.files.upload(file=str(upload_path), config={"mime_type": mime_type})
     try:
         deadline = time.monotonic() + 60
         while getattr(getattr(uploaded, "state", None), "name", "") == "PROCESSING":
@@ -600,6 +608,7 @@ def _invoke_agentic_video(
         "prompt_tokens": getattr(usage, "total_input_tokens", None),
         "completion_tokens": getattr(usage, "total_output_tokens", None),
         "total_tokens": getattr(usage, "total_tokens", None),
+        "upload_audio_removal": audio_removal,
     }}
 
 

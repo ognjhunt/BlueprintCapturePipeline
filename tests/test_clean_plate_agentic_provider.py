@@ -1,4 +1,5 @@
 """Actual provider request shape and fail-closed agentic trace; no live calls."""
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
@@ -9,6 +10,15 @@ from blueprint_pipeline.clean_plate_removal_analysis_gemini import (
     _provider_error_blocker,
     parse_removal_plan_response,
 )
+from blueprint_pipeline.capture_audio_minimization import AudioRemovalError
+from tests.capture_audio_fakes import VIDEO_ONLY_MARKER, FakeMediaTools
+
+
+@pytest.fixture(autouse=True)
+def media_tools(monkeypatch) -> FakeMediaTools:
+    """Hermetic ffmpeg/ffprobe: the provider receives a video-only copy."""
+
+    return FakeMediaTools().install(monkeypatch)
 
 
 def invoke(tmp_path, steps, finish="completed", processing="agentic"):
@@ -345,3 +355,52 @@ def test_the_retained_decision_names_its_repair_policy_and_reserves_for_it(tmp_p
     assert captured["binding"]["validation_repair_turns"] == 1
     single = website_gemini_receipts.gemini_quote(model=captured["binding"]["model"], input_tokens=1, max_output_tokens=8192)
     assert captured["maximum_cost_usd"] > 2 * single
+
+
+def _recording_genai(uploads):
+    media = NS(name="files/test", uri="https://provider.test/file", state=NS(name="ACTIVE"))
+
+    def upload(*, file, config):
+        uploads.append((file, Path(file).read_bytes(), config))
+        return media
+
+    def generate(**_):
+        return NS(status="completed", steps=[output('{"targets":[]}')])
+
+    files = NS(upload=upload, get=lambda **_: media, delete=lambda **_: None)
+    return NS(Client=lambda **_: NS(interactions=NS(create=generate), files=files))
+
+
+def test_task_video_analysis_uploads_a_video_only_copy(tmp_path, media_tools):
+    """Website free-beta privacy minimization: the site's video reaches the provider without sound."""
+    source = tmp_path / "website-upload.mov"
+    source.write_bytes(b"site-video-with-voices")
+    uploads = []
+
+    result = _invoke_agentic_video(api_key="fake", model=DEFAULT_MODEL, processing="static",
+                                   video_path=source, genai=_recording_genai(uploads),
+                                   types=NS(HttpOptions=NS, HttpRetryOptions=NS))
+
+    [(uploaded_path, uploaded_bytes, config)] = uploads
+    assert uploaded_path != str(source)
+    assert uploaded_bytes == VIDEO_ONLY_MARKER + b"site-video-with-voices"
+    assert config == {"mime_type": "video/quicktime"}
+    assert "-an" in media_tools.ffmpeg_commands()[0]
+    assert source.read_bytes() == b"site-video-with-voices"
+    assert result["video_processing"]["upload_audio_removal"]["audio_removed"] is True
+
+
+@pytest.mark.parametrize("tools", [lambda: FakeMediaTools(ffmpeg=False), lambda: FakeMediaTools(output_audio_streams=1)])
+def test_task_video_analysis_uploads_nothing_without_a_video_only_copy(monkeypatch, tmp_path, tools):
+    tools().install(monkeypatch)
+    source = tmp_path / "website-upload.mov"
+    source.write_bytes(b"site-video-with-voices")
+    uploads = []
+
+    with pytest.raises(AudioRemovalError) as error:
+        _invoke_agentic_video(api_key="fake", model=DEFAULT_MODEL, processing="static",
+                              video_path=source, genai=_recording_genai(uploads),
+                              types=NS(HttpOptions=NS, HttpRetryOptions=NS))
+
+    assert uploads == []
+    assert _provider_error_blocker(error.value) == "gemini_clean_plate_upload_audio_removal_failed"

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from .capture_audio_minimization import audio_removal_receipt
 from .capture_bridge import CaptureDescriptor
 from .capture_enrichment_llm import build_capture_enrichment_runner
 from .core.stage_graph import StageSpec, run_stage_graph, stage_concurrency_from_env
@@ -2940,10 +2941,11 @@ def _worldlabs_transcode_attempts(
     *,
     input_duration: float,
 ) -> List[Dict[str, Any]]:
+    # Video-only: the World Labs input never carries the walkthrough's sound.
     defaults = [
-        {"clip_seconds": 30.0, "max_width": 1280, "crf": 28, "maxrate": "4M", "bufsize": "8M", "audio_bitrate": "96k"},
-        {"clip_seconds": 24.0, "max_width": 1280, "crf": 30, "maxrate": "3M", "bufsize": "6M", "audio_bitrate": "96k"},
-        {"clip_seconds": 20.0, "max_width": 960, "crf": 32, "maxrate": "2M", "bufsize": "4M", "audio_bitrate": "64k"},
+        {"clip_seconds": 30.0, "max_width": 1280, "crf": 28, "maxrate": "4M", "bufsize": "8M"},
+        {"clip_seconds": 24.0, "max_width": 1280, "crf": 30, "maxrate": "3M", "bufsize": "6M"},
+        {"clip_seconds": 20.0, "max_width": 960, "crf": 32, "maxrate": "2M", "bufsize": "4M"},
     ]
     attempts: List[Dict[str, Any]] = []
     for item in defaults:
@@ -3149,41 +3151,44 @@ def _prepare_worldlabs_input_video(
     attempt_reports: List[Dict[str, Any]] = []
     compliant = False
     last_error = ""
+    audio_removal: Dict[str, Any] = {}
     for attempt_index, attempt in enumerate(attempts, start=1):
+        command = [
+            ffmpeg,
+            "-y",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{float(attempt['clip_start_seconds']):.3f}",
+            "-i",
+            str(source_path),
+            "-t",
+            f"{float(attempt['actual_clip_seconds']):.3f}",
+            "-map",
+            "0:v:0",
+            "-vf",
+            f"scale='min({int(attempt['max_width'])},iw)':-2",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            str(int(attempt["crf"])),
+            "-maxrate",
+            str(attempt["maxrate"]),
+            "-bufsize",
+            str(attempt["bufsize"]),
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            # A walkthrough's sound can carry people's conversations and the
+            # provider does not use it; the provider input is video-only.
+            "-an",
+            str(output_path),
+        ]
         proc = subprocess.run(
-            [
-                ffmpeg,
-                "-y",
-                "-loglevel",
-                "error",
-                "-ss",
-                f"{float(attempt['clip_start_seconds']):.3f}",
-                "-i",
-                str(source_path),
-                "-t",
-                f"{float(attempt['actual_clip_seconds']):.3f}",
-                "-vf",
-                f"scale='min({int(attempt['max_width'])},iw)':-2",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                str(int(attempt["crf"])),
-                "-maxrate",
-                str(attempt["maxrate"]),
-                "-bufsize",
-                str(attempt["bufsize"]),
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                "-c:a",
-                "aac",
-                "-b:a",
-                str(attempt["audio_bitrate"]),
-                str(output_path),
-            ],
+            command,
             capture_output=True,
             text=True,
             check=False,
@@ -3199,6 +3204,20 @@ def _prepare_worldlabs_input_video(
                 }
             )
             continue
+        audio_removal = audio_removal_receipt(
+            command=command,
+            returncode=proc.returncode,
+            output=output_path,
+            method="ffmpeg_worldlabs_input_reencode",
+            source=source_path,
+        )
+        if not audio_removal["audio_removed"]:
+            # Never leave a provider input that still carries sound.
+            output_path.unlink(missing_ok=True)
+            raise StageError(
+                "worldlabs_input_prep",
+                f"worldlabs_input_audio_removal_failed:{audio_removal.get('reason') or 'not_shown'}",
+            )
         output_metrics = _ffprobe_video_metrics(output_path)
         output_duration = float(output_metrics.get("duration_seconds") or 0.0)
         output_size_bytes = int(output_metrics.get("size_bytes") or 0)
@@ -3247,6 +3266,8 @@ def _prepare_worldlabs_input_video(
         "output_video_uri": output_uri,
         "output_manifest_uri": manifest_uri,
         "output_checksum_sha256": output_checksum,
+        "audio_removed": audio_removal.get("audio_removed") is True,
+        "audio_removal": audio_removal,
         "input_labeling": input_labeling,
     }
     if production_launch_mode() and not privacy_safe_input:
@@ -3278,7 +3299,6 @@ def _prepare_worldlabs_input_video(
                 "crf": int(selected_attempt.get("crf") or 0),
                 "maxrate": selected_attempt.get("maxrate"),
                 "bufsize": selected_attempt.get("bufsize"),
-                "audio_bitrate": selected_attempt.get("audio_bitrate"),
             },
             "attempts": attempt_reports,
         },
@@ -3298,6 +3318,8 @@ def _prepare_worldlabs_input_video(
         "input_audit_path": str(audit_path),
         "input_checksum_sha256": source_checksum,
         "output_checksum_sha256": output_checksum,
+        "audio_removed": audio_removal.get("audio_removed") is True,
+        "audio_removal": audio_removal,
     }
     write_json(manifest_path, payload)
     write_json(audit_path, audit_payload)

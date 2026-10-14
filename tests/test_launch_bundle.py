@@ -15,6 +15,7 @@ from blueprint_pipeline.provider_preview import (
     WorldLabsPreviewProvider,
     run_preview_provider,
 )
+from tests.capture_audio_fakes import VIDEO_ONLY_MARKER, FakeMediaTools
 
 
 def test_buyer_trust_score_penalizes_missing_rights_without_preview_failure_penalty() -> None:
@@ -494,6 +495,7 @@ def test_worldlabs_submit_reads_local_staged_gs_uri_for_upload(
     video_path = capture_root / "pipeline" / "worldlabs_input" / "worldlabs_input.mp4"
     video_path.parent.mkdir(parents=True)
     video_path.write_bytes(b"local-video-bytes")
+    FakeMediaTools().install(monkeypatch)
     provider = WorldLabsPreviewProvider()
     uploaded: dict[str, object] = {}
 
@@ -544,7 +546,9 @@ def test_worldlabs_submit_reads_local_staged_gs_uri_for_upload(
 
     assert result["status"] == "processing"
     assert result["provider_run_id"] == "op-1"
-    assert uploaded["data"] == b"local-video-bytes"
+    # The provider gets a video-only copy of the staged input, never its soundtrack.
+    assert uploaded["data"] == VIDEO_ONLY_MARKER + b"local-video-bytes"
+    assert result["worldlabs_upload_audio_removal"]["audio_removed"] is True
     assert uploaded["content_type"] == "video/mp4"
 
 
