@@ -28,7 +28,7 @@ import subprocess
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .common import ensure_dir, sha256_file
 
@@ -75,6 +75,54 @@ def audio_free_remux_command(ffmpeg: str, source: Path, destination: Path) -> Li
         "-an",
         "-sn",
         "-dn",
+        str(destination),
+    ]
+
+
+def video_only_reencode_command(
+    ffmpeg: str,
+    source: Path,
+    destination: Path,
+    attempt: Mapping[str, Any],
+) -> List[str]:
+    """A size-bounded H.264 clip of ``source``'s first video stream and nothing else.
+
+    ``attempt`` carries ``clip_start_seconds``, ``actual_clip_seconds``,
+    ``max_width``, ``crf``, ``maxrate`` and ``bufsize``. Used for provider
+    inputs that must be re-encoded (World Labs), so the clip never carries the
+    walkthrough's sound.
+    """
+
+    return [
+        ffmpeg,
+        "-y",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{float(attempt['clip_start_seconds']):.3f}",
+        "-i",
+        str(source),
+        "-t",
+        f"{float(attempt['actual_clip_seconds']):.3f}",
+        "-map",
+        "0:v:0",
+        "-vf",
+        f"scale='min({int(attempt['max_width'])},iw)':-2",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        str(int(attempt["crf"])),
+        "-maxrate",
+        str(attempt["maxrate"]),
+        "-bufsize",
+        str(attempt["bufsize"]),
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-an",
         str(destination),
     ]
 

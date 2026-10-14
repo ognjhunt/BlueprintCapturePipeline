@@ -54,6 +54,25 @@ def test_video_only_copy_drops_audio_and_never_touches_the_source(monkeypatch, t
     assert str(tmp_path) not in " ".join(receipt["command"])
 
 
+def test_reencode_clip_maps_only_the_first_video_stream(tmp_path: Path) -> None:
+    attempt = {
+        "clip_start_seconds": 1.5,
+        "actual_clip_seconds": 20.0,
+        "max_width": 960,
+        "crf": 32,
+        "maxrate": "2M",
+        "bufsize": "4M",
+    }
+    command = cam.video_only_reencode_command("ffmpeg", tmp_path / "in.mov", tmp_path / "out.mp4", attempt)
+
+    assert command[command.index("-ss") + 1] == "1.500"
+    assert command[command.index("-t") + 1] == "20.000"
+    assert command[command.index("-map") + 1] == "0:v:0"
+    assert command[command.index("-crf") + 1] == "32"
+    assert command[-2:] == ["-an", str(tmp_path / "out.mp4")]
+    assert not {"-c:a", "-b:a"} & set(command)
+
+
 def test_without_ffprobe_the_receipt_rests_on_the_exact_command(monkeypatch, tmp_path: Path) -> None:
     FakeMediaTools(ffprobe=False).install(monkeypatch)
     receipt = cam.write_audio_free_video(_source(tmp_path), tmp_path / "out.mov")

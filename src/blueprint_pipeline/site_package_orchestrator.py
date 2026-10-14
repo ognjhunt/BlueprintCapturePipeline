@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from .capture_audio_minimization import audio_removal_receipt
+from .capture_audio_minimization import audio_removal_receipt, video_only_reencode_command
 from .capture_bridge import CaptureDescriptor
 from .capture_enrichment_llm import build_capture_enrichment_runner
 from .core.stage_graph import StageSpec, run_stage_graph, stage_concurrency_from_env
@@ -2941,7 +2941,6 @@ def _worldlabs_transcode_attempts(
     *,
     input_duration: float,
 ) -> List[Dict[str, Any]]:
-    # Video-only: the World Labs input never carries the walkthrough's sound.
     defaults = [
         {"clip_seconds": 30.0, "max_width": 1280, "crf": 28, "maxrate": "4M", "bufsize": "8M"},
         {"clip_seconds": 24.0, "max_width": 1280, "crf": 30, "maxrate": "3M", "bufsize": "6M"},
@@ -3153,40 +3152,8 @@ def _prepare_worldlabs_input_video(
     last_error = ""
     audio_removal: Dict[str, Any] = {}
     for attempt_index, attempt in enumerate(attempts, start=1):
-        command = [
-            ffmpeg,
-            "-y",
-            "-loglevel",
-            "error",
-            "-ss",
-            f"{float(attempt['clip_start_seconds']):.3f}",
-            "-i",
-            str(source_path),
-            "-t",
-            f"{float(attempt['actual_clip_seconds']):.3f}",
-            "-map",
-            "0:v:0",
-            "-vf",
-            f"scale='min({int(attempt['max_width'])},iw)':-2",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            str(int(attempt["crf"])),
-            "-maxrate",
-            str(attempt["maxrate"]),
-            "-bufsize",
-            str(attempt["bufsize"]),
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            # A walkthrough's sound can carry people's conversations and the
-            # provider does not use it; the provider input is video-only.
-            "-an",
-            str(output_path),
-        ]
+        # Video-only: a walkthrough's sound can carry people's conversations.
+        command = video_only_reencode_command(ffmpeg, source_path, output_path, attempt)
         proc = subprocess.run(
             command,
             capture_output=True,
