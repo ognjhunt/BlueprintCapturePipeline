@@ -19,7 +19,7 @@ predicted failure boundary.
 
 Until these are observed, broader visions are not roadmaps.
 
-### Immediate Sequence
+### Arm Decision Proof Sequence
 
 Blueprint has qualified the decision/outcome harness retrospectively on SIMPLER.
 It next qualifies the scene-construction service on exact public data: metric
@@ -30,11 +30,12 @@ SimReady USD replacement, a manual-versus-NVIDIA Content Agents authoring check,
 one targeted ScanNet++ measured transfer, deterministic variation, abstention,
 and full simulator-side replay.
 
-Only after that public matrix and partner protocol pass does Blueprint take one
-fresh capture of one previously unseen workcell, including registered
-clean-background and object-present observations. Fresh capture is the final new
-construction input; two-candidate execution, sealing, held-out physical trials,
-and adjudication follow it.
+Only after that public matrix and partner protocol pass does Arm Decision Proof
+take its one fresh capture of one previously unseen workcell, including
+registered clean-background and object-present observations. That capture is
+the proof's final new construction input; two-candidate execution, sealing,
+held-out physical trials, and adjudication follow it. This sequence gates only
+the proof's capture. Free beta site captures are not held behind it.
 
 This sequence is not open-ended capture or 3DGS research. New features or methods
 are added only when a gate identifies a specific missing measurement and an exact

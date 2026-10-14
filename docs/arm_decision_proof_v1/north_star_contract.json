@@ -1,10 +1,9 @@
 {
-  "schema_version": "arm_decision_proof_north_star.v4",
+  "schema_version": "arm_decision_proof_north_star.v3",
   "program_id": "arm-decision-proof-v1",
-  "status": "active_program",
-  "co_active_programs": ["free-beta-evaluated-pilot"],
+  "status": "sole_active_program",
   "approved_on": "2026-08-04",
-  "amended_on": "2026-10-14",
+  "amended_on": "2026-08-06",
   "north_star": "After qualifying every reusable service seam on a digest-bound, rights-cleared public evidence ladder, including removal of one source object from a metric splat/collision scene, released-code background completion, and replacement with one exact SimReady USD, take one fresh, rights-cleared capture of one previously unseen fixed-arm workcell; construct a candidate Minimum Sufficient Evaluation Replica whose observed metric geometry, registered appearance, collision geometry, and physics-authored task objects remain distinct but share one measured frame; prospectively decide which of exactly two frozen policy or configuration candidates deserves the next scarce physical-test budget, or explicitly abstain, then verify that decision and at least one predicted failure boundary with randomized held-out physical trials.",
   "north_star_metric": {
     "name": "prospectively_physically_validated_new_site_task_decisions",

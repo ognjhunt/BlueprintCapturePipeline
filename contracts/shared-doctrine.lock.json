@@ -19,7 +19,7 @@
     },
     "SHARED_VISION": {
       "file": "VISION.md",
-      "canonical_sha256": "fd9bd7a73e404fefb94a1c1f3e100d9b8377321c80fda05332b53ef177013e36"
+      "canonical_sha256": "a73dfe1bb0b0098e3a9757a9b38fd8ed7753d3f728436299b8d76882dd57dcfc"
     },
     "SHARED_WORLD_MODEL_STRATEGY": {
       "file": "WORLD_MODEL_STRATEGY_CONTEXT.md",

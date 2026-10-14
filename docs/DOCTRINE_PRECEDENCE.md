@@ -7,24 +7,30 @@ contradictions. This document is the resolution order for agents (Claude,
 Codex, or other) and human engineers when documents disagree. It governs how
 to *read* conflicts; it is not a license to ignore doctrine.
 
-## Sole Active Program
+## Active Programs
 
+The owner decision of 2026-10-14, recorded in the shared doctrine
+(`doctrine/platform-context.md`), makes two programs active: the free beta's
+evaluated, recommended pilot (`free-beta-evaluated-pilot`) and Arm Decision
+Proof v1. Beta work is admitted by naming the beta journey step it unblocks;
+the shared doctrine lists the beta's active build-out. Arm Decision Proof keeps
+sole authority over physical-validation claims.
+
+For Arm Decision Proof,
 [`arm_decision_proof_v1/north_star_contract.json`](arm_decision_proof_v1/north_star_contract.json)
-is the frozen scope and acceptance contract for Blueprint's first
-evaluation-proof track, its sole active evaluation build-out program.
+is the frozen scope and acceptance contract and
 [`arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-is the only active backlog. They govern what work may be started; they do not
-override raw artifact truth, code/schema reality, rights, safety, spend, or
-physical-evidence gates.
+is its active backlog. Its `status` value `sole_active_program` predates the
+2026-10-14 decision and is a historical label. They govern what Arm Decision
+Proof work may be started; they do not override raw artifact truth,
+code/schema reality, rights, safety, spend, or physical-evidence gates.
 
 The owner decision of 2026-10-05
 (`gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`)
 sets how to read them. Prospecting, screening, outreach, and partner discovery
 are open across robot forms and task families. The contract's `scope` is the
 current default build target, not a ban on other forms, and its `non_goals`
-bound this track's build-out. Its `status` value `sole_active_program`, like
-"sole active program" elsewhere, means the sole active evaluation build-out
-program. Where older freeze or sequencing wording, including in the shared
+bound this track's build-out. Where older freeze or sequencing wording, including in the shared
 blocks of `PLATFORM_CONTEXT.md`, `WORLD_MODEL_STRATEGY_CONTEXT.md`, and
 `VISION.md`, names a robot form or task family, it limits build-out, not
 discovery. Building evaluation support for another form or task family needs a
@@ -33,8 +39,9 @@ for a completed proof. `AGENTS.md` holds the rule text.
 
 Other documents remain useful as stable dependency contracts, compatibility
 instructions, or historical evidence. Their existence does not make their lane
-active. An agent must name the Arm Decision Proof item and gate a legacy document
-directly unblocks before using it as implementation direction.
+active. An agent must name the beta journey step, or the Arm Decision Proof item
+and gate, that a legacy document directly unblocks before using it as
+implementation direction.
 
 ## For "what exists / what is true right now"
 
