@@ -3,8 +3,9 @@
 Tests should pin package/runtime truth boundaries without calling live providers,
 GPU services, Stripe, WebApp mutation, or deployment commands.
 
-Arm Decision Proof v1 is the sole active program. New tests must protect an ADP
-contract or preserve compatibility needed by it. Existing captures, fixtures,
+Two programs are active: the free beta's evaluated, recommended pilot and Arm
+Decision Proof v1. New tests must protect a beta or ADP contract, or preserve
+compatibility needed by one. Existing captures, fixtures,
 and scenes must retain `development_only` claim ceilings and may never be used to
 assert partner capture, physical fidelity, or customer-value proof.
 

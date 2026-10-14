@@ -47,9 +47,9 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     "adp-simpler-public-reference": "retired_appearance_approach",
     "adp009d-aura-native-live-camera": "retired_appearance_approach",
     "adp009d-aura-ovrtx-live-camera": "retired_appearance_approach",
-    # Frozen by the active program contract in CLAUDE.md: Arm Decision Proof v1
-    # is the sole active program, and policy-ranking, world-model, and
-    # post-training work is explicitly frozen.
+    # Frozen by the shared doctrine: policy-ranking, world-model, and
+    # post-training work stays frozen under both active programs (the free
+    # beta and Arm Decision Proof v1).
     "openpi-policy-ranking": "frozen_program",
     "persistent-policy-wam-loop": "frozen_program",
     "policy-ranking-cosmos-reasoner": "frozen_program",

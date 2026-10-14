@@ -18,13 +18,18 @@ Read first (repo-root-relative):
 
 Key rules (full text and precedents in `AGENTS.md`):
 
-- Arm Decision Proof v1 is the first evaluation-proof track and the sole active
-  evaluation build-out program: one partner, site, fixed arm, rigid-object
-  task, and two real frozen candidates, prospectively sealed and physically
-  adjudicated. That envelope is the current default build target, not a ban on
-  other robot forms.
-- Every task must name the ADP backlog item and day gate it unblocks. Existing
-  captures/scenes may exercise downstream seams only as `development_only`.
+- Two programs are active (owner decision 2026-10-14): the **free beta's
+  evaluated, recommended pilot** (customer-facing: invited teams' own policies
+  evaluated on website site scenes, one recommendation when a run passes) and
+  **Arm Decision Proof v1** (the evidence program: one partner, site, fixed arm,
+  rigid-object task, and two real frozen candidates, prospectively sealed and
+  physically adjudicated). ADP keeps sole authority over physical-validation
+  claims. The fixed-arm envelope is the default build target for both, not a
+  ban on other robot forms.
+- Every task must name the beta journey step, or the ADP backlog item and day
+  gate, it unblocks. Existing captures/scenes may exercise downstream seams only
+  as `development_only`; beta site-capture results stay out of ADP qualified
+  evidence.
 - ADP-008 is observed complete. Complete ADP-009 with **artifixer3D+ with
   `gpt-image-2` as the appearance path**; targeted ScanNet++ real measured
   transfer after access; one exact SimReady USD; and a bounded NVIDIA USD

@@ -1,9 +1,12 @@
 # Documentation Authority
 
-## Sole Active Program
+## Active Programs
 
-Blueprint's sole active program is
-[`Arm Decision Proof v1`](arm_decision_proof_v1/README.md).
+Two programs are active (owner decision 2026-10-14; see the shared doctrine in
+`../PLATFORM_CONTEXT.md`): the free beta's evaluated, recommended pilot, whose
+customer journeys live in `Blueprint-WebApp`, and the evidence program
+[`Arm Decision Proof v1`](arm_decision_proof_v1/README.md). The documents below
+are Arm Decision Proof's.
 
 Active execution documents are limited to:
 

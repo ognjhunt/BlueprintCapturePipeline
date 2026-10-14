@@ -1,4 +1,4 @@
-"""Contract tests for Blueprint's sole active Arm Decision Proof program."""
+"""Contract tests for Blueprint's Arm Decision Proof evidence program."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 ROOT = Path(__file__).resolve().parents[1]
 PROGRAM_ROOT = ROOT / "docs" / "arm_decision_proof_v1"
 CONTRACT_PATH = PROGRAM_ROOT / "north_star_contract.json"
-SCHEMA_PATH = ROOT / "docs" / "schemas" / "arm_decision_proof_north_star.v3.schema.json"
+SCHEMA_PATH = ROOT / "docs" / "schemas" / "arm_decision_proof_north_star.v4.schema.json"
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -29,7 +29,8 @@ def test_north_star_contract_is_schema_valid() -> None:
 def test_north_star_contract_preserves_proof_and_compatibility_boundaries() -> None:
     contract = _read_json(CONTRACT_PATH)
 
-    assert contract["status"] == "sole_active_program"
+    assert contract["status"] == "active_program"
+    assert contract["co_active_programs"] == ["free-beta-evaluated-pilot"]
     assert contract["execution_strategy"] == {
         "mode": "public_evidence_ladder_then_fresh_site_proof",
         "completed_precursor": "ADP-008_simpler_decision_harness",
