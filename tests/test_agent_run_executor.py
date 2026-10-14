@@ -168,6 +168,10 @@ def test_missing_provider_cost_does_not_block_quoted_episode_settlement(tmp_path
     assert settlement["episodes_run"] == 4
     assert settlement["rate_usd"] == 2.0
     assert "observed_cost_usd" not in settlement
+    # A terminal that states no scoring is reported as unverified, never as a score.
+    assert received[0][1]["scoring"]["runtime"] == "unstated"
+    assert received[0][1]["scoring"]["success_source"] == "unverified"
+    assert received[0][1]["scoring"]["scored_episode_count"] == 0
 
 
 def test_pending_terminal_artifacts_keep_claimed_run_open(tmp_path: Path) -> None:

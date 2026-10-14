@@ -261,6 +261,10 @@ class AgentRunWebAppClient:
         quoted_usd = float(row["quoted_usd"])
         if episodes <= 0 or episodes > quoted_episodes or quoted_episodes <= 0:
             raise ValueError("agent_execution_terminal_episode_count_invalid")
+        from .agent_run_result_scoring import unstated_scoring, validate_scoring_statement
+        # Every result states who scored it; the WebApp admits only an allowlisted statement.
+        scoring = (unstated_scoring() if receipt.get("scoring") is None
+                   else validate_scoring_statement(receipt["scoring"], episodes_run=episodes))
         self._json(
             "/api/internal/pipeline/agent-run-results",
             method="POST",
@@ -277,6 +281,7 @@ class AgentRunWebAppClient:
                 "artifact_uri": receipt.get("artifact_uri"),
                 **({"private_execution_result": receipt["private_execution_result"]}
                    if receipt.get("private_execution_result") else {}),
+                "scoring": scoring,
             },
         )
         rate = quoted_usd / quoted_episodes
@@ -377,7 +382,11 @@ def _default_terminal_reader(
     native = read_native_terminal(job_dir=job_dir, expected_job_id=expected_job_id,
         expected_canonical_request_digest=expected_canonical_request_digest)
     if native is not None:
-        return native
+        if native.get("status") != "completed":
+            return native
+        from .agent_run_result_scoring import controlled_native_scoring
+        return {**native, "scoring": controlled_native_scoring(native)}
+    from .agent_run_result_scoring import legacy_command_batch_scoring
     from .robot_eval_terminal_artifact_adapter import read_terminal_robot_eval_artifacts
 
     observed = read_terminal_robot_eval_artifacts(job_dir)
@@ -411,6 +420,8 @@ def _default_terminal_reader(
         "note": "Observed canonical terminal robot-eval artifacts",
         "artifact_uri": episode.get("metrics_path"),
         "observed_cost_usd": _mapping(observed.get("cost")).get("observed_cost_usd"),
+        # A legacy command batch never ran the team's policy under a job's contract.
+        "scoring": legacy_command_batch_scoring(),
     }
 
 
