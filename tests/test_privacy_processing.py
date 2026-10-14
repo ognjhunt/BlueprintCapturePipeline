@@ -15,6 +15,14 @@ from blueprint_pipeline.privacy_processing import (
     _vip_command_template,
     run_privacy_postprocess,
 )
+from tests.capture_audio_fakes import VIDEO_ONLY_MARKER, FakeMediaTools
+
+
+@pytest.fixture(autouse=True)
+def media_tools(monkeypatch) -> FakeMediaTools:
+    """Hermetic ffmpeg/ffprobe for the video-only final walkthrough contract."""
+
+    return FakeMediaTools().install(monkeypatch)
 
 
 def _write_video(path: Path, payload: bytes = b"fake-video") -> None:
@@ -876,24 +884,21 @@ def test_privacy_processing_remote_output_and_copy_fallback(monkeypatch, tmp_pat
     source = tmp_path / "copy-source.mov"
     dest = tmp_path / "copy-dest.mov"
     _write_video(source, b"copy")
-    monkeypatch.setattr(pp.shutil, "which", lambda _name: None)
-    assert pp._copy_or_remux_video(source, dest)["mode"] == "copy"
-    assert dest.read_bytes() == b"copy"
+    # No byte-copy fallback: without ffmpeg there is no video-only copy at all.
+    FakeMediaTools(ffmpeg=False).install(monkeypatch)
+    unavailable = pp._publish_video_only(source, dest)
+    assert unavailable["status"] == "failed"
+    assert unavailable["reason"] == "ffmpeg_not_found"
+    assert unavailable["audio_removed"] is False
+    assert not dest.exists()
 
     remux_dest = tmp_path / "remux-dest.mov"
-
-    class RemuxCompleted:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def remux_run(args: list[str], **_kwargs: object) -> RemuxCompleted:
-        Path(args[-1]).write_bytes(b"remux")
-        return RemuxCompleted()
-
-    monkeypatch.setattr(pp.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
-    monkeypatch.setattr(pp.subprocess, "run", remux_run)
-    assert pp._copy_or_remux_video(source, remux_dest)["mode"] == "remux"
+    tools = FakeMediaTools().install(monkeypatch)
+    remuxed = pp._publish_video_only(source, remux_dest)
+    assert remuxed["mode"] == "video_only_remux"
+    assert remuxed["audio_removed"] is True
+    assert "-an" in tools.ffmpeg_commands()[0]
+    assert remux_dest.read_bytes() == VIDEO_ONLY_MARKER + b"copy"
 
     monkeypatch.setattr(pp.shutil, "which", lambda _name: None)
     assert pp._run_local_full_frame_redaction(source, tmp_path / "redacted.mov")[
@@ -1075,7 +1080,7 @@ def test_privacy_postprocess_fails_closed_with_no_runners_configured(
     def _forbidden(*_args: object, **_kwargs: object) -> dict[str, object]:
         raise AssertionError("ffmpeg/raw passthrough must not run when failing closed")
 
-    monkeypatch.setattr(pp, "_copy_or_remux_video", _forbidden)
+    monkeypatch.setattr(pp, "_publish_video_only", _forbidden)
     monkeypatch.setattr(pp, "_run_local_full_frame_redaction", _forbidden)
     # Belt-and-suspenders: even if a helper slipped through, ffmpeg is absent.
     monkeypatch.setattr(pp.shutil, "which", lambda _name: None)
@@ -1108,3 +1113,136 @@ def test_privacy_postprocess_fails_closed_with_no_runners_configured(
     assert manifest["reason"] == "sam3_runner_not_configured"
     assert verification["status"] == "failed_closed"
     assert verification["initial_detection"]["reason"] == "sam3_runner_not_configured"
+
+
+# --- Video-only walkthrough contract (website free-beta privacy minimization) ---
+#
+# Every published walkthrough is a video-only copy, the receipt reflects what
+# the encoder did, and the raw capture is never rewritten. ADP-010 site evidence
+# / ADP-021 capture privacy contract.
+
+
+def _configure_privacy_path(monkeypatch, path: str) -> None:
+    monkeypatch.setenv("PRIVACY_PIPELINE_ENABLED", "true")
+    monkeypatch.setattr(pp, "_run_depth_anything", lambda **_kwargs: _depth_anything_result())
+    detections = {
+        "passthrough": [{"status": "succeeded", "people_detected": False, "people_count": 0}],
+        "vip": [
+            {"status": "succeeded", "people_detected": True, "people_count": 1},
+            {"status": "succeeded", "people_detected": False, "people_count": 0},
+        ],
+        "deepprivacy2": [
+            {"status": "succeeded", "people_detected": True, "people_count": 1},
+            {"status": "succeeded", "people_detected": True, "people_count": 1},
+            {"status": "succeeded", "people_detected": False, "people_count": 0},
+        ],
+    }[path]
+    results = iter(detections)
+    monkeypatch.setattr(pp, "_run_sam3", lambda **_kwargs: next(results))
+
+    def vip(**kwargs):
+        _write_video(kwargs["output_video"], b"vip-frames")
+        return {"status": "succeeded", "output_video": str(kwargs["output_video"])}
+
+    def deepprivacy(**kwargs):
+        _write_video(kwargs["output_video"], b"anonymized-frames")
+        return {
+            "status": "succeeded",
+            "output_video": str(kwargs["output_video"]),
+            "face_anonymized_segments": ["0.0-1.0"],
+        }
+
+    monkeypatch.setattr(pp, "_run_vip", vip)
+    monkeypatch.setattr(pp, "_run_deepprivacy2", deepprivacy)
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "published_from"),
+    [
+        ("passthrough", "no_people_detected", "raw/walkthrough.mov"),
+        ("vip", "person_removed", "privacy/intermediate_vip_walkthrough.mov"),
+        ("deepprivacy2", "face_anonymized_fallback", "privacy/intermediate_deepprivacy2_walkthrough.mov"),
+    ],
+)
+def test_every_published_walkthrough_is_a_video_only_copy(
+    monkeypatch, tmp_path: Path, media_tools: FakeMediaTools, path: str, status: str, published_from: str
+) -> None:
+    capture_root, pipeline_dir, raw_video = _capture_paths(tmp_path, f"audio-{path}")
+    raw_video.write_bytes(b"raw-with-voices")
+    _configure_privacy_path(monkeypatch, path)
+
+    result = _run_postprocess_for(capture_root, pipeline_dir, raw_video)
+
+    assert result["status"] == status
+    final = capture_root / "privacy" / "final_walkthrough.mov"
+    source = capture_root / published_from
+    [command] = media_tools.ffmpeg_commands()
+    assert command[command.index("-i") + 1] == str(source)
+    assert command[-1] == str(final)
+    assert "-an" in command
+    assert final.read_bytes() == VIDEO_ONLY_MARKER + source.read_bytes()
+    assert result["audio_removed"] is True
+    assert result["audio_removal"]["evidence"] == "ffprobe_output_has_no_audio_stream"
+    assert result["audio_removal"]["output_audio_stream_count"] == 0
+    manifest = json.loads((pipeline_dir / "privacy_processing_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["audio_removed"] is True
+    assert manifest["audio_removal"] == result["audio_removal"]
+    # Raw truth is preserved exactly as received.
+    assert raw_video.read_bytes() == b"raw-with-voices"
+    assert result["raw_retained"] is True
+
+
+@pytest.mark.parametrize("path", ["passthrough", "vip", "deepprivacy2"])
+@pytest.mark.parametrize(
+    ("tools", "reason"),
+    [
+        (lambda: FakeMediaTools(ffmpeg=False), "audio_removal_failed:ffmpeg_not_found"),
+        (lambda: FakeMediaTools(output_audio_streams=1), "audio_removal_failed:audio_stream_present_after_encode"),
+    ],
+)
+def test_walkthrough_not_shown_audio_free_is_never_published(
+    monkeypatch, tmp_path: Path, path: str, tools, reason: str
+) -> None:
+    tools().install(monkeypatch)
+    capture_root, pipeline_dir, raw_video = _capture_paths(tmp_path, f"no-audio-proof-{path}")
+    raw_video.write_bytes(b"raw-with-voices")
+    _configure_privacy_path(monkeypatch, path)
+
+    result = _run_postprocess_for(capture_root, pipeline_dir, raw_video)
+
+    assert result["status"] == "failed_closed"
+    assert result["reason"] == reason
+    assert result["audio_removed"] is False
+    assert result["privacy_processed_video_uri"] is None
+    assert result["world_model_video_uri"] is None
+    assert not (capture_root / "privacy" / "final_walkthrough.mov").exists()
+    assert raw_video.read_bytes() == b"raw-with-voices"
+    verification = json.loads((pipeline_dir / "privacy_verification_report.json").read_text(encoding="utf-8"))
+    assert verification["status"] == "failed_closed"
+
+
+def test_local_redaction_reports_audio_from_the_output_not_the_intent(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "raw.mov"
+    _write_video(source, b"raw-with-voices")
+    commands: list[list[str]] = []
+
+    def redaction_run(command, **_kwargs):
+        commands.append([str(item) for item in command])
+        Path(command[-1]).write_bytes(b"pixelated")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(pp.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(pp.subprocess, "run", redaction_run)
+
+    redacted = pp._run_local_full_frame_redaction(source, tmp_path / "redacted.mov")
+    assert "-an" in commands[0]
+    assert redacted["audio_removed"] is True
+    assert redacted["audio_removal"]["evidence"] == "ffprobe_output_has_no_audio_stream"
+
+    FakeMediaTools(output_audio_streams=1).install(monkeypatch)
+    kept_audio = pp._run_local_full_frame_redaction(source, tmp_path / "redacted-with-audio.mov")
+    assert kept_audio["status"] == "failed"
+    assert kept_audio["audio_removed"] is False
+    assert kept_audio["reason"] == "audio_stream_present_after_encode"
+    assert not (tmp_path / "redacted-with-audio.mov").exists()
+    assert source.read_bytes() == b"raw-with-voices"

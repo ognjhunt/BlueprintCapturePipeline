@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from blueprint_pipeline import privacy_service_runtime as psr
+from tests.capture_audio_fakes import VIDEO_ONLY_MARKER, FakeMediaTools
 
 
 def _write(path: Path, payload: bytes = b"data") -> Path:
@@ -118,6 +119,13 @@ def _install_fake_cv2(monkeypatch: pytest.MonkeyPatch, *, frames: list[np.ndarra
     fake.inpaint = lambda frame, _mask, _radius, _method: np.full_like(frame, 7)
     monkeypatch.setitem(sys.modules, "cv2", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def media_tools(monkeypatch: pytest.MonkeyPatch) -> FakeMediaTools:
+    """Hermetic ffmpeg/ffprobe for the video-only output contract."""
+
+    return FakeMediaTools().install(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
@@ -292,16 +300,17 @@ def test_privacy_runtime_materialization_copy_and_subprocess_helpers(
     monkeypatch.setattr(psr.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout="1.25", stderr=""))
     assert psr._ffprobe_duration(local) == 1.25
 
+    # The redacted frames are published as-is; the source soundtrack is never re-attached.
+    assert not hasattr(psr, "_merge_audio_if_possible")
     video_only = _write(tmp_path / "video-only.mp4", b"video-only")
-    output = tmp_path / "merged.mp4"
-    monkeypatch.setattr(psr.shutil, "which", lambda name: None)
-    psr._merge_audio_if_possible(source_video=local, video_only_path=video_only, output_video=output)
+    output = tmp_path / "published.mp4"
+    receipt = psr._publish_video_only_frames(video_only_path=video_only, output_video=output)
     assert output.read_bytes() == b"video-only"
-    output.unlink()
-    monkeypatch.setattr(psr.shutil, "which", lambda name: "/bin/ffmpeg")
-    monkeypatch.setattr(psr.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr="bad"))
-    psr._merge_audio_if_possible(source_video=local, video_only_path=video_only, output_video=output)
-    assert output.read_bytes() == b"video-only"
+    assert not video_only.exists()
+    assert receipt["audio_removed"] is True
+    assert receipt["method"] == "opencv_video_writer"
+    missing = psr._publish_video_only_frames(video_only_path=video_only, output_video=tmp_path / "none.mp4")
+    assert missing["audio_removed"] is False
 
 
 def test_privacy_runtime_sam3_and_depth_backends(
@@ -443,7 +452,6 @@ def test_privacy_runtime_depth_maps_vip_and_deepprivacy(
     np.save(arkit_depth / "depth_000000.npy", np.ones((3, 4), dtype=np.float32))
     np.save(arkit_conf / "confidence_000000.npy", np.ones((3, 4), dtype=np.float32))
     _install_fake_cv2(monkeypatch, frames=[np.zeros((3, 4, 3), dtype=np.uint8)])
-    monkeypatch.setattr(psr, "_merge_audio_if_possible", lambda source_video, video_only_path, output_video: _write(output_video, b"merged"))
     vip_arkit = psr._run_vip_backend(
         input_video=video,
         masks_dir=masks_dir,
@@ -693,7 +701,6 @@ def test_privacy_runtime_remaining_branch_edges(
     _write(masks_dir / "frame_000001.png", b"mask-late")
     _install_fake_cv2(monkeypatch, frames=[np.zeros((3, 4, 3), dtype=np.uint8), np.zeros((3, 4, 3), dtype=np.uint8)])
     monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path, **_kwargs: (SimpleNamespace(_blueprint_infer_depth=lambda _runtime, _rgb: np.ones((3, 4), dtype=np.float32)), []))
-    monkeypatch.setattr(psr, "_merge_audio_if_possible", lambda source_video, video_only_path, output_video: _write(output_video, b"vip"))
     vip_missing_first_mask = psr._run_vip_backend(
         input_video=video,
         masks_dir=masks_dir,
@@ -767,3 +774,104 @@ def test_privacy_runtime_remaining_branch_edges(
         },
     )
     assert dispatched["status"] == "succeeded"
+
+
+# --- Video-only output contract (website free-beta privacy minimization) ---
+#
+# The runners never carry the source soundtrack into a redacted walkthrough,
+# and their results say how that was shown. ADP-010 / ADP-021 privacy contract.
+
+
+def _run_vip_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> tuple[dict, Path]:
+    video = _write(tmp_path / f"{name}-source.mov", b"source-with-voices")
+    masks_dir = tmp_path / f"{name}-masks"
+    _write(masks_dir / "frame_000000.png", b"mask")
+    _install_fake_cv2(monkeypatch, frames=[np.zeros((3, 4, 3), dtype=np.uint8)])
+    monkeypatch.setattr(
+        psr,
+        "_load_depth_anything_runtime",
+        lambda _path, **_kwargs: (SimpleNamespace(_blueprint_infer_depth=lambda _runtime, _rgb: np.ones((3, 4), dtype=np.float32)), []),
+    )
+    output = tmp_path / f"{name}.mov"
+    result = psr._run_vip_backend(
+        input_video=video,
+        masks_dir=masks_dir,
+        output_video=output,
+        preferred_depth_source="depth_anything",
+        arkit_depth_dir=None,
+        arkit_confidence_dir=None,
+        precomputed_depth_frames=None,
+        precomputed_confidence_frames=None,
+        vip_model_path="",
+        depth_anything_model_path="",
+    )
+    assert video.read_bytes() == b"source-with-voices"
+    return result, output
+
+
+def test_vip_output_never_reattaches_source_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, media_tools: FakeMediaTools
+) -> None:
+    result, output = _run_vip_once(tmp_path, monkeypatch, "vip-video-only")
+
+    assert result["status"] == "succeeded"
+    assert media_tools.ffmpeg_commands() == []  # no mux step that could add the source audio
+    assert output.read_bytes() == b"video"  # exactly what the video-only writer produced
+    assert not output.with_suffix(".video_only.mp4").exists()
+    assert result["audio_removed"] is True
+    assert result["audio_removal"]["evidence"] == "ffprobe_output_has_no_audio_stream"
+
+
+def test_vip_output_with_an_audio_stream_is_not_published(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeMediaTools(output_audio_streams=1).install(monkeypatch)
+    result, output = _run_vip_once(tmp_path, monkeypatch, "vip-audio-present")
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "vip_audio_removal_failed:audio_stream_present_after_encode"
+    assert result["audio_removed"] is False
+    assert not output.exists()
+
+
+def test_deepprivacy2_output_is_a_video_only_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, media_tools: FakeMediaTools
+) -> None:
+    video = _write(tmp_path / "dp2-source.mov", b"source-with-voices")
+    repo = tmp_path / "deepprivacy2"
+    _write(repo / "anonymize.py", b"script")
+    _write(repo / "configs" / "anonymizers" / "face.py", b"config")
+    monkeypatch.setenv("DEEPPRIVACY2_REPO_DIR", str(repo))
+    anonymize_targets: list[Path] = []
+
+    def run_anonymize(command, **_kwargs):
+        target = Path(command[command.index("-o") + 1])
+        anonymize_targets.append(target)
+        _write(target, b"anonymized-with-source-audio")
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(psr.subprocess, "run", run_anonymize)
+    monkeypatch.setattr(psr, "_ffprobe_duration", lambda _path, **_kwargs: 2.0)
+    output = tmp_path / "dp2-out.mov"
+
+    result = psr._run_deepprivacy2_backend(input_video=video, output_video=output, deepprivacy2_model_path="")
+
+    assert result["status"] == "succeeded"
+    [scratch] = anonymize_targets
+    assert scratch != output
+    assert not scratch.exists()  # the soundtrack-bearing anonymizer output is not kept
+    [command] = media_tools.ffmpeg_commands()
+    assert command[command.index("-i") + 1] == str(scratch)
+    assert command[-1] == str(output)
+    assert "-an" in command
+    assert output.read_bytes() == VIDEO_ONLY_MARKER + b"anonymized-with-source-audio"
+    assert result["audio_removed"] is True
+    assert result["audio_removal"]["output_audio_stream_count"] == 0
+    assert video.read_bytes() == b"source-with-voices"
+
+    FakeMediaTools(ffmpeg=False).install(monkeypatch)
+    blocked_output = tmp_path / "dp2-blocked.mov"
+    blocked = psr._run_deepprivacy2_backend(input_video=video, output_video=blocked_output, deepprivacy2_model_path="")
+    assert blocked["status"] == "failed"
+    assert blocked["reason"] == "deepprivacy2_audio_removal_failed:ffmpeg_not_found"
+    assert blocked["audio_removed"] is False
+    assert not blocked_output.exists()
+    assert not anonymize_targets[-1].exists()

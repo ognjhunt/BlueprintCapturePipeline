@@ -1,4 +1,10 @@
-"""Privacy-preserving post-processing for capture walkthrough video."""
+"""Privacy-preserving post-processing for capture walkthrough video.
+
+The published walkthrough (``privacy/final_walkthrough.mov``) is always
+video-only: sound in a workplace walkthrough can carry people's conversations
+and no downstream stage uses it. The raw capture is never modified. See
+``capture_audio_minimization`` for how removal is shown rather than assumed.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ from .common import (
     utc_now_iso,
     write_json,
 )
+from .capture_audio_minimization import audio_removal_receipt, write_audio_free_video
 from .cloud_run_iam_auth import CloudRunIamAuthError, cloud_run_id_token_headers
 from .launch_proof_policy import production_forces_true
 
@@ -170,30 +177,22 @@ def _run_http_json(
     return {"status": "failed", "reason": "http_non_object_json"}
 
 
-def _copy_or_remux_video(source: Path, destination: Path) -> Dict[str, Any]:
-    ensure_dir(destination.parent)
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg:
-        proc = subprocess.run(
-            [
-                ffmpeg,
-                "-y",
-                "-loglevel",
-                "error",
-                "-i",
-                str(source),
-                "-c",
-                "copy",
-                str(destination),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc.returncode == 0 and destination.is_file():
-            return {"status": "succeeded", "mode": "remux"}
-    shutil.copyfile(source, destination)
-    return {"status": "succeeded", "mode": "copy"}
+def _publish_video_only(source: Path, destination: Path) -> Dict[str, Any]:
+    """Publish ``source`` at ``destination`` without its audio track.
+
+    There is no byte-copy fallback: a copy would carry the soundtrack. When a
+    video-only copy cannot be made or shown, the destination is left absent and
+    the caller fails closed.
+    """
+
+    receipt = write_audio_free_video(source, destination)
+    return {
+        "status": "succeeded" if receipt.get("audio_removed") is True else "failed",
+        "mode": "video_only_remux",
+        "reason": receipt.get("reason"),
+        "audio_removed": receipt.get("audio_removed") is True,
+        "audio_removal": receipt,
+    }
 
 
 def _local_full_frame_redaction_enabled() -> bool:
@@ -229,27 +228,28 @@ def _run_local_full_frame_redaction(source: Path, destination: Path) -> Dict[str
         "scale=trunc(iw*8/2)*2:trunc(ih*8/2)*2:flags=neighbor,"
         "format=yuv420p"
     )
+    command = [
+        ffmpeg,
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source),
+        "-vf",
+        vf,
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "32",
+        "-movflags",
+        "+faststart",
+        str(destination),
+    ]
     proc = subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            str(source),
-            "-vf",
-            vf,
-            "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "32",
-            "-movflags",
-            "+faststart",
-            str(destination),
-        ],
+        command,
         capture_output=True,
         text=True,
         check=False,
@@ -260,10 +260,27 @@ def _run_local_full_frame_redaction(source: Path, destination: Path) -> Dict[str
             "reason": f"ffmpeg_redaction_failed:{proc.returncode}",
             "stderr": proc.stderr[-4000:],
         }
+    # Report what the encoder did to the audio, not what the command intended.
+    audio_removal = audio_removal_receipt(
+        command=command,
+        returncode=proc.returncode,
+        output=destination,
+        method="ffmpeg_full_frame_redaction_reencode",
+        source=source,
+    )
+    if not audio_removal["audio_removed"]:
+        destination.unlink(missing_ok=True)
+        return {
+            "status": "failed",
+            "reason": str(audio_removal.get("reason") or "audio_removal_not_shown"),
+            "audio_removed": False,
+            "audio_removal": audio_removal,
+        }
     return {
         "status": "succeeded",
         "mode": "full_frame_pixelation_blur",
         "audio_removed": True,
+        "audio_removal": audio_removal,
         "pixel_width": width,
         "blur_radius": blur,
         "output_video": str(destination),
@@ -697,6 +714,38 @@ def _ensure_remote_output_local(
         shutil.copyfile(local_path, destination)
 
 
+def _fail_closed_without_video_only_walkthrough(
+    payload: Dict[str, Any],
+    *,
+    publish_result: Mapping[str, Any],
+    manifest_path: Path,
+    verification_path: Path,
+    initial_detection: Mapping[str, Any],
+    vip_verification: Optional[Mapping[str, Any]],
+    fallback_verification: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """No privacy-processed walkthrough is published unless it is shown audio-free."""
+
+    payload["status"] = "failed_closed"
+    payload["reason"] = f"audio_removal_failed:{publish_result.get('reason') or 'not_shown'}"
+    payload["audio_removed"] = False
+    payload["audio_removal"] = publish_result.get("audio_removal")
+    payload["privacy_processed_video_uri"] = None
+    payload["world_model_video_uri"] = None
+    write_json(manifest_path, payload)
+    write_json(
+        verification_path,
+        _verification_report(
+            initial_detection=initial_detection,
+            vip_verification=vip_verification,
+            fallback_verification=fallback_verification,
+            result_status=payload["status"],
+            result_mode=payload["mode"],
+        ),
+    )
+    return payload
+
+
 def run_privacy_postprocess(
     *,
     bucket: str,
@@ -767,6 +816,9 @@ def run_privacy_postprocess(
         "raw_video_path": str(raw_video_path) if raw_video_path else None,
         "privacy_processed_video_uri": None,
         "world_model_video_uri": None,
+        # True only once a published walkthrough is shown to carry no audio.
+        "audio_removed": False,
+        "audio_removal": None,
         "privacy_manifest_uri": manifest_uri,
         "privacy_verification_report_uri": verification_uri,
         "redaction_prompt": _privacy_redaction_prompt(),
@@ -849,6 +901,8 @@ def run_privacy_postprocess(
             return payload
 
         payload["status"] = "full_frame_redacted_local_proof"
+        payload["audio_removed"] = redaction_result.get("audio_removed") is True
+        payload["audio_removal"] = redaction_result.get("audio_removal")
         payload["privacy_processed_video_uri"] = final_video_uri
         payload["world_model_video_uri"] = final_video_uri
         payload["proof_boundary"] = {
@@ -940,10 +994,22 @@ def run_privacy_postprocess(
     payload["depth_source"] = str(depth_conditioning.get("source") or "").strip() or None
     payload["depth_conditioning"] = depth_conditioning
     if not bool(initial_detection.get("people_detected")):
-        passthrough = _copy_or_remux_video(raw_video_path, final_video_path)
+        passthrough = _publish_video_only(raw_video_path, final_video_path)
         payload["steps"].append({"name": "passthrough_copy", "result": dict(passthrough)})
-        payload["status"] = "no_people_detected"
         payload["mode"] = "none"
+        if passthrough["status"] != "succeeded":
+            return _fail_closed_without_video_only_walkthrough(
+                payload,
+                publish_result=passthrough,
+                manifest_path=manifest_path,
+                verification_path=verification_path,
+                initial_detection=initial_detection,
+                vip_verification={"status": "not_needed"},
+                fallback_verification=None,
+            )
+        payload["status"] = "no_people_detected"
+        payload["audio_removed"] = True
+        payload["audio_removal"] = passthrough["audio_removal"]
         payload["privacy_processed_video_uri"] = final_video_uri
         payload["world_model_video_uri"] = final_video_uri
         write_json(manifest_path, payload)
@@ -1032,9 +1098,22 @@ def run_privacy_postprocess(
         return payload
 
     if not bool(vip_verification.get("people_detected")):
-        shutil.copyfile(vip_video_path, final_video_path)
-        payload["status"] = "person_removed"
         payload["mode"] = "removal"
+        published = _publish_video_only(vip_video_path, final_video_path)
+        payload["steps"].append({"name": "final_walkthrough_video_only_copy", "result": dict(published)})
+        if published["status"] != "succeeded":
+            return _fail_closed_without_video_only_walkthrough(
+                payload,
+                publish_result=published,
+                manifest_path=manifest_path,
+                verification_path=verification_path,
+                initial_detection=initial_detection,
+                vip_verification=vip_verification,
+                fallback_verification=None,
+            )
+        payload["status"] = "person_removed"
+        payload["audio_removed"] = True
+        payload["audio_removal"] = published["audio_removal"]
         payload["people_removed"] = payload["people_detected"]
         payload["depth_source"] = (
             str(vip_result.get("depth_source") or "").strip()
@@ -1131,9 +1210,22 @@ def run_privacy_postprocess(
         )
         return payload
 
-    shutil.copyfile(deepprivacy_video_path, final_video_path)
-    payload["status"] = "face_anonymized_fallback"
     payload["mode"] = "anonymized_fallback"
+    published = _publish_video_only(deepprivacy_video_path, final_video_path)
+    payload["steps"].append({"name": "final_walkthrough_video_only_copy", "result": dict(published)})
+    if published["status"] != "succeeded":
+        return _fail_closed_without_video_only_walkthrough(
+            payload,
+            publish_result=published,
+            manifest_path=manifest_path,
+            verification_path=verification_path,
+            initial_detection=initial_detection,
+            vip_verification=vip_verification,
+            fallback_verification=fallback_verification,
+        )
+    payload["status"] = "face_anonymized_fallback"
+    payload["audio_removed"] = True
+    payload["audio_removal"] = published["audio_removal"]
     payload["fallback_used"] = True
     payload["people_removed"] = max(
         0,
