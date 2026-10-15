@@ -3,6 +3,8 @@
 The HTTP handoff never deletes bytes. Operator cleanup uses a retained plan and
 does not assert that cloud storage, provider copies or delivered copies vanished.
 ADP-010/day-14: immutable capture rights remain authoritative after withdrawal.
+``delete`` (website_capture_withdrawal_deletion) extends one operator deletion
+to every copy the Pipeline controls: launch runs, their evidence and B2 offload.
 """
 from __future__ import annotations
 
@@ -472,14 +474,18 @@ def apply_local_cleanup(*, capture_root: Path, expected_plan_digest: str, author
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("inspect", "plan", "apply", "cloud-plan", "cloud-apply"))
+    parser.add_argument("operation", choices=("inspect", "plan", "apply", "cloud-plan", "cloud-apply", "delete"))
     parser.add_argument("--capture-root", type=Path, required=True)
     parser.add_argument("--expected-plan-digest")
     parser.add_argument("--authorize-local-deletion", action="store_true")
     parser.add_argument("--bucket", help="Existing operator-authorized source bucket for an exact cloud plan")
     parser.add_argument("--authorize-cloud-deletion", action="store_true")
+    from .website_capture_withdrawal_deletion import add_cli_arguments, run_cli
+    add_cli_arguments(parser)
     args = parser.parse_args()
-    if args.operation in {"cloud-plan", "cloud-apply"}:
+    if args.operation == "delete":
+        result = run_cli(args)
+    elif args.operation in {"cloud-plan", "cloud-apply"}:
         if not args.bucket:
             parser.error("--bucket is required for explicit cloud cleanup")
         storage = GoogleWebsiteCleanupStorage(args.bucket)
