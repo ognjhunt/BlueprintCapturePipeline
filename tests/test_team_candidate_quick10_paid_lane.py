@@ -36,7 +36,7 @@ from blueprint_pipeline.team_candidate_quick10_bundle import (
     assert_secret_absent,
     build_team_candidate_session_bundle,
 )
-from blueprint_pipeline.team_candidate_quick10_staging import stage_team_runtime
+from blueprint_pipeline.team_candidate_quick10_staging import scene_inputs_from_frozen_pair, stage_team_runtime
 from tests.test_provider_runtime_import_closure import _real_canary_pair_inputs
 from tests.test_team_candidate_quick10_rehearsal import TEAM, TOKEN_ENV, _admission
 
@@ -47,12 +47,13 @@ def stage_team_bundle(tmp_path: Path, *, admission: dict[str, Any] | None = None
     """A real sealed team bundle over the frozen pair's real Quick-10 inputs (shared with the launch tests)."""
 
     packet, runtime_receipt, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path)
-    contract = json.loads(pair_inputs.read_text())["task_success_contract"]
+    frozen = json.loads(pair_inputs.read_text())
     paths = stage_team_runtime(
-        root=tmp_path / "team", run_id="team-quick10-run-1", pair_inputs_path=pair_inputs,
-        pair_activation_path=pair_activation, admission=admission or _admission(contract),
+        root=tmp_path / "team", run_id="team-quick10-run-1",
+        scene_inputs=scene_inputs_from_frozen_pair(pair_inputs, pair_activation),
+        admission=admission or _admission(frozen["task_success_contract"]),
         prompt="Push the mug onto the green target marker.", max_policy_queries=10,
-        hard_cap_usd=20.0, hard_ttl_seconds=9_000)
+        hard_cap_usd=20.0, hard_ttl_seconds=9_000, cells=frozen["cells"])
     receipt = build_team_candidate_session_bundle(
         job_dir=tmp_path / "team-job", packet_dir=packet, runtime_source_packet_receipt=runtime_receipt,
         runtime_input_manifest_path=paths["runtime_inputs"], session_authority_path=paths["session_authority"],

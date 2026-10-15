@@ -1057,6 +1057,38 @@ def _materialize_native_particlefield_appearance(
     }
 
 
+def evidence_asset_row(path: Path, *, root: Path, semantic_role: str,
+                       pose_world: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """One packet asset read from the run's evidence root (scene assets sit at the world origin)."""
+
+    digest, size = _sha256_and_size(path)
+    return {
+        "semantic_role": semantic_role,
+        "filename": path.name,
+        "source": {"root": "evidence", "relative_path": path.relative_to(root).as_posix(),
+                   "size_bytes": size, "sha256": digest},
+        "pose_world": dict(pose_world) if pose_world is not None else {
+            "position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
+    }
+
+
+def packet_appearance_variant(native_appearance: Mapping[str, Any]) -> dict[str, Any]:
+    """The packet's appearance variant for a materialized native appearance."""
+
+    if native_appearance.get("representation") == "usd_geometry":
+        return {key: native_appearance[key] for key in (
+            "representation", "source_configured_appearance_digest", "representation_conversion_performed",
+            "source_bytes_preserved", "claim_ceiling", "captured_scene_fidelity_proven")}
+    return {
+        "representation": "particlefield_3d_gaussian_splat",
+        "source_configured_appearance_digest": native_appearance["source_configured_appearance_digest"],
+        "representation_conversion_performed": native_appearance["representation_conversion_performed"],
+        "exact_learned_arrays_preserved": True,
+        "gaussian_field_quality": native_appearance["gaussian_field_quality"],
+        "render_backend": native_appearance["appearance_render_backend"],
+    }
+
+
 def _derive_runtime_prismatic_friction_overlay(
     *, task_spec: Mapping[str, Any], task_definition: Mapping[str, Any],
     replacement_path: Path, output_root: Path,
@@ -1398,23 +1430,8 @@ def compile_native_arena_episode(
     ):
         path = (native_appearance_path if role == "appearance" else
                 runtime_replacement_path if role == "replacement" else configured_assets[role])
-        digest, size = _sha256_and_size(path)
-        row: dict[str, Any] = {
-            "semantic_role": semantic_role,
-            "filename": path.name,
-            "source": {
-                "root": "evidence",
-                "relative_path": path.relative_to(root).as_posix(),
-                "size_bytes": size,
-                "sha256": digest,
-            },
-            "pose_world": object_pose
-            if role == "replacement"
-            else {
-                "position_world_m": [0.0, 0.0, 0.0],
-                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
-            },
-        }
+        row = evidence_asset_row(path, root=root, semantic_role=semantic_role,
+                                 pose_world=object_pose if role == "replacement" else None)
         if role == "replacement":
             # An articulated subject must spawn as an articulation and start at
             # the closed reset the qualifier read back; a rigid spawn would
@@ -1494,27 +1511,7 @@ def compile_native_arena_episode(
         "physics_frequency_hz": execution.get("physics_frequency_hz"),
         "configured_task_template_adapter": task_adapter,
         "appearance_variant": (
-            {key: native_appearance[key] for key in (
-                "representation", "source_configured_appearance_digest", "representation_conversion_performed",
-                "source_bytes_preserved", "claim_ceiling", "captured_scene_fidelity_proven")}
-            if native_appearance.get("representation") == "usd_geometry" else {
-                "representation": "particlefield_3d_gaussian_splat",
-                "source_configured_appearance_digest": native_appearance[
-                    "source_configured_appearance_digest"
-                ],
-                "representation_conversion_performed": native_appearance[
-                    "representation_conversion_performed"
-                ],
-                "exact_learned_arrays_preserved": True,
-                "gaussian_field_quality": native_appearance[
-                    "gaussian_field_quality"
-                ],
-                "render_backend": native_appearance[
-                    "appearance_render_backend"
-                ],
-            }
-            if policy_observation_setup is None
-            else None
+            packet_appearance_variant(native_appearance) if policy_observation_setup is None else None
         ),
         "native_construction_feedback": (
             {
@@ -1758,4 +1755,6 @@ __all__ = [
     "OUTPUT_SCHEMA_VERSION",
     "TaskEvaluationNativeArenaEpisodeCompilerError",
     "compile_native_arena_episode",
+    "evidence_asset_row",
+    "packet_appearance_variant",
 ]

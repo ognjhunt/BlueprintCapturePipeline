@@ -263,11 +263,46 @@ class _Provider:
                 "native_control_result_path": str(result_path), "native_control_result_digest": result["result_digest"]}
 
 
+def _team_scene_record(packet: Path, runtime: Path, inputs: dict[str, Any]) -> Path:
+    """What ``team_scene_packet`` seals over a prepared scene's own compiled packet (no prior run)."""
+
+    from blueprint_pipeline import team_scene_packet as scene_packet
+
+    # A compiled plan names its scene and task, as its receipt does.
+    receipt_path, plan_path = (packet / "native_task_arena_packet_receipt.v1.json",
+                               packet / "native_task_arena_scene_plan.v1.json")
+    receipt = json.loads(receipt_path.read_text())
+    plan = {**json.loads(plan_path.read_text()), "scene_id": receipt["scene_id"], "task_id": receipt["task_id"]}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    for artifact in receipt["artifacts"]:
+        if artifact["relative_path"] == plan_path.name:
+            artifact.update(size_bytes=plan_path.stat().st_size,
+                            sha256="sha256:" + hashlib.sha256(plan_path.read_bytes()).hexdigest())
+    receipt.update(arena_scene_plan_digest=plan["plan_digest"], receipt_digest="")
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+    record = lambda path: {"path": str(path.resolve()), "size_bytes": path.stat().st_size,
+                           "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+    value = {"schema_version": scene_packet.SCHEMA, "claim_ceiling": scene_packet.CLAIM_CEILING,
+             **{key: inputs[key] for key in ("scene_revision_digest", "configuration_digest", "plan_digest",
+                                             "task_success_contract", "task_success_contract_digest")},
+             "base_native_packet": record(receipt_path), "runtime_source": record(runtime),
+             "construction_result": record(receipt_path), "execution_authority": scene_packet.EXECUTION_AUTHORITY,
+             "control_diagnostic": scene_packet.PENDING_CONTROLS, "robot_station": {"stance_digest": "fixture"},
+             "droid_profile_digest": "sha256:" + "0" * 64, "inputs_digest": ""}
+    value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
+    path = packet.parent / scene_packet.RECORD_FILENAME
+    path.write_text(json.dumps(value))
+    return path
+
+
 def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "founder@blueprint",
-           robot: dict[str, Any] | None = None, derived: bool = False) -> dict[str, Any]:
+           robot: dict[str, Any] | None = None, derived: bool = False,
+           scene_half: str = "frozen_pair") -> dict[str, Any]:
     capture = tmp_path / "capture"
     capture.mkdir()
-    packet, _runtime, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path / "scene")
+    packet, runtime, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path / "scene")
     inputs = json.loads(pair_inputs.read_text())
     task_spec = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())["task_spec"]
     operator = tmp_path / "operator"
@@ -313,9 +348,12 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
     if derived:
         from blueprint_pipeline.team_candidate_quick10_registry import write_derived_profile
 
+        half = ({"team_scene_inputs_path": str(_team_scene_record(packet, runtime, inputs))}
+                if scene_half == "team_scene" else
+                {key: scene_row[key] for key in ("pair_runtime_inputs_path", "pair_activation_path")})
         written = write_derived_profile({**{key: scene_row[key] for key in (
-            "capture_root", "scene_id", "task_id", "scenario_id", "pair_runtime_inputs_path", "pair_activation_path",
-            "robot_free_probe_root")}, "scene_revision_digest": inputs["scene_revision_digest"]})
+            "capture_root", "scene_id", "task_id", "scenario_id", "robot_free_probe_root")}, **half,
+            "scene_revision_digest": inputs["scene_revision_digest"]})
         assert written["status"] == "written", written
     if not rigid_schema:  # before the rigid probe lands, its kind is admitted for this rigid scene only
         monkeypatch.setattr(probe_gate, "PROBE_TASK_KINDS", frozenset({"articulated_open_close", task_spec["task_kind"]}))
@@ -689,3 +727,32 @@ def test_a_scene_written_in_by_its_own_records_runs_without_a_hand_written_profi
     # A scene's row can never carry an operator decision.
     refused = write_derived_profile({"capture_root": str(world["capture"]), "allowed_founder_approvers": ["someone"]})
     assert refused["status"] == "derived_profile_refused" and "allowed_founder_approvers" in refused["unexpected"]
+
+
+def test_a_prepared_scene_hosts_a_team_run_from_its_own_packet_with_no_prior_run(tmp_path, monkeypatch) -> None:
+    """No robot placement, no frozen pair: the scene's own compiled packet is the whole scene half."""
+
+    from blueprint_pipeline.team_candidate_quick10_registry import (
+        profile_for_capture,
+        write_derived_profile,
+    )
+
+    world = _world(tmp_path, monkeypatch, derived=True, scene_half="team_scene")
+    profile = profile_for_capture(world["capture"])
+    assert "pair_runtime_inputs_path" not in profile and profile["team_scene_inputs_path"]
+    staged, summary = _staged_run_reported(world)
+    assert staged["staged"] == 1 and summary["completed"] == 1, (staged, summary)
+    # Every session ran on the packet itself as its construction lineage, under the team's own run kind.
+    inputs = json.loads(next(world["job_dir"].glob("shards/00/stage-00/runtime_inputs/"
+                                                   "policy_canary_runtime_inputs.json")).read_text())
+    assert inputs["run_kind"] == "team_candidate_evaluation"
+    assert inputs["construction_result"] == inputs["base_native_packet"]
+    assert {cell["control_diagnostic"]["mode"] for cell in inputs["cells"]} == {"nonblocking_diagnostic_pending"}
+    preflight = json.loads(next(world["job_dir"].glob(
+        "shards/00/stage-00/bundle/policy_canary_static_startup_preflight.v1.json")).read_text())
+    assert preflight["status"] == "passed"
+    # A row names exactly one scene half.
+    both = write_derived_profile({**{key: profile[key] for key in (
+        "capture_root", "scene_id", "task_id", "scenario_id", "robot_free_probe_root", "scene_revision_digest",
+        "team_scene_inputs_path")}, "pair_runtime_inputs_path": "/x", "pair_activation_path": "/y"})
+    assert both["status"] == "derived_profile_refused" and both["missing"] == ["team_scene_inputs_path"]

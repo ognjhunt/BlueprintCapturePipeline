@@ -309,14 +309,13 @@ def _queue_root() -> Path:
 
 
 def _session_cells(*, purpose: str, facts: Mapping[str, Any], profile: Mapping[str, Any]) -> list[dict[str, Any]]:
-    frozen = list(facts["inputs"]["cells"])
     scene = facts["scene"]
     task_spec = _m(scene.get("task_spec"))
     generated = scored_cells(scene_revision_digest=str(scene["scene_revision_digest"]),
                              scene_id=str(profile.get("scene_id") or "scene"), salt=str(profile["scored_matrix_salt"]),
                              task_spec=task_spec, task_kind=str(task_spec.get("task_kind") or ""),
                              nominal_dynamic_friction=profile.get("nominal_dynamic_friction"))
-    return runtime_cells(generated, template=frozen[0])
+    return runtime_cells(generated, control_diagnostic=facts["inputs"]["control_diagnostic"])
 
 
 def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]], admission: Mapping[str, Any],
@@ -349,8 +348,7 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
         if probe is None:  # no team episode may run on a scene whose check cannot be recorded
             raise TeamCandidateLaunchError("team_evaluation_robot_free_probe_unrecordable")
     paths = stage_team_runtime(
-        root=root, run_id=run_id, pair_inputs_path=Path(profile["pair_runtime_inputs_path"]),
-        pair_activation_path=Path(profile["pair_activation_path"]), admission=admission, prompt=facts["prompt"],
+        root=root, run_id=run_id, scene_inputs=facts["inputs"], admission=admission, prompt=facts["prompt"],
         max_policy_queries=max_queries, hard_cap_usd=cap_usd, hard_ttl_seconds=ttl,
         cells=list(cells), team_embodiment=binding, robot_free_probe=probe)
     bundle = build_team_candidate_session_bundle(

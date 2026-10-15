@@ -214,22 +214,15 @@ def scored_cells(*, scene_revision_digest: str, scene_id: str, salt: str, task_s
     return cells
 
 
-def runtime_cells(cells: Sequence[Mapping[str, Any]], *, template: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Generated cells in the runtime-input shape, carrying the scene's frozen per-cell bindings.
-
-    The template is one of the scene's frozen Quick-10 cells: its control
-    diagnostic, success-contract and camera bindings apply to every cell of the
-    scene; only the scenario, seed and identity change.
-    """
+def runtime_cells(cells: Sequence[Mapping[str, Any]], *, control_diagnostic: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Generated cells in the runtime-input shape, each carrying the scene's per-cell control binding."""
 
     rows = []
     for cell in cells:
-        row = {key: deepcopy(value) for key, value in template.items()
-               if key not in {"cell_id", "seed", "family", "partition", "resolved_scenario",
-                              "cell_spec_digest", "resolved_scenario_digest"}}
-        row.update({key: deepcopy(cell[key]) for key in ("cell_id", "seed", "family", "partition",
-                                                           "resolved_scenario", "cell_spec_digest")})
+        row = {key: deepcopy(cell[key]) for key in ("cell_id", "seed", "family", "partition",
+                                                     "resolved_scenario", "cell_spec_digest")}
         row["resolved_scenario_digest"] = canonical_digest(row["resolved_scenario"])
+        row["control_diagnostic"] = deepcopy(dict(control_diagnostic))
         rows.append(row)
     return rows
 

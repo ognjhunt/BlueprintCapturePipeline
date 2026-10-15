@@ -229,7 +229,7 @@ def publish_agent_execution_offer(capture_root: Path, *, transport=None,
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Republish a capture's offer, e.g. after its robot-free probe or Quick-10 inputs land."""
+    """Republish a capture's offer, e.g. after its robot-free probe or its scene half (``team_scene_packet``) lands."""
     import argparse
 
     parser = argparse.ArgumentParser(description=main.__doc__)

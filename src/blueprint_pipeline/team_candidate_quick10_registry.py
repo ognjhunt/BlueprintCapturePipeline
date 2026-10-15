@@ -1,4 +1,4 @@
-"""Operator registry for the team-candidate Quick-10 runtime (beta L5).
+"""Operator registry for team evaluations (beta L5).
 
 Beta journey step: L5 team policy evaluation. As with the controlled native
 queue, customer JSON never chooses files, budgets or launch commands: an
@@ -6,7 +6,9 @@ operator-owned registry (path in ``BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY``,
 not group- or world-writable, owned by root or the service user, self-digest
 intact) binds one capture to:
 
-- the scene's frozen internal Quick-10 inputs and activation (ten cells);
+- the scene's half of a run: the prepared scene's own compiled packet
+  (``team_scene_packet``, no robot placement and no prior run), or the scene's
+  frozen internal Quick-10 inputs and activation;
 - the directory the scene's robot-free probe receipt is retained in (read
   only through ``robot_free_probe_gate.retained_probe_receipt``);
 - the open-loop horizon, hourly-rate ceiling and hard TTL of a run;
@@ -15,17 +17,16 @@ intact) binds one capture to:
 
 A scene need not be written in by hand: when the registry names a
 ``derived_profiles`` root, a sealed row holding a prepared scene's own records
-(capture, task, frozen Quick-10 inputs, probe root, revision) is read from
-there, and the operator's ``defaults`` supply everything only the operator
-decides. ``write_derived_profile`` writes that row; its caller is the
-prepared-scene Quick-10 setup, which waits on the owner's standing setup
-authority (placement review is paid inference). A scored matrix's
-salt is an HMAC of the scene revision under the operator's key file; without
-one, scored evaluations stay unlisted. An operator row always wins.
+(capture, task, the scene half, probe root, revision) is read from there, and
+the operator's ``defaults`` supply everything only the operator decides.
+``write_derived_profile`` writes that row; ``team_scene_packet`` calls it once
+it has compiled a prepared scene. A scored matrix's salt is an HMAC of the
+scene revision under the operator's key file; without one, scored evaluations
+stay unlisted. An operator row always wins.
 
 :func:`offer_eligibility` is the one rule both the offer publisher and the
-launch apply (``team_evaluation_plan``): the scene's frozen Quick-10 cells
-resolve, strict per-cell controls are not required, the scene's secret matrix
+launch apply (``team_evaluation_plan``): the scene's packet resolves its
+nominal cell, strict per-cell controls are not required, the scene's secret matrix
 salt is present, and the robot-free probe either passed at the inputs' current
 scene revision for the scene's task or, on a rigid scene, is still undecided
 (the evaluation's first cell then records and scores it before any team
@@ -47,21 +48,25 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
-from .team_candidate_quick10_staging import TeamCandidateStagingError, frozen_quick10_inputs
+from .team_candidate_quick10_staging import TeamCandidateStagingError, scene_inputs_from_frozen_pair
 from .team_evaluation_plan import PURPOSES, SCORED
 from .team_robot_free_probe import scored_task_spec
 
 REGISTRY_ENV = "BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY"
 REGISTRY_SCHEMA = "blueprint.team_candidate_quick10_registry.v1"
 DERIVED_SCHEMA = "blueprint.team_candidate_derived_profile.v1"
-# What a prepared scene's own records determine (the first eight are required).
-DERIVED_FIELDS = ("capture_root", "scene_id", "task_id", "scenario_id", "pair_runtime_inputs_path",
-                  "pair_activation_path", "robot_free_probe_root", "scene_revision_digest",
-                  "nominal_dynamic_friction")
+# What a prepared scene's own records determine (the first six are required, plus one scene half:
+# the scene's own compiled packet, or a frozen internal Quick-10 pair).
+DERIVED_FIELDS = ("capture_root", "scene_id", "task_id", "scenario_id", "robot_free_probe_root",
+                  "scene_revision_digest", "team_scene_inputs_path", "pair_runtime_inputs_path",
+                  "pair_activation_path", "nominal_dynamic_friction")
+REQUIRED_DERIVED_FIELDS = DERIVED_FIELDS[:6]
 # What only the operator decides: who may fund a run, at what rate, and each team's rights.
 OPERATOR_FIELDS = ("allowed_founder_approvers", "max_hourly_rate_usd", "open_loop_horizon", "team_rights",
                    "machine_avoidlist_path")
-QUICK_CELLS = 10
+# The scene's nominal cell: what the prompt and query budget are read from.
+NOMINAL_CELL = {"cell_id": "scene.nominal", "seed": 0, "family": "canonical_anchor",
+                "resolved_scenario": {"family": "canonical_anchor", "ordinal": 0, "parameters": {}}}
 
 
 class TeamCandidateRegistryError(ValueError):
@@ -176,7 +181,9 @@ def write_derived_profile(row: Mapping[str, Any]) -> dict[str, Any]:
     if settings is None:
         return {"status": "derived_profiles_not_configured"}
     value = {key: row[key] for key in DERIVED_FIELDS if row.get(key) is not None}
-    missing = sorted(set(DERIVED_FIELDS[:8]) - set(value))
+    missing = sorted(set(REQUIRED_DERIVED_FIELDS) - set(value))
+    if not _one_scene_half(value):
+        missing.append("team_scene_inputs_path")
     if missing or set(row) - set(DERIVED_FIELDS):
         return {"status": "derived_profile_refused", "missing": missing,
                 "unexpected": sorted(set(row) - set(DERIVED_FIELDS))}
@@ -190,6 +197,11 @@ def write_derived_profile(row: Mapping[str, Any]) -> dict[str, Any]:
     staging.chmod(0o644)
     os.replace(staging, path)
     return {"status": "written", "path": str(path), "profile_digest": value["profile_digest"]}
+
+
+def _one_scene_half(profile: Mapping[str, Any]) -> bool:
+    pair = [bool(profile.get(key)) for key in ("pair_runtime_inputs_path", "pair_activation_path")]
+    return bool(profile.get("team_scene_inputs_path")) != (pair == [True, True]) and pair in ([True, True], [False, False])
 
 
 def profile_for_request(request: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -210,34 +222,46 @@ def rights_record(profile: Mapping[str, Any], *, team_id: str, checkpoint_id: st
     return _read(Path(path)) if path else None
 
 
+def _scene_inputs(profile: Mapping[str, Any]) -> dict[str, Any]:
+    if not _one_scene_half(profile):
+        raise TeamCandidateRegistryError("team_candidate_scene_half_ambiguous")
+    if profile.get("team_scene_inputs_path"):
+        from .team_scene_packet import TeamScenePacketError, read_team_scene_inputs
+
+        try:
+            return read_team_scene_inputs(Path(profile["team_scene_inputs_path"]))
+        except (OSError, ValueError, TeamScenePacketError) as exc:
+            raise TeamCandidateRegistryError("team_scene_inputs_unavailable") from exc
+    try:
+        return scene_inputs_from_frozen_pair(Path(profile["pair_runtime_inputs_path"]),
+                                             Path(profile["pair_activation_path"]))
+    except (KeyError, OSError, ValueError, TeamCandidateStagingError) as exc:
+        raise TeamCandidateRegistryError("team_candidate_frozen_quick10_inputs_unavailable") from exc
+
+
 def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
-    """Everything a team run needs from the scene's frozen Quick-10 inputs (no network)."""
+    """Everything a team run needs from the scene's half of the evaluation (no network)."""
 
     from .adp009d_policy_episode import maximum_policy_queries_for_task_spec
     from .native_task_arena_policy_canary_worker import _resolved_scene_plan
 
-    try:
-        inputs, activation = frozen_quick10_inputs(Path(profile["pair_runtime_inputs_path"]),
-                                                   Path(profile["pair_activation_path"]))
-    except (KeyError, OSError, ValueError, TeamCandidateStagingError) as exc:
-        raise TeamCandidateRegistryError("team_candidate_frozen_quick10_inputs_unavailable") from exc
+    inputs = _scene_inputs(profile)
     packet_dir = Path(inputs["base_native_packet"]["path"]).parent
     plan = _read(packet_dir / "native_task_arena_scene_plan.v1.json")
     try:
-        resolved = [_resolved_scene_plan(plan, cell, task_success_contract=inputs["task_success_contract"])
-                    for cell in inputs["cells"]]
+        nominal = _resolved_scene_plan(plan, {**NOMINAL_CELL, "control_diagnostic": inputs["control_diagnostic"]},
+                                       task_success_contract=inputs["task_success_contract"])
     except (KeyError, RuntimeError, TypeError, ValueError) as exc:
         raise TeamCandidateRegistryError("team_candidate_droid_franka_cells_unavailable") from exc
-    if ((plan.get("robot") or {}).get("robot_id") != "franka_panda" or len(resolved) != QUICK_CELLS
-            or any((row.get("policy_canary_embodiment_profile") or {}).get("robot_preset_id")
-                   != DROID_POLICY_CANARY_PRESET_ID for row in resolved)):
+    if ((plan.get("robot") or {}).get("robot_id") != "franka_panda"
+            or (nominal.get("policy_canary_embodiment_profile") or {}).get("robot_preset_id")
+            != DROID_POLICY_CANARY_PRESET_ID):
         raise TeamCandidateRegistryError("team_candidate_droid_franka_cells_unavailable")
     horizon = profile.get("open_loop_horizon")
     if type(horizon) is not int or horizon <= 0:
         raise TeamCandidateRegistryError("team_candidate_open_loop_horizon_invalid")
-    raw = Path(profile["pair_runtime_inputs_path"]).read_bytes()
     return {
-        "inputs": inputs, "activation": activation, "packet_dir": packet_dir,
+        "inputs": inputs, "packet_dir": packet_dir,
         "runtime_source_packet_receipt": Path(inputs["runtime_source"]["path"]),
         # A rigid task's robot-free probe is planned and bound against the specification a team is
         # scored with: the scene's, under the job's success contract (team_robot_free_probe). The
@@ -248,11 +272,10 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
                                 else plan.get("task_spec")),
                   "task_success_contract": inputs["task_success_contract"],
                   "embodiment_preset_id": DROID_POLICY_CANARY_PRESET_ID},
-        "prompt": resolved[0]["task_spec"]["prompt"],
-        "max_policy_queries": maximum_policy_queries_for_task_spec(resolved[0]["task_spec"],
-                                                                   open_loop_horizon=horizon),
+        "prompt": nominal["task_spec"]["prompt"],
+        "max_policy_queries": maximum_policy_queries_for_task_spec(nominal["task_spec"], open_loop_horizon=horizon),
         "open_loop_horizon": horizon,
-        "episode_specs_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "episode_specs_sha256": canonical_digest(inputs),
     }
 
 
@@ -304,10 +327,11 @@ def offer_eligibility(profile: Mapping[str, Any] | None,
 __all__ = [
     "DERIVED_FIELDS",
     "DERIVED_SCHEMA",
+    "NOMINAL_CELL",
     "OPERATOR_FIELDS",
-    "QUICK_CELLS",
     "REGISTRY_ENV",
     "REGISTRY_SCHEMA",
+    "REQUIRED_DERIVED_FIELDS",
     "TeamCandidateRegistryError",
     "load_registry",
     "offer_eligibility",

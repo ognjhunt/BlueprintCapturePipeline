@@ -982,7 +982,8 @@ def _construction_lineage_mode(
     ):
         raise RuntimeError("policy_canary_scene_plan_invalid")
     if construction.get("schema_version") == "native_task_arena_packet_receipt.v1":
-        if (inputs.get("run_kind") != "internal_policy_canary"
+        # A team evaluation may run on a prepared scene's own compiled packet (``team_scene_packet``).
+        if (inputs.get("run_kind") not in ("internal_policy_canary", TEAM_RUN_KIND)
                 or inputs.get("claim_ceiling") != "diagnostic_policy_execution"
                 or inputs.get("construction_result") != inputs.get("base_native_packet")
                 or construction.get("status") != "construction_packet_completed"
