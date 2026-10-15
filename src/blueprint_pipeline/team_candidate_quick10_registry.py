@@ -14,10 +14,12 @@ intact) binds one capture to:
 - one sealed rights record per admitted team checkpoint.
 
 A scene need not be written in by hand: when the registry names a
-``derived_profiles`` root, a prepared scene's own records (capture, task,
-frozen Quick-10 inputs, probe root, revision) are written there as a sealed
-row when its inputs land (``write_derived_profile``), and the operator's
-``defaults`` supply everything only the operator decides. A scored matrix's
+``derived_profiles`` root, a sealed row holding a prepared scene's own records
+(capture, task, frozen Quick-10 inputs, probe root, revision) is read from
+there, and the operator's ``defaults`` supply everything only the operator
+decides. ``write_derived_profile`` writes that row; its caller is the
+prepared-scene Quick-10 setup, which waits on the owner's standing setup
+authority (placement review is paid inference). A scored matrix's
 salt is an HMAC of the scene revision under the operator's key file; without
 one, scored evaluations stay unlisted. An operator row always wins.
 
