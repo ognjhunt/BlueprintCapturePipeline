@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .checkpoint_policy_credentials import bearer_lease_id
 from .common import utc_now_iso
 from .controlled_policy_configuration import canonical_request_digest
 from .decision_evidence_contracts import canonical_digest
@@ -250,9 +251,8 @@ def _candidate_records(*, row: Mapping[str, Any], request: Mapping[str, Any], pr
                               "model_identity_digest": metadata["model_identity_digest"],
                               "team_policy_id": metadata["policy_id"]}}
     lease = {"schema_version": LEASE_SCHEMA, "kind": "kms_bearer_lease", "status": "available", "single_use": True,
-             "lease_id": "policy-access-" + canonical_digest({"credential_ref": access["credential_ref"],
-                                                              "job_id": request["job_id"],
-                                                              "pipeline_run_id": pipeline_run_id})[7:39],
+             "lease_id": bearer_lease_id(credential_ref=access["credential_ref"], job_id=request["job_id"],
+                                         pipeline_run_id=pipeline_run_id),
              "credential_ref_digest": canonical_digest({"credential_ref": access["credential_ref"]}),
              "credential_env": CREDENTIAL_ENV, "origin": origin, "candidate_id": candidate_id,
              "secret_material_recorded": False, "expires_at_iso": funding["expires_at_iso"]}
@@ -387,7 +387,11 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
         raise TeamCandidateLaunchError(";".join(blockers) or "team_candidate_profile_missing")
     funding = _funding(row, profile)
     payload = _endpoint(request)
-    access = hooks["credential_client"](request=request, payload=payload, pipeline_run_id=pipeline_run_id).access()
+    # The single-use lease the admission seals: the WebApp releases the token for it once.
+    lease_id = bearer_lease_id(credential_ref=str(payload["credential_ref"]), job_id=request["job_id"],
+                               pipeline_run_id=pipeline_run_id)
+    access = hooks["credential_client"](request=request, payload=payload,
+                                        pipeline_run_id=pipeline_run_id).release_bearer_lease(lease_id=lease_id)
     credential = _m(access.get("credential"))
     token = credential.get("bearer_token")
     if (access.get("kind") != "bearer" or credential.get("endpoint_url") != payload["endpoint_url"]

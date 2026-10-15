@@ -50,6 +50,7 @@ from blueprint_pipeline import team_candidate_quick10_vast as team_vast
 from blueprint_pipeline import vast_provider_adapter
 from blueprint_pipeline.agent_execution_offer import publish_agent_execution_offer
 from blueprint_pipeline.agent_run_result_scoring import validate_scoring_statement
+from blueprint_pipeline.checkpoint_policy_credentials import bearer_lease_id
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_worker import (
     preflight_policy_canary_runtime_directory,
@@ -148,18 +149,25 @@ class _WebApp(executor.AgentRunWebAppClient):
 
 
 class _Broker:
-    """``CheckpointPolicyCredentialClient``'s job-bound bearer access, as the WebApp answers it."""
+    """``CheckpointPolicyCredentialClient``'s single-use bearer lease, as the WebApp must answer it."""
 
     accessed: ClassVar[list[str]] = []
+    leases: ClassVar[list[str]] = []
 
     def __init__(self, *, request: dict[str, Any], payload: dict[str, Any], pipeline_run_id: str) -> None:
         assert payload["credential_ref"] == CREDENTIAL_REF and pipeline_run_id.startswith("agent-attempt-")
-        self.request = request
+        self.request, self.pipeline_run_id = request, pipeline_run_id
 
-    def access(self) -> dict[str, Any]:
+    def release_bearer_lease(self, *, lease_id: str) -> dict[str, Any]:
+        assert lease_id == bearer_lease_id(credential_ref=CREDENTIAL_REF, job_id=self.request["job_id"],
+                                           pipeline_run_id=self.pipeline_run_id)
+        if lease_id in _Broker.leases:  # the WebApp releases a lease's token once
+            raise ValueError("checkpoint_policy_credential_delivery_unavailable")
         _Broker.accessed.append(self.request["job_id"])
+        _Broker.leases.append(lease_id)
         return {"ok": True, "credential_ref": CREDENTIAL_REF, "kind": "bearer",
-                "credential": {"job_id": self.request["job_id"], "endpoint_url": ENDPOINT, "bearer_token": TOKEN}}
+                "credential": {"job_id": self.request["job_id"], "endpoint_url": ENDPOINT, "bearer_token": TOKEN},
+                "lease": {"lease_id": lease_id, "single_use": True, "status": "released", "release_count": 1}}
 
 
 def _provider_session_result(runtime: Path, spec: dict[str, Any], *, probe_status: str = "passed",
@@ -404,7 +412,7 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
         allocator.main(argv)  # the runner polls it; this stand-in returns before the first poll
         return 2**22 + 7  # no such process
 
-    _Broker.accessed = []
+    _Broker.accessed, _Broker.leases = [], []
     zeros: list[dict[str, Any]] = []
     queue = tmp_path / "team-evaluations"
     def provider_zero() -> dict[str, Any]:
@@ -446,6 +454,9 @@ def test_a_request_runs_200_hidden_cells_first_shard_alone_and_reports_one_score
     assert staged["claimed"] == 1 and staged["staged"] == 1 and staged["pending"] == 1, staged
     assert summary["completed"] == 1, summary
     assert _Broker.accessed == ["canonical-job-1"]
+    # The admission seals the very lease the WebApp released once.
+    admission = json.loads((world["job_dir"] / "team_candidate_admission.json").read_text())
+    assert _Broker.leases == [admission["credential"]["lease_id"]]
     # Eight GPU sessions of 25 cells, each its own allocation inside its share of the cap; the
     # first ran alone and its gate opened the rest.
     calls = world["allocator_calls"]

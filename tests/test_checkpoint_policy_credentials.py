@@ -10,10 +10,12 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import agent_run_executor as executor
-from blueprint_pipeline.checkpoint_policy_credentials import CheckpointPolicyCredentialClient
+from blueprint_pipeline.checkpoint_policy_credentials import (
+    CheckpointPolicyCredentialClient,
+    bearer_lease_id,
+)
 from blueprint_pipeline.controlled_policy_configuration import canonical_request_digest
 from blueprint_pipeline.safe_outbound_http import SafeHttpResponse
-
 
 REFERENCE = "policy-credential-00000000-0000-0000-0000-000000000001"
 OWNER = "agent-attempt-" + "a" * 32
@@ -48,6 +50,10 @@ class SyntheticCredentialRoute:
         self.requests = []
         self.decryptions = 0
         self.echo_override = {}
+        # The single-use bearer lease contract the WebApp must add; off models today's route.
+        self.lease_contract = False
+        self.released = {}
+        self.lease_override = {}
 
     def __call__(self, url, *, method, data, headers, **_kwargs):
         assert url.endswith("/checkpoint-policy-credentials/" + REFERENCE)
@@ -59,8 +65,12 @@ class SyntheticCredentialRoute:
         payload = json.loads(data)
         self.requests.append(payload)
         allowed = {"action", "job_id", "canonical_request_digest", "tenant_id", "contract",
-            "admission_receipt"} | ({"pipeline_run_id"} if self.strict_claim else set())
-        if set(payload) - allowed or (self.strict_claim and not payload.get("pipeline_run_id")):
+            "admission_receipt"} | ({"pipeline_run_id"} if self.strict_claim else set()) \
+            | ({"lease_id"} if self.lease_contract else set())
+        actions = {"access", "registry_lease", "bind_admission"} | (
+            {"bearer_lease_release"} if self.lease_contract else set())
+        if (set(payload) - allowed or payload.get("action") not in actions
+                or (self.strict_claim and not payload.get("pipeline_run_id"))):
             raise urllib.error.HTTPError(url, 400, "invalid", {}, None)
         due = self.settlement_due_ms if self.strict_claim else self.original_due_ms
         if not self.active or self.now_ms >= due or (
@@ -68,12 +78,27 @@ class SyntheticCredentialRoute:
             raise urllib.error.HTTPError(url, 409, "claim required", {}, None)
         assert payload["job_id"] == self.request_value["job_id"]
         assert payload["canonical_request_digest"] == canonical_request_digest(self.request_value)
+        if payload["action"] == "bearer_lease_release":
+            # One release per lease id, recomputed from the claimed run, recorded before decryption.
+            expected = bearer_lease_id(credential_ref=REFERENCE, job_id=payload["job_id"],
+                                       pipeline_run_id=payload["pipeline_run_id"])
+            if payload["lease_id"] != expected or expected in self.released:
+                raise urllib.error.HTTPError(url, 409, "lease consumed", {}, None)
+            self.released[expected] = payload["pipeline_run_id"]
         self.decryptions += 1
         reply = {"ok": True, "job_id": payload["job_id"],
             "canonical_request_digest": payload["canonical_request_digest"]}
         if self.strict_claim:
             reply["pipeline_run_id"] = payload["pipeline_run_id"]
-        if payload["action"] == "access":
+        if payload["action"] == "bearer_lease_release":
+            policy = self.request_value["policy_package"]["policy_api_endpoint"]
+            reply.update(credential_ref=REFERENCE, kind="bearer",
+                credential={"job_id": payload["job_id"], "endpoint_url": policy["endpoint_url"],
+                            "bearer_token": SECRET},
+                lease={"lease_id": payload["lease_id"], "single_use": True, "status": "released",
+                       "release_count": 1, "credential_ref": REFERENCE, "job_id": payload["job_id"],
+                       "pipeline_run_id": payload["pipeline_run_id"], **self.lease_override})
+        elif payload["action"] == "access":
             package = self.request_value["policy_package"]
             policy = package.get("policy_api_endpoint") or package["docker_container"]
             reply.update(credential_ref=REFERENCE, kind=policy["credential_kind"])
@@ -218,3 +243,69 @@ def test_transport_exception_text_cannot_enter_native_failure_receipt(route, req
         client.access()
     assert SECRET not in str(error.value)
     assert error.value.__suppress_context__
+
+
+def _lease_id(request_value, owner=OWNER):
+    return bearer_lease_id(credential_ref=REFERENCE, job_id=request_value["job_id"], pipeline_run_id=owner)
+
+
+def test_bearer_lease_id_is_the_documented_cross_runtime_formula():
+    expected = "policy-access-" + hashlib.sha256(json.dumps(
+        {"credential_ref": REFERENCE, "job_id": "canonical-job-1", "pipeline_run_id": OWNER},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:32]
+    assert bearer_lease_id(credential_ref=REFERENCE, job_id="canonical-job-1", pipeline_run_id=OWNER) == expected
+
+
+def test_bearer_lease_is_released_once_and_a_second_claim_gets_no_token(route, request_value, capsys, caplog):
+    route.lease_contract = True
+    lease_id = _lease_id(request_value)
+    row = client_for(request_value).release_bearer_lease(lease_id=lease_id)
+    assert row["credential"]["bearer_token"] == SECRET and row["lease"]["lease_id"] == lease_id
+    assert route.requests == [{"action": "bearer_lease_release", "job_id": "canonical-job-1",
+        "pipeline_run_id": OWNER, "canonical_request_digest": canonical_request_digest(request_value),
+        "lease_id": lease_id}]
+    # Another process (a crash replay, a second dispatcher) claiming the same lease gets nothing.
+    with pytest.raises(ValueError, match="^checkpoint_policy_credential_delivery_unavailable$") as error:
+        client_for(request_value).release_bearer_lease(lease_id=lease_id)
+    assert error.value.__context__.code == 409 and route.decryptions == 1
+    captured = capsys.readouterr()
+    assert SECRET not in captured.out + captured.err + caplog.text
+
+
+def test_a_webapp_without_the_lease_contract_releases_nothing(route, request_value):
+    with pytest.raises(ValueError, match="^checkpoint_policy_credential_delivery_unavailable$") as error:
+        client_for(request_value).release_bearer_lease(lease_id=_lease_id(request_value))
+    assert error.value.__context__.code == 400 and route.decryptions == 0
+
+
+@pytest.mark.parametrize("lease_id", [None, "policy-access-" + "0" * 32, "another"])
+def test_a_lease_id_not_bound_to_this_claim_is_refused_before_any_request(route, request_value, lease_id):
+    route.lease_contract = True
+    with pytest.raises(ValueError, match="^checkpoint_policy_bearer_lease_invalid$"):
+        client_for(request_value).release_bearer_lease(lease_id=lease_id)
+    assert route.requests == []
+
+
+def test_a_registry_credential_cannot_claim_a_bearer_lease(route, request_value):
+    route.lease_contract = True
+    with pytest.raises(ValueError, match="^checkpoint_policy_bearer_lease_invalid$"):
+        client_for(request_value, kind="registry").release_bearer_lease(lease_id=_lease_id(request_value))
+    assert route.requests == []
+
+
+@pytest.mark.parametrize("field,value", [("single_use", False), ("status", "available"), ("release_count", 2),
+    ("release_count", None), ("lease_id", "policy-access-" + "1" * 32), ("pipeline_run_id", "another-owner"),
+    ("job_id", "another-job"), ("credential_ref", "policy-credential-" + "0" * 36)])
+def test_a_reply_that_does_not_confirm_one_bound_release_is_refused(route, request_value, field, value):
+    route.lease_contract = True
+    route.lease_override[field] = value
+    with pytest.raises(ValueError, match="^checkpoint_policy_bearer_lease_unenforced$") as error:
+        client_for(request_value).release_bearer_lease(lease_id=_lease_id(request_value))
+    assert SECRET not in str(error.value)
+
+
+def test_a_reply_without_any_lease_record_is_refused(route, request_value):
+    route.lease_contract = True
+    route.echo_override["lease"] = None
+    with pytest.raises(ValueError, match="^checkpoint_policy_bearer_lease_unenforced$"):
+        client_for(request_value).release_bearer_lease(lease_id=_lease_id(request_value))
