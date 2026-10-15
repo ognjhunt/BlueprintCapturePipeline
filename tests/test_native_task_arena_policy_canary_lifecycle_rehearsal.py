@@ -323,7 +323,9 @@ def _scene_plan() -> dict[str, Any]:
         "schema_version": "native_task_arena_scene_plan.v1",
         "task_id": "scene-839873-mug-planar-push",
         "task_kind": "rigid_pick_place",
-        "robot": {"robot_id": "franka_panda"},
+        # The robot station, as the scene compiler places Blueprint's robot (a team's arm stands here too).
+        "robot": {"robot_id": "franka_panda", "base_pose_world": {
+            "position_world_m": [2.9681748, -3.3100837, SUPPORT_PLANE_Z_M], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}},
         "objects": [
             {
                 "name": "task_object",

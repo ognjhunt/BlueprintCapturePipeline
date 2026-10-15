@@ -56,6 +56,7 @@ from blueprint_pipeline.team_candidate_quick10_admission import RIGHTS_SCHEMA
 from blueprint_pipeline import team_candidate_quick10_launch as launch
 from blueprint_pipeline.team_candidate_quick10_launch import CREDENTIAL_ENV, TERMINAL_FILENAME
 from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, REGISTRY_SCHEMA
+from blueprint_pipeline.team_embodiment import validate_embodiment_manifest
 from tests.test_agent_run_executor import _row
 from tests.test_provider_runtime_import_closure import _real_canary_pair_inputs
 
@@ -90,13 +91,14 @@ def _metadata() -> dict[str, Any]:
 class _TeamService:
     """The team's HTTPS service: answers only its own origin, only with the bearer token."""
 
-    def __init__(self) -> None:
+    def __init__(self, metadata: dict[str, Any] | None = None) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.metadata = metadata or _metadata()
 
     def transport(self, *, url: str, method: str, body: Any, headers: dict[str, str]) -> bytes:
         assert headers["Authorization"] == "Bearer " + TOKEN and url == ENDPOINT and method == "GET"
         self.calls.append(("launch_metadata", method))
-        return json.dumps(_metadata()).encode()
+        return json.dumps(self.metadata).encode()
 
     def __call__(self, url: str, **kwargs: Any) -> Any:
         assert kwargs["allowed_origins"] == (ORIGIN,) and kwargs["max_redirects"] == 0
@@ -104,7 +106,7 @@ class _TeamService:
         self.calls.append(("provider_" + kwargs["method"].lower(), kwargs["method"]))
 
         class Response:
-            body = json.dumps(_metadata()).encode()
+            body = json.dumps(self.metadata).encode()
         return Response()
 
 
@@ -224,7 +226,7 @@ class _Provider:
 
 
 def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "founder@blueprint",
-           purpose: str = "practice") -> dict[str, Any]:
+           purpose: str = "practice", robot: dict[str, Any] | None = None) -> dict[str, Any]:
     capture = tmp_path / "capture"
     capture.mkdir()
     packet, _runtime, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path / "scene")
@@ -277,6 +279,18 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
     row.update(execution_admission_canonical_json=frozen,
                execution_admission_digest="sha256:" + hashlib.sha256(frozen.encode()).hexdigest())
     service = _TeamService()
+    if robot is not None:  # the team's own arm, declared in the request and named by its service
+        canonical["policy_package"]["policy_api_endpoint"].update(
+            policy_interface_id="blueprint_policy_https.v1", robot_embodiment=robot["manifest"])
+        frozen = json.dumps(admission, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        row.update(execution_admission_canonical_json=frozen,
+                   execution_admission_digest="sha256:" + hashlib.sha256(frozen.encode()).hexdigest())
+        declared = validate_embodiment_manifest(robot["manifest"])
+        service = _TeamService({"schema_version": "blueprint.policy_https_metadata.v1", "policy_id": "acme-arm",
+                                "policy_interface_id": "blueprint_policy_https.v1", "action_space": "joint_position",
+                                "action_chunk_rows": declared["action_chunk_rows"],
+                                "model_identity_digest": MODEL_DIGEST,
+                                "embodiment_digest": declared["embodiment_digest"]})
     monkeypatch.setattr(https_client, "fetch_bounded_https", service)
     provider = _Provider(tmp_path, monkeypatch, service)
     monkeypatch.setattr(team_vast, "run_arena_native_control_vast", provider)
@@ -304,6 +318,8 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
 
     hooks = {"credential_client": _Broker, "metadata_transport": service.transport, "queue_root": queue,
              "provider_zero": lambda: world["provider_zero"](), "implementation_commit": "a" * 40}
+    if robot is not None:
+        hooks["model_fetch"] = lambda url, target: shutil.copyfile(robot["model"], target)
     runner = {"allocator_starter": start_allocator, "provider_zero": lambda: world["provider_zero"](),
               "sleep": lambda _seconds: None}
     world = {"capture": capture, "row": row, "client": _WebApp(row), "hooks": hooks, "runner": runner,
@@ -500,3 +516,38 @@ def test_the_terminal_reader_is_bound_to_its_request_and_silent_for_other_jobs(t
     with pytest.raises(ValueError, match="team_candidate_terminal_binding_mismatch"):
         read_team_candidate_terminal(job_dir=job, expected_job_id="canonical-job-1",
                                      expected_canonical_request_digest=digest)
+
+
+def test_a_team_brings_its_own_arm_and_cameras_to_a_practice_run(tmp_path, monkeypatch) -> None:
+    from tests.test_team_embodiment import manifest, write_robot_usd
+
+    model = write_robot_usd(tmp_path / "acme_arm.usda")
+    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model), "model": model})
+    staged, summary = _staged_run_reported(world)
+    assert staged["staged"] == 1 and summary["completed"] == 1, (staged, summary)
+    job = world["job_dir"]
+    admission = json.loads((job / "team_candidate_admission.json").read_text())
+    assert (admission["policy_interface_id"], admission["embodiment_preset_id"]) == (
+        "blueprint_policy_https.v1", "team_embodiment")
+    spec = json.loads(next(job.glob("shards/00/stage-00/runtime_inputs/policy_execution_spec.*.json")).read_text())
+    binding = spec["team_embodiment"]
+    assert binding["manifest"]["embodiment_digest"] == admission["embodiment"]["embodiment_digest"]
+    # The verified robot ships in the sealed bundle at the path the binding names; the worker's
+    # static preflight (run by the stand-in GPU host) resolved every cell onto it.
+    bundle = next(job.glob("shards/00/stage-00/bundle/team_candidate_quick10_session_bundle.zip"))
+    with zipfile.ZipFile(bundle) as archive:
+        shipped = archive.read("provider_runtime/native_task_packet/team_embodiment/robot.usd")
+    assert "sha256:" + hashlib.sha256(shipped).hexdigest() == binding["model"]["sha256"]
+    (_path, result), _settlement = world["client"].posted
+    assert result["episodes_run"] == 10 and result["scoring"]["runtime"] == "team_evaluation_practice"
+
+
+def test_a_team_arm_that_cannot_reach_the_task_is_refused_before_any_allocation(tmp_path, monkeypatch) -> None:
+    from tests.test_team_embodiment import manifest, write_robot_usd
+
+    model = write_robot_usd(tmp_path / "acme_arm.usda")
+    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model, reach_m=0.1), "model": model})
+    summary = executor.poll_once(client=world["client"], capture_root=world["capture"],
+                                 team_launch_hooks=world["hooks"])
+    assert summary["blocked"] == 1 and world["allocator_calls"] == []
+    assert world["client"].blocked == ["team_embodiment_station_out_of_reach"]

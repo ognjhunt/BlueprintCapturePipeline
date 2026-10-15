@@ -56,6 +56,14 @@ from .team_candidate_quick10_admission import (
     admit_team_candidate,
 )
 from .team_candidate_quick10_registry import offer_eligibility, profile_for_request, rights_record
+from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
+from .team_embodiment import (
+    TeamEmbodimentError,
+    read_model_structure,
+    team_embodiment_binding,
+    validate_embodiment_manifest,
+    verify_model_file,
+)
 from .team_evaluation_plan import (
     EPISODES,
     PRACTICE,
@@ -66,6 +74,9 @@ from .team_evaluation_plan import (
     shard_ttl_seconds,
     shards,
 )
+from .team_policy_https_client import INTERFACE_ID as TEAM_ROBOT_INTERFACE
+from .team_policy_https_client import METADATA_KEYS as TEAM_METADATA_KEYS
+from .team_policy_https_client import METADATA_SCHEMA as TEAM_METADATA_SCHEMA
 
 TERMINAL_FILENAME = "team_candidate_quick10_terminal.json"
 TERMINAL_SCHEMA = "blueprint.team_candidate_quick10_terminal.v1"
@@ -84,6 +95,9 @@ MAX_UNALLOCATED_RESTAGES = 48
 POLL_SECONDS = 60
 _METADATA_KEYS = {"schema_version", "policy_id", "policy_interface_id", "action_space", "action_chunk_rows",
                   "model_identity_digest"}
+EMBODIMENT_BINDING_FILENAME = "team_embodiment_binding.json"
+EMBODIMENT_MODEL_PATH = Path("team_embodiment") / "robot.usd"
+MAX_ROBOT_MODEL_BYTES = 512 * 1024 * 1024
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -120,6 +134,15 @@ def _endpoint(request: Mapping[str, Any]) -> dict[str, Any]:
     return _m(package.get("policy_api_endpoint")) if present == ["policy_api_endpoint"] else {}
 
 
+def request_embodiment(request: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The team's own robot (validated manifest) on ``blueprint_policy_https.v1``, None on DROID; raise if invalid."""
+
+    payload = _endpoint(request)
+    if payload.get("policy_interface_id") != TEAM_ROBOT_INTERFACE:
+        return None
+    return validate_embodiment_manifest(_m(payload.get("robot_embodiment")))
+
+
 def request_purpose(request: Mapping[str, Any]) -> str | None:
     """``practice`` or ``scored`` from the request's execution profile, else None."""
 
@@ -133,7 +156,11 @@ def team_request_blockers(request: Mapping[str, Any], row: Mapping[str, Any]) ->
     purpose = request_purpose(request)
     url = urlsplit(str(payload.get("endpoint_url") or ""))
     blockers = []
-    if (purpose is None or payload.get("policy_interface_id") != INTERFACE_ID
+    try:
+        request_embodiment(request)
+    except TeamEmbodimentError as exc:
+        blockers.extend(exc.blockers)
+    if (purpose is None or payload.get("policy_interface_id") not in (INTERFACE_ID, TEAM_ROBOT_INTERFACE)
             or payload.get("credential_kind") != "bearer"
             or re.fullmatch(r"policy-credential-[0-9a-f-]{36}", str(payload.get("credential_ref") or "")) is None
             or url.scheme != "https" or not url.hostname or url.username or url.password or url.fragment):
@@ -152,7 +179,8 @@ def team_request_blockers(request: Mapping[str, Any], row: Mapping[str, Any]) ->
     return blockers
 
 
-def _team_metadata(endpoint_url: str, origin: str, token: str, transport: Callable[..., bytes] | None) -> dict:
+def _team_metadata(endpoint_url: str, origin: str, token: str, transport: Callable[..., bytes] | None,
+                   manifest: Mapping[str, Any] | None = None) -> dict:
     headers = {"Accept": "application/json", "Authorization": "Bearer " + token}
     if transport is None:
         from .core.security_controls import fetch_bounded_https
@@ -165,6 +193,17 @@ def _team_metadata(endpoint_url: str, origin: str, token: str, transport: Callab
         value = json.loads(raw)
     except (TypeError, ValueError) as exc:
         raise TeamCandidateLaunchError("team_candidate_metadata_invalid") from exc
+    if manifest is not None:
+        # The team's own robot: the served policy must name the declared robot and its chunk.
+        if (not isinstance(value, dict) or set(value) != TEAM_METADATA_KEYS
+                or value["schema_version"] != TEAM_METADATA_SCHEMA
+                or value["policy_interface_id"] != TEAM_ROBOT_INTERFACE or value["action_space"] != "joint_position"
+                or value["embodiment_digest"] != manifest["embodiment_digest"]
+                or value["action_chunk_rows"] != manifest["action_chunk_rows"]
+                or not _ID.fullmatch(str(value["policy_id"]))
+                or not _DIGEST.fullmatch(str(value["model_identity_digest"]))):
+            raise TeamCandidateLaunchError("team_candidate_metadata_invalid")
+        return value
     if (not isinstance(value, dict) or set(value) != _METADATA_KEYS or value["schema_version"] != METADATA_SCHEMA
             or value["policy_interface_id"] != INTERFACE_ID or value["action_space"] != "joint_position"
             or value["action_chunk_rows"] not in SUPPORTED_ACTION_CHUNK_ROWS
@@ -194,11 +233,17 @@ def _candidate_records(*, row: Mapping[str, Any], request: Mapping[str, Any], pr
     team_id, checkpoint_id = str(row.get("team_id") or ""), str(_m(row.get("checkpoint")).get("checkpoint_id") or "")
     candidate_id = f"team-{team_id}.{checkpoint_id}"
     rows = int(metadata["action_chunk_rows"])
+    manifest = request_embodiment(request)
     candidate = {"schema_version": CANDIDATE_SCHEMA, "team_id": team_id, "checkpoint_id": checkpoint_id,
-                 "candidate_id": candidate_id, "embodiment_preset_id": DROID_POLICY_CANARY_PRESET_ID,
-                 "policy_interface_id": INTERFACE_ID,
+                 "candidate_id": candidate_id,
+                 "embodiment_preset_id": DROID_POLICY_CANARY_PRESET_ID if manifest is None else TEAM_ROBOT_ID,
+                 "policy_interface_id": INTERFACE_ID if manifest is None else TEAM_ROBOT_INTERFACE,
+                 **({} if manifest is None else {"embodiment": manifest}),
                  "delivery": {"mode": "https_policy", "endpoint_url": endpoint, "metadata_url": endpoint,
-                              "action_chunk_rows": rows, "open_loop_horizon": min(int(facts["open_loop_horizon"]), rows),
+                              "action_chunk_rows": rows,
+                              # A team's own robot executes its whole declared chunk before the next query.
+                              "open_loop_horizon": (min(int(facts["open_loop_horizon"]), rows) if manifest is None
+                                                    else rows),
                               "model_identity_digest": metadata["model_identity_digest"],
                               "team_policy_id": metadata["policy_id"]}}
     lease = {"schema_version": LEASE_SCHEMA, "kind": "kms_bearer_lease", "status": "available", "single_use": True,
@@ -283,17 +328,27 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
 
     root = job_dir / "shards" / f"{index:02d}" / f"stage-{restage:02d}"
     run_id = f"{base_run_id}-s{index:02d}" + (f"r{restage:02d}" if restage else "")
-    ttl = shard_ttl_seconds(len(cells))
+    binding_path = job_dir / EMBODIMENT_BINDING_FILENAME
+    binding = _read(binding_path) if binding_path.is_file() else None
+    hz = int(binding["manifest"]["control_hz"]) if binding else 15
+    ttl = shard_ttl_seconds(len(cells), control_hz=hz)
+    max_queries = facts["max_policy_queries"]
+    if binding is not None:
+        # The team's chunk runs whole at its own rate over the scene's time budget.
+        plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
+        steps = int(plan["cadence"]["maximum_action_steps"]) * hz // 15
+        max_queries = -(-steps // int(admission["delivery"]["open_loop_horizon"]))
     paths = stage_team_runtime(
         root=root, run_id=run_id, pair_inputs_path=Path(profile["pair_runtime_inputs_path"]),
         pair_activation_path=Path(profile["pair_activation_path"]), admission=admission, prompt=facts["prompt"],
-        max_policy_queries=facts["max_policy_queries"], hard_cap_usd=cap_usd, hard_ttl_seconds=ttl,
-        cells=list(cells))
+        max_policy_queries=max_queries, hard_cap_usd=cap_usd, hard_ttl_seconds=ttl,
+        cells=list(cells), team_embodiment=binding)
     bundle = build_team_candidate_session_bundle(
         job_dir=root / "bundle", packet_dir=facts["packet_dir"],
         runtime_source_packet_receipt=facts["runtime_source_packet_receipt"],
         runtime_input_manifest_path=paths["runtime_inputs"], session_authority_path=paths["session_authority"],
-        execution_spec_path=paths["execution_spec"], implementation_commit=commit)
+        execution_spec_path=paths["execution_spec"], implementation_commit=commit,
+        team_robot_model_path=job_dir / EMBODIMENT_MODEL_PATH if binding else None)
     argv = ["gpu-canary", "--provider", "vast", "--probe-kind", PROBE_KIND,
             "--native-task-arena-policy-canary-session-authority", str(paths["session_authority"]),
             "--native-task-arena-policy-canary-session-bundle-receipt",
@@ -334,17 +389,21 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     token = token.strip()
     endpoint = str(payload["endpoint_url"])
     origin = f"{urlsplit(endpoint).scheme}://{urlsplit(endpoint).netloc}"
-    metadata = _team_metadata(endpoint, origin, token, hooks.get("metadata_transport"))
+    manifest = request_embodiment(request)
+    metadata = _team_metadata(endpoint, origin, token, hooks.get("metadata_transport"), manifest)
     records = _candidate_records(row=row, request=request, profile=profile, facts=facts, funding=funding,
                                  access=access, metadata=metadata, pipeline_run_id=pipeline_run_id, purpose=purpose)
     admission = admit_team_candidate(**records, scene=facts["scene"], probe_receipt=facts.get("probe_receipt"),
                                      purpose=purpose)
     _write(job_dir / "team_candidate_admission.json", admission)
     _write(job_dir / REQUEST_FILENAME, dict(request))
+    if manifest is not None:
+        _stage_robot_model(job_dir=job_dir, manifest=manifest, facts=facts, fetch=hooks.get("model_fetch"))
     commit = hooks.get("implementation_commit") or _source_commit()
     base_run_id = f"team-{purpose}-" + canonical_digest({"job_id": request["job_id"], "run": pipeline_run_id})[7:31]
     cells = _session_cells(purpose=purpose, facts=facts, profile=profile)
-    groups = shards(cells)
+    # A faster control rate renders more frames per episode, so its shards hold fewer cells.
+    groups = shards(cells, size=max(1, SHARD_CELLS * 15 // (int(manifest["control_hz"]) if manifest else 15)))
     total_cap = float(funding["cap_usd"])
     staged = [_stage_shard(job_dir=job_dir, index=index, cells=group, admission=admission, facts=facts,
                            profile=profile, cap_usd=round(total_cap * len(group) / len(cells), 2),
@@ -369,6 +428,30 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
         stream.write(token + "\n")
     queue = Path(hooks.get("queue_root") or _queue_root()) / "pending"
     _write(queue / f"{request['job_id']}.json", {"job_dir": str(job_dir), "queued_at_iso": utc_now_iso()})
+
+
+def _fetch_model(url: str, target: Path) -> None:
+    from .core.security_controls import fetch_bounded_https
+
+    origin = f"{urlsplit(url).scheme}://{urlsplit(url).netloc}"
+    fetch_bounded_https(url, method="GET", headers={"Accept": "*/*"}, timeout_seconds=300,
+                        max_bytes=MAX_ROBOT_MODEL_BYTES, allowed_origins=(origin,), max_redirects=0,
+                        output_path=target)
+
+
+def _stage_robot_model(*, job_dir: Path, manifest: Mapping[str, Any], facts: Mapping[str, Any],
+                       fetch: Callable[[str, Path], None] | None) -> dict[str, Any]:
+    """Fetch the team's robot USD once, verify it is the declared file, and seal its binding to the scene."""
+
+    target = job_dir / EMBODIMENT_MODEL_PATH
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
+    (fetch or _fetch_model)(str(manifest["model"]["url"]), target)
+    record = verify_model_file(manifest, target)
+    plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
+    binding = team_embodiment_binding(manifest, model_record=record, structure=read_model_structure(target),
+                                      scene_plan=plan)
+    _write(job_dir / EMBODIMENT_BINDING_FILENAME, binding)
+    return binding
 
 
 def _current_shard(job_dir: Path, index: int) -> dict[str, Any]:

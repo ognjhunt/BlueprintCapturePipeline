@@ -127,3 +127,19 @@ register_native_robot_adapter(
         policy_camera_roles=("head", "left_wrist", "right_wrist"),
     )
 )
+register_native_robot_adapter(
+    NativeRobotAdapter(
+        # A robot team's own arm (``team_embodiment``): its cameras are mounted on
+        # a robot link or in the world, as the team declared.
+        robot_id="team_embodiment",
+        arena_module="isaaclab_arena.embodiments.embodiment_base",
+        factory_module="blueprint_pipeline.team_embodiment_runtime",
+        factory_name="build_team_embodiment",
+        camera_roles=(
+            *((f"team_camera_{index}", f"team_camera_{index}", "world_or_robot_body") for index in range(4)),
+            ("overview", "external_camera_2", "world"),
+        ),
+        required_camera_roles=("team_camera_0", "overview"),
+        policy_camera_roles=tuple(f"team_camera_{index}" for index in range(4)),
+    )
+)

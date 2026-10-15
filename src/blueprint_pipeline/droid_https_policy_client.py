@@ -130,6 +130,10 @@ class DroidHttpsTeamPolicyClient:
     """Team-hosted DROID policy with per-operation declared-identity checks."""
 
     learned_policy = True
+    # A subclass serving another wire contract over the same transport overrides these.
+    interface_id = INTERFACE_ID
+    request_schema = REQUEST_SCHEMA
+    transport_name = TRANSPORT
 
     def __init__(self, *, spec: DroidHttpsPolicySpec, bearer_token: str | None,
                  transport: Transport | None = None) -> None:
@@ -191,6 +195,9 @@ class DroidHttpsTeamPolicyClient:
             raise ValueError("droid_https_policy_request_evidence_missing")
         return json.loads(json.dumps(self._request_evidence))
 
+    def _encode(self, observation: Mapping[str, Any]) -> dict[str, Any]:
+        return encode_observation(observation)
+
     def infer(self, observation: Mapping[str, Any]) -> Any:
         """Send one observation, retain truthful evidence, return only the action chunk."""
 
@@ -201,17 +208,17 @@ class DroidHttpsTeamPolicyClient:
         self._last_inference_evidence = None
         self._request_evidence = None
         metadata = self._verified_metadata()
-        body = json.dumps({"schema_version": REQUEST_SCHEMA, "request_id": secrets.token_hex(24),
-                           "policy_interface_id": INTERFACE_ID, "observation": encode_observation(observation)},
+        body = json.dumps({"schema_version": self.request_schema, "request_id": secrets.token_hex(24),
+                           "policy_interface_id": self.interface_id, "observation": self._encode(observation)},
                           sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-        self._request_evidence = capture_request(observation, transport=TRANSPORT)
+        self._request_evidence = capture_request(observation, transport=self.transport_name)
         if self._request_evidence_sink is not None:
             self._request_evidence_sink(self._request_evidence)
         response = self._call(self._spec.endpoint_url, "POST", body)
         retained = json.loads(json.dumps(response, allow_nan=False))
         keys = sorted(str(key) for key in response) if isinstance(response, Mapping) else []
         self._last_inference_evidence = {
-            "server_response_received": True, "transport": TRANSPORT,
+            "server_response_received": True, "transport": self.transport_name,
             "transport_connection_generation": self._generation,
             "server_identity_sha256": metadata["identity_sha256"], "identity_basis": metadata["identity_basis"],
             "request_body_sha256": _sha(body), "wire_response_type": type(response).__name__,
@@ -243,7 +250,7 @@ class DroidHttpsTeamPolicyClient:
         self.candidate_policy_queried = False
         self._last_inference_evidence = None
         self._request_evidence = None
-        return {"identity_verified": True, "transport": TRANSPORT,
+        return {"identity_verified": True, "transport": self.transport_name,
                 "readiness_method": "declared_identity_handshake_without_inference",
                 "connection_generation": self._generation, "candidate_policy_queried": False,
                 "candidate_inference_performed": False, "policy_state_advanced": False,
@@ -254,7 +261,7 @@ class DroidHttpsTeamPolicyClient:
         return None
 
     def evidence_summary(self) -> dict[str, Any]:
-        return {"transport": TRANSPORT, "identity_verified": True, "server_metadata": self.server_metadata,
+        return {"transport": self.transport_name, "identity_verified": True, "server_metadata": self.server_metadata,
                 "connection_generation": self._generation,
                 "last_inference_evidence": (self.last_inference_evidence()
                                             if self._last_inference_evidence is not None else None)}

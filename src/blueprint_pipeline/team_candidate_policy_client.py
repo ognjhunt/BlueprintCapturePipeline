@@ -2,7 +2,8 @@
 
 Beta journey step: L5 team policy evaluation. The canary worker resolves every
 candidate's client here. A spec on a team HTTPS interface gets the team's own
-authenticated HTTPS client. Its bearer token is read from the private file
+authenticated HTTPS client: the DROID contract, or the team's own robot
+(``blueprint_policy_https.v1``). Its bearer token is read from the private file
 named by the ``*_FILE`` environment variable the sealed execution spec names;
 the provider bootstrap writes that file at 0600 from the instance environment.
 Every other spec keeps the frozen pair's pinned OpenPI and GR00T clients. Only the canary bundle binds
@@ -41,7 +42,15 @@ def _bearer_token(credential_env: str) -> str | None:
 
 def canary_policy_client(spec: Mapping[str, Any], *,
                          groot_worker_identity_receipt: Mapping[str, Any] | None = None) -> Any:
-    if resolve_policy_interface(spec) in TEAM_HTTPS_INTERFACES:
+    interface = resolve_policy_interface(spec)
+    if interface == "blueprint_policy_https.v1":
+        from .team_policy_https_client import TeamPolicyHttpsClient, TeamPolicySpec
+
+        return TeamPolicyHttpsClient(
+            spec=TeamPolicySpec(**spec["policy_spec"]),
+            bearer_token=_bearer_token(str(spec["policy_endpoint"]["credential_env"])),
+        )
+    if interface in TEAM_HTTPS_INTERFACES:
         from .droid_https_policy_client import DroidHttpsPolicySpec, DroidHttpsTeamPolicyClient
 
         return DroidHttpsTeamPolicyClient(

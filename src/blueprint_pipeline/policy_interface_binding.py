@@ -13,11 +13,13 @@ INTERFACES = {
     "openpi_droid.v1": "pi05_droid",
     "groot_n17_droid.v1": "groot_n17_droid",
     "openpi_droid_https.v1": "pi05_droid",
+    # A team's own robot and cameras (``team_embodiment``); no frozen candidate shares it.
+    "blueprint_policy_https.v1": "team_embodiment",
 }
 # Written out, not inverted: two interfaces share pi05_droid's contract, and
 # only the pinned OpenPI one may ever serve the frozen pi05_droid candidate.
 LEGACY_INTERFACES = {"pi05_droid": "openpi_droid.v1", "groot_n17_droid": "groot_n17_droid.v1"}
-TEAM_HTTPS_INTERFACES = frozenset({"openpi_droid_https.v1"})
+TEAM_HTTPS_INTERFACES = frozenset({"openpi_droid_https.v1", "blueprint_policy_https.v1"})
 
 
 def resolve_policy_interface(spec: Mapping[str, Any]) -> str:

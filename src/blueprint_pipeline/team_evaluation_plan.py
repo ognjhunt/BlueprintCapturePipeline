@@ -89,8 +89,10 @@ def profile_purpose(profile_id: str) -> str | None:
     return next((purpose for purpose, value in PROFILES.items() if value == profile_id), None)
 
 
-def shard_ttl_seconds(cell_count: int) -> int:
-    return SHARD_OVERHEAD_SECONDS + SECONDS_PER_CELL * int(cell_count)
+def shard_ttl_seconds(cell_count: int, *, control_hz: int = 15) -> int:
+    """A shard's hard time limit; cameras render every control step, so a faster robot takes longer per cell."""
+
+    return SHARD_OVERHEAD_SECONDS + SECONDS_PER_CELL * int(cell_count) * max(1, int(control_hz) // 15)
 
 
 def _finite(value: Any) -> float | None:

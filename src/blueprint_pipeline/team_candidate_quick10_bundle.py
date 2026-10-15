@@ -36,6 +36,7 @@ from .native_task_arena_bundle import POLICY_RUNTIME_ROOT_MODULE_NAMES, _sha256,
 from .native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
 from .native_task_arena_policy_canary_bundle import (
     CANARY_SHIPPED_PACKAGE_FILES,
+    TEAM_RUNTIME_MODULE_NAMES,
     _bound_record_path,
     _read,
     stage_policy_contract_dependencies,
@@ -205,8 +206,13 @@ def build_team_candidate_session_bundle(
     execution_spec_path: str | Path,
     implementation_commit: str,
     generated_at: str | None = None,
+    team_robot_model_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Package the warm Quick-10 worker for one admitted team candidate (no secret material)."""
+    """Package the warm Quick-10 worker for one admitted team candidate (no secret material).
+
+    A candidate on its own robot ships its verified robot USD at the path its
+    sealed binding names inside the scene packet.
+    """
 
     inputs = validate_runtime_input_manifest(_read(runtime_input_manifest_path))
     authority = validate_session_authority(_read(session_authority_path))
@@ -248,8 +254,7 @@ def build_team_candidate_session_bundle(
         package / name for name in (
             "native_task_arena_policy_worker.py", "native_task_arena_policy_canary_session.py",
             "policy_canary_interrupted_cell_recovery.py", "native_policy_canary_diagnostic_continuation.py",
-            "native_task_arena_policy_canary_worker.py", "team_candidate_policy_client.py",
-            "droid_https_policy_client.py")})
+            "native_task_arena_policy_canary_worker.py", *TEAM_RUNTIME_MODULE_NAMES)})
     assert_provider_runtime_import_closure(
         package_source_dir=package, shipped_module_names=sorted(path.name for path in runtime_modules),
         shipped_package_files=CANARY_SHIPPED_PACKAGE_FILES, code="team_candidate_bundle_import_closure_incomplete")
@@ -277,6 +282,18 @@ def build_team_candidate_session_bundle(
         for name in POLICY_RUNTIME_ROOT_MODULE_NAMES:
             if name != "adp009d_policy_server_worker.py":  # no local policy server in a team session
                 shutil.copy2(package / name, runtime / name)
+        binding = spec.get("team_embodiment")
+        if (binding is None) != (team_robot_model_path is None):
+            raise TeamCandidateBundleError("team_embodiment_model_binding_mismatch")
+        if binding is not None:
+            from .team_embodiment import verify_model_file
+
+            record = verify_model_file(binding["manifest"], team_robot_model_path)
+            if record["size_bytes"] != binding["model"]["size_bytes"]:
+                raise TeamCandidateBundleError("team_embodiment_model_binding_mismatch")
+            target = runtime / "native_task_packet" / binding["model"]["bundle_path"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(team_robot_model_path, target)
         entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
         entrypoint.write_text(_entrypoint(credential_env), encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)

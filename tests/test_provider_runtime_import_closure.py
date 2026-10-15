@@ -44,8 +44,7 @@ CANARY_SHIPPED_MODULES = sorted(
         "policy_canary_interrupted_cell_recovery.py",
         "native_policy_canary_diagnostic_continuation.py",
         "native_task_arena_policy_canary_worker.py",
-        "team_candidate_policy_client.py",
-        "droid_https_policy_client.py",
+        *bundle.TEAM_RUNTIME_MODULE_NAMES,
     }
 )
 CANARY_PACKAGE_FILES = bundle.CANARY_SHIPPED_PACKAGE_FILES

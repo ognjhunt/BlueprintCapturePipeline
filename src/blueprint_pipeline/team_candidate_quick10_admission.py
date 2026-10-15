@@ -7,11 +7,13 @@ the scene, for ``practice`` (the ten published Quick-10 cells, feedback only)
 or ``scored`` (200 hidden cells, the only evidence a recommendation may rest
 on; ``team_evaluation_plan``), and seals what the runtime may run:
 
-- the candidate is the team's own policy on the DROID Franka (Robotiq 2F-85)
-  interface, served by the team over authenticated HTTPS
-  (``openpi_droid_https.v1``); a private-checkpoint delivery is refused by
-  name because Blueprint has no runtime that serves a team's uploaded
-  pi0.5/GR00T weights on the GPU yet;
+- the candidate is the team's own policy, served by the team over
+  authenticated HTTPS, either on the DROID Franka (Robotiq 2F-85) interface
+  (``openpi_droid_https.v1``) or on the team's own robot, cameras and action
+  chunk (``blueprint_policy_https.v1`` with a ``blueprint.robot_embodiment.v1``
+  manifest, ``team_embodiment``); a private-checkpoint delivery is refused by
+  name because Blueprint has no runtime that serves a team's uploaded weights
+  on the GPU yet;
 - its rights record grants a licence to run and forbids self-grading,
   ranking, secret retention and Arm Decision Proof evidence use;
 - a single-use KMS bearer-credential lease for exactly that origin is
@@ -51,6 +53,9 @@ from .native_task_arena_policy_canary_session import (
 )
 from .policy_interface_binding import TEAM_HTTPS_INTERFACES
 from .robot_free_probe_gate import RobotFreeProbeGateError, require_robot_free_probe, task_success_contract_binding
+from .team_embodiment import POLICY_INTERFACE_ID as TEAM_ROBOT_INTERFACE
+from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
+from .team_embodiment import TeamEmbodimentError, admission_blockers, camera_names, validate_embodiment_manifest
 from .team_evaluation_plan import EPISODES, PRACTICE, PURPOSES, SCORED, SHARD_CELLS, shard_ttl_seconds
 
 CANDIDATE_SCHEMA = "blueprint.team_policy_candidate.v1"
@@ -91,16 +96,35 @@ def _self_digest_ok(value: Mapping[str, Any], field: str) -> bool:
     return value.get(field) == canonical_digest(dict(value), digest_field=field)
 
 
+def team_robot_manifest(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The validated manifest of a candidate on its own robot, None on the DROID interface; raise when invalid."""
+
+    if candidate.get("policy_interface_id") != TEAM_ROBOT_INTERFACE:
+        return None
+    return validate_embodiment_manifest(_m(candidate.get("embodiment")))
+
+
 def _candidate_blockers(candidate: Mapping[str, Any]) -> list[str]:
     blockers = []
     delivery = _m(candidate.get("delivery"))
+    rows_allowed: tuple[int, ...] = (10, 15)
+    try:
+        manifest = team_robot_manifest(candidate)
+    except TeamEmbodimentError as exc:
+        manifest, rows_allowed = None, ()
+        blockers.extend(exc.blockers)
     if candidate.get("schema_version") != CANDIDATE_SCHEMA:
         blockers.append("team_candidate_record_invalid")
     if not all(_ID.fullmatch(str(candidate.get(key) or "")) for key in ("team_id", "checkpoint_id", "candidate_id")):
         blockers.append("team_candidate_identity_invalid")
     if candidate.get("candidate_id") in CANDIDATE_IDS:
         blockers.append("team_candidate_cannot_impersonate_frozen_candidate")
-    if candidate.get("embodiment_preset_id") != DROID_POLICY_CANARY_PRESET_ID:
+    if manifest is not None:
+        blockers.extend(admission_blockers(manifest))
+        rows_allowed = (int(manifest["action_chunk_rows"]),)
+    expected_preset = (TEAM_ROBOT_ID if candidate.get("policy_interface_id") == TEAM_ROBOT_INTERFACE
+                       else DROID_POLICY_CANARY_PRESET_ID)
+    if candidate.get("embodiment_preset_id") != expected_preset:
         blockers.append("team_candidate_interface_mismatch:embodiment")
     if delivery.get("mode") == "private_checkpoint":
         blockers.append("team_candidate_private_checkpoint_runtime_unavailable")
@@ -112,7 +136,7 @@ def _candidate_blockers(candidate: Mapping[str, Any]) -> list[str]:
         if (any(urlsplit(url).scheme != "https" or not urlsplit(url).hostname or urlsplit(url).username
                 or urlsplit(url).password or urlsplit(url).fragment for url in urls) or len(origins) != 1):
             blockers.append("team_candidate_endpoint_invalid")
-        if (delivery.get("action_chunk_rows") not in (10, 15) or type(delivery.get("open_loop_horizon")) is not int
+        if (delivery.get("action_chunk_rows") not in rows_allowed or type(delivery.get("open_loop_horizon")) is not int
                 or not 1 <= delivery["open_loop_horizon"] <= int(delivery.get("action_chunk_rows") or 0)
                 or not _DIGEST.fullmatch(str(delivery.get("model_identity_digest") or ""))
                 or not _ID.fullmatch(str(delivery.get("team_policy_id") or ""))):
@@ -197,8 +221,13 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
         blockers.append("team_candidate_scene_success_contract_invalid")
     if (contract.get("criteria") or {}).get("controls", {}).get("mode") == "required_per_cell":
         blockers.append("team_candidate_strict_controls_runtime_unavailable")
-    if scene.get("embodiment_preset_id") != candidate.get("embodiment_preset_id"):
+    # A team's own robot stands at the scene's robot station; staging checks its reach from there.
+    if (candidate.get("embodiment_preset_id") != TEAM_ROBOT_ID
+            and scene.get("embodiment_preset_id") != candidate.get("embodiment_preset_id")):
         blockers.append("team_candidate_interface_mismatch:scene_embodiment")
+    if (candidate.get("embodiment_preset_id") == TEAM_ROBOT_ID
+            and task_spec.get("task_kind") != "rigid_pick_place"):
+        blockers.append("team_embodiment_task_kind_unsupported")
     probe: dict[str, Any] = {}
     try:
         probe = require_robot_free_probe(probe_receipt, scene_revision_digest=revision,
@@ -221,6 +250,7 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
         "team_id": candidate["team_id"], "checkpoint_id": candidate["checkpoint_id"],
         "candidate_id": candidate["candidate_id"], "policy_interface_id": candidate["policy_interface_id"],
         "embodiment_preset_id": candidate["embodiment_preset_id"],
+        "embodiment": team_robot_manifest(candidate),
         "delivery": {key: delivery[key] for key in (
             "mode", "endpoint_url", "metadata_url", "action_chunk_rows", "open_loop_horizon", "model_identity_digest",
             "team_policy_id")},
@@ -260,12 +290,21 @@ def runtime_binding(admission: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mapping[str, Any], prompt: str,
-                   max_policy_queries: int) -> dict[str, Any]:
-    """The sealed per-candidate execution spec the canary worker loads (no secret material)."""
+                   max_policy_queries: int, team_embodiment: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The sealed per-candidate execution spec the canary worker loads (no secret material).
+
+    A candidate on its own robot carries the staged ``team_embodiment`` binding
+    (``team_embodiment.team_embodiment_binding``) for the admitted manifest.
+    """
 
     value = validate_admission(admission)
     if task_success_contract.get("contract_digest") != value["task_success_contract_digest"]:
         raise TeamCandidateAdmissionError(["team_candidate_execution_contract_mismatch"])
+    manifest = value.get("embodiment")
+    if (manifest is None) != (team_embodiment is None) or (
+            manifest is not None and _m(_m(team_embodiment).get("manifest")).get("embodiment_digest")
+            != manifest["embodiment_digest"]):
+        raise TeamCandidateAdmissionError(["team_embodiment_binding_mismatch"])
     delivery, credential = value["delivery"], value["credential"]
     # The team's own declared id; Blueprint's candidate id stays the evidence identity.
     policy_spec = {"policy_id": delivery["team_policy_id"], "endpoint_url": delivery["endpoint_url"],
@@ -274,6 +313,8 @@ def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mappi
                    "action_chunk_rows": delivery["action_chunk_rows"],
                    "open_loop_horizon": delivery["open_loop_horizon"],
                    "policy_interface_id": value["policy_interface_id"]}
+    if manifest is not None:
+        policy_spec.update(embodiment_digest=manifest["embodiment_digest"], camera_names=camera_names(manifest))
     spec = {
         "schema_version": EXECUTION_SPEC_SCHEMA, "candidate_id": value["candidate_id"],
         "policy_interface_id": value["policy_interface_id"],
@@ -288,7 +329,9 @@ def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mappi
         "task_success_contract": dict(task_success_contract),
         "task_success_contract_digest": value["task_success_contract_digest"],
         "prompt": prompt, "max_policy_queries": int(max_policy_queries),
-        "open_loop_horizon": delivery["open_loop_horizon"], "execution_spec_digest": "",
+        "open_loop_horizon": delivery["open_loop_horizon"],
+        **({"team_embodiment": dict(team_embodiment)} if team_embodiment is not None else {}),
+        "execution_spec_digest": "",
     }
     spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
     return spec
@@ -300,5 +343,6 @@ __all__ = [
     "admit_team_candidate",
     "execution_spec",
     "runtime_binding",
+    "team_robot_manifest",
     "validate_admission",
 ]

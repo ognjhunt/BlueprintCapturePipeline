@@ -108,7 +108,12 @@ def build_agent_execution_offer(capture_root: Path, *, policy_execution_profiles
 def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
     """What a team is asked to do and how it is judged; nothing about the site's geometry."""
     from .droid_https_policy_client import IMAGE_KEYS, INTERFACE_ID, STATE_KEYS, SUPPORTED_ACTION_CHUNK_ROWS
+    from .team_embodiment import ADMITTED_FORMS, CONTROL_HZ, MAX_ACTION_CHUNK_ROWS
+    from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
+    from .team_embodiment import SCHEMA as EMBODIMENT_SCHEMA
     from .team_evaluation_plan import EPISODES, SCORED_FAMILY_SHARES, variation_bounds
+    from .team_policy_https_client import INTERFACE_ID as TEAM_ROBOT_INTERFACE
+    from .team_policy_https_client import METADATA_SCHEMA as TEAM_METADATA_SCHEMA
 
     scene = facts["scene"]
     task_spec = scene.get("task_spec") if isinstance(scene.get("task_spec"), Mapping) else {}
@@ -125,12 +130,24 @@ def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -
         "scored": {"episodes": EPISODES["scored"], "cells_published": False,
                    "families": [name for name, _ in SCORED_FAMILY_SHARES],
                    "parameter_bounds": {name: list(value) for name, value in sorted(bounds.items())}},
-        "policy_interface": {"policy_interface_id": INTERFACE_ID, "embodiment_preset_id": scene["embodiment_preset_id"],
-                             "observation": {"images": list(IMAGE_KEYS), "image_size": [224, 224],
-                                             "state": list(STATE_KEYS), "prompt": True},
-                             "action": {"space": "joint_position", "dimension": 8, "control_hz": 15,
-                                        "chunk_rows": sorted(SUPPORTED_ACTION_CHUNK_ROWS)},
-                             "request_timeout_seconds": 30, "authentication": "bearer"},
+        # A team brings a policy for Blueprint's DROID Franka, or for its own robot and cameras.
+        "policy_interfaces": [
+            {"policy_interface_id": INTERFACE_ID, "embodiment_preset_id": scene["embodiment_preset_id"],
+             "observation": {"images": list(IMAGE_KEYS), "image_size": [224, 224],
+                             "state": list(STATE_KEYS), "prompt": True},
+             "action": {"space": "joint_position", "dimension": 8, "control_hz": 15,
+                        "chunk_rows": sorted(SUPPORTED_ACTION_CHUNK_ROWS)},
+             "request_timeout_seconds": 30, "authentication": "bearer"},
+            {"policy_interface_id": TEAM_ROBOT_INTERFACE, "embodiment_preset_id": TEAM_ROBOT_ID,
+             "embodiment_schema": EMBODIMENT_SCHEMA, "admitted_forms": list(ADMITTED_FORMS),
+             "robot_station": "base_fixed_at_scene_robot_station_declared_reach_must_cover_task",
+             "observation": {"images": "one_png_per_declared_camera", "state": ["joint_position", "gripper_position"],
+                             "prompt": True},
+             "action": {"space": "joint_position", "row": "declared_arm_joint_targets_then_gripper_closure_0_to_1",
+                        "control_hz": list(CONTROL_HZ), "chunk_rows": [1, MAX_ACTION_CHUNK_ROWS]},
+             "metadata_schema": TEAM_METADATA_SCHEMA, "task_kinds": ["rigid_pick_place"],
+             "request_timeout_seconds": 30, "authentication": "bearer"},
+        ],
     }
 
 
