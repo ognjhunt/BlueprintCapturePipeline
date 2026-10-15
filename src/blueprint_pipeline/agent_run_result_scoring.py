@@ -12,8 +12,8 @@ who decided the second. Every result this repository reports now states:
 - ``claim_ceiling``: carried unchanged, never upgraded.
 
 The WebApp admits a result as recommendation evidence only through a positive
-allowlist (today exactly ``policy_canary_quick10_team_candidate`` with
-``simulator_scored`` and every binding present). This module states facts; it
+allowlist (today exactly ``team_evaluation_scored`` with ``simulator_scored``
+and every binding present). This module states facts; it
 does not decide admission. Mirror: Blueprint-WebApp
 ``server/utils/runResultScoring.ts``.
 """
@@ -25,7 +25,9 @@ from collections.abc import Mapping
 from typing import Any
 
 SCHEMA_VERSION = "blueprint.agent_run_result_scoring.v1"
-TEAM_CANDIDATE_QUICK10 = "policy_canary_quick10_team_candidate"
+# A team's evaluation: 200 hidden cells, the only run a recommendation may rest on.
+TEAM_SCORED = "team_evaluation_scored"
+TEAM_RUNTIMES = {"scored": TEAM_SCORED}
 CONTROLLED_NATIVE_SEALED_TASK = "controlled_native_sealed_task"
 LEGACY_COMMAND_BATCH = "legacy_robot_eval_command_batch"
 SIMULATOR_SCORED = "simulator_scored"
@@ -105,7 +107,8 @@ __all__ = [
     "LEGACY_COMMAND_BATCH",
     "SCHEMA_VERSION",
     "SIMULATOR_SCORED",
-    "TEAM_CANDIDATE_QUICK10",
+    "TEAM_RUNTIMES",
+    "TEAM_SCORED",
     "AgentRunResultScoringError",
     "controlled_native_scoring",
     "legacy_command_batch_scoring",

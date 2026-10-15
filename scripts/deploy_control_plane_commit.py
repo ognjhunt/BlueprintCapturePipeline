@@ -447,6 +447,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-activation.path",
     "blueprint-task-evaluation-policy-canary-dispatcher.service",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
+    "blueprint-team-evaluation-runner.service",
+    "blueprint-team-evaluation-runner.path",
     "blueprint-native-g1-team-campaign-dispatcher.service",
     "blueprint-native-g1-team-campaign-dispatcher.timer",
     "blueprint-native-g1-team-campaign-settlement.service",
@@ -503,6 +505,9 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
+    # Runs only evaluations the agent-run dispatcher already staged under a
+    # founder's free-beta admission; each shard keeps its own cap and TTL.
+    "blueprint-team-evaluation-runner.path",
     # Remote episode compilation dispatches only in a remote mode (set, or auto
     # once the remote CPU config is there), with that config, the owner's
     # standing authority and the dispatcher credential; in host mode, which an

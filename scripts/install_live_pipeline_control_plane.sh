@@ -1442,6 +1442,12 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.timer" \
   "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.timer"
 run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.service" \
+  "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.path" \
+  "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.path"
+run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.timer" \
   "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.timer"
 run install -m 0644 \
@@ -1773,6 +1779,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
   systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path
+  systemctl enable --now blueprint-team-evaluation-runner.path
   systemctl enable --now blueprint-native-g1-team-campaign-dispatcher.timer
   systemctl enable --now blueprint-native-g1-team-campaign-settlement.timer
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
@@ -1793,6 +1800,7 @@ else
   echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
   echo "enable authority-gated paid policy canary queue with: systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path"
+  echo "enable the staged robot-team evaluation runner with: systemctl enable --now blueprint-team-evaluation-runner.path"
   echo "enable G1 team campaign dispatcher with: systemctl enable --now blueprint-native-g1-team-campaign-dispatcher.timer"
   echo "enable G1 team campaign settlement with: systemctl enable --now blueprint-native-g1-team-campaign-settlement.timer"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"

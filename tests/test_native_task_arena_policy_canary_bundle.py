@@ -408,6 +408,7 @@ def test_provider_canary_package_imports_from_its_shipped_module_closure(
         "native_task_arena_policy_worker.py",
         "native_task_arena_policy_canary_session.py",
         "native_task_arena_policy_canary_worker.py",
+        *bundle.TEAM_RUNTIME_MODULE_NAMES,
     }
     for name in module_names:
         shutil.copy2(package / name, staged / name)

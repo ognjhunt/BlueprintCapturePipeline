@@ -51,6 +51,14 @@ from .task_evaluation_canary_hotfix_overlay import (
 
 # The bounded HTTPS boundary the team candidate's client uses (stdlib only).
 CANARY_SHIPPED_PACKAGE_FILES = ("core/__init__.py", "core/security_controls.py")
+# The team path the shared worker imports: the team's HTTPS clients and its own robot.
+TEAM_RUNTIME_MODULE_NAMES = (
+    "team_candidate_policy_client.py", "droid_https_policy_client.py", "team_policy_https_client.py",
+    "team_embodiment.py", "team_embodiment_runtime.py", "native_task_robot_contact_topology.py",
+    # The first session on an undecided rigid scene records and scores its robot-free probe.
+    "rigid_robot_free_probe_recorder.py", "rigid_robot_free_probe_plan.py",
+    "rigid_robot_free_readiness_score.py",
+)
 
 
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
@@ -378,11 +386,10 @@ def build_policy_canary_session_bundle(
             package / "native_policy_canary_diagnostic_continuation.py",
             # Interruption recovery reuses the worker's pure input validators.
             package / "native_task_arena_policy_canary_worker.py",
-            # Beta L5: one admitted team candidate's authenticated HTTPS client.
-            package / "team_candidate_policy_client.py",
-            package / "droid_https_policy_client.py",
         )
     )
+    # Beta L5: one admitted team candidate's authenticated HTTPS client, and its own robot.
+    runtime_modules.extend(package / name for name in TEAM_RUNTIME_MODULE_NAMES)
     # Refuse to seal a bundle whose shipped package cannot satisfy its own
     # imports; the alternative is discovering it on a rented GPU after both
     # policy servers are up.  The worker itself ships at the runtime root, so

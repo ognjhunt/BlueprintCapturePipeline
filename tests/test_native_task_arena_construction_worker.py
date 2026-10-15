@@ -147,6 +147,8 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
     assert ROBOT_EMBODIMENT_MODULES == {
         "franka_panda": "isaaclab_arena.embodiments.droid.droid",
         "unitree_g1": "isaaclab_arena.embodiments.g1.g1",
+        # A robot team's own arm is built on Arena's embodiment base (team_embodiment_runtime).
+        "team_embodiment": "isaaclab_arena.embodiments.embodiment_base",
     }
     assert {
         "torch",

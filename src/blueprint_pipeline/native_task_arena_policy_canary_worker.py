@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from blueprint_pipeline.native_policy_canary_control_gate import controls_required, execute_native_controls, validate_controls_receipt
 from blueprint_pipeline.native_policy_canary_matrix_gate import execute_strict_matrix, _episode_embodiment_parity_diagnostic
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -22,6 +21,8 @@ import time
 from typing import Any, Callable, Mapping
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.team_embodiment import apply_team_embodiment, is_team_plan
+from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan as _resolved_scene_plan
 from blueprint_pipeline.policy_canary_worker_evidence import (
     _write_episode_failure_gap, _write_episode_json_artifact,
     _write_indexed_telemetry as _write_policy_canary_telemetry,
@@ -34,7 +35,7 @@ from blueprint_pipeline.appearance_render_backend import (
     build_appearance_render_backend,
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
-    EXECUTION_MODES, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME,
+    EXECUTION_MODES, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND,
     execute_paired_session,
     validate_runtime_input_manifest,
     validate_session_authority,
@@ -404,6 +405,8 @@ def policy_observation_gate_mode(
 ) -> str:
     """Choose the camera gate from the resolved embodiment, before Isaac starts."""
     profile = resolved_plan.get("policy_canary_embodiment_profile")
+    if is_team_plan(resolved_plan):
+        return "native_team_embodiment_camera"
     if profile is not None:
         from blueprint_pipeline.droid_policy_canary_embodiment import apply_droid_policy_canary_profile
         expected = apply_droid_policy_canary_profile(resolved_plan)["policy_canary_embodiment_profile"]
@@ -416,6 +419,15 @@ def policy_observation_gate_mode(
         validate_wrist_camera_mount_registry(registry)
         return "native_registered_camera_sweep"
     return "sealed_reference_and_human_review"
+
+
+def _team_embodiment_binding(specs: Mapping[str, Mapping[str, Any]]) -> dict[str, Any] | None:
+    """The sealed team-robot binding a team candidate's spec carries, else None (Blueprint's robot)."""
+
+    bindings = [spec["team_embodiment"] for spec in specs.values() if spec.get("team_embodiment") is not None]
+    if len(bindings) > 1 or (bindings and len(specs) != 1):
+        raise RuntimeError("policy_canary_team_embodiment_binding_ambiguous")
+    return dict(bindings[0]) if bindings else None
 
 
 def preflight_policy_canary_static_inputs(
@@ -457,15 +469,20 @@ def preflight_policy_canary_static_inputs(
                 raise RuntimeError("policy_canary_frozen_execution_spec_mismatch")
         check(f"execution_spec.{candidate}", validate_spec)
     cells: list[dict[str, Any]] = []
+    team_binding = check("team_embodiment_binding", lambda: _team_embodiment_binding(specs))
+
+    def resolve(cell: Mapping[str, Any]) -> dict[str, Any]:
+        plan = _resolved_scene_plan(base_scene_plan, cell, task_success_contract=inputs.get("task_success_contract"))
+        return apply_team_embodiment(plan, team_binding) if team_binding is not None else plan
+
     for index, cell in enumerate(inputs.get("cells") or []):
-        plan = check(f"cell.{index}.resolved_plan", lambda cell=cell: _resolved_scene_plan(
-            base_scene_plan, cell, task_success_contract=inputs.get("task_success_contract")))
+        plan = check(f"cell.{index}.resolved_plan", lambda cell=cell: resolve(cell))
         if plan is None:
             continue
         def validate_native_camera_parameters(plan=plan):
             from blueprint_pipeline.native_task_arena_runtime import camera_runtime_parameters
             for camera in plan["cameras"]:
-                camera_runtime_parameters(camera)
+                camera_runtime_parameters(camera, robot_id=str(plan["robot"]["robot_id"]))
         check(f"cell.{index}.native_camera_parameters", validate_native_camera_parameters)
         if (cell.get("control_diagnostic") or {}).get("mode") == "nonblocking_omitted_by_user":
             def validate_final_camera_start(plan=plan):
@@ -476,11 +493,12 @@ def preflight_policy_canary_static_inputs(
                 validate_camera_start_configuration(plan, binding)
             check(f"cell.{index}.final_camera_start", validate_final_camera_start)
         def validate_cadence(plan: Mapping[str, Any] = plan) -> None:
-            if not (float(plan["task_spec"]["control_frequency_hz"])
-                    == float(plan["cadence"]["control_frequency_hz"]) == 15.0):
+            control = float(plan["robot"]["control_hz"]) if is_team_plan(plan) else 15.0
+            if not (float(plan["task_spec"]["control_frequency_hz"]) == 15.0
+                    and float(plan["cadence"]["control_frequency_hz"]) == control):
                 raise RuntimeError("policy_canary_control_frequency_invalid")
         check(f"cell.{index}.cadence", validate_cadence)
-        for candidate, spec in specs.items():
+        for candidate, spec in specs.items() if not is_team_plan(plan) else ():
             def validate_episode_budget(plan=plan, spec=spec):
                 from blueprint_pipeline.adp009d_policy_episode import _resolved_task_spec
                 _resolved_task_spec(
@@ -716,6 +734,17 @@ def isaac_cell_runtime() -> CellRuntime:
         output_root: Path,
     ) -> Mapping[str, Any]:
         """Prove the task-facing mount and exact reset frames before policy load."""
+
+        if is_team_plan(plan):
+            from blueprint_pipeline.native_task_arena_construction_worker import _camera_snapshot
+            from blueprint_pipeline.team_embodiment_runtime import team_observation_gate
+
+            receipt = team_observation_gate(
+                built=built, plan=plan, output_root=output_root, camera_snapshot=_camera_snapshot,
+                site_appearance_render_expected=camera_site_appearance_required(plan))
+            (output_root / "prepolicy_observation_gate" / "team_embodiment_observation_gate.v1.json").write_text(
+                json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            return receipt
 
         import torch
 
@@ -953,7 +982,8 @@ def _construction_lineage_mode(
     ):
         raise RuntimeError("policy_canary_scene_plan_invalid")
     if construction.get("schema_version") == "native_task_arena_packet_receipt.v1":
-        if (inputs.get("run_kind") != "internal_policy_canary"
+        # A team evaluation may run on a prepared scene's own compiled packet (``team_scene_packet``).
+        if (inputs.get("run_kind") not in ("internal_policy_canary", TEAM_RUN_KIND)
                 or inputs.get("claim_ceiling") != "diagnostic_policy_execution"
                 or inputs.get("construction_result") != inputs.get("base_native_packet")
                 or construction.get("status") != "construction_packet_completed"
@@ -992,22 +1022,6 @@ def _construction_lineage_mode(
     raise RuntimeError("policy_canary_construction_lineage_schema_invalid")
 
 
-def _yaw_quaternion_xyzw(degrees: float) -> list[float]:
-    half = math.radians(degrees) / 2.0
-    return [0.0, 0.0, math.sin(half), math.cos(half)]
-
-
-def _quaternion_product_xyzw(a: list[float], b: list[float]) -> list[float]:
-    ax, ay, az, aw = a
-    bx, by, bz, bw = b
-    return [
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
-    ]
-
-
 def _validate_provider_manifest(
     value: Mapping[str, Any],
     *,
@@ -1032,173 +1046,6 @@ def _validate_provider_manifest(
     ):
         raise RuntimeError("policy_canary_provider_manifest_invalid")
     return manifest
-
-
-def _resolved_scene_plan(
-    base: Mapping[str, Any],
-    cell: Mapping[str, Any],
-    *,
-    task_success_contract: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    plan = deepcopy(dict(base))
-    aim = cell.get("operator_wrist_camera_aim")
-    if aim is not None:
-        if not isinstance(aim, Mapping) or aim.get("mode") != "point_at_task_object_then_rigidly_follow_wrist" or not str(aim.get("authorized_by") or "").strip() or aim.get("authority_digest") != canonical_digest(aim, digest_field="authority_digest"):
-            raise RuntimeError("operator_wrist_camera_aim_authority_invalid")
-        plan["operator_wrist_camera_aim"] = dict(aim)
-    task_success_contract = task_success_contract or cell.get(
-        "task_success_contract"
-    )
-    if (
-        not isinstance(task_success_contract, Mapping)
-        or (
-            cell.get("task_success_contract_digest")
-            or task_success_contract.get("contract_digest")
-        )
-        != task_success_contract.get("contract_digest")
-    ):
-        raise RuntimeError("policy_canary_task_success_contract_binding_invalid")
-    plan["task_spec"]["task_success_contract"] = deepcopy(
-        dict(task_success_contract)
-    )
-    control = cell.get("control_diagnostic") or {}
-    if control.get("mode") == "nonblocking_omitted_by_user":
-        from blueprint_pipeline.native_task_arena_policy_canary_session import validate_control_omission_authority
-        from blueprint_pipeline.native_task_camera_start_configuration import validate_camera_start_configuration
-        omission = validate_control_omission_authority(control.get("omission_authority") or {},
-            contract_digest=task_success_contract["contract_digest"])
-        camera_start = omission.get("policy_canary_camera_start_configuration")
-        if camera_start is not None:
-            plan["policy_canary_camera_start_configuration"] = validate_camera_start_configuration(plan, camera_start)
-    plan["task_spec"]["task_success_contract_digest"] = task_success_contract["contract_digest"]
-    scenario = deepcopy(dict(cell["resolved_scenario"]))
-    scenario["cell_id"] = cell["cell_id"]
-    scenario["seed"] = cell["seed"]
-    if cell.get("resolved_scenario_digest") is not None:
-        scenario["resolved_scenario_digest"] = cell["resolved_scenario_digest"]
-    parameters = dict(scenario.get("parameters") or {})
-    applications: list[dict[str, Any]] = []
-    coverage_gaps: list[dict[str, Any]] = []
-    subject = next(row for row in plan["objects"] if row.get("task_subject") is True)
-    if "object_start_y_delta_m" in parameters:
-        delta = float(parameters["object_start_y_delta_m"])
-        subject["pose_world"]["position_world_m"][1] += delta
-        subject["reset_state"]["root_pose_world"]["position_world_m"][1] += delta
-        if plan["task_kind"] == "rigid_pick_place":
-            scoring_start_pose = plan["task_spec"].get("start_pose_world")
-            if not isinstance(scoring_start_pose, list) or len(scoring_start_pose) != 7:
-                raise RuntimeError("policy_canary_task_scoring_start_pose_invalid")
-            scoring_start_pose[1] += delta
-        elif "start_pose_world" in plan["task_spec"]:
-            raise RuntimeError("policy_canary_articulated_scoring_pose_unexpected")
-        applications.append(
-            {
-                "parameter_id": "object_start_y_delta_m",
-                "readback_kind": "task_subject_root_position_y_m",
-                "expected_native_value": subject["pose_world"]["position_world_m"][1],
-                "delta_from_nominal": delta,
-            }
-        )
-    if "object_yaw_delta_degrees" in parameters:
-        delta = float(parameters["object_yaw_delta_degrees"])
-        orientation = _quaternion_product_xyzw(
-            _yaw_quaternion_xyzw(delta),
-            list(subject["pose_world"]["orientation_xyzw"]),
-        )
-        subject["pose_world"]["orientation_xyzw"] = orientation
-        subject["reset_state"]["root_pose_world"]["orientation_xyzw"] = list(
-            orientation
-        )
-        if plan["task_kind"] == "rigid_pick_place":
-            scoring_start_pose = plan["task_spec"].get("start_pose_world")
-            if not isinstance(scoring_start_pose, list) or len(scoring_start_pose) != 7:
-                raise RuntimeError("policy_canary_task_scoring_start_pose_invalid")
-            scoring_start_pose[3:] = list(orientation)
-        elif "start_pose_world" in plan["task_spec"]:
-            raise RuntimeError("policy_canary_articulated_scoring_pose_unexpected")
-        applications.append(
-            {
-                "parameter_id": "object_yaw_delta_degrees",
-                "readback_kind": "task_subject_root_orientation_xyzw",
-                "expected_native_value": orientation,
-                "delta_from_nominal": delta,
-            }
-        )
-    if "external_camera_x_delta_m" in parameters:
-        delta = float(parameters["external_camera_x_delta_m"])
-        camera = next(row for row in plan["cameras"] if row["role"] == "external")
-        if plan.get("policy_canary_camera_start_configuration") is not None:
-            from blueprint_pipeline.native_task_camera_start_configuration import external_camera_offset_position
-            expected_camera_x = external_camera_offset_position({**plan, "scenario": scenario})[0]
-        else:
-            camera["frame_from_camera_matrix"][3] += delta
-            expected_camera_x = camera["frame_from_camera_matrix"][3]
-        applications.append(
-            {
-                "parameter_id": "external_camera_x_delta_m",
-                "readback_kind": "camera_offset_position_x_m",
-                "camera_role": "external",
-                "expected_native_value": expected_camera_x,
-                "delta_from_nominal": delta,
-            }
-        )
-    if "task_light_intensity_scale" in parameters:
-        scale = float(parameters["task_light_intensity_scale"])
-        applications.append(
-            {
-                "parameter_id": "task_light_intensity_scale",
-                "readback_kind": "task_light_intensity_scale",
-                "expected_native_value": scale,
-                "nominal_native_intensity": 1500.0,
-                "application_tolerance": 1.0e-6,
-            }
-        )
-    from blueprint_pipeline.native_rigid_friction_scenario import add_application as add_rigid_friction
-    add_rigid_friction(parameters, subject, applications, coverage_gaps)
-    if "material_cousin" in parameters:
-        coverage_gaps.append(
-            {
-                "family": "admitted_object_material_cousin",
-                "reason": "admitted_runtime_material_asset_unavailable",
-                "fallback": "canonical_task_material",
-            }
-        )
-    scenario["parameter_applications"] = applications
-    for application in applications:
-        key = application["parameter_id"]
-        application.setdefault("runtime_name", subject["name"])
-        application.setdefault("runtime_target", application["readback_kind"])
-        application.setdefault("unit", "degrees" if "degrees" in key else "m" if key.endswith("_m") else "ratio")
-        application.setdefault("resolved_value", parameters[key])
-        # No tolerance is invented for an unqualified diagnostic dimension.
-        application.setdefault("application_tolerance", 0.0)
-    scenario["runtime_coverage_gaps"] = coverage_gaps
-    plan["scenario"] = scenario
-    # Both frozen DROID adapters emit actions at 15 Hz. Keep PhysX at 120 Hz
-    # and change the exact canary cadence to an integral decimation of eight.
-    plan["cadence"]["control_frequency_hz"] = 15.0
-    plan["cadence"]["control_decimation"] = 8
-    action_steps = int(plan["cadence"]["maximum_action_steps"])
-    settle_samples = int(plan["cadence"]["settle_window_samples"])
-    plan["task_spec"]["control_frequency_hz"] = 15.0
-    plan["task_spec"]["maximum_episode_seconds"] = action_steps / 15.0
-    plan["cadence"]["episode_length_seconds"] = (
-        action_steps / 15.0
-        + settle_samples / 15.0
-        + 6.0 * float(plan["cadence"]["physics_dt_seconds"])
-    )
-    plan["canary_cadence_adjustment"] = {
-        "source_control_frequency_hz": float(base["cadence"]["control_frequency_hz"]),
-        "resolved_control_frequency_hz": 15.0,
-        "physics_frequency_hz": float(plan["cadence"]["physics_frequency_hz"]),
-        "control_decimation": 8,
-        "reason": "frozen_droid_policy_action_cadence",
-    }
-    from blueprint_pipeline.droid_policy_canary_embodiment import (
-        apply_droid_policy_canary_profile,
-    )
-
-    return apply_droid_policy_canary_profile(plan)
 
 
 def _sha256(path: Path) -> str:
@@ -1351,7 +1198,7 @@ def _aggregate_isolated_cell_results(
         "candidate_ids": list(candidate_ids),
         "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
-        "episodes_per_policy": 10,
+        "episodes_per_policy": len(inputs["cells"]),
         "learned_policy_rollout_count": len(candidate_ids) * len(inputs["cells"]),
         "provider_allocations_observed": None,
         "retry_cap": 0,
@@ -1388,6 +1235,8 @@ def _aggregate_isolated_cell_results(
         planned_cells=result["frozen_cells"]) if len(candidate_ids) == 2 else None  # one team candidate: no pair
     if authority.get("execution_release") is not None:
         result["execution_release"] = authority["execution_release"]
+    if child_results[0].get("robot_free_probe_trace") is not None:
+        result["robot_free_probe_trace"] = child_results[0]["robot_free_probe_trace"]
     result["artifact_inventory"] = telemetry_artifacts
     result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
@@ -1542,13 +1391,27 @@ def _run_isolated_cell_processes(
                 f"exit_{exit_code}"
             )
         child_results.append(_read(child_result_path))
+        if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
+            # The scene failed its robot-free check in cell 0: no further team episode runs on it.
+            blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
+                       "run_kind": inputs["run_kind"], "claim_ceiling": "diagnostic_policy_execution",
+                       "task_success_contract": inputs["task_success_contract"],
+                       "task_success_contract_digest": inputs["task_success_contract_digest"],
+                       "episodes": [], "artifact_inventory": [], "candidate_policy_queried": False,
+                       "blockers": ["team_scene_robot_free_probe_not_passed"],
+                       **{key: child_results[0][key] for key in ("robot_free_probe_trace", "robot_free_probe_status")}}
+            blocked["result_digest"] = canonical_digest(blocked, digest_field="result_digest")
+            _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=blocked)
+            return 1
         if index == 0 and inputs.get("diagnostic_continuation_protocol") is not None:
             from blueprint_pipeline.native_policy_canary_diagnostic_continuation import assess_diagnostic_first_cell, GATE_FILENAME
             diagnostic_continuation_gate = assess_diagnostic_first_cell(runtime_root=runtime, child_root=child_root)
             _seal_result(result_path=output_root / GATE_FILENAME, result=diagnostic_continuation_gate)
             if diagnostic_continuation_gate["status"] != "passed":
                 raise RuntimeError("diagnostic_continuation_first_cell_blocked:" + ",".join(diagnostic_continuation_gate["blockers"]))
-        elif index == 0:
+        elif index == 0 and inputs.get("run_kind") != TEAM_RUN_KIND:
+            # The DROID harness-parity probe qualifies Blueprint's frozen canary; a team's
+            # policy that does not approach the object in cell 0 is scored, not blocked.
             diagnostics = [
                 row.get("embodiment_parity_diagnostic")
                 for row in child_results[-1].get("episodes") or []
@@ -1650,6 +1513,12 @@ def _run_selected_cell(
             raise RuntimeError("policy_canary_frozen_execution_spec_mismatch:" + candidate)
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
+    team_binding = _team_embodiment_binding(specs)
+    probe_request = next((spec["robot_free_probe"] for spec in specs.values()
+                          if spec.get("robot_free_probe") is not None), None)
+
+    def team_plan(plan: dict[str, Any]) -> dict[str, Any]:
+        return apply_team_embodiment(plan, team_binding) if team_binding is not None else plan
 
     packet_request_path = runtime / "native_task_packet" / PACKET_REQUEST_FILENAME
     packet_request = _read(packet_request_path) if packet_request_path.is_file() else {}
@@ -1728,7 +1597,7 @@ def _run_selected_cell(
         from blueprint_pipeline.native_task_arena_policy_worker import _PolicyQueryTracker
         from blueprint_pipeline.policy_interface_binding import observation_interface
 
-        scene_plan = _resolved_scene_plan(base_scene_plan, context)
+        scene_plan = team_plan(_resolved_scene_plan(base_scene_plan, context))
         dependencies = bound_runtime.preflight_dependency_matrix(
             robot_id=str(scene_plan["robot"]["robot_id"])
         )
@@ -1763,136 +1632,187 @@ def _run_selected_cell(
         )
         if not device["passed"]:
             raise RuntimeError("policy_canary_device_binding_failed")
+        if (probe_request is not None and selected_cell_index == 0
+                and "robot_free_probe_trace" not in current_session
+                and bound_runtime.make_rigid_task_readback is not None):
+            # Beta L5: record the scene's undecided robot-free probe in the built scene, before
+            # any episode, with the robot idle; closeout scores and retains it.
+            from blueprint_pipeline.team_embodiment_runtime import record_arena_robot_free_probe
+
+            current_session["robot_free_probe_trace"] = record_arena_robot_free_probe(
+                built=built, task_readback=bound_runtime.make_rigid_task_readback(built), plan=scene_plan,
+                request=probe_request)
+            from blueprint_pipeline.team_embodiment_runtime import probe_status
+
+            current_session["robot_free_probe_status"] = probe_status(
+                request=probe_request, trace=current_session["robot_free_probe_trace"])
+        if current_session.get("robot_free_probe_status") not in (None, "passed"):
+            # Owner decision 2026-10-12: no team episode on a scene whose success check is unproven.
+            raise RuntimeError("team_scene_robot_free_probe_not_passed")
         env = built.env
         seed = int(context["seed"])
         env.reset(seed=seed)
         robot = env.unwrapped.scene["robot"]
-        gripper = bound_runtime.gripper_probe(env=env, robot=robot, seed=seed)
-        if gripper["status"] != "measured":
-            raise RuntimeError("policy_canary_gripper_unresolved")
-        env.reset(seed=seed)
-        servo = bound_runtime.make_servo(
-            env=env, robot=robot, gripper_convention=gripper
-        )
-        task_kind = str(scene_plan["task_kind"])
-        if task_kind == "articulated_open_close":
-            task_readback = bound_runtime.make_task_readback(
-                built,
-                grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
-            )
-        elif task_kind == "rigid_pick_place":
-            if bound_runtime.make_rigid_task_readback is None:
-                raise RuntimeError("policy_canary_rigid_task_readback_missing")
-            task_readback = bound_runtime.make_rigid_task_readback(built)
-        else:
-            task_readback = None
-        episode_environment, environment_receipt = bound_runtime.build_episode_environment(
-            built=built,
-            gripper_convention=gripper,
-            servo=servo,
-            task_readback=task_readback,
-            to_tensor=bound_runtime.to_tensor,
-        )
-        if task_kind == "rigid_pick_place":
-            if bound_runtime.wrap_rigid_scoring_environment is None:
-                raise RuntimeError("policy_canary_rigid_scoring_environment_missing")
-            episode_environment = bound_runtime.wrap_rigid_scoring_environment(
-                environment=episode_environment,
-                task_readback=task_readback,
-                task_spec=scene_plan["task_spec"],
-            )
+        if is_team_plan(scene_plan):
+            # A team's own robot: its own loop, the same scorer, media and failure evidence.
+            from blueprint_pipeline.native_task_arena_policy_worker import _PolicyQueryTracker
+            from blueprint_pipeline.team_embodiment_runtime import run_team_episode
+
+            tracker = _PolicyQueryTracker(policy["client"])
+            spec = policy["spec"]
+            episode_id = f"{authority['run_id']}--{context['cell_id']}--{context['candidate_id']}"
             environment_receipt = {
-                **dict(environment_receipt),
-                "task_state_source": (
-                    "native_rigid_scoring_frame_and_filtered_contact_readback"
-                ),
-            }
-        environment_receipt = {
-            **dict(environment_receipt),
-            "appearance_renderer": dict(current_env["appearance_renderer"]),
-            "post_gate_rtx_streaming_guard": dict(
-                current_session.get("post_gate_rtx_streaming_guard") or {}
-            ),
-        }
-        tracker = _PolicyQueryTracker(policy["client"])
-        spec = policy["spec"]
-        episode_id = f"{authority['run_id']}--{context['cell_id']}--{context['candidate_id']}"
-        def scientific_reset_reader():
-            from blueprint_pipeline.policy_scientific_reset import ScientificResetScenarioMismatch, compare_reset_readbacks, read_native_reset_channels, seal_reset_readback
-            binding = {
-                "candidate_id": context["candidate_id"], "cell_id": context["cell_id"],
-                "seed": context["seed"], "resolved_scenario_digest": context["resolved_scenario_digest"],
-                "task_spec_digest": canonical_digest(scene_plan["task_spec"]),
+                "adapter": "team_embodiment_runtime", "embodiment_digest": scene_plan["robot"]["embodiment_digest"],
+                "task_state_source": "native_rigid_scoring_frame_and_filtered_contact_readback",
+                "appearance_renderer": dict(current_env["appearance_renderer"]),
+                "post_gate_rtx_streaming_guard": dict(current_session.get("post_gate_rtx_streaming_guard") or {}),
             }
             try:
-                channels = read_native_reset_channels(built, episode_environment)
-            except ScientificResetScenarioMismatch as exc:
-                episode_progress["scientific_reset"] = seal_reset_readback(binding=binding, **exc.channels)
-                raise
-            receipt = seal_reset_readback(binding=binding, **channels)
-            reference = current_env.setdefault("scientific_reset_reference", receipt)
-            parity = compare_reset_readbacks(reference, receipt)
-            if parity["status"] == "mismatch":
-                raise RuntimeError("policy_canary_scientific_reset_pair_mismatch:" + ",".join(parity["mismatches"]))
-            return receipt
-        try:
-            episode = bound_runtime.run_policy_episode(
-                environment=episode_environment,
-                policy=tracker,
-                candidate_id=str(context["candidate_id"]),
-                interface_candidate_id=observation_interface(spec),
-                prompt=str(spec["prompt"]),
-                task_spec=scene_plan["task_spec"],
-                max_policy_queries=int(spec["max_policy_queries"]),
-                settle_window_samples=int(
-                    scene_plan["task_spec"]["settle_window_samples"]
-                ),
-                open_loop_horizon=int(spec["open_loop_horizon"]),
-                gripper=GripperConvention(
-                    closed_command=float(gripper["closed_command"]),
-                    open_command=float(gripper["open_command"]),
-                    measured_by_probe=True,
-                ),
-                media_output_dir=output_root / "episodes",
-                episode_id=episode_id,
-                scoring_authorized=True,
-                require_complete_multicamera_media=True,
-                require_prestart_readiness=True,
-                observation_integrity={
-                    "authority": observation_integrity_authority,
-                    "appearance_render_backend_receipt_digest": (
-                        appearance_render_backend["receipt_digest"]
-                    ),
-                    "runtime_gate": current_session.get(
-                        "policy_observation_runtime_gate"
-                    ),
-                },
-                progress=episode_progress,
-                scientific_reset_reader=scientific_reset_reader,
-            )
-            try:
-                _require_completed_episode_media(output_root, episode)
-            except (OSError, ValueError) as media_error:
-                episode_progress["media_integrity_failure"] = str(media_error)
-                raise
-        except Exception as exc:
-            failure_path = _write_episode_failure_gap(
-                output_root=output_root,
-                run_id=str(authority["run_id"]),
-                context=context,
-                failure=exc,
-                progress=episode_progress,
-            )
-            raise PolicyCanaryEpisodeFailure(
-                cause=exc,
-                evidence=_read(failure_path),
-            ) from exc
-        finally:
-            if str(context["candidate_id"]) == str(inputs["candidate_ids"][-1]):
+                episode = run_team_episode(
+                    built=built, task_readback=bound_runtime.make_rigid_task_readback(built), policy=tracker,
+                    plan=scene_plan, prompt=str(spec["prompt"]), max_policy_queries=int(spec["max_policy_queries"]),
+                    open_loop_horizon=int(spec["open_loop_horizon"]), media_root=output_root / "episodes",
+                    episode_id=episode_id, progress=episode_progress)
+                _require_completed_episode_media(
+                    output_root, episode, camera_ids=[*(row["role"] for row in scene_plan["cameras"]
+                                                        if row.get("policy_input") is True), "overview"])
+            except Exception as exc:
+                failure_path = _write_episode_failure_gap(
+                    output_root=output_root, run_id=str(authority["run_id"]), context=context, failure=exc,
+                    progress=episode_progress)
+                raise PolicyCanaryEpisodeFailure(cause=exc, evidence=_read(failure_path)) from exc
+            finally:
                 close = getattr(env, "close", None)
                 if callable(close):
                     close()
                 current_env.clear()
+        else:
+            gripper = bound_runtime.gripper_probe(env=env, robot=robot, seed=seed)
+            if gripper["status"] != "measured":
+                raise RuntimeError("policy_canary_gripper_unresolved")
+            env.reset(seed=seed)
+            servo = bound_runtime.make_servo(
+                env=env, robot=robot, gripper_convention=gripper
+            )
+            task_kind = str(scene_plan["task_kind"])
+            if task_kind == "articulated_open_close":
+                task_readback = bound_runtime.make_task_readback(
+                    built,
+                    grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
+                )
+            elif task_kind == "rigid_pick_place":
+                if bound_runtime.make_rigid_task_readback is None:
+                    raise RuntimeError("policy_canary_rigid_task_readback_missing")
+                task_readback = bound_runtime.make_rigid_task_readback(built)
+            else:
+                task_readback = None
+            episode_environment, environment_receipt = bound_runtime.build_episode_environment(
+                built=built,
+                gripper_convention=gripper,
+                servo=servo,
+                task_readback=task_readback,
+                to_tensor=bound_runtime.to_tensor,
+            )
+            if task_kind == "rigid_pick_place":
+                if bound_runtime.wrap_rigid_scoring_environment is None:
+                    raise RuntimeError("policy_canary_rigid_scoring_environment_missing")
+                episode_environment = bound_runtime.wrap_rigid_scoring_environment(
+                    environment=episode_environment,
+                    task_readback=task_readback,
+                    task_spec=scene_plan["task_spec"],
+                )
+                environment_receipt = {
+                    **dict(environment_receipt),
+                    "task_state_source": (
+                        "native_rigid_scoring_frame_and_filtered_contact_readback"
+                    ),
+                }
+            environment_receipt = {
+                **dict(environment_receipt),
+                "appearance_renderer": dict(current_env["appearance_renderer"]),
+                "post_gate_rtx_streaming_guard": dict(
+                    current_session.get("post_gate_rtx_streaming_guard") or {}
+                ),
+            }
+            tracker = _PolicyQueryTracker(policy["client"])
+            spec = policy["spec"]
+            episode_id = f"{authority['run_id']}--{context['cell_id']}--{context['candidate_id']}"
+            def scientific_reset_reader():
+                from blueprint_pipeline.policy_scientific_reset import ScientificResetScenarioMismatch, compare_reset_readbacks, read_native_reset_channels, seal_reset_readback
+                binding = {
+                    "candidate_id": context["candidate_id"], "cell_id": context["cell_id"],
+                    "seed": context["seed"], "resolved_scenario_digest": context["resolved_scenario_digest"],
+                    "task_spec_digest": canonical_digest(scene_plan["task_spec"]),
+                }
+                try:
+                    channels = read_native_reset_channels(built, episode_environment)
+                except ScientificResetScenarioMismatch as exc:
+                    episode_progress["scientific_reset"] = seal_reset_readback(binding=binding, **exc.channels)
+                    raise
+                receipt = seal_reset_readback(binding=binding, **channels)
+                reference = current_env.setdefault("scientific_reset_reference", receipt)
+                parity = compare_reset_readbacks(reference, receipt)
+                if parity["status"] == "mismatch":
+                    raise RuntimeError("policy_canary_scientific_reset_pair_mismatch:" + ",".join(parity["mismatches"]))
+                return receipt
+            try:
+                episode = bound_runtime.run_policy_episode(
+                    environment=episode_environment,
+                    policy=tracker,
+                    candidate_id=str(context["candidate_id"]),
+                    interface_candidate_id=observation_interface(spec),
+                    prompt=str(spec["prompt"]),
+                    task_spec=scene_plan["task_spec"],
+                    max_policy_queries=int(spec["max_policy_queries"]),
+                    settle_window_samples=int(
+                        scene_plan["task_spec"]["settle_window_samples"]
+                    ),
+                    open_loop_horizon=int(spec["open_loop_horizon"]),
+                    gripper=GripperConvention(
+                        closed_command=float(gripper["closed_command"]),
+                        open_command=float(gripper["open_command"]),
+                        measured_by_probe=True,
+                    ),
+                    media_output_dir=output_root / "episodes",
+                    episode_id=episode_id,
+                    scoring_authorized=True,
+                    require_complete_multicamera_media=True,
+                    require_prestart_readiness=True,
+                    observation_integrity={
+                        "authority": observation_integrity_authority,
+                        "appearance_render_backend_receipt_digest": (
+                            appearance_render_backend["receipt_digest"]
+                        ),
+                        "runtime_gate": current_session.get(
+                            "policy_observation_runtime_gate"
+                        ),
+                    },
+                    progress=episode_progress,
+                    scientific_reset_reader=scientific_reset_reader,
+                )
+                try:
+                    _require_completed_episode_media(output_root, episode)
+                except (OSError, ValueError) as media_error:
+                    episode_progress["media_integrity_failure"] = str(media_error)
+                    raise
+            except Exception as exc:
+                failure_path = _write_episode_failure_gap(
+                    output_root=output_root,
+                    run_id=str(authority["run_id"]),
+                    context=context,
+                    failure=exc,
+                    progress=episode_progress,
+                )
+                raise PolicyCanaryEpisodeFailure(
+                    cause=exc,
+                    evidence=_read(failure_path),
+                ) from exc
+            finally:
+                if str(context["candidate_id"]) == str(inputs["candidate_ids"][-1]):
+                    close = getattr(env, "close", None)
+                    if callable(close):
+                        close()
+                    current_env.clear()
         visual = episode.get("visual_evidence") or {}
         media = episode.get("media_artifacts") or {}
         motion = episode.get("motion_evidence") or {}
@@ -2113,9 +2033,9 @@ def _run_selected_cell(
 
     def prepolicy_observation_gate(session: Mapping[str, Any]) -> dict[str, Any]:
         cell = inputs["cells"][selected_cell_index]
-        scene_plan = _resolved_scene_plan(
+        scene_plan = team_plan(_resolved_scene_plan(
             base_scene_plan, cell, task_success_contract=inputs["task_success_contract"],
-        )
+        ))
         if policy_observation_gate_mode(packet_request, scene_plan) != "sealed_reference_and_human_review":
             if bound_runtime.prepolicy_camera_gate is None:
                 raise RuntimeError("policy_canary_runtime_camera_gate_unavailable")
@@ -2257,6 +2177,9 @@ def _run_selected_cell(
         prepolicy_control_gate=prepolicy_control_gate,
     )
     result["appearance_render_backend"] = dict(appearance_render_backend)
+    if current_session.get("robot_free_probe_trace") is not None:
+        result["robot_free_probe_trace"] = current_session["robot_free_probe_trace"]
+        result["robot_free_probe_status"] = current_session.get("robot_free_probe_status")
     telemetry_index, telemetry_artifacts = _write_policy_canary_telemetry(
         output_root, result["episodes"]
     )

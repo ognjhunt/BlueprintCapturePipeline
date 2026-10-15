@@ -696,8 +696,8 @@ def read_native_task_arena_scenario_parameters(
                 error=f"native_task_arena_scenario_root_pose_missing:{runtime_name}",
             )
             dtype = native_storage["canonical_scalar_dtype"]
-            if kind == "task_subject_root_position_y_m":
-                observed: Any = float(pose[1])
+            if kind in ("task_subject_root_position_x_m", "task_subject_root_position_y_m"):
+                observed: Any = float(pose[0 if kind.endswith("_x_m") else 1])
                 error = abs(observed - float(expected))
                 if tolerance == 0.0 and dtype in {"float32", "torch.float32"}:
                     # Compare an exact reset with the exact value its native

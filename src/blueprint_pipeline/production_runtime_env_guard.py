@@ -93,6 +93,7 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.task_evaluation_configured_controls_progression_worker",
     "blueprint_pipeline.native_g1_team_campaign_dispatcher",
     "blueprint_pipeline.native_g1_team_campaign_settlement",
+    "blueprint_pipeline.team_candidate_quick10_launch",
 )
 
 ENTRYPOINT_REMEDIATION = (

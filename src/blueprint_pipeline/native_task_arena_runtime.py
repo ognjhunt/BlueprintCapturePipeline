@@ -529,7 +529,7 @@ def camera_runtime_parameters(camera: Mapping[str, Any], *, robot_id: str = "fra
         raise NativeTaskArenaRuntimeError([f"native_task_arena_camera_role_invalid:{role}"])
     runtime_name, expected_frame = camera_roles[role]
     if (
-        pose_frame != expected_frame
+        pose_frame not in ({"world", "robot_body"} if expected_frame == "world_or_robot_body" else {expected_frame})
         or not parent
         or (pose_frame == "world" and parent != "{ENV_REGEX_NS}")
         or (

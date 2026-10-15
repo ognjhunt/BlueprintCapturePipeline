@@ -122,6 +122,12 @@ def retain_robot_free_readiness(*, run_root: str | Path, revision_reference: Map
             "retained": True, "write": outcome}
 
 
+def retain_receipt(run_root: str | Path, receipt: Mapping[str, Any]) -> str:
+    """Retain a receipt scored elsewhere (a team evaluation's recorded probe) where the gate reads it."""
+
+    return _write(_safe(Path(run_root) / RECEIPT_FILENAME), receipt)
+
+
 def retain_for_source_launch(run_root: str | Path, *, fetcher: Fetcher | None = None) -> dict[str, Any]:
     """The same retention for a completed source launch, read from its validated terminal evidence."""
 
@@ -138,5 +144,6 @@ __all__ = [
     "RobotFreeReadinessRetentionError",
     "TRACE_FILENAME",
     "retain_for_source_launch",
+    "retain_receipt",
     "retain_robot_free_readiness",
 ]

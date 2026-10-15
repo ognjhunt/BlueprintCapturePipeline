@@ -1,0 +1,42 @@
+[Unit]
+Description=Run staged robot-team evaluations: shards on rented GPUs, then one sealed terminal
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target blueprint-gpu-spend-guard.service
+After=network-online.target blueprint-gpu-spend-guard.service
+
+[Service]
+Type=oneshot
+# The dispatcher stages and queues; this unit holds a scored evaluation's
+# shards (hours of GPU time) in its own cgroup so dispatch never waits on it.
+# Each shard's allocator keeps its own hard cap, TTL and watchdog, and survives
+# a restart of this unit (KillMode=process); the next run waits on it again.
+TimeoutStartSec=16h
+KillMode=process
+Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
+User=blueprint
+Group=blueprint
+UMask=0077
+EnvironmentFile=/etc/blueprint/pipeline-control-plane.env
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
+Environment=BLUEPRINT_TEAM_EVALUATION_QUEUE=/var/lib/blueprint/pipeline-control-plane/team-evaluations
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.team_candidate_quick10_launch run-queue'
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/blueprint
+TasksMax=512
+MemoryMax=8G
+CPUQuota=200%

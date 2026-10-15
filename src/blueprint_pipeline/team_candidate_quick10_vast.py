@@ -54,6 +54,11 @@ _SECRET_FILE_ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,58}_FILE$")
 TEAM_RESULT_UPLOAD_BYTES = 4 * POLICY_RESULT_UPLOAD_BYTES
 
 
+def team_result_upload_bytes(episodes: int) -> int:
+    """The download budget for one team session, scaled from ten episodes to its own cell count."""
+    return TEAM_RESULT_UPLOAD_BYTES * max(1, -(-int(episodes) // 10))
+
+
 def credential_file_blockers(path: str | Path | None) -> list[str]:
     """The private token file the lane hands to the provider channel: regular, 0600, owned, bounded."""
 
@@ -127,11 +132,12 @@ def run_team_candidate_session_vast(
         allowed_geolocation_country_codes=NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES,
         authorization_consumption=consumption, stale_offer_create_retry_limit=0,
         expected_provider_download_bytes=POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES + POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES,
-        expected_provider_upload_bytes=TEAM_RESULT_UPLOAD_BYTES, provider_runtime_environment=environment,
+        expected_provider_upload_bytes=team_result_upload_bytes(authority["episodes_per_policy"]),
+        provider_runtime_environment=environment,
         # Outputs download after the session (the launcher default); only the frozen
         # Quick-10 session streams provider outputs.
         runtime_secret_file_paths={credential_env: Path(str(credential_file))},
     )
 
 
-__all__ = ["credential_file_blockers", "run_team_candidate_session_vast"]
+__all__ = ["credential_file_blockers", "run_team_candidate_session_vast", "team_result_upload_bytes"]

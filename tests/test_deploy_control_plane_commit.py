@@ -559,6 +559,14 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/policy-canaries/pending/*.json\n",
         encoding="utf-8",
     )
+    team_runner_service = unit_dir / "blueprint-team-evaluation-runner.service"
+    team_runner_service.write_text(
+        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-team-evaluation-runner\n",
+        encoding="utf-8",
+    )
+    team_runner_path = unit_dir / "blueprint-team-evaluation-runner.path"
+    team_runner_path.write_text(
+        "[Path]\nPathExistsGlob=/team-evaluations/pending/*.json\n", encoding="utf-8")
     g1_service = unit_dir / "blueprint-native-g1-team-campaign-dispatcher.service"
     g1_service.write_text(
         "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-g1-team\n",
@@ -696,6 +704,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         activation_path,
         canary_service,
         canary_path,
+        team_runner_service,
+        team_runner_path,
         g1_service,
         g1_timer,
         g1_settlement_service,
@@ -766,6 +776,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-task-evaluation-policy-canary-dispatcher.service",
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
+        "blueprint-team-evaluation-runner.service",
+        "blueprint-team-evaluation-runner.path",
         "blueprint-native-g1-team-campaign-dispatcher.service",
         "blueprint-native-g1-team-campaign-dispatcher.timer",
         "blueprint-native-g1-team-campaign-settlement.service",
@@ -825,6 +837,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
         "blueprint-task-evaluation-sam31-preparation-execution.path",
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
+        "blueprint-team-evaluation-runner.path",
         "blueprint-task-evaluation-episode-compilation-remote.path",
     )
 

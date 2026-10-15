@@ -1,0 +1,12 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-team-evaluation-runner.path.json
+Description=Run staged robot-team evaluations (practice and scored)
+
+[Path]
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/team-evaluations/pending/*.json
+Unit=blueprint-team-evaluation-runner.service
+
+[Install]
+WantedBy=multi-user.target

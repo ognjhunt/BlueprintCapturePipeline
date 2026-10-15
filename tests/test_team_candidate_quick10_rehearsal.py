@@ -42,8 +42,16 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
     validate_session_result,
 )
 from blueprint_pipeline.team_candidate_policy_client import canary_policy_client
-from blueprint_pipeline.team_candidate_quick10_admission import RUNTIME, execution_spec, runtime_binding
-from blueprint_pipeline.team_candidate_quick10_result import TeamCandidateResultError, team_candidate_terminal
+from blueprint_pipeline.team_candidate_quick10_admission import (
+    RUNTIME,
+    execution_spec,
+    runtime_binding,
+)
+from blueprint_pipeline.team_candidate_quick10_result import (
+    TeamCandidateResultError,
+    episode_outcome,
+    team_candidate_terminal,
+)
 from tests import test_native_task_arena_policy_canary_lifecycle_rehearsal as paired
 
 TEAM = "team-acme.pi05-ft-7"
@@ -58,7 +66,8 @@ def _admission(contract: dict[str, Any]) -> dict[str, Any]:
 
     value = {
         "schema_version": TEAM_ADMISSION_SCHEMA_VERSION, "status": "admitted",
-        "run_kind": "team_candidate_evaluation", "runtime": RUNTIME, "preset_id": "quick_10", "episodes": 10,
+        "run_kind": "team_candidate_evaluation", "runtime": RUNTIME, "evaluation_purpose": "scored",
+        "episodes": 10,
         "team_id": "team-acme", "checkpoint_id": "pi05-ft-7", "candidate_id": TEAM,
         "policy_interface_id": "openpi_droid_https.v1",
         "embodiment_preset_id": "droid_franka_panda_robotiq_2f85_v1",
@@ -225,13 +234,13 @@ def test_quick10_runs_ten_simulator_scored_episodes_of_one_team_candidate(tmp_pa
 
     closed = _close_provider(result)
     assert validate_session_result(closed)["run_kind"] == "team_candidate_evaluation"
-    terminal = team_candidate_terminal(session_result=closed, runtime_binding=inputs["team_candidate_admission"])
+    terminal = team_candidate_terminal(session_results=[closed], purpose="scored", episodes=10, runtime_binding=inputs["team_candidate_admission"])
     succeeded = sum(row["episode"]["score"]["task_succeeded"] for row in result["episodes"])
     assert terminal["episodes_run"] == 10 and terminal["episodes_succeeded"] == succeeded
     assert terminal["scoring"] == validate_scoring_statement(terminal["scoring"], episodes_run=10)
     assert terminal["scoring"] == {
         "schema_version": "blueprint.agent_run_result_scoring.v1",
-        "runtime": "policy_canary_quick10_team_candidate", "success_source": "simulator_scored",
+        "runtime": "team_evaluation_scored", "success_source": "simulator_scored",
         "scored_episode_count": 10, "claim_ceiling": "diagnostic_policy_execution",
         "success_contract_digest": inputs["task_success_contract_digest"],
         "scene_revision_digest": inputs["scene_revision_digest"],
@@ -276,14 +285,16 @@ def test_a_refused_team_response_keeps_the_run_out_of_recommendation_evidence(tm
     blocked = _close_provider(result)
     blocked["status"] = "blocked"
     blocked["result_digest"] = canonical_digest(blocked, digest_field="result_digest")
-    terminal = team_candidate_terminal(session_result=blocked, runtime_binding=inputs["team_candidate_admission"])
-    # Reported honestly, and unequal counts keep it out of recommendation evidence.
-    assert terminal["episodes_run"] == 10 and terminal["scoring"]["scored_episode_count"] == 9
+    terminal = team_candidate_terminal(session_results=[blocked], purpose="scored", episodes=10, runtime_binding=inputs["team_candidate_admission"])
+    # The team's service caused it, so it is the team's failure, not a void episode.
+    refused_row = next(row for row in terminal["episode_outcomes"] if row["cell_id"] == refused[0]["cell_id"])
+    assert refused_row["outcome"] == "failure" and refused_row["reason"].startswith("policy_")
+    assert terminal["episodes_run"] == 10 and terminal["scoring"]["scored_episode_count"] == 10
 
 
 def test_runtime_refuses_a_frozen_id_a_second_candidate_or_an_unbound_admission(tmp_path) -> None:
     _runtime, _output, inputs, admission = _stage_team_runtime(tmp_path)
-    reseal = lambda value: {**value, "runtime_inputs_digest": canonical_digest(  # noqa: E731
+    reseal = lambda value: {**value, "runtime_inputs_digest": canonical_digest(
         value, digest_field="runtime_inputs_digest")}
     assert validate_runtime_input_manifest(inputs)["candidate_ids"] == [TEAM]
     for change, code in (
@@ -298,7 +309,7 @@ def test_runtime_refuses_a_frozen_id_a_second_candidate_or_an_unbound_admission(
         with pytest.raises(PolicyCanarySessionError, match=code):
             validate_runtime_input_manifest(reseal({**inputs, **change}))
     with pytest.raises(TeamCandidateResultError, match="binding_mismatch"):
-        team_candidate_terminal(session_result=_fake_closed_team_result(inputs),
+        team_candidate_terminal(session_results=[_fake_closed_team_result(inputs)], purpose="scored", episodes=10,
                                 runtime_binding={**inputs["team_candidate_admission"], "candidate_id": "x"})
     assert admission["adp_qualified_evidence_eligible"] is False
 
@@ -339,16 +350,40 @@ def test_projection_counts_only_simulator_verdicts(tmp_path) -> None:
     _runtime, _output, inputs, _admission_record = _stage_team_runtime(tmp_path)
     closed = _fake_closed_team_result(inputs)
     binding = inputs["team_candidate_admission"]
-    assert team_candidate_terminal(session_result=closed, runtime_binding=binding)["episodes_succeeded"] == 10
+    assert team_candidate_terminal(session_results=[closed], purpose="scored", episodes=10, runtime_binding=binding)["episodes_succeeded"] == 10
     # A self-graded row is refused by the session contract itself.
     self_graded = json.loads(json.dumps(closed))
     self_graded["episodes"][0]["scoring_authority"] = "candidate_policy"
     self_graded["result_digest"] = canonical_digest(self_graded, digest_field="result_digest")
     with pytest.raises(TeamCandidateResultError, match="session_result_invalid"):
-        team_candidate_terminal(session_result=self_graded, runtime_binding=binding)
-    # An undetermined score is neither a success nor a scored episode.
+        team_candidate_terminal(session_results=[self_graded], purpose="scored", episodes=10, runtime_binding=binding)
+    # An undetermined score is the simulator's failure: void, never counted either way; more than
+    # 5% of a run void (here one in ten) refuses the whole run rather than scoring the rest.
     undetermined = json.loads(json.dumps(closed))
     undetermined["episodes"][1]["episode"] = {"score": {"status": "undetermined", "task_succeeded": None}}
     undetermined["result_digest"] = canonical_digest(undetermined, digest_field="result_digest")
-    terminal = team_candidate_terminal(session_result=undetermined, runtime_binding=binding)
-    assert terminal["scoring"]["scored_episode_count"] == 9 and terminal["episodes_succeeded"] == 9
+    assert episode_outcome(undetermined["episodes"][1]) == ("void", "simulator_score_undetermined")
+    with pytest.raises(TeamCandidateResultError, match="void_share_exceeded"):
+        team_candidate_terminal(session_results=[undetermined], purpose="scored", episodes=10, runtime_binding=binding)
+
+
+def test_a_scene_that_fails_its_robot_free_check_in_cell_zero_runs_no_further_team_episode(tmp_path) -> None:
+    runtime_root, provider_output, _inputs, _admission = _stage_team_runtime(tmp_path)
+    spawned: list[int] = []
+    trace = {"schema_version": "rigid_robot_free_probe_trace.v1", "trace_digest": "sha256:" + "9" * 64}
+
+    def cell_zero_failed_its_probe(*, index: int, child_root: Any, **_: Any) -> int:
+        # What cell 0 seals when the scene's probe did not pass: the trace and its verdict, no team episode.
+        spawned.append(index)
+        (child_root / PROVIDER_RESULT_FILENAME).write_text(json.dumps(
+            {"episodes": [], "robot_free_probe_trace": trace, "robot_free_probe_status": "failed"}))
+        return 1
+
+    exit_code = worker._run_isolated_cell_processes(runtime_root=runtime_root, output_root=provider_output,
+                                                    run_cell_process=cell_zero_failed_its_probe)
+    result = json.loads((provider_output / PROVIDER_RESULT_FILENAME).read_text())
+    assert exit_code == 1 and spawned == [0]
+    assert result["status"] == "blocked" and result["blockers"] == ["team_scene_robot_free_probe_not_passed"]
+    # Closeout retains the failed receipt from this trace, so the scene is closed to every team.
+    assert result["robot_free_probe_trace"] == trace and result["candidate_policy_queried"] is False
+    assert result["result_digest"] == canonical_digest(result, digest_field="result_digest")

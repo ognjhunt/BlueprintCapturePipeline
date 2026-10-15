@@ -67,7 +67,8 @@ def bound_media_artifact(
     }
 
 
-def require_completed_episode_media(output_root: Path, episode: Mapping[str, Any]) -> None:
+def require_completed_episode_media(output_root: Path, episode: Mapping[str, Any], *,
+                                    camera_ids: Any = ("external", "wrist", "overview")) -> None:
     """Verify the producer's frozen bytes before the worker seals completion."""
     artifacts = episode.get("media_artifacts")
     if not isinstance(artifacts, list) or not artifacts:
@@ -89,7 +90,7 @@ def require_completed_episode_media(output_root: Path, episode: Mapping[str, Any
         raise ValueError("policy_canary_episode_multicamera_manifest_missing_or_ambiguous")
     media_root = output_root / "episodes"
     manifest = _read(media_root / manifests[0]["relative_path"])
-    if (set(manifest.get("required_camera_ids") or []) != {"external", "wrist", "overview"}
+    if (set(manifest.get("required_camera_ids") or []) != set(camera_ids)
             or set(manifest.get("review_only_camera_ids") or []) != {"overview"}):
         raise ValueError("policy_canary_episode_camera_contract_invalid")
     validate_multicamera_frame_manifest(manifest, output_dir=media_root, verify_files=True)

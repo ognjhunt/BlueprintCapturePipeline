@@ -209,6 +209,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "task_object_native_settle_gate.py",
     "task_object_native_settle_runtime.py",
     "policy_canary_media_integrity.py",
+    "policy_canary_scene_resolution.py",
     "policy_scientific_reset.py",
     "policy_request_evidence.py",
     "policy_interface_binding.py",
