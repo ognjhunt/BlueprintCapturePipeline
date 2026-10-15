@@ -261,11 +261,12 @@ def test_existing_canonical_result_is_never_overwritten(tmp_path):
 def test_new_helper_stays_inside_the_provider_bundle_import_closure():
     from blueprint_pipeline import policy_canary_interrupted_cell_recovery as recovery
     from blueprint_pipeline.provider_runtime_import_closure import provider_runtime_import_closure_blockers
-    from tests.test_provider_runtime_import_closure import CANARY_SHIPPED_MODULES
+    from tests.test_provider_runtime_import_closure import CANARY_PACKAGE_FILES, CANARY_SHIPPED_MODULES
 
     path = recovery.Path(recovery.__file__)
     assert provider_runtime_import_closure_blockers(package_source_dir=path.parent,
-        shipped_module_names=[*CANARY_SHIPPED_MODULES, path.name]) == []
+        shipped_module_names=[*CANARY_SHIPPED_MODULES, path.name],
+        shipped_package_files=CANARY_PACKAGE_FILES) == []
 
 
 def test_recovery_replay_refuses_new_uninventoried_original_files(tmp_path):

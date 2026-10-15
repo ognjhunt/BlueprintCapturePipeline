@@ -1,9 +1,23 @@
-"""Explicit admitted client interfaces, separate from product candidate IDs."""
+"""Explicit admitted client interfaces, separate from product candidate IDs.
+
+Each interface names the frozen candidate whose observation and action
+contract it uses. ``openpi_droid_https.v1`` is that same pi0.5-DROID contract
+(two 224x224 views, joint and gripper state, prompt; joint-position action
+chunk) delivered by a robot team's own authenticated HTTPS service instead of
+Blueprint's pinned OpenPI server. Beta journey step: L5 team policy evaluation.
+"""
 from collections.abc import Mapping
 from typing import Any
 
-INTERFACES = {"openpi_droid.v1": "pi05_droid", "groot_n17_droid.v1": "groot_n17_droid"}
-LEGACY_INTERFACES = {value: key for key, value in INTERFACES.items()}
+INTERFACES = {
+    "openpi_droid.v1": "pi05_droid",
+    "groot_n17_droid.v1": "groot_n17_droid",
+    "openpi_droid_https.v1": "pi05_droid",
+}
+# Written out, not inverted: two interfaces share pi05_droid's contract, and
+# only the pinned OpenPI one may ever serve the frozen pi05_droid candidate.
+LEGACY_INTERFACES = {"pi05_droid": "openpi_droid.v1", "groot_n17_droid": "groot_n17_droid.v1"}
+TEAM_HTTPS_INTERFACES = frozenset({"openpi_droid_https.v1"})
 
 
 def resolve_policy_interface(spec: Mapping[str, Any]) -> str:

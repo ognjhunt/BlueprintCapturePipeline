@@ -423,6 +423,7 @@ def _prestart_episode_readiness(
     environment: EpisodeEnvironment,
     policy: DroidPolicyClient,
     candidate_id: str,
+    interface_candidate_id: str,
     prompt: str,
     gripper: GripperConvention,
     task_kind: str,
@@ -484,12 +485,12 @@ def _prestart_episode_readiness(
     inputs = environment.read_policy_inputs()
     camera_rgb = {
         view: inputs[view]
-        for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+        for view in CANDIDATE_REQUIRED_VIEWS[interface_candidate_id]
         if view in inputs
     }
     policy_input_saturation = _evidence(policy_input_saturation_evidence, camera_rgb=camera_rgb)
     try:
-        observation = _build_observation(candidate_id, camera_rgb, inputs, prompt)
+        observation = _build_observation(interface_candidate_id, camera_rgb, inputs, prompt)
     except (KeyError, DroidObservationError) as exc:
         raise PolicyEpisodeError(
             [f"{BLOCKER_PRESTART_READINESS}:policy_observation_invalid:{exc}"]
@@ -527,7 +528,7 @@ def _prestart_episode_readiness(
     policy_evidence = _policy_prestart_evidence(policy)
     readiness_id = f"{episode_id}--prestart-readiness"
     exact_frame = persist_observation_frame(
-        _policy_view_composite(observation, candidate_id=candidate_id),
+        _policy_view_composite(observation, candidate_id=interface_candidate_id),
         output_dir=media_root,
         episode_id=readiness_id,
         frame_index=0,
@@ -679,6 +680,7 @@ def run_policy_episode(
     environment: EpisodeEnvironment,
     policy: DroidPolicyClient,
     candidate_id: str,
+    interface_candidate_id: str | None = None,
     destination_position_world_m: Sequence[float] | None = None,
     prompt: str,
     gripper: GripperConvention,
@@ -709,8 +711,9 @@ def run_policy_episode(
     :class:`~blueprint_pipeline.adp009d_task_scoring.TaskScoringError`.
     """
 
-    if candidate_id not in CANDIDATE_REQUIRED_VIEWS:
-        raise PolicyEpisodeError([f"policy_episode_unknown_candidate:{candidate_id}"])
+    interface = interface_candidate_id or candidate_id  # observation/action contract key
+    if interface not in CANDIDATE_REQUIRED_VIEWS:
+        raise PolicyEpisodeError([f"policy_episode_unknown_candidate:{interface}"])
     if int(max_policy_queries) < 1:
         raise PolicyEpisodeError(["policy_episode_query_budget_invalid"])
     if int(settle_window_samples) < 1:
@@ -840,7 +843,7 @@ def run_policy_episode(
         prestart_readiness = _prestart_episode_readiness(
             environment=environment,
             policy=policy,
-            candidate_id=candidate_id,
+            candidate_id=candidate_id, interface_candidate_id=interface,
             prompt=prompt,
             gripper=gripper,
             task_kind=task_kind,
@@ -1019,12 +1022,12 @@ def run_policy_episode(
                 terminal_inputs = environment.read_policy_inputs()
                 terminal_camera_rgb = {
                     view: terminal_inputs[view]
-                    for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                    for view in CANDIDATE_REQUIRED_VIEWS[interface]
                     if view in terminal_inputs
                 }
                 try:
                     terminal_policy_observation = _build_observation(
-                        candidate_id, terminal_camera_rgb, terminal_inputs, prompt
+                        interface, terminal_camera_rgb, terminal_inputs, prompt
                     )
                 except KeyError as exc:
                     raise PolicyEpisodeError(
@@ -1032,7 +1035,7 @@ def run_policy_episode(
                     ) from exc
                 terminal_observation_record = persist_observation_frame(
                     _policy_view_composite(
-                        terminal_policy_observation, candidate_id=candidate_id
+                        terminal_policy_observation, candidate_id=interface
                     ),
                     output_dir=media_root,
                     episode_id=episode_id,
@@ -1046,7 +1049,7 @@ def run_policy_episode(
                     "candidate_id": candidate_id,
                     "prompt": str(prompt),
                     "policy_input_view_order": list(
-                        CANDIDATE_REQUIRED_VIEWS[candidate_id]
+                        CANDIDATE_REQUIRED_VIEWS[interface]
                     ),
                     "legacy_media_profile": True,
                 },
@@ -1227,7 +1230,7 @@ def run_policy_episode(
             "observation_adapter_schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
             "action_space": action_magnitudes["source_action_space"],
             "observation_conversion": describe_observation_conversion(
-                candidate_id,
+                interface,
                 source_hw=_measured_source_hw(observed_source_resolutions_hw),
             ),
             "destination_position_world_m": (
@@ -1305,7 +1308,7 @@ def run_policy_episode(
                 and all(row.get("status") == "observed" for row in (inputs.get("sensor_freshness") or {}).values())})
         timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         camera_rgb = {
-            view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
+            view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[interface] if view in inputs
         }
         # The conversion receipt must report the size the cameras actually
         # rendered, so measure it from the frames the policy receives rather
@@ -1320,7 +1323,7 @@ def run_policy_episode(
             raise PolicyEpisodeError([BLOCKER_SOURCE_RESOLUTION_UNMEASURED])
         phase_started = time.monotonic()
         try:
-            observation = _build_observation(candidate_id, camera_rgb, inputs, prompt)
+            observation = _build_observation(interface, camera_rgb, inputs, prompt)
         except KeyError as exc:
             raise PolicyEpisodeError(
                 [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{exc.args[0]}_missing"]
@@ -1333,9 +1336,9 @@ def run_policy_episode(
 
         if media_root is not None and episode_id is not None:
             phase_started = time.monotonic()
-            view_order = list(CANDIDATE_REQUIRED_VIEWS[candidate_id])
+            view_order = list(CANDIDATE_REQUIRED_VIEWS[interface])
             exact_frame = persist_observation_frame(
-                _policy_view_composite(observation, candidate_id=candidate_id),
+                _policy_view_composite(observation, candidate_id=interface),
                 output_dir=media_root,
                 episode_id=episode_id,
                 frame_index=query_index,
@@ -1510,7 +1513,7 @@ def run_policy_episode(
             action_values,
             horizon=int(open_loop_horizon),
             action_space=policy_action_space,
-            candidate_id=candidate_id,
+            candidate_id=interface,
         )
         executed_prefix_rows = int(plan["executed_rows"])
         discarded_tail_rows = int(plan["discarded_rows"])
@@ -1530,7 +1533,7 @@ def run_policy_episode(
                 action_values[:executed_prefix_rows],
                 action_space=policy_action_space,
                 joint_limits=joint_limits,
-                candidate_id=candidate_id,
+                candidate_id=interface,
             )
         except DroidActionExecutionError as exc:
             raw_action_evidence["raw_bound_validation_errors"] = list(exc.errors)
@@ -1549,7 +1552,7 @@ def run_policy_episode(
                 action_values,
                 action_space=policy_action_space,
                 joint_limits=joint_limits,
-                candidate_id=candidate_id,
+                candidate_id=interface,
             )
         except DroidActionExecutionError as exc:
             full_response_bound_errors = list(exc.errors)
@@ -1602,7 +1605,7 @@ def run_policy_episode(
                 joint_limits=joint_limits,
                 gripper=gripper,
                 action_space=policy_action_space,
-                candidate_id=candidate_id,
+                candidate_id=interface,
             )
             query_clamped_rows += int(action["joint_limit_clamped"])
             action_record = {
@@ -1927,7 +1930,7 @@ def run_policy_episode(
         "observation_adapter_schema_version": DROID_OBSERVATION_SCHEMA_VERSION,
         "action_space": commanded_action_magnitudes["source_action_space"],
         "observation_conversion": describe_observation_conversion(
-            candidate_id, source_hw=_measured_source_hw(observed_source_resolutions_hw)
+            interface, source_hw=_measured_source_hw(observed_source_resolutions_hw)
         ),
         "destination_position_world_m": (
             [float(v) for v in destination_position_world_m]
