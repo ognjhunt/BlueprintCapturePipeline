@@ -65,6 +65,15 @@ def _free_beta_run(row: Mapping[str, Any]) -> bool:
             and all(c in "0123456789abcdef" for c in digest[7:]))
 
 
+TEAM_CANDIDATE_QUICK10_PROFILE = "policy_canary_quick10_team_candidate_v1"
+
+
+def _requests_team_candidate_runtime(canonical: Mapping[str, Any]) -> bool:
+    package = _mapping(canonical.get("policy_package"))
+    return any(_mapping(package.get(name)).get("execution_profile") == TEAM_CANDIDATE_QUICK10_PROFILE
+               for name in ("policy_api_endpoint", "docker_container", "sim_controller_plugin"))
+
+
 def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = None) -> list[str]:
     blockers: list[str] = []
     if not _free_beta_run(row):
@@ -111,7 +120,12 @@ def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = No
         blockers.append("agent_execution_canonical_team_mismatch")
     if _mapping(canonical.get("site_package")).get("capture_id") != binding.get("capture_id"):
         blockers.append("agent_execution_canonical_capture_mismatch")
-    if capture_root is not None:
+    if _requests_team_candidate_runtime(canonical):
+        # Beta L5: the Quick-10 team-candidate runtime runs only through its own
+        # admission and launch path, which this executor does not yet drive.
+        # Refuse by name instead of falling into the legacy or one-episode paths.
+        blockers.append("agent_execution_team_candidate_runtime_not_wired")
+    elif capture_root is not None:
         configured_root = str(capture_root.resolve())
         request_root = str(_mapping(canonical.get("site_package")).get("capture_root") or "")
         if request_root != configured_root or canonical.get("capture_root") != configured_root:
@@ -581,6 +595,7 @@ def poll_once(
         "agent_execution_native_profile_missing",
         "agent_execution_native_profile_invalid",
         "agent_execution_native_single_episode_required",
+        "agent_execution_team_candidate_runtime_not_wired",
     }
     for row in client.list_runs(limit, capture_id=capture_id):
         summary["examined"] += 1

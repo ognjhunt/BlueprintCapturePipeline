@@ -104,3 +104,30 @@ def test_controlled_native_terminal_states_a_sealed_task_score_not_a_job_score(t
     monkeypatch.setattr(native_queue, "read_native_terminal", lambda **_kwargs: {"status": "blocked"})
     assert "scoring" not in executor._default_terminal_reader(
         job_dir=tmp_path, expected_job_id="job-1", expected_canonical_request_digest=DIGEST)
+
+
+def test_a_team_candidate_request_is_refused_by_name_until_its_launch_path_is_wired(tmp_path, monkeypatch) -> None:
+    """Beta L5: never fall into the legacy batch or the one-episode native path."""
+
+    import hashlib
+    import json
+
+    from tests.test_agent_run_executor import FakeClient, _row
+
+    row = _row(tmp_path)
+    admission = row["execution_admission"]
+    admission["canonical_execution_request"]["policy_package"] = {"policy_api_endpoint": {
+        "endpoint_url": "https://policy.example/v1/act", "execution_profile": "policy_canary_quick10_team_candidate_v1",
+        "policy_interface_id": "openpi_droid_https.v1"}}
+    canonical = json.dumps(admission, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    row.update(execution_admission_canonical_json=canonical,
+               execution_admission_digest="sha256:" + hashlib.sha256(canonical.encode()).hexdigest())
+    assert executor.validate_queue_run(row, capture_root=tmp_path) == [
+        "agent_execution_team_candidate_runtime_not_wired"]
+    monkeypatch.setattr(native_queue, "execute_staged_controlled_request",
+                        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not execute")))
+    client = FakeClient([row])
+    summary = executor.poll_once(client=client, capture_root=tmp_path,
+                                 terminal_reader=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("no read")))
+    assert summary["blocked"] == 1 and client.blocked == ["agent_execution_team_candidate_runtime_not_wired"]
+    assert not list((tmp_path / "pipeline" / "robot_eval_job_requests").rglob("*.json"))
