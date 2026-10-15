@@ -256,7 +256,7 @@ class _Robot:
         self.joint_names = joint_names or ["finger_joint", *ARM]
         self.q = np.zeros(len(self.joint_names))
         self.q[self.joint_names.index("finger_joint")] = 0.04
-        self.root = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])  # Isaac Lab: position, then wxyz
+        self.root = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])  # Pinned Isaac Lab Beta2: position, then xyzw
         self.data = self
 
     @property
@@ -316,7 +316,13 @@ class _Policy:
         return self.chunks[min(len(self.observations), len(self.chunks)) - 1]
 
 
-def test_the_team_policy_drives_the_team_arm_and_an_out_of_limit_row_never_reaches_it(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("base_quaternion_xyzw", [
+    [0.0, 0.0, 0.0, 1.0],
+    [0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5)],
+    [0.2, -0.3, 0.4, math.sqrt(0.71)],
+])
+def test_the_team_policy_drives_the_team_arm_and_an_out_of_limit_row_never_reaches_it(
+        tmp_path, monkeypatch, base_quaternion_xyzw) -> None:
     _declared, sealed = binding(tmp_path)
     plan = {**apply_team_embodiment(station_plan(), sealed), "scenario": {"seed": 7}}  # as the worker resolves it
     monkeypatch.setattr(native_task_episode_environment, "NativeRigidScoringEnvironment", _Scoring)
@@ -329,6 +335,7 @@ def test_the_team_policy_drives_the_team_arm_and_an_out_of_limit_row_never_reach
                                            "required_camera_ids": kwargs["required_camera_ids"]}, []))
     built = type("Built", (), {"env": _Env(), "camera_scene_names": {
         "team_camera_0": "team_camera_0", "team_camera_1": "team_camera_1", "overview": "external_camera_2"}})()
+    built.env.robot.root[3:7] = base_quaternion_xyzw
     policy = _Policy([[[0.1, 0.2, 0.3, 1.0]] * 4])
     progress: dict[str, Any] = {}
     episode = run_team_episode(built=built, task_readback=None, policy=policy, plan=plan, prompt="Put the mug away",
@@ -337,7 +344,10 @@ def test_the_team_policy_drives_the_team_arm_and_an_out_of_limit_row_never_reach
     first = policy.observations[0]
     assert sorted(first["images"]) == ["scene_rgb", "wrist_rgb"] and first["images"]["wrist_rgb"].dtype == np.uint8
     assert first["state"] == {"joint_position": [0.0, 0.0, 0.0], "joint_velocity": [0.0, 0.0, 0.0],
-                              "gripper_position": [0.0], "base": BASE_AT_REST}
+                              "gripper_position": [0.0],
+                              "base": {**BASE_AT_REST, "orientation_xyzw": base_quaternion_xyzw}}
+    assert all(row["state"]["base"]["orientation_xyzw"] == base_quaternion_xyzw
+               for row in policy.observations)
     # A closure of 1 drives the declared gripper joint to its closed position; arm targets pass through.
     assert built.env.steps[0] == [0.1, 0.2, 0.3, 0.0] and policy.observations[1]["state"]["gripper_position"] == [1.0]
     # 180 control steps at 30 Hz plus the settle window, task state sampled every second step.
@@ -436,7 +446,7 @@ class _WheeledEnv(_Env):
 
     def reset(self, seed: int) -> None:
         self.robot.q = np.array([0.04, 0.0, 0.0, 0.0, 0.0, 0.0])
-        self.robot.root = np.array([1.0, -1.0, 0.9, 1.0, 0.0, 0.0, 0.0])
+        self.robot.root = np.array([1.0, -1.0, 0.9, 0.0, 0.0, 0.0, 1.0])
 
     def step(self, action: list[list[float]]) -> None:
         targets = action[0]
@@ -469,6 +479,7 @@ def test_a_wheeled_humanoid_drives_by_wheel_velocity_and_a_fall_ends_its_episode
     first = policy.observations[0]["state"]
     assert len(first["joint_position"]) == len(first["joint_velocity"]) == 5
     assert first["base"]["position_world_m"] == [1.0, -1.0, 0.9]
+    assert first["base"]["orientation_xyzw"] == STANCE["orientation_xyzw"]
     assert env.steps[0] == [0.1, 0.2, 0.3, 0.0, 2.0, -2.0]
     # It fell on its fifth step: the policy is not asked again, and the wheels stop while the object settles.
     assert len(policy.observations) == 2 and env.steps[5] == [0.1, 0.2, 0.3, 0.0, 0.0, 0.0]

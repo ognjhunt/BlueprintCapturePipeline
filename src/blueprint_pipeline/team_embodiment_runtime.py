@@ -347,8 +347,9 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
 
     def base_state() -> dict[str, list[float]]:
         pose, velocity = _array(robot.data.root_pose_w)[0], _array(robot.data.root_vel_w)[0]
-        w, x, y, z = (float(v) for v in pose[3:7])  # Isaac Lab stores wxyz
-        return {"position_world_m": [float(v) for v in pose[:3]], "orientation_xyzw": [x, y, z, w],
+        # The pinned Isaac Lab Beta2 root-pose buffer already uses XYZW.
+        return {"position_world_m": [float(v) for v in pose[:3]],
+                "orientation_xyzw": [float(v) for v in pose[3:7]],
                 "linear_velocity_world_mps": [float(v) for v in velocity[:3]],
                 "angular_velocity_world_radps": [float(v) for v in velocity[3:6]]}
 
