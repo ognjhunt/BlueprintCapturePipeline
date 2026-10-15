@@ -1493,7 +1493,7 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
     declared_valid = re.fullmatch(r"[0-9a-f]{40}", declared) is not None
     observed = running_source_commit(module_path)
     headroom = _configured_disk_headroom()
-    # Beta capture privacy: sound removal needs ffmpeg and ffprobe on this host.
+    # Beta capture privacy: sound removal needs ffmpeg on this host.
     media_blockers = media_tool_blockers()
     if observed and declared_valid and observed != declared:
         return {

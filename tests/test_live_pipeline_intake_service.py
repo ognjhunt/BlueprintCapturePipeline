@@ -2384,21 +2384,24 @@ def test_neither_source_available_fails_closed(tmp_path, monkeypatch):
     assert payload["blockers"] == ["deployment_identity_source_commit_unavailable"]
 
 
-def test_a_host_without_the_capture_sound_removal_tools_names_them(tmp_path, monkeypatch):
-    """Sound removal fails closed per capture without ffmpeg and ffprobe; the
-    deployed identity names the gap without refusing the commit proof."""
+def test_a_host_without_ffmpeg_names_it_and_ffprobe_alone_is_not_a_blocker(tmp_path, monkeypatch):
+    """Sound removal fails closed per capture without ffmpeg; the deployed identity
+    names the gap without refusing the commit proof. Without ffprobe removal still
+    succeeds on the exact command, so that is not a blocker."""
 
     from blueprint_pipeline import capture_audio_minimization as audio
     from blueprint_pipeline import live_pipeline_intake_service as intake
 
     monkeypatch.delenv(intake.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
-    monkeypatch.setattr(audio.shutil, "which", lambda tool: "/usr/bin/ffmpeg" if tool == "ffmpeg" else None)
     module = _release_worktree(tmp_path, "a" * 40)
 
+    monkeypatch.setattr(audio.shutil, "which", lambda tool: "/usr/bin/ffprobe" if tool == "ffprobe" else None)
     payload = intake.deployment_identity_payload(module)
-
     assert payload["commit_proven"] is True
-    assert payload["blockers"] == ["capture_audio_removal_tool_missing:ffprobe"]
+    assert payload["blockers"] == ["capture_audio_removal_tool_missing:ffmpeg"]
+
+    monkeypatch.setattr(audio.shutil, "which", lambda tool: "/usr/bin/ffmpeg" if tool == "ffmpeg" else None)
+    assert intake.deployment_identity_payload(module)["blockers"] == []
 
 
 def test_a_branch_checkout_is_not_answered_for(tmp_path, monkeypatch):
