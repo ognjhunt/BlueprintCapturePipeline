@@ -120,18 +120,22 @@ def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = No
         blockers.append("agent_execution_canonical_team_mismatch")
     if _mapping(canonical.get("site_package")).get("capture_id") != binding.get("capture_id"):
         blockers.append("agent_execution_canonical_capture_mismatch")
-    if _requests_team_candidate_runtime(canonical):
+    team_request = _requests_team_candidate_runtime(canonical)
+    if team_request:
         # Beta L5: the Quick-10 team-candidate runtime runs only through its own
-        # admission and launch path, which this executor does not yet drive.
-        # Refuse by name instead of falling into the legacy or one-episode paths.
-        blockers.append("agent_execution_team_candidate_runtime_not_wired")
-    elif capture_root is not None:
+        # registry-bound admission and launch path, never the legacy or
+        # one-episode paths; the launch re-checks all of this before spend.
+        from .team_candidate_quick10_launch import team_request_blockers
+        blockers.extend(team_request_blockers(canonical, row))
+    if capture_root is not None:
         configured_root = str(capture_root.resolve())
         request_root = str(_mapping(canonical.get("site_package")).get("capture_root") or "")
         if request_root != configured_root or canonical.get("capture_root") != configured_root:
             blockers.append("agent_execution_capture_root_partition_mismatch")
         from .controlled_native_queue import configured_profile, routes_controlled_request
-        if routes_controlled_request(canonical):
+        if team_request:
+            pass  # the operator registry binds the scene's frozen Quick-10 inputs instead of episode specs
+        elif routes_controlled_request(canonical):
             # Native scope is frozen in the operator registry and admitted
             # request. Legacy capture compilation can rewrite episode_specs.
             try:
@@ -369,6 +373,8 @@ def _stage_canonical_request(row: Mapping[str, Any], inbox_dir: Path) -> Path:
         # The native queue owns this request. The legacy JSON inbox consumer
         # must not race it or replay the submitted policy through another path.
         inbox_dir = inbox_dir / "controlled-native"
+    elif _requests_team_candidate_runtime(canonical):
+        inbox_dir = inbox_dir / "team-candidate-quick10"
     required = ("customer", "site_package", "requested_tasks", "robot_profile", "policy_package")
     missing = [field for field in required if not canonical.get(field)]
     if missing:
@@ -392,6 +398,11 @@ def _stage_canonical_request(row: Mapping[str, Any], inbox_dir: Path) -> Path:
 def _default_terminal_reader(
     *, job_dir: Path, expected_job_id: str, expected_canonical_request_digest: str
 ) -> Mapping[str, Any]:
+    from .team_candidate_quick10_closeout import read_team_candidate_terminal
+    team = read_team_candidate_terminal(job_dir=job_dir, expected_job_id=expected_job_id,
+        expected_canonical_request_digest=expected_canonical_request_digest)
+    if team is not None:
+        return team  # a completed team terminal already carries its simulator-scored statement
     from .controlled_native_queue import read_native_terminal
     native = read_native_terminal(job_dir=job_dir, expected_job_id=expected_job_id,
         expected_canonical_request_digest=expected_canonical_request_digest)
@@ -479,6 +490,7 @@ def poll_once(
     inbox_dir: Path | None = None,
     journal_dir: Path | None = None,
     terminal_reader: Callable[..., Mapping[str, Any]] = _default_terminal_reader,
+    team_launch_hooks: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if (capture_root is None) == (capture_partition_root is None):
         raise ValueError("agent_execution_capture_scope_required")
@@ -595,7 +607,11 @@ def poll_once(
         "agent_execution_native_profile_missing",
         "agent_execution_native_profile_invalid",
         "agent_execution_native_single_episode_required",
-        "agent_execution_team_candidate_runtime_not_wired",
+        "agent_execution_team_candidate_package_invalid",
+        "agent_execution_team_candidate_episode_scope_invalid",
+        "agent_execution_team_candidate_profile_invalid",
+        "agent_execution_team_candidate_profile_missing",
+        "agent_execution_team_candidate_not_offered",
     }
     for row in client.list_runs(limit, capture_id=capture_id):
         summary["examined"] += 1
@@ -689,6 +705,13 @@ def poll_once(
             execute_staged_controlled_request(request=canonical,
                 job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
                 pipeline_run_id=journal.get("pipeline_run_id"))
+        elif _requests_team_candidate_runtime(canonical) and launch_allowed:
+            from .team_candidate_quick10_launch import execute_staged_team_candidate_request
+            journal["state"] = "native_execution_in_progress"
+            _write_json_atomic(journal_path, journal)
+            execute_staged_team_candidate_request(row=row, request=canonical,
+                job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
+                pipeline_run_id=journal.get("pipeline_run_id"), **dict(team_launch_hooks or {}))
         terminal = terminal_reader(
             job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
             expected_job_id=str(journal["canonical_job_id"]),
