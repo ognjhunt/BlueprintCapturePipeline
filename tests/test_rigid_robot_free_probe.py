@@ -225,6 +225,9 @@ def test_success_that_is_a_robot_state_or_has_no_hold_window_is_refused_by_name(
         receipt = rigid.score_rigid_robot_free_readiness(task_spec=_with_contract(spec, **changes), physics_probe=None)
         assert (receipt["status"], receipt["probe_error"]) == ("probe_unavailable", reason)
         assert receipt["learned_policy_evaluation_admitted"] is False
+    unpaced = {key: value for key, value in spec.items() if key != "control_frequency_hz"}
+    assert rigid.score_rigid_robot_free_readiness(task_spec=unpaced, physics_probe=None)["probe_error"] == (
+        "control_frequency_missing")
 
 
 def test_physics_evidence_must_be_recorded_for_this_revision_task_and_plan(tmp_path: Path) -> None:

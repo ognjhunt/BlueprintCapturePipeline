@@ -87,6 +87,9 @@ def probe_context(task_spec: Mapping[str, Any]) -> dict[str, Any]:
     if criteria["settling"]["mode"] != "required":
         # Without a hold window nothing says the released object stayed put.
         raise RigidRobotFreeProbeUnsupported("hold_window_not_required")
+    if not spec["control_frequency_hz"]:
+        # Teams are read once per control step; without the rate there is no episode to mirror.
+        raise RigidRobotFreeProbeUnsupported("control_frequency_missing")
     raw_target = task_spec.get("target_position_world_m")
     lower = spec["destination_position_bounds_world_m"]["minimum"]
     upper = spec["destination_position_bounds_world_m"]["maximum"]
