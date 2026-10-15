@@ -40,6 +40,7 @@ from .decision_evidence_contracts import canonical_digest
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
 from .team_candidate_quick10_staging import TeamCandidateStagingError, frozen_quick10_inputs
 from .team_evaluation_plan import PRACTICE, PURPOSES, SCORED
+from .team_robot_free_probe import scored_task_spec
 
 REGISTRY_ENV = "BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY"
 REGISTRY_SCHEMA = "blueprint.team_candidate_quick10_registry.v1"
@@ -135,7 +136,13 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "inputs": inputs, "activation": activation, "packet_dir": packet_dir,
         "runtime_source_packet_receipt": Path(inputs["runtime_source"]["path"]),
-        "scene": {"scene_revision_digest": inputs.get("scene_revision_digest"), "task_spec": plan.get("task_spec"),
+        # A rigid task's robot-free probe is planned and bound against the specification a team is
+        # scored with: the scene's, under the job's success contract (team_robot_free_probe). The
+        # articulated probe binds the scene's specification as compiled.
+        "scene": {"scene_revision_digest": inputs.get("scene_revision_digest"),
+                  "task_spec": (scored_task_spec(plan["task_spec"], inputs["task_success_contract"])
+                                if (plan.get("task_spec") or {}).get("task_kind") == "rigid_pick_place"
+                                else plan.get("task_spec")),
                   "task_success_contract": inputs["task_success_contract"],
                   "embodiment_preset_id": DROID_POLICY_CANARY_PRESET_ID},
         "prompt": resolved[0]["task_spec"]["prompt"],

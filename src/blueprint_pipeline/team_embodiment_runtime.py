@@ -436,9 +436,94 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     }
 
 
+def _quaternion_multiply(a: Sequence[float], b: Sequence[float]) -> list[float]:
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return [aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw, aw * bw - ax * bx - ay * by - az * bz]
+
+
+def _rotate(quaternion: Sequence[float], vector: Sequence[float]) -> list[float]:
+    x, y, z, w = quaternion
+    rotated = _quaternion_multiply(_quaternion_multiply(quaternion, [*vector, 0.0]), [-x, -y, -z, w])
+    return rotated[:3]
+
+
+def asset_root_for_scoring_pose(scoring_pose: Sequence[float], offset: Mapping[str, Any]) -> list[float]:
+    """The asset-root pose that puts the task's scoring frame at ``scoring_pose`` (all xyz + xyzw)."""
+
+    ox, oy, oz, ow = (float(v) for v in offset["orientation_xyzw"])
+    inverse = [-ox, -oy, -oz, ow]
+    rotation = _quaternion_multiply([float(v) for v in scoring_pose[3:7]], inverse)
+    shift = _rotate(rotation, [float(v) for v in offset["position_m"]])
+    return [float(scoring_pose[axis]) - shift[axis] for axis in range(3)] + rotation
+
+
+class _ArenaProbeScene:
+    """The rigid probe's three-method seam over the built scene: set the object's pose, step physics, read."""
+
+    def __init__(self, *, built: Any, task_readback: Any, plan: Mapping[str, Any]):
+        import torch
+
+        self._torch = torch
+        self._env = built.env.unwrapped
+        self._object = self._env.scene[built.scene_asset_names["task_object"]]
+        self._readback = task_readback
+        spec = plan["task_spec"]
+        self._offset = spec["interaction_affordance"]["asset_root_from_scoring_frame"]
+        self._contact_n = float(spec["task_contact_minimum_force_n"])
+
+    def set_scoring_pose(self, pose: Sequence[float]) -> None:
+        device = self._env.device
+        root = asset_root_for_scoring_pose(pose, self._offset)
+        self._object.write_root_pose_to_sim(self._torch.tensor([root], dtype=self._torch.float32, device=device))
+        self._object.write_root_velocity_to_sim(self._torch.zeros((1, 6), dtype=self._torch.float32, device=device))
+
+    def step(self) -> None:
+        self._env.scene.write_data_to_sim()
+        self._env.sim.step(render=False)
+        self._env.scene.update(dt=self._env.physics_dt)
+
+    def read_sample(self) -> Mapping[str, Any]:
+        native = self._readback.read_task_sample()
+        return {"task_scoring_pose_world": native["task_scoring_pose_world"],
+                "support_contact_active": float(native["task_support_contact_peak_force_n"]) >= self._contact_n,
+                "scene_collision_force_n": float(native["task_scene_collision_peak_force_n"])}
+
+
+def record_arena_robot_free_probe(*, built: Any, task_readback: Any, plan: Mapping[str, Any],
+                                  request: Mapping[str, Any]) -> dict[str, Any]:
+    """Execute the control plane's robot-free probe plan in the built scene; never raise.
+
+    The robot stays at its reset pose and never drives the object: the object
+    is left untouched, then carried by setting its pose and released, and
+    physics alone decides where it rests. The trace is scored on the control
+    plane (``team_robot_free_probe``).
+    """
+
+    from .decision_evidence_contracts import canonical_digest
+    from .rigid_robot_free_probe_recorder import record_rigid_robot_free_probe
+
+    try:
+        if (request.get("request_digest") != canonical_digest(dict(request), digest_field="request_digest")
+                or abs(float(built.env.unwrapped.physics_dt) * float(request["plan"]["physics_hz"]) - 1.0) > 1e-6):
+            raise RuntimeError("team_robot_free_probe_request_or_rate_invalid")
+        built.env.reset(seed=int(plan["scenario"]["seed"]))
+        scene = _ArenaProbeScene(built=built, task_readback=task_readback, plan=plan)
+        return record_rigid_robot_free_probe(scene=scene, plan=request["plan"], binding=request["binding"])
+    except Exception as exc:  # noqa: BLE001 - a probe failure is evidence, never a failed practice run
+        trace = {"schema_version": "scene_rigid_robot_free_success_probe.v1", "binding": dict(request.get("binding") or {}),
+                 "plan": dict(request.get("plan") or {}), "status": "failed",
+                 "error": f"{type(exc).__name__}:{str(exc)[:200]}", "trace_digest": ""}
+        trace["trace_digest"] = canonical_digest(trace, digest_field="trace_digest")
+        return trace
+
+
 __all__ = [
     "TeamPolicyActionRejected",
+    "asset_root_for_scoring_pose",
     "build_team_embodiment",
+    "record_arena_robot_free_probe",
     "run_team_episode",
     "team_observation_gate",
 ]

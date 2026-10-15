@@ -55,6 +55,8 @@ CANARY_SHIPPED_PACKAGE_FILES = ("core/__init__.py", "core/security_controls.py")
 TEAM_RUNTIME_MODULE_NAMES = (
     "team_candidate_policy_client.py", "droid_https_policy_client.py", "team_policy_https_client.py",
     "team_embodiment.py", "team_embodiment_runtime.py", "native_task_robot_contact_topology.py",
+    # A practice session records an undecided rigid scene's robot-free probe.
+    "rigid_robot_free_probe_recorder.py", "rigid_robot_free_probe_plan.py",
 )
 
 

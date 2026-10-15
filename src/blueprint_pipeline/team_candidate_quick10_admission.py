@@ -290,11 +290,14 @@ def runtime_binding(admission: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mapping[str, Any], prompt: str,
-                   max_policy_queries: int, team_embodiment: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                   max_policy_queries: int, team_embodiment: Mapping[str, Any] | None = None,
+                   robot_free_probe: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The sealed per-candidate execution spec the canary worker loads (no secret material).
 
     A candidate on its own robot carries the staged ``team_embodiment`` binding
-    (``team_embodiment.team_embodiment_binding``) for the admitted manifest.
+    (``team_embodiment.team_embodiment_binding``) for the admitted manifest. A
+    practice session on a scene whose robot-free probe is undecided carries the
+    probe to record (``team_robot_free_probe.probe_request``).
     """
 
     value = validate_admission(admission)
@@ -331,6 +334,7 @@ def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mappi
         "prompt": prompt, "max_policy_queries": int(max_policy_queries),
         "open_loop_horizon": delivery["open_loop_horizon"],
         **({"team_embodiment": dict(team_embodiment)} if team_embodiment is not None else {}),
+        **({"robot_free_probe": dict(robot_free_probe)} if robot_free_probe is not None else {}),
         "execution_spec_digest": "",
     }
     spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")

@@ -1421,6 +1421,8 @@ def _aggregate_isolated_cell_results(
         planned_cells=result["frozen_cells"]) if len(candidate_ids) == 2 else None  # one team candidate: no pair
     if authority.get("execution_release") is not None:
         result["execution_release"] = authority["execution_release"]
+    if child_results[0].get("robot_free_probe_trace") is not None:
+        result["robot_free_probe_trace"] = child_results[0]["robot_free_probe_trace"]
     result["artifact_inventory"] = telemetry_artifacts
     result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
@@ -1684,6 +1686,8 @@ def _run_selected_cell(
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
     team_binding = _team_embodiment_binding(specs)
+    probe_request = next((spec["robot_free_probe"] for spec in specs.values()
+                          if spec.get("robot_free_probe") is not None), None)
 
     def team_plan(plan: dict[str, Any]) -> dict[str, Any]:
         return apply_team_embodiment(plan, team_binding) if team_binding is not None else plan
@@ -1800,6 +1804,16 @@ def _run_selected_cell(
         )
         if not device["passed"]:
             raise RuntimeError("policy_canary_device_binding_failed")
+        if (probe_request is not None and selected_cell_index == 0
+                and "robot_free_probe_trace" not in current_session
+                and bound_runtime.make_rigid_task_readback is not None):
+            # Beta L5: record the scene's undecided robot-free probe in the built scene, before
+            # any episode, with the robot idle; closeout scores and retains it.
+            from blueprint_pipeline.team_embodiment_runtime import record_arena_robot_free_probe
+
+            current_session["robot_free_probe_trace"] = record_arena_robot_free_probe(
+                built=built, task_readback=bound_runtime.make_rigid_task_readback(built), plan=scene_plan,
+                request=probe_request)
         env = built.env
         seed = int(context["seed"])
         env.reset(seed=seed)
@@ -2328,6 +2342,8 @@ def _run_selected_cell(
         prepolicy_control_gate=prepolicy_control_gate,
     )
     result["appearance_render_backend"] = dict(appearance_render_backend)
+    if current_session.get("robot_free_probe_trace") is not None:
+        result["robot_free_probe_trace"] = current_session["robot_free_probe_trace"]
     telemetry_index, telemetry_artifacts = _write_policy_canary_telemetry(
         output_root, result["episodes"]
     )

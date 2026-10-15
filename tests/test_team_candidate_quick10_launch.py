@@ -57,6 +57,7 @@ from blueprint_pipeline import team_candidate_quick10_launch as launch
 from blueprint_pipeline.team_candidate_quick10_launch import CREDENTIAL_ENV, TERMINAL_FILENAME
 from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, REGISTRY_SCHEMA
 from blueprint_pipeline.team_embodiment import validate_embodiment_manifest
+from blueprint_pipeline.team_robot_free_probe import scored_task_spec
 from tests.test_agent_run_executor import _row
 from tests.test_provider_runtime_import_closure import _real_canary_pair_inputs
 
@@ -240,7 +241,9 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
               else {"zero_action_not_success": True, "direct_drive_success": True})
     probe = _sealed({"schema_version": rigid_schema or probe_gate.RECEIPT_SCHEMA, "status": "passed",
                      "configured_scene_revision_digest": inputs["scene_revision_digest"],
-                     "task_spec_digest": canonical_digest(task_spec), "learned_policy_evaluation_admitted": True,
+                     # Bound to the specification a team is scored with (team_robot_free_probe).
+                     "task_spec_digest": canonical_digest(scored_task_spec(task_spec, inputs["task_success_contract"])),
+                     "learned_policy_evaluation_admitted": True,
                      "task_success_contract_digest": inputs["task_success_contract_digest"],
                      "checks": checks, "proof_boundary": {"robot_embodiment_used": False}}, "receipt_digest")
     (operator / "probe").mkdir()

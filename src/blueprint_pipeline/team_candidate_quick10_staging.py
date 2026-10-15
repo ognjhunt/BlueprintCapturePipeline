@@ -79,7 +79,8 @@ def stage_team_runtime(*, root: Path, run_id: str, pair_inputs_path: Path, pair_
                        admission: Mapping[str, Any], prompt: str, max_policy_queries: int,
                        hard_cap_usd: float, hard_ttl_seconds: int,
                        cells: list[Mapping[str, Any]] | None = None,
-                       team_embodiment: Mapping[str, Any] | None = None) -> dict[str, Path]:
+                       team_embodiment: Mapping[str, Any] | None = None,
+                       robot_free_probe: Mapping[str, Any] | None = None) -> dict[str, Path]:
     """Write the team activation, inputs, authority and spec under ``root``; return their paths.
 
     ``cells`` are this session's cells in the runtime-input shape; None runs the
@@ -124,7 +125,8 @@ def stage_team_runtime(*, root: Path, run_id: str, pair_inputs_path: Path, pair_
         resource_name="blueprint-native-task-policy-canary-" + canonical_digest({"run_id": run_id})[7:23],
         hard_cap_usd=float(hard_cap_usd), hard_ttl_seconds=int(hard_ttl_seconds))
     spec = execution_spec(admitted, task_success_contract=inputs["task_success_contract"], prompt=prompt,
-                          max_policy_queries=max_policy_queries, team_embodiment=team_embodiment)
+                          max_policy_queries=max_policy_queries, team_embodiment=team_embodiment,
+                          robot_free_probe=robot_free_probe)
     return {"activation": activation_path, "runtime_inputs": inputs_path,
             "session_authority": _write(directory / "policy_canary_session_authority.json", authority),
             "execution_spec": _write(directory / f"policy_execution_spec.{candidate[0]}.json", spec)}

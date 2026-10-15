@@ -338,11 +338,19 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
         plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
         steps = int(plan["cadence"]["maximum_action_steps"]) * hz // 15
         max_queries = -(-steps // int(admission["delivery"]["open_loop_horizon"]))
+    # The first practice session on a scene whose robot-free probe is undecided records it.
+    probe = None
+    if (index == 0 and admission["evaluation_purpose"] == PRACTICE
+            and (facts.get("probe_receipt") or {}).get("status") in (None, "probe_unavailable")):
+        from .team_robot_free_probe import probe_request
+
+        probe = probe_request(task_spec=facts["scene"]["task_spec"],
+                              scene_revision_digest=str(facts["scene"]["scene_revision_digest"]))
     paths = stage_team_runtime(
         root=root, run_id=run_id, pair_inputs_path=Path(profile["pair_runtime_inputs_path"]),
         pair_activation_path=Path(profile["pair_activation_path"]), admission=admission, prompt=facts["prompt"],
         max_policy_queries=max_queries, hard_cap_usd=cap_usd, hard_ttl_seconds=ttl,
-        cells=list(cells), team_embodiment=binding)
+        cells=list(cells), team_embodiment=binding, robot_free_probe=probe)
     bundle = build_team_candidate_session_bundle(
         job_dir=root / "bundle", packet_dir=facts["packet_dir"],
         runtime_source_packet_receipt=facts["runtime_source_packet_receipt"],

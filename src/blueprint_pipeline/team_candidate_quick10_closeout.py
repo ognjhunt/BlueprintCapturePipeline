@@ -115,6 +115,23 @@ def join_team_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[str
     return value
 
 
+def _retain_probe(job_dir: Path, request: Mapping[str, Any], trace: Mapping[str, Any]) -> None:
+    """Score and retain the scene's robot-free probe recorded in this session; never fail the run."""
+
+    from .team_candidate_quick10_registry import profile_for_request, scene_facts
+    from .team_robot_free_probe import retain_recorded_probe
+
+    path = job_dir / "robot_free_probe_retention.json"
+    if path.exists():
+        return
+    try:
+        profile = profile_for_request(request)
+        outcome = retain_recorded_probe(profile=profile, facts=scene_facts(profile), trace=trace)
+    except Exception as exc:  # noqa: BLE001 - the probe is evidence for the scene, not this run's result
+        outcome = {"status": "retention_failed", "reason": f"{type(exc).__name__}:{str(exc)[:300]}"}
+    _replace(path, {**outcome, "trace_digest": trace.get("trace_digest")})
+
+
 def _shard_roots(job_dir: Path, shard_count: int) -> list[Path]:
     roots = []
     for index in range(shard_count):
@@ -162,6 +179,8 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
         inner = _read(native_path)
         if inner.get("result_digest") != adapter.get("native_control_result_digest"):
             raise TeamCandidateLaunchError("team_candidate_provider_result_binding_mismatch")
+        if isinstance(inner.get("robot_free_probe_trace"), Mapping):
+            _retain_probe(job_dir, request, inner["robot_free_probe_trace"])
         joined = join_team_session_closeout(inner=inner, adapter=adapter, provider_zero=zero,
                                             adapter_path=root / "allocator_result.json")
         _replace(root / "team_candidate_session_result.json", joined)
