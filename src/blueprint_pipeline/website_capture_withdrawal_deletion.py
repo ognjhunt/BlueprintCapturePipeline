@@ -79,6 +79,14 @@ PROVIDER_COPIES = (
      "outside the Pipeline"},
 )
 POINTER_SUFFIXES = (".offloaded.v1.json", ".residue.v1.json", ".residue-restore.v1.json")
+# Each sidecar's writer seals it: (schemas, digest field, the field naming its run).
+_POINTER_SEALS = {
+    ".offloaded.v1.json": ({"control_plane_evidence_offload_pointer.v1"}, "pointer_digest", "directory"),
+    ".residue.v1.json": ({"control_plane_result_residue_pointer.v1"}, "pointer_digest", "run"),
+    ".residue-restore.v1.json": ({"control_plane_result_residue_restore_receipt.v1",
+                                  "control_plane_evidence_restore_receipt.v1"}, "receipt_digest", "run"),
+}
+REGISTRATION_SCHEMA = "website_scene_source_registration.v1"
 _SCANNED_SUFFIXES = (".json", ".jsonl")
 _TOKEN = re.compile(rb"[A-Za-z0-9._-]+")
 _ID = rb"[A-Za-z0-9][A-Za-z0-9._-]{0,119}"
@@ -174,6 +182,12 @@ def _lineage_intents(identity: Mapping[str, str], site: Path, intent_root: Path 
             except WithdrawalDeletionError as error:
                 unresolved.append({"path": str(path), "reason": str(error)})
                 continue
+            # Only a sealed registration may seed deletion lineage; a stale or
+            # corrupted one could name another intent and widen the deletion.
+            if (value.get("schema_version") != REGISTRATION_SCHEMA
+                    or value.get("registration_digest") != canonical_digest(value, digest_field="registration_digest")):
+                unresolved.append({"path": str(path), "reason": "website_withdrawal_deletion_registration_unsealed"})
+                continue
             source = value.get("capture_source") if isinstance(value.get("capture_source"), dict) else {}
             references = [str(ref.get("path")) for ref in (value.get("references") or {}).values()
                           if isinstance(ref, dict)]
@@ -215,6 +229,17 @@ def _scan_files(paths: Iterable[Path], scan: _Scan) -> None:
         _regular(path)
         with path.open("rb") as stream:
             scan.feed(stream)
+
+
+def _sealed_pointer(path: Path, run: str) -> dict[str, Any]:
+    """A sidecar its writer sealed, bound to this run; anything else could name another run's objects."""
+
+    value = _json(path)
+    schemas, field, name = next(seal for suffix, seal in _POINTER_SEALS.items() if path.name.endswith(suffix))
+    _require(value.get("schema_version") in schemas
+             and value.get(field) == canonical_digest(value, digest_field=field)
+             and value.get(name) == run, "pointer_unsealed")
+    return value
 
 
 def _pointer_records(pointer: Mapping[str, Any]) -> list[bytes]:
@@ -281,7 +306,7 @@ def _scan_unit(unit: dict[str, Any], scan: _Scan, *, object_store: Any, scan_arc
     """``scanned``, ``offloaded_pointer`` or ``offloaded_archive``; raises when it cannot judge the run."""
 
     directory = unit["directory"]
-    pointers = [_json(path) for path in unit["pointers"]]
+    pointers = [_sealed_pointer(path, unit["name"]) for path in unit["pointers"]]
     for pointer in pointers:
         for raw in _pointer_records(pointer):
             scan.feed(_Bytes(raw))
@@ -544,6 +569,10 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
         Path(workspace["receipt"]).unlink()
         deleted["files"].append(workspace["receipt"])
     local_plan = withdrawal.plan_local_cleanup(capture_root=Path(capture_root))
+    # The local cleanup deletes only the scene files the reviewed plan covered.
+    _require(len(local_plan["files"]) == plan["scene_files"]["count"] and canonical_digest({"rows": [
+        [row["path"], row["size"], row["inode"], row["mtime_ns"]] for row in local_plan["files"]]})
+        == plan["scene_files"]["digest"], "scene_files_changed")
     local = withdrawal.apply_local_cleanup(capture_root=Path(capture_root), expected_plan_digest=local_plan["digest"],
                                            authorize_local_deletion=True)
     cloud_storage = resolution.get("cloud_storage")

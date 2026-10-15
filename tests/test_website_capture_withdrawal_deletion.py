@@ -28,6 +28,14 @@ BUCKET = "blueprint-artifacts"
 PREFIX = "blueprint/arm-decision-proof-v1/configured-scenes/artifacts"
 
 
+
+def _sealed(value: dict, field: str) -> dict:
+    """Seal a record the way its writer does."""
+
+    value = {**value, field: ""}
+    value[field] = canonical_digest(value, digest_field=field)
+    return value
+
 def _uri(kind: str, digit: str, name: str) -> str:
     return f"s3://{BUCKET}/{PREFIX}/{kind}/sha256/{digit * 64}/{name}"
 
@@ -125,11 +133,12 @@ def world(tmp_path):
            {"intent_id": intent_id, "request": request})
     _write(control / "task-evaluation-scene-intents" / ("scene-" + "d" * 64) / "intent.json",
            {"intent_id": "scene-" + "d" * 64, "request": {**request, "submission_id": "other"}})
-    _write(control / "website-source-bindings" / "registration.json", {
+    _write(control / "website-source-bindings" / "registration.json", _sealed({
         "schema_version": "website_scene_source_registration.v1",
         "request_digest": cross_runtime_canonical_digest(request),
         "capture_source": {"request_id": "req1", "scene_id": "site-req1", "capture_id": "walkthrough-req1"},
-        "references": {"preparation": {"path": str(capture / "pipeline/website_scene_preparation/preparation.json")}}})
+        "references": {"preparation": {"path": str(capture / "pipeline/website_scene_preparation/preparation.json")}}},
+        "registration_digest"))
     # A launch run that names only its scene intent, as a scene-owned launch profile does.
     construction = launches / "launch-req1-construction-0001"
     _write(construction / "launch_profile.json", {"scene_attempt_binding": {"intent_id": intent_id},
@@ -151,19 +160,19 @@ def world(tmp_path):
     # launch profile naming its scene intent is inside the archive.
     offloaded = _uri("control-plane-evidence", "b", "evidence.tar")
     receipt = json.dumps({"launch_id": "launch-req1-controls-0002", "status": "completed"}).encode()
-    _write(launches / "launch-req1-controls-0002.offloaded.v1.json", {
+    _write(launches / "launch-req1-controls-0002.offloaded.v1.json", _sealed({
         "schema_version": "control_plane_evidence_offload_pointer.v1", "directory": "launch-req1-controls-0002",
         "uri": offloaded, "members": [], "retained_receipt_bytes": {
-            "launch_receipt.json": base64.b64encode(receipt).decode()}})
+            "launch_receipt.json": base64.b64encode(receipt).decode()}}, "pointer_digest"))
     # The intent-keyed scene preparation output.
     _write(prepared / intent_id / "website-source/binding.json", {"intent_digest": "sha256:" + "e" * 64})
     # Another site's run and archive: never touched.
     other = launches / "launch-req2-construction-0003"
     _write(other / "launch_profile.json", {"capture_root": "/x/scenes/site-req2/captures/walkthrough-req2"})
     other_uri = _uri("control-plane-evidence", "f", "evidence.tar")
-    _write(launches / "launch-req2-controls-0004.offloaded.v1.json", {
-        "schema_version": "control_plane_evidence_offload_pointer.v1", "uri": other_uri,
-        "members": [], "retained_receipt_bytes": {}, "scene_id": "site-req2"})
+    _write(launches / "launch-req2-controls-0004.offloaded.v1.json", _sealed({
+        "schema_version": "control_plane_evidence_offload_pointer.v1", "directory": "launch-req2-controls-0004",
+        "uri": other_uri, "members": [], "retained_receipt_bytes": {}, "scene_id": "site-req2"}, "pointer_digest"))
     # The retired scene workspace's receipt and archive.
     workspace = _uri("website-scene-workspace", "9", "workspace.tar")
     retired = {"schema_version": "website_scene_workspace_retired.v1", "bucket": "source-bucket",
@@ -290,6 +299,21 @@ def test_apply_needs_authorization_and_the_unchanged_reviewed_plan(world, tmp_pa
     assert _snapshot(tmp_path) == before and world["store"].deleted == []
 
 
+def test_local_cleanup_deletes_only_the_reviewed_scene_files(world, tmp_path, monkeypatch):
+    plan = _plan(world)
+    real = withdrawal.plan_local_cleanup
+
+    def late_writer(**kwargs):
+        # A file written after the reviewed plan was re-resolved, before the local cleanup.
+        _write(world["capture"] / "late-upload.mov", b"never reviewed")
+        return real(**kwargs)
+
+    monkeypatch.setattr(withdrawal, "plan_local_cleanup", late_writer)
+    with pytest.raises(deletion.WithdrawalDeletionError, match="scene_files_changed"):
+        _apply(world, plan)
+    assert (world["capture"] / "late-upload.mov").exists()
+
+
 @pytest.mark.parametrize("fault,reason", [
     ("symlink", "unsafe_entry"),
     ("another_site", "run_names_another_site"),
@@ -299,6 +323,8 @@ def test_apply_needs_authorization_and_the_unchanged_reviewed_plan(world, tmp_pa
     ("shared_object", "object_shared_with_unbound_run"),
     ("no_object_store", "object_store_unconfigured"),
     ("unreadable_intent", "record_unreadable"),
+    ("unsealed_registration", "registration_unsealed"),
+    ("forged_pointer", "pointer_unsealed"),
 ])
 def test_anything_unresolved_fails_closed_before_any_deletion(world, tmp_path, fault, reason):
     overrides = {}
@@ -307,8 +333,10 @@ def test_anything_unresolved_fails_closed_before_any_deletion(world, tmp_path, f
     elif fault == "another_site":
         _write(world["canary"] / "mixed.json", {"scene_id": "site-req9"})
     elif fault in ("undetermined_pointer", "unreadable_archive"):
-        _write(world["launches"] / "launch-unknown-0005.offloaded.v1.json", {
-            "uri": _uri("control-plane-evidence", "8", "evidence.tar"), "members": [], "retained_receipt_bytes": {}})
+        _write(world["launches"] / "launch-unknown-0005.offloaded.v1.json", _sealed({
+            "schema_version": "control_plane_evidence_offload_pointer.v1", "directory": "launch-unknown-0005",
+            "uri": _uri("control-plane-evidence", "8", "evidence.tar"), "members": [], "retained_receipt_bytes": {}},
+            "pointer_digest"))
         if fault == "undetermined_pointer":
             overrides["scan_offloaded_archives"] = False
     elif fault == "foreign_bucket":
@@ -318,6 +346,15 @@ def test_anything_unresolved_fails_closed_before_any_deletion(world, tmp_path, f
         _write(world["other"] / "artifacts/result_delivery/remote_artifacts/review.json", {"uri": world["review"]})
     elif fault == "no_object_store":
         overrides["object_store"] = None
+    elif fault == "unsealed_registration":
+        # A stale registration naming this scene but another intent must not seed deletion.
+        _write(Path(world["resolution"]["binding_root"]) / "stale.json", {
+            "schema_version": "website_scene_source_registration.v1", "request_digest": "sha256:" + "d" * 64,
+            "capture_source": {"scene_id": "site-req1"}, "references": {}})
+    elif fault == "forged_pointer":
+        # A bound run's pointer rewritten to name another run's archive, without the writer's seal.
+        path = world["launches"] / "launch-req1-controls-0002.offloaded.v1.json"
+        _write(path, {**json.loads(path.read_text()), "uri": world["other_uri"]})
     else:
         _write(Path(world["resolution"]["intent_root"]) / ("scene-" + "1" * 64) / "intent.json", b"{not json")
     plan = _plan(world, **overrides)
@@ -331,8 +368,9 @@ def test_anything_unresolved_fails_closed_before_any_deletion(world, tmp_path, f
 @pytest.mark.parametrize("names_site", [True, False])
 def test_reading_an_offloaded_archive_resolves_an_undetermined_pointer(world, names_site):
     unknown = _uri("control-plane-evidence", "7", "evidence.tar")
-    _write(world["launches"] / "launch-unknown-0006.offloaded.v1.json",
-           {"uri": unknown, "members": [], "retained_receipt_bytes": {}})
+    _write(world["launches"] / "launch-unknown-0006.offloaded.v1.json", _sealed({
+        "schema_version": "control_plane_evidence_offload_pointer.v1", "directory": "launch-unknown-0006",
+        "uri": unknown, "members": [], "retained_receipt_bytes": {}}, "pointer_digest"))
     body = b'{"capture_root": "/x/scenes/site-req1/captures/walkthrough-req1"}' if names_site \
         else b'{"scene_id": "site-req3"}'
     world["store"].put(unknown, _archive({"run/launch_profile.json": body, "run/frame.png": b"\x00binary"}))
