@@ -522,6 +522,7 @@ def test_deployment_identity_fails_closed_without_exact_source_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = TestClient(create_app())
+    monkeypatch.setattr(service, "media_tool_blockers", lambda: [])
 
     # "No identity" now has to be arranged rather than assumed: the endpoint has
     # two sources, and a CI checkout is detached at a real commit, which the
@@ -2322,6 +2323,7 @@ def test_deployment_identity_reads_the_commit_the_code_came_from(tmp_path, monke
     from blueprint_pipeline import live_pipeline_intake_service as intake
 
     monkeypatch.delenv(intake.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
+    monkeypatch.setattr(intake, "media_tool_blockers", lambda: [])
     module = _release_worktree(tmp_path, "a" * 40)
 
     payload = intake.deployment_identity_payload(module)
@@ -2341,6 +2343,7 @@ def test_a_declared_commit_that_contradicts_the_running_code_proves_nothing(
     from blueprint_pipeline import live_pipeline_intake_service as intake
 
     monkeypatch.setenv(intake.PIPELINE_SOURCE_COMMIT_ENV, "b" * 40)
+    monkeypatch.setattr(intake, "media_tool_blockers", lambda: [])
     module = _release_worktree(tmp_path, "a" * 40)
 
     payload = intake.deployment_identity_payload(module)
@@ -2371,6 +2374,7 @@ def test_neither_source_available_fails_closed(tmp_path, monkeypatch):
     from blueprint_pipeline import live_pipeline_intake_service as intake
 
     monkeypatch.delenv(intake.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
+    monkeypatch.setattr(intake, "media_tool_blockers", lambda: [])
     detached = tmp_path / "no-checkout" / "module.py"
     detached.parent.mkdir(parents=True)
 
@@ -2378,6 +2382,26 @@ def test_neither_source_available_fails_closed(tmp_path, monkeypatch):
 
     assert payload["commit_proven"] is False
     assert payload["blockers"] == ["deployment_identity_source_commit_unavailable"]
+
+
+def test_a_host_without_ffmpeg_names_it_and_ffprobe_alone_is_not_a_blocker(tmp_path, monkeypatch):
+    """Sound removal fails closed per capture without ffmpeg; the deployed identity
+    names the gap without refusing the commit proof. Without ffprobe removal still
+    succeeds on the exact command, so that is not a blocker."""
+
+    from blueprint_pipeline import capture_audio_minimization as audio
+    from blueprint_pipeline import live_pipeline_intake_service as intake
+
+    monkeypatch.delenv(intake.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
+    module = _release_worktree(tmp_path, "a" * 40)
+
+    monkeypatch.setattr(audio.shutil, "which", lambda tool: "/usr/bin/ffprobe" if tool == "ffprobe" else None)
+    payload = intake.deployment_identity_payload(module)
+    assert payload["commit_proven"] is True
+    assert payload["blockers"] == ["capture_audio_removal_tool_missing:ffmpeg"]
+
+    monkeypatch.setattr(audio.shutil, "which", lambda tool: "/usr/bin/ffmpeg" if tool == "ffmpeg" else None)
+    assert intake.deployment_identity_payload(module)["blockers"] == []
 
 
 def test_a_branch_checkout_is_not_answered_for(tmp_path, monkeypatch):

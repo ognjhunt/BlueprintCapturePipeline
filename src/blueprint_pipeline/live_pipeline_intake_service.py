@@ -40,6 +40,7 @@ from .capture_upload_intake import (
     CaptureUploadTransferError,
     process_capture_upload_submission,
 )
+from .capture_audio_minimization import media_tool_blockers
 from .capture_qa_webapp_sync import build_capture_qa_webapp_publication
 from .company_policy_container_http import register_company_policy_container_routes
 from .company_policy_container_admission import default_company_policy_container_admission_root
@@ -1492,6 +1493,8 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
     declared_valid = re.fullmatch(r"[0-9a-f]{40}", declared) is not None
     observed = running_source_commit(module_path)
     headroom = _configured_disk_headroom()
+    # Beta capture privacy: sound removal needs ffmpeg on this host.
+    media_blockers = media_tool_blockers()
     if observed and declared_valid and observed != declared:
         return {
             "schema_version": DEPLOYMENT_IDENTITY_SCHEMA_VERSION,
@@ -1499,7 +1502,7 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
             "commit_proven": False,
             "source_commit": None,
             "source_commit_source": "conflicting",
-            "blockers": ["deployment_identity_declared_commit_conflicts_with_running_checkout"],
+            "blockers": ["deployment_identity_declared_commit_conflicts_with_running_checkout", *media_blockers],
             "claim_ceiling": "deployed_service_identity_only",
             "default_object_removal": removal_default,
             "disk_headroom": headroom,
@@ -1516,7 +1519,7 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
         "commit_proven": proven,
         "source_commit": source_commit or None,
         "source_commit_source": source,
-        "blockers": [] if proven else ["deployment_identity_source_commit_unavailable"],
+        "blockers": ([] if proven else ["deployment_identity_source_commit_unavailable"]) + media_blockers,
         "claim_ceiling": "deployed_service_identity_only",
         "default_object_removal": removal_default,
         "disk_headroom": headroom,

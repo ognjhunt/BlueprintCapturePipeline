@@ -127,6 +127,17 @@ def video_only_reencode_command(
     ]
 
 
+def media_tool_blockers(which: Optional[Which] = None) -> List[str]:
+    """Name ffmpeg when this host lacks it: removal then fails closed for every capture.
+
+    ffprobe is not named: without it the receipt rests on the exact ``-an`` command.
+    This makes the gap visible on the deployed service's identity, which the operator
+    door's status reports.
+    """
+
+    return [] if _which(which)("ffmpeg") else ["capture_audio_removal_tool_missing:ffmpeg"]
+
+
 def probe_audio_stream_count(
     path: Path,
     *,
