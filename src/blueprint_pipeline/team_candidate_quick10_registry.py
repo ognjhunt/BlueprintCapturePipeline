@@ -24,14 +24,12 @@ salt is an HMAC of the scene revision under the operator's key file; without
 one, scored evaluations stay unlisted. An operator row always wins.
 
 :func:`offer_eligibility` is the one rule both the offer publisher and the
-launch apply, per evaluation purpose (``team_evaluation_plan``): the scene's
-frozen Quick-10 cells resolve, strict per-cell controls are not required, and
-
-- ``practice`` (the ten published cells, feedback only) may run while the
-  robot-free probe is still pending, never after it failed;
-- ``scored`` (200 hidden cells, recommendation evidence) needs the probe passed
-  at the inputs' current scene revision for the scene's task, and the scene's
-  secret matrix salt.
+launch apply (``team_evaluation_plan``): the scene's frozen Quick-10 cells
+resolve, strict per-cell controls are not required, the scene's secret matrix
+salt is present, and the robot-free probe either passed at the inputs' current
+scene revision for the scene's task or, on a rigid scene, is still undecided
+(the evaluation's first cell then records and scores it before any team
+episode). A scene whose probe was decided and failed is closed to every team.
 
 Anything else fails closed with a typed reason, and that offer is not listed.
 """
@@ -50,7 +48,7 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
 from .team_candidate_quick10_staging import TeamCandidateStagingError, frozen_quick10_inputs
-from .team_evaluation_plan import PRACTICE, PURPOSES, SCORED
+from .team_evaluation_plan import PURPOSES, SCORED
 from .team_robot_free_probe import scored_task_spec
 
 REGISTRY_ENV = "BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY"
@@ -291,8 +289,11 @@ def offer_eligibility(profile: Mapping[str, Any] | None,
                 task_spec.get("task_kind"), facts["inputs"]["task_success_contract"]))
         facts["probe_receipt"] = receipt
     except RobotFreeProbeGateError as exc:
+        # Undecided: the evaluation's first cell records and scores the probe before any team episode.
+        # Decided and failed: closed to every team.
         facts["probe"], facts["probe_receipt"] = None, receipt
-        if purpose != PRACTICE or (receipt or {}).get("status") not in (None, "probe_unavailable"):
+        if (task_spec.get("task_kind") != "rigid_pick_place"
+                or (receipt or {}).get("status") not in (None, "probe_unavailable")):
             blockers.append(str(exc))
     salt = profile.get("scored_matrix_salt")
     if purpose == SCORED and (not isinstance(salt, str) or len(salt) < 32):

@@ -1,12 +1,13 @@
 """Hermetic launch rehearsal: one team evaluation request, executor claim to scoring statement.
 
-Beta journey step: L5 team policy evaluation. A free-beta request for a team
-practice run or scored evaluation is staged by the real agent-run executor
+Beta journey step: L5 team policy evaluation. A free-beta request for a team's
+scored evaluation (200 hidden cells) is staged by the real agent-run executor
 (``poll_once``) through the real WebApp client methods, the real operator
 registry and eligibility rule, the real admission, staging, bundle builder and
 static preflight; run by the real team evaluation runner (``run_queue``)
 through the real canonical allocator (``paid_resource_allocator gpu-canary``),
-lane and team transport, shard by shard; closed by the real closeout and
+lane and team transport, the first shard alone and then the rest behind its
+gate (``first_shard_gate``); closed by the real closeout and
 terminal; and reported by the real ``report_completed`` on the next poll.
 
 Faked, and only these: the WebApp's HTTP replies, the credential broker's
@@ -35,7 +36,7 @@ import re
 import shutil
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -149,7 +150,7 @@ class _WebApp(executor.AgentRunWebAppClient):
 class _Broker:
     """``CheckpointPolicyCredentialClient``'s job-bound bearer access, as the WebApp answers it."""
 
-    accessed: list[str] = []
+    accessed: ClassVar[list[str]] = []
 
     def __init__(self, *, request: dict[str, Any], payload: dict[str, Any], pipeline_run_id: str) -> None:
         assert payload["credential_ref"] == CREDENTIAL_REF and pipeline_run_id.startswith("agent-attempt-")
@@ -161,10 +162,20 @@ class _Broker:
                 "credential": {"job_id": self.request["job_id"], "endpoint_url": ENDPOINT, "bearer_token": TOKEN}}
 
 
-def _provider_session_result(runtime: Path, spec: dict[str, Any]) -> dict[str, Any]:
+def _provider_session_result(runtime: Path, spec: dict[str, Any], *, probe_status: str = "passed",
+                             service_down: bool = False) -> dict[str, Any]:
     """Stand in for the GPU worker's simulator-scored episode records (shape of the real worker's)."""
 
     inputs = json.loads((runtime / "runtime_inputs" / "policy_canary_runtime_inputs.json").read_text())
+    probe = {"robot_free_probe_trace": {"trace_digest": "sha256:" + "6" * 64}, "robot_free_probe_status": probe_status}
+    if spec.get("robot_free_probe") is not None and probe_status != "passed":
+        # The worker's cell-0 gate: no team episode on a scene whose check did not pass.
+        blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
+                   "run_kind": inputs["run_kind"], "claim_ceiling": "diagnostic_policy_execution",
+                   "task_success_contract": inputs["task_success_contract"],
+                   "task_success_contract_digest": inputs["task_success_contract_digest"], "episodes": [],
+                   "blockers": ["team_scene_robot_free_probe_not_passed"], **probe}
+        return _sealed(blocked, "result_digest")
     episodes = []
     for cell in inputs["cells"]:
         succeeded = _succeeds(cell["cell_id"])
@@ -181,7 +192,7 @@ def _provider_session_result(runtime: Path, spec: dict[str, Any]) -> dict[str, A
             "candidate_policy_queried": True, "actions_reached_robot": True, "arm_moved": True,
             "scoring_authority": "deterministic_simulator_state", "visual_evidence": {"status": "complete"},
             "episode": {"score": {"status": "scored", "task_succeeded": succeeded}}, **digests}
-        if _times_out(cell["cell_id"]):
+        if service_down or _times_out(cell["cell_id"]):
             # The worker's retained row when the team's service stops answering mid-episode.
             row.update(status="failed", episode_failure_stage="after_first_observation", episode={},
                        candidate_policy_query_attempted=True, policy_response_status="timeout",
@@ -200,7 +211,8 @@ def _provider_session_result(runtime: Path, spec: dict[str, Any]) -> dict[str, A
               "provider_allocations_observed": None, "retry_cap": 0,
               "warm_session_open_count": 1, "episodes": episodes, "session_closeout": {"status": "pending"},
               "scene_promotion_performed": False, "official_ranking_performed": False,
-              "candidate_policy_queried": True, "blockers": []}
+              "candidate_policy_queried": True, "blockers": [],
+              **(probe if spec.get("robot_free_probe") is not None else {})}
     return _sealed(result, "result_digest")
 
 
@@ -209,6 +221,7 @@ class _Provider:
 
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service: _TeamService) -> None:
         self.tmp_path, self.monkeypatch, self.service, self.calls = tmp_path, monkeypatch, service, []
+        self.probe_status, self.service_down = "passed", False
 
     def __call__(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
@@ -235,7 +248,8 @@ class _Provider:
         assert canary_policy_client(spec).preflight_readiness()["identity_verified"] is True
         attempt = Path(kwargs["job_dir"]) / "attempt-1"
         attempt.mkdir(parents=True)
-        result = _provider_session_result(runtime, spec)
+        result = _provider_session_result(runtime, spec, probe_status=self.probe_status,
+                                          service_down=self.service_down)
         # The host is released with its instance; the next shard gets a fresh one.
         self.monkeypatch.delenv(CREDENTIAL_ENV)
         shutil.rmtree(host)
@@ -250,7 +264,7 @@ class _Provider:
 
 
 def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "founder@blueprint",
-           purpose: str = "practice", robot: dict[str, Any] | None = None, derived: bool = False) -> dict[str, Any]:
+           robot: dict[str, Any] | None = None, derived: bool = False) -> dict[str, Any]:
     capture = tmp_path / "capture"
     capture.mkdir()
     packet, _runtime, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path / "scene")
@@ -311,9 +325,9 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
     canonical["customer"]["id"] = row["team_id"] = admission["binding"]["team_id"] = TEAM
     row["checkpoint"]["checkpoint_id"] = admission["binding"]["checkpoint_id"] = CHECKPOINT
     canonical["robot_profile"]["robot_profile_id"] = CHECKPOINT
-    episodes = {"practice": 10, "scored": 200}[purpose]
+    episodes = 200
     canonical["policy_package"] = {"policy_api_endpoint": {
-        "endpoint_url": ENDPOINT, "execution_profile": f"team_evaluation_{purpose}_v1",
+        "endpoint_url": ENDPOINT, "execution_profile": "team_evaluation_scored_v1",
         "policy_interface_id": "openpi_droid_https.v1", "credential_ref": CREDENTIAL_REF, "credential_kind": "bearer"}}
     canonical["execution_authorization"].update(episodes=episodes, max_cost_usd=20)
     admission["funding"].update(cap_usd=20, approved_by=approver)
@@ -366,6 +380,7 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
     runner = {"allocator_starter": start_allocator, "provider_zero": lambda: world["provider_zero"](),
               "sleep": lambda _seconds: None}
     world = {"capture": capture, "row": row, "client": _WebApp(row), "hooks": hooks, "runner": runner,
+             "probe_receipt": probe, "operator": operator,
              "queue": queue, "provider": provider, "provider_zero": provider_zero, "service": service,
              "allocator_calls": allocator_calls, "zeros": zeros,
              "job_dir": capture / "pipeline" / "robot_eval_jobs" / canonical["job_id"]}
@@ -386,33 +401,43 @@ def _every_file(root: Path) -> list[Path]:
     return [path for path in root.rglob("*") if path.is_file()]
 
 
-def test_a_practice_request_is_driven_from_claim_to_a_scored_practice_statement(tmp_path, monkeypatch) -> None:
+def test_a_request_runs_200_hidden_cells_first_shard_alone_and_reports_one_scored_result(
+        tmp_path, monkeypatch) -> None:
     world = _world(tmp_path, monkeypatch)
     staged, summary = _staged_run_reported(world)
     assert staged["claimed"] == 1 and staged["staged"] == 1 and staged["pending"] == 1, staged
     assert summary["completed"] == 1, summary
-    assert _Broker.accessed == ["canonical-job-1"] and len(world["allocator_calls"]) == 1
-    assert len(world["provider"].calls) == 1
+    assert _Broker.accessed == ["canonical-job-1"]
+    # Eight GPU sessions of 25 cells, each its own allocation inside its share of the cap; the
+    # first ran alone and its gate opened the rest.
+    calls = world["allocator_calls"]
+    assert len(calls) == 8 and len(world["provider"].calls) == 8 and "/shards/00/" in " ".join(calls[0])
+    gate = json.loads((world["job_dir"] / launch.FIRST_SHARD_GATE_FILENAME).read_text())
+    assert gate["status"] == "passed" and gate["episodes"] == 25
+    caps = [float(argv[argv.index("--adp-max-spend-usd") + 1]) for argv in calls]
+    assert sum(caps) <= 20.0 and set(caps) == {2.5}
     # The terminal the executor reported, and the scoring statement it sent.
-    (path, result), (settlement_path, settlement) = world["client"].posted
+    (path, result), (_settlement_path, settlement) = world["client"].posted
     assert path == "/api/internal/pipeline/agent-run-results" and settlement["rate_usd"] == 0
-    cells = json.loads((world["job_dir"] / "team_candidate_admission.json").read_text())
-    expected = sum(_succeeds(row["cell_id"]) for row in result["episode_outcomes"])
-    assert result["episodes_run"] == 10 and result["episodes_succeeded"] == expected
+    outcomes = result["episode_outcomes"]
+    assert result["episodes_run"] == 200 and len({row["cell_id"] for row in outcomes}) == 200
+    assert result["episodes_succeeded"] == sum(_succeeds(row["cell_id"]) and not _times_out(row["cell_id"])
+                                               for row in outcomes)
     # A cell whose policy service stopped answering is the team's failure, reported, never voided.
-    timed_out = [row for row in result["episode_outcomes"] if _times_out(row["cell_id"])]
-    assert all((row["outcome"], row["reason"]) == ("failure", "policy_service_did_not_answer") for row in timed_out)
-    assert result["evaluation_purpose"] == "practice" and cells["evaluation_purpose"] == "practice"
-    # Practice returns every published cell's parameters and outcome to the team.
-    assert all("parameters" in row and row["outcome"] in {"success", "failure"} for row in result["episode_outcomes"])
-    scoring = validate_scoring_statement(result["scoring"], episodes_run=10)
-    # Simulator-scored, every binding, every episode; labelled practice so it is never evidence.
-    assert (scoring["runtime"], scoring["success_source"]) == ("team_evaluation_practice", "simulator_scored")
+    timed_out = [row for row in outcomes if _times_out(row["cell_id"])]
+    assert timed_out and all((row["outcome"], row["reason"]) == ("failure", "policy_service_did_not_answer")
+                             for row in timed_out)
+    # Cells stay hidden: the team learns each cell's family, outcome and reason, never its draw.
+    assert all("parameters" not in row for row in outcomes)
+    assert {"canonical_anchor", "placement_approach", "illumination", "camera_sensor",
+            "pairwise_stress", "held_out_composition"} <= {row["family"] for row in outcomes}
+    assert result["evaluation_purpose"] == "scored"
+    scoring = validate_scoring_statement(result["scoring"], episodes_run=200)
+    assert (scoring["runtime"], scoring["success_source"]) == ("team_evaluation_scored", "simulator_scored")
     assert all(re.fullmatch(r"sha256:[0-9a-f]{64}", str(scoring[key])) for key in (
         "success_contract_digest", "scene_revision_digest", "robot_free_probe_receipt_digest",
         "team_candidate_admission_digest", "session_result_digest"))
-    assert scoring["scored_episode_count"] == result["episodes_run"]
-    assert scoring["claim_ceiling"] == "diagnostic_policy_execution"
+    assert scoring["scored_episode_count"] == 200 and scoring["claim_ceiling"] == "diagnostic_policy_execution"
     job = world["job_dir"]
     terminal = json.loads((job / TERMINAL_FILENAME).read_text())
     admission = json.loads((job / "team_candidate_admission.json").read_text())
@@ -422,40 +447,26 @@ def test_a_practice_request_is_driven_from_claim_to_a_scored_practice_statement(
     # The canonical allocator admitted exactly this team run, inside the free-beta cap.
     paid = json.loads(next(job.glob("shards/00/stage-00/paid_admission.json")).read_text())
     assert paid["status"] == "admitted" and paid["program_id"] == "blueprint-free-beta-evaluated-pilot"
-    assert paid["allocation_binding"]["candidate_ids"] == [CANDIDATE] and paid["hard_cap_usd"] == 20.0
+    assert paid["allocation_binding"]["candidate_ids"] == [CANDIDATE]
     # The token never touched disk outside the deleted private file, nor any receipt, log or post.
     assert not (job / ".team-credential").exists()
     assert not [path for path in _every_file(job) if TOKEN.encode() in path.read_bytes()]
     assert TOKEN not in json.dumps(world["client"].posted)
-    # The provider handshake used the token it received through the secret channel.
     assert ("provider_get", "GET") in world["service"].calls
     # A second pass neither re-launches nor re-reports.
     launch.run_queue(world["queue"], hooks=world["runner"])
     again = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert again["completed"] == 0 and len(world["allocator_calls"]) == 1 and len(world["client"].posted) == 2
+    assert again["completed"] == 0 and len(world["allocator_calls"]) == 8 and len(world["client"].posted) == 2
 
 
-def test_a_scored_request_runs_200_hidden_cells_in_shards_and_reports_one_result(tmp_path, monkeypatch) -> None:
-    world = _world(tmp_path, monkeypatch, purpose="scored")
-    staged, summary = _staged_run_reported(world)
-    assert staged["staged"] == 1 and summary["completed"] == 1, (staged, summary)
-    # Eight GPU sessions of 25 cells, each its own allocation inside its share of the cap.
-    assert len(world["allocator_calls"]) == 8 and len(world["provider"].calls) == 8
-    caps = [float(argv[argv.index("--adp-max-spend-usd") + 1]) for argv in world["allocator_calls"]]
-    assert sum(caps) <= 20.0 and set(caps) == {2.5}
-    (_path, result), _settlement = world["client"].posted
-    outcomes = result["episode_outcomes"]
-    assert result["episodes_run"] == 200 and len({row["cell_id"] for row in outcomes}) == 200
-    assert result["episodes_succeeded"] == sum(_succeeds(row["cell_id"]) for row in outcomes)
-    # Scored cells stay hidden: the team learns each cell's family and outcome, not its parameters.
-    assert all("parameters" not in row for row in outcomes)
-    families = {row["family"] for row in outcomes}
-    assert {"canonical_anchor", "placement_approach", "illumination", "camera_sensor",
-            "pairwise_stress", "held_out_composition"} <= families
-    scoring = validate_scoring_statement(result["scoring"], episodes_run=200)
-    assert (scoring["runtime"], scoring["success_source"]) == ("team_evaluation_scored", "simulator_scored")
-    assert scoring["scored_episode_count"] == 200
-    assert not (world["job_dir"] / ".team-credential").exists()
+def test_a_policy_failing_at_the_interface_stops_after_the_first_shard(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    world["provider"].service_down = True  # every episode: the team's service never answered
+    _staged, summary = _staged_run_reported(world)
+    # One GPU session spent, not eight; the team learns why.
+    assert len(world["allocator_calls"]) == 1 and summary["blocked"] == 1, summary
+    [reason] = world["client"].blocked
+    assert reason == "team_policy_interface_failures:25_episodes:policy_service_did_not_answer=25"
 
 
 def test_an_unadmitted_funding_approver_never_reaches_the_credential_or_the_allocator(tmp_path, monkeypatch) -> None:
@@ -470,14 +481,72 @@ def test_an_unadmitted_funding_approver_never_reaches_the_credential_or_the_allo
     assert terminal["status"] == "blocked" and terminal["provider_zero_not_applicable"] is True
 
 
-def test_a_scored_evaluation_without_a_retained_probe_is_refused_before_claiming_spend(tmp_path, monkeypatch) -> None:
-    world = _world(tmp_path, monkeypatch, purpose="scored")
-    (tmp_path / "operator" / "probe" / probe_gate.RECEIPT_FILENAME).unlink()
-    summary = executor.poll_once(client=world["client"], capture_root=world["capture"],
-                                 team_launch_hooks=world["hooks"])
-    assert summary["blocked"] == 1 and world["client"].blocked == ["agent_execution_team_candidate_not_offered"]
-    assert _Broker.accessed == [] and world["allocator_calls"] == []
-    assert not world["job_dir"].exists()
+def _probe_retention(world: dict[str, Any], monkeypatch: pytest.MonkeyPatch, *, passes: bool) -> list[Any]:
+    """Closeout's retention of the trace the first cell recorded, with the scorer's verdict stubbed.
+
+    The trace's real scoring is pinned in tests/test_team_robot_free_probe.py; here the scene is
+    decided whichever way the test needs, written where the gate reads it.
+    """
+
+    from blueprint_pipeline import team_robot_free_probe
+
+    receipt_path = world["operator"] / "probe" / probe_gate.RECEIPT_FILENAME
+    receipt_path.unlink()
+    retained: list[Any] = []
+
+    def retain(*, profile: dict[str, Any], facts: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
+        receipt = dict(world["probe_receipt"])
+        if not passes:
+            receipt.update(status="failed", learned_policy_evaluation_admitted=False,
+                           checks={**receipt["checks"], "direct_placement_success": False})
+        receipt = _sealed({key: value for key, value in receipt.items() if key != "receipt_digest"},
+                          "receipt_digest")
+        receipt_path.write_text(json.dumps(receipt))
+        retained.append(trace)
+        return {"receipt_status": receipt["status"], "receipt_digest": receipt["receipt_digest"],
+                "probe_error": None, "write": "written", "offer_status": "published"}
+
+    monkeypatch.setattr(team_robot_free_probe, "retain_recorded_probe", retain)
+    # This fixture scene's spec is not one the rigid probe can plan; stand in the control plane's plan.
+    monkeypatch.setattr(team_robot_free_probe, "probe_request", lambda **kwargs: _sealed(
+        {"schema_version": team_robot_free_probe.REQUEST_SCHEMA, "plan": {"stand_in": True},
+         "binding": {"configured_scene_revision_digest": kwargs["scene_revision_digest"]},
+         "task_spec": kwargs["task_spec"], "request_digest": ""}, "request_digest"))
+    return retained
+
+
+def test_a_rigid_scene_with_an_undecided_check_records_it_in_the_first_cell_and_binds_it(
+        tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    retained = _probe_retention(world, monkeypatch, passes=True)
+    _staged, summary = _staged_run_reported(world)
+    assert summary["completed"] == 1 and len(world["allocator_calls"]) == 8 and len(retained) == 1
+    # Only the first shard carried the probe; its pass is the receipt the scoring statement binds.
+    job = world["job_dir"]
+    specs = sorted(job.glob("shards/*/stage-00/runtime_inputs/policy_execution_spec.*.json"))
+    assert [json.loads(path.read_text()).get("robot_free_probe") is not None for path in specs] == (
+        [True] + [False] * 7)
+    receipt = json.loads((world["operator"] / "probe" / probe_gate.RECEIPT_FILENAME).read_text())
+    (_path, result), _settlement = world["client"].posted
+    assert result["scoring"]["robot_free_probe_receipt_digest"] == receipt["receipt_digest"]
+
+
+def test_a_scene_that_fails_its_check_in_the_first_cell_stops_and_closes_to_every_team(
+        tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    _probe_retention(world, monkeypatch, passes=False)
+    world["provider"].probe_status = "failed"
+    _staged, summary = _staged_run_reported(world)
+    assert len(world["allocator_calls"]) == 1 and summary["blocked"] == 1, summary
+    assert world["client"].blocked == ["team_scene_robot_free_probe_not_passed"]
+    # The decided failure is retained: the next team is refused before any spend.
+    from blueprint_pipeline.team_candidate_quick10_registry import (
+        offer_eligibility,
+        profile_for_capture,
+    )
+
+    assert offer_eligibility(profile_for_capture(world["capture"]))[1] == [
+        "team_evaluation_robot_free_probe_not_passed"]
 
 
 def test_a_token_in_the_sealed_bundle_stops_the_launch_before_the_allocator(tmp_path, monkeypatch) -> None:
@@ -500,11 +569,11 @@ def test_closeout_waits_for_provider_zero_before_reporting(tmp_path, monkeypatch
     observations = iter([dict(ZERO), live])  # zero before launch, then a live instance at closeout
     world["provider_zero"] = lambda: next(observations, dict(ZERO))
     _staged, pending = _staged_run_reported(world)
-    assert pending["pending"] == 1 and world["client"].posted == [] and len(world["allocator_calls"]) == 1
+    assert pending["pending"] == 1 and world["client"].posted == [] and len(world["allocator_calls"]) == 8
     assert not (world["job_dir"] / TERMINAL_FILENAME).exists()
     launch.run_queue(world["queue"], hooks=world["runner"])
     second = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert second["completed"] == 1 and len(world["allocator_calls"]) == 1  # recovered, never re-allocated
+    assert second["completed"] == 1 and len(world["allocator_calls"]) == 8  # recovered, never re-allocated
 
 
 def test_the_offer_lists_each_team_evaluation_only_while_eligible(tmp_path, monkeypatch) -> None:
@@ -527,20 +596,23 @@ def test_the_offer_lists_each_team_evaluation_only_while_eligible(tmp_path, monk
     published = publish_agent_execution_offer(root, transport=lambda **kwargs: sent.append(kwargs["payload"]))
     assert published["status"] == "published" and capture.exists()
     offer = sent[-1]["offer"]
-    assert offer["policy_execution_profiles"] == ["team_evaluation_practice_v1", "team_evaluation_scored_v1"]
-    assert offer["episode_count"] == 10 and offer["scenario_id"] == "nominal"
+    assert offer["policy_execution_profiles"] == ["team_evaluation_scored_v1"]
+    assert offer["episode_count"] == 200 and offer["scenario_id"] == "nominal"
     contract = offer["team_evaluation"]["contract"]
     assert contract["scored"]["episodes"] == 200 and contract["scored"]["cells_published"] is False
-    assert len(contract["practice"]["cells"]) == 10 and contract["instruction"]
+    assert "practice" not in contract and contract["instruction"]
     assert contract["task_success_contract"]["contract_digest"].startswith("sha256:")
-    # Without the scene's retained probe only practice stays listed, and the scored reason is stated.
-    (tmp_path / "operator" / "probe" / probe_gate.RECEIPT_FILENAME).unlink()
+    # A rigid scene whose check is undecided stays listed: the first cell records it.
+    receipt_path = tmp_path / "operator" / "probe" / probe_gate.RECEIPT_FILENAME
+    receipt_path.unlink()
     publish_agent_execution_offer(root, transport=lambda **kwargs: sent.append(kwargs["payload"]))
-    offer = sent[-1]["offer"]
-    assert offer["policy_execution_profiles"] == ["team_evaluation_practice_v1"]
-    assert offer["team_evaluation"]["scored"] == {
-        "profile": "team_evaluation_scored_v1", "episodes": 200, "available": False,
-        "reason": "team_evaluation_robot_free_probe_receipt_missing"}
+    assert sent[-1]["offer"]["policy_execution_profiles"] == ["team_evaluation_scored_v1"]
+    # A scene whose check failed is not listed at all, and says why.
+    failed = {key: value for key, value in world["probe_receipt"].items() if key != "receipt_digest"}
+    failed.update(status="failed", learned_policy_evaluation_admitted=False)
+    receipt_path.write_text(json.dumps(_sealed(failed, "receipt_digest")))
+    published = publish_agent_execution_offer(root, transport=lambda **kwargs: sent.append(kwargs["payload"]))
+    assert sent[-1].get("offer") is None or "team_evaluation" not in sent[-1]["offer"], published
 
 
 def test_the_terminal_reader_is_bound_to_its_request_and_silent_for_other_jobs(tmp_path, monkeypatch) -> None:
@@ -553,7 +625,7 @@ def test_the_terminal_reader_is_bound_to_its_request_and_silent_for_other_jobs(t
     digest = canonical_digest(world["row"]["execution_admission"]["canonical_execution_request"])
     sealed = read_team_candidate_terminal(job_dir=job, expected_job_id="canonical-job-1",
                                           expected_canonical_request_digest=digest)
-    assert sealed["status"] == "completed" and sealed["episodes_run"] == 10
+    assert sealed["status"] == "completed" and sealed["episodes_run"] == 200
     with pytest.raises(ValueError, match="team_candidate_terminal_binding_mismatch"):
         read_team_candidate_terminal(job_dir=job, expected_job_id="another-job",
                                      expected_canonical_request_digest=digest)
@@ -564,7 +636,7 @@ def test_the_terminal_reader_is_bound_to_its_request_and_silent_for_other_jobs(t
                                      expected_canonical_request_digest=digest)
 
 
-def test_a_team_brings_its_own_arm_and_cameras_to_a_practice_run(tmp_path, monkeypatch) -> None:
+def test_a_team_brings_its_own_arm_and_cameras_to_its_evaluation(tmp_path, monkeypatch) -> None:
     from tests.test_team_embodiment import manifest, write_robot_usd
 
     model = write_robot_usd(tmp_path / "acme_arm.usda")
@@ -585,7 +657,7 @@ def test_a_team_brings_its_own_arm_and_cameras_to_a_practice_run(tmp_path, monke
         shipped = archive.read("provider_runtime/native_task_packet/team_embodiment/robot.usd")
     assert "sha256:" + hashlib.sha256(shipped).hexdigest() == binding["model"]["sha256"]
     (_path, result), _settlement = world["client"].posted
-    assert result["episodes_run"] == 10 and result["scoring"]["runtime"] == "team_evaluation_practice"
+    assert result["episodes_run"] == 200 and result["scoring"]["runtime"] == "team_evaluation_scored"
 
 
 def test_a_team_arm_that_cannot_reach_the_task_is_refused_before_any_allocation(tmp_path, monkeypatch) -> None:

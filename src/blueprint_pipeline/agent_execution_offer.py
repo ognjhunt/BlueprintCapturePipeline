@@ -22,13 +22,12 @@ Publishing is best-effort and never fails the simulation lane: a missing offer
 fails closed on the WebApp side (the plan stays unpayable).
 
 Beta L5: when the scene has a team evaluation profile, the offer instead lists
-the team evaluation (``team_evaluation_plan``): a practice run of the ten
-published cells and a scored evaluation of 200 hidden cells, each listed only
-while :func:`team_candidate_quick10_registry.offer_eligibility` holds for that
-purpose, with the reason when it does not. It also carries the public
-evaluation contract a team builds against: the instruction, the sealed success
-contract, the scored variation families and their bounds, the practice cells
-and the policy interface. No scene geometry, footage or site identity is in it.
+the team evaluation (``team_evaluation_plan``): 200 hidden cells, listed only
+while :func:`team_candidate_quick10_registry.offer_eligibility` holds, with the
+reason when it does not. It also carries the public evaluation contract a team
+builds against: the instruction, the sealed success contract, the variation
+families and their bounds, and the policy interfaces. No scene geometry,
+footage or site identity is in it.
 Otherwise the ordinary offer is published, so a team listing never outlives
 its eligibility.
 """
@@ -128,10 +127,6 @@ def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -
         "schema_version": "blueprint.team_evaluation_contract.v1",
         "task_kind": task_spec.get("task_kind"), "instruction": facts["prompt"],
         "task_success_contract": scene["task_success_contract"],
-        "practice": {"episodes": EPISODES["practice"],
-                     "cells": [{"cell_id": cell["cell_id"], "family": cell["family"],
-                                "parameters": dict((cell.get("resolved_scenario") or {}).get("parameters") or {})}
-                               for cell in facts["inputs"]["cells"]]},
         "scored": {"episodes": EPISODES["scored"], "cells_published": False,
                    "families": [name for name, _ in SCORED_FAMILY_SHARES],
                    "parameter_bounds": {name: list(value) for name, value in sorted(bounds.items())}},
@@ -160,9 +155,9 @@ def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -
 
 
 def build_team_candidate_offer(capture_root: Path) -> tuple[dict[str, Any] | None, str | None]:
-    """The team evaluation offer (practice and scored), or ``(None, reason)`` when neither may be listed."""
+    """The team evaluation offer (200 scored cells), or ``(None, reason)`` when it may not be listed."""
     from .team_candidate_quick10_registry import offer_eligibility, profile_for_capture
-    from .team_evaluation_plan import EPISODES, PRACTICE, PROFILES, PURPOSES
+    from .team_evaluation_plan import EPISODES, PROFILES, PURPOSES, SCORED
 
     root = Path(capture_root).resolve()
     descriptor = _read_object(root / "capture_descriptor.json") or {}
@@ -182,10 +177,10 @@ def build_team_candidate_offer(capture_root: Path) -> tuple[dict[str, Any] | Non
         listing[purpose] = {"profile": PROFILES[purpose], "episodes": EPISODES[purpose],
                             "available": purpose_facts is not None, "reason": None if purpose_facts else blockers[0]}
     if facts is None:
-        return None, listing[PRACTICE]["reason"]
+        return None, listing[SCORED]["reason"]
     return {
         "schema_version": OFFER_SCHEMA_VERSION, "scene_id": scene_id, "capture_id": capture_id,
-        "capture_root": str(root), "scenario_id": str(profile["scenario_id"]), "episode_count": EPISODES[PRACTICE],
+        "capture_root": str(root), "scenario_id": str(profile["scenario_id"]), "episode_count": EPISODES[SCORED],
         "episode_specs_sha256": facts["episode_specs_sha256"],
         "policy_execution_profiles": [row["profile"] for row in listing.values() if row["available"]],
         "team_evaluation": {**listing, "contract": _evaluation_contract(facts, profile)},

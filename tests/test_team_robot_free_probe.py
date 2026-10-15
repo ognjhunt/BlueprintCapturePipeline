@@ -1,4 +1,4 @@
-"""A rigid scene's robot-free probe, recorded during a team's practice run, opens scored evaluations.
+"""A rigid scene's robot-free probe, recorded in a team evaluation's first cell, decides the scene.
 
 Beta journey step: L5 team policy evaluation. Hermetic: the rigid probe's
 deterministic stand-in scene (``FlatSupport``) plays the GPU host. No Isaac,
@@ -15,7 +15,7 @@ from blueprint_pipeline import robot_free_probe_gate as gate
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_readback import _compose_pose_xyzw
 from blueprint_pipeline.rigid_robot_free_probe_recorder import record_rigid_robot_free_probe
-from blueprint_pipeline.team_embodiment_runtime import asset_root_for_scoring_pose
+from blueprint_pipeline.team_embodiment_runtime import asset_root_for_scoring_pose, probe_status
 from blueprint_pipeline.team_robot_free_probe import (
     probe_request,
     retain_recorded_probe,
@@ -35,13 +35,17 @@ def _scored_spec(tmp_path: Path) -> dict:
     return scored_task_spec(spec, _sealed_contract(spec))
 
 
-def test_a_practice_run_records_the_probe_and_its_pass_opens_scored_runs(tmp_path, monkeypatch) -> None:
+def test_the_first_cell_records_the_probe_and_its_pass_opens_the_scene(tmp_path, monkeypatch) -> None:
     spec = _scored_spec(tmp_path / "case")
     request = probe_request(task_spec=spec, scene_revision_digest=REVISION)
     assert request is not None and request["binding"]["task_spec_digest"] == canonical_digest(spec)
     # The GPU host executes exactly the control plane's plan; the stand-in scene plays physics.
     trace = record_rigid_robot_free_probe(scene=FlatSupport(spec["start_pose_world"]), plan=request["plan"],
                                           binding=request["binding"])
+    # The GPU host scores it before any team episode, as closeout will; a tampered request decides nothing.
+    assert probe_status(request=request, trace=trace) == "passed"
+    assert probe_status(request={**request, "task_spec": {**spec, "task_id": "other"}}, trace=trace) == (
+        "probe_request_invalid")
     published: list[Path] = []
     monkeypatch.setattr(agent_execution_offer, "publish_agent_execution_offer",
                         lambda root: published.append(root) or {"status": "published"})
@@ -77,6 +81,7 @@ def test_a_scene_that_holds_no_goal_fails_and_a_failed_recording_stays_undecided
     profile = {"robot_free_probe_root": str(root), "capture_root": str(tmp_path / "capture")}
     facts = {"scene": {"task_spec": spec, "scene_revision_digest": REVISION}}
     assert retain_recorded_probe(profile=profile, facts=facts, trace=fell)["receipt_status"] == "failed"
+    assert probe_status(request=request, trace=fell) == "failed"  # no team episode runs on this scene
     # A recording that did not complete (the GPU host refused the plan) never decides the scene.
     broken = {**fell, "status": "failed", "error": "RuntimeError:team_robot_free_probe_request_or_rate_invalid",
               "trace_digest": ""}

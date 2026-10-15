@@ -1,7 +1,7 @@
-"""Close one team evaluation (practice or scored) and seal the terminal the agent-run executor reports.
+"""Close one team's scored evaluation and seal the terminal the agent-run executor reports.
 
-Beta journey step: L5 team policy evaluation. A run is one GPU session
-(practice) or several (one per shard of a scored evaluation). The terminal
+Beta journey step: L5 team policy evaluation. A run is one GPU session per
+shard of its 200 cells. The terminal
 receipt (``team_candidate_quick10_terminal.json`` in the run's job directory,
 read by the executor's default terminal reader) is written only after:
 
@@ -191,8 +191,17 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
         if joined["session_closeout"]["blockers"]:
             raise TeamCandidateLaunchError(";".join(joined["session_closeout"]["blockers"]))
         joined_results.append(joined)
-    receipt = team_candidate_terminal(session_results=joined_results, runtime_binding=runtime_binding(admission),
-                                      purpose=str(admission["evaluation_purpose"]))
+    binding = runtime_binding(admission)
+    if binding.get("robot_free_probe_receipt_digest") is None:
+        # The scene's probe was recorded and passed in this evaluation's first cell: bind that receipt.
+        from .team_candidate_quick10_registry import offer_eligibility, profile_for_request
+
+        facts, _ = offer_eligibility(profile_for_request(request))
+        if facts is None or facts.get("probe") is None:
+            raise TeamCandidateLaunchError("team_scene_robot_free_probe_not_passed")
+        binding = {**binding, "robot_free_probe_receipt_digest": facts["probe"]["receipt_digest"]}
+    receipt = team_candidate_terminal(session_results=joined_results, runtime_binding=binding,
+                                      purpose=str(admission["evaluation_purpose"]), episodes=int(admission["episodes"]))
     return _seal(job_dir, request, {**receipt, "provider_zero_verified": True,
                                     "admission_digest": admission["admission_digest"]})
 

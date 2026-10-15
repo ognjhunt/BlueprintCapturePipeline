@@ -1,21 +1,25 @@
-"""Drive one team's evaluation of a site job, practice or scored, from admission to its terminal.
+"""Drive one team's scored evaluation of a site job, from admission to its terminal.
 
 Beta journey step: L5 team policy evaluation. Two processes share the work, so
 a scored evaluation of 200 episodes (hours of GPU time) never holds the
 agent-run dispatcher:
 
 - the **dispatcher** (``execute_staged_team_candidate_request``) admits and
-  stages: it re-checks eligibility for the run's purpose, reads the founder's
+  stages: it re-checks the scene's eligibility, reads the founder's
   free-beta funding approval, claims the job-bound bearer credential, reads the
   team's declared metadata once, seals the admission, and stages every GPU
-  session (one for practice; one per shard of at most 25 cells for a scored
-  run) with its own runtime inputs, session authority and sealed bundle. The
+  session (one per shard of at most 25 cells) with its own runtime inputs,
+  session authority and sealed bundle. The
   token is written to one private 0600 file and the job is queued;
 - the **runner** (``python -m blueprint_pipeline.team_candidate_quick10_launch
   run-queue``, a path-activated unit with its own cgroup and timeout) runs the
   queued shards through the canonical allocator (``paid_resource_allocator
-  gpu-canary``), at most ``SHARD_CONCURRENCY`` at once, then seals the single
-  terminal the executor reports.
+  gpu-canary``): the first shard alone, then the rest at most
+  ``SHARD_CONCURRENCY`` at once, and seals the single terminal the executor
+  reports. After the first shard (``first_shard_gate``) the evaluation stops
+  when the scene's robot-free check, recorded there, did not pass, or when most
+  of its episodes failed at the interface rather than the task, so a broken
+  integration costs one GPU session, not eight.
 
 As before, customer JSON chooses nothing: the operator profile binds the scene;
 an execution lock and a sealed intent make a second launch impossible after a
@@ -66,7 +70,6 @@ from .team_embodiment import (
 )
 from .team_evaluation_plan import (
     EPISODES,
-    PRACTICE,
     SHARD_CELLS,
     profile_purpose,
     runtime_cells,
@@ -144,7 +147,7 @@ def request_embodiment(request: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def request_purpose(request: Mapping[str, Any]) -> str | None:
-    """``practice`` or ``scored`` from the request's execution profile, else None."""
+    """``scored`` when the request's execution profile is the team evaluation's, else None."""
 
     return profile_purpose(str(_endpoint(request).get("execution_profile") or ""))
 
@@ -307,8 +310,6 @@ def _queue_root() -> Path:
 
 def _session_cells(*, purpose: str, facts: Mapping[str, Any], profile: Mapping[str, Any]) -> list[dict[str, Any]]:
     frozen = list(facts["inputs"]["cells"])
-    if purpose == PRACTICE:
-        return [dict(cell) for cell in frozen]
     scene = facts["scene"]
     task_spec = _m(scene.get("task_spec"))
     generated = scored_cells(scene_revision_digest=str(scene["scene_revision_digest"]),
@@ -338,14 +339,15 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
         plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
         steps = int(plan["cadence"]["maximum_action_steps"]) * hz // 15
         max_queries = -(-steps // int(admission["delivery"]["open_loop_horizon"]))
-    # The first practice session on a scene whose robot-free probe is undecided records it.
+    # The first session on a scene whose robot-free probe is undecided records and scores it first.
     probe = None
-    if (index == 0 and admission["evaluation_purpose"] == PRACTICE
-            and (facts.get("probe_receipt") or {}).get("status") in (None, "probe_unavailable")):
+    if index == 0 and facts.get("probe") is None:
         from .team_robot_free_probe import probe_request
 
         probe = probe_request(task_spec=facts["scene"]["task_spec"],
                               scene_revision_digest=str(facts["scene"]["scene_revision_digest"]))
+        if probe is None:  # no team episode may run on a scene whose check cannot be recorded
+            raise TeamCandidateLaunchError("team_evaluation_robot_free_probe_unrecordable")
     paths = stage_team_runtime(
         root=root, run_id=run_id, pair_inputs_path=Path(profile["pair_runtime_inputs_path"]),
         pair_activation_path=Path(profile["pair_activation_path"]), admission=admission, prompt=facts["prompt"],
@@ -513,9 +515,12 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
                         break
             if states is None:
                 continue
+            # The first shard runs alone; the rest start only once its gate passed.
+            opened = states[0] == "returned" and first_shard_gate(job_dir=job_dir, request=request,
+                                                                   shard=shard_rows[0])
             running = states.count("running")
             for row, state in zip(shard_rows, states, strict=True):
-                if state == "staged" and running < limit:
+                if state == "staged" and running < limit and (row["index"] == 0 or opened):
                     root = Path(row["root"])
                     pid = hooks["allocator_starter"](row["argv"], log_path=root / "allocator.log")
                     _write(root / "allocator_process.json", {"pid": pid, "started_at_iso": utc_now_iso()})
@@ -535,6 +540,53 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
     except Exception as exc:  # noqa: BLE001 - every failure is sealed, and released only at provider zero
         seal_blocked_terminal(request=request, job_dir=job_dir, error=exc, provider_zero=hooks["provider_zero"])
         return None
+
+
+FIRST_SHARD_GATE_FILENAME = "first_shard_gate.json"
+
+
+def first_shard_gate(*, job_dir: Path, request: Mapping[str, Any], shard: Mapping[str, Any]) -> bool:
+    """True once the first shard's result opens the other shards; raise to stop the evaluation.
+
+    It stops when the shard was never allocated, when the scene's robot-free
+    check recorded in its first cell did not pass (the probe is retained, so
+    the scene is closed to every team), or when most of its episodes failed at
+    the interface rather than the task. The team learns why from the blocker.
+    """
+
+    from .task_evaluation_scene_execution_authority import proves_no_provider_allocation
+    from .team_candidate_quick10_closeout import _retain_probe
+    from .team_candidate_quick10_result import episode_outcome
+    from .team_evaluation_plan import FIRST_SHARD_INTERFACE_FAILURE_SHARE, INTERFACE_FAILURE_REASONS
+
+    path = job_dir / FIRST_SHARD_GATE_FILENAME
+    if path.is_file():
+        return True
+    adapter = _read(Path(shard["root"]) / "allocator_result.json")
+    if proves_no_provider_allocation(adapter):
+        raise TeamCandidateLaunchError("team_evaluation_shard_not_allocated:00")
+    native = Path(str(adapter.get("native_control_result_path") or ""))
+    inner = _read(native) if native.is_file() else {}
+    if not inner or inner.get("result_digest") != adapter.get("native_control_result_digest"):
+        raise TeamCandidateLaunchError("team_candidate_provider_result_missing")
+    if isinstance(inner.get("robot_free_probe_trace"), Mapping):
+        _retain_probe(job_dir, request, inner["robot_free_probe_trace"])
+        if _read(job_dir / "robot_free_probe_retention.json").get("receipt_status") != "passed":
+            raise TeamCandidateLaunchError("team_scene_robot_free_probe_not_passed")
+    rows = [row for row in inner.get("episodes") or [] if isinstance(row, Mapping)]
+    if not rows:
+        raise TeamCandidateLaunchError(";".join(map(str, inner.get("blockers") or [])) or "team_evaluation_shard_blocked")
+    reasons: dict[str, int] = {}
+    for row in rows:
+        _, reason = episode_outcome(row)
+        if reason in INTERFACE_FAILURE_REASONS:
+            reasons[reason] = reasons.get(reason, 0) + 1
+    if sum(reasons.values()) > FIRST_SHARD_INTERFACE_FAILURE_SHARE * len(rows):
+        raise TeamCandidateLaunchError(f"team_policy_interface_failures:{len(rows)}_episodes:" + ",".join(
+            f"{name}={count}" for name, count in sorted(reasons.items())))
+    _write(path, {"status": "passed", "episodes": len(rows), "interface_failures": reasons,
+                  "observed_at_iso": utc_now_iso()})
+    return True
 
 
 def _restage_shard(*, job_dir: Path, shard: Mapping[str, Any]) -> dict[str, Any]:
@@ -605,7 +657,7 @@ def run_queue(queue_root: Path | None = None, *, hooks: Mapping[str, Any] | None
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run queued team evaluations (practice and scored).")
+    parser = argparse.ArgumentParser(description="Run queued team evaluations.")
     parser.add_argument("command", choices=["run-queue"])
     parser.add_argument("--queue-root", type=Path, default=None)
     args = parser.parse_args(argv)
@@ -627,6 +679,7 @@ __all__ = [
     "TERMINAL_SCHEMA",
     "TeamCandidateLaunchError",
     "execute_staged_team_candidate_request",
+    "first_shard_gate",
     "request_purpose",
     "run_queue",
     "run_staged_evaluation",

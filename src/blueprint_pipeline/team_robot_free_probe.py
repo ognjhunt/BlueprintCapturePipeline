@@ -1,24 +1,22 @@
-"""Record a rigid scene's robot-free success check during a team's practice run, then retain it.
+"""Record a rigid scene's robot-free success check in a team's first evaluation cell, then retain it.
 
-Beta journey step: L5 team policy evaluation. A team's scored evaluation is
-refused until the scene's robot-free probe passed (``robot_free_probe_gate``):
-left untouched the task must not succeed, and carried into its goal without a
-robot it must. For rigid pick-and-place scenes that probe could not run: its
-Isaac launcher was never wired, and it scored the configured revision's task
-specification, not the one a team is scored with, so even a pass could not
-admit a scored run.
+Beta journey step: L5 team policy evaluation. Owner decision 2026-10-12: no
+team is scored on a scene until its robot-free probe passed
+(``robot_free_probe_gate``): left untouched the task must not succeed, and
+carried into its goal without a robot it must. For rigid pick-and-place scenes
+that probe could not run: its Isaac launcher was never wired, and it scored the
+configured revision's task specification, not the one a team is scored with,
+so even a pass could not admit a scored run.
 
-The probe now runs where the scene already exists: the first GPU session of a
-team's practice run on a scene whose probe has not been decided. It is
-planned here, on the control plane, against the exact task specification and
-success contract the team is scored with (``scored_task_spec``); the GPU host
-only executes the plan in the built scene (``team_embodiment_runtime``)
-before any episode, with the robot idle at its reset pose and never driving
-the object. Closeout scores the recorded trace with the rigid readiness
-scorer, retains the receipt where the gate reads it (a decided receipt is
-never replaced), and republishes the job's offer, so scored evaluations open
-the moment the probe passes. A probe that cannot run, or fails, never breaks
-the practice run that hosts it.
+The probe now runs where the scene already exists: the first cell of the first
+evaluation on a scene whose probe has not been decided. It is planned here, on
+the control plane, against the exact task specification and success contract
+the team is scored with (``scored_task_spec``); the GPU host executes the plan
+in the built scene with the robot idle at its reset pose, scores it with the
+same scorer (``team_embodiment_runtime.probe_status``) and runs no team
+episode unless it passed. Closeout scores the recorded trace again, retains the
+receipt where the gate reads it (a decided receipt is never replaced), and
+republishes the job's offer; a failed probe closes the scene to every team.
 """
 
 from __future__ import annotations
@@ -62,7 +60,8 @@ def probe_request(*, task_spec: Mapping[str, Any], scene_revision_digest: str) -
     binding = {"configured_scene_revision_digest": scene_revision_digest,
                "task_spec_digest": canonical_digest(dict(task_spec)), "replacement_asset_digest": None,
                "scene_context": SCENE_CONTEXT, "scene_collisions_modeled": True}
-    request = {"schema_version": REQUEST_SCHEMA, "plan": plan, "binding": binding, "request_digest": ""}
+    request = {"schema_version": REQUEST_SCHEMA, "plan": plan, "binding": binding,
+               "task_spec": deepcopy(dict(task_spec)), "request_digest": ""}
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     return request
 
@@ -72,8 +71,8 @@ def retain_recorded_probe(*, profile: Mapping[str, Any], facts: Mapping[str, Any
     """Score the recorded trace, retain the receipt beside the source launch, and republish the offer."""
 
     from .agent_execution_offer import publish_agent_execution_offer
+    from .rigid_robot_free_readiness_score import score_rigid_robot_free_readiness
     from .robot_free_readiness_retention import retain_receipt
-    from .task_evaluation_scene_rigid_robot_free_readiness import score_rigid_robot_free_readiness
 
     scene = facts["scene"]
     receipt = score_rigid_robot_free_readiness(task_spec=scene["task_spec"], physics_probe=trace,

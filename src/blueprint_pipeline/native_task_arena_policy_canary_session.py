@@ -53,8 +53,8 @@ CLAIM_CEILING = "diagnostic_policy_execution"
 CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 EPISODES_PER_POLICY = 10
 LEARNED_ROLLOUT_COUNT = 20
-# A team run carries its own cell list: a practice Quick-10, or one shard of a
-# scored evaluation. Only the internal paired canary is fixed at ten.
+# A team run carries its own cell list: one shard of its scored evaluation.
+# Only the internal paired canary is fixed at ten.
 TEAM_MAX_CELLS_PER_SESSION = 50
 PROBE_KIND = "native-task-arena-policy-canary-session"
 PROVIDER_BUNDLE_SCHEMA_VERSION = (
@@ -147,14 +147,14 @@ def _team_admission_binding(payload: Mapping[str, Any]) -> None:
             raise PolicyCanarySessionError("policy_canary_team_admission_unexpected")
         return
     row = _mapping(binding)
-    # A practice run may record the scene's robot-free probe itself; a scored
-    # run is admitted only on a probe that already passed.
+    # Admitted on a probe that passed, or on an undecided one the first cell records,
+    # scores and must pass before any team episode (the worker's cell-0 gate).
     probe_ok = (_digest(row.get("robot_free_probe_receipt_digest"))
-                or (row.get("evaluation_purpose") == "practice" and row.get("robot_free_probe_receipt_digest") is None))
+                or row.get("robot_free_probe_receipt_digest") is None)
     if (set(row) != {"schema_version", "admission_digest", "candidate_id", "evaluation_purpose",
                      "robot_free_probe_receipt_digest", "scene_revision_digest", "task_success_contract_digest"}
             or row.get("schema_version") != TEAM_ADMISSION_SCHEMA_VERSION
-            or row.get("evaluation_purpose") not in ("practice", "scored") or not probe_ok
+            or row.get("evaluation_purpose") != "scored" or not probe_ok
             or not all(_digest(row.get(key)) for key in ("admission_digest", "scene_revision_digest"))
             or [row.get("candidate_id")] != list(payload.get("candidate_ids") or [])
             or row.get("scene_revision_digest") != payload.get("scene_revision_digest")

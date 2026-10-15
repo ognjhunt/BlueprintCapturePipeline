@@ -1,7 +1,7 @@
-"""Report one team's evaluation (practice or scored) as a simulator-scored agent-run result.
+"""Report one team's scored evaluation as a simulator-scored agent-run result.
 
 Beta journey step: L5 team policy evaluation. The input is every closed session
-result of the run (one for a practice run, one per shard for a scored run),
+result of the run (one per shard),
 each with provider teardown and provider-zero confirmed; the output is the
 terminal receipt the agent-run executor posts to the WebApp, with its scoring
 statement and one outcome row per episode.
@@ -25,8 +25,7 @@ episodes; ``episodes_succeeded`` counts successes. Nothing the team's service
 returns besides actions is read as an outcome. The claim ceiling stays
 ``diagnostic_policy_execution``: a bounded simulation estimate that never
 certifies physical performance or safety, and never Arm Decision Proof
-evidence. A practice run is labelled with its own runtime so the WebApp never
-counts it toward a recommendation.
+evidence.
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ from .native_task_arena_policy_canary_session import (
     PolicyCanarySessionError,
     validate_session_result,
 )
-from .team_evaluation_plan import EPISODES, MAXIMUM_VOID_SHARE, PRACTICE, PURPOSES, SCORED
+from .team_evaluation_plan import EPISODES, MAXIMUM_VOID_SHARE, PURPOSES
 
 _POLICY_ERROR_PREFIXES = ("droid_https_policy_", "team_policy_https_")
 
@@ -94,7 +93,7 @@ def episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
 
 
 def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], runtime_binding: Mapping[str, Any],
-                            purpose: str) -> dict[str, Any]:
+                            purpose: str, episodes: int | None = None) -> dict[str, Any]:
     """Return the terminal receipt (outcomes, counts, scoring) for the agent-run executor."""
 
     if purpose not in PURPOSES or not session_results:
@@ -114,7 +113,8 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
         rows.extend(row for row in result["episodes"] if row.get("candidate_id") == binding["candidate_id"])
         result_digests.append(result["result_digest"])
     cell_ids = [str(row.get("cell_id") or "") for row in rows]
-    if len(rows) != EPISODES[purpose] or len(set(cell_ids)) != len(rows):
+    # Exactly the admitted episode count (the admission's; the purpose's by default).
+    if len(rows) != (EPISODES[purpose] if episodes is None else int(episodes)) or len(set(cell_ids)) != len(rows):
         raise TeamCandidateResultError("team_candidate_session_result_episode_count_invalid")
     outcomes = []
     for row in rows:
@@ -122,16 +122,14 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
         scenario = row.get("resolved_scenario") if isinstance(row.get("resolved_scenario"), Mapping) else {}
         outcomes.append({
             "cell_id": row.get("cell_id"), "family": row.get("family") or scenario.get("family"),
+            # Cells are hidden: the team learns each cell's family, outcome and reason, never its draw.
             "outcome": outcome, "reason": reason,
-            # Practice cells are published; a scored run reports only each cell's family.
-            **({"parameters": dict(scenario.get("parameters") or {})} if purpose == PRACTICE else {}),
         })
     counted = [row for row in outcomes if row["outcome"] != "void"]
     succeeded = sum(1 for row in counted if row["outcome"] == "success")
     void = len(outcomes) - len(counted)
-    if purpose == SCORED and void > math.floor(MAXIMUM_VOID_SHARE * len(outcomes)):
+    if void > math.floor(MAXIMUM_VOID_SHARE * len(outcomes)):
         raise TeamCandidateResultError("team_scored_run_void_share_exceeded")
-    label = "Practice run" if purpose == PRACTICE else "Scored evaluation"
     return {
         "status": "completed",
         "episodes_run": len(counted),
@@ -139,7 +137,7 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
         "median_cycle_seconds": None,
         "cycle_seconds_p10": None,
         "cycle_seconds_p90": None,
-        "note": (f"{label} of one team's own policy: {len(counted)} episodes scored by the simulator against "
+        "note": (f"Scored evaluation of one team's own policy: {len(counted)} episodes scored by the simulator against "
                  f"the sealed success contract, {succeeded} succeeded"
                  + (f", {void} void (simulator failure, not counted)" if void else "")
                  + ". Simulation estimate; not physical performance or safety."),

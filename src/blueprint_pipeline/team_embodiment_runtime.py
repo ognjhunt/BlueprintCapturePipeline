@@ -521,6 +521,20 @@ def asset_root_for_scoring_pose(scoring_pose: Sequence[float], offset: Mapping[s
     return [float(scoring_pose[axis]) - shift[axis] for axis in range(3)] + rotation
 
 
+def probe_status(*, request: Mapping[str, Any], trace: Mapping[str, Any]) -> str:
+    """The recorded probe's verdict on the GPU host, before any team episode (same scorer as closeout)."""
+
+    from .rigid_robot_free_readiness_score import score_rigid_robot_free_readiness
+
+    if (request.get("request_digest") != canonical_digest(dict(request), digest_field="request_digest")
+            or request["binding"]["task_spec_digest"] != canonical_digest(dict(request["task_spec"]))):
+        return "probe_request_invalid"
+    receipt = score_rigid_robot_free_readiness(
+        task_spec=request["task_spec"], physics_probe=trace,
+        configured_scene_revision_digest=request["binding"]["configured_scene_revision_digest"])
+    return str(receipt["status"])
+
+
 class _ArenaProbeScene:
     """The rigid probe's three-method seam over the built scene: set the object's pose, step physics, read."""
 
@@ -573,7 +587,7 @@ def record_arena_robot_free_probe(*, built: Any, task_readback: Any, plan: Mappi
         built.env.reset(seed=int(plan["scenario"]["seed"]))
         scene = _ArenaProbeScene(built=built, task_readback=task_readback, plan=plan)
         return record_rigid_robot_free_probe(scene=scene, plan=request["plan"], binding=request["binding"])
-    except Exception as exc:  # noqa: BLE001 - a probe failure is evidence, never a failed practice run
+    except Exception as exc:  # noqa: BLE001 - a recording failure is evidence; the cell-0 gate refuses the scene
         trace = {"schema_version": "scene_rigid_robot_free_success_probe.v1", "binding": dict(request.get("binding") or {}),
                  "plan": dict(request.get("plan") or {}), "status": "failed",
                  "error": f"{type(exc).__name__}:{str(exc)[:200]}", "trace_digest": ""}

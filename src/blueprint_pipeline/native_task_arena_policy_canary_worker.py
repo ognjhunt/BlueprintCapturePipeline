@@ -35,7 +35,7 @@ from blueprint_pipeline.appearance_render_backend import (
     build_appearance_render_backend,
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
-    EXECUTION_MODES, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME,
+    EXECUTION_MODES, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND,
     execute_paired_session,
     validate_runtime_input_manifest,
     validate_session_authority,
@@ -1390,13 +1390,27 @@ def _run_isolated_cell_processes(
                 f"exit_{exit_code}"
             )
         child_results.append(_read(child_result_path))
+        if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
+            # The scene failed its robot-free check in cell 0: no further team episode runs on it.
+            blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
+                       "run_kind": inputs["run_kind"], "claim_ceiling": "diagnostic_policy_execution",
+                       "task_success_contract": inputs["task_success_contract"],
+                       "task_success_contract_digest": inputs["task_success_contract_digest"],
+                       "episodes": [], "artifact_inventory": [], "candidate_policy_queried": False,
+                       "blockers": ["team_scene_robot_free_probe_not_passed"],
+                       **{key: child_results[0][key] for key in ("robot_free_probe_trace", "robot_free_probe_status")}}
+            blocked["result_digest"] = canonical_digest(blocked, digest_field="result_digest")
+            _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=blocked)
+            return 1
         if index == 0 and inputs.get("diagnostic_continuation_protocol") is not None:
             from blueprint_pipeline.native_policy_canary_diagnostic_continuation import assess_diagnostic_first_cell, GATE_FILENAME
             diagnostic_continuation_gate = assess_diagnostic_first_cell(runtime_root=runtime, child_root=child_root)
             _seal_result(result_path=output_root / GATE_FILENAME, result=diagnostic_continuation_gate)
             if diagnostic_continuation_gate["status"] != "passed":
                 raise RuntimeError("diagnostic_continuation_first_cell_blocked:" + ",".join(diagnostic_continuation_gate["blockers"]))
-        elif index == 0:
+        elif index == 0 and inputs.get("run_kind") != TEAM_RUN_KIND:
+            # The DROID harness-parity probe qualifies Blueprint's frozen canary; a team's
+            # policy that does not approach the object in cell 0 is scored, not blocked.
             diagnostics = [
                 row.get("embodiment_parity_diagnostic")
                 for row in child_results[-1].get("episodes") or []
@@ -1627,6 +1641,13 @@ def _run_selected_cell(
             current_session["robot_free_probe_trace"] = record_arena_robot_free_probe(
                 built=built, task_readback=bound_runtime.make_rigid_task_readback(built), plan=scene_plan,
                 request=probe_request)
+            from blueprint_pipeline.team_embodiment_runtime import probe_status
+
+            current_session["robot_free_probe_status"] = probe_status(
+                request=probe_request, trace=current_session["robot_free_probe_trace"])
+        if current_session.get("robot_free_probe_status") not in (None, "passed"):
+            # Owner decision 2026-10-12: no team episode on a scene whose success check is unproven.
+            raise RuntimeError("team_scene_robot_free_probe_not_passed")
         env = built.env
         seed = int(context["seed"])
         env.reset(seed=seed)
@@ -2157,6 +2178,7 @@ def _run_selected_cell(
     result["appearance_render_backend"] = dict(appearance_render_backend)
     if current_session.get("robot_free_probe_trace") is not None:
         result["robot_free_probe_trace"] = current_session["robot_free_probe_trace"]
+        result["robot_free_probe_status"] = current_session.get("robot_free_probe_status")
     telemetry_index, telemetry_artifacts = _write_policy_canary_telemetry(
         output_root, result["episodes"]
     )

@@ -4,9 +4,8 @@ Beta journey step: L5 team policy evaluation. The scene's internal Quick-10
 inputs (``task_evaluation_policy_canary_runtime_inputs.v1``, run kind
 ``internal_policy_canary``) freeze the scene packet, ten cells, their seeds and
 the sealed success contract. A team run keeps the scene and contract, replaces
-the frozen pair with the one admitted candidate, and runs either those ten
-published cells (practice) or one shard of the scored matrix
-(``team_evaluation_plan``):
+the frozen pair with the one admitted candidate, and runs one shard of the
+scored matrix (``team_evaluation_plan``):
 
 - a team activation manifest (the session's cells and seeds, run kind
   ``team_candidate_evaluation``, a run id of its own);

@@ -13,7 +13,7 @@ who decided the second. Every result this repository reports now states:
 
 The WebApp admits a result as recommendation evidence only through a positive
 allowlist (today exactly ``team_evaluation_scored`` with ``simulator_scored``
-and every binding present; a practice run is never evidence). This module states facts; it
+and every binding present). This module states facts; it
 does not decide admission. Mirror: Blueprint-WebApp
 ``server/utils/runResultScoring.ts``.
 """
@@ -25,11 +25,9 @@ from collections.abc import Mapping
 from typing import Any
 
 SCHEMA_VERSION = "blueprint.agent_run_result_scoring.v1"
-# A team's practice run (ten published cells, feedback only) and its scored
-# evaluation (200 hidden cells, the only run a recommendation may rest on).
-TEAM_PRACTICE = "team_evaluation_practice"
+# A team's evaluation: 200 hidden cells, the only run a recommendation may rest on.
 TEAM_SCORED = "team_evaluation_scored"
-TEAM_RUNTIMES = {"practice": TEAM_PRACTICE, "scored": TEAM_SCORED}
+TEAM_RUNTIMES = {"scored": TEAM_SCORED}
 CONTROLLED_NATIVE_SEALED_TASK = "controlled_native_sealed_task"
 LEGACY_COMMAND_BATCH = "legacy_robot_eval_command_batch"
 SIMULATOR_SCORED = "simulator_scored"
@@ -109,7 +107,6 @@ __all__ = [
     "LEGACY_COMMAND_BATCH",
     "SCHEMA_VERSION",
     "SIMULATOR_SCORED",
-    "TEAM_PRACTICE",
     "TEAM_RUNTIMES",
     "TEAM_SCORED",
     "AgentRunResultScoringError",

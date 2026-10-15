@@ -1,17 +1,21 @@
-"""What an invited robot team's evaluation of one site job runs: practice, then scored.
+"""What an invited robot team's evaluation of one site job runs: 200 hidden, scored cells.
 
-Beta journey step: L5 team policy evaluation. A team needs two things from an
-evaluation, and they pull in opposite directions:
+Beta journey step: L5 team policy evaluation. A team is evaluated once, on 200
+cells it has not seen, drawn from the scene's bounded variation families; the
+result is the only thing a recommendation may rest on. Ten episodes cannot tell
+a 90% policy from a 60% one (9/10 has a 95% Wilson lower bound near 0.60); 200
+can (180/200 has one near 0.85). There is no separate practice run: a team's
+integration mistakes (joint order, units, cameras) are caught by failing fast,
+not by a second kind of run.
 
-- **practice** is for the team. It runs the scene's ten published Quick-10
-  cells, returns every episode's outcome and failure reason, and never counts
-  toward a recommendation. A team can see exactly what it is being asked to do
-  and fix its policy between attempts;
-- **scored** is for the site. It runs 200 cells the team has not seen, drawn
-  from the same bounded variation families, and is the only run a
-  recommendation may rest on. Ten episodes cannot tell a 90% policy from a 60%
-  one (9/10 has a 95% Wilson lower bound near 0.60); 200 can (180/200 has one
-  near 0.85).
+- The first shard of 25 cells runs alone. On a scene whose robot-free check is
+  still undecided, its first cell records and scores that check before any
+  team episode, and no team episode runs unless it passed.
+- If the scene's check did not pass, or most of the first shard's episodes
+  failed at the interface (the service did not answer, or returned an
+  invalid or out-of-limit action) rather than at the task, the evaluation
+  stops there and the team gets those episodes' outcomes and reasons, without
+  the other seven shards being spent.
 
 Scored cells are generated deterministically from the scene revision and a
 per-scene secret salt held on the control plane, so every team on a job faces
@@ -23,7 +27,7 @@ half the orientation tolerance (and 10 degrees), task light 0.8-1.2, external
 camera +-2 cm and dynamic friction within 20% of nominal. Nothing here changes
 the object, the task or the success contract.
 
-The scored matrix mixes, for 200 cells: canonical anchors, single-family cells
+The matrix mixes, for 200 cells: canonical anchors, single-family cells
 stratified across each family's range (placement, illumination, camera,
 physics), pairwise stress cells and a held-out composition of every family at
 once. Cells run in shards of at most 25 on separate GPU sessions so a 200-cell
@@ -48,14 +52,17 @@ from .site_task_variation_request import (
     START_SHIFT_SHARE_OF_REACH,
 )
 
-PRACTICE = "practice"
 SCORED = "scored"
-PURPOSES = (PRACTICE, SCORED)
-PRACTICE_PROFILE = "team_evaluation_practice_v1"
+PURPOSES = (SCORED,)
 SCORED_PROFILE = "team_evaluation_scored_v1"
-PROFILES = {PRACTICE: PRACTICE_PROFILE, SCORED: SCORED_PROFILE}
-EPISODES = {PRACTICE: 10, SCORED: 200}
+PROFILES = {SCORED: SCORED_PROFILE}
+EPISODES = {SCORED: 200}
 SHARD_CELLS = 25
+# The first shard stops the evaluation when more than this share of its
+# episodes failed at the interface rather than at the task.
+FIRST_SHARD_INTERFACE_FAILURE_SHARE = 0.5
+INTERFACE_FAILURE_REASONS = frozenset({"policy_service_did_not_answer", "policy_action_invalid",
+                                       "policy_service_error", "policy_action_beyond_joint_limits"})
 # At most this share of a scored run may be void (the simulator, not the
 # policy, failed). Void episodes never count; a run with more is refused.
 MAXIMUM_VOID_SHARE = 0.05
@@ -233,9 +240,9 @@ def shards(cells: Sequence[Mapping[str, Any]], *, size: int = SHARD_CELLS) -> li
 
 __all__ = [
     "EPISODES",
+    "FIRST_SHARD_INTERFACE_FAILURE_SHARE",
+    "INTERFACE_FAILURE_REASONS",
     "MAXIMUM_VOID_SHARE",
-    "PRACTICE",
-    "PRACTICE_PROFILE",
     "PROFILES",
     "PURPOSES",
     "SCORED",

@@ -1,4 +1,4 @@
-"""Admission of ONE team candidate to a practice run or a scored evaluation fails closed on every gate.
+"""Admission of ONE team candidate to a scored evaluation fails closed on every gate.
 
 Beta journey step: L5 team policy evaluation. Control plane only: no network,
 provider, GPU or spend. The scene is articulated because only articulated
@@ -140,16 +140,9 @@ def test_every_gate_fails_closed_with_its_own_reason() -> None:
 
 
 def test_the_robot_free_probe_is_mandatory_for_this_scene_revision_and_task() -> None:
+    # This articulated scene's probe cannot be recorded inside an evaluation: it must already have passed.
     assert _blockers(probe_receipt=None) == ["team_evaluation_robot_free_probe_receipt_missing"]
-    # Practice is feedback: it may run while the probe is pending, never after it failed.
-    practice_budget = {**_inputs()["budget"], "episodes": 10}
-    practice = admit_team_candidate(**_inputs(probe_receipt=None, budget=practice_budget), purpose="practice", now=NOW)
-    assert practice["evaluation_purpose"] == "practice" and practice["robot_free_probe_receipt_digest"] is None
-    with pytest.raises(TeamCandidateAdmissionError) as raised:
-        admit_team_candidate(**_inputs(probe_receipt=scored_probe_receipt(REVISION, passes=False),
-                                       budget=practice_budget), purpose="practice", now=NOW)
-    assert raised.value.blockers == ["team_evaluation_robot_free_probe_not_passed"]
-    assert _blockers(budget=practice_budget) == ["team_candidate_budget_cap_invalid"]  # a scored run is 200
+    assert _blockers(budget={**_inputs()["budget"], "episodes": 10}) == ["team_candidate_budget_cap_invalid"]
     assert _blockers(probe_receipt=scored_probe_receipt(REVISION, passes=False)) == [
         "team_evaluation_robot_free_probe_not_passed"]
     assert _blockers(probe_receipt=scored_probe_receipt("sha256:" + "8" * 64)) == [

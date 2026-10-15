@@ -1,11 +1,10 @@
-"""Admit ONE robot team's own policy to a practice run or a scored evaluation of a site job.
+"""Admit ONE robot team's own policy to a scored evaluation of a site job.
 
 Beta journey step: L5 team policy evaluation. The website scene runtime ran
 only Blueprint's two frozen public policies. This control-plane admission (no
 network, no provider, no spend) decides whether one team candidate may run on
-the scene, for ``practice`` (the ten published Quick-10 cells, feedback only)
-or ``scored`` (200 hidden cells, the only evidence a recommendation may rest
-on; ``team_evaluation_plan``), and seals what the runtime may run:
+the scene's 200 hidden cells (the only evidence a recommendation may rest on;
+``team_evaluation_plan``), and seals what the runtime may run:
 
 - the candidate is the team's own policy, served by the team over
   authenticated HTTPS, either on the DROID Franka (Robotiq 2F-85) interface
@@ -18,14 +17,14 @@ on; ``team_evaluation_plan``), and seals what the runtime may run:
   ranking, secret retention and Arm Decision Proof evidence use;
 - a single-use KMS bearer-credential lease for exactly that origin is
   available (the secret itself never enters this record);
-- the run is free, single-attempt, has exactly its purpose's episode count, and
+- the run is free, single-attempt, has exactly 200 episodes, and
   stays inside the free-beta provider cap;
 - the founder admitted exactly this team, candidate and scene revision, and
   the admission has not expired;
-- for a scored run, the scene's robot-free success probe passed at this
-  revision for the exact task specification (``robot_free_probe_gate``); a
-  practice run may go ahead while the probe is still pending (it records the
-  rigid probe itself), never after it failed; and
+- the scene's robot-free success probe passed at this revision for the exact
+  task specification (``robot_free_probe_gate``), or is still undecided: the
+  evaluation's first cell then records and scores it before any team episode,
+  and runs none unless it passed. A scene whose probe failed is refused; and
 - the scene's success contract and embodiment are the ones the run scores.
 
 Every refusal is collected and raised together with typed reasons. A sealed
@@ -65,7 +64,6 @@ from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
 from .team_embodiment import TeamEmbodimentError, camera_names, validate_embodiment_manifest
 from .team_evaluation_plan import (
     EPISODES,
-    PRACTICE,
     PURPOSES,
     SCORED,
     SHARD_CELLS,
@@ -216,7 +214,7 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
                          founder_admission: Mapping[str, Any], scene: Mapping[str, Any],
                          probe_receipt: Mapping[str, Any] | None, purpose: str = SCORED,
                          now: datetime | None = None) -> dict[str, Any]:
-    """Seal one team candidate's practice or scored admission, or raise with every typed reason."""
+    """Seal one team candidate's scored admission, or raise with every typed reason."""
 
     moment = now or datetime.now(timezone.utc)
     candidate, scene = _m(candidate), _m(scene)
@@ -249,10 +247,10 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
                                          task_success_contract_digest=task_success_contract_binding(
                                              task_spec.get("task_kind"), scene.get("task_success_contract")))
     except RobotFreeProbeGateError as exc:
-        # Practice is feedback, never evidence: it may run (and record the
-        # rigid probe) while the probe is pending, but never on a scene whose
-        # probe was decided and failed.
-        if purpose != PRACTICE or _m(probe_receipt).get("status") not in (None, "probe_unavailable"):
+        # Undecided on a rigid scene: recorded and scored in the first cell, before any team
+        # episode. Decided and failed, or a kind no evaluation can record: refused.
+        if (task_spec.get("task_kind") != "rigid_pick_place"
+                or _m(probe_receipt).get("status") not in (None, "probe_unavailable")):
             blockers.append(str(exc))
     if blockers:
         raise TeamCandidateAdmissionError(blockers)
@@ -308,8 +306,8 @@ def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mappi
     """The sealed per-candidate execution spec the canary worker loads (no secret material).
 
     A candidate on its own robot carries the staged ``team_embodiment`` binding
-    (``team_embodiment.team_embodiment_binding``) for the admitted manifest. A
-    practice session on a scene whose robot-free probe is undecided carries the
+    (``team_embodiment.team_embodiment_binding``) for the admitted manifest. The
+    first session on a scene whose robot-free probe is undecided carries the
     probe to record (``team_robot_free_probe.probe_request``).
     """
 

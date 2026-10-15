@@ -123,7 +123,7 @@ def retain_robot_free_readiness(*, run_root: str | Path, revision_reference: Map
 
 
 def retain_receipt(run_root: str | Path, receipt: Mapping[str, Any]) -> str:
-    """Retain a receipt scored elsewhere (a team practice run's recorded probe) where the gate reads it."""
+    """Retain a receipt scored elsewhere (a team evaluation's recorded probe) where the gate reads it."""
 
     return _write(_safe(Path(run_root) / RECEIPT_FILENAME), receipt)
 
