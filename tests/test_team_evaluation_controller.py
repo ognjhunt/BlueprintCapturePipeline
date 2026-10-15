@@ -14,6 +14,7 @@ from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import task_evaluation_team_run_controller as controller
 from tests.test_task_evaluation_controls_autoprovision import setup, COMMIT
 from tests.test_task_evaluation_scene_intake import request
+from tests.test_robot_free_probe_gate import scored_probe_receipt
 
 
 def _put(path, value):
@@ -37,6 +38,8 @@ def _case(tmp_path, monkeypatch):
     _put(run/'webapp_sync_succeeded.json', {'sync_result_digest':'sha256:'+'4'*64})
     terminal = {'result_digest':'sha256:'+'1'*64,'configured_scene_revision_digest':'sha256:'+'2'*64,
         'publication_result_digest':'sha256:'+'3'*64}
+    # Beta L5: the scene's robot-free probe passed at this exact configured revision.
+    _put(run/'robot_free_readiness.v1.json', scored_probe_receipt(terminal['configured_scene_revision_digest']))
     monkeypatch.setattr(progression, '_validate_source', lambda p:(terminal,
         {'receipt_digest':'sha256:'+'5'*64, 'launch_profile_digest':profile['profile_digest'], 'source_commit':COMMIT},
         {'provider_zero_receipt_digest':'sha256:'+'6'*64}))
@@ -153,3 +156,33 @@ def test_unavailable_policy_refuses_before_source_read_or_reservation(tmp_path, 
     with pytest.raises(ValueError, match='team_evaluation_policy_unavailable'):
         controller.source_for_evaluation(config=config, intent=intent, now=args['now'])
     assert not list(args['scene_root'].glob('scene-*/attempts/*.json'))
+
+
+@pytest.mark.parametrize('probe, reason', [
+    (None, 'receipt_missing'),
+    ('failed', 'not_passed'),
+    ('stale', 'scene_revision_mismatch'),
+])
+def test_team_evaluation_requires_a_passed_robot_free_probe_at_the_current_revision(tmp_path, monkeypatch,
+                                                                                    probe, reason):
+    args, config, original_path, selected = _case(tmp_path, monkeypatch)
+    receipt = Path(config['launch_state_root'])/'source-launch'/'robot_free_readiness.v1.json'
+    if probe is None:
+        receipt.unlink()
+    elif probe == 'failed':
+        _put(receipt, scored_probe_receipt('sha256:'+'2'*64, passes=False))
+    else:
+        _put(receipt, scored_probe_receipt('sha256:'+'7'*64))
+    owner = selected('eval-one')
+    intent = intake._read(args['scene_root']/owner['intent_id']/'intent.json', 'intent_digest')
+    with pytest.raises(ValueError, match='team_evaluation_robot_free_probe_' + reason):
+        controller.source_for_evaluation(config=config, intent=intent, now=args['now'])
+    with pytest.raises(ValueError, match='team_evaluation_robot_free_probe_' + reason):
+        adoption.provision_terminal_controls_adoption(config=config, catalog=args['catalog'],
+            intent_id=owner['intent_id'], expected_production_commit=COMMIT, now=args['now'])
+    assert not list(args['scene_root'].glob('scene-*/attempts/*.json'))
+    plan = {'source_launch_id':'source-launch', 'source_launch_receipt_digest':'sha256:'+'5'*64,
+        'evaluation_run_id':'eval-one', 'evaluation_authority':{**intent['request']['task']['evaluation_source'],
+            'scene_intent_digest':owner['intent_digest']}}
+    assert controller.plan_authority_blocker(plan, config['launch_state_root']) == (
+        'team_evaluation_robot_free_probe_' + reason)
