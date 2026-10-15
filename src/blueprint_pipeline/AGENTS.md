@@ -1,11 +1,14 @@
 # Agent Guide For `src/blueprint_pipeline/`
 
 This package contains materialization, package assembly, provider adapters,
-privacy and geometry lanes, runtime support, launch gates, and WebApp sync. Arm
-Decision Proof v1 is the sole active program; other lanes remain compatibility
-unless a recorded ADP blocker requires their smallest reusable component.
+privacy and geometry lanes, runtime support, launch gates, and WebApp sync. Two
+programs are active, the free beta's evaluated, recommended pilot and Arm
+Decision Proof v1; other lanes remain compatibility unless a recorded blocker in
+one of them requires their smallest reusable component.
 
-Active work should converge on one partner-owned fixed-arm task, two frozen
+Beta work converges on invited teams' own policies evaluated on website site
+scenes for enough episodes to judge them. ADP work converges on one
+partner-owned fixed-arm task, two frozen
 candidates, a qualified candidate MSER, complete condition-level receipts, a
 sealed prospective decision, and an exact held-out Physical Outcome Join.
 Existing fixtures/scenes may exercise these seams only as `development_only`.

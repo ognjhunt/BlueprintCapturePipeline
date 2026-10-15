@@ -15,15 +15,15 @@
   "blocks": {
     "SHARED_PLATFORM_CONTEXT": {
       "file": "PLATFORM_CONTEXT.md",
-      "canonical_sha256": "8afcacd21f41f804a22bf0465fe1e9daccc69181c8360be0875bf87fac4f3e5f"
+      "canonical_sha256": "992b265c3df2cc3782647eb07c0600346347f89932d5a5d64abd0ecb4c09d23a"
     },
     "SHARED_VISION": {
       "file": "VISION.md",
-      "canonical_sha256": "4ac7e74eccedc956ce169293b4fedcf5ae373bcaf89d8e04415471b7aef77352"
+      "canonical_sha256": "a73dfe1bb0b0098e3a9757a9b38fd8ed7753d3f728436299b8d76882dd57dcfc"
     },
     "SHARED_WORLD_MODEL_STRATEGY": {
       "file": "WORLD_MODEL_STRATEGY_CONTEXT.md",
-      "canonical_sha256": "8effdab088ed509cdb41c8d7d5328d3481268ac0409352b9eb1d17d7f5ac5082"
+      "canonical_sha256": "de06fe8f08c8bd811387519159b5e1e77a3a9494c112623979a2ffc4392e822a"
     }
   },
   "canonical_source": "BlueprintCapturePipeline doctrine/"

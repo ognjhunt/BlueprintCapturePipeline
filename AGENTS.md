@@ -57,17 +57,27 @@ dependent step as blocked instead of guessing.
 
 ## Product Rules
 
-- Treat `arm-decision-proof-v1` as the sole active evaluation build-out
-  program. Historical docs, schemas, providers, evaluators, and runtime lanes
-  are compatibility or paused material unless a recorded Arm Decision Proof
-  blocker requires the smallest possible dependency.
-- Before accepting work, name the ADP backlog item and day-7/day-14/day-21/day-28,
-  day-35, or day-42 gate it unblocks, the observed completion artifact, why existing
-  infrastructure is insufficient, and the smallest reversible change. Missing
-  any answer means the work is out of focus.
+- **Two programs are active (owner decision 2026-10-14; shared doctrine in
+  `doctrine/platform-context.md`):** the free beta's evaluated, recommended
+  pilot (`free-beta-evaluated-pilot`) and `arm-decision-proof-v1`. The beta is
+  the customer-facing program; Arm Decision Proof is the evidence program and
+  keeps sole authority over physical-validation claims. Historical docs,
+  schemas, providers, evaluators, and runtime lanes are compatibility or paused
+  material unless a recorded blocker in one of these programs requires the
+  smallest possible dependency.
+- Before accepting work, name what it unblocks: a free beta journey step (for
+  example "beta: invited-team evaluation runtime" or "beta: concurrent scene
+  preparation"), or the ADP backlog item and day-7/day-14/day-21/day-28,
+  day-35, or day-42 gate. Also name the observed completion artifact, why
+  existing infrastructure is insufficient, and the smallest reversible change.
+  Missing any answer means the work is out of focus.
 - Keep geometry, capture observations, simulators, learned evaluators, providers,
   and physical evidence replaceable behind stable capture and evaluation contracts.
-- Optimize for the one prospective two-candidate fixed-arm Task Evaluation Run.
+- Optimize for the one prospective two-candidate fixed-arm Task Evaluation Run
+  and for invited teams' beta evaluation runs on scenes built from website
+  site captures. A beta recommendation needs a team's own policy, scored by
+  the simulator (never self-reported) for at least the minimum evidence
+  episodes against the job's frozen pass mark.
   Legacy five-policy, Policy Improvement Run, Post-Training Data Package,
   humanoid, world-model, and provider contracts remain compatibility/internal
   machinery, not active products or default outputs.
@@ -79,6 +89,9 @@ dependent step as blocked instead of guessing.
   now. Keep them `development_only`; they cannot qualify partner capture, owner
   task truth, registration, task physics, observation-domain match, sim-to-real
   fidelity, or partner value. Never copy fixture data into qualified evidence.
+  Beta site captures are the beta's real inputs: results on scenes built from
+  them may back a beta recommendation as a bounded simulation estimate, but
+  never enter Arm Decision Proof qualified evidence.
 - ADP-008 is observed complete. The 2026-08-06 ADP-009 transition accepts the
   bounded InteriorGS/SAGE/SimReady construction rehearsal while preserving the
   historical suite at `7/10`, and fresh Raw V3.2 capture replaces ScanNet++ as

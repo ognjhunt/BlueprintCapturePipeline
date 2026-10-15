@@ -28,6 +28,10 @@ DeepPrivacy2 requests additionally accept:
 
 - ``output_video_uri`` or ``output_video_path``: anonymized walkthrough destination
 - ``deepprivacy2_model_path``: optional local path, ``gs://`` URI, or HTTPS URL used as ``TORCH_HOME``
+
+Every output video is video-only: the source soundtrack is never carried into a
+redacted or anonymized walkthrough, and each result says how that was shown
+(``audio_removed`` / ``audio_removal``).
 """
 
 from __future__ import annotations
@@ -52,6 +56,7 @@ from .common import (
     parse_bool,
     resolve_gs_uri_to_path,
 )
+from .capture_audio_minimization import video_only_encoder_receipt, write_audio_free_video
 from .logging_utils import log_event
 
 
@@ -743,38 +748,22 @@ def _inpaint_with_depth(
     return output
 
 
-def _merge_audio_if_possible(*, source_video: Path, video_only_path: Path, output_video: Path) -> None:
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        shutil.copyfile(video_only_path, output_video)
-        return
-    proc = subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            str(video_only_path),
-            "-i",
-            str(source_video),
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a?",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-shortest",
-            str(output_video),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0 or not output_video.is_file():
-        shutil.copyfile(video_only_path, output_video)
+def _publish_video_only_frames(*, video_only_path: Path, output_video: Path) -> Dict[str, Any]:
+    """Publish the redacted frames as the output video, with no soundtrack.
+
+    The source audio is deliberately not re-attached: a workplace walkthrough
+    can record people talking, and nothing downstream uses sound. The frames
+    were written by OpenCV's VideoWriter, which has no audio input; ffprobe
+    confirms the output when it is available.
+    """
+
+    if not video_only_path.is_file():
+        return video_only_encoder_receipt(video_only_path, encoder="opencv_video_writer")
+    os.replace(video_only_path, output_video)
+    receipt = video_only_encoder_receipt(output_video, encoder="opencv_video_writer")
+    if not receipt["audio_removed"]:
+        output_video.unlink(missing_ok=True)
+    return receipt
 
 
 def _run_vip_backend(
@@ -911,14 +900,24 @@ def _run_vip_backend(
         cap.release()
         writer.release()
 
-    _merge_audio_if_possible(source_video=input_video, video_only_path=temp_video, output_video=output_video)
+    audio_removal = _publish_video_only_frames(video_only_path=temp_video, output_video=output_video)
     if temp_video.exists():
         temp_video.unlink()
+    if not audio_removal["audio_removed"]:
+        return {
+            "status": "failed",
+            "reason": f"vip_audio_removal_failed:{audio_removal.get('reason') or 'not_shown'}",
+            "audio_removed": False,
+            "audio_removal": audio_removal,
+            "warnings": depth_warnings,
+        }
     return {
         "status": "succeeded",
         "runner_kind": "vip",
         "backend": "depth_guided_inpaint",
         "output_video": str(output_video),
+        "audio_removed": True,
+        "audio_removal": audio_removal,
         "depth_source": depth_source,
         "used_precomputed_depth": use_precomputed_depth,
         "frames_processed": frame_index,
@@ -951,6 +950,11 @@ def _run_deepprivacy2_backend(
     if deepprivacy2_model_path:
         env["TORCH_HOME"] = deepprivacy2_model_path
         env["DEEPPRIVACY2_MODEL_PATH"] = deepprivacy2_model_path
+    # Nothing guarantees anonymize.py drops the source soundtrack, so its
+    # output is scratch; only a video-only copy of it becomes the result.
+    anonymized_with_source_audio = output_video.with_name(
+        f"{output_video.stem}.anonymize_output{output_video.suffix}"
+    )
     command = [
         sys.executable,
         str(anonymize_script),
@@ -958,7 +962,7 @@ def _run_deepprivacy2_backend(
         "-i",
         str(input_video),
         "-o",
-        str(output_video),
+        str(anonymized_with_source_audio),
         "--track",
     ]
     # Subprocess backend: model load happens inside anonymize.py, so per-load
@@ -982,10 +986,22 @@ def _run_deepprivacy2_backend(
         returncode=proc.returncode,
         model_load_embedded=True,
     )
-    if proc.returncode != 0 or not output_video.is_file():
+    if proc.returncode != 0 or not anonymized_with_source_audio.is_file():
+        anonymized_with_source_audio.unlink(missing_ok=True)
         return {
             "status": "failed",
             "reason": f"deepprivacy2_command_failed:{proc.returncode}",
+            "stdout": proc.stdout[-4000:],
+            "stderr": proc.stderr[-4000:],
+        }
+    audio_removal = write_audio_free_video(anonymized_with_source_audio, output_video)
+    anonymized_with_source_audio.unlink(missing_ok=True)
+    if not audio_removal["audio_removed"]:
+        return {
+            "status": "failed",
+            "reason": f"deepprivacy2_audio_removal_failed:{audio_removal.get('reason') or 'not_shown'}",
+            "audio_removed": False,
+            "audio_removal": audio_removal,
             "stdout": proc.stdout[-4000:],
             "stderr": proc.stderr[-4000:],
         }
@@ -996,6 +1012,8 @@ def _run_deepprivacy2_backend(
         "status": "succeeded",
         "runner_kind": "deepprivacy2",
         "output_video": str(output_video),
+        "audio_removed": True,
+        "audio_removal": audio_removal,
         "face_anonymized_segments": face_segments,
         "stdout": proc.stdout[-4000:],
         "stderr": proc.stderr[-4000:],

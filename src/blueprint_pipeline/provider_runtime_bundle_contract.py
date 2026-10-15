@@ -240,13 +240,18 @@ def provider_runtime_contract_blockers(
         )
         runner_blocker = "provider_runner_missing_adp009d_articulated_native_runtime_contract"
     elif provider_bundle_kind == "native_task_arena_policy_canary_session":
+        # The frozen pair tears down its local policy servers; a team candidate
+        # is served remotely. The adapter binds which one the manifest's run
+        # kind requires (policy_canary_session_bundle_identity).
         entrypoint_valid = all(
             token in entrypoint_text
             for token in (
                 "native_task_arena_policy_canary_session_result.v1.json",
                 "policy_canary_worker_failed_without_result",
-                "adp009d_policy_server_worker.py",
             )
+        ) and any(
+            token in entrypoint_text
+            for token in ("adp009d_policy_server_worker.py", "blueprint_team_candidate_remote_policy_session")
         )
         runner_valid = all(
             token in runner_text

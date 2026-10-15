@@ -65,6 +65,15 @@ def _free_beta_run(row: Mapping[str, Any]) -> bool:
             and all(c in "0123456789abcdef" for c in digest[7:]))
 
 
+TEAM_CANDIDATE_QUICK10_PROFILE = "policy_canary_quick10_team_candidate_v1"
+
+
+def _requests_team_candidate_runtime(canonical: Mapping[str, Any]) -> bool:
+    package = _mapping(canonical.get("policy_package"))
+    return any(_mapping(package.get(name)).get("execution_profile") == TEAM_CANDIDATE_QUICK10_PROFILE
+               for name in ("policy_api_endpoint", "docker_container", "sim_controller_plugin"))
+
+
 def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = None) -> list[str]:
     blockers: list[str] = []
     if not _free_beta_run(row):
@@ -111,13 +120,22 @@ def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = No
         blockers.append("agent_execution_canonical_team_mismatch")
     if _mapping(canonical.get("site_package")).get("capture_id") != binding.get("capture_id"):
         blockers.append("agent_execution_canonical_capture_mismatch")
+    team_request = _requests_team_candidate_runtime(canonical)
+    if team_request:
+        # Beta L5: the Quick-10 team-candidate runtime runs only through its own
+        # registry-bound admission and launch path, never the legacy or
+        # one-episode paths; the launch re-checks all of this before spend.
+        from .team_candidate_quick10_launch import team_request_blockers
+        blockers.extend(team_request_blockers(canonical, row))
     if capture_root is not None:
         configured_root = str(capture_root.resolve())
         request_root = str(_mapping(canonical.get("site_package")).get("capture_root") or "")
         if request_root != configured_root or canonical.get("capture_root") != configured_root:
             blockers.append("agent_execution_capture_root_partition_mismatch")
         from .controlled_native_queue import configured_profile, routes_controlled_request
-        if routes_controlled_request(canonical):
+        if team_request:
+            pass  # the operator registry binds the scene's frozen Quick-10 inputs instead of episode specs
+        elif routes_controlled_request(canonical):
             # Native scope is frozen in the operator registry and admitted
             # request. Legacy capture compilation can rewrite episode_specs.
             try:
@@ -261,6 +279,10 @@ class AgentRunWebAppClient:
         quoted_usd = float(row["quoted_usd"])
         if episodes <= 0 or episodes > quoted_episodes or quoted_episodes <= 0:
             raise ValueError("agent_execution_terminal_episode_count_invalid")
+        from .agent_run_result_scoring import unstated_scoring, validate_scoring_statement
+        # Every result states who scored it; the WebApp admits only an allowlisted statement.
+        scoring = (unstated_scoring() if receipt.get("scoring") is None
+                   else validate_scoring_statement(receipt["scoring"], episodes_run=episodes))
         self._json(
             "/api/internal/pipeline/agent-run-results",
             method="POST",
@@ -277,6 +299,7 @@ class AgentRunWebAppClient:
                 "artifact_uri": receipt.get("artifact_uri"),
                 **({"private_execution_result": receipt["private_execution_result"]}
                    if receipt.get("private_execution_result") else {}),
+                "scoring": scoring,
             },
         )
         rate = quoted_usd / quoted_episodes
@@ -350,6 +373,8 @@ def _stage_canonical_request(row: Mapping[str, Any], inbox_dir: Path) -> Path:
         # The native queue owns this request. The legacy JSON inbox consumer
         # must not race it or replay the submitted policy through another path.
         inbox_dir = inbox_dir / "controlled-native"
+    elif _requests_team_candidate_runtime(canonical):
+        inbox_dir = inbox_dir / "team-candidate-quick10"
     required = ("customer", "site_package", "requested_tasks", "robot_profile", "policy_package")
     missing = [field for field in required if not canonical.get(field)]
     if missing:
@@ -373,11 +398,20 @@ def _stage_canonical_request(row: Mapping[str, Any], inbox_dir: Path) -> Path:
 def _default_terminal_reader(
     *, job_dir: Path, expected_job_id: str, expected_canonical_request_digest: str
 ) -> Mapping[str, Any]:
+    from .team_candidate_quick10_closeout import read_team_candidate_terminal
+    team = read_team_candidate_terminal(job_dir=job_dir, expected_job_id=expected_job_id,
+        expected_canonical_request_digest=expected_canonical_request_digest)
+    if team is not None:
+        return team  # a completed team terminal already carries its simulator-scored statement
     from .controlled_native_queue import read_native_terminal
     native = read_native_terminal(job_dir=job_dir, expected_job_id=expected_job_id,
         expected_canonical_request_digest=expected_canonical_request_digest)
     if native is not None:
-        return native
+        if native.get("status") != "completed":
+            return native
+        from .agent_run_result_scoring import controlled_native_scoring
+        return {**native, "scoring": controlled_native_scoring(native)}
+    from .agent_run_result_scoring import legacy_command_batch_scoring
     from .robot_eval_terminal_artifact_adapter import read_terminal_robot_eval_artifacts
 
     observed = read_terminal_robot_eval_artifacts(job_dir)
@@ -411,6 +445,8 @@ def _default_terminal_reader(
         "note": "Observed canonical terminal robot-eval artifacts",
         "artifact_uri": episode.get("metrics_path"),
         "observed_cost_usd": _mapping(observed.get("cost")).get("observed_cost_usd"),
+        # A legacy command batch never ran the team's policy under a job's contract.
+        "scoring": legacy_command_batch_scoring(),
     }
 
 
@@ -454,6 +490,7 @@ def poll_once(
     inbox_dir: Path | None = None,
     journal_dir: Path | None = None,
     terminal_reader: Callable[..., Mapping[str, Any]] = _default_terminal_reader,
+    team_launch_hooks: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if (capture_root is None) == (capture_partition_root is None):
         raise ValueError("agent_execution_capture_scope_required")
@@ -570,6 +607,11 @@ def poll_once(
         "agent_execution_native_profile_missing",
         "agent_execution_native_profile_invalid",
         "agent_execution_native_single_episode_required",
+        "agent_execution_team_candidate_package_invalid",
+        "agent_execution_team_candidate_episode_scope_invalid",
+        "agent_execution_team_candidate_profile_invalid",
+        "agent_execution_team_candidate_profile_missing",
+        "agent_execution_team_candidate_not_offered",
     }
     for row in client.list_runs(limit, capture_id=capture_id):
         summary["examined"] += 1
@@ -663,6 +705,13 @@ def poll_once(
             execute_staged_controlled_request(request=canonical,
                 job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
                 pipeline_run_id=journal.get("pipeline_run_id"))
+        elif _requests_team_candidate_runtime(canonical) and launch_allowed:
+            from .team_candidate_quick10_launch import execute_staged_team_candidate_request
+            journal["state"] = "native_execution_in_progress"
+            _write_json_atomic(journal_path, journal)
+            execute_staged_team_candidate_request(row=row, request=canonical,
+                job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
+                pipeline_run_id=journal.get("pipeline_run_id"), **dict(team_launch_hooks or {}))
         terminal = terminal_reader(
             job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
             expected_job_id=str(journal["canonical_job_id"]),
@@ -674,19 +723,27 @@ def poll_once(
         if status in {"pending", "not_found"}:
             summary["pending"] += 1
             continue
-        if status == "blocked":
-            client.report_blocked(
-                row,
-                str(journal["pipeline_run_id"]),
-                ";".join(str(item) for item in terminal.get("blockers", [])),
-            )
-            journal["state"] = "reported_blocked"
-            summary["blocked"] += 1
-        elif status == "completed":
-            client.report_completed(row, str(journal["pipeline_run_id"]), terminal)
-            journal["state"] = "reported_completed"
-            summary["completed"] += 1
-        else:
+        try:
+            if status == "blocked":
+                client.report_blocked(
+                    row,
+                    str(journal["pipeline_run_id"]),
+                    ";".join(str(item) for item in terminal.get("blockers", [])),
+                )
+                journal["state"] = "reported_blocked"
+                summary["blocked"] += 1
+            elif status == "completed":
+                client.report_completed(row, str(journal["pipeline_run_id"]), terminal)
+                journal["state"] = "reported_completed"
+                summary["completed"] += 1
+            else:
+                summary["pending"] += 1
+                continue
+        except (OSError, ValueError, urllib.error.URLError):
+            # The WebApp refused or could not take the report (an older WebApp
+            # rejects a field it does not know yet, such as `scoring`). The
+            # journal stays where it was, so the report is retried next pass,
+            # and one refused report does not stop this pass serving other runs.
             summary["pending"] += 1
             continue
         _write_json_atomic(journal_path, journal)

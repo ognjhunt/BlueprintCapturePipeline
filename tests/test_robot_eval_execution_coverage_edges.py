@@ -192,19 +192,25 @@ def test_robot_eval_execution_matrix_policy_and_command_edges(
         modality="recorded_action_trace",
         observations=[],
         generated_at="2026-06-01T00:00:00Z",
+        success_source=ree.TEAM_REPORTED,
     )
     assert attempts[0]["observation_id"] == "observation_1"
-    assert ree._normalize_policy_attempts(
+    # A finished team submission without a verdict is not a success.
+    assert attempts[0]["success"] is None
+    reported = ree._normalize_policy_attempts(
         payload=[{"status": "failed", "success": False}],
         modality="teleop_demo",
         observations=[{"observation_id": "obs-1"}],
         generated_at="2026-06-01T00:00:00Z",
-    )[0]["success"] is False
+        success_source=ree.TEAM_REPORTED,
+    )[0]
+    assert reported["success"] is None and reported["reported_success"] is False
     expanded = ree._normalize_policy_attempts(
         payload={},
         modality="high_level_skill_trace",
         observations=[{"observation_id": "obs-1"}, {"observation_id": "obs-2"}],
         generated_at="2026-06-01T00:00:00Z",
+        success_source=ree.TEAM_REPORTED,
     )
     assert [attempt["observation_id"] for attempt in expanded] == ["obs-1"]
     assert expanded[0]["status"] == "submitted_unexecuted"

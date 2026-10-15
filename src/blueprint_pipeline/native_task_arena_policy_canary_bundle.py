@@ -49,6 +49,9 @@ from .task_evaluation_canary_hotfix_overlay import (
     verify_canary_hotfix_overlay,
 )
 
+# The bounded HTTPS boundary the team candidate's client uses (stdlib only).
+CANARY_SHIPPED_PACKAGE_FILES = ("core/__init__.py", "core/security_controls.py")
+
 
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
 
@@ -375,6 +378,9 @@ def build_policy_canary_session_bundle(
             package / "native_policy_canary_diagnostic_continuation.py",
             # Interruption recovery reuses the worker's pure input validators.
             package / "native_task_arena_policy_canary_worker.py",
+            # Beta L5: one admitted team candidate's authenticated HTTPS client.
+            package / "team_candidate_policy_client.py",
+            package / "droid_https_policy_client.py",
         )
     )
     # Refuse to seal a bundle whose shipped package cannot satisfy its own
@@ -387,6 +393,7 @@ def build_policy_canary_session_bundle(
             {path.name for path in runtime_modules}
             | {"native_task_arena_policy_canary_worker.py"}
         ),
+        shipped_package_files=CANARY_SHIPPED_PACKAGE_FILES,
         code="policy_canary_bundle_import_closure_incomplete",
     )
     job = Path(job_dir).expanduser().resolve()
@@ -400,6 +407,7 @@ def build_policy_canary_session_bundle(
         expected_output_filename=PROVIDER_RESULT_FILENAME,
         container_image=NATIVE_TASK_ARENA_IMAGE,
         runtime_source_packet_receipt=runtime_source_packet_receipt,
+        runtime_extra_files={f"blueprint_pipeline/{name}": package / name for name in CANARY_SHIPPED_PACKAGE_FILES},
         bound_runtime_inputs={
             "policy_canary_runtime_inputs.json": runtime_input_manifest_path,
             "policy_canary_session_authority.json": session_authority_path,

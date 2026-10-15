@@ -6,8 +6,18 @@ import sys
 from types import ModuleType, SimpleNamespace
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline import scene_semantics as semantics
 from blueprint_pipeline.scene_semantics import infer_capture_fidelity_review, infer_scene_semantics
+from tests.capture_audio_fakes import VIDEO_ONLY_MARKER, FakeMediaTools
+
+
+@pytest.fixture(autouse=True)
+def media_tools(monkeypatch) -> FakeMediaTools:
+    """Hermetic ffmpeg/ffprobe: uploads are made from video-only copies."""
+
+    return FakeMediaTools().install(monkeypatch)
 
 
 def test_capture_fidelity_review_prefers_raw_video(monkeypatch, tmp_path: Path) -> None:
@@ -848,3 +858,81 @@ def test_assemble_capture_fidelity_review_helper_projection(tmp_path: Path) -> N
     via_orchestrator.pop("generated_at", None)
     out.pop("generated_at", None)
     assert via_orchestrator == out
+
+
+def _fake_gemini_review_client(monkeypatch, uploads: list[tuple[str, bytes]]):
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.files = self
+            self.models = self
+
+        def upload(self, *, file: str):
+            uploads.append((file, Path(file).read_bytes()))
+            return SimpleNamespace(name="files/9", uri="uri://9", state=SimpleNamespace(name="ACTIVE"))
+
+        def delete(self, *, name: str) -> None:
+            return None
+
+        def generate_content(self, *, model: str, contents, config):
+            return SimpleNamespace(text='{"summary":"ok","confidence":0.8,"scores":{"coverage":0.8}}')
+
+    fake_types = SimpleNamespace(
+        FileData=lambda **kwargs: SimpleNamespace(**kwargs),
+        VideoMetadata=lambda **kwargs: SimpleNamespace(**kwargs),
+        Part=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    fake_google = ModuleType("google")
+    fake_google.genai = SimpleNamespace(Client=lambda api_key: FakeClient(), types=fake_types)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+
+
+def test_capture_review_uploads_a_video_only_copy_never_the_raw_file(
+    monkeypatch, tmp_path: Path, media_tools: FakeMediaTools
+) -> None:
+    """Website free-beta privacy minimization: the provider gets no capture audio."""
+
+    raw_video = tmp_path / "capture" / "raw" / "walkthrough.mov"
+    raw_video.parent.mkdir(parents=True)
+    raw_video.write_bytes(b"raw-with-voices")
+    uploads: list[tuple[str, bytes]] = []
+    _fake_gemini_review_client(monkeypatch, uploads)
+
+    review = infer_capture_fidelity_review(
+        capture_root=tmp_path / "capture",
+        raw_video_path=raw_video,
+        keyframe_path=None,
+        descriptor={"capture_modality": "iphone_arkit_lidar"},
+        qa_report={},
+    )
+
+    [(uploaded_path, uploaded_bytes)] = uploads
+    assert uploaded_path != str(raw_video)
+    assert uploaded_bytes == VIDEO_ONLY_MARKER + b"raw-with-voices"
+    assert "-an" in media_tools.ffmpeg_commands()[0]
+    assert raw_video.read_bytes() == b"raw-with-voices"
+    receipt = review["provenance"]["video_upload_audio_removal"]
+    assert receipt["audio_removed"] is True
+    assert receipt["evidence"] == "ffprobe_output_has_no_audio_stream"
+
+
+@pytest.mark.parametrize(
+    "tools", [lambda: FakeMediaTools(ffmpeg=False), lambda: FakeMediaTools(output_audio_streams=1)]
+)
+def test_capture_review_uploads_nothing_without_a_video_only_copy(monkeypatch, tmp_path: Path, tools) -> None:
+    tools().install(monkeypatch)
+    raw_video = tmp_path / "walkthrough.mov"
+    raw_video.write_bytes(b"raw-with-voices")
+    uploads: list[tuple[str, bytes]] = []
+    _fake_gemini_review_client(monkeypatch, uploads)
+
+    review = infer_capture_fidelity_review(
+        capture_root=tmp_path,
+        raw_video_path=raw_video,
+        keyframe_path=None,
+        descriptor={},
+        qa_report={},
+    )
+
+    assert uploads == []
+    assert review["status"] == "failed"

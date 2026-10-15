@@ -42,6 +42,13 @@ SCHEMA_VERSION = "native_task_arena_policy_canary_session.v1"
 AUTHORITY_SCHEMA_VERSION = "native_task_arena_policy_canary_session_authority.v1"
 RESULT_SCHEMA_VERSION = "native_task_arena_policy_canary_session_result.v1"
 RUN_KIND = "internal_policy_canary"
+# Beta L5: the same warm Quick-10 runtime running ONE admitted team candidate
+# in place of the frozen pair. Its admission binding travels in the inputs.
+TEAM_RUN_KIND = "team_candidate_evaluation"
+RUN_KINDS = (RUN_KIND, TEAM_RUN_KIND)
+EXECUTION_MODES = {RUN_KIND: "internal_policy_canary_paired_session",
+                   TEAM_RUN_KIND: "team_candidate_evaluation_session"}
+TEAM_ADMISSION_SCHEMA_VERSION = "blueprint.team_candidate_quick10_admission.v1"
 CLAIM_CEILING = "diagnostic_policy_execution"
 CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 EPISODES_PER_POLICY = 10
@@ -108,6 +115,34 @@ def _candidate_pair(value: Any) -> tuple[str, str]:
     if len(set(pair)) != 2 or any(_REGISTRY_ID.fullmatch(item) is None for item in pair):
         raise PolicyCanarySessionError("policy_canary_candidate_pair_invalid")
     return pair  # type: ignore[return-value]
+
+
+def _candidate_set(value: Any, run_kind: Any) -> tuple[str, ...]:
+    """The frozen pair for the internal canary; exactly one non-frozen team candidate otherwise."""
+    if run_kind != TEAM_RUN_KIND:
+        return _candidate_pair(value)
+    if (not isinstance(value, (list, tuple)) or len(value) != 1
+            or _REGISTRY_ID.fullmatch(str(value[0] or "")) is None or value[0] in CANDIDATE_IDS):
+        raise PolicyCanarySessionError("policy_canary_team_candidate_invalid")
+    return (str(value[0]),)
+
+
+def _team_admission_binding(payload: Mapping[str, Any]) -> None:
+    binding = payload.get("team_candidate_admission")
+    if payload.get("run_kind") != TEAM_RUN_KIND:
+        if binding is not None:
+            raise PolicyCanarySessionError("policy_canary_team_admission_unexpected")
+        return
+    row = _mapping(binding)
+    if (set(row) != {"schema_version", "admission_digest", "candidate_id", "robot_free_probe_receipt_digest",
+                     "scene_revision_digest", "task_success_contract_digest"}
+            or row.get("schema_version") != TEAM_ADMISSION_SCHEMA_VERSION
+            or not all(_digest(row.get(key)) for key in (
+                "admission_digest", "robot_free_probe_receipt_digest", "scene_revision_digest"))
+            or [row.get("candidate_id")] != list(payload.get("candidate_ids") or [])
+            or row.get("scene_revision_digest") != payload.get("scene_revision_digest")
+            or row.get("task_success_contract_digest") != payload.get("task_success_contract_digest")):
+        raise PolicyCanarySessionError("policy_canary_team_admission_binding_invalid")
 
 
 def _record(value: Any, *, code: str) -> dict[str, Any]:
@@ -211,16 +246,18 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         "capture_contract",
         "runtime_inputs_digest",
         "diagnostic_continuation_protocol",
+        "team_candidate_admission",
     }
     if (
         not set(payload).issubset(allowed_fields)
         or payload.get("schema_version")
         != "task_evaluation_policy_canary_runtime_inputs.v1"
-        or payload.get("run_kind") != RUN_KIND
+        or payload.get("run_kind") not in RUN_KINDS
         or payload.get("claim_ceiling") != CLAIM_CEILING
     ):
         raise PolicyCanarySessionError("policy_canary_runtime_input_identity_invalid")
-    _candidate_pair(payload.get("candidate_ids"))
+    _candidate_set(payload.get("candidate_ids"), payload.get("run_kind"))
+    _team_admission_binding(payload)
     for field in ("activation_digest", "configuration_digest", "plan_digest"):
         if not _digest(payload.get(field)):
             raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
@@ -309,10 +346,10 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
-    candidate_ids = _candidate_pair(payload.get("candidate_ids"))
+    candidate_ids = _candidate_set(payload.get("candidate_ids"), payload.get("run_kind"))
     if (
         payload.get("schema_version") != AUTHORITY_SCHEMA_VERSION
-        or payload.get("run_kind") != RUN_KIND
+        or payload.get("run_kind") not in RUN_KINDS
         or payload.get("claim_ceiling") != CLAIM_CEILING
         or payload.get("episodes_per_policy") != EPISODES_PER_POLICY
         or payload.get("learned_policy_rollout_count")
@@ -397,8 +434,8 @@ def validate_provider_bundle(
     if (
         payload.get("schema_version") != PROVIDER_BUNDLE_SCHEMA_VERSION
         or payload.get("status") != "ready"
-        or payload.get("execution_mode") != "internal_policy_canary_paired_session"
-        or payload.get("run_kind") != RUN_KIND
+        or payload.get("execution_mode") != EXECUTION_MODES[bound_authority["run_kind"]]
+        or payload.get("run_kind") != bound_authority["run_kind"]
         or payload.get("claim_ceiling") != CLAIM_CEILING
         or tuple(payload.get("candidate_ids") or ())
         != tuple(bound_authority["candidate_ids"])
@@ -440,10 +477,10 @@ def build_session_authority(
     execution_release: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     inputs = validate_runtime_input_manifest(runtime_inputs)
-    candidate_ids = _candidate_pair(inputs["candidate_ids"])
+    candidate_ids = _candidate_set(inputs["candidate_ids"], inputs["run_kind"])
     activation = json.loads(json.dumps(activation_manifest, allow_nan=False))
     if (
-        activation.get("run_kind") != RUN_KIND
+        activation.get("run_kind") != inputs["run_kind"]
         or activation.get("claim_ceiling") != CLAIM_CEILING
         or activation.get("activation_digest") != inputs["activation_digest"]
         or tuple(activation.get("candidate_ids") or ()) != candidate_ids
@@ -458,12 +495,12 @@ def build_session_authority(
         raise PolicyCanarySessionError("policy_canary_activation_manifest_invalid")
     payload: dict[str, Any] = {
         "schema_version": AUTHORITY_SCHEMA_VERSION,
-        "run_kind": RUN_KIND,
+        "run_kind": inputs["run_kind"],
         "claim_ceiling": CLAIM_CEILING,
         "run_id": activation.get("run_id"),
         "candidate_ids": list(candidate_ids),
         "episodes_per_policy": EPISODES_PER_POLICY,
-        "learned_policy_rollout_count": LEARNED_ROLLOUT_COUNT,
+        "learned_policy_rollout_count": EPISODES_PER_POLICY * len(candidate_ids),
         "activation_manifest": _record(
             activation_record, code="policy_canary_session_activation_manifest_invalid"
         ),
@@ -591,7 +628,7 @@ def validate_session_result(
     allow_legacy_missing_task_success_contract: bool = False,
 ) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
-    candidate_ids = _candidate_pair(payload.get("candidate_ids"))
+    candidate_ids = _candidate_set(payload.get("candidate_ids"), payload.get("run_kind"))
     from .native_policy_canary_control_gate import controls_required, strict_result_controls_valid
     strict_partial = (controls_required(payload.get("task_success_contract") or {})
                       and payload.get("status") == "blocked" and bool(payload.get("strict_gate_blockers")))
@@ -599,7 +636,7 @@ def validate_session_result(
     closeout = _mapping(payload.get("session_closeout"))
     if (
         payload.get("schema_version") != RESULT_SCHEMA_VERSION
-        or payload.get("run_kind") != RUN_KIND
+        or payload.get("run_kind") not in RUN_KINDS
         or payload.get("claim_ceiling") != CLAIM_CEILING
         or payload.get("episodes_per_policy") != EPISODES_PER_POLICY
         or payload.get("learned_policy_rollout_count")
@@ -662,7 +699,7 @@ def validate_session_result(
             or key in observed
             or isinstance(seed, bool)
             or not isinstance(seed, int)
-            or row.get("run_kind") != RUN_KIND
+            or row.get("run_kind") != payload["run_kind"]
             or row.get("claim_ceiling") != CLAIM_CEILING
             or row.get("ranking_eligible") is not False
             or not _episode_evidence_valid(row)
@@ -686,8 +723,8 @@ def validate_session_result(
         by_candidate[candidate].append((cell_id, seed))
     if (
         (len(observed) != payload["learned_policy_rollout_count"] and not strict_partial)
-        or sorted(by_candidate[candidate_ids[0]])
-        != sorted(by_candidate[candidate_ids[1]])
+        or any(sorted(by_candidate[candidate]) != sorted(by_candidate[candidate_ids[0]])
+               for candidate in candidate_ids)
     ):
         raise PolicyCanarySessionError("policy_canary_session_pairing_invalid")
     completed = not strict_partial and all(row.get("status") == "completed" for row in episodes)
@@ -728,7 +765,7 @@ def execute_paired_session(
 
     bound_authority = validate_session_authority(authority)
     inputs = validate_runtime_input_manifest(runtime_inputs)
-    candidate_ids = _candidate_pair(inputs["candidate_ids"])
+    candidate_ids = _candidate_set(inputs["candidate_ids"], inputs["run_kind"])
     if bound_authority["runtime_inputs_digest"] != inputs["runtime_inputs_digest"]:
         raise PolicyCanarySessionError("policy_canary_session_runtime_binding_mismatch")
     if tuple(bound_authority["candidate_ids"]) != candidate_ids:
@@ -783,7 +820,7 @@ def execute_paired_session(
                     context = {
                         **cell,
                         "candidate_id": candidate_id,
-                        "run_kind": RUN_KIND,
+                        "run_kind": inputs["run_kind"],
                         "claim_ceiling": CLAIM_CEILING,
                         "policy_outcome_interpretable": False,
                         "ranking_eligible": False,
@@ -886,7 +923,7 @@ def execute_paired_session(
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "blocked",
-        "run_kind": RUN_KIND,
+        "run_kind": inputs["run_kind"],
         "claim_ceiling": CLAIM_CEILING,
         "candidate_ids": list(candidate_ids),
         "task_success_contract": inputs["task_success_contract"],
@@ -957,6 +994,7 @@ __all__ = [
     "CANDIDATE_IDS",
     "CANONICAL_ALLOCATOR",
     "CLAIM_CEILING",
+    "EXECUTION_MODES",
     "PolicyCanaryEpisodeFailure",
     "PolicyCanarySessionError",
     "PROBE_KIND",
@@ -964,7 +1002,10 @@ __all__ = [
     "PROVIDER_RESULT_FILENAME",
     "RESULT_SCHEMA_VERSION",
     "RUN_KIND",
+    "RUN_KINDS",
     "SCHEMA_VERSION",
+    "TEAM_ADMISSION_SCHEMA_VERSION",
+    "TEAM_RUN_KIND",
     "build_session_authority",
     "consume_session_authority_once",
     "execute_paired_session",

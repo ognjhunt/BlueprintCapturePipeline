@@ -44,8 +44,11 @@ CANARY_SHIPPED_MODULES = sorted(
         "policy_canary_interrupted_cell_recovery.py",
         "native_policy_canary_diagnostic_continuation.py",
         "native_task_arena_policy_canary_worker.py",
+        "team_candidate_policy_client.py",
+        "droid_https_policy_client.py",
     }
 )
+CANARY_PACKAGE_FILES = bundle.CANARY_SHIPPED_PACKAGE_FILES
 
 
 def test_episode_interpretation_remains_control_plane_only() -> None:
@@ -55,6 +58,7 @@ def test_episode_interpretation_remains_control_plane_only() -> None:
         provider_runtime_import_closure_blockers(
             package_source_dir=REPO_PACKAGE,
             shipped_module_names=CANARY_SHIPPED_MODULES,
+            shipped_package_files=CANARY_PACKAGE_FILES,
         )
         == []
     )
@@ -102,7 +106,8 @@ def _spec(candidate: str) -> dict[str, object]:
     return value
 
 
-def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
+def _real_canary_pair_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """The frozen pair's sealed Quick-10 inputs: packet, runtime source, inputs and activation paths."""
     public = public_setup()
     packet = _packet(tmp_path, scene_id="839873")
     from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _scene_plan
@@ -200,6 +205,13 @@ def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
         inputs, digest_field="runtime_inputs_digest"
     )
     inputs_path = _write(tmp_path / "runtime_inputs.json", inputs)
+    return packet, runtime_receipt, inputs_path, activation_path
+
+
+def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
+    packet, runtime_receipt, inputs_path, activation_path = _real_canary_pair_inputs(tmp_path)
+    inputs = json.loads(inputs_path.read_text())
+    activation = json.loads(activation_path.read_text())
     authority = build_session_authority(
         activation_manifest=activation,
         activation_record=_record(activation_path),
@@ -231,7 +243,8 @@ def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
 def test_canary_shipped_package_is_statically_import_closed() -> None:
     assert (
         provider_runtime_import_closure_blockers(
-            package_source_dir=REPO_PACKAGE, shipped_module_names=CANARY_SHIPPED_MODULES
+            package_source_dir=REPO_PACKAGE, shipped_module_names=CANARY_SHIPPED_MODULES,
+            shipped_package_files=CANARY_PACKAGE_FILES,
         )
         == []
     )
@@ -339,10 +352,13 @@ def test_real_canary_bundle_passes_vast_preflight_and_imports_in_isolation(
     assert "policy_canary_interrupted_cell_recovery.py" in shipped
     assert "native_policy_canary_diagnostic_continuation.py" in shipped
     assert "native_task_arena_policy_canary_worker.py" in shipped
+    assert {"team_candidate_policy_client.py", "droid_https_policy_client.py"} <= set(shipped)
+    assert all((package / name).is_file() for name in CANARY_PACKAGE_FILES)
     assert (runtime / "adp009d_groot_worker_identity.py").is_file()
     assert (
         provider_runtime_import_closure_blockers(
-            package_source_dir=package, shipped_module_names=shipped
+            package_source_dir=package, shipped_module_names=shipped,
+            shipped_package_files=CANARY_PACKAGE_FILES,
         )
         == []
     )

@@ -48,12 +48,20 @@ def reconcile_preparation_completion(*, intent, config):
                 and receipt['launch_profile_digest'] == profile['profile_digest']
                 and receipt['terminal_evidence']['scene_configuration'] == projection,
                 'preparation_completion_publication_mismatch')
+            # Beta L5: the team-evaluation gate reads the robot-free readiness
+            # receipt beside this launch; retain it here instead of by hand. A
+            # transient failure raises and this completion is retried.
+            from . import robot_free_readiness_retention as retention
+            readiness = retention.retain_robot_free_readiness(
+                run_root=run, revision_reference=result['configured_scene_revision_reference'],
+                revision_digest=result['configured_scene_revision_digest'])
             return {'status': 'completed', 'phase': 'scene_prepared', 'blockers': [],
                 'result_reference': result['configured_scene_revision_reference'],
                 'state': {'scene_preparation_completion': {
                     'launch_receipt': record(receipt_path),
                     'provider_zero': record(run / 'post_teardown_provider_zero_receipt.json'),
                     'website_readback': record(run / 'webapp_sync_succeeded.json'),
+                    'robot_free_readiness': readiness,
                     'robot_evaluation_performed': False}}}
         except (ValueError, OSError, KeyError, TypeError, RuntimeError) as exc:
             return {'status': 'awaiting_execution', 'phase': 'scene_publication',

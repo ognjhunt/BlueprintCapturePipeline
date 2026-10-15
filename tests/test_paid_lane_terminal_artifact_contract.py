@@ -68,6 +68,8 @@ PAID_LANE_MODULES = (
     "semantic_teacher_image_edit_vast.py",
     "simpler_public_vast.py",
     "task_evaluation_scene_configuration_vast.py",
+    # Beta L5: one team candidate's Quick-10 session, through the shared Arena transport.
+    "team_candidate_quick10_vast.py",
 )
 
 #: Lanes whose result is sealed by the allocator wrapper that writes it to the

@@ -20,6 +20,13 @@ nothing, so no self-serve run can be bought against it.
 
 Publishing is best-effort and never fails the simulation lane: a missing offer
 fails closed on the WebApp side (the plan stays unpayable).
+
+Beta L5: when the operator's team-candidate registry has a profile for the
+capture, the offer instead lists ``policy_canary_quick10_team_candidate_v1``
+with ten episodes, but only while :func:`team_candidate_quick10_registry.
+offer_eligibility` holds (passed robot-free probe at the inputs' current
+revision, DROID Franka Quick-10 cells). Otherwise the ordinary offer is
+published, so a team-candidate listing never outlives its eligibility.
 """
 
 from __future__ import annotations
@@ -94,6 +101,30 @@ def build_agent_execution_offer(capture_root: Path, *, policy_execution_profiles
     }, None
 
 
+def build_team_candidate_offer(capture_root: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """The Quick-10 team-candidate offer, or ``(None, reason)`` when it may not be listed."""
+    from .team_candidate_quick10_registry import EPISODES, PROFILE, offer_eligibility, profile_for_capture
+
+    root = Path(capture_root).resolve()
+    descriptor = _read_object(root / "capture_descriptor.json") or {}
+    scene_id = str(descriptor.get("scene_id") or "").strip()
+    capture_id = str(descriptor.get("capture_id") or "").strip()
+    if not scene_id or not capture_id or root.name != capture_id or root.parent.parent.name != scene_id:
+        return None, "capture_root_identity_mismatch"
+    try:
+        profile = profile_for_capture(root)
+    except (OSError, ValueError) as exc:
+        return None, str(exc) or "team_candidate_registry_invalid"
+    facts, blockers = offer_eligibility(profile)
+    if facts is None:
+        return None, blockers[0]
+    return {
+        "schema_version": OFFER_SCHEMA_VERSION, "scene_id": scene_id, "capture_id": capture_id,
+        "capture_root": str(root), "scenario_id": str(profile["scenario_id"]), "episode_count": EPISODES,
+        "episode_specs_sha256": facts["episode_specs_sha256"], "policy_execution_profiles": [PROFILE],
+    }, None
+
+
 def publish_agent_execution_offer(capture_root: Path, *, transport=None,
                                   policy_execution_profiles: tuple[str, ...] = ()) -> dict[str, Any]:
     """Post the offer for a website capture. Never raises; records the outcome."""
@@ -104,7 +135,13 @@ def publish_agent_execution_offer(capture_root: Path, *, transport=None,
     if not is_website_entry_source(metadata.get("capture_entry_source")) or not request_id:
         result: dict[str, Any] = {"status": "skipped", "reason": "not_a_website_capture"}
     else:
-        offer, reason = build_agent_execution_offer(root, policy_execution_profiles=policy_execution_profiles)
+        try:
+            offer, team_refusal = build_team_candidate_offer(root)
+        except Exception as exc:  # noqa: BLE001 - publishing must not fail the lane
+            offer, team_refusal = None, "team_candidate_offer_unavailable:" + type(exc).__name__
+        reason = None
+        if offer is None:
+            offer, reason = build_agent_execution_offer(root, policy_execution_profiles=policy_execution_profiles)
         if offer is None:
             result = {"status": "skipped", "reason": reason}
         else:
@@ -119,9 +156,27 @@ def publish_agent_execution_offer(capture_root: Path, *, transport=None,
                 result = {"status": "published", "offer": offer}
             except Exception as exc:  # noqa: BLE001 - publishing must not fail the lane
                 result = {"status": "failed", "reason": str(exc)[:500], "offer": offer}
+        if team_refusal is not None and team_refusal != "team_candidate_profile_missing":
+            result["team_candidate_offer_refused"] = team_refusal
     try:
         (root / PUBLICATION_RELATIVE).parent.mkdir(parents=True, exist_ok=True)
         (root / PUBLICATION_RELATIVE).write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
     except OSError:
         pass
     return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Republish a capture's offer, e.g. after its robot-free probe or Quick-10 inputs land."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("--capture-root", required=True, type=Path)
+    args = parser.parse_args(argv)
+    result = publish_agent_execution_offer(args.capture_root)
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result.get("status") == "published" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

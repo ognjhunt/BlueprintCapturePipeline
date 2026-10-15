@@ -34,8 +34,7 @@ from blueprint_pipeline.appearance_render_backend import (
     build_appearance_render_backend,
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
-    PolicyCanaryEpisodeFailure,
-    PROVIDER_RESULT_FILENAME,
+    EXECUTION_MODES, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME,
     execute_paired_session,
     validate_runtime_input_manifest,
     validate_session_authority,
@@ -525,7 +524,7 @@ def preflight_policy_canary_runtime_directory(runtime_root: Path) -> dict[str, A
         packet_request=read("native_task_packet/native_task_arena_packet_request.v1.json"),
         construction=read("runtime_inputs/native_task_arena_construction_result.v1.json"),
         specs={candidate: read(f"runtime_inputs/policy_execution_spec.{candidate}.json")
-               for candidate in ("pi05_droid", "groot_n17_droid")},
+               for candidate in inputs.get("candidate_ids") or ()},
         observation_integrity_authority=read(str(observation_path.relative_to(runtime_root))) if observation_path.is_file() else None,
     )
     try:
@@ -668,10 +667,10 @@ def isaac_cell_runtime() -> CellRuntime:
         read_native_task_arena_device_binding,
     )
     from blueprint_pipeline.native_task_arena_policy_worker import (
-        _policy_client,
         _runtime_groot_worker_identity,
         _to_tensor,
     )
+    from blueprint_pipeline.team_candidate_policy_client import canary_policy_client
     from blueprint_pipeline.native_task_arena_preconstruction import (
         prepare_native_task_arena_preconstruction,
     )
@@ -928,7 +927,7 @@ def isaac_cell_runtime() -> CellRuntime:
         make_task_readback=NativeArticulatedTaskArenaReadback,
         build_episode_environment=build_native_task_episode_environment,
         to_tensor=_to_tensor,
-        policy_client=_policy_client,
+        policy_client=canary_policy_client,
         groot_worker_identity=_runtime_groot_worker_identity,
         run_policy_episode=run_policy_episode,
         prepolicy_camera_gate=prepolicy_camera_gate,
@@ -1020,8 +1019,8 @@ def _validate_provider_manifest(
         manifest.get("schema_version")
         != "native_task_arena_policy_canary_provider_bundle.v1"
         or manifest.get("execution_mode")
-        != "internal_policy_canary_paired_session"
-        or manifest.get("run_kind") != "internal_policy_canary"
+        != EXECUTION_MODES.get(str(runtime_inputs.get("run_kind")))
+        or manifest.get("run_kind") != runtime_inputs.get("run_kind")
         or manifest.get("claim_ceiling") != "diagnostic_policy_execution"
         or manifest.get("runtime_inputs_digest")
         != runtime_inputs.get("runtime_inputs_digest")
@@ -1347,7 +1346,7 @@ def _aggregate_isolated_cell_results(
     result: dict[str, Any] = {
         "schema_version": "native_task_arena_policy_canary_session_result.v1",
         "status": "runtime_completed_unqualified_pending_closeout",
-        "run_kind": "internal_policy_canary",
+        "run_kind": inputs.get("run_kind") or "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": list(candidate_ids),
         "task_success_contract": inputs["task_success_contract"],
@@ -1386,7 +1385,7 @@ def _aggregate_isolated_cell_results(
     from blueprint_pipeline.policy_paired_summary import paired_summary
     result["frozen_cells"] = [{key: cell[key] for key in ("cell_id", "seed", "family", "partition", "cell_spec_digest", "resolved_scenario_digest") if key in cell} for cell in inputs["cells"]]
     result["paired_diagnostic_summary"] = paired_summary(result["episodes"], candidate_ids=candidate_ids,
-        planned_cells=result["frozen_cells"])
+        planned_cells=result["frozen_cells"]) if len(candidate_ids) == 2 else None  # one team candidate: no pair
     if authority.get("execution_release") is not None:
         result["execution_release"] = authority["execution_release"]
     result["artifact_inventory"] = telemetry_artifacts
@@ -1519,7 +1518,7 @@ def _run_isolated_cell_processes(
             )
             result = {
                 "schema_version": "native_task_arena_policy_canary_session_result.v1",
-                "status": "blocked", "run_kind": "internal_policy_canary",
+                "status": "blocked", "run_kind": inputs.get("run_kind") or "internal_policy_canary",
                 "claim_ceiling": "diagnostic_policy_execution",
                 "task_success_contract": inputs["task_success_contract"],
                 "task_success_contract_digest": inputs["task_success_contract_digest"],
@@ -1726,9 +1725,8 @@ def _run_selected_cell(
     ) -> dict[str, Any]:
         started_ns = time.time_ns()
         from blueprint_pipeline.adp009d_droid_action_execution import GripperConvention
-        from blueprint_pipeline.native_task_arena_policy_worker import (
-            _PolicyQueryTracker,
-        )
+        from blueprint_pipeline.native_task_arena_policy_worker import _PolicyQueryTracker
+        from blueprint_pipeline.policy_interface_binding import observation_interface
 
         scene_plan = _resolved_scene_plan(base_scene_plan, context)
         dependencies = bound_runtime.preflight_dependency_matrix(
@@ -1842,6 +1840,7 @@ def _run_selected_cell(
                 environment=episode_environment,
                 policy=tracker,
                 candidate_id=str(context["candidate_id"]),
+                interface_candidate_id=observation_interface(spec),
                 prompt=str(spec["prompt"]),
                 task_spec=scene_plan["task_spec"],
                 max_policy_queries=int(spec["max_policy_queries"]),

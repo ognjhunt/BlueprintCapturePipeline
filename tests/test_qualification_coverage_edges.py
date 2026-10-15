@@ -10,6 +10,7 @@ from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.common import StageError, PipelineError
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 import blueprint_pipeline.site_package_orchestrator as q
+from tests.capture_audio_fakes import FakeMediaTools
 
 
 def _confirmed_website_task(**identity):
@@ -604,6 +605,65 @@ def test_worldlabs_input_video_preparation_edges(
             pipeline_dir=pipeline_dir,
             bucket="bucket",
         )
+
+
+def test_worldlabs_input_is_a_video_only_encode_with_a_truthful_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Website free-beta privacy minimization: the World Labs input carries no capture audio."""
+    storage_root = tmp_path / "bucket"
+    pipeline_dir = storage_root / "pipeline"
+    pipeline_dir.mkdir(parents=True)
+    source = tmp_path / "final_walkthrough.mov"
+    source.write_bytes(b"walkthrough")
+    privacy_uri = "gs://bucket/captures/scene-1/capture-1/privacy/final_walkthrough.mov"
+    privacy_processing = {
+        "status": "person_removed",
+        "privacy_processed_video_uri": privacy_uri,
+        "privacy_manifest_uri": "gs://bucket/privacy/manifest.json",
+    }
+    commands: list[list[str]] = []
+
+    def transcode(command, **_kwargs):
+        commands.append([str(item) for item in command])
+        Path(command[-1]).write_bytes(b"encoded")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(q, "production_launch_mode", lambda: False)
+    monkeypatch.setattr(q, "_resolve_optional_uri_to_path", lambda *_args, **_kwargs: source)
+    monkeypatch.setattr(q.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(q.subprocess, "run", transcode)
+    monkeypatch.setattr(q, "_ffprobe_video_metrics", lambda path: {"duration_seconds": 20.0, "size_bytes": 9})
+    FakeMediaTools().install(monkeypatch)
+
+    ready = q._prepare_worldlabs_input_video(
+        descriptor=_descriptor(privacy_processed_video_uri=privacy_uri),
+        privacy_processing=privacy_processing,
+        storage_root=storage_root,
+        pipeline_dir=pipeline_dir,
+        bucket="bucket",
+    )
+
+    [command] = commands
+    assert "-an" in command
+    assert command[command.index("-map") + 1] == "0:v:0"
+    assert not {"-c:a", "-b:a"} & set(command)
+    assert ready["payload"]["audio_removed"] is True
+    assert ready["audit_payload"]["audio_removed"] is True
+    assert ready["audit_payload"]["audio_removal"]["evidence"] == "ffprobe_output_has_no_audio_stream"
+    assert all("audio_bitrate" not in attempt for attempt in ready["payload"]["selection_policy"]["attempts"])
+
+    FakeMediaTools(output_audio_streams=1).install(monkeypatch)
+    with pytest.raises(StageError, match="worldlabs_input_audio_removal_failed:audio_stream_present_after_encode"):
+        q._prepare_worldlabs_input_video(
+            descriptor=_descriptor(privacy_processed_video_uri=privacy_uri),
+            privacy_processing=privacy_processing,
+            storage_root=storage_root,
+            pipeline_dir=pipeline_dir,
+            bucket="bucket",
+        )
+    assert not (pipeline_dir / "worldlabs_input" / "worldlabs_input.mp4").exists()
 
 
 def test_scene_graph_route_readiness_and_llm_payload_edges() -> None:

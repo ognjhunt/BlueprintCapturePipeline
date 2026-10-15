@@ -1,0 +1,426 @@
+"""Hermetic launch rehearsal: one team-candidate Quick-10 request, executor claim to scoring statement.
+
+Beta journey step: L5 team policy evaluation. A free-beta request for the
+team-candidate Quick-10 runtime is driven by the real agent-run executor
+(``poll_once``) through the real WebApp client methods, the real operator
+registry and eligibility rule, the real admission, staging, bundle builder and
+static preflight, the real canonical allocator (``paid_resource_allocator
+gpu-canary``), lane and team transport, the real closeout and terminal, and the
+real ``report_completed``.
+
+Faked, and only these: the WebApp's HTTP replies, the credential broker's
+reply (``CheckpointPolicyCredentialClient.access``), the team's HTTPS service,
+provider-zero inventory, the launch environment's watchdog and spend-lock
+probes, and the Vast transport plus GPU host (``run_arena_native_control_vast``).
+That last fake reads the token only through the real runtime-secret reader,
+verifies the sealed bundle with the real worker's static preflight, and has the
+real team client complete its identity handshake with that token. The ten
+episode records it returns stand in for the GPU worker, whose real ten-episode
+team run is pinned in ``tests/test_team_candidate_quick10_rehearsal.py``.
+
+The rehearsal scene is rigid. Its sealed probe receipt is read through the
+gate's retention API; until the rigid probe lands on this branch, the gate's
+task-kind set is widened for this scene only and every other check runs (the
+receipt takes the rigid schema and checks once the gate has them). No GPU,
+provider, network or spend.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import zipfile
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import blueprint_pipeline.droid_https_policy_client as https_client
+from blueprint_pipeline import agent_run_executor as executor
+from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import policy_canary_allocator_lane as lane
+from blueprint_pipeline import robot_free_probe_gate as probe_gate
+from blueprint_pipeline import team_candidate_quick10_vast as team_vast
+from blueprint_pipeline import vast_provider_adapter
+from blueprint_pipeline.agent_execution_offer import publish_agent_execution_offer
+from blueprint_pipeline.agent_run_result_scoring import validate_scoring_statement
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_task_arena_policy_canary_worker import preflight_policy_canary_runtime_directory
+from blueprint_pipeline.team_candidate_policy_client import canary_policy_client
+from blueprint_pipeline.team_candidate_quick10_closeout import read_team_candidate_terminal
+from blueprint_pipeline.team_candidate_quick10_admission import RIGHTS_SCHEMA
+from blueprint_pipeline.team_candidate_quick10_launch import CREDENTIAL_ENV, TERMINAL_FILENAME
+from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, REGISTRY_SCHEMA
+from tests.test_agent_run_executor import _row
+from tests.test_provider_runtime_import_closure import _real_canary_pair_inputs
+
+TOKEN = "team-bearer-0123456789abcdef0123456789"
+ORIGIN = "https://policy.acme-robotics.example"
+ENDPOINT = ORIGIN + "/v1/act"
+CREDENTIAL_REF = "policy-credential-1b4e28ba-2fa1-11d2-883f-0016d3cca427"
+TEAM, CHECKPOINT, CANDIDATE = "acme", "pi05-ft-7", "team-acme.pi05-ft-7"
+MODEL_DIGEST = "sha256:" + "7" * 64
+SUCCEEDED = [True] * 7 + [False] * 3
+ZERO = {"schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1", "status": "provider_zero_confirmed",
+        "provider": "vast", "api_confirmed": True, "live_instance_count": 0, "provider_zero_verified": True,
+        "blockers": []}
+
+
+def _sealed(value: dict[str, Any], field: str) -> dict[str, Any]:
+    value[field] = canonical_digest(value, digest_field=field)
+    return value
+
+
+def _metadata() -> dict[str, Any]:
+    return {"schema_version": https_client.METADATA_SCHEMA, "policy_id": "acme-pi05-ft-7",
+            "policy_interface_id": "openpi_droid_https.v1", "action_space": "joint_position",
+            "action_chunk_rows": 10, "model_identity_digest": MODEL_DIGEST}
+
+
+class _TeamService:
+    """The team's HTTPS service: answers only its own origin, only with the bearer token."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def transport(self, *, url: str, method: str, body: Any, headers: dict[str, str]) -> bytes:
+        assert headers["Authorization"] == "Bearer " + TOKEN and url == ENDPOINT and method == "GET"
+        self.calls.append(("launch_metadata", method))
+        return json.dumps(_metadata()).encode()
+
+    def __call__(self, url: str, **kwargs: Any) -> Any:
+        assert kwargs["allowed_origins"] == (ORIGIN,) and kwargs["max_redirects"] == 0
+        assert kwargs["headers"]["Authorization"] == "Bearer " + TOKEN and url == ENDPOINT
+        self.calls.append(("provider_" + kwargs["method"].lower(), kwargs["method"]))
+
+        class Response:
+            body = json.dumps(_metadata()).encode()
+        return Response()
+
+
+class _WebApp(executor.AgentRunWebAppClient):
+    """The real client's methods over a fake WebApp: claim, run state, results and settlements."""
+
+    def __init__(self, row: dict[str, Any]) -> None:
+        self.row, self.owner, self.posted, self.blocked = row, None, [], []
+
+    def _json(self, path: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if path.startswith("/api/internal/pipeline/agent-runs?"):
+            return {"runs": [self.row] if self.owner is None else []}
+        if path.endswith("/started"):
+            self.owner = payload["pipeline_run_id"]
+            return {"pipeline_run_id": self.owner}
+        if path.startswith("/api/internal/pipeline/agent-runs/"):
+            return {"state": "requested", "money_resolved": False, "cancellation_requested": False,
+                    "dispatch": {"pipeline_run_id": self.owner},
+                    "execution_admission_digest": self.row["execution_admission_digest"]}
+        self.posted.append((path, payload))
+        if payload.get("blocked_before_any_episode"):
+            self.blocked.append(payload["reason"])
+        return {"ok": True}
+
+
+class _Broker:
+    """``CheckpointPolicyCredentialClient``'s job-bound bearer access, as the WebApp answers it."""
+
+    accessed: list[str] = []
+
+    def __init__(self, *, request: dict[str, Any], payload: dict[str, Any], pipeline_run_id: str) -> None:
+        assert payload["credential_ref"] == CREDENTIAL_REF and pipeline_run_id.startswith("agent-attempt-")
+        self.request = request
+
+    def access(self) -> dict[str, Any]:
+        _Broker.accessed.append(self.request["job_id"])
+        return {"ok": True, "credential_ref": CREDENTIAL_REF, "kind": "bearer",
+                "credential": {"job_id": self.request["job_id"], "endpoint_url": ENDPOINT, "bearer_token": TOKEN}}
+
+
+def _provider_session_result(runtime: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    """Stand in for the GPU worker's ten simulator-scored episode records (shape of the real worker's)."""
+
+    inputs = json.loads((runtime / "runtime_inputs" / "policy_canary_runtime_inputs.json").read_text())
+    episodes = []
+    for cell, succeeded in zip(inputs["cells"], SUCCEEDED, strict=True):
+        digests = {field: canonical_digest({"cell": cell["cell_id"], "field": field}) for field in (
+            "lossless_frame_manifest_digest", "review_video_digest", "returned_action_sequence_digest",
+            "action_delivery_readback_digest", "state_trace_digest", "contact_force_digest",
+            "task_object_trajectory_digest", "deterministic_score_digest")}
+        episodes.append({
+            "candidate_id": spec["candidate_id"], "cell_id": cell["cell_id"], "seed": cell["seed"],
+            "cell_spec_digest": cell["cell_spec_digest"], "resolved_scenario": cell["resolved_scenario"],
+            "resolved_scenario_digest": cell["resolved_scenario_digest"], "run_kind": inputs["run_kind"],
+            "claim_ceiling": "diagnostic_policy_execution", "ranking_eligible": False, "status": "completed",
+            "checkpoint_digest": spec["checkpoint_digest"], "runtime_identity_digest": spec["runtime_identity_digest"],
+            "candidate_policy_queried": True, "actions_reached_robot": True, "arm_moved": True,
+            "scoring_authority": "deterministic_simulator_state", "visual_evidence": {"status": "complete"},
+            "episode": {"score": {"status": "scored", "task_succeeded": succeeded}}, **digests})
+    result = {"schema_version": "native_task_arena_policy_canary_session_result.v1",
+              "status": "runtime_completed_unqualified_pending_closeout", "run_kind": inputs["run_kind"],
+              "claim_ceiling": "diagnostic_policy_execution", "candidate_ids": inputs["candidate_ids"],
+              "task_success_contract": inputs["task_success_contract"],
+              "task_success_contract_digest": inputs["task_success_contract_digest"], "episodes_per_policy": 10,
+              "learned_policy_rollout_count": 10, "provider_allocations_observed": None, "retry_cap": 0,
+              "warm_session_open_count": 1, "episodes": episodes, "session_closeout": {"status": "pending"},
+              "scene_promotion_performed": False, "official_ranking_performed": False,
+              "candidate_policy_queried": True, "blockers": []}
+    return _sealed(result, "result_digest")
+
+
+class _Provider:
+    """Vast plus the GPU host, behind the real team transport's one call."""
+
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service: _TeamService) -> None:
+        self.tmp_path, self.monkeypatch, self.service, self.calls = tmp_path, monkeypatch, service, []
+
+    def __call__(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        assert set(kwargs["runtime_secret_file_paths"]) == {CREDENTIAL_ENV}
+        assert kwargs["forward_hf_token"] is False and kwargs["execute"] is True
+        assert kwargs["paid_resource_admission_grant"] is not None
+        # The provider reads the token only through the real runtime-secret channel reader.
+        secrets = vast_provider_adapter._runtime_secret_file_values(kwargs["runtime_secret_file_paths"])
+        assert secrets == {CREDENTIAL_ENV: TOKEN}
+        bundle_path = Path(kwargs["prepared_bundle"]["bundle_path"])
+        host = self.tmp_path / "gpu-host"
+        with zipfile.ZipFile(bundle_path) as archive:
+            assert not any(TOKEN.encode() in archive.read(member) for member in archive.infolist())
+            archive.extractall(host)
+        runtime = host / "provider_runtime"
+        assert preflight_policy_canary_runtime_directory(runtime)["status"] == "passed"
+        # The host bootstrap: a 0600 file in a 0700 directory, its path exported under the spec's name.
+        secret_root = host / ".blueprint-runtime-secrets"
+        secret_root.mkdir(mode=0o700)
+        (secret_root / CREDENTIAL_ENV.lower()).write_text(secrets[CREDENTIAL_ENV])
+        (secret_root / CREDENTIAL_ENV.lower()).chmod(0o600)
+        self.monkeypatch.setenv(CREDENTIAL_ENV, str(secret_root / CREDENTIAL_ENV.lower()))
+        spec = json.loads((runtime / "runtime_inputs" / f"policy_execution_spec.{CANDIDATE}.json").read_text())
+        assert canary_policy_client(spec).preflight_readiness()["identity_verified"] is True
+        attempt = Path(kwargs["job_dir"]) / "attempt-1"
+        attempt.mkdir(parents=True)
+        result = _provider_session_result(runtime, spec)
+        result_path = attempt / "native_task_arena_policy_canary_session_result.v1.json"
+        result_path.write_text(json.dumps(result))
+        return {"status": "completed", "blockers": [], "vast_instance_ids": [7001], "provider_mutations_performed": 1,
+                "provider_create_attempted": True, "continuing_spend_from_this_run": False,
+                "provider_closeout": {"provider_zero_confirmed": True, "warm_session_retained": False,
+                                      "all_staged_objects_absent": True},
+                "bundle_sha256": kwargs["prepared_bundle"]["bundle_sha256"],
+                "native_control_result_path": str(result_path), "native_control_result_digest": result["result_digest"]}
+
+
+def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "founder@blueprint") -> dict[str, Any]:
+    capture = tmp_path / "capture"
+    capture.mkdir()
+    packet, _runtime, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path / "scene")
+    inputs = json.loads(pair_inputs.read_text())
+    task_spec = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())["task_spec"]
+    operator = tmp_path / "operator"
+    operator.mkdir()
+    # The receipt as the scene's probe retains it beside its source launch, read through the gate.
+    rigid_schema = getattr(probe_gate, "RIGID_RECEIPT_SCHEMA", None)
+    checks = (dict.fromkeys(probe_gate.REQUIRED_CHECKS[task_spec["task_kind"]], True) if rigid_schema
+              else {"zero_action_not_success": True, "direct_drive_success": True})
+    probe = _sealed({"schema_version": rigid_schema or probe_gate.RECEIPT_SCHEMA, "status": "passed",
+                     "configured_scene_revision_digest": inputs["scene_revision_digest"],
+                     "task_spec_digest": canonical_digest(task_spec), "learned_policy_evaluation_admitted": True,
+                     "task_success_contract_digest": inputs["task_success_contract_digest"],
+                     "checks": checks, "proof_boundary": {"robot_embodiment_used": False}}, "receipt_digest")
+    (operator / "probe").mkdir()
+    (operator / "probe" / probe_gate.RECEIPT_FILENAME).write_text(json.dumps(probe))
+    rights = _sealed({"schema_version": RIGHTS_SCHEMA, "status": "admitted", "team_id": TEAM,
+                      "candidate_id": CANDIDATE, "checkpoint_id": CHECKPOINT, "license_to_run_granted": True,
+                      "policy_self_grading_permitted": False, "official_ranking_permitted": False,
+                      "secret_material_recorded": False, "adp_qualified_evidence_permitted": False}, "rights_digest")
+    (operator / "rights.json").write_text(json.dumps(rights))
+    registry = _sealed({"schema_version": REGISTRY_SCHEMA, "profiles": [{
+        "capture_root": str(capture.resolve()), "task_id": "pick_place", "scenario_id": "nominal",
+        "pair_runtime_inputs_path": str(pair_inputs), "pair_activation_path": str(pair_activation),
+        "robot_free_probe_root": str(operator / "probe"), "open_loop_horizon": 8,
+        "max_hourly_rate_usd": 0.8, "hard_ttl_seconds": 9_000, "allowed_founder_approvers": ["founder@blueprint"],
+        "team_rights": {f"{TEAM}/{CHECKPOINT}": str(operator / "rights.json")}}]}, "registry_digest")
+    (operator / "registry.json").write_text(json.dumps(registry))
+    (operator / "registry.json").chmod(0o644)
+    monkeypatch.setenv(REGISTRY_ENV, str(operator / "registry.json"))
+    if not rigid_schema:  # before the rigid probe lands, its kind is admitted for this rigid scene only
+        monkeypatch.setattr(probe_gate, "PROBE_TASK_KINDS", frozenset({"articulated_open_close", task_spec["task_kind"]}))
+    row = _row(capture)
+    admission = row["execution_admission"]
+    canonical = admission["canonical_execution_request"]
+    canonical["customer"]["id"] = row["team_id"] = admission["binding"]["team_id"] = TEAM
+    row["checkpoint"]["checkpoint_id"] = admission["binding"]["checkpoint_id"] = CHECKPOINT
+    canonical["robot_profile"]["robot_profile_id"] = CHECKPOINT
+    canonical["policy_package"] = {"policy_api_endpoint": {
+        "endpoint_url": ENDPOINT, "execution_profile": "policy_canary_quick10_team_candidate_v1",
+        "policy_interface_id": "openpi_droid_https.v1", "credential_ref": CREDENTIAL_REF, "credential_kind": "bearer"}}
+    canonical["execution_authorization"].update(episodes=10, max_cost_usd=20)
+    admission["funding"].update(cap_usd=20, approved_by=approver)
+    row["quoted_episodes"] = 10
+    frozen = json.dumps(admission, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    row.update(execution_admission_canonical_json=frozen,
+               execution_admission_digest="sha256:" + hashlib.sha256(frozen.encode()).hexdigest())
+    service = _TeamService()
+    monkeypatch.setattr(https_client, "fetch_bounded_https", service)
+    provider = _Provider(tmp_path, monkeypatch, service)
+    monkeypatch.setattr(team_vast, "run_arena_native_control_vast", provider)
+    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers",
+                        lambda: ([], {"orchestrator_source_commit": "a" * 40}))
+    monkeypatch.setattr(lane, "_launch_environment_blockers", lambda *args: [])
+    monkeypatch.delenv(lane.REQUIRE_INTEGRATION_CANARY_ENV, raising=False)
+    allocator_calls: list[list[str]] = []
+
+    def run_allocator(argv: list[str], *, log_path: Path, timeout_seconds: int) -> int:
+        token_file = Path(argv[argv.index("--team-candidate-credential-file") + 1])
+        assert token_file.stat().st_mode & 0o777 == 0o600 and token_file.read_text().strip() == TOKEN
+        assert TOKEN not in " ".join(argv) and "--execute" in argv
+        allocator_calls.append(list(argv))
+        return allocator.main(argv)
+
+    _Broker.accessed = []
+    zeros: list[dict[str, Any]] = []
+    hooks = {"credential_client": _Broker, "metadata_transport": service.transport, "allocator_runner": run_allocator,
+             "provider_zero": lambda: zeros.append(dict(ZERO)) or dict(ZERO), "implementation_commit": "a" * 40}
+    return {"capture": capture, "row": row, "client": _WebApp(row), "hooks": hooks, "provider": provider,
+            "service": service, "allocator_calls": allocator_calls, "zeros": zeros,
+            "job_dir": capture / "pipeline" / "robot_eval_jobs" / canonical["job_id"]}
+
+
+def _every_file(root: Path) -> list[Path]:
+    return [path for path in root.rglob("*") if path.is_file()]
+
+
+def test_a_team_request_is_driven_from_claim_to_an_admitted_scoring_statement(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    summary = executor.poll_once(client=world["client"], capture_root=world["capture"],
+                                 team_launch_hooks=world["hooks"])
+    assert summary["claimed"] == 1 and summary["staged"] == 1 and summary["completed"] == 1, summary
+    assert _Broker.accessed == ["canonical-job-1"] and len(world["allocator_calls"]) == 1
+    assert len(world["provider"].calls) == 1
+    # The terminal the executor reported, and the scoring statement it sent.
+    (path, result), (settlement_path, settlement) = world["client"].posted
+    assert path == "/api/internal/pipeline/agent-run-results" and settlement["rate_usd"] == 0
+    assert result["episodes_run"] == 10 and result["episodes_succeeded"] == 7
+    scoring = validate_scoring_statement(result["scoring"], episodes_run=10)
+    # The WebApp's runResultScoring rule: the one admitted runtime, simulator-scored, every binding, every episode.
+    assert (scoring["runtime"], scoring["success_source"]) == ("policy_canary_quick10_team_candidate",
+                                                               "simulator_scored")
+    assert all(re.fullmatch(r"sha256:[0-9a-f]{64}", str(scoring[key])) for key in (
+        "success_contract_digest", "scene_revision_digest", "robot_free_probe_receipt_digest",
+        "team_candidate_admission_digest", "session_result_digest"))
+    assert scoring["scored_episode_count"] == result["episodes_run"]
+    assert scoring["claim_ceiling"] == "diagnostic_policy_execution"
+    job = world["job_dir"]
+    terminal = json.loads((job / TERMINAL_FILENAME).read_text())
+    admission = json.loads((job / "team_candidate_admission.json").read_text())
+    assert terminal["status"] == "completed" and terminal["admission_digest"] == admission["admission_digest"]
+    assert scoring["team_candidate_admission_digest"] == admission["admission_digest"]
+    assert admission["candidate_id"] == CANDIDATE and admission["adp_qualified_evidence_eligible"] is False
+    # The canonical allocator admitted exactly this team run, inside the free-beta cap.
+    paid = json.loads((job / "paid_admission.json").read_text())
+    assert paid["status"] == "admitted" and paid["program_id"] == "blueprint-free-beta-evaluated-pilot"
+    assert paid["allocation_binding"]["candidate_ids"] == [CANDIDATE] and paid["hard_cap_usd"] == 20.0
+    # The token never touched disk outside the deleted private file, nor any receipt, log or post.
+    assert not (job / ".team-credential").exists()
+    assert json.loads((job / "allocator_invocation.json").read_text())["credential_file_removed"] is True
+    assert not [path for path in _every_file(job) if TOKEN.encode() in path.read_bytes()]
+    assert TOKEN not in json.dumps(world["client"].posted)
+    # The provider handshake used the token it received through the secret channel.
+    assert ("provider_get", "GET") in world["service"].calls
+    # A second pass neither re-launches nor re-reports.
+    again = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    assert again["completed"] == 0 and len(world["allocator_calls"]) == 1 and len(world["client"].posted) == 2
+
+
+def test_an_unadmitted_funding_approver_never_reaches_the_credential_or_the_allocator(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch, approver="someone-else")
+    summary = executor.poll_once(client=world["client"], capture_root=world["capture"],
+                                 team_launch_hooks=world["hooks"])
+    assert summary["blocked"] == 1 and summary["completed"] == 0
+    assert world["client"].blocked == ["team_candidate_founder_funding_approval_not_admitted"]
+    assert _Broker.accessed == [] and world["allocator_calls"] == [] and world["provider"].calls == []
+    terminal = json.loads((world["job_dir"] / TERMINAL_FILENAME).read_text())
+    assert terminal["status"] == "blocked" and terminal["provider_zero_not_applicable"] is True
+
+
+def test_a_scene_without_a_retained_probe_is_refused_before_claiming_spend(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    (tmp_path / "operator" / "probe" / probe_gate.RECEIPT_FILENAME).unlink()
+    summary = executor.poll_once(client=world["client"], capture_root=world["capture"],
+                                 team_launch_hooks=world["hooks"])
+    assert summary["blocked"] == 1 and world["client"].blocked == ["agent_execution_team_candidate_not_offered"]
+    assert _Broker.accessed == [] and world["allocator_calls"] == []
+    assert not world["job_dir"].exists()
+
+
+def test_a_token_in_the_sealed_bundle_stops_the_launch_before_the_allocator(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    real_metadata = _metadata()
+    # A team that declares its token as its policy id would put it in the sealed spec.
+    world["hooks"]["metadata_transport"] = lambda **_kwargs: json.dumps({**real_metadata, "policy_id": TOKEN}).encode()
+    executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    assert world["allocator_calls"] == [] and world["provider"].calls == []
+    failure = json.loads((world["job_dir"] / "team_candidate_quick10_failure.json").read_text())
+    assert failure["blockers"] == ["team_candidate_secret_in_bundle"]
+    assert world["client"].blocked == ["team_candidate_secret_in_bundle"]
+
+
+def test_closeout_waits_for_provider_zero_before_reporting(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    live = {**ZERO, "provider_zero_verified": False, "live_instance_count": 1, "blockers": ["live"]}
+    observations = iter([dict(ZERO), live])  # zero before launch, then a live instance at closeout
+    world["hooks"]["provider_zero"] = lambda: next(observations, dict(ZERO))
+    first = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    assert first["pending"] == 1 and world["client"].posted == [] and len(world["allocator_calls"]) == 1
+    assert not (world["job_dir"] / TERMINAL_FILENAME).exists()
+    second = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    assert second["completed"] == 1 and len(world["allocator_calls"]) == 1  # recovered, never re-allocated
+
+
+def test_the_offer_lists_the_team_runtime_only_while_eligible(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    capture = world["capture"]
+    descriptor = {"scene_id": "site-req1", "capture_id": "cap-1", "site_submission_id": "req1",
+                  "metadata": {"capture_entry_source": "website_task_capture"}}
+    root = tmp_path / "partition" / "scenes" / "site-req1" / "captures" / "cap-1"
+    root.mkdir(parents=True)
+    (root / "capture_descriptor.json").write_text(json.dumps(descriptor))
+    specs = root / "pipeline" / "simulation_automation" / "episode_specs.json"
+    specs.parent.mkdir(parents=True)
+    specs.write_text(json.dumps({"episode_count": 2, "episodes": [{"scenario_id": "nominal"}] * 2}))
+    registry_path = Path(os.environ[REGISTRY_ENV])
+    registry = json.loads(registry_path.read_text())
+    registry["profiles"][0]["capture_root"] = str(root.resolve())
+    registry_path.write_text(json.dumps(_sealed(registry, "registry_digest")))
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr("blueprint_pipeline.agent_execution_offer.is_website_entry_source", lambda _value: True)
+    published = publish_agent_execution_offer(root, transport=lambda **kwargs: sent.append(kwargs["payload"]))
+    assert published["status"] == "published" and capture.exists()
+    assert sent[-1]["offer"]["policy_execution_profiles"] == ["policy_canary_quick10_team_candidate_v1"]
+    assert sent[-1]["offer"]["episode_count"] == 10 and sent[-1]["offer"]["scenario_id"] == "nominal"
+    # Without the scene's retained probe the ordinary offer replaces it.
+    (tmp_path / "operator" / "probe" / probe_gate.RECEIPT_FILENAME).unlink()
+    fallback = publish_agent_execution_offer(root, transport=lambda **kwargs: sent.append(kwargs["payload"]))
+    assert "policy_execution_profiles" not in sent[-1]["offer"] and sent[-1]["offer"]["episode_count"] == 2
+    assert fallback["team_candidate_offer_refused"] == "team_evaluation_robot_free_probe_receipt_missing"
+
+
+def test_the_terminal_reader_is_bound_to_its_request_and_silent_for_other_jobs(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    job = world["job_dir"]
+    job.mkdir(parents=True)
+    assert read_team_candidate_terminal(job_dir=job, expected_job_id="canonical-job-1",
+                                        expected_canonical_request_digest="sha256:" + "0" * 64) is None
+    executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    digest = canonical_digest(world["row"]["execution_admission"]["canonical_execution_request"])
+    sealed = read_team_candidate_terminal(job_dir=job, expected_job_id="canonical-job-1",
+                                          expected_canonical_request_digest=digest)
+    assert sealed["status"] == "completed" and sealed["episodes_run"] == 10
+    with pytest.raises(ValueError, match="team_candidate_terminal_binding_mismatch"):
+        read_team_candidate_terminal(job_dir=job, expected_job_id="another-job",
+                                     expected_canonical_request_digest=digest)
+    tampered = {**sealed, "episodes_succeeded": 10}
+    (job / TERMINAL_FILENAME).write_text(json.dumps(tampered))
+    with pytest.raises(ValueError, match="team_candidate_terminal_binding_mismatch"):
+        read_team_candidate_terminal(job_dir=job, expected_job_id="canonical-job-1",
+                                     expected_canonical_request_digest=digest)

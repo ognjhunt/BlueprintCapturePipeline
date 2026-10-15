@@ -6,6 +6,13 @@ from . import task_evaluation_controls_autoprovision as worker
 from . import task_evaluation_team_run_authority as authority
 
 
+def _require_passed_probe(root, terminal):
+    """Beta L5: no team evaluation on a scene whose robot-free probe did not pass at this revision."""
+    from .robot_free_probe_gate import require_robot_free_probe, retained_probe_receipt
+    require_robot_free_probe(retained_probe_receipt(root),
+                             scene_revision_digest=terminal['configured_scene_revision_digest'])
+
+
 def source_for_evaluation(*, config, intent, now=None):
     """Resolve only retained terminal evidence; never reconstruct or alter the source."""
     from .task_evaluation_configured_controls_progression_worker import _validate_source
@@ -28,6 +35,7 @@ def source_for_evaluation(*, config, intent, now=None):
     worker._require(receipt.get('launch_profile_digest') == profile.get('profile_digest')
         and terminal['configured_scene_revision_digest'] == selected['configured_scene_revision_digest'],
         'team_evaluation_source_changed')
+    _require_passed_probe(root, terminal)
     owner = authority.evaluation_owner(source_profile=profile, authority=binding,
         source_launch_id=root.name, configured_scene_revision_digest=terminal['configured_scene_revision_digest'],
         evaluation_run_id=intent['request']['submission_id'], now=now)
@@ -98,6 +106,7 @@ def plan_authority_blocker(value, launch_root):
         terminal, receipt, _ = _validate_source(source_root)
         worker._require(receipt['receipt_digest'] == value['source_launch_receipt_digest'],
             'team_evaluation_source_changed')
+        _require_passed_probe(source_root, terminal)
         profile = worker._json(source_root / 'launch_profile.json')
         authority.evaluation_owner(source_profile=profile, authority=binding,
             source_launch_id=value['source_launch_id'],

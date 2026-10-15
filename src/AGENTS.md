@@ -3,8 +3,9 @@
 Read the root `AGENTS.md`, `PLATFORM_CONTEXT.md`, and
 `WORLD_MODEL_STRATEGY_CONTEXT.md` first.
 
-Arm Decision Proof v1 is the sole active program. A source change must name the
-ADP backlog item and day gate it unblocks. Existing modules outside that path are
+Two programs are active: the free beta's evaluated, recommended pilot and Arm
+Decision Proof v1 (owner decision 2026-10-14). A source change must name the beta
+journey step, or the ADP backlog item and day gate, it unblocks. Existing modules outside that path are
 compatibility code, not invitations to extend their former lanes.
 
 `src/` contains runtime code. Preserve behavior unless the user explicitly asks

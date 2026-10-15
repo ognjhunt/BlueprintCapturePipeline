@@ -1,19 +1,25 @@
 ## Vision
 
-### The Only Active Horizon
+### Active Horizons
 
-Blueprint's current horizon is **one prospectively physically validated
-site-specific arm decision**.
+Blueprint has two current horizons, one for each active program.
 
-The company must show that a robot team can give Blueprint one real fixed-arm
+The **free beta** horizon is **one site that started through the public form
+booking a pilot recommended on evidence**: an invited team's own policy, scored
+by the simulator on a scene built from that site's capture, passing the job's
+frozen pass mark. That recommendation is a bounded estimate, and the pilot
+measures what the simulation cannot.
+
+The **Arm Decision Proof** horizon is **one prospectively physically validated
+site-specific arm decision**. The company must show that a robot team can give Blueprint one real fixed-arm
 workcell, task, and two runnable candidates; Blueprint can construct the minimum
 replica needed to make a sealed selection, elimination, or abstention; and a
 held-out physical trial can adjudicate the same practical decision and a
 predicted failure boundary.
 
-Until that is observed, broader visions are not roadmaps.
+Until these are observed, broader visions are not roadmaps.
 
-### Immediate Sequence
+### Arm Decision Proof Sequence
 
 Blueprint has qualified the decision/outcome harness retrospectively on SIMPLER.
 It next qualifies the scene-construction service on exact public data: metric
@@ -24,11 +30,12 @@ SimReady USD replacement, a manual-versus-NVIDIA Content Agents authoring check,
 one targeted ScanNet++ measured transfer, deterministic variation, abstention,
 and full simulator-side replay.
 
-Only after that public matrix and partner protocol pass does Blueprint take one
-fresh capture of one previously unseen workcell, including registered
-clean-background and object-present observations. Fresh capture is the final new
-construction input; two-candidate execution, sealing, held-out physical trials,
-and adjudication follow it.
+Only after that public matrix and partner protocol pass does Arm Decision Proof
+take its one fresh capture of one previously unseen workcell, including
+registered clean-background and object-present observations. That capture is
+the proof's final new construction input; two-candidate execution, sealing,
+held-out physical trials, and adjudication follow it. This sequence gates only
+the proof's capture. Free beta site captures are not held behind it.
 
 This sequence is not open-ended capture or 3DGS research. New features or methods
 are added only when a gate identifies a specific missing measurement and an exact
@@ -72,10 +79,11 @@ goal. Candidate decisions include repeating the same method on a second
 fixed-arm site-task, offering bounded capture/testbed preparation, investigating
 one measured fidelity blocker, or stopping.
 
-Humanoids, broader manipulation, multi-site generalization, learned/world-model
-evaluation, post-training, marketplaces, standards, and deployment are
-uncommitted options. None is automatically next, and none authorizes present
-work.
+Humanoids, broader manipulation, cross-site generalization claims,
+learned/world-model evaluation, post-training, provider marketplaces, standards,
+and deployment are uncommitted options. None is automatically next, and none
+authorizes present work. The free beta's site and robot-team journeys are not in
+this list: they are active work.
 
 ### Invariants
 
@@ -87,4 +95,5 @@ work.
    human-authorized and fail closed.
 6. A failed or contradictory result is immutable evidence, not a marketing
    success.
-7. Every task must directly remove an Arm Decision Proof gate blocker.
+7. Every task must directly remove a blocker in an active program: a free beta
+   journey step or an Arm Decision Proof gate.

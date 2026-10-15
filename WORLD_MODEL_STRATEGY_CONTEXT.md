@@ -8,12 +8,14 @@
 <!-- SHARED_WORLD_MODEL_STRATEGY_START -->
 ## Strategic Doctrine
 
-### Sole Strategy
+### Strategy
 
-All backend and infrastructure choices serve **Arm Decision Proof v1**. The
+All backend and infrastructure choices serve the two active programs: the
+**free beta's evaluated, recommended pilot** and **Arm Decision Proof v1**. The
 strategy is not to build a world model, simulator, reconstruction company,
-provider marketplace, or general benchmark. It is to make one prospective,
-site-specific fixed-arm decision and physically adjudicate it.
+provider marketplace, or general benchmark. It is to evaluate invited robot
+teams on real site jobs with bounded simulation estimates, and to make one
+prospective, site-specific fixed-arm decision and physically adjudicate it.
 
 World models, classical simulators, reconstruction systems, 3DGS renderers,
 SimReady tools, analytic geometry, learned evaluators, and physical evidence are
@@ -181,6 +183,8 @@ measurable missing input. More backend sophistication is not the default answer
 to a failed business or scientific premise.
 
 World-model, humanoid, dynamic-scene, deformable, universal-runtime,
-post-training, multi-site, and provider-marketplace work remains frozen until a
-successful Arm Decision Proof and a new explicit strategy decision.
+post-training, cross-site generalization, and provider-marketplace work remains
+frozen until a successful Arm Decision Proof and a new explicit strategy
+decision. Operating several free beta sites at once is beta work, not
+cross-site generalization.
 <!-- SHARED_WORLD_MODEL_STRATEGY_END -->

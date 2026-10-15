@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from .common import write_json
 from .native_task_arena_policy_canary_session import (
     PROBE_KIND,
+    TEAM_RUN_KIND,
     validate_provider_bundle,
     validate_session_authority,
 )
@@ -41,6 +42,7 @@ from .adp_isaac_lab_arena_vast import (
     _remaining_session_live_minutes,
     _vast_credential_file_present,
 )
+from .team_candidate_quick10_vast import credential_file_blockers, run_team_candidate_session_vast
 
 
 REQUIRE_INTEGRATION_CANARY_ENV = "BLUEPRINT_REQUIRE_POLICY_INTEGRATION_CANARY"
@@ -57,6 +59,11 @@ def add_policy_canary_allocator_arguments(parser: Any) -> None:
         "--require-policy-integration-canary",
         action="store_true",
         help="Refuse to allocate without a passing, fresh integration canary receipt.",
+    )
+    parser.add_argument(
+        "--team-candidate-credential-file",
+        help="Private 0600 bearer-token file for a team-candidate session (beta L5); "
+             "handed to the provider only through its runtime-secret channel.",
     )
 
 
@@ -179,20 +186,29 @@ def run_policy_canary_allocator_lane(
         static_preflight = preflight_sealed_policy_canary_bundle(prepared_bundle)
         write_json(Path(args.adp_job_dir) / "launch_preflight" / "sealed_bundle_static_preflight.json", static_preflight)
         blockers.extend(static_preflight.get("blockers") or [])
+    # Beta L5: a team-candidate authority needs its private credential file; the pair never takes one.
+    team = authority is not None and authority.get("run_kind") == TEAM_RUN_KIND
+    credential_file = getattr(args, "team_candidate_credential_file", None)
+    if team:
+        blockers.extend(credential_file_blockers(credential_file))
+    elif credential_file:
+        blockers.append("policy_canary_credential_file_unexpected")
+    program_id = "blueprint-free-beta-evaluated-pilot" if team else "arm-decision-proof-v1"
+    candidate_ids = list((authority or {}).get("candidate_ids") or ["pi05_droid", "groot_n17_droid"])
     binding = {
-        "program_id": "arm-decision-proof-v1",
+        "program_id": program_id,
         "probe_kind": PROBE_KIND,
         "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
-        "run_kind": "internal_policy_canary",
+        "run_kind": TEAM_RUN_KIND if team else "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "bundle_sha256": prepared_bundle.get("bundle_sha256") if prepared_bundle else None,
         "runtime_inputs_digest": (
             prepared_bundle.get("runtime_inputs_digest") if prepared_bundle else None
         ),
         "authority_digest": authority.get("authority_digest") if authority else None,
-        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "candidate_ids": candidate_ids,
         "episodes_per_policy": 10,
-        "learned_policy_rollout_count": 20,
+        "learned_policy_rollout_count": 10 * len(candidate_ids),
         "maximum_provider_allocations": 1,
         "retry_cap": 0,
         "hard_cap_usd": args.adp_max_spend_usd,
@@ -208,7 +224,7 @@ def run_policy_canary_allocator_lane(
     )
     admission.update(
         {
-            "program_id": "arm-decision-proof-v1",
+            "program_id": program_id,
             "probe_kind": PROBE_KIND,
             "control_plane_identity": dict(control_identity),
             "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
@@ -246,6 +262,16 @@ def run_policy_canary_allocator_lane(
             "blockers": sorted(set(blockers)),
             "provider_mutations_performed": 0,
         }
+    elif team:
+        result = run_team_candidate_session_vast(
+            job_dir=args.adp_job_dir, prepared_bundle=prepared_bundle, session_authority=authority,
+            paid_resource_admission_grant=grant, execute=args.execute, credential_file=credential_file,
+            machine_avoidlist_path=args.adp_machine_avoidlist, max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+            hard_cap_usd=args.adp_max_spend_usd, hard_ttl_seconds=args.adp_hard_ttl_seconds,
+            allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+            provider_runtime_environment={name: os.environ[name] for name in POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES
+                                          if name in os.environ},
+        )
     else:
         result = run_native_task_arena_policy_canary_session_vast(
             job_dir=args.adp_job_dir,

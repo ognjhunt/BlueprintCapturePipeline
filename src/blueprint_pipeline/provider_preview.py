@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Protocol
+from .capture_audio_minimization import AudioRemovalError, audio_free_video_bytes
 from .common import resolve_gs_uri_to_path, utc_now_iso, write_json
 from .launch_proof_policy import production_launch_mode
 from .local_capture import resolve_local_capture_context
@@ -620,6 +621,17 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         """Upload video to World Labs media assets. Returns upload proof fields."""
         ext = _extension_from_uri(video_uri)
         filename = _filename_from_uri(video_uri, f"capture-video.{ext}")
+        # The provider receives video-only bytes, whatever the selected source
+        # carries: sound can record people talking and reconstruction does not
+        # use it. Removal is shown before any provider call; otherwise nothing
+        # is sent.
+        try:
+            video_bytes, audio_removal = audio_free_video_bytes(
+                _read_uri_bytes(video_uri, capture_root=capture_root),
+                suffix=ext,
+            )
+        except AudioRemovalError as exc:
+            raise RuntimeError(f"worldlabs_video_audio_removal_failed:{exc}") from exc
         upload_payload = _worldlabs_api_request(
             "/marble/v1/media-assets:prepare_upload",
             method="POST",
@@ -644,7 +656,6 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         upload_url = str(upload_info.get("upload_url") or "").strip()
         if not upload_url:
             raise RuntimeError("worldlabs_upload_url_missing")
-        video_bytes = _read_uri_bytes(video_uri, capture_root=capture_root)
         _presigned_upload(
             upload_url,
             method=str(upload_info.get("upload_method") or "PUT"),
@@ -660,6 +671,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             "upload_payload": upload_payload,
             "filename": filename,
             "content_type": _mime_for_extension(ext),
+            "audio_removal": audio_removal,
         }
 
     def submit(
@@ -725,6 +737,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             media_asset_id = ""
             upload_id = ""
             upload_payload: Dict[str, Any] = {}
+            upload_audio_removal: Optional[Dict[str, Any]] = None
             if generation_source_type == "video_uri":
                 video_prompt["source"] = "uri"
                 video_prompt["uri"] = selected_video_uri
@@ -738,6 +751,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 media_asset_id = str(upload_proof.get("media_asset_id") or "").strip()
                 upload_id = str(upload_proof.get("upload_id") or media_asset_id).strip()
                 upload_payload = dict(upload_proof.get("upload_payload") or {})
+                upload_audio_removal = upload_proof.get("audio_removal")
                 video_prompt["source"] = "media_asset"
                 video_prompt["media_asset_id"] = media_asset_id
                 video_prompt.pop("uri", None)
@@ -769,6 +783,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "worldlabs_media_asset_id": media_asset_id or None,
                 "worldlabs_upload_id": upload_id or None,
                 "worldlabs_upload": upload_payload or None,
+                "worldlabs_upload_audio_removal": upload_audio_removal,
                 "generation_source_type": generation_source_type,
                 "selected_input_checksum_sha256": request_manifest.get("selected_input_checksum_sha256"),
                 "source_input_checksum_sha256": request_manifest.get("source_input_checksum_sha256"),

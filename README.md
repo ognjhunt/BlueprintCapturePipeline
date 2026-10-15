@@ -5,9 +5,11 @@
 > Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
 
 
-## Sole Active Program: Arm Decision Proof v1
+> Current owner direction (2026-10-14, recorded in AGENTS.md and the shared doctrine): **two programs are active.** The free beta's evaluated, recommended pilot is the customer-facing program: invited robot teams' own policies are evaluated in simulations built from website site captures, and Blueprint recommends one team whose run passed. Arm Decision Proof v1 below is the evidence program and keeps sole authority over physical-validation claims. Multi-site beta operation, the team evaluation runtime, and the robot-team journey are active work, not frozen. The frozen north-star v3 contract keeps its historical `status: sole_active_program`; this decision supersedes that label without reopening the contract.
 
-Blueprint's only active build objective is to produce one prospectively
+## Evidence Program: Arm Decision Proof v1
+
+The evidence program's build objective is to produce one prospectively
 physically validated, site-specific fixed-arm decision.
 
 > Qualify the reusable service on exact public datasets first—including one
@@ -139,7 +141,7 @@ Do not create fake candidates to satisfy them.
   contracts, adapters, runtime, decisions, and evidence joins
 - `tests/` — deterministic contract and fixture coverage
 - `tests/fixtures/` — development-only inputs; never physical qualification
-- `docs/arm_decision_proof_v1/` — sole active program
+- `docs/arm_decision_proof_v1/` — the evidence program (active alongside the free beta)
 - `docs/schemas/` — versioned schemas, including the north-star focus lock
 - `docs/` — stable dependency docs, compatibility material, and historical evidence
 - `doctrine/` — canonical shared doctrine synced to Capture and WebApp
