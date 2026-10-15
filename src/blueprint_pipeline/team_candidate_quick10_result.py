@@ -67,6 +67,10 @@ def episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
     """``(outcome, reason)``: success, failure (scored or policy-caused) or void (simulator)."""
 
     verdict = _scored(row)
+    motion = (row.get("episode") or {}).get("motion_evidence") if isinstance(row.get("episode"), Mapping) else None
+    if verdict is not None and isinstance(motion, Mapping) and motion.get("robot_fell") is True:
+        # A free base that fell failed the job, whatever became of the object.
+        return "failure", "robot_fell"
     if verdict is not None:
         return ("success", "task_succeeded") if verdict else ("failure", "task_not_completed")
     if row.get("status") == "completed":

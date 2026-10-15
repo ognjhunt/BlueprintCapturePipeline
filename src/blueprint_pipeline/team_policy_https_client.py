@@ -82,8 +82,17 @@ class TeamPolicySpec:
                 "embodiment_digest": self.embodiment_digest}
 
 
+BASE_STATE_SHAPES = {"position_world_m": 3, "orientation_xyzw": 4, "linear_velocity_world_mps": 3,
+                     "angular_velocity_world_radps": 3}
+
+
 def encode_team_observation(observation: Mapping[str, Any], *, camera_names: list[str]) -> dict[str, Any]:
-    """The team's declared views as lossless PNG, its joint and gripper state, and the prompt."""
+    """The team's declared views as lossless PNG, its joint, gripper and base state, and the prompt.
+
+    Every declared joint's position and velocity (declared order), the gripper's
+    closure, and the base's world pose (xyzw) and velocity: what a fixed arm, a
+    wheeled base or a balancing humanoid's policy reads.
+    """
 
     import numpy as np
     from PIL import Image
@@ -91,7 +100,7 @@ def encode_team_observation(observation: Mapping[str, Any], *, camera_names: lis
     images = observation.get("images") if isinstance(observation.get("images"), Mapping) else {}
     state = observation.get("state") if isinstance(observation.get("state"), Mapping) else {}
     if (set(observation) != {"images", "state", "prompt"} or sorted(images) != sorted(camera_names)
-            or set(state) != {"joint_position", "gripper_position"}):
+            or set(state) != {"joint_position", "joint_velocity", "gripper_position", "base"}):
         raise ValueError("team_policy_https_observation_keys_invalid")
     wire: dict[str, Any] = {"images": {}, "state": {}}
     for name in camera_names:
@@ -102,11 +111,21 @@ def encode_team_observation(observation: Mapping[str, Any], *, camera_names: lis
         Image.fromarray(image).save(buffer, format="PNG")
         wire["images"][name] = {"encoding": "png_base64", "height": int(image.shape[0]),
                                 "width": int(image.shape[1]), "data": base64.b64encode(buffer.getvalue()).decode()}
-    for key in ("joint_position", "gripper_position"):
+    for key in ("joint_position", "joint_velocity", "gripper_position"):
         values = [float(value) for value in np.asarray(state[key], dtype=float).reshape(-1)]
-        if (key == "joint_position" and not values) or not all(math.isfinite(value) for value in values):
+        if (key != "gripper_position" and not values) or not all(math.isfinite(value) for value in values):
             raise ValueError("team_policy_https_observation_state_invalid")
         wire["state"][key] = values
+    base = state["base"] if isinstance(state["base"], Mapping) else {}
+    if (len(wire["state"]["joint_velocity"]) != len(wire["state"]["joint_position"])
+            or set(base) != set(BASE_STATE_SHAPES)):
+        raise ValueError("team_policy_https_observation_state_invalid")
+    wire["state"]["base"] = {}
+    for key, size in BASE_STATE_SHAPES.items():
+        values = [float(value) for value in np.asarray(base[key], dtype=float).reshape(-1)]
+        if len(values) != size or not all(math.isfinite(value) for value in values):
+            raise ValueError("team_policy_https_observation_state_invalid")
+        wire["state"]["base"][key] = values
     if not isinstance(observation["prompt"], str) or not observation["prompt"].strip():
         raise ValueError("team_policy_https_observation_prompt_invalid")
     wire["prompt"] = observation["prompt"]
@@ -124,5 +143,5 @@ class TeamPolicyHttpsClient(DroidHttpsTeamPolicyClient):
         return encode_team_observation(observation, camera_names=list(self._spec.camera_names))
 
 
-__all__ = ["INTERFACE_ID", "METADATA_KEYS", "METADATA_SCHEMA", "TeamPolicyHttpsClient", "TeamPolicySpec",
+__all__ = ["BASE_STATE_SHAPES", "INTERFACE_ID", "METADATA_KEYS", "METADATA_SCHEMA", "TeamPolicyHttpsClient", "TeamPolicySpec",
            "encode_team_observation"]

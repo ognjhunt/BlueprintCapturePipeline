@@ -41,7 +41,10 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
 
-from .adp_articulated_task_success_contract import task_kind_of_contract, validate_task_success_contract
+from .adp_articulated_task_success_contract import (
+    task_kind_of_contract,
+    validate_task_success_contract,
+)
 from .adp_task_scoring import TaskNeutralScoringError
 from .decision_evidence_contracts import canonical_digest
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
@@ -52,11 +55,22 @@ from .native_task_arena_policy_canary_session import (
     TEAM_RUN_KIND,
 )
 from .policy_interface_binding import TEAM_HTTPS_INTERFACES
-from .robot_free_probe_gate import RobotFreeProbeGateError, require_robot_free_probe, task_success_contract_binding
+from .robot_free_probe_gate import (
+    RobotFreeProbeGateError,
+    require_robot_free_probe,
+    task_success_contract_binding,
+)
 from .team_embodiment import POLICY_INTERFACE_ID as TEAM_ROBOT_INTERFACE
 from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
-from .team_embodiment import TeamEmbodimentError, admission_blockers, camera_names, validate_embodiment_manifest
-from .team_evaluation_plan import EPISODES, PRACTICE, PURPOSES, SCORED, SHARD_CELLS, shard_ttl_seconds
+from .team_embodiment import TeamEmbodimentError, camera_names, validate_embodiment_manifest
+from .team_evaluation_plan import (
+    EPISODES,
+    PRACTICE,
+    PURPOSES,
+    SCORED,
+    SHARD_CELLS,
+    shard_ttl_seconds,
+)
 
 CANDIDATE_SCHEMA = "blueprint.team_policy_candidate.v1"
 RIGHTS_SCHEMA = "blueprint.team_policy_candidate_rights.v1"
@@ -120,7 +134,6 @@ def _candidate_blockers(candidate: Mapping[str, Any]) -> list[str]:
     if candidate.get("candidate_id") in CANDIDATE_IDS:
         blockers.append("team_candidate_cannot_impersonate_frozen_candidate")
     if manifest is not None:
-        blockers.extend(admission_blockers(manifest))
         rows_allowed = (int(manifest["action_chunk_rows"]),)
     expected_preset = (TEAM_ROBOT_ID if candidate.get("policy_interface_id") == TEAM_ROBOT_INTERFACE
                        else DROID_POLICY_CANARY_PRESET_ID)

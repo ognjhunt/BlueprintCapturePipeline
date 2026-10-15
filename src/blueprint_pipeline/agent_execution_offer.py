@@ -107,8 +107,13 @@ def build_agent_execution_offer(capture_root: Path, *, policy_execution_profiles
 
 def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
     """What a team is asked to do and how it is judged; nothing about the site's geometry."""
-    from .droid_https_policy_client import IMAGE_KEYS, INTERFACE_ID, STATE_KEYS, SUPPORTED_ACTION_CHUNK_ROWS
-    from .team_embodiment import ADMITTED_FORMS, CONTROL_HZ, MAX_ACTION_CHUNK_ROWS
+    from .droid_https_policy_client import (
+        IMAGE_KEYS,
+        INTERFACE_ID,
+        STATE_KEYS,
+        SUPPORTED_ACTION_CHUNK_ROWS,
+    )
+    from .team_embodiment import BASE_MODES, CONTROL_HZ, FORMS, MAX_ACTION_CHUNK_ROWS
     from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
     from .team_embodiment import SCHEMA as EMBODIMENT_SCHEMA
     from .team_evaluation_plan import EPISODES, SCORED_FAMILY_SHARES, variation_bounds
@@ -139,11 +144,14 @@ def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -
                         "chunk_rows": sorted(SUPPORTED_ACTION_CHUNK_ROWS)},
              "request_timeout_seconds": 30, "authentication": "bearer"},
             {"policy_interface_id": TEAM_ROBOT_INTERFACE, "embodiment_preset_id": TEAM_ROBOT_ID,
-             "embodiment_schema": EMBODIMENT_SCHEMA, "admitted_forms": list(ADMITTED_FORMS),
-             "robot_station": "base_fixed_at_scene_robot_station_declared_reach_must_cover_task",
-             "observation": {"images": "one_png_per_declared_camera", "state": ["joint_position", "gripper_position"],
+             "embodiment_schema": EMBODIMENT_SCHEMA, "forms": list(FORMS), "base_modes": list(BASE_MODES),
+             "robot_start": {"fixed": "scene_robot_station_declared_reach_must_cover_task",
+                             "free": "closest_clear_floor_stance_facing_task_falling_fails_episode"},
+             "observation": {"images": "one_png_per_declared_camera",
+                             "state": ["joint_position", "joint_velocity", "gripper_position", "base"],
                              "prompt": True},
-             "action": {"space": "joint_position", "row": "declared_arm_joint_targets_then_gripper_closure_0_to_1",
+             "action": {"space": "joint_targets",
+                        "row": "one_value_per_declared_joint_position_or_wheel_velocity_then_gripper_closure_0_to_1",
                         "control_hz": list(CONTROL_HZ), "chunk_rows": [1, MAX_ACTION_CHUNK_ROWS]},
              "metadata_schema": TEAM_METADATA_SCHEMA, "task_kinds": ["rigid_pick_place"],
              "request_timeout_seconds": 30, "authentication": "bearer"},

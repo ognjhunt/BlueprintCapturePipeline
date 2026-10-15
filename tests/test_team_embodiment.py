@@ -1,4 +1,4 @@
-"""A robot team's own arm: bound to the scene's robot station, driven by its own policy, scored by the scene.
+"""A robot team's own robot, of any form: bound to the scene, driven by its own policy, scored by the scene.
 
 Beta journey step: L5 team policy evaluation. Hermetic: a tiny OpenUSD robot
 authored here stands in for a team's model; Isaac is faked only inside the
@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -41,21 +42,23 @@ from blueprint_pipeline.team_policy_https_client import (
 from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _scene_plan
 
 ARM = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint"]
+WHEELS, WHEEL_LINKS = ["left_wheel_joint", "right_wheel_joint"], ["left_wheel", "right_wheel"]
 ORIGIN = "https://policy.acme-robotics.example"
 
 
-def write_robot_usd(path: Path, *, anchored: bool = True) -> Path:
-    """A three-joint arm with a two-finger gripper, as Isaac's URDF importer would flatten it."""
+def write_robot_usd(path: Path, *, anchored: bool = True, wheels: bool = False) -> Path:
+    """A three-joint arm with a two-finger gripper (on two wheels), as Isaac's URDF importer would flatten it."""
 
     from pxr import Usd, UsdPhysics
 
     stage = Usd.Stage.CreateNew(str(path))
     root = stage.DefinePrim("/acme_arm", "Xform")
     stage.SetDefaultPrim(root)
-    links = ["base_link", "upper_arm", "forearm", "wrist", "left_finger", "right_finger"]
+    links = ["base_link", "upper_arm", "forearm", "wrist", "left_finger", "right_finger",
+             *(WHEEL_LINKS if wheels else [])]
     for link in links:
         UsdPhysics.RigidBodyAPI.Apply(stage.DefinePrim(f"/acme_arm/{link}", "Xform"))
-    for name, kind in [*((joint, UsdPhysics.RevoluteJoint) for joint in ARM),
+    for name, kind in [*((joint, UsdPhysics.RevoluteJoint) for joint in ARM + (WHEELS if wheels else [])),
                        ("finger_joint", UsdPhysics.PrismaticJoint)]:
         kind.Define(stage, f"/acme_arm/joints/{name}")
     if anchored:
@@ -71,7 +74,9 @@ def manifest(model: Path, **overrides: Any) -> dict[str, Any]:
         "schema_version": "blueprint.robot_embodiment.v1", "embodiment_id": "acme-arm-v2", "form": "fixed_base_arm",
         "model": {"format": "usd", "url": "https://models.acme-robotics.example/acme_arm.usda",
                   "sha256": "sha256:" + hashlib.sha256(model.read_bytes()).hexdigest()},
-        "arm_joints": [{"name": name, "lower": -3.0, "upper": 3.0, "max_velocity": 2.0} for name in ARM],
+        "base": {"mode": "fixed"},
+        "joints": [{"name": name, "control": "position", "lower": -3.0, "upper": 3.0, "max_velocity": 2.0}
+                   for name in ARM],
         "gripper": {"joints": [{"name": "finger_joint", "open": 0.04, "closed": 0.0}], "max_width_m": 0.08,
                     "contact_links": ["left_finger", "right_finger"]},
         "tool_link": "wrist", "reset_joint_positions": {**dict.fromkeys(ARM, 0.0), "finger_joint": 0.04},
@@ -120,7 +125,8 @@ def test_a_team_arm_stands_at_the_scene_station_with_its_own_cameras_and_rate(tm
     plan = apply_team_embodiment(base, sealed)
     robot = plan["robot"]
     assert robot["robot_id"] == "team_embodiment" and robot["base_pose_world"] == base["robot"]["base_pose_world"]
-    assert robot["arm_joint_names"] == ARM and robot["embodiment_digest"] == declared["embodiment_digest"]
+    assert robot["joint_names"] == ARM and robot["embodiment_digest"] == declared["embodiment_digest"]
+    assert robot["base_mode"] == "fixed_at_station" and set(robot["joint_controls"].values()) == {"position"}
     assert robot["usd_path"] == "team_embodiment/robot.usd" and robot["usd_sha256"] == declared["model"]["sha256"]
     # The team's two cameras replace Blueprint's policy cameras; the overview stays for review only.
     assert [(row["role"], row["policy_input"]) for row in plan["cameras"]] == [
@@ -163,11 +169,14 @@ def test_an_arm_that_cannot_be_evaluated_is_refused_by_name_before_any_gpu(tmp_p
         validate_embodiment_manifest(manifest(model, control_hz=10, cameras=[]))
     assert {"team_embodiment_control_hz_invalid", "team_embodiment_cameras_invalid"} <= set(error.value.blockers)
     cases = {
-        "team_embodiment_model_joint_missing:wrist_3_joint": {"arm_joints": manifest(model)["arm_joints"] + [
-            {"name": "wrist_3_joint", "lower": -1.0, "upper": 1.0, "max_velocity": 1.0}],
+        "team_embodiment_model_joint_missing:wrist_3_joint": {"joints": manifest(model)["joints"] + [
+            {"name": "wrist_3_joint", "control": "position", "lower": -1.0, "upper": 1.0, "max_velocity": 1.0}],
             "reset_joint_positions": {**dict.fromkeys([*ARM, "wrist_3_joint"], 0.0), "finger_joint": 0.04}},
         "team_embodiment_station_out_of_reach": {"reach_m": 0.2},
-        "team_embodiment_form_not_admitted:humanoid": {"form": "humanoid"},
+        # A fixed arm cannot be declared free (a free base goes to the task instead of reaching from a station).
+        "team_embodiment_form_base_mismatch": {"base": {"mode": "free", "root_height_m": 0.8, "fall_height_m": 0.4,
+                                                        "footprint_half_extent_m": [0.3, 0.3],
+                                                        "ground_contact_links": ["base_link"]}},
     }
     for index, (blocker, overrides) in enumerate(cases.items()):
         (tmp_path / str(index)).mkdir()
@@ -208,13 +217,15 @@ def test_the_team_service_gets_its_own_cameras_and_state_and_must_name_its_robot
     client = TeamPolicyHttpsClient(spec=spec, bearer_token="team-token-0123456789", transport=transport)
     image = np.zeros((240, 320, 3), dtype=np.uint8)
     actions = client.infer({"images": {"wrist_rgb": image, "scene_rgb": image}, "prompt": "Put the mug on the tray",
-                            "state": {"joint_position": [0.0, 0.1, 0.2], "gripper_position": [0.0]}})
+                            "state": {"joint_position": [0.0, 0.1, 0.2], "joint_velocity": [0.0, 0.0, 0.0],
+                                      "gripper_position": [0.0], "base": BASE_AT_REST}})
     assert actions == [[0.1, 0.2, 0.3, 1.0]] * 4
     request = seen[0]
     assert (request["schema_version"], request["policy_interface_id"]) == (
         "blueprint.policy_https_request.v1", "blueprint_policy_https.v1")
     assert sorted(request["observation"]["images"]) == ["scene_rgb", "wrist_rgb"]
-    assert request["observation"]["state"] == {"joint_position": [0.0, 0.1, 0.2], "gripper_position": [0.0]}
+    assert request["observation"]["state"] == {"joint_position": [0.0, 0.1, 0.2], "joint_velocity": [0.0, 0.0, 0.0],
+                                               "gripper_position": [0.0], "base": BASE_AT_REST}
     assert metadata["schema_version"] == METADATA_SCHEMA
     metadata = {**metadata, "embodiment_digest": "sha256:" + "0" * 64}  # served for some other robot
     with pytest.raises(ValueError, match="identity_mismatch"):
@@ -236,15 +247,33 @@ class _Camera:
         self.cfg = type("Cfg", (), {"spawn": type("Spawn", (), {"clipping_range": (0.01, 100.0)})()})()
 
 
+BASE_AT_REST = {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "linear_velocity_world_mps": [0.0, 0.0, 0.0], "angular_velocity_world_radps": [0.0, 0.0, 0.0]}
+
+
 class _Robot:
-    def __init__(self) -> None:
-        self.joint_names = ["finger_joint", *ARM]
-        self.q = np.array([0.04, 0.0, 0.0, 0.0])
+    def __init__(self, joint_names: list[str] | None = None) -> None:
+        self.joint_names = joint_names or ["finger_joint", *ARM]
+        self.q = np.zeros(len(self.joint_names))
+        self.q[self.joint_names.index("finger_joint")] = 0.04
+        self.root = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])  # Isaac Lab: position, then wxyz
         self.data = self
 
     @property
     def joint_pos(self) -> _Array:
         return _Array([self.q])
+
+    @property
+    def joint_vel(self) -> _Array:
+        return _Array([np.zeros(len(self.joint_names))])
+
+    @property
+    def root_pose_w(self) -> _Array:
+        return _Array([self.root])
+
+    @property
+    def root_vel_w(self) -> _Array:
+        return _Array([np.zeros(6)])
 
 
 class _Env:
@@ -307,7 +336,8 @@ def test_the_team_policy_drives_the_team_arm_and_an_out_of_limit_row_never_reach
                                episode_id="run--cell--team", progress=progress, to_action=lambda t: [t])
     first = policy.observations[0]
     assert sorted(first["images"]) == ["scene_rgb", "wrist_rgb"] and first["images"]["wrist_rgb"].dtype == np.uint8
-    assert first["state"] == {"joint_position": [0.0, 0.0, 0.0], "gripper_position": [0.0]}
+    assert first["state"] == {"joint_position": [0.0, 0.0, 0.0], "joint_velocity": [0.0, 0.0, 0.0],
+                              "gripper_position": [0.0], "base": BASE_AT_REST}
     # A closure of 1 drives the declared gripper joint to its closed position; arm targets pass through.
     assert built.env.steps[0] == [0.1, 0.2, 0.3, 0.0] and policy.observations[1]["state"]["gripper_position"] == [1.0]
     # 180 control steps at 30 Hz plus the settle window, task state sampled every second step.
@@ -352,3 +382,163 @@ def test_a_team_robot_is_admitted_only_with_a_valid_manifest_and_a_rigid_task(tm
     with pytest.raises(TeamCandidateAdmissionError) as refused:
         admit_team_candidate(**{**records, "candidate": candidate}, now=NOW)
     assert {"team_embodiment_digest_mismatch"} <= set(refused.value.blockers)
+
+
+def wheeled_manifest(model: Path) -> dict[str, Any]:
+    """A wheeled humanoid: free on the floor, an arm by position, two wheels by velocity."""
+
+    value = manifest(model, form="wheeled_humanoid",
+                     base={"mode": "free", "root_height_m": 0.9, "fall_height_m": 0.45,
+                           "footprint_half_extent_m": [0.3, 0.3], "ground_contact_links": WHEEL_LINKS},
+                     joints=[*manifest(model)["joints"],
+                             *({"name": name, "control": "velocity", "max_velocity": 10.0, "damping": 5.0}
+                               for name in WHEELS)])
+    value.pop("reach_m")
+    return value
+
+
+STANCE = {"position_world_m": [1.0, -1.0, 0.9], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0], "floor_z_m": 0.0}
+
+
+def test_a_wheeled_humanoid_starts_free_on_the_floor_and_its_wheels_are_driven_by_velocity(tmp_path) -> None:
+    model = write_robot_usd(tmp_path / "wheeled.usda", anchored=False, wheels=True)
+    declared = validate_embodiment_manifest(wheeled_manifest(model))
+    record, structure = verify_model_file(declared, model), read_model_structure(model)
+    with pytest.raises(TeamEmbodimentError, match="free_base_stance_unavailable"):
+        team_embodiment_binding(declared, model_record=record, structure=structure, scene_plan=station_plan())
+    sealed = team_embodiment_binding(declared, model_record=record, structure=structure, scene_plan=station_plan(),
+                                     stance=STANCE)
+    plan = apply_team_embodiment(station_plan(), sealed)
+    robot = plan["robot"]
+    assert robot["base_mode"] == "free_on_floor" and robot["base_pose_world"]["position_world_m"] == [1.0, -1.0, 0.9]
+    assert robot["fall_height_world_m"] == 0.45 and robot["joint_names"] == [*ARM, *WHEELS]
+    assert robot["joint_gains"]["left_wheel_joint"] == {"stiffness": 0.0, "damping": 5.0}
+    # Wheels on the floor are standing, not a collision: they carry no robot-on-scene sensor.
+    scene = [row["prim_path"] for row in plan["articulation"]["contact_sensors"]
+             if row["logical_sensor_id"] == "robot_scene_contact"]
+    assert scene and not any(path.endswith(("left_wheel", "right_wheel")) for path in scene)
+    # A free base whose model pins it to the world could never move.
+    pinned = write_robot_usd(tmp_path / "pinned.usda", wheels=True)
+    pinned_manifest = validate_embodiment_manifest(wheeled_manifest(pinned))
+    with pytest.raises(TeamEmbodimentError, match="free_base_anchored_to_world"):
+        team_embodiment_binding(pinned_manifest, model_record=verify_model_file(pinned_manifest, pinned),
+                                structure=read_model_structure(pinned), scene_plan=station_plan(), stance=STANCE)
+
+
+class _WheeledEnv(_Env):
+    """Falls over after its fifth control step."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.robot = _Robot(["finger_joint", *ARM, *WHEELS])
+        self.unwrapped.scene["robot"] = self.robot
+        self.reset(0)
+
+    def reset(self, seed: int) -> None:
+        self.robot.q = np.array([0.04, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.robot.root = np.array([1.0, -1.0, 0.9, 1.0, 0.0, 0.0, 0.0])
+
+    def step(self, action: list[list[float]]) -> None:
+        targets = action[0]
+        self.steps.append(list(targets))
+        # Simulator order: arm positions, the finger's, then the wheels' velocities.
+        self.robot.q = np.array([targets[3], *targets[:3], *targets[4:]])
+        self.robot.root[2] = 0.9 if len(self.steps) < 5 else 0.2
+
+
+def test_a_wheeled_humanoid_drives_by_wheel_velocity_and_a_fall_ends_its_episode_as_its_failure(
+        tmp_path, monkeypatch) -> None:
+    model = write_robot_usd(tmp_path / "wheeled.usda", anchored=False, wheels=True)
+    declared = validate_embodiment_manifest(wheeled_manifest(model))
+    sealed = team_embodiment_binding(declared, model_record=verify_model_file(declared, model),
+                                     structure=read_model_structure(model), scene_plan=station_plan(), stance=STANCE)
+    plan = {**apply_team_embodiment(station_plan(), sealed), "scenario": {"seed": 7}}
+    monkeypatch.setattr(native_task_episode_environment, "NativeRigidScoringEnvironment", _Scoring)
+    monkeypatch.setattr(adp_task_scoring, "score_task_episode_from_spec",
+                        lambda *, task_spec, samples: {"status": "scored", "task_succeeded": True})
+    monkeypatch.setattr(episode_visual_evidence, "finalize_multicamera_visual_evidence",
+                        lambda **kwargs: ({"status": "complete"}, []))
+    env = _WheeledEnv()
+    built = type("Built", (), {"env": env, "camera_scene_names": {
+        "team_camera_0": "team_camera_0", "team_camera_1": "team_camera_1", "overview": "external_camera_2"}})()
+    # One row: three arm targets, two wheel velocities, then the gripper closure.
+    policy = _Policy([[[0.1, 0.2, 0.3, 2.0, -2.0, 1.0]] * 4])
+    episode = run_team_episode(built=built, task_readback=None, policy=policy, plan=plan, prompt="Put the mug away",
+                               max_policy_queries=100, open_loop_horizon=4, media_root=tmp_path / "episodes",
+                               episode_id="run--cell--team", progress={}, to_action=lambda t: [t])
+    first = policy.observations[0]["state"]
+    assert len(first["joint_position"]) == len(first["joint_velocity"]) == 5
+    assert first["base"]["position_world_m"] == [1.0, -1.0, 0.9]
+    assert env.steps[0] == [0.1, 0.2, 0.3, 0.0, 2.0, -2.0]
+    # It fell on its fifth step: the policy is not asked again, and the wheels stop while the object settles.
+    assert len(policy.observations) == 2 and env.steps[5] == [0.1, 0.2, 0.3, 0.0, 0.0, 0.0]
+    assert episode["motion_evidence"]["robot_fell"] is True
+    row = {"status": "completed", "scoring_authority": "deterministic_simulator_state", "episode": episode}
+    assert episode_outcome(row) == ("failure", "robot_fell")
+    # A wheel velocity beyond its declared maximum never reaches the robot.
+    env = _WheeledEnv()
+    built.env = env
+    with pytest.raises(TeamPolicyActionRejected, match="left_wheel_joint"):
+        run_team_episode(built=built, task_readback=None, policy=_Policy([[[0.1, 0.2, 0.3, 50.0, 0.0, 0.0]]]),
+                         plan=plan, prompt="Put the mug away", max_policy_queries=100, open_loop_horizon=4,
+                         media_root=tmp_path / "rejected", episode_id="run--cell2--team", progress={},
+                         to_action=lambda t: [t])
+    assert env.steps == []
+
+
+def write_room_usd(path: Path) -> Path:
+    """A floor and a table, as the scene's collision mesh: Z up, meters."""
+
+    from pxr import Usd, UsdGeom
+
+    stage = Usd.Stage.CreateNew(str(path))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    stage.SetDefaultPrim(stage.DefinePrim("/World", "Xform"))
+    floor = UsdGeom.Mesh.Define(stage, "/World/Floor")
+    floor.CreatePointsAttr([(-1.0, -3.0, 0.0), (5.0, -3.0, 0.0), (5.0, 3.0, 0.0), (-1.0, 3.0, 0.0)])
+    floor.CreateFaceVertexCountsAttr([4])
+    floor.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    floor.CreateExtentAttr([(-1.0, -3.0, 0.0), (5.0, 3.0, 0.0)])
+    (x0, y0, z0), (x1, y1, z1) = (1.5, -0.3, 0.0), (2.5, 0.3, 0.75)
+    table = UsdGeom.Mesh.Define(stage, "/World/Table")
+    table.CreatePointsAttr([(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
+                            (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)])
+    table.CreateFaceVertexCountsAttr([4] * 6)
+    table.CreateFaceVertexIndicesAttr([0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7])
+    table.CreateExtentAttr([(x0, y0, z0), (x1, y1, z1)])
+    stage.GetRootLayer().Save()
+    return path
+
+
+def test_a_free_base_starts_at_the_closest_clear_floor_spot_facing_the_task(tmp_path) -> None:
+    from blueprint_pipeline.team_embodiment_stance import free_base_stance
+
+    room = write_room_usd(tmp_path / "assets" / "collision.usda")
+    model = write_robot_usd(tmp_path / "wheeled.usda", anchored=False, wheels=True)
+    declared = validate_embodiment_manifest(wheeled_manifest(model))
+    plan = {"objects": [{"semantic_role": "scene_collision", "usd_path": "assets/collision.usda",
+                         "sha256": "sha256:" + hashlib.sha256(room.read_bytes()).hexdigest(),
+                         "pose_world": {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}}],
+            "task_spec": {"start_pose_world": [2.0, 0.0, 0.8, 0.0, 0.0, 0.0, 1.0],
+                          "subject_collision_bounds_scoring_frame_m": {"minimum": [-0.05, -0.05, -0.05],
+                                                                        "maximum": [0.05, 0.05, 0.05]}}}
+    stance = free_base_stance(declared, scene_plan=plan, packet_dir=tmp_path)
+    x, y, z = stance["position_world_m"]
+    assert abs(stance["floor_z_m"]) < 1e-6 and abs(z - 0.9) < 1e-6  # on the floor, not the table
+    # Clear of the table's footprint, facing the object.
+    assert abs(x - 2.0) >= 0.5 + 0.3 or abs(y) >= 0.3 + 0.3
+    yaw = stance["yaw_rad"]
+    assert abs(math.atan2(0.0 - y, 2.0 - x) - yaw) < 1e-9 and stance["clear_stances"] > 0
+    # A room with no clear floor near the task refuses the robot by name.
+    crowded = {**declared, "base": {**declared["base"], "footprint_half_extent_m": [1.5, 1.5]}}
+    with pytest.raises(TeamEmbodimentError, match="no_clear_stance"):
+        free_base_stance(crowded, scene_plan=plan, packet_dir=tmp_path)
+    # The launch fetches the team's model, finds this stance and seals it into the binding.
+    from blueprint_pipeline import team_candidate_quick10_launch as launch
+
+    (tmp_path / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    sealed = launch._stage_robot_model(job_dir=tmp_path / "job", manifest=declared,
+                                       facts={"packet_dir": str(tmp_path)},
+                                       fetch=lambda url, target: target.write_bytes(model.read_bytes()))
+    assert sealed["stance"] == stance and sealed["manifest"]["base"]["mode"] == "free"

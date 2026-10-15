@@ -1,28 +1,28 @@
 """A robot team's own embodiment: their robot model, the joints their policy drives, and their cameras.
 
-Beta journey step: L5 team policy evaluation. Until now the only robot a team
-could be evaluated on was Blueprint's simulated Franka Panda with a Robotiq
-2F-85 on the DROID interface. A team that deploys a UR5e, a Kinova, an xArm or
-any other arm would have been evaluated on a robot it would never bring to the
-site's pilot. This module lets the team bring its own:
+Beta journey step: L5 team policy evaluation. A team brings the robot it would
+bring to the site's pilot, whatever its form: a fixed arm, two arms, a mobile
+manipulator, a wheeled or legged humanoid. Owner direction 2026-10-15: every
+embodiment is evaluated, so nothing here is specific to one form. A robot is
+described by two things the simulator needs and nothing else:
 
-- **the robot**: one flattened USD (Isaac Sim's native format; Isaac Lab's
-  URDF importer produces it from a URDF), bound by SHA-256, plus the joints the
-  policy drives in action order with their limits, the gripper joints and their
-  open and closed positions, the links that may touch the task object, the tool
-  link, the reset pose and the actuator gains;
-- **the cameras** the policy sees: each mounted on a robot link or in the world,
-  posed in the OpenCV optical convention (+Z forward, +X right, +Y down) with
-  its resolution and horizontal field of view;
-- **the control rate** and the action chunk its policy returns.
+- **its base**: ``fixed`` (pinned to the world at the scene's robot station,
+  the pose Blueprint placed its own arm at; the model authors the world anchor)
+  or ``free`` (it stands or drives on the scene's floor under its own control;
+  it starts at a clear floor stance facing the task, and falling ends the
+  episode as the robot's failure);
+- **its joints**: each driven joint, in action order, by ``position`` (arms,
+  legs, torsos, heads, fingers) or by ``velocity`` (wheels), with its limits
+  and optional gains; optionally a gripper whose joints close together on one
+  0-to-1 command.
 
-The robot's base is held fixed at the scene's robot station, the pose Blueprint
-placed its own robot at when it built the site's scene. A robot whose declared
-reach does not cover the task object and its destination from the station, or
-whose model lacks a declared joint or link, is refused by name before any GPU
-time is spent. Fixed-base arms are the admitted form: evaluating a mobile
-manipulator or a humanoid with its base locked needs a recorded owner focus
-decision first (``ADMITTED_FORMS``).
+plus one flattened USD (Isaac Sim's native format; Isaac Lab's URDF and MJCF
+importers produce it) bound by SHA-256, the reset pose, the cameras the policy
+sees (mounted on a link or in the world, OpenCV optical convention, resolution
+and horizontal field of view), the control rate and the action chunk. A model
+that lacks a declared joint or link, a fixed base that is not anchored or
+cannot reach the task from the station, a free base that is anchored or has no
+clear stance near the task, is refused by name before any GPU time is spent.
 
 The task, the success contract and the scoring are unchanged: success is
 decided from the task object's simulated state, sampled at the scene's task
@@ -30,10 +30,11 @@ rate, never from anything robot-side except the gripper's opening (from the
 declared gripper joints and maximum width) and which declared links touch the
 object.
 
-The control plane validates, reads the model's bodies and joints (OpenUSD) and
-seals a binding into the execution spec; the GPU worker applies the binding to
-each resolved scene plan (``apply_team_embodiment``) before Isaac builds the
-scene, and ``team_embodiment_runtime`` drives it.
+The control plane validates, reads the model's bodies and joints (OpenUSD),
+finds a free base's stance (``team_embodiment_stance``) and seals a binding
+into the execution spec; the GPU worker applies the binding to each resolved
+scene plan (``apply_team_embodiment``) before Isaac builds the scene, and
+``team_embodiment_runtime`` drives it.
 """
 
 from __future__ import annotations
@@ -53,13 +54,17 @@ SCHEMA = "blueprint.robot_embodiment.v1"
 BINDING_SCHEMA = "blueprint.team_embodiment_binding.v1"
 ROBOT_ID = "team_embodiment"
 POLICY_INTERFACE_ID = "blueprint_policy_https.v1"
-FORMS = ("fixed_base_arm", "mobile_manipulator", "humanoid")
-# Forms the runtime will evaluate today. Others are declared truthfully and refused by name.
-ADMITTED_FORMS = ("fixed_base_arm",)
+# What the team says its robot is (reported, never a gate); the base and joints decide how it is simulated.
+FORMS = ("fixed_base_arm", "bimanual_arm", "mobile_manipulator", "wheeled_humanoid", "humanoid",
+         "legged_manipulator", "other")
+FIXED_FORMS = ("fixed_base_arm", "bimanual_arm")
+BASE_MODES = ("fixed", "free")
+JOINT_CONTROLS = ("position", "velocity")
+MAX_JOINTS = 64
 # Control rates: multiples of the scene's 15 Hz task-sampling rate that divide
 # its 120 Hz physics rate, so every task sample lands on a control step. A
 # slower policy repeats rows of its chunk.
-CONTROL_HZ = (15, 30, 60)
+CONTROL_HZ = (15, 30, 60, 120)
 MAX_CAMERAS = 4
 MAX_ACTION_CHUNK_ROWS = 64
 BUNDLE_MODEL_PATH = "team_embodiment/robot.usd"
@@ -90,7 +95,7 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
     m = dict(value) if isinstance(value, Mapping) else {}
     blockers: list[str] = []
-    allowed = {"schema_version", "embodiment_id", "form", "model", "arm_joints", "gripper", "tool_link",
+    allowed = {"schema_version", "embodiment_id", "form", "model", "base", "joints", "gripper", "tool_link",
                "reset_joint_positions", "actuator", "cameras", "control_hz", "action_chunk_rows", "reach_m",
                "embodiment_digest"}
     if set(m) - allowed:
@@ -107,18 +112,45 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
             or url.query or url.fragment or not _DIGEST.fullmatch(str(model.get("sha256") or ""))
             or set(model) != {"format", "url", "sha256"}):
         blockers.append("team_embodiment_model_invalid")
-    arm = m.get("arm_joints") if isinstance(m.get("arm_joints"), list) else []
+    base = m.get("base") if isinstance(m.get("base"), Mapping) else {}
+    if base.get("mode") == "fixed":
+        if set(base) != {"mode"}:
+            blockers.append("team_embodiment_base_invalid")
+    elif base.get("mode") == "free":
+        root, fall, footprint = base.get("root_height_m"), base.get("fall_height_m"), base.get("footprint_half_extent_m")
+        ground = base.get("ground_contact_links")
+        if (set(base) != {"mode", "root_height_m", "fall_height_m", "footprint_half_extent_m", "ground_contact_links"}
+                or not _finite(root) or not 0.05 <= float(root) <= 2.5
+                or not _finite(fall) or not 0 < float(fall) < float(root)
+                or not _vector(footprint, 2) or not all(0.05 <= float(v) <= 1.5 for v in footprint)
+                or not isinstance(ground, list) or not 1 <= len(ground) <= 16
+                or len(set(map(str, ground))) != len(ground) or not all(_NAME.fullmatch(str(v)) for v in ground)):
+            blockers.append("team_embodiment_base_invalid")
+    else:
+        blockers.append("team_embodiment_base_invalid")
+    if m.get("form") in FIXED_FORMS and base.get("mode") != "fixed":
+        blockers.append("team_embodiment_form_base_mismatch")
+    declared = m.get("joints") if isinstance(m.get("joints"), list) else []
     names: list[str] = []
-    for joint in arm:
+    position_limits: dict[str, tuple[float, float]] = {}
+    for joint in declared:
         joint = joint if isinstance(joint, Mapping) else {}
-        if (set(joint) != {"name", "lower", "upper", "max_velocity"} or not _NAME.fullmatch(str(joint.get("name")))
-                or not all(_finite(joint.get(key)) for key in ("lower", "upper", "max_velocity"))
-                or not float(joint["lower"]) < float(joint["upper"]) or not float(joint["max_velocity"]) > 0):
-            blockers.append("team_embodiment_arm_joint_invalid")
+        control = joint.get("control")
+        required = {"name", "control", "max_velocity"} | ({"lower", "upper"} if control == "position" else set())
+        optional = {"stiffness", "damping"} if control == "position" else {"damping"}
+        if (control not in JOINT_CONTROLS or not required <= set(joint) or set(joint) - required - optional
+                or not _NAME.fullmatch(str(joint.get("name")))
+                or not all(_finite(joint.get(key)) for key in required - {"name", "control"})
+                or not float(joint["max_velocity"]) > 0
+                or not all(_finite(joint[key]) and float(joint[key]) > 0 for key in optional & set(joint))
+                or (control == "position" and not float(joint["lower"]) < float(joint["upper"]))):
+            blockers.append("team_embodiment_joint_invalid")
             continue
         names.append(str(joint["name"]))
-    if not 1 <= len(arm) <= 32:
-        blockers.append("team_embodiment_arm_joints_count_invalid")
+        if control == "position":
+            position_limits[str(joint["name"])] = (float(joint["lower"]), float(joint["upper"]))
+    if not 1 <= len(declared) <= MAX_JOINTS:
+        blockers.append("team_embodiment_joints_count_invalid")
     gripper = m.get("gripper")
     gripper_names: list[str] = []
     if gripper is not None:
@@ -143,11 +175,10 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("team_embodiment_joint_names_not_unique")
     if not _NAME.fullmatch(str(m.get("tool_link") or "")):
         blockers.append("team_embodiment_tool_link_invalid")
+    # Every position-driven joint (and gripper joint) has a reset position; a wheel starts at rest.
     reset = m.get("reset_joint_positions") if isinstance(m.get("reset_joint_positions"), Mapping) else {}
-    limits = {str(j["name"]): (float(j["lower"]), float(j["upper"])) for j in arm
-              if isinstance(j, Mapping) and str(j.get("name")) in names}
-    if (set(reset) != set(names) | set(gripper_names) or not all(_finite(v) for v in reset.values())
-            or any(not limits[name][0] <= float(reset[name]) <= limits[name][1] for name in names)):
+    if (set(reset) != set(position_limits) | set(gripper_names) or not all(_finite(v) for v in reset.values())
+            or any(not low <= float(reset[name]) <= high for name, (low, high) in position_limits.items())):
         blockers.append("team_embodiment_reset_invalid")
     actuator = m.get("actuator") if isinstance(m.get("actuator"), Mapping) else {}
     if (set(actuator) != {"stiffness", "damping"}
@@ -176,7 +207,9 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     rows = m.get("action_chunk_rows")
     if type(rows) is not int or not 1 <= rows <= MAX_ACTION_CHUNK_ROWS:
         blockers.append("team_embodiment_action_chunk_rows_invalid")
-    if not _finite(m.get("reach_m")) or not 0.1 <= float(m["reach_m"]) <= 3.0:
+    # A fixed base must reach the task from the station; a free base goes to it.
+    if (base.get("mode") == "fixed") != ("reach_m" in m) or (
+            "reach_m" in m and (not _finite(m["reach_m"]) or not 0.1 <= float(m["reach_m"]) <= 3.0)):
         blockers.append("team_embodiment_reach_invalid")
     if blockers:
         raise TeamEmbodimentError(blockers)
@@ -188,9 +221,9 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def action_dimension(manifest: Mapping[str, Any]) -> int:
-    """One target per driven arm joint, then the gripper's closure fraction (0 open, 1 closed)."""
+    """One target per declared joint (a position, or a wheel's velocity), then the gripper's closure (0 to 1)."""
 
-    return len(manifest["arm_joints"]) + (1 if manifest.get("gripper") else 0)
+    return len(manifest["joints"]) + (1 if manifest.get("gripper") else 0)
 
 
 def camera_names(manifest: Mapping[str, Any]) -> list[str]:
@@ -254,24 +287,32 @@ def _body_path(structure: Mapping[str, Any], link: str) -> str | None:
 
 
 def model_structure_blockers(manifest: Mapping[str, Any], structure: Mapping[str, Any]) -> list[str]:
-    """Every declared joint and link must exist, once, in the model, and its base is pinned to the world."""
+    """Every declared joint and link exists, once, in the model; a fixed base is anchored, a free one is not."""
 
     gripper = manifest.get("gripper") or {}
-    joints = [j["name"] for j in manifest["arm_joints"]] + [j["name"] for j in gripper.get("joints") or []]
+    joints = [j["name"] for j in manifest["joints"]] + [j["name"] for j in gripper.get("joints") or []]
     links = [manifest["tool_link"], *(gripper.get("contact_links") or []),
-             *(c["mount_link"] for c in manifest["cameras"] if c["mount_link"] is not None)]
+             *(c["mount_link"] for c in manifest["cameras"] if c["mount_link"] is not None),
+             *manifest["base"].get("ground_contact_links", [])]
     blockers = [f"team_embodiment_model_joint_missing:{name}" for name in joints
                 if name not in structure["joint_names"]]
     blockers += [f"team_embodiment_model_link_missing_or_ambiguous:{link}" for link in dict.fromkeys(links)
                  if _body_path(structure, link) is None]
-    # A fixed-base arm whose model does not pin its base floats: contacts would move it mid-episode.
-    blockers += [] if structure.get("world_anchor_links") else ["team_embodiment_model_base_not_anchored_to_world"]
+    # A fixed base whose model does not pin it floats (contacts would move it mid-episode);
+    # a free base whose model pins it could never stand, walk or drive.
+    anchored = bool(structure.get("world_anchor_links"))
+    if manifest["base"]["mode"] == "fixed" and not anchored:
+        blockers.append("team_embodiment_model_base_not_anchored_to_world")
+    if manifest["base"]["mode"] == "free" and anchored:
+        blockers.append("team_embodiment_model_free_base_anchored_to_world")
     return blockers
 
 
 def station_reach_blockers(scene_plan: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
-    """Refuse a robot whose declared reach cannot cover the task from the scene's robot station."""
+    """Refuse a fixed base whose declared reach cannot cover the task from the scene's robot station."""
 
+    if manifest["base"]["mode"] != "fixed":
+        return []
     robot = scene_plan.get("robot") if isinstance(scene_plan.get("robot"), Mapping) else {}
     base = ((robot.get("base_pose_world") or {}).get("position_world_m")
             if isinstance(robot.get("base_pose_world"), Mapping) else None)
@@ -292,22 +333,26 @@ def station_reach_blockers(scene_plan: Mapping[str, Any], manifest: Mapping[str,
             else ["team_embodiment_station_out_of_reach"])
 
 
-def admission_blockers(manifest: Mapping[str, Any]) -> list[str]:
-    return [] if manifest["form"] in ADMITTED_FORMS else [f"team_embodiment_form_not_admitted:{manifest['form']}"]
-
-
 def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mapping[str, Any],
-                            structure: Mapping[str, Any], scene_plan: Mapping[str, Any]) -> dict[str, Any]:
-    """The sealed binding the execution spec carries, or raise with every reason (no I/O)."""
+                            structure: Mapping[str, Any], scene_plan: Mapping[str, Any],
+                            stance: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The sealed binding the execution spec carries, or raise with every reason (no I/O).
 
-    blockers = [*admission_blockers(manifest), *model_structure_blockers(manifest, structure),
-                *station_reach_blockers(scene_plan, manifest)]
+    A free base carries its floor ``stance`` (``team_embodiment_stance.free_base_stance``).
+    """
+
+    free = manifest["base"]["mode"] == "free"
+    blockers = [*model_structure_blockers(manifest, structure), *station_reach_blockers(scene_plan, manifest)]
+    if free and not (isinstance(stance, Mapping) and _vector(stance.get("position_world_m"), 3)
+                     and _vector(stance.get("orientation_xyzw"), 4) and _finite(stance.get("floor_z_m"))):
+        blockers.append("team_embodiment_free_base_stance_unavailable")
     if blockers:
         raise TeamEmbodimentError(blockers)
     binding = {"schema_version": BINDING_SCHEMA, "manifest": deepcopy(dict(manifest)),
                "model": {"sha256": model_record["sha256"], "size_bytes": int(model_record["size_bytes"]),
                          "bundle_path": BUNDLE_MODEL_PATH},
-               "body_paths": list(structure["body_paths"]), "binding_digest": ""}
+               "body_paths": list(structure["body_paths"]),
+               **({"stance": deepcopy(dict(stance))} if free else {}), "binding_digest": ""}
     binding["binding_digest"] = canonical_digest(binding, digest_field="binding_digest")
     return binding
 
@@ -422,17 +467,31 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
     if len(task_bodies) != len(contact_links):
         raise TeamEmbodimentError(["team_embodiment_contact_links_not_in_model"])
     reset = {name: float(position) for name, position in manifest["reset_joint_positions"].items()}
+    joints, defaults = manifest["joints"], manifest["actuator"]
+    base = manifest["base"]
+    if base["mode"] == "free":
+        stance = binding["stance"]
+        base_row = {"base_mode": "free_on_floor",
+                    "base_pose_world": {"position_world_m": list(stance["position_world_m"]),
+                                        "orientation_xyzw": list(stance["orientation_xyzw"])},
+                    "fall_height_world_m": float(stance["floor_z_m"]) + float(base["fall_height_m"])}
+    else:
+        base_row = {"base_mode": "fixed_at_station", "base_pose_world": deepcopy(dict(station))}
     value["robot"] = {
         "robot_id": ROBOT_ID, "embodiment_id": manifest["embodiment_id"],
-        "embodiment_digest": manifest["embodiment_digest"], "form": manifest["form"],
-        "base_mode": "fixed_at_station", "base_pose_world": deepcopy(dict(station)),
+        "embodiment_digest": manifest["embodiment_digest"], "form": manifest["form"], **base_row,
         "usd_path": BUNDLE_MODEL_PATH, "usd_sha256": binding["model"]["sha256"],
         "usd_size_bytes": int(binding["model"]["size_bytes"]), "usd_dependency_bindings": [],
         "usd_runtime_asset_dependencies": [],
-        "arm_joint_names": [joint["name"] for joint in manifest["arm_joints"]],
+        "joint_names": [joint["name"] for joint in joints],
+        "joint_controls": {joint["name"]: joint["control"] for joint in joints},
         "joint_position_limits_rad": {joint["name"]: [float(joint["lower"]), float(joint["upper"])]
-                                      for joint in manifest["arm_joints"]},
-        "joint_velocity_limits": {joint["name"]: float(joint["max_velocity"]) for joint in manifest["arm_joints"]},
+                                      for joint in joints if joint["control"] == "position"},
+        "joint_velocity_limits": {joint["name"]: float(joint["max_velocity"]) for joint in joints},
+        # A wheel is driven by velocity: no stiffness, only damping.
+        "joint_gains": {joint["name"]: {
+            "stiffness": 0.0 if joint["control"] == "velocity" else float(joint.get("stiffness", defaults["stiffness"])),
+            "damping": float(joint.get("damping", defaults["damping"]))} for joint in joints},
         "gripper_joints": [dict(joint) for joint in gripper.get("joints") or []],
         "gripper_max_width_m": gripper.get("max_width_m"),
         "joint_reset_positions_rad": reset, "actuator": dict(manifest["actuator"]),
@@ -460,14 +519,17 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
                    maximum_action_steps=int(cadence["maximum_action_steps"]) * stride,
                    settle_window_samples=int(cadence["settle_window_samples"]) * stride)
     if isinstance(value.get("articulation"), dict):
+        # Feet and wheels bear the robot's weight on the floor: that is standing, not a collision.
+        ground = {_body_path(structure, link) for link in base.get("ground_contact_links", [])}
         _rebind_contact_sensors(value["articulation"], task_bodies=task_bodies,
-                                protected=sorted(binding["body_paths"]))
+                                protected=sorted(set(binding["body_paths"]) - ground))
     profile = {"schema_version": "team_embodiment_profile.v1", "robot_preset_id": ROBOT_ID,
                "embodiment_id": manifest["embodiment_id"], "embodiment_digest": manifest["embodiment_digest"],
                "policy_interface_id": POLICY_INTERFACE_ID,
                "policy_camera_roles": [role for role, _ in camera_slots(manifest)],
                "review_only_camera_roles": [row.get("role") for row in review],
-               "claim_boundary": {"base": "held_fixed_at_scene_robot_station",
+               "claim_boundary": {"base": ("held_fixed_at_scene_robot_station" if base["mode"] == "fixed"
+                                           else "free_on_scene_floor_from_clear_stance_falling_fails_episode"),
                                   "task_sampling_hz": task_hz, "control_hz": hz},
                "binding_digest": binding["binding_digest"], "profile_digest": ""}
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
@@ -481,17 +543,17 @@ def is_team_plan(plan: Mapping[str, Any]) -> bool:
 
 
 __all__ = [
-    "ADMITTED_FORMS",
+    "BASE_MODES",
     "BINDING_SCHEMA",
     "BUNDLE_MODEL_PATH",
     "CONTROL_HZ",
+    "FIXED_FORMS",
     "FORMS",
     "POLICY_INTERFACE_ID",
     "ROBOT_ID",
     "SCHEMA",
     "TeamEmbodimentError",
     "action_dimension",
-    "admission_blockers",
     "apply_team_embodiment",
     "camera_names",
     "camera_slots",

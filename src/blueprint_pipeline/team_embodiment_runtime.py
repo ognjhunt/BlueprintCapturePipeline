@@ -1,23 +1,30 @@
-"""Drive a robot team's own arm in the site scene: build it, gate its first observation, run one episode.
+"""Drive a robot team's own robot in the site scene: build it, gate its first observation, run one episode.
 
 Beta journey step: L5 team policy evaluation. ``team_embodiment`` validates
 and binds what the team declared; this module is the GPU side, imported only
 inside the Isaac process:
 
-- ``build_team_embodiment`` spawns the team's USD at the scene's robot station
-  with the declared actuator gains, a joint-position action over the declared
-  arm and gripper joints in action order, and one camera per declared camera;
+- ``build_team_embodiment`` spawns the team's USD at its start pose (the
+  scene's robot station for a fixed base, its floor stance for a free one,
+  under gravity), with each declared joint's gains, a joint-position action
+  over the position-driven joints (then the gripper's) and a joint-velocity
+  action over the velocity-driven ones (wheels), and one camera per declared
+  camera;
 - ``team_observation_gate`` runs before the team's policy is contacted: the
-  robot reset to its declared pose, its base stayed at the station, every team
-  camera rendered a real frame, and the scene's overview camera sees the task
-  object. Whether the team's own cameras frame the task is the team's choice
-  and is recorded, never gated;
-- ``run_team_episode`` is the closed loop: the team's cameras, joint positions
-  and gripper closure go to the team's policy; each returned row is joint
-  targets for the arm plus a gripper closure fraction; the simulator executes
-  it at the team's control rate and records the task object's state at the
-  scene's task rate; the scene's sealed success contract scores the samples
-  (``score_task_episode_from_spec``), exactly as for Blueprint's own robot.
+  robot reset to its declared pose at its start pose, every team camera
+  rendered a real frame, and the scene's overview camera sees the task object.
+  Whether the team's own cameras frame the task is the team's choice and is
+  recorded, never gated;
+- ``run_team_episode`` is the closed loop: the team's cameras, every declared
+  joint's position and velocity, the gripper closure and the base's pose and
+  velocity go to the team's policy; each returned row is one target per
+  declared joint (a position, or a wheel's velocity) plus a gripper closure;
+  the simulator executes it at the team's control rate and records the task
+  object's state at the scene's task rate; the scene's sealed success contract
+  scores the samples (``score_task_episode_from_spec``), exactly as for
+  Blueprint's own robot. A free base whose root drops below its declared fall
+  height has fallen: the policy is not queried again and the episode is the
+  robot's failure.
 
 A row outside a joint's declared limits, or a closure outside [0, 1], is
 refused before it reaches the robot and ends the episode as the policy's
@@ -87,8 +94,21 @@ def _calibration(camera: Any) -> dict[str, Any]:
             "near_m": float(clipping[0]), "far_m": float(clipping[1]), "world_pose_source": "isaac_sensor_buffer"}
 
 
+def action_joint_groups(robot: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """``(position-driven, velocity-driven)`` joints in the simulator's action order.
+
+    Position: the declared position joints in declared order, then the gripper's.
+    Velocity: the declared velocity joints (wheels) in declared order.
+    """
+
+    controls = robot["joint_controls"]
+    return ([name for name in robot["joint_names"] if controls[name] == "position"]
+            + [joint["name"] for joint in robot["gripper_joints"]],
+            [name for name in robot["joint_names"] if controls[name] == "velocity"])
+
+
 def build_team_embodiment(robot: Mapping[str, Any], *, enable_cameras: bool, pose_class: Any) -> Any:
-    """The team's arm as an Isaac Lab Arena embodiment, spawned at the station pose."""
+    """The team's robot as an Isaac Lab Arena embodiment, spawned at its start pose."""
 
     import isaaclab.sim as sim_utils
     from isaaclab.actuators import ImplicitActuatorCfg
@@ -104,33 +124,44 @@ def build_team_embodiment(robot: Mapping[str, Any], *, enable_cameras: bool, pos
     from isaaclab.utils import configclass
     from isaaclab_arena.embodiments.embodiment_base import EmbodimentBase
 
-    joints = [*robot["arm_joint_names"], *(joint["name"] for joint in robot["gripper_joints"])]
+    position, velocity = action_joint_groups(robot)
     pose = robot["base_pose_world"]
-    gains = robot["actuator"]
+    free = robot["base_mode"] == "free_on_floor"
+    gains = {**{joint["name"]: {key: float(robot["actuator"][key]) for key in ("stiffness", "damping")}
+                for joint in robot["gripper_joints"]}, **robot["joint_gains"]}
     articulation = ArticulationCfg(
         prim_path="{ENV_REGEX_NS}/Robot",
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(robot["usd_path"]), activate_contact_sensors=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True, max_depenetration_velocity=5.0),
+            # A fixed base is held by its anchor; a free base stands, walks or drives under gravity.
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=not free, max_depenetration_velocity=5.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=False, solver_position_iteration_count=64,
                 solver_velocity_iteration_count=0)),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=tuple(pose["position_world_m"]), rot=tuple(pose["orientation_xyzw"]),
-            joint_pos=dict(robot["joint_reset_positions_rad"])),
+            joint_pos=dict(robot["joint_reset_positions_rad"]), joint_vel={".*": 0.0}),
         soft_joint_pos_limit_factor=1.0,
         actuators={"team_joints": ImplicitActuatorCfg(
-            joint_names_expr=joints, stiffness=float(gains["stiffness"]), damping=float(gains["damping"]))},
+            joint_names_expr=[*position, *velocity],
+            stiffness={name: gains[name]["stiffness"] for name in [*position, *velocity]},
+            damping={name: gains[name]["damping"] for name in [*position, *velocity]})},
     )
 
     @configclass
     class SceneCfg:
         robot: ArticulationCfg = articulation
 
-    @configclass
-    class Actions:
-        joint_positions = mdp.JointPositionActionCfg(
-            asset_name="robot", joint_names=joints, scale=1.0, use_default_offset=False, preserve_order=True)
+    # The simulator's action vector: position targets, then wheel velocities (``action_joint_groups``).
+    terms: dict[str, Any] = {}
+    if position:
+        terms["joint_positions"] = mdp.JointPositionActionCfg(
+            asset_name="robot", joint_names=position, scale=1.0, use_default_offset=False, preserve_order=True)
+    if velocity:
+        terms["joint_velocities"] = mdp.JointVelocityActionCfg(
+            asset_name="robot", joint_names=velocity, scale=1.0, use_default_offset=False, preserve_order=True)
+    Actions = configclass(type("TeamActionsCfg", (), {"__annotations__": {k: type(v) for k, v in terms.items()},
+                                                     **terms}))
 
     @configclass
     class PolicyObservations(ObservationGroupCfg):
@@ -144,12 +175,15 @@ def build_team_embodiment(robot: Mapping[str, Any], *, enable_cameras: bool, pos
     class Observations:
         policy = PolicyObservations()
 
-    @configclass
-    class Events:
-        reset_robot_joints = EventTermCfg(
-            func=mdp.reset_joints_by_offset, mode="reset",
-            params={"asset_cfg": SceneEntityCfg("robot"), "position_range": (0.0, 0.0),
-                    "velocity_range": (0.0, 0.0)})
+    events: dict[str, Any] = {"reset_robot_joints": EventTermCfg(
+        func=mdp.reset_joints_by_offset, mode="reset",
+        params={"asset_cfg": SceneEntityCfg("robot"), "position_range": (0.0, 0.0), "velocity_range": (0.0, 0.0)})}
+    if free:
+        # A free base returns to its floor stance, at rest, every episode.
+        events["reset_robot_root"] = EventTermCfg(
+            func=mdp.reset_root_state_uniform, mode="reset",
+            params={"asset_cfg": SceneEntityCfg("robot"), "pose_range": {}, "velocity_range": {}})
+    Events = configclass(type("TeamEventsCfg", (), {"__annotations__": {k: EventTermCfg for k in events}, **events}))
 
     # The arena runtime poses, sizes and calibrates each camera from the scene plan.
     names = [f"team_camera_{index}" for index in range(len(robot["camera_names"]))] + ["external_camera_2"]
@@ -203,7 +237,8 @@ def team_observation_gate(*, built: Any, plan: Mapping[str, Any], output_root: P
     base = [float(v) for v in _array(robot.data.root_pose_w)[0][:3]]
     drift = math.dist(base, [float(v) for v in plan["robot"]["base_pose_world"]["position_world_m"]])
     if not drift <= BASE_DRIFT_TOLERANCE_M:
-        blockers.append("team_embodiment_base_not_fixed_at_station")
+        blockers.append("team_embodiment_base_not_fixed_at_station" if plan["robot"]["base_mode"] == "fixed_at_station"
+                        else "team_embodiment_base_not_at_floor_stance")
     root = output_root / "prepolicy_observation_gate" / "team_reset"
     root.mkdir(parents=True, exist_ok=True)
     frames = {}
@@ -277,16 +312,23 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     unwrapped = env.unwrapped
     robot = unwrapped.scene["robot"]
     row, task_spec, cadence = plan["robot"], plan["task_spec"], plan["cadence"]
-    arm = list(row["arm_joint_names"])
+    declared = list(row["joint_names"])
+    controls = row["joint_controls"]
     gripper = list(row["gripper_joints"])
     names = list(robot.joint_names)
-    missing = [name for name in [*arm, *(j["name"] for j in gripper)] if name not in names]
+    missing = [name for name in [*declared, *(j["name"] for j in gripper)] if name not in names]
     if missing:
         raise RuntimeError("team_embodiment_joint_missing_at_runtime:" + ",".join(missing))
-    arm_index = [names.index(name) for name in arm]
+    declared_index = [names.index(name) for name in declared]
     gripper_index = [names.index(joint["name"]) for joint in gripper]
-    limits = [row["joint_position_limits_rad"][name] for name in arm]
-    width_dimension = len(arm) + (1 if gripper else 0)
+    # Where each declared joint's value sits in a policy row, split by how the simulator drives it.
+    position_columns = [j for j, name in enumerate(declared) if controls[name] == "position"]
+    velocity_columns = [j for j, name in enumerate(declared) if controls[name] == "velocity"]
+    bounds = [row["joint_position_limits_rad"][name] if controls[name] == "position"
+              else [-float(row["joint_velocity_limits"][name]), float(row["joint_velocity_limits"][name])]
+              for name in declared]
+    fall_height = float(row["fall_height_world_m"]) if row["base_mode"] == "free_on_floor" else None
+    width_dimension = len(declared) + (1 if gripper else 0)
     stride = int(cadence["task_sample_stride"])
     action_steps = int(cadence["maximum_action_steps"])
     settle_steps = int(cadence["settle_window_samples"])
@@ -302,6 +344,13 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
 
     def joint_positions() -> Any:
         return _array(robot.data.joint_pos)[0]
+
+    def base_state() -> dict[str, list[float]]:
+        pose, velocity = _array(robot.data.root_pose_w)[0], _array(robot.data.root_vel_w)[0]
+        w, x, y, z = (float(v) for v in pose[3:7])  # Isaac Lab stores wxyz
+        return {"position_world_m": [float(v) for v in pose[:3]], "orientation_xyzw": [x, y, z, w],
+                "linear_velocity_world_mps": [float(v) for v in velocity[:3]],
+                "angular_velocity_world_radps": [float(v) for v in velocity[3:6]]}
 
     def closure(q: Any) -> float | None:
         if not gripper:
@@ -354,27 +403,36 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     commanded: list[dict[str, Any]] = []
     queries: list[dict[str, Any]] = []
 
+    fell = False
+
     def advance(targets: Sequence[float]) -> None:
-        nonlocal step
+        nonlocal step, fell
         env.step(to_action(list(targets)))
         step += 1
+        if fall_height is not None and float(_array(robot.data.root_pose_w)[0][2]) < fall_height:
+            fell = True
         if step % stride == 0:
             q = joint_positions()
-            joint_trace.append([float(q[i]) for i in arm_index])
+            joint_trace.append([float(q[i]) for i in declared_index])
             sample = scoring.read_object_sample()
             sample["step_index"] = step // stride
             samples.append(sample)
 
     q0 = joint_positions()
-    last = [float(q0[i]) for i in arm_index] + [float(q0[i]) for i in gripper_index]
+    base0 = base_state()["position_world_m"]
+    # Hold: every position joint (and the gripper) where it is; every wheel at rest.
+    last = ([float(q0[declared_index[j]]) for j in position_columns] + [float(q0[i]) for i in gripper_index]
+            + [0.0] * len(velocity_columns))
     for query_index in range(int(max_policy_queries)):
-        if step >= action_steps:
+        if step >= action_steps or fell:
             break
-        q = joint_positions()
+        q, qd = joint_positions(), _array(robot.data.joint_vel)[0]
         images = {name: _rgb(unwrapped.scene[built.camera_scene_names[role]]) for role, name in roles}
         observation = {"images": images, "prompt": prompt,
-                       "state": {"joint_position": [float(q[i]) for i in arm_index],
-                                 "gripper_position": [] if not gripper else [closure(q)]}}
+                       "state": {"joint_position": [float(q[i]) for i in declared_index],
+                                 "joint_velocity": [float(qd[i]) for i in declared_index],
+                                 "gripper_position": [] if not gripper else [closure(q)],
+                                 "base": base_state()}}
         observations.append(capture("policy-input"))
         progress["first_observation_retained"] = True
         progress.update(candidate_policy_query_attempted=True, candidate_action_applied=False, phase="policy_query")
@@ -394,9 +452,9 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
             raise ValueError("team_policy_https_action_nonfinite")
         progress["candidate_action_finite_validated"] = True
         executed = actions[:int(open_loop_horizon)]
-        violations = [f"candidate_action_joint_position_bounds_invalid:{arm[j]}:row{r}"
-                      for r in range(executed.shape[0]) for j in range(len(arm))
-                      if not limits[j][0] - LIMIT_TOLERANCE <= executed[r, j] <= limits[j][1] + LIMIT_TOLERANCE]
+        violations = [f"candidate_action_joint_position_bounds_invalid:{declared[j]}:row{r}"
+                      for r in range(executed.shape[0]) for j in range(len(declared))
+                      if not bounds[j][0] - LIMIT_TOLERANCE <= executed[r, j] <= bounds[j][1] + LIMIT_TOLERANCE]
         if gripper:
             violations += [f"candidate_action_joint_position_bounds_invalid:gripper_closure:row{r}"
                            for r in range(executed.shape[0]) if not 0.0 <= executed[r, -1] <= 1.0]
@@ -407,26 +465,30 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
             progress["phase"] = "policy_action_bounds_refused"
             raise TeamPolicyActionRejected(violations[:16])
         for action in executed:
-            if step >= action_steps:
+            if step >= action_steps or fell:
                 break
-            targets = [float(v) for v in action[:len(arm)]]
+            targets = [float(action[j]) for j in position_columns]
             for joint in gripper:
                 targets.append(float(joint["open"]) + float(action[-1]) * (float(joint["closed"]) - float(joint["open"])))
+            targets += [float(action[j]) for j in velocity_columns]
             commanded.append({"step_index": step, "targets": targets})
             advance(targets)
             progress["candidate_action_applied"] = True
             last = targets
+    if velocity_columns:  # the wheels stop while the task object settles
+        last = [*last[:len(last) - len(velocity_columns)], *([0.0] * len(velocity_columns))]
     for _ in range(settle_steps):  # hold the last command while the task object settles
         advance(last)
     score = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
     visual, artifacts = seal_media()
     state_trace, contacts, trajectory = episode_trace_evidence(
         joint_trace=joint_trace, task_samples=samples, task_pose_field="task_object_pose_world")
-    moved = bool(joint_trace) and max(abs(a - b) for row_q in joint_trace
-                                     for a, b in zip(row_q, [float(q0[i]) for i in arm_index], strict=True)) > 1e-3
+    moved = (bool(joint_trace) and max(abs(a - b) for row_q in joint_trace
+                                       for a, b in zip(row_q, [float(q0[i]) for i in declared_index], strict=True))
+             > 1e-3) or math.dist(base_state()["position_world_m"], base0) > 1e-3
     return {
         "status": "completed", "score": score, "visual_evidence": visual, "media_artifacts": artifacts,
-        "motion_evidence": {"actions_reached_robot": bool(commanded), "arm_moved": moved,
+        "motion_evidence": {"actions_reached_robot": bool(commanded), "arm_moved": moved, "robot_fell": fell,
                             "control_hz": float(cadence["control_frequency_hz"]), "task_sample_stride": stride},
         "commanded_actions": commanded, "state_trace": state_trace, "contact_force_evidence": contacts,
         "task_object_trajectory": trajectory, "queries": queries, "policy_queries": len(queries),

@@ -456,8 +456,13 @@ def _stage_robot_model(*, job_dir: Path, manifest: Mapping[str, Any], facts: Map
     (fetch or _fetch_model)(str(manifest["model"]["url"]), target)
     record = verify_model_file(manifest, target)
     plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
+    stance = None
+    if manifest["base"]["mode"] == "free":
+        from .team_embodiment_stance import free_base_stance
+
+        stance = free_base_stance(manifest, scene_plan=plan, packet_dir=Path(facts["packet_dir"]))
     binding = team_embodiment_binding(manifest, model_record=record, structure=read_model_structure(target),
-                                      scene_plan=plan)
+                                      scene_plan=plan, stance=stance)
     _write(job_dir / EMBODIMENT_BINDING_FILENAME, binding)
     return binding
 
