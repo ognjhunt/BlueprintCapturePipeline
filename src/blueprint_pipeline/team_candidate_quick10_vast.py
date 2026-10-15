@@ -128,8 +128,9 @@ def run_team_candidate_session_vast(
         authorization_consumption=consumption, stale_offer_create_retry_limit=0,
         expected_provider_download_bytes=POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES + POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES,
         expected_provider_upload_bytes=TEAM_RESULT_UPLOAD_BYTES, provider_runtime_environment=environment,
+        # Outputs download after the session (the launcher default); only the frozen
+        # Quick-10 session streams provider outputs.
         runtime_secret_file_paths={credential_env: Path(str(credential_file))},
-        provider_output_delivery="download",
     )
 
 

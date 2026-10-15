@@ -165,7 +165,8 @@ def test_the_token_reaches_the_provider_only_through_the_runtime_secret_channel(
     assert team_vast.run_team_candidate_session_vast(**kwargs) == {"status": "completed"}
     sent = calls[0]
     assert sent["runtime_secret_file_paths"] == {TOKEN_ENV: token_file}
-    assert sent["forward_hf_token"] is False and sent["provider_output_delivery"] == "download"
+    # No streaming: the session passes no delivery mode, so the launcher's download default applies.
+    assert sent["forward_hf_token"] is False and not any(key.startswith("provider_output_") for key in sent)
     assert sent["provider_bundle_kind"] == "native_task_arena_policy_canary_session"
     assert "paired_witness_binding" not in sent and sent["candidate_policy_query_expected"] is True
     assert TOKEN not in json.dumps({key: str(value) for key, value in sent.items()})
