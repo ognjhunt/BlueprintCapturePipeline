@@ -70,8 +70,11 @@ def test_every_way_a_probe_can_fail_to_admit_has_its_own_reason() -> None:
 
 
 def test_task_kinds_without_a_robot_free_probe_are_refused_by_name() -> None:
-    assert _reason(scored_probe_receipt(), task_kind="rigid_pick_place") == (
-        "unavailable_for_task_kind:rigid_pick_place")
+    assert gate.PROBE_TASK_KINDS == {"articulated_open_close", "rigid_pick_place"}
+    assert _reason(scored_probe_receipt(), task_kind="deformable_fold") == (
+        "unavailable_for_task_kind:deformable_fold")
+    # An articulated receipt never admits a rigid task (its own probe: tests/test_rigid_robot_free_probe.py).
+    assert _reason(scored_probe_receipt(), task_kind="rigid_pick_place") == "task_kind_mismatch"
 
 
 def test_the_retained_receipt_is_read_beside_the_source_launch_without_following_links(tmp_path: Path) -> None:

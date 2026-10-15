@@ -137,7 +137,7 @@ def test_the_robot_free_probe_is_mandatory_for_this_scene_revision_and_task() ->
     assert _blockers(probe_receipt=scored_probe_receipt("sha256:" + "8" * 64)) == [
         "team_evaluation_robot_free_probe_scene_revision_mismatch"]
     rigid = {**_inputs()["scene"], "task_spec": {**_spec(), "task_kind": "rigid_pick_place"}}
-    assert "team_evaluation_robot_free_probe_unavailable_for_task_kind:rigid_pick_place" in _blockers(scene=rigid)
+    assert "team_evaluation_robot_free_probe_task_kind_mismatch" in _blockers(scene=rigid)
 
 
 def test_interface_and_delivery_mismatches_are_refused_by_name() -> None:
