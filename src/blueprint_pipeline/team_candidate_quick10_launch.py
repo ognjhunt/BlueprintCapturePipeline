@@ -201,7 +201,7 @@ def _team_metadata(endpoint_url: str, origin: str, token: str, transport: Callab
         if (not isinstance(value, dict) or set(value) != TEAM_METADATA_KEYS
                 or value["schema_version"] != TEAM_METADATA_SCHEMA
                 or value["policy_interface_id"] != TEAM_ROBOT_INTERFACE or value["action_space"] != "joint_position"
-                or value["embodiment_digest"] != manifest["embodiment_digest"]
+                or value["embodiment_id"] != manifest["embodiment_id"]
                 or value["action_chunk_rows"] != manifest["action_chunk_rows"]
                 or not _ID.fullmatch(str(value["policy_id"]))
                 or not _DIGEST.fullmatch(str(value["model_identity_digest"]))):

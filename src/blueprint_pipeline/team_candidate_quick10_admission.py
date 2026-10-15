@@ -328,7 +328,7 @@ def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mappi
                    "open_loop_horizon": delivery["open_loop_horizon"],
                    "policy_interface_id": value["policy_interface_id"]}
     if manifest is not None:
-        policy_spec.update(embodiment_digest=manifest["embodiment_digest"], camera_names=camera_names(manifest))
+        policy_spec.update(embodiment_id=manifest["embodiment_id"], camera_names=camera_names(manifest))
     spec = {
         "schema_version": EXECUTION_SPEC_SCHEMA, "candidate_id": value["candidate_id"],
         "policy_interface_id": value["policy_interface_id"],

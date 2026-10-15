@@ -202,7 +202,7 @@ def test_the_team_service_gets_its_own_cameras_and_state_and_must_name_its_robot
     declared = validate_embodiment_manifest(manifest(model))
     spec = TeamPolicySpec(policy_id="acme-arm-pick", endpoint_url=ORIGIN + "/v1/act", metadata_url=ORIGIN + "/v1/act",
                           allowed_origin=ORIGIN, model_identity_digest="sha256:" + "7" * 64,
-                          embodiment_digest=declared["embodiment_digest"], action_chunk_rows=4, open_loop_horizon=4,
+                          embodiment_id=declared["embodiment_id"], action_chunk_rows=4, open_loop_horizon=4,
                           camera_names=["wrist_rgb", "scene_rgb"])
     metadata = spec.expected_metadata()
     seen: list[dict[str, Any]] = []
@@ -227,7 +227,7 @@ def test_the_team_service_gets_its_own_cameras_and_state_and_must_name_its_robot
     assert request["observation"]["state"] == {"joint_position": [0.0, 0.1, 0.2], "joint_velocity": [0.0, 0.0, 0.0],
                                                "gripper_position": [0.0], "base": BASE_AT_REST}
     assert metadata["schema_version"] == METADATA_SCHEMA
-    metadata = {**metadata, "embodiment_digest": "sha256:" + "0" * 64}  # served for some other robot
+    metadata = {**metadata, "embodiment_id": "some-other-robot"}  # served for some other robot
     with pytest.raises(ValueError, match="identity_mismatch"):
         client.preflight_readiness()
 

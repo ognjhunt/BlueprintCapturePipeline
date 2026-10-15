@@ -385,7 +385,7 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
                                 "policy_interface_id": "blueprint_policy_https.v1", "action_space": "joint_position",
                                 "action_chunk_rows": declared["action_chunk_rows"],
                                 "model_identity_digest": MODEL_DIGEST,
-                                "embodiment_digest": declared["embodiment_digest"]})
+                                "embodiment_id": declared["embodiment_id"]})
     monkeypatch.setattr(https_client, "fetch_bounded_https", service)
     provider = _Provider(tmp_path, monkeypatch, service)
     monkeypatch.setattr(team_vast, "run_arena_native_control_vast", provider)
