@@ -20,6 +20,10 @@ import pytest
 from tests.test_scene_retirement_engine import action_fixture
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'deploy/operator-door'))
+# Bind the door package now. A test module collected later can put scripts/
+# first on sys.path, and scripts/operator_door.py (the client, not this
+# package) would then shadow it for the lazy imports below.
+import operator_door  # noqa: E402,F401
 
 
 def bridge():
