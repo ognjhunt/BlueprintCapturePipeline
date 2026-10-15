@@ -8,9 +8,23 @@ drifts from this guide, this guide wins; if docs disagree with each other, use
 
 ## Mission
 
-`BlueprintCapturePipeline` has one active build mission: deliver **Arm Decision
-Proof v1** (`arm-decision-proof-v1`), the first evaluation-proof track. Qualify
-the reusable service first on exact, rights-cleared public datasets—including
+`BlueprintCapturePipeline` serves two active programs (owner decision
+2026-10-14; shared doctrine in `doctrine/platform-context.md`):
+
+- the free beta's evaluated, recommended pilot (`free-beta-evaluated-pilot`),
+  the customer-facing program: scenes prepared from website site captures for
+  many sites, invited teams' own policies scored on them by the simulator, and
+  one recommendation when a run passes; and
+- **Arm Decision Proof v1** (`arm-decision-proof-v1`), the evidence program and
+  first evaluation-proof track, which keeps sole authority over
+  physical-validation claims.
+
+Shared seams (capture, scene preparation, policy execution, scoring, result
+publication) are built once and serve both. When the two compete for the same
+engineering time, work an invited site or robot team is blocked on comes first,
+and the founder resolves anything else.
+
+For Arm Decision Proof v1: qualify the reusable service first on exact, rights-cleared public datasets—including
 one metric 3DGS/collision object removal, released-code inpainting, and exact
 SimReady USD replacement—then take one fresh capture of one previously unseen
 fixed-arm workcell. Blueprint must prospectively choose or eliminate one of
@@ -126,9 +140,12 @@ dependent step as blocked instead of guessing.
   approved allowances. Sending and automatic first contact stay off; a draft is
   not permission to send. Five-policy/general-ranking campaigns,
   world-model/evaluator research, reconstruction/provider bakeoffs, universal
-  runtimes, dynamic-scene research, post-training products, multi-site
-  generalization, and unrelated WebApp/growth work still need an observed ADP
-  blocker and an explicit scope change.
+  runtimes, dynamic-scene research, post-training products, cross-site
+  generalization claims, and WebApp/growth work unrelated to the beta journeys
+  still need an observed blocker in one of the two active programs and an
+  explicit scope change. Serving many beta sites is not that frozen item:
+  scene preparation and evaluation throughput for several concurrent beta
+  sites, with spend caps, is active beta work.
 
 ## Repo Map
 
@@ -176,9 +193,10 @@ dependent step as blocked instead of guessing.
   This checkpoint requires a decision and a status update, not an automatic pause
   or a new permission request. Preserve the existing rights, spend, evidence,
   watchdog, and teardown requirements.
-- Work the Arm Decision Proof critical path in order. Prefer changes that turn an
-  existing development-only seam into a replayable, fail-closed precursor of the
-  partner proof; do not optimize unrelated platform breadth.
+- Work the Arm Decision Proof critical path in order for proof work, and the
+  beta journey steps for beta work. Prefer changes that turn an existing
+  development-only seam into a replayable, fail-closed precursor of the partner
+  proof or of a beta journey step; do not optimize unrelated platform breadth.
 - For splat survey, inspection, or scene-understanding work, first use and extend
   the existing `scene_placement/interiorgs_index.py`, `splat_scene_analysis.py`,
   `scene_placement/perception_views.py`, and object-index Splat Analyzer seams.

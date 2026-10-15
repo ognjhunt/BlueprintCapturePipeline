@@ -15,7 +15,8 @@ capture, package, adapter, runtime, and sync contracts.
 Prefer thin changes to the existing Decision/Evidence Router, EvaluationRunSpec,
 two-candidate matrix, runtime receipt, sealing, statistics, and Physical Outcome
 Join paths. Do not start humanoid, deformable, world-model, provider-bakeoff,
-post-training, or universal-runtime work without an observed ADP blocker.
+post-training, or universal-runtime work without an observed blocker in one of
+the two active programs.
 
 Do not edit env files, secrets, provider tokens, GPU runner config, or live
 deployment config from this tree. Prefer targeted tests for touched modules.

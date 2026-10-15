@@ -51,7 +51,9 @@ Key rules (full text and precedents in `AGENTS.md`):
   rigid-object envelope is the default build target. Spend stays inside
   approved allowances; sending and automatic first contact stay off.
   Five-policy/general-ranking, world-model, provider bakeoff, post-training,
-  multi-site, and unrelated product work stays frozen.
+  cross-site generalization claims, and product work unrelated to the beta
+  journeys stay frozen; scene preparation and evaluation throughput for several
+  concurrent beta sites is active beta work.
 - Keep world-model backends swappable behind stable contracts.
 - Protect provenance, rights, privacy, and raw capture truth.
 - Optimize for the single customer-facing Task Evaluation Run. Treat the
