@@ -95,6 +95,21 @@ def require_robot_free_probe(receipt: Mapping[str, Any] | None, *, scene_revisio
             "task_spec_digest": receipt.get("task_spec_digest")}
 
 
+def task_success_contract_binding(task_kind: object, task_success_contract: object) -> str | None:
+    """The success-contract digest a probe receipt for this task must carry, or None.
+
+    ``task_success_contract`` is the contract the team's run will be scored
+    against. Only rigid receipts record its digest (the articulated receipt
+    binds the contract through the task spec alone). A rigid task whose contract
+    has no digest returns "" so the gate refuses rather than skipping the binding.
+    """
+
+    if task_kind != "rigid_pick_place":
+        return None
+    digest = task_success_contract.get("contract_digest") if isinstance(task_success_contract, Mapping) else None
+    return digest if isinstance(digest, str) else ""
+
+
 def retained_probe_receipt(root: Path) -> dict[str, Any] | None:
     """Read the receipt retained beside a source launch; never follow a symlink."""
 
@@ -120,4 +135,5 @@ __all__ = [
     "RobotFreeProbeGateError",
     "require_robot_free_probe",
     "retained_probe_receipt",
+    "task_success_contract_binding",
 ]

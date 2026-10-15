@@ -145,7 +145,8 @@ def offer_eligibility(profile: Mapping[str, Any] | None) -> tuple[dict[str, Any]
     """The scene facts when the team runtime may be listed and launched, else every reason."""
 
     from .native_policy_canary_control_gate import controls_required
-    from .robot_free_probe_gate import RobotFreeProbeGateError, require_robot_free_probe, retained_probe_receipt
+    from .robot_free_probe_gate import (
+        RobotFreeProbeGateError, require_robot_free_probe, retained_probe_receipt, task_success_contract_binding)
 
     if profile is None:
         return None, ["team_candidate_profile_missing"]
@@ -161,7 +162,9 @@ def offer_eligibility(profile: Mapping[str, Any] | None) -> tuple[dict[str, Any]
     try:
         facts["probe"] = require_robot_free_probe(
             receipt, scene_revision_digest=facts["scene"]["scene_revision_digest"],
-            task_spec_digest=canonical_digest(dict(task_spec)), task_kind=task_spec.get("task_kind"))
+            task_spec_digest=canonical_digest(dict(task_spec)), task_kind=task_spec.get("task_kind"),
+            task_success_contract_digest=task_success_contract_binding(
+                task_spec.get("task_kind"), facts["inputs"]["task_success_contract"]))
         facts["probe_receipt"] = receipt
     except RobotFreeProbeGateError as exc:
         blockers.append(str(exc))

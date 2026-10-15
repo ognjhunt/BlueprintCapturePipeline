@@ -289,6 +289,26 @@ def test_the_gate_admits_a_passed_rigid_receipt_and_binds_it(tmp_path: Path) -> 
     _require_passed_probe(tmp_path, {"configured_scene_revision_digest": revision})
 
 
+def test_team_candidate_callers_bind_the_rigid_success_contract_they_score_with(tmp_path: Path) -> None:
+    receipt, spec, configured = passed_rigid_receipt(tmp_path)
+    revision = configured["revision_digest"]
+    # The contract the probe scored (the normalized spec's), which the team run must also score with.
+    contract = probe_context(spec)["spec"]["task_success_contract"]
+    # The digest callers derive from the contract they score with is the one the receipt carries.
+    assert gate.task_success_contract_binding("rigid_pick_place", contract) == receipt["task_success_contract_digest"]
+    gate.require_robot_free_probe(receipt, scene_revision_digest=revision, task_kind="rigid_pick_place",
+                                  task_success_contract_digest=gate.task_success_contract_binding(
+                                      "rigid_pick_place", contract))
+    # A different contract, or one without a digest, is refused rather than skipped.
+    other = {**contract, "contract_digest": "sha256:" + "7" * 64}
+    for wrong in (other, {}, None):
+        assert _reason(receipt, scene_revision_digest=revision, task_kind="rigid_pick_place",
+                       task_success_contract_digest=gate.task_success_contract_binding(
+                           "rigid_pick_place", wrong)) == "task_success_contract_mismatch"
+    # Articulated receipts carry no contract digest; their callers bind through the task spec only.
+    assert gate.task_success_contract_binding("articulated_open_close", contract) is None
+
+
 def test_the_gate_refuses_a_stale_failed_mismatched_or_incomplete_rigid_receipt(tmp_path: Path) -> None:
     receipt, spec, configured = passed_rigid_receipt(tmp_path)
     revision = configured["revision_digest"]

@@ -47,7 +47,7 @@ from .native_task_arena_policy_canary_session import (
     TEAM_RUN_KIND,
 )
 from .policy_interface_binding import TEAM_HTTPS_INTERFACES
-from .robot_free_probe_gate import RobotFreeProbeGateError, require_robot_free_probe
+from .robot_free_probe_gate import RobotFreeProbeGateError, require_robot_free_probe, task_success_contract_binding
 
 CANDIDATE_SCHEMA = "blueprint.team_policy_candidate.v1"
 RIGHTS_SCHEMA = "blueprint.team_policy_candidate_rights.v1"
@@ -196,7 +196,9 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
     try:
         probe = require_robot_free_probe(probe_receipt, scene_revision_digest=revision,
                                          task_spec_digest=canonical_digest(task_spec),
-                                         task_kind=task_spec.get("task_kind"))
+                                         task_kind=task_spec.get("task_kind"),
+                                         task_success_contract_digest=task_success_contract_binding(
+                                             task_spec.get("task_kind"), scene.get("task_success_contract")))
     except RobotFreeProbeGateError as exc:
         blockers.append(str(exc))
     if blockers:
