@@ -294,8 +294,9 @@ def test_a_refused_team_response_keeps_the_run_out_of_recommendation_evidence(tm
 
 def test_runtime_refuses_a_frozen_id_a_second_candidate_or_an_unbound_admission(tmp_path) -> None:
     _runtime, _output, inputs, admission = _stage_team_runtime(tmp_path)
-    reseal = lambda value: {**value, "runtime_inputs_digest": canonical_digest(
-        value, digest_field="runtime_inputs_digest")}
+    def reseal(value):
+        return {**value, "runtime_inputs_digest": canonical_digest(
+            value, digest_field="runtime_inputs_digest")}
     assert validate_runtime_input_manifest(inputs)["candidate_ids"] == [TEAM]
     for change, code in (
         ({"candidate_ids": ["pi05_droid"]}, "policy_canary_team_candidate_invalid"),

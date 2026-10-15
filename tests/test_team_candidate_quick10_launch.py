@@ -282,8 +282,9 @@ def _team_scene_record(packet: Path, runtime: Path, inputs: dict[str, Any]) -> P
     receipt.update(arena_scene_plan_digest=plan["plan_digest"], receipt_digest="")
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-    record = lambda path: {"path": str(path.resolve()), "size_bytes": path.stat().st_size,
-                           "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+    def record(path):
+        return {"path": str(path.resolve()), "size_bytes": path.stat().st_size,
+                "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
     value = {"schema_version": scene_packet.SCHEMA, "claim_ceiling": scene_packet.CLAIM_CEILING,
              **{key: inputs[key] for key in ("scene_revision_digest", "configuration_digest", "plan_digest",
                                              "task_success_contract", "task_success_contract_digest")},
