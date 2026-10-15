@@ -624,13 +624,13 @@
       "expires_on": "2027-08-15",
       "source": "PyPI JSON license classifier 'OSI Approved :: MIT License' retrieved 2026-08-15"
     },
-    "mcp==1.28.1": {
+    "mcp==1.30.0": {
       "license_expression": "MIT",
-      "approved": true,
+      "approved": false,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-29",
-      "expires_on": "2027-07-29",
-      "source": "installed distribution metadata License"
+      "reviewed_on": "2026-10-15",
+      "expires_on": "2027-10-15",
+      "source": "Owner approval pending. Exact wheel license matches https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/LICENSE and the previously reviewed 1.28.1 license; license SHA256 5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d. See docs/third-party/mcp-1.30.0-license-review.md."
     },
     "mdurl==0.1.2": {
       "license_expression": "MIT",
