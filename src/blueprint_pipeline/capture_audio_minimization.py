@@ -127,6 +127,17 @@ def video_only_reencode_command(
     ]
 
 
+def media_tool_blockers(which: Optional[Which] = None) -> List[str]:
+    """Name each tool this host lacks to remove capture audio (ffmpeg) and show it is gone (ffprobe).
+
+    Removal fails closed per capture without them; this makes the gap visible on the
+    deployed service's identity, which the operator door's status reports.
+    """
+
+    lookup = _which(which)
+    return [f"capture_audio_removal_tool_missing:{tool}" for tool in ("ffmpeg", "ffprobe") if not lookup(tool)]
+
+
 def probe_audio_stream_count(
     path: Path,
     *,
