@@ -13,6 +13,14 @@ intact) binds one capture to:
 - the founder approvers whose free-beta funding approval may launch a run;
 - one sealed rights record per admitted team checkpoint.
 
+A scene need not be written in by hand: when the registry names a
+``derived_profiles`` root, a prepared scene's own records (capture, task,
+frozen Quick-10 inputs, probe root, revision) are written there as a sealed
+row when its inputs land (``write_derived_profile``), and the operator's
+``defaults`` supply everything only the operator decides. A scored matrix's
+salt is an HMAC of the scene revision under the operator's key file; without
+one, scored evaluations stay unlisted. An operator row always wins.
+
 :func:`offer_eligibility` is the one rule both the offer publisher and the
 launch apply, per evaluation purpose (``team_evaluation_plan``): the scene's
 frozen Quick-10 cells resolve, strict per-cell controls are not required, and
@@ -29,6 +37,7 @@ Anything else fails closed with a typed reason, and that offer is not listed.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import stat
@@ -44,6 +53,14 @@ from .team_robot_free_probe import scored_task_spec
 
 REGISTRY_ENV = "BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY"
 REGISTRY_SCHEMA = "blueprint.team_candidate_quick10_registry.v1"
+DERIVED_SCHEMA = "blueprint.team_candidate_derived_profile.v1"
+# What a prepared scene's own records determine (the first eight are required).
+DERIVED_FIELDS = ("capture_root", "scene_id", "task_id", "scenario_id", "pair_runtime_inputs_path",
+                  "pair_activation_path", "robot_free_probe_root", "scene_revision_digest",
+                  "nominal_dynamic_friction")
+# What only the operator decides: who may fund a run, at what rate, and each team's rights.
+OPERATOR_FIELDS = ("allowed_founder_approvers", "max_hourly_rate_usd", "open_loop_horizon", "team_rights",
+                   "machine_avoidlist_path")
 QUICK_CELLS = 10
 
 
@@ -78,7 +95,69 @@ def load_registry() -> dict[str, Any] | None:
     return registry
 
 
+def _operator_file(path: Path, *, code: str) -> Path:
+    try:
+        status = path.lstat()
+    except OSError as exc:
+        raise TeamCandidateRegistryError(code) from exc
+    if (not path.is_absolute() or stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode)
+            or status.st_mode & 0o022 or status.st_uid not in {0, os.getuid()}):
+        raise TeamCandidateRegistryError(code)
+    return path
+
+
+def _derived_settings(registry: Mapping[str, Any]) -> dict[str, Any] | None:
+    settings = registry.get("derived_profiles")
+    if settings is None:
+        return None
+    root = Path(str((settings or {}).get("root") or ""))
+    defaults = (settings or {}).get("defaults")
+    if (not isinstance(settings, Mapping) or not root.is_absolute() or not isinstance(defaults, Mapping)
+            or set(defaults) - set(OPERATOR_FIELDS) or set(OPERATOR_FIELDS[:3]) - set(defaults)):
+        raise TeamCandidateRegistryError("team_candidate_derived_profile_settings_invalid")
+    return {"root": root, "defaults": dict(defaults), "salt_key_path": settings.get("scored_matrix_salt_key_path")}
+
+
+def _derived_path(root: Path, capture_root: str) -> Path:
+    return root / (hashlib.sha256(capture_root.encode()).hexdigest()[:32] + ".json")
+
+
+def _scored_salt(key_path: Any, scene_revision_digest: Any) -> str | None:
+    """A per-scene scored-matrix salt from the operator's key; None (scored unlisted) without one."""
+
+    if not key_path:
+        return None
+    path = _operator_file(Path(str(key_path)), code="team_candidate_scored_salt_key_not_operator_owned")
+    if path.stat().st_mode & 0o077:
+        raise TeamCandidateRegistryError("team_candidate_scored_salt_key_not_operator_owned")
+    key = path.read_bytes().strip()
+    if len(key) < 32:
+        raise TeamCandidateRegistryError("team_candidate_scored_salt_key_invalid")
+    return hmac.new(key, str(scene_revision_digest).encode(), hashlib.sha256).hexdigest()
+
+
+def _derived_profile(registry: Mapping[str, Any], capture_root: str) -> dict[str, Any] | None:
+    """A scene's derived row (scene facts only) under the operator's defaults (approvers, rights, rate)."""
+
+    settings = _derived_settings(registry)
+    if settings is None:
+        return None
+    path = _derived_path(settings["root"], capture_root)
+    if not path.exists():
+        return None
+    row = _read(_operator_file(path, code="team_candidate_derived_profile_not_operator_owned"))
+    if (row.get("schema_version") != DERIVED_SCHEMA or set(row) - {*DERIVED_FIELDS, "schema_version", "profile_digest"}
+            or row.get("capture_root") != capture_root
+            or row.get("profile_digest") != canonical_digest(row, digest_field="profile_digest")):
+        raise TeamCandidateRegistryError("team_candidate_derived_profile_invalid")
+    profile = {key: value for key, value in row.items() if key in DERIVED_FIELDS}
+    salt = _scored_salt(settings["salt_key_path"], row.get("scene_revision_digest"))
+    return {**profile, **settings["defaults"], **({"scored_matrix_salt": salt} if salt else {})}
+
+
 def profile_for_capture(capture_root: str | Path) -> dict[str, Any] | None:
+    """The capture's team-evaluation profile: an operator row, else the scene's derived row."""
+
     registry = load_registry()
     if registry is None:
         return None
@@ -86,7 +165,31 @@ def profile_for_capture(capture_root: str | Path) -> dict[str, Any] | None:
     matches = [dict(row) for row in registry["profiles"] if isinstance(row, Mapping) and row.get("capture_root") == root]
     if len(matches) > 1:
         raise TeamCandidateRegistryError("team_candidate_profile_ambiguous")
-    return matches[0] if matches else None
+    return matches[0] if matches else _derived_profile(registry, root)
+
+
+def write_derived_profile(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Record a prepared scene's facts (never approvers, rights, rate or salt) where the registry reads them."""
+
+    registry = load_registry()
+    settings = _derived_settings(registry) if registry is not None else None
+    if settings is None:
+        return {"status": "derived_profiles_not_configured"}
+    value = {key: row[key] for key in DERIVED_FIELDS if row.get(key) is not None}
+    missing = sorted(set(DERIVED_FIELDS[:8]) - set(value))
+    if missing or set(row) - set(DERIVED_FIELDS):
+        return {"status": "derived_profile_refused", "missing": missing,
+                "unexpected": sorted(set(row) - set(DERIVED_FIELDS))}
+    value["capture_root"] = str(Path(str(value["capture_root"])).resolve())
+    value = {"schema_version": DERIVED_SCHEMA, **value, "profile_digest": ""}
+    value["profile_digest"] = canonical_digest(value, digest_field="profile_digest")
+    settings["root"].mkdir(parents=True, exist_ok=True)
+    path = _derived_path(settings["root"], value["capture_root"])
+    staging = path.with_suffix(".tmp")
+    staging.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    staging.chmod(0o644)
+    os.replace(staging, path)
+    return {"status": "written", "path": str(path), "profile_digest": value["profile_digest"]}
 
 
 def profile_for_request(request: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -196,6 +299,9 @@ def offer_eligibility(profile: Mapping[str, Any] | None,
 
 
 __all__ = [
+    "DERIVED_FIELDS",
+    "DERIVED_SCHEMA",
+    "OPERATOR_FIELDS",
     "QUICK_CELLS",
     "REGISTRY_ENV",
     "REGISTRY_SCHEMA",
@@ -206,4 +312,5 @@ __all__ = [
     "profile_for_request",
     "rights_record",
     "scene_facts",
+    "write_derived_profile",
 ]

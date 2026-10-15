@@ -44,16 +44,18 @@ from blueprint_pipeline import agent_run_executor as executor
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import policy_canary_allocator_lane as lane
 from blueprint_pipeline import robot_free_probe_gate as probe_gate
+from blueprint_pipeline import team_candidate_quick10_launch as launch
 from blueprint_pipeline import team_candidate_quick10_vast as team_vast
 from blueprint_pipeline import vast_provider_adapter
 from blueprint_pipeline.agent_execution_offer import publish_agent_execution_offer
 from blueprint_pipeline.agent_run_result_scoring import validate_scoring_statement
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.native_task_arena_policy_canary_worker import preflight_policy_canary_runtime_directory
+from blueprint_pipeline.native_task_arena_policy_canary_worker import (
+    preflight_policy_canary_runtime_directory,
+)
 from blueprint_pipeline.team_candidate_policy_client import canary_policy_client
-from blueprint_pipeline.team_candidate_quick10_closeout import read_team_candidate_terminal
 from blueprint_pipeline.team_candidate_quick10_admission import RIGHTS_SCHEMA
-from blueprint_pipeline import team_candidate_quick10_launch as launch
+from blueprint_pipeline.team_candidate_quick10_closeout import read_team_candidate_terminal
 from blueprint_pipeline.team_candidate_quick10_launch import CREDENTIAL_ENV, TERMINAL_FILENAME
 from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, REGISTRY_SCHEMA
 from blueprint_pipeline.team_embodiment import validate_embodiment_manifest
@@ -227,7 +229,7 @@ class _Provider:
 
 
 def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "founder@blueprint",
-           purpose: str = "practice", robot: dict[str, Any] | None = None) -> dict[str, Any]:
+           purpose: str = "practice", robot: dict[str, Any] | None = None, derived: bool = False) -> dict[str, Any]:
     capture = tmp_path / "capture"
     capture.mkdir()
     packet, _runtime, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path / "scene")
@@ -260,9 +262,26 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
         "max_hourly_rate_usd": 0.8, "allowed_founder_approvers": ["founder@blueprint"],
         "scene_id": "site-req1", "scored_matrix_salt": SALT,
         "team_rights": {f"{TEAM}/{CHECKPOINT}": str(operator / "rights.json")}}]}, "registry_digest")
+    if derived:
+        # Nothing about this scene is written by hand: the operator names only who may fund a run, at
+        # what rate, each team's rights and the salt key; the scene's row is written when its inputs land.
+        scene_row = registry["profiles"][0]
+        (operator / "salt.key").write_text("k" * 48)
+        (operator / "salt.key").chmod(0o600)
+        registry = _sealed({"schema_version": REGISTRY_SCHEMA, "profiles": [], "derived_profiles": {
+            "root": str(operator / "derived"), "scored_matrix_salt_key_path": str(operator / "salt.key"),
+            "defaults": {key: scene_row[key] for key in ("allowed_founder_approvers", "max_hourly_rate_usd",
+                                                         "open_loop_horizon", "team_rights")}}}, "registry_digest")
     (operator / "registry.json").write_text(json.dumps(registry))
     (operator / "registry.json").chmod(0o644)
     monkeypatch.setenv(REGISTRY_ENV, str(operator / "registry.json"))
+    if derived:
+        from blueprint_pipeline.team_candidate_quick10_registry import write_derived_profile
+
+        written = write_derived_profile({**{key: scene_row[key] for key in (
+            "capture_root", "scene_id", "task_id", "scenario_id", "pair_runtime_inputs_path", "pair_activation_path",
+            "robot_free_probe_root")}, "scene_revision_digest": inputs["scene_revision_digest"]})
+        assert written["status"] == "written", written
     if not rigid_schema:  # before the rigid probe lands, its kind is admitted for this rigid scene only
         monkeypatch.setattr(probe_gate, "PROBE_TASK_KINDS", frozenset({"articulated_open_close", task_spec["task_kind"]}))
     row = _row(capture)
@@ -554,3 +573,23 @@ def test_a_team_arm_that_cannot_reach_the_task_is_refused_before_any_allocation(
                                  team_launch_hooks=world["hooks"])
     assert summary["blocked"] == 1 and world["allocator_calls"] == []
     assert world["client"].blocked == ["team_embodiment_station_out_of_reach"]
+
+
+def test_a_scene_written_in_by_its_own_records_runs_without_a_hand_written_profile(
+        tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline.team_candidate_quick10_registry import (
+        load_registry,
+        profile_for_capture,
+        write_derived_profile,
+    )
+
+    world = _world(tmp_path, monkeypatch, derived=True)
+    profile = profile_for_capture(world["capture"])
+    # The scene's facts came from its row; who may fund it, at what rate, and rights from the operator.
+    assert profile["allowed_founder_approvers"] == ["founder@blueprint"] and len(profile["scored_matrix_salt"]) == 64
+    assert load_registry()["profiles"] == []
+    staged, summary = _staged_run_reported(world)
+    assert staged["staged"] == 1 and summary["completed"] == 1, (staged, summary)
+    # A scene's row can never carry an operator decision.
+    refused = write_derived_profile({"capture_root": str(world["capture"]), "allowed_founder_approvers": ["someone"]})
+    assert refused["status"] == "derived_profile_refused" and "allowed_founder_approvers" in refused["unexpected"]
