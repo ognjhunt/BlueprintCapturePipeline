@@ -700,19 +700,27 @@ def poll_once(
         if status in {"pending", "not_found"}:
             summary["pending"] += 1
             continue
-        if status == "blocked":
-            client.report_blocked(
-                row,
-                str(journal["pipeline_run_id"]),
-                ";".join(str(item) for item in terminal.get("blockers", [])),
-            )
-            journal["state"] = "reported_blocked"
-            summary["blocked"] += 1
-        elif status == "completed":
-            client.report_completed(row, str(journal["pipeline_run_id"]), terminal)
-            journal["state"] = "reported_completed"
-            summary["completed"] += 1
-        else:
+        try:
+            if status == "blocked":
+                client.report_blocked(
+                    row,
+                    str(journal["pipeline_run_id"]),
+                    ";".join(str(item) for item in terminal.get("blockers", [])),
+                )
+                journal["state"] = "reported_blocked"
+                summary["blocked"] += 1
+            elif status == "completed":
+                client.report_completed(row, str(journal["pipeline_run_id"]), terminal)
+                journal["state"] = "reported_completed"
+                summary["completed"] += 1
+            else:
+                summary["pending"] += 1
+                continue
+        except (OSError, ValueError, urllib.error.URLError):
+            # The WebApp refused or could not take the report (an older WebApp
+            # rejects a field it does not know yet, such as `scoring`). The
+            # journal stays where it was, so the report is retried next pass,
+            # and one refused report does not stop this pass serving other runs.
             summary["pending"] += 1
             continue
         _write_json_atomic(journal_path, journal)

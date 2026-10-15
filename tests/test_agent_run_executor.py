@@ -146,6 +146,34 @@ def test_digest_bound_episode_receipt_closes_claimed_run(tmp_path: Path) -> None
     assert client.completed == [receipt]
 
 
+def test_refused_terminal_report_stays_pending_and_is_retried(tmp_path: Path) -> None:
+    """An older WebApp that rejects the report (HTTP 400) must not lose the run or crash the pass."""
+    row = _row(tmp_path)
+    receipt = {"status": "completed", "episodes_run": 5, "episodes_succeeded": 3,
+               "artifact_uri": "gs://blueprint/results/run-1/receipt.json"}
+
+    class RefusingClient(FakeClient):
+        refuse = True
+
+        def report_completed(self, row: Any, pipeline_run_id: str, receipt: dict[str, Any]) -> None:
+            if self.refuse:
+                raise urllib.error.HTTPError("https://webapp.test/api/internal/pipeline/agent-run-results",
+                                             400, "Bad Request", None, None)
+            super().report_completed(row, pipeline_run_id, receipt)
+
+    client = RefusingClient([row])
+    first = executor.poll_once(client=client, capture_root=tmp_path, terminal_reader=lambda **_kwargs: receipt)
+    assert first["pending"] == 1
+    assert first["completed"] == 0
+    assert client.completed == []
+
+    client.refuse = False
+    client.rows = []  # The WebApp no longer lists a claimed run; only its journal remains.
+    second = executor.poll_once(client=client, capture_root=tmp_path, terminal_reader=lambda **_kwargs: receipt)
+    assert second["completed"] == 1
+    assert client.completed == [receipt]
+
+
 def test_missing_provider_cost_does_not_block_quoted_episode_settlement(tmp_path: Path) -> None:
     row = _row(tmp_path)
     # Historical paid outcomes still settle even though new paid claims refuse.
