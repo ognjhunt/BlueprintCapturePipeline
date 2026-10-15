@@ -123,7 +123,7 @@ def test_a_team_candidate_request_without_its_operator_profile_is_refused_by_nam
     row = _row(tmp_path)
     admission = row["execution_admission"]
     admission["canonical_execution_request"]["policy_package"] = {"policy_api_endpoint": {
-        "endpoint_url": "https://policy.example/v1/act", "execution_profile": "policy_canary_quick10_team_candidate_v1",
+        "endpoint_url": "https://policy.example/v1/act", "execution_profile": "team_evaluation_practice_v1",
         "policy_interface_id": "openpi_droid_https.v1", "credential_kind": "bearer",
         "credential_ref": "policy-credential-1b4e28ba-2fa1-11d2-883f-0016d3cca427"}}
     admission["canonical_execution_request"]["execution_authorization"]["episodes"] = 10

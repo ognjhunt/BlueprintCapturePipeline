@@ -1,12 +1,14 @@
-"""Derive one team candidate's Quick-10 runtime inputs from the scene's frozen Quick-10 cells.
+"""Derive one team candidate's runtime inputs from the scene's frozen Quick-10 inputs.
 
 Beta journey step: L5 team policy evaluation. The scene's internal Quick-10
 inputs (``task_evaluation_policy_canary_runtime_inputs.v1``, run kind
-``internal_policy_canary``) freeze ten cells, their seeds and the sealed
-success contract. A team run keeps exactly those cells and contract and
-replaces the frozen pair with the one admitted candidate:
+``internal_policy_canary``) freeze the scene packet, ten cells, their seeds and
+the sealed success contract. A team run keeps the scene and contract, replaces
+the frozen pair with the one admitted candidate, and runs either those ten
+published cells (practice) or one shard of the scored matrix
+(``team_evaluation_plan``):
 
-- a team activation manifest (same cells and seeds, run kind
+- a team activation manifest (the session's cells and seeds, run kind
   ``team_candidate_evaluation``, a run id of its own);
 - team runtime inputs carrying the admission's runtime binding, with the
   pair-only records (policy readiness, diagnostic continuation, the pair's
@@ -75,8 +77,13 @@ def frozen_quick10_inputs(inputs_path: Path, activation_path: Path) -> tuple[dic
 
 def stage_team_runtime(*, root: Path, run_id: str, pair_inputs_path: Path, pair_activation_path: Path,
                        admission: Mapping[str, Any], prompt: str, max_policy_queries: int,
-                       hard_cap_usd: float, hard_ttl_seconds: int) -> dict[str, Path]:
-    """Write the team activation, inputs, authority and spec under ``root``; return their paths."""
+                       hard_cap_usd: float, hard_ttl_seconds: int,
+                       cells: list[Mapping[str, Any]] | None = None) -> dict[str, Path]:
+    """Write the team activation, inputs, authority and spec under ``root``; return their paths.
+
+    ``cells`` are this session's cells in the runtime-input shape; None runs the
+    scene's ten frozen Quick-10 cells.
+    """
 
     admitted = validate_admission(admission)
     pair, activation = frozen_quick10_inputs(pair_inputs_path, pair_activation_path)
@@ -85,13 +92,23 @@ def stage_team_runtime(*, root: Path, run_id: str, pair_inputs_path: Path, pair_
             or binding["task_success_contract_digest"] != pair["task_success_contract_digest"]):
         raise TeamCandidateStagingError("team_candidate_admission_scene_binding_mismatch")
     candidate = [admitted["candidate_id"]]
+    session_cells = [dict(cell) for cell in (pair["cells"] if cells is None else cells)]
+    template = dict((activation.get("campaign_units") or [{}])[0])
+    units = [{**template, "campaign_unit_id": f"{run_id}-{cell['cell_id']}", "candidate_ids": candidate,
+              **{key: cell[key] for key in ("cell_id", "seed", "cell_spec_digest", "family")}}
+             for cell in session_cells]
     team_activation = {**activation, "run_id": run_id, "run_kind": TEAM_RUN_KIND, "candidate_ids": candidate,
-                       "campaign_units": [{**unit, "candidate_ids": candidate}
-                                          for unit in activation.get("campaign_units") or []],
-                       "activation_digest": ""}
+                       "campaign_unit_count": len(units), "campaign_units": units, "activation_digest": ""}
+    if isinstance(activation.get("paired_session_request"), Mapping):
+        team_activation["paired_session_request"] = {
+            **activation["paired_session_request"], "candidate_ids": candidate, "policy_count": 1,
+            "episodes_per_policy": len(units), "learned_policy_rollout_count": len(units),
+            "cells": [{key: cell[key] for key in ("cell_id", "seed", "cell_spec_digest", "family")}
+                      for cell in session_cells]}
     team_activation["activation_digest"] = canonical_digest(team_activation, digest_field="activation_digest")
     inputs = {key: value for key, value in pair.items() if key not in PAIR_ONLY_INPUT_FIELDS}
-    inputs.update(run_id=run_id, run_kind=TEAM_RUN_KIND, candidate_ids=candidate,
+    inputs.update(run_id=run_id, run_kind=TEAM_RUN_KIND, candidate_ids=candidate, cells=session_cells,
+                  matrix_digest=canonical_digest({"ordered_cells": [cell["cell_id"] for cell in session_cells]}),
                   activation_digest=team_activation["activation_digest"], team_candidate_admission=binding,
                   runtime_inputs_digest="")
     inputs["runtime_inputs_digest"] = canonical_digest(inputs, digest_field="runtime_inputs_digest")

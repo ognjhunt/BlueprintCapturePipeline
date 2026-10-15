@@ -1080,22 +1080,26 @@ def _resolved_scene_plan(
     applications: list[dict[str, Any]] = []
     coverage_gaps: list[dict[str, Any]] = []
     subject = next(row for row in plan["objects"] if row.get("task_subject") is True)
-    if "object_start_y_delta_m" in parameters:
-        delta = float(parameters["object_start_y_delta_m"])
-        subject["pose_world"]["position_world_m"][1] += delta
-        subject["reset_state"]["root_pose_world"]["position_world_m"][1] += delta
+    # A scored team evaluation shifts the start on both table axes; the
+    # published Quick-10 cells shift only y.
+    for axis, parameter_id in ((0, "object_start_x_delta_m"), (1, "object_start_y_delta_m")):
+        if parameter_id not in parameters:
+            continue
+        delta = float(parameters[parameter_id])
+        subject["pose_world"]["position_world_m"][axis] += delta
+        subject["reset_state"]["root_pose_world"]["position_world_m"][axis] += delta
         if plan["task_kind"] == "rigid_pick_place":
             scoring_start_pose = plan["task_spec"].get("start_pose_world")
             if not isinstance(scoring_start_pose, list) or len(scoring_start_pose) != 7:
                 raise RuntimeError("policy_canary_task_scoring_start_pose_invalid")
-            scoring_start_pose[1] += delta
+            scoring_start_pose[axis] += delta
         elif "start_pose_world" in plan["task_spec"]:
             raise RuntimeError("policy_canary_articulated_scoring_pose_unexpected")
         applications.append(
             {
-                "parameter_id": "object_start_y_delta_m",
-                "readback_kind": "task_subject_root_position_y_m",
-                "expected_native_value": subject["pose_world"]["position_world_m"][1],
+                "parameter_id": parameter_id,
+                "readback_kind": f"task_subject_root_position_{'xy'[axis]}_m",
+                "expected_native_value": subject["pose_world"]["position_world_m"][axis],
                 "delta_from_nominal": delta,
             }
         )
@@ -1351,7 +1355,7 @@ def _aggregate_isolated_cell_results(
         "candidate_ids": list(candidate_ids),
         "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
-        "episodes_per_policy": 10,
+        "episodes_per_policy": len(inputs["cells"]),
         "learned_policy_rollout_count": len(candidate_ids) * len(inputs["cells"]),
         "provider_allocations_observed": None,
         "retry_cap": 0,

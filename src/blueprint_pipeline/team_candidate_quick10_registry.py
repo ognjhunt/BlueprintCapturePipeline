@@ -14,11 +14,16 @@ intact) binds one capture to:
 - one sealed rights record per admitted team checkpoint.
 
 :func:`offer_eligibility` is the one rule both the offer publisher and the
-launch apply: the Quick-10 cells resolve to the DROID Franka (Robotiq 2F-85)
-embodiment, strict per-cell controls are not required, and the robot-free
-probe passed at the inputs' current scene revision for the scene's task.
-Anything else fails closed with a typed reason, and the team offer is not
-listed.
+launch apply, per evaluation purpose (``team_evaluation_plan``): the scene's
+frozen Quick-10 cells resolve, strict per-cell controls are not required, and
+
+- ``practice`` (the ten published cells, feedback only) may run while the
+  robot-free probe is still pending, never after it failed;
+- ``scored`` (200 hidden cells, recommendation evidence) needs the probe passed
+  at the inputs' current scene revision for the scene's task, and the scene's
+  secret matrix salt.
+
+Anything else fails closed with a typed reason, and that offer is not listed.
 """
 
 from __future__ import annotations
@@ -34,11 +39,11 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
 from .team_candidate_quick10_staging import TeamCandidateStagingError, frozen_quick10_inputs
+from .team_evaluation_plan import PRACTICE, PURPOSES, SCORED
 
 REGISTRY_ENV = "BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY"
 REGISTRY_SCHEMA = "blueprint.team_candidate_quick10_registry.v1"
-PROFILE = "policy_canary_quick10_team_candidate_v1"
-EPISODES = 10
+QUICK_CELLS = 10
 
 
 class TeamCandidateRegistryError(ValueError):
@@ -119,7 +124,7 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
                     for cell in inputs["cells"]]
     except (KeyError, RuntimeError, TypeError, ValueError) as exc:
         raise TeamCandidateRegistryError("team_candidate_droid_franka_cells_unavailable") from exc
-    if ((plan.get("robot") or {}).get("robot_id") != "franka_panda" or len(resolved) != EPISODES
+    if ((plan.get("robot") or {}).get("robot_id") != "franka_panda" or len(resolved) != QUICK_CELLS
             or any((row.get("policy_canary_embodiment_profile") or {}).get("robot_preset_id")
                    != DROID_POLICY_CANARY_PRESET_ID for row in resolved)):
         raise TeamCandidateRegistryError("team_candidate_droid_franka_cells_unavailable")
@@ -141,8 +146,9 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def offer_eligibility(profile: Mapping[str, Any] | None) -> tuple[dict[str, Any] | None, list[str]]:
-    """The scene facts when the team runtime may be listed and launched, else every reason."""
+def offer_eligibility(profile: Mapping[str, Any] | None,
+                      purpose: str = SCORED) -> tuple[dict[str, Any] | None, list[str]]:
+    """The scene facts when this evaluation purpose may be listed and launched, else every reason."""
 
     from .native_policy_canary_control_gate import controls_required
     from .robot_free_probe_gate import (
@@ -150,6 +156,8 @@ def offer_eligibility(profile: Mapping[str, Any] | None) -> tuple[dict[str, Any]
 
     if profile is None:
         return None, ["team_candidate_profile_missing"]
+    if purpose not in PURPOSES:
+        return None, ["team_candidate_evaluation_purpose_invalid"]
     try:
         facts = scene_facts(profile)
         receipt = retained_probe_receipt(Path(profile["robot_free_probe_root"]))
@@ -167,13 +175,17 @@ def offer_eligibility(profile: Mapping[str, Any] | None) -> tuple[dict[str, Any]
                 task_spec.get("task_kind"), facts["inputs"]["task_success_contract"]))
         facts["probe_receipt"] = receipt
     except RobotFreeProbeGateError as exc:
-        blockers.append(str(exc))
+        facts["probe"], facts["probe_receipt"] = None, receipt
+        if purpose != PRACTICE or (receipt or {}).get("status") not in (None, "probe_unavailable"):
+            blockers.append(str(exc))
+    salt = profile.get("scored_matrix_salt")
+    if purpose == SCORED and (not isinstance(salt, str) or len(salt) < 32):
+        blockers.append("team_scored_matrix_salt_missing")
     return (None, blockers) if blockers else (facts, [])
 
 
 __all__ = [
-    "EPISODES",
-    "PROFILE",
+    "QUICK_CELLS",
     "REGISTRY_ENV",
     "REGISTRY_SCHEMA",
     "TeamCandidateRegistryError",

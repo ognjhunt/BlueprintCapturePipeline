@@ -29,6 +29,8 @@ ENTRYPOINT = "provider_runtime/run_adp_arena_provider_runtime.sh"
 PAIR = ["pi05_droid", "groot_n17_droid"]
 PAIR_SHAPE = ("internal_policy_canary_paired_session", "internal_policy_canary", 20)
 TEAM_SHAPE = ("team_candidate_evaluation_session", "team_candidate_evaluation", 10)
+# Mirrors native_task_arena_policy_canary_session.TEAM_MAX_CELLS_PER_SESSION (kept equal by a test).
+TEAM_MAX_CELLS_PER_SESSION = 50
 # Written by the team entrypoint in place of the pair's local-server teardown.
 TEAM_ENTRYPOINT_MARKER = "blueprint_team_candidate_remote_policy_session"
 _TEAM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -47,6 +49,15 @@ def _shape(payload: Mapping[str, Any]) -> tuple[str, str, int] | None:
         if (payload.get("execution_mode"), payload.get("run_kind")) == shape[:2]:
             return shape
     return None
+
+
+def _episode_shape_valid(payload: Mapping[str, Any], shape: tuple[str, str, int]) -> bool:
+    """The pair runs its ten cells twice; a team session runs its own 1-50 cells once."""
+
+    episodes, rollouts = payload.get("episodes_per_policy"), payload.get("learned_policy_rollout_count")
+    if shape is TEAM_SHAPE:
+        return (type(episodes) is int and 1 <= episodes <= TEAM_MAX_CELLS_PER_SESSION and rollouts == episodes)
+    return episodes == 10 and rollouts == shape[2]
 
 
 def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
@@ -73,8 +84,7 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
         or payload.get("blockers") != []
         or payload.get("input_digest") != canonical_digest(payload, digest_field="input_digest")
         or payload.get("claim_ceiling") != "diagnostic_policy_execution"
-        or payload.get("episodes_per_policy") != 10
-        or payload.get("learned_policy_rollout_count") != shape[2]
+        or not _episode_shape_valid(payload, shape)
         or payload.get("maximum_provider_allocations") != 1
         or payload.get("retry_cap") != 0
         or payload.get("expected_output_filename") != RESULT_FILENAME

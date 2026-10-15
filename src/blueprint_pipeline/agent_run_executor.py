@@ -65,12 +65,12 @@ def _free_beta_run(row: Mapping[str, Any]) -> bool:
             and all(c in "0123456789abcdef" for c in digest[7:]))
 
 
-TEAM_CANDIDATE_QUICK10_PROFILE = "policy_canary_quick10_team_candidate_v1"
+TEAM_EVALUATION_PROFILES = frozenset({"team_evaluation_practice_v1", "team_evaluation_scored_v1"})
 
 
 def _requests_team_candidate_runtime(canonical: Mapping[str, Any]) -> bool:
     package = _mapping(canonical.get("policy_package"))
-    return any(_mapping(package.get(name)).get("execution_profile") == TEAM_CANDIDATE_QUICK10_PROFILE
+    return any(_mapping(package.get(name)).get("execution_profile") in TEAM_EVALUATION_PROFILES
                for name in ("policy_api_endpoint", "docker_container", "sim_controller_plugin"))
 
 
@@ -299,6 +299,9 @@ class AgentRunWebAppClient:
                 "artifact_uri": receipt.get("artifact_uri"),
                 **({"private_execution_result": receipt["private_execution_result"]}
                    if receipt.get("private_execution_result") else {}),
+                # A team evaluation says whether it was practice or scored, and
+                # returns each episode's outcome (and, for practice, its cell).
+                **({key: receipt[key] for key in ("evaluation_purpose", "episode_outcomes") if key in receipt}),
                 "scoring": scoring,
             },
         )

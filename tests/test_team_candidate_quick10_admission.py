@@ -1,4 +1,4 @@
-"""Admission of ONE team candidate to the Quick-10 canary fails closed on every gate.
+"""Admission of ONE team candidate to a practice run or a scored evaluation fails closed on every gate.
 
 Beta journey step: L5 team policy evaluation. Control plane only: no network,
 provider, GPU or spend. The scene is articulated because only articulated
@@ -60,7 +60,7 @@ def _inputs(**overrides: Any) -> dict[str, Any]:
              "credential_ref_digest": "sha256:" + "6" * 64, "credential_env": "BLUEPRINT_TEAM_POLICY_BEARER_FILE",
              "origin": ORIGIN, "candidate_id": "team-acme.pi05-ft-7", "secret_material_recorded": False,
              "expires_at_iso": "2026-10-15T18:00:00Z"}
-    budget = {"payer": "blueprint", "customer_price_usd": 0, "max_attempts": 1, "episodes": 10,
+    budget = {"payer": "blueprint", "customer_price_usd": 0, "max_attempts": 1, "episodes": 200,
               "cap_usd": 20, "hard_ttl_seconds": 9000}
     founder = _sealed({"schema_version": "blueprint.team_candidate_founder_admission.v1",
                        "approved_by": "founder", "approval_reference": "owner-decision-team-acme-quick10",
@@ -85,8 +85,9 @@ def _blockers(**overrides: Any) -> list[str]:
 def test_an_admitted_team_candidate_seals_exactly_what_the_runtime_may_run(tmp_path, monkeypatch) -> None:
     values = _inputs()
     admission = admit_team_candidate(**values, now=NOW)
-    assert admission["status"] == "admitted" and admission["runtime"] == "policy_canary_quick10_team_candidate"
-    assert admission["episodes"] == 10 and admission["claim_ceiling"] == "diagnostic_policy_execution"
+    assert admission["status"] == "admitted" and admission["runtime"] == "team_evaluation"
+    assert admission["evaluation_purpose"] == "scored" and admission["episodes"] == 200
+    assert admission["claim_ceiling"] == "diagnostic_policy_execution"
     assert admission["adp_qualified_evidence_eligible"] is False
     assert admission["robot_free_probe_receipt_digest"] == values["probe_receipt"]["receipt_digest"]
     assert admission["task_success_contract_digest"] == values["scene"]["task_success_contract"]["contract_digest"]
@@ -107,8 +108,9 @@ def test_an_admitted_team_candidate_seals_exactly_what_the_runtime_may_run(tmp_p
     assert "team-secret-token" not in str(spec)
     binding = runtime_binding(admission)
     assert binding["admission_digest"] == admission["admission_digest"]
-    assert set(binding) == {"schema_version", "admission_digest", "candidate_id", "robot_free_probe_receipt_digest",
-                            "scene_revision_digest", "task_success_contract_digest"}
+    assert set(binding) == {"schema_version", "admission_digest", "candidate_id", "evaluation_purpose",
+                            "robot_free_probe_receipt_digest", "scene_revision_digest",
+                            "task_success_contract_digest"}
 
 
 def test_every_gate_fails_closed_with_its_own_reason() -> None:
@@ -139,6 +141,15 @@ def test_every_gate_fails_closed_with_its_own_reason() -> None:
 
 def test_the_robot_free_probe_is_mandatory_for_this_scene_revision_and_task() -> None:
     assert _blockers(probe_receipt=None) == ["team_evaluation_robot_free_probe_receipt_missing"]
+    # Practice is feedback: it may run while the probe is pending, never after it failed.
+    practice_budget = {**_inputs()["budget"], "episodes": 10}
+    practice = admit_team_candidate(**_inputs(probe_receipt=None, budget=practice_budget), purpose="practice", now=NOW)
+    assert practice["evaluation_purpose"] == "practice" and practice["robot_free_probe_receipt_digest"] is None
+    with pytest.raises(TeamCandidateAdmissionError) as raised:
+        admit_team_candidate(**_inputs(probe_receipt=scored_probe_receipt(REVISION, passes=False),
+                                       budget=practice_budget), purpose="practice", now=NOW)
+    assert raised.value.blockers == ["team_evaluation_robot_free_probe_not_passed"]
+    assert _blockers(budget=practice_budget) == ["team_candidate_budget_cap_invalid"]  # a scored run is 200
     assert _blockers(probe_receipt=scored_probe_receipt(REVISION, passes=False)) == [
         "team_evaluation_robot_free_probe_not_passed"]
     assert _blockers(probe_receipt=scored_probe_receipt("sha256:" + "8" * 64)) == [

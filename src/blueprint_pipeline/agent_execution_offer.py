@@ -21,12 +21,16 @@ nothing, so no self-serve run can be bought against it.
 Publishing is best-effort and never fails the simulation lane: a missing offer
 fails closed on the WebApp side (the plan stays unpayable).
 
-Beta L5: when the operator's team-candidate registry has a profile for the
-capture, the offer instead lists ``policy_canary_quick10_team_candidate_v1``
-with ten episodes, but only while :func:`team_candidate_quick10_registry.
-offer_eligibility` holds (passed robot-free probe at the inputs' current
-revision, DROID Franka Quick-10 cells). Otherwise the ordinary offer is
-published, so a team-candidate listing never outlives its eligibility.
+Beta L5: when the scene has a team evaluation profile, the offer instead lists
+the team evaluation (``team_evaluation_plan``): a practice run of the ten
+published cells and a scored evaluation of 200 hidden cells, each listed only
+while :func:`team_candidate_quick10_registry.offer_eligibility` holds for that
+purpose, with the reason when it does not. It also carries the public
+evaluation contract a team builds against: the instruction, the sealed success
+contract, the scored variation families and their bounds, the practice cells
+and the policy interface. No scene geometry, footage or site identity is in it.
+Otherwise the ordinary offer is published, so a team listing never outlives
+its eligibility.
 """
 
 from __future__ import annotations
@@ -101,9 +105,39 @@ def build_agent_execution_offer(capture_root: Path, *, policy_execution_profiles
     }, None
 
 
+def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
+    """What a team is asked to do and how it is judged; nothing about the site's geometry."""
+    from .droid_https_policy_client import IMAGE_KEYS, INTERFACE_ID, STATE_KEYS, SUPPORTED_ACTION_CHUNK_ROWS
+    from .team_evaluation_plan import EPISODES, SCORED_FAMILY_SHARES, variation_bounds
+
+    scene = facts["scene"]
+    task_spec = scene.get("task_spec") if isinstance(scene.get("task_spec"), Mapping) else {}
+    bounds = variation_bounds(task_spec, task_kind=str(task_spec.get("task_kind") or ""),
+                              nominal_dynamic_friction=profile.get("nominal_dynamic_friction"))
+    return {
+        "schema_version": "blueprint.team_evaluation_contract.v1",
+        "task_kind": task_spec.get("task_kind"), "instruction": facts["prompt"],
+        "task_success_contract": scene["task_success_contract"],
+        "practice": {"episodes": EPISODES["practice"],
+                     "cells": [{"cell_id": cell["cell_id"], "family": cell["family"],
+                                "parameters": dict((cell.get("resolved_scenario") or {}).get("parameters") or {})}
+                               for cell in facts["inputs"]["cells"]]},
+        "scored": {"episodes": EPISODES["scored"], "cells_published": False,
+                   "families": [name for name, _ in SCORED_FAMILY_SHARES],
+                   "parameter_bounds": {name: list(value) for name, value in sorted(bounds.items())}},
+        "policy_interface": {"policy_interface_id": INTERFACE_ID, "embodiment_preset_id": scene["embodiment_preset_id"],
+                             "observation": {"images": list(IMAGE_KEYS), "image_size": [224, 224],
+                                             "state": list(STATE_KEYS), "prompt": True},
+                             "action": {"space": "joint_position", "dimension": 8, "control_hz": 15,
+                                        "chunk_rows": sorted(SUPPORTED_ACTION_CHUNK_ROWS)},
+                             "request_timeout_seconds": 30, "authentication": "bearer"},
+    }
+
+
 def build_team_candidate_offer(capture_root: Path) -> tuple[dict[str, Any] | None, str | None]:
-    """The Quick-10 team-candidate offer, or ``(None, reason)`` when it may not be listed."""
-    from .team_candidate_quick10_registry import EPISODES, PROFILE, offer_eligibility, profile_for_capture
+    """The team evaluation offer (practice and scored), or ``(None, reason)`` when neither may be listed."""
+    from .team_candidate_quick10_registry import offer_eligibility, profile_for_capture
+    from .team_evaluation_plan import EPISODES, PRACTICE, PROFILES, PURPOSES
 
     root = Path(capture_root).resolve()
     descriptor = _read_object(root / "capture_descriptor.json") or {}
@@ -115,13 +149,21 @@ def build_team_candidate_offer(capture_root: Path) -> tuple[dict[str, Any] | Non
         profile = profile_for_capture(root)
     except (OSError, ValueError) as exc:
         return None, str(exc) or "team_candidate_registry_invalid"
-    facts, blockers = offer_eligibility(profile)
+    listing: dict[str, Any] = {}
+    facts = None
+    for purpose in PURPOSES:
+        purpose_facts, blockers = offer_eligibility(profile, purpose)
+        facts = facts or purpose_facts
+        listing[purpose] = {"profile": PROFILES[purpose], "episodes": EPISODES[purpose],
+                            "available": purpose_facts is not None, "reason": None if purpose_facts else blockers[0]}
     if facts is None:
-        return None, blockers[0]
+        return None, listing[PRACTICE]["reason"]
     return {
         "schema_version": OFFER_SCHEMA_VERSION, "scene_id": scene_id, "capture_id": capture_id,
-        "capture_root": str(root), "scenario_id": str(profile["scenario_id"]), "episode_count": EPISODES,
-        "episode_specs_sha256": facts["episode_specs_sha256"], "policy_execution_profiles": [PROFILE],
+        "capture_root": str(root), "scenario_id": str(profile["scenario_id"]), "episode_count": EPISODES[PRACTICE],
+        "episode_specs_sha256": facts["episode_specs_sha256"],
+        "policy_execution_profiles": [row["profile"] for row in listing.values() if row["available"]],
+        "team_evaluation": {**listing, "contract": _evaluation_contract(facts, profile)},
     }, None
 
 

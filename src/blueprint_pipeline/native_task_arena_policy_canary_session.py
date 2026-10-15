@@ -48,11 +48,14 @@ TEAM_RUN_KIND = "team_candidate_evaluation"
 RUN_KINDS = (RUN_KIND, TEAM_RUN_KIND)
 EXECUTION_MODES = {RUN_KIND: "internal_policy_canary_paired_session",
                    TEAM_RUN_KIND: "team_candidate_evaluation_session"}
-TEAM_ADMISSION_SCHEMA_VERSION = "blueprint.team_candidate_quick10_admission.v1"
+TEAM_ADMISSION_SCHEMA_VERSION = "blueprint.team_candidate_admission.v2"
 CLAIM_CEILING = "diagnostic_policy_execution"
 CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 EPISODES_PER_POLICY = 10
 LEARNED_ROLLOUT_COUNT = 20
+# A team run carries its own cell list: a practice Quick-10, or one shard of a
+# scored evaluation. Only the internal paired canary is fixed at ten.
+TEAM_MAX_CELLS_PER_SESSION = 50
 PROBE_KIND = "native-task-arena-policy-canary-session"
 PROVIDER_BUNDLE_SCHEMA_VERSION = (
     "native_task_arena_policy_canary_provider_bundle.v1"
@@ -127,6 +130,16 @@ def _candidate_set(value: Any, run_kind: Any) -> tuple[str, ...]:
     return (str(value[0]),)
 
 
+def episodes_per_policy_for(run_kind: Any, cell_count: Any) -> int:
+    """The episode count a session of ``run_kind`` with ``cell_count`` cells must carry."""
+    if run_kind != TEAM_RUN_KIND:
+        return EPISODES_PER_POLICY
+    if (isinstance(cell_count, bool) or not isinstance(cell_count, int)
+            or not 1 <= cell_count <= TEAM_MAX_CELLS_PER_SESSION):
+        raise PolicyCanarySessionError("policy_canary_team_cell_count_invalid")
+    return cell_count
+
+
 def _team_admission_binding(payload: Mapping[str, Any]) -> None:
     binding = payload.get("team_candidate_admission")
     if payload.get("run_kind") != TEAM_RUN_KIND:
@@ -134,11 +147,15 @@ def _team_admission_binding(payload: Mapping[str, Any]) -> None:
             raise PolicyCanarySessionError("policy_canary_team_admission_unexpected")
         return
     row = _mapping(binding)
-    if (set(row) != {"schema_version", "admission_digest", "candidate_id", "robot_free_probe_receipt_digest",
-                     "scene_revision_digest", "task_success_contract_digest"}
+    # A practice run may record the scene's robot-free probe itself; a scored
+    # run is admitted only on a probe that already passed.
+    probe_ok = (_digest(row.get("robot_free_probe_receipt_digest"))
+                or (row.get("evaluation_purpose") == "practice" and row.get("robot_free_probe_receipt_digest") is None))
+    if (set(row) != {"schema_version", "admission_digest", "candidate_id", "evaluation_purpose",
+                     "robot_free_probe_receipt_digest", "scene_revision_digest", "task_success_contract_digest"}
             or row.get("schema_version") != TEAM_ADMISSION_SCHEMA_VERSION
-            or not all(_digest(row.get(key)) for key in (
-                "admission_digest", "robot_free_probe_receipt_digest", "scene_revision_digest"))
+            or row.get("evaluation_purpose") not in ("practice", "scored") or not probe_ok
+            or not all(_digest(row.get(key)) for key in ("admission_digest", "scene_revision_digest"))
             or [row.get("candidate_id")] != list(payload.get("candidate_ids") or [])
             or row.get("scene_revision_digest") != payload.get("scene_revision_digest")
             or row.get("task_success_contract_digest") != payload.get("task_success_contract_digest")):
@@ -291,7 +308,7 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise PolicyCanarySessionError("policy_canary_runtime_input_authority_invalid")
     cells = payload.get("cells")
-    if not isinstance(cells, list) or len(cells) != EPISODES_PER_POLICY:
+    if not isinstance(cells, list) or len(cells) != episodes_per_policy_for(payload.get("run_kind"), len(cells)):
         raise PolicyCanarySessionError("policy_canary_runtime_input_cells_invalid")
     seen_cells: set[str] = set()
     seen_seeds: set[int] = set()
@@ -351,7 +368,8 @@ def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
         payload.get("schema_version") != AUTHORITY_SCHEMA_VERSION
         or payload.get("run_kind") not in RUN_KINDS
         or payload.get("claim_ceiling") != CLAIM_CEILING
-        or payload.get("episodes_per_policy") != EPISODES_PER_POLICY
+        or payload.get("episodes_per_policy")
+        != episodes_per_policy_for(payload.get("run_kind"), payload.get("episodes_per_policy"))
         or payload.get("learned_policy_rollout_count")
         != payload.get("episodes_per_policy") * len(candidate_ids)
         or payload.get("maximum_provider_allocations") != 1
@@ -439,7 +457,7 @@ def validate_provider_bundle(
         or payload.get("claim_ceiling") != CLAIM_CEILING
         or tuple(payload.get("candidate_ids") or ())
         != tuple(bound_authority["candidate_ids"])
-        or payload.get("episodes_per_policy") != EPISODES_PER_POLICY
+        or payload.get("episodes_per_policy") != bound_authority["episodes_per_policy"]
         or payload.get("learned_policy_rollout_count")
         != bound_authority["learned_policy_rollout_count"]
         or payload.get("maximum_provider_allocations") != 1
@@ -484,7 +502,7 @@ def build_session_authority(
         or activation.get("claim_ceiling") != CLAIM_CEILING
         or activation.get("activation_digest") != inputs["activation_digest"]
         or tuple(activation.get("candidate_ids") or ()) != candidate_ids
-        or activation.get("campaign_unit_count") != EPISODES_PER_POLICY
+        or activation.get("campaign_unit_count") != len(inputs["cells"])
         or activation.get("task_success_contract")
         != inputs["task_success_contract"]
         or activation.get("task_success_contract_digest")
@@ -499,8 +517,8 @@ def build_session_authority(
         "claim_ceiling": CLAIM_CEILING,
         "run_id": activation.get("run_id"),
         "candidate_ids": list(candidate_ids),
-        "episodes_per_policy": EPISODES_PER_POLICY,
-        "learned_policy_rollout_count": EPISODES_PER_POLICY * len(candidate_ids),
+        "episodes_per_policy": len(inputs["cells"]),
+        "learned_policy_rollout_count": len(inputs["cells"]) * len(candidate_ids),
         "activation_manifest": _record(
             activation_record, code="policy_canary_session_activation_manifest_invalid"
         ),
@@ -638,7 +656,8 @@ def validate_session_result(
         payload.get("schema_version") != RESULT_SCHEMA_VERSION
         or payload.get("run_kind") not in RUN_KINDS
         or payload.get("claim_ceiling") != CLAIM_CEILING
-        or payload.get("episodes_per_policy") != EPISODES_PER_POLICY
+        or payload.get("episodes_per_policy")
+        != episodes_per_policy_for(payload.get("run_kind"), payload.get("episodes_per_policy"))
         or payload.get("learned_policy_rollout_count")
         != payload.get("episodes_per_policy") * len(candidate_ids)
         or payload.get("retry_cap") != 0
@@ -928,8 +947,8 @@ def execute_paired_session(
         "candidate_ids": list(candidate_ids),
         "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
-        "episodes_per_policy": EPISODES_PER_POLICY,
-        "learned_policy_rollout_count": len(candidate_ids) * EPISODES_PER_POLICY,
+        "episodes_per_policy": len(inputs["cells"]),
+        "learned_policy_rollout_count": len(candidate_ids) * len(inputs["cells"]),
         "provider_allocations_observed": (
             None
             if provider_closeout_pending
@@ -1005,9 +1024,11 @@ __all__ = [
     "RUN_KINDS",
     "SCHEMA_VERSION",
     "TEAM_ADMISSION_SCHEMA_VERSION",
+    "TEAM_MAX_CELLS_PER_SESSION",
     "TEAM_RUN_KIND",
     "build_session_authority",
     "consume_session_authority_once",
+    "episodes_per_policy_for",
     "execute_paired_session",
     "validate_runtime_input_manifest",
     "validate_provider_bundle",

@@ -1,13 +1,15 @@
-"""Close one team-candidate Quick-10 run and seal the terminal the agent-run executor reports.
+"""Close one team evaluation (practice or scored) and seal the terminal the agent-run executor reports.
 
-Beta journey step: L5 team policy evaluation. The terminal receipt
-(``team_candidate_quick10_terminal.json`` in the run's job directory, read by
-the executor's default terminal reader) is written only after:
+Beta journey step: L5 team policy evaluation. A run is one GPU session
+(practice) or several (one per shard of a scored evaluation). The terminal
+receipt (``team_candidate_quick10_terminal.json`` in the run's job directory,
+read by the executor's default terminal reader) is written only after:
 
-- the allocator's result proves nothing was allocated (a refusal), or
-- the session result is joined to teardown, staged-object absence and a fresh
-  authenticated global provider-zero, and that closed result validates for the
-  admitted candidate (``team_candidate_terminal``).
+- every shard's allocator result proves nothing was allocated (a refusal), or
+- every shard's session result is joined to its teardown, staged-object
+  absence and a fresh authenticated global provider-zero, and the closed
+  results together validate for the admitted candidate
+  (``team_candidate_terminal``).
 
 While provider-zero is unproven nothing is written, so the run stays pending
 and its hold is not released; the next poll retries. A failure is sealed as a
@@ -29,7 +31,6 @@ from typing import Any
 from .common import utc_now_iso
 from .controlled_policy_configuration import canonical_request_digest
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_policy_canary_session import EPISODES_PER_POLICY
 from .policy_canary_retained_billing import adapter_instance_ids
 from .policy_canary_staged_object_absence import closeout_staged_objects
 from .task_evaluation_scene_execution_authority import proves_no_provider_allocation
@@ -37,6 +38,7 @@ from .team_candidate_quick10_admission import runtime_binding, validate_admissio
 from .team_candidate_quick10_launch import (
     FAILURE_FILENAME,
     INTENT_FILENAME,
+    SHARD_FILENAME,
     TERMINAL_FILENAME,
     TERMINAL_SCHEMA,
     TeamCandidateLaunchError,
@@ -81,7 +83,7 @@ def _zero_verified(value: Mapping[str, Any]) -> bool:
 
 def join_team_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[str, Any],
                                provider_zero: Mapping[str, Any], adapter_path: Path | None = None) -> dict[str, Any]:
-    """The session result with its provider closeout bound in (one allocation, ten episodes)."""
+    """The session result with its provider closeout bound in (one allocation, every planned episode)."""
 
     value = json.loads(json.dumps(dict(inner), allow_nan=False))
     instance_ids = adapter_instance_ids(adapter, result_path=adapter_path, read_json=lambda path, code: _read(path),
@@ -93,8 +95,10 @@ def join_team_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[str
                 and adapter.get("continuing_spend_from_this_run") is False)
     zero = _zero_verified(provider_zero)
     episodes = value.get("episodes")
-    completed = (isinstance(episodes, list) and len(episodes) == EPISODES_PER_POLICY
-                 and all(isinstance(row, Mapping) and row.get("status") == "completed" for row in episodes))
+    # Every planned episode returned a row. Failed rows are scored or voided
+    # by team_candidate_terminal; a missing row is an incomplete session.
+    completed = (isinstance(episodes, list) and len(episodes) == value.get("learned_policy_rollout_count")
+                 and all(isinstance(row, Mapping) for row in episodes))
     value["provider_allocations_observed"] = len(instance_ids)
     value["session_closeout"] = {"status": "closed" if teardown and zero else "blocked",
                                  "provider_allocations_observed": len(instance_ids),
@@ -111,9 +115,19 @@ def join_team_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[str
     return value
 
 
+def _shard_roots(job_dir: Path, shard_count: int) -> list[Path]:
+    roots = []
+    for index in range(shard_count):
+        stages = sorted((job_dir / "shards" / f"{index:02d}").glob(f"stage-*/{SHARD_FILENAME}"))
+        if not stages:
+            raise TeamCandidateLaunchError("team_evaluation_shard_missing")
+        roots.append(stages[-1].parent)
+    return roots
+
+
 def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
                                  provider_zero: Callable[[], Mapping[str, Any]]) -> dict[str, Any] | None:
-    """Seal the terminal from the allocator's result, or return None while provider-zero is unproven."""
+    """Seal the terminal from every shard's allocator result, or return None while provider-zero is unproven."""
 
     if (job_dir / TERMINAL_FILENAME).exists():
         return _read(job_dir / TERMINAL_FILENAME)
@@ -124,28 +138,38 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
     admission = validate_admission(_read(job_dir / "team_candidate_admission.json"))
     if admission["admission_digest"] != intent.get("admission_digest"):
         raise TeamCandidateLaunchError("team_candidate_terminal_admission_mismatch")
-    adapter_path = job_dir / "allocator_result.json"
-    adapter = _read(adapter_path)
-    if proves_no_provider_allocation(adapter):
+    roots = _shard_roots(job_dir, int(intent["shard_count"]))
+    adapters = [(root, _read(root / "allocator_result.json")) for root in roots]
+    if all(proves_no_provider_allocation(adapter) for _, adapter in adapters):
         return _seal(job_dir, request, {"status": "blocked", "provider_allocation_performed": False,
-                                        "blockers": [str(item) for item in adapter.get("blockers") or []]
+                                        "blockers": sorted({str(item) for _, adapter in adapters
+                                                            for item in adapter.get("blockers") or []})
                                         or ["team_candidate_provider_not_allocated"]})
-    bundle = _read(job_dir / "bundle" / "team_candidate_quick10_session_bundle_receipt.v1.json")
-    if adapter.get("bundle_sha256") != bundle.get("bundle_sha256"):
-        raise TeamCandidateLaunchError("team_candidate_allocator_result_bundle_mismatch")
     zero = dict(provider_zero())
     _replace(job_dir / "post_teardown_global_provider_zero.json", zero)
     if not _zero_verified(zero):
         return None
-    native_path = Path(str(adapter.get("native_control_result_path") or ""))
-    if not native_path.is_file():
-        raise TeamCandidateLaunchError("team_candidate_provider_result_missing")
-    inner = _read(native_path)
-    if inner.get("result_digest") != adapter.get("native_control_result_digest"):
-        raise TeamCandidateLaunchError("team_candidate_provider_result_binding_mismatch")
-    joined = join_team_session_closeout(inner=inner, adapter=adapter, provider_zero=zero, adapter_path=adapter_path)
-    _replace(job_dir / "team_candidate_session_result.json", joined)
-    receipt = team_candidate_terminal(session_result=joined, runtime_binding=runtime_binding(admission))
+    joined_results = []
+    for root, adapter in adapters:
+        if proves_no_provider_allocation(adapter):
+            raise TeamCandidateLaunchError("team_evaluation_shard_not_allocated:" + root.parent.name)
+        bundle = _read(root / "bundle" / "team_candidate_quick10_session_bundle_receipt.v1.json")
+        if adapter.get("bundle_sha256") != bundle.get("bundle_sha256"):
+            raise TeamCandidateLaunchError("team_candidate_allocator_result_bundle_mismatch")
+        native_path = Path(str(adapter.get("native_control_result_path") or ""))
+        if not native_path.is_file():
+            raise TeamCandidateLaunchError("team_candidate_provider_result_missing")
+        inner = _read(native_path)
+        if inner.get("result_digest") != adapter.get("native_control_result_digest"):
+            raise TeamCandidateLaunchError("team_candidate_provider_result_binding_mismatch")
+        joined = join_team_session_closeout(inner=inner, adapter=adapter, provider_zero=zero,
+                                            adapter_path=root / "allocator_result.json")
+        _replace(root / "team_candidate_session_result.json", joined)
+        if joined["status"] != "completed_unqualified":
+            raise TeamCandidateLaunchError(";".join(joined["blockers"]) or "team_evaluation_shard_blocked")
+        joined_results.append(joined)
+    receipt = team_candidate_terminal(session_results=joined_results, runtime_binding=runtime_binding(admission),
+                                      purpose=str(admission["evaluation_purpose"]))
     return _seal(job_dir, request, {**receipt, "provider_zero_verified": True,
                                     "admission_digest": admission["admission_digest"]})
 
@@ -178,16 +202,17 @@ def seal_blocked_terminal(*, request: Mapping[str, Any], job_dir: Path, error: E
 
 
 def allocator_running(job_dir: Path) -> bool:
-    """True while the recorded allocator process for this job is still alive."""
+    """True while any shard's recorded allocator process for this job is still alive."""
 
-    path = job_dir / "allocator_process.json"
-    if not path.is_file() or (job_dir / "allocator_invocation.json").exists():
-        return False
-    try:
-        os.kill(int(_read(path)["pid"]), 0)
-    except (OSError, KeyError, TypeError, ValueError):
-        return False
-    return True
+    for path in job_dir.glob("shards/*/stage-*/allocator_process.json"):
+        if (path.parent / "allocator_result.json").exists():
+            continue
+        try:
+            os.kill(int(_read(path)["pid"]), 0)
+        except (OSError, KeyError, TypeError, ValueError):
+            continue
+        return True
+    return False
 
 
 def read_team_candidate_terminal(*, job_dir: Path, expected_job_id: str,

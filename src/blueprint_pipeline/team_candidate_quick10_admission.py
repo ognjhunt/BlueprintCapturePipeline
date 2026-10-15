@@ -1,9 +1,11 @@
-"""Admit ONE robot team's own policy to the Quick-10 canary in place of the frozen pair.
+"""Admit ONE robot team's own policy to a practice run or a scored evaluation of a site job.
 
 Beta journey step: L5 team policy evaluation. The website scene runtime ran
 only Blueprint's two frozen public policies. This control-plane admission (no
-network, no provider, no spend) decides whether one team candidate may take
-their place for the ten Quick-10 cells, and seals what the runtime may run:
+network, no provider, no spend) decides whether one team candidate may run on
+the scene, for ``practice`` (the ten published Quick-10 cells, feedback only)
+or ``scored`` (200 hidden cells, the only evidence a recommendation may rest
+on; ``team_evaluation_plan``), and seals what the runtime may run:
 
 - the candidate is the team's own policy on the DROID Franka (Robotiq 2F-85)
   interface, served by the team over authenticated HTTPS
@@ -14,12 +16,14 @@ their place for the ten Quick-10 cells, and seals what the runtime may run:
   ranking, secret retention and Arm Decision Proof evidence use;
 - a single-use KMS bearer-credential lease for exactly that origin is
   available (the secret itself never enters this record);
-- the run is free, single-attempt, ten episodes, and inside the free-beta
-  provider cap;
+- the run is free, single-attempt, has exactly its purpose's episode count, and
+  stays inside the free-beta provider cap;
 - the founder admitted exactly this team, candidate and scene revision, and
   the admission has not expired;
-- the scene's robot-free success probe passed at this revision for the exact
-  task specification (``robot_free_probe_gate``); and
+- for a scored run, the scene's robot-free success probe passed at this
+  revision for the exact task specification (``robot_free_probe_gate``); a
+  practice run may go ahead while the probe is still pending (it records the
+  rigid probe itself), never after it failed; and
 - the scene's success contract and embodiment are the ones the run scores.
 
 Every refusal is collected and raised together with typed reasons. A sealed
@@ -42,21 +46,22 @@ from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
 from .native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
     CLAIM_CEILING,
-    EPISODES_PER_POLICY,
     TEAM_ADMISSION_SCHEMA_VERSION,
     TEAM_RUN_KIND,
 )
 from .policy_interface_binding import TEAM_HTTPS_INTERFACES
 from .robot_free_probe_gate import RobotFreeProbeGateError, require_robot_free_probe, task_success_contract_binding
+from .team_evaluation_plan import EPISODES, PRACTICE, PURPOSES, SCORED, SHARD_CELLS, shard_ttl_seconds
 
 CANDIDATE_SCHEMA = "blueprint.team_policy_candidate.v1"
 RIGHTS_SCHEMA = "blueprint.team_policy_candidate_rights.v1"
 LEASE_SCHEMA = "blueprint.team_policy_credential_lease_availability.v1"
 FOUNDER_SCHEMA = "blueprint.team_candidate_founder_admission.v1"
 EXECUTION_SPEC_SCHEMA = "native_task_arena_policy_canary_execution_spec.v1"
-RUNTIME = "policy_canary_quick10_team_candidate"
+RUNTIME = "team_evaluation"
 FREE_BETA_PROVIDER_CAP_USD = 20.0
-MAX_TTL_SECONDS = 4 * 3600
+# Per GPU session (one shard): the longest shard is SHARD_CELLS cells.
+MAX_TTL_SECONDS = shard_ttl_seconds(SHARD_CELLS)
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,58}_FILE$")
@@ -145,11 +150,11 @@ def _lease_blockers(lease: Mapping[str, Any], candidate: Mapping[str, Any], now:
     return []
 
 
-def _budget_blockers(budget: Mapping[str, Any]) -> list[str]:
+def _budget_blockers(budget: Mapping[str, Any], purpose: str) -> list[str]:
     cap = budget.get("cap_usd")
     ttl = budget.get("hard_ttl_seconds")
     if (budget.get("payer") != "blueprint" or budget.get("customer_price_usd") != 0
-            or budget.get("max_attempts") != 1 or budget.get("episodes") != EPISODES_PER_POLICY
+            or budget.get("max_attempts") != 1 or budget.get("episodes") != EPISODES.get(purpose)
             or type(cap) not in (int, float) or not 0 < float(cap) <= FREE_BETA_PROVIDER_CAP_USD
             or type(ttl) is not int or not 0 < ttl <= MAX_TTL_SECONDS):
         return ["team_candidate_budget_cap_invalid"]
@@ -172,16 +177,18 @@ def _founder_blockers(founder: Mapping[str, Any], candidate: Mapping[str, Any], 
 def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, Any],
                          credential_lease: Mapping[str, Any], budget: Mapping[str, Any],
                          founder_admission: Mapping[str, Any], scene: Mapping[str, Any],
-                         probe_receipt: Mapping[str, Any] | None, now: datetime | None = None) -> dict[str, Any]:
-    """Seal one team candidate's Quick-10 admission, or raise with every typed reason."""
+                         probe_receipt: Mapping[str, Any] | None, purpose: str = SCORED,
+                         now: datetime | None = None) -> dict[str, Any]:
+    """Seal one team candidate's practice or scored admission, or raise with every typed reason."""
 
     moment = now or datetime.now(timezone.utc)
     candidate, scene = _m(candidate), _m(scene)
     revision = scene.get("scene_revision_digest")
     task_spec = _m(scene.get("task_spec"))
-    blockers = [*_candidate_blockers(candidate), *_rights_blockers(_m(rights), candidate),
-                *_lease_blockers(_m(credential_lease), candidate, moment), *_budget_blockers(_m(budget)),
-                *_founder_blockers(_m(founder_admission), candidate, revision, moment)]
+    blockers = [] if purpose in PURPOSES else ["team_candidate_evaluation_purpose_invalid"]
+    blockers += [*_candidate_blockers(candidate), *_rights_blockers(_m(rights), candidate),
+                 *_lease_blockers(_m(credential_lease), candidate, moment), *_budget_blockers(_m(budget), purpose),
+                 *_founder_blockers(_m(founder_admission), candidate, revision, moment)]
     contract: dict[str, Any] = {}
     try:
         raw_contract = _m(scene.get("task_success_contract"))
@@ -200,13 +207,17 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
                                          task_success_contract_digest=task_success_contract_binding(
                                              task_spec.get("task_kind"), scene.get("task_success_contract")))
     except RobotFreeProbeGateError as exc:
-        blockers.append(str(exc))
+        # Practice is feedback, never evidence: it may run (and record the
+        # rigid probe) while the probe is pending, but never on a scene whose
+        # probe was decided and failed.
+        if purpose != PRACTICE or _m(probe_receipt).get("status") not in (None, "probe_unavailable"):
+            blockers.append(str(exc))
     if blockers:
         raise TeamCandidateAdmissionError(blockers)
     delivery = candidate["delivery"]
     admission = {
         "schema_version": TEAM_ADMISSION_SCHEMA_VERSION, "status": "admitted", "run_kind": TEAM_RUN_KIND,
-        "runtime": RUNTIME, "preset_id": "quick_10", "episodes": EPISODES_PER_POLICY,
+        "runtime": RUNTIME, "evaluation_purpose": purpose, "episodes": EPISODES[purpose],
         "team_id": candidate["team_id"], "checkpoint_id": candidate["checkpoint_id"],
         "candidate_id": candidate["candidate_id"], "policy_interface_id": candidate["policy_interface_id"],
         "embodiment_preset_id": candidate["embodiment_preset_id"],
@@ -215,9 +226,9 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
             "team_policy_id")},
         "credential": {key: credential_lease[key] for key in ("lease_id", "credential_ref_digest", "credential_env",
                                                               "origin")},
-        "scene_revision_digest": revision, "task_spec_digest": probe["task_spec_digest"],
+        "scene_revision_digest": revision, "task_spec_digest": canonical_digest(task_spec),
         "task_success_contract_digest": contract["contract_digest"],
-        "robot_free_probe_receipt_digest": probe["receipt_digest"],
+        "robot_free_probe_receipt_digest": probe.get("receipt_digest"),
         "rights_digest": rights["rights_digest"], "founder_approval_digest": founder_admission["approval_digest"],
         "budget": {key: budget[key] for key in ("cap_usd", "hard_ttl_seconds", "max_attempts", "episodes")},
         "claim_ceiling": CLAIM_CEILING, "evidence_scope": "development_only",
@@ -242,7 +253,7 @@ def runtime_binding(admission: Mapping[str, Any]) -> dict[str, Any]:
 
     value = validate_admission(admission)
     return {"schema_version": TEAM_ADMISSION_SCHEMA_VERSION, "admission_digest": value["admission_digest"],
-            "candidate_id": value["candidate_id"],
+            "candidate_id": value["candidate_id"], "evaluation_purpose": value["evaluation_purpose"],
             "robot_free_probe_receipt_digest": value["robot_free_probe_receipt_digest"],
             "scene_revision_digest": value["scene_revision_digest"],
             "task_success_contract_digest": value["task_success_contract_digest"]}

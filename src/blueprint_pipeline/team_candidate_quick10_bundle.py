@@ -42,7 +42,6 @@ from .native_task_arena_policy_canary_bundle import (
 )
 from .native_task_arena_policy_canary_session import (
     CLAIM_CEILING,
-    EPISODES_PER_POLICY,
     EXECUTION_MODES,
     PROVIDER_BUNDLE_SCHEMA_VERSION,
     PROVIDER_RESULT_FILENAME,
@@ -286,7 +285,8 @@ def build_team_candidate_session_bundle(
         manifest.update({
             "schema_version": PROVIDER_BUNDLE_SCHEMA_VERSION, "execution_mode": EXECUTION_MODES[TEAM_RUN_KIND],
             "run_kind": TEAM_RUN_KIND, "claim_ceiling": CLAIM_CEILING, "candidate_ids": [candidate],
-            "episodes_per_policy": EPISODES_PER_POLICY, "learned_policy_rollout_count": EPISODES_PER_POLICY,
+            "episodes_per_policy": authority["episodes_per_policy"],
+            "learned_policy_rollout_count": authority["learned_policy_rollout_count"],
             "maximum_provider_allocations": 1, "retry_cap": 0, "authority_digest": authority["authority_digest"],
             "runtime_inputs_digest": inputs["runtime_inputs_digest"],
             "task_success_contract_digest": inputs["task_success_contract_digest"],
