@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from blueprint_pipeline import robot_free_readiness_retention as retention
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_execution_authority import bind_scene_attempt
@@ -21,7 +22,12 @@ def save(path, value, field=None):
 
 
 @pytest.fixture
-def prepared(tmp_path):
+def prepared(tmp_path, monkeypatch):
+    # The published references here are placeholders; retention of the robot-free
+    # readiness receipt is pinned by tests/test_robot_free_readiness_retention.py.
+    retained = []
+    monkeypatch.setattr(retention, 'retain_robot_free_readiness',
+                        lambda **kwargs: retained.append(kwargs) or {'status': 'probe_unavailable', 'retained': True})
     root, result_path = _source(tmp_path)
     run = root / 'scene-839873-qualifying'
     intent_root = tmp_path / 'intents'
@@ -80,6 +86,31 @@ def test_scene_preparation_finishes_without_robot_or_policy_result(prepared):
     assert result['status'] == 'completed' and result['phase'] == 'scene_prepared'
     assert result['state']['scene_preparation_completion']['robot_evaluation_performed'] is False
     assert not (run / 'policy_canary_result_projection.json').exists()
+
+
+def test_completion_retains_the_robot_free_readiness_receipt_beside_the_launch(prepared, monkeypatch):
+    args, run, result_path = prepared
+    calls = []
+    monkeypatch.setattr(retention, 'retain_robot_free_readiness',
+                        lambda **kwargs: calls.append(kwargs) or {'status': 'passed', 'retained': True})
+    result = reconcile_preparation_completion(**args)
+    published = json.loads(result_path.read_text())
+    assert calls == [{'run_root': run, 'revision_reference': published['configured_scene_revision_reference'],
+                      'revision_digest': published['configured_scene_revision_digest']}]
+    assert result['state']['scene_preparation_completion']['robot_free_readiness'] == {
+        'status': 'passed', 'retained': True}
+
+
+def test_a_transient_retention_failure_keeps_completion_pending_for_retry(prepared, monkeypatch):
+    args, _, _ = prepared
+
+    def unavailable(**_kwargs):
+        raise retention.RobotFreeReadinessRetentionError('robot_free_readiness_retention_failed:OSError:x')
+
+    monkeypatch.setattr(retention, 'retain_robot_free_readiness', unavailable)
+    result = reconcile_preparation_completion(**args)
+    assert result['status'] == 'awaiting_execution'
+    assert result['blockers'] == ['robot_free_readiness_retention_failed:OSError:x']
 
 
 @pytest.mark.parametrize('missing', ['webapp_sync_succeeded.json', 'post_teardown_provider_zero_receipt.json'])
