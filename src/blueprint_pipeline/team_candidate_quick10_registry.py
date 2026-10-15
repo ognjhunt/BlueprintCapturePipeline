@@ -159,7 +159,11 @@ def offer_eligibility(profile: Mapping[str, Any] | None,
 
     from .native_policy_canary_control_gate import controls_required
     from .robot_free_probe_gate import (
-        RobotFreeProbeGateError, require_robot_free_probe, retained_probe_receipt, task_success_contract_binding)
+        RobotFreeProbeGateError,
+        require_robot_free_probe,
+        retained_probe_receipt,
+        task_success_contract_binding,
+    )
 
     if profile is None:
         return None, ["team_candidate_profile_missing"]
