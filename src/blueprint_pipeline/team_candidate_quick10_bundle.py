@@ -340,13 +340,15 @@ def main(argv: list[str] | None = None) -> int:
                  "--session-authority-path", "--execution-spec-path", "--implementation-commit"):
         parser.add_argument(name, required=True)
     parser.add_argument("--generated-at")
+    parser.add_argument("--team-robot-model", help="the team's staged USD model, for a bring-your-own-arm run")
     args = parser.parse_args(argv)
     receipt = build_team_candidate_session_bundle(
         job_dir=args.job_dir, packet_dir=args.packet_dir,
         runtime_source_packet_receipt=args.runtime_source_packet_receipt,
         runtime_input_manifest_path=args.runtime_input_manifest_path,
         session_authority_path=args.session_authority_path, execution_spec_path=args.execution_spec_path,
-        implementation_commit=args.implementation_commit, generated_at=args.generated_at)
+        implementation_commit=args.implementation_commit, generated_at=args.generated_at,
+        team_robot_model_path=args.team_robot_model)
     print(json.dumps(receipt, sort_keys=True))
     return 0
 

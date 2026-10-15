@@ -231,9 +231,21 @@ def read_model_structure(path: str | Path) -> dict[str, Any]:
         stage = Usd.Stage.Open(str(path))
         joints = sorted({prim.GetName() for prim in stage.Traverse()
                          if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)})
+        # A fixed joint with one empty body pins that link to the world. Isaac Lab's
+        # fix_root_link cannot do it for this topology (root Xform, links beneath),
+        # so the model must author its own anchor, as Isaac's URDF importer does.
+        anchors = []
+        for prim in stage.Traverse():
+            if not prim.IsA(UsdPhysics.FixedJoint):
+                continue
+            joint = UsdPhysics.FixedJoint(prim)
+            ends = [list(joint.GetBody0Rel().GetTargets()), list(joint.GetBody1Rel().GetTargets())]
+            linked = [stage.GetPrimAtPath(targets[0]) for targets in ends if targets]
+            if len(linked) == 1 and linked[0] and linked[0].HasAPI(UsdPhysics.RigidBodyAPI):
+                anchors.append(linked[0].GetName())
     except (NativeTaskRobotContactTopologyError, Exception) as exc:  # pxr raises Tf errors on bad bytes
         raise TeamEmbodimentError(["team_embodiment_model_unreadable"]) from exc
-    return {"body_paths": bodies, "joint_names": joints}
+    return {"body_paths": bodies, "joint_names": joints, "world_anchor_links": sorted(anchors)}
 
 
 def _body_path(structure: Mapping[str, Any], link: str) -> str | None:
@@ -242,7 +254,7 @@ def _body_path(structure: Mapping[str, Any], link: str) -> str | None:
 
 
 def model_structure_blockers(manifest: Mapping[str, Any], structure: Mapping[str, Any]) -> list[str]:
-    """Every declared joint and link must exist, once, in the model."""
+    """Every declared joint and link must exist, once, in the model, and its base is pinned to the world."""
 
     gripper = manifest.get("gripper") or {}
     joints = [j["name"] for j in manifest["arm_joints"]] + [j["name"] for j in gripper.get("joints") or []]
@@ -252,6 +264,8 @@ def model_structure_blockers(manifest: Mapping[str, Any], structure: Mapping[str
                 if name not in structure["joint_names"]]
     blockers += [f"team_embodiment_model_link_missing_or_ambiguous:{link}" for link in dict.fromkeys(links)
                  if _body_path(structure, link) is None]
+    # A fixed-base arm whose model does not pin its base floats: contacts would move it mid-episode.
+    blockers += [] if structure.get("world_anchor_links") else ["team_embodiment_model_base_not_anchored_to_world"]
     return blockers
 
 
@@ -333,6 +347,31 @@ def _plan_cameras(manifest: Mapping[str, Any], structure: Mapping[str, Any]) -> 
     return rows
 
 
+def _shift_team_cameras(plan: dict[str, Any]) -> None:
+    """A camera-shifted cell moves the team's fixed cameras, not the Blueprint camera they replaced.
+
+    The scene resolver shifted Blueprint's ``external`` camera, which the team's
+    cameras replace. The same shift goes to every team camera fixed in the world
+    (each mounted camera when the team declared none), and the readback checks
+    each one.
+    """
+
+    scenario = plan.get("scenario") if isinstance(plan.get("scenario"), dict) else {}
+    applications = list(scenario.get("parameter_applications") or [])
+    shifts = [row for row in applications if row.get("parameter_id") == "external_camera_x_delta_m"]
+    if not shifts:
+        return
+    delta = float(shifts[0]["delta_from_nominal"])
+    team = [row for row in plan["cameras"] if row.get("policy_input") is True]
+    moved = [row for row in team if row["pose_frame"] == "world"] or team
+    kept = [row for row in applications if row.get("parameter_id") != "external_camera_x_delta_m"]
+    for camera in moved:
+        camera["frame_from_camera_matrix"][3] += delta
+        kept.append({**shifts[0], "camera_role": camera["role"],
+                     "expected_native_value": camera["frame_from_camera_matrix"][3]})
+    scenario["parameter_applications"] = kept
+
+
 def _rebind_contact_sensors(articulation: dict[str, Any], *, task_bodies: list[str], protected: list[str]) -> None:
     """Point the scene compiler's robot-side contact sensors at the team robot's bodies."""
 
@@ -408,6 +447,7 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
     # The team's cameras replace Blueprint's policy cameras; the review (overview) camera stays.
     review = [row for row in value.get("cameras") or [] if row.get("review_only") is True]
     value["cameras"] = [*_plan_cameras(manifest, structure), *review]
+    _shift_team_cameras(value)
     cadence = value["cadence"]
     task_hz = float(value["task_spec"]["control_frequency_hz"])
     hz = int(manifest["control_hz"])

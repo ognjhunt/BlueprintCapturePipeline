@@ -44,7 +44,7 @@ ARM = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint"]
 ORIGIN = "https://policy.acme-robotics.example"
 
 
-def write_robot_usd(path: Path) -> Path:
+def write_robot_usd(path: Path, *, anchored: bool = True) -> Path:
     """A three-joint arm with a two-finger gripper, as Isaac's URDF importer would flatten it."""
 
     from pxr import Usd, UsdPhysics
@@ -58,6 +58,10 @@ def write_robot_usd(path: Path) -> Path:
     for name, kind in [*((joint, UsdPhysics.RevoluteJoint) for joint in ARM),
                        ("finger_joint", UsdPhysics.PrismaticJoint)]:
         kind.Define(stage, f"/acme_arm/joints/{name}")
+    if anchored:
+        # The importer's fixed-base anchor: base_link pinned to the world (no body0).
+        UsdPhysics.FixedJoint.Define(stage, "/acme_arm/joints/root_joint").CreateBody1Rel().SetTargets(
+            ["/acme_arm/base_link"])
     stage.GetRootLayer().Save()
     return path
 
@@ -137,6 +141,22 @@ def test_a_team_arm_stands_at_the_scene_station_with_its_own_cameras_and_rate(tm
     assert plan["policy_canary_embodiment_profile"]["robot_preset_id"] == "team_embodiment"
 
 
+def test_a_camera_shifted_cell_moves_the_team_scene_camera_and_reads_that_camera_back(tmp_path) -> None:
+    _declared, sealed = binding(tmp_path)
+    shift = {"parameter_id": "external_camera_x_delta_m", "readback_kind": "camera_offset_position_x_m",
+             "camera_role": "external", "expected_native_value": 0.53, "delta_from_nominal": 0.03}
+    # As the scene resolver leaves it: Blueprint's external camera shifted, before the team's replace it.
+    plan = apply_team_embodiment({**station_plan(), "scenario": {"parameter_applications": [shift]}}, sealed)
+    nominal = apply_team_embodiment({**station_plan(), "scenario": {"parameter_applications": []}}, sealed)
+    wrist, scene = plan["cameras"][0], plan["cameras"][1]
+    assert scene["frame_from_camera_matrix"][3] == pytest.approx(
+        nominal["cameras"][1]["frame_from_camera_matrix"][3] + 0.03)
+    assert wrist["frame_from_camera_matrix"] == nominal["cameras"][0]["frame_from_camera_matrix"]
+    [applied] = plan["scenario"]["parameter_applications"]
+    assert applied["camera_role"] == "team_camera_1"
+    assert applied["expected_native_value"] == scene["frame_from_camera_matrix"][3]
+
+
 def test_an_arm_that_cannot_be_evaluated_is_refused_by_name_before_any_gpu(tmp_path) -> None:
     model = write_robot_usd(tmp_path / "acme_arm.usda")
     with pytest.raises(TeamEmbodimentError) as error:
@@ -154,6 +174,13 @@ def test_an_arm_that_cannot_be_evaluated_is_refused_by_name_before_any_gpu(tmp_p
         with pytest.raises(TeamEmbodimentError) as error:
             binding(tmp_path / str(index), **overrides)
         assert blocker in error.value.blockers
+    # A model that does not pin its base to the world would float under contact: refused.
+    floating = write_robot_usd(tmp_path / "floating.usda", anchored=False)
+    loose = validate_embodiment_manifest(manifest(floating))
+    with pytest.raises(TeamEmbodimentError) as error:
+        team_embodiment_binding(loose, model_record=verify_model_file(loose, floating),
+                                structure=read_model_structure(floating), scene_plan=station_plan())
+    assert "team_embodiment_model_base_not_anchored_to_world" in error.value.blockers
     declared = validate_embodiment_manifest(manifest(model))
     other = tmp_path / "other.usda"
     other.write_text("#usda 1.0\n")

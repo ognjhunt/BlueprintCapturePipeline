@@ -72,9 +72,20 @@ MODEL_DIGEST = "sha256:" + "7" * 64
 SALT = "5" * 64
 
 
+def _verdict(cell_id: str) -> int:
+    return int(hashlib.sha256(cell_id.encode()).hexdigest(), 16) % 10
+
+
 def _succeeds(cell_id: str) -> bool:
     """The stand-in worker's verdict: seven in ten cells succeed, deterministically by cell."""
-    return int(hashlib.sha256(cell_id.encode()).hexdigest(), 16) % 10 < 7
+    return _verdict(cell_id) < 7
+
+
+def _times_out(cell_id: str) -> bool:
+    """One failing cell in ten is the team's service not answering: a failed episode, never a void."""
+    return _verdict(cell_id) == 9
+
+
 ZERO = {"schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1", "status": "provider_zero_confirmed",
         "provider": "vast", "api_confirmed": True, "live_instance_count": 0, "provider_zero_verified": True,
         "blockers": []}
@@ -161,7 +172,7 @@ def _provider_session_result(runtime: Path, spec: dict[str, Any]) -> dict[str, A
             "lossless_frame_manifest_digest", "review_video_digest", "returned_action_sequence_digest",
             "action_delivery_readback_digest", "state_trace_digest", "contact_force_digest",
             "task_object_trajectory_digest", "deterministic_score_digest")}
-        episodes.append({
+        row = {
             "candidate_id": spec["candidate_id"], "cell_id": cell["cell_id"], "seed": cell["seed"],
             "cell_spec_digest": cell["cell_spec_digest"], "resolved_scenario": cell["resolved_scenario"],
             "resolved_scenario_digest": cell["resolved_scenario_digest"], "run_kind": inputs["run_kind"],
@@ -169,7 +180,17 @@ def _provider_session_result(runtime: Path, spec: dict[str, Any]) -> dict[str, A
             "checkpoint_digest": spec["checkpoint_digest"], "runtime_identity_digest": spec["runtime_identity_digest"],
             "candidate_policy_queried": True, "actions_reached_robot": True, "arm_moved": True,
             "scoring_authority": "deterministic_simulator_state", "visual_evidence": {"status": "complete"},
-            "episode": {"score": {"status": "scored", "task_succeeded": succeeded}}, **digests})
+            "episode": {"score": {"status": "scored", "task_succeeded": succeeded}}, **digests}
+        if _times_out(cell["cell_id"]):
+            # The worker's retained row when the team's service stops answering mid-episode.
+            row.update(status="failed", episode_failure_stage="after_first_observation", episode={},
+                       candidate_policy_query_attempted=True, policy_response_status="timeout",
+                       failure_message="team_policy_https_timeout", first_observation_retained=True,
+                       policy_outcome_interpretable=False,
+                       visual_evidence={"status": "complete", "human_review_available": True,
+                                        "episode_terminal_status": "failed_after_first_observation",
+                                        "terminal_observation_invented": False})
+        episodes.append(row)
     result = {"schema_version": "native_task_arena_policy_canary_session_result.v1",
               "status": "runtime_completed_unqualified_pending_closeout", "run_kind": inputs["run_kind"],
               "claim_ceiling": "diagnostic_policy_execution", "candidate_ids": inputs["candidate_ids"],
@@ -378,6 +399,9 @@ def test_a_practice_request_is_driven_from_claim_to_a_scored_practice_statement(
     cells = json.loads((world["job_dir"] / "team_candidate_admission.json").read_text())
     expected = sum(_succeeds(row["cell_id"]) for row in result["episode_outcomes"])
     assert result["episodes_run"] == 10 and result["episodes_succeeded"] == expected
+    # A cell whose policy service stopped answering is the team's failure, reported, never voided.
+    timed_out = [row for row in result["episode_outcomes"] if _times_out(row["cell_id"])]
+    assert all((row["outcome"], row["reason"]) == ("failure", "policy_service_did_not_answer") for row in timed_out)
     assert result["evaluation_purpose"] == "practice" and cells["evaluation_purpose"] == "practice"
     # Practice returns every published cell's parameters and outcome to the team.
     assert all("parameters" in row and row["outcome"] in {"success", "failure"} for row in result["episode_outcomes"])

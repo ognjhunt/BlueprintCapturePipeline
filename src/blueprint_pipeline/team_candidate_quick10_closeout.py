@@ -95,22 +95,26 @@ def join_team_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[str
                 and adapter.get("continuing_spend_from_this_run") is False)
     zero = _zero_verified(provider_zero)
     episodes = value.get("episodes")
-    # Every planned episode returned a row. Failed rows are scored or voided
-    # by team_candidate_terminal; a missing row is an incomplete session.
-    completed = (isinstance(episodes, list) and len(episodes) == value.get("learned_policy_rollout_count")
-                 and all(isinstance(row, Mapping) for row in episodes))
+    # Every planned episode returned a row. A missing row is an incomplete
+    # session; a failed row is an outcome team_candidate_terminal scores or voids.
+    returned = (isinstance(episodes, list) and len(episodes) == value.get("learned_policy_rollout_count")
+                and all(isinstance(row, Mapping) for row in episodes))
+    closeout_blockers = [] if returned else ["team_candidate_episodes_incomplete"]
+    closeout_blockers += [] if len(instance_ids) == 1 else ["policy_canary_provider_allocation_count_invalid"]
+    closeout_blockers += [] if teardown else ["policy_canary_teardown_incomplete"]
+    closeout_blockers += [] if zero else ["policy_canary_global_provider_zero_unproven"]
+    closeout_blockers = sorted(set(closeout_blockers + list(staged["blockers"])))
     value["provider_allocations_observed"] = len(instance_ids)
     value["session_closeout"] = {"status": "closed" if teardown and zero else "blocked",
                                  "provider_allocations_observed": len(instance_ids),
-                                 "teardown_completed": teardown, "provider_zero_confirmed": zero}
-    value["status"] = ("completed_unqualified" if completed and len(instance_ids) == 1 and teardown and zero
-                       and not staged["blockers"] else "blocked")
+                                 "teardown_completed": teardown, "provider_zero_confirmed": zero,
+                                 "blockers": closeout_blockers}
+    # The session validator's terms: completed_unqualified only when every
+    # episode completed; a closed session with failed episodes is "blocked".
+    value["status"] = ("completed_unqualified" if not closeout_blockers
+                       and all(row.get("status") == "completed" for row in episodes) else "blocked")
     blockers = [str(item) for item in value.get("blockers") or [] if str(item)]
-    blockers += [] if completed else ["team_candidate_episodes_incomplete"]
-    blockers += [] if len(instance_ids) == 1 else ["policy_canary_provider_allocation_count_invalid"]
-    blockers += [] if teardown else ["policy_canary_teardown_incomplete"]
-    blockers += [] if zero else ["policy_canary_global_provider_zero_unproven"]
-    value["blockers"] = sorted(set(blockers + list(staged["blockers"])))
+    value["blockers"] = sorted(set(blockers + closeout_blockers))
     value["result_digest"] = canonical_digest(value, digest_field="result_digest")
     return value
 
@@ -184,8 +188,8 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
         joined = join_team_session_closeout(inner=inner, adapter=adapter, provider_zero=zero,
                                             adapter_path=root / "allocator_result.json")
         _replace(root / "team_candidate_session_result.json", joined)
-        if joined["status"] != "completed_unqualified":
-            raise TeamCandidateLaunchError(";".join(joined["blockers"]) or "team_evaluation_shard_blocked")
+        if joined["session_closeout"]["blockers"]:
+            raise TeamCandidateLaunchError(";".join(joined["session_closeout"]["blockers"]))
         joined_results.append(joined)
     receipt = team_candidate_terminal(session_results=joined_results, runtime_binding=runtime_binding(admission),
                                       purpose=str(admission["evaluation_purpose"]))
