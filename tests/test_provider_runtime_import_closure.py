@@ -106,7 +106,8 @@ def _spec(candidate: str) -> dict[str, object]:
     return value
 
 
-def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
+def _real_canary_pair_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """The frozen pair's sealed Quick-10 inputs: packet, runtime source, inputs and activation paths."""
     public = public_setup()
     packet = _packet(tmp_path, scene_id="839873")
     from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _scene_plan
@@ -204,6 +205,13 @@ def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
         inputs, digest_field="runtime_inputs_digest"
     )
     inputs_path = _write(tmp_path / "runtime_inputs.json", inputs)
+    return packet, runtime_receipt, inputs_path, activation_path
+
+
+def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
+    packet, runtime_receipt, inputs_path, activation_path = _real_canary_pair_inputs(tmp_path)
+    inputs = json.loads(inputs_path.read_text())
+    activation = json.loads(activation_path.read_text())
     authority = build_session_authority(
         activation_manifest=activation,
         activation_record=_record(activation_path),

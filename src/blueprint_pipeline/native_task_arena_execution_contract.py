@@ -368,9 +368,10 @@ def native_task_arena_execution_transport_completed(
             == "runtime_completed_unqualified_pending_closeout"
             and result.get("schema_version")
             == "native_task_arena_policy_canary_session_result.v1"
-            and result.get("run_kind") == "internal_policy_canary"
+            # The frozen pair runs twenty rollouts; one team candidate runs ten.
+            and (result.get("run_kind"), result.get("learned_policy_rollout_count"))
+            in {("internal_policy_canary", 20), ("team_candidate_evaluation", 10)}
             and result.get("claim_ceiling") == "diagnostic_policy_execution"
-            and result.get("learned_policy_rollout_count") == 20
             and result.get("candidate_policy_queried") is True
             and result.get("scene_promotion_performed") is False
             and result.get("official_ranking_performed") is False

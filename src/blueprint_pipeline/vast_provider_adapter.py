@@ -2429,35 +2429,10 @@ def _session_budget_guard(
 def _validate_policy_canary_provider_manifest(
     payload: object,
 ) -> dict[str, Any]:
-    if not isinstance(payload, Mapping):
-        raise TypeError("native_task_arena_policy_canary_manifest_not_mapping")
-    if (
-        payload.get("schema_version")
-        != "native_task_arena_policy_canary_provider_bundle.v1"
-        or payload.get("status") != "ready"
-        or payload.get("blockers") != []
-        or payload.get("input_digest")
-        != canonical_digest(payload, digest_field="input_digest")
-        or payload.get("execution_mode")
-        != "internal_policy_canary_paired_session"
-        or payload.get("run_kind") != "internal_policy_canary"
-        or payload.get("claim_ceiling") != "diagnostic_policy_execution"
-        or payload.get("candidate_ids") != ["pi05_droid", "groot_n17_droid"]
-        or payload.get("episodes_per_policy") != 10
-        or payload.get("learned_policy_rollout_count") != 20
-        or payload.get("maximum_provider_allocations") != 1
-        or payload.get("retry_cap") != 0
-        or payload.get("expected_output_filename")
-        != "native_task_arena_policy_canary_session_result.v1.json"
-        or payload.get("runtime_entrypoint")
-        != "provider_runtime/run_adp_arena_provider_runtime.sh"
-        or payload.get("candidate_policy_queried") is not False
-        or payload.get("provider_zero_required_after_return") is not True
-    ):
-        raise ValueError("native_task_arena_policy_canary_manifest_invalid")
-    readiness = dict(payload)
-    readiness["local_bundle_ready_for_remote_staging"] = True
-    return readiness
+    # Both session run kinds (frozen pair, one team candidate) share this kind.
+    from .policy_canary_session_bundle_identity import validate_policy_canary_provider_manifest
+
+    return validate_policy_canary_provider_manifest(payload)
 
 
 def _blueprint_bundle_preflight(
@@ -2575,17 +2550,12 @@ def _blueprint_bundle_preflight(
     policy_canary_session_required_entries = native_task_arena_required_entries | {
         "provider_runtime/runtime_inputs/policy_canary_runtime_inputs.json",
         "provider_runtime/runtime_inputs/policy_canary_session_authority.json",
-        "provider_runtime/runtime_inputs/policy_execution_spec.pi05_droid.json",
-        "provider_runtime/runtime_inputs/policy_execution_spec.groot_n17_droid.json",
         "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
         "provider_runtime/blueprint_pipeline/native_task_arena_policy_canary_session.py",
         "provider_runtime/blueprint_pipeline/native_task_arena_policy_worker.py",
-        "provider_runtime/blueprint_pipeline/openpi_droid_policy_runtime.py",
-        "provider_runtime/blueprint_pipeline/groot_n17_droid_policy_runtime.py",
         "provider_runtime/blueprint_pipeline/policy_episode_trace_evidence.py",
         "provider_runtime/blueprint_pipeline/episode_visual_evidence.py",
-        "provider_runtime/adp009d_policy_server_worker.py",
-    }
+    }  # plus the run kind's own members once its manifest validates
     paired_target_native_import_required_entries = {
         "provider_runtime/run_paired_target_native_import_probe.sh",
         "provider_runtime/run_paired_target_native_import_probe.py",
@@ -2945,6 +2915,12 @@ def _blueprint_bundle_preflight(
                             readiness = _validate_policy_canary_provider_manifest(
                                 native_manifest
                             )
+                            from .policy_canary_session_bundle_identity import (
+                                run_kind_entrypoint_blockers,
+                                run_kind_required_entries,
+                            )
+                            required_entries.update(run_kind_required_entries(readiness))
+                            blockers.extend(run_kind_entrypoint_blockers(readiness, entrypoint_text))
                         except (
                             KeyError,
                             TypeError,

@@ -59,7 +59,7 @@ FREE_BETA_PROVIDER_CAP_USD = 20.0
 MAX_TTL_SECONDS = 4 * 3600
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+_ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,58}_FILE$")
 
 
 class TeamCandidateAdmissionError(ValueError):
@@ -109,7 +109,8 @@ def _candidate_blockers(candidate: Mapping[str, Any]) -> list[str]:
             blockers.append("team_candidate_endpoint_invalid")
         if (delivery.get("action_chunk_rows") not in (10, 15) or type(delivery.get("open_loop_horizon")) is not int
                 or not 1 <= delivery["open_loop_horizon"] <= int(delivery.get("action_chunk_rows") or 0)
-                or not _DIGEST.fullmatch(str(delivery.get("model_identity_digest") or ""))):
+                or not _DIGEST.fullmatch(str(delivery.get("model_identity_digest") or ""))
+                or not _ID.fullmatch(str(delivery.get("team_policy_id") or ""))):
             blockers.append("team_candidate_interface_mismatch:action_chunk")
     return blockers
 
@@ -208,7 +209,8 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
         "candidate_id": candidate["candidate_id"], "policy_interface_id": candidate["policy_interface_id"],
         "embodiment_preset_id": candidate["embodiment_preset_id"],
         "delivery": {key: delivery[key] for key in (
-            "mode", "endpoint_url", "metadata_url", "action_chunk_rows", "open_loop_horizon", "model_identity_digest")},
+            "mode", "endpoint_url", "metadata_url", "action_chunk_rows", "open_loop_horizon", "model_identity_digest",
+            "team_policy_id")},
         "credential": {key: credential_lease[key] for key in ("lease_id", "credential_ref_digest", "credential_env",
                                                               "origin")},
         "scene_revision_digest": revision, "task_spec_digest": probe["task_spec_digest"],
@@ -252,7 +254,8 @@ def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mappi
     if task_success_contract.get("contract_digest") != value["task_success_contract_digest"]:
         raise TeamCandidateAdmissionError(["team_candidate_execution_contract_mismatch"])
     delivery, credential = value["delivery"], value["credential"]
-    policy_spec = {"policy_id": value["candidate_id"], "endpoint_url": delivery["endpoint_url"],
+    # The team's own declared id; Blueprint's candidate id stays the evidence identity.
+    policy_spec = {"policy_id": delivery["team_policy_id"], "endpoint_url": delivery["endpoint_url"],
                    "metadata_url": delivery["metadata_url"], "allowed_origin": credential["origin"],
                    "model_identity_digest": delivery["model_identity_digest"],
                    "action_chunk_rows": delivery["action_chunk_rows"],

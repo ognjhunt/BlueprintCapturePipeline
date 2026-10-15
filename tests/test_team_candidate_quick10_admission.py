@@ -48,7 +48,8 @@ def _inputs(**overrides: Any) -> dict[str, Any]:
                  "policy_interface_id": "openpi_droid_https.v1",
                  "delivery": {"mode": "https_policy", "endpoint_url": ORIGIN + "/v1/act",
                               "metadata_url": ORIGIN + "/v1/metadata", "action_chunk_rows": 10,
-                              "open_loop_horizon": 8, "model_identity_digest": "sha256:" + "7" * 64}}
+                              "open_loop_horizon": 8, "model_identity_digest": "sha256:" + "7" * 64,
+                              "team_policy_id": "acme-pi05-ft-7"}}
     rights = _sealed({"schema_version": "blueprint.team_policy_candidate_rights.v1", "status": "admitted",
                       "team_id": "team-acme", "candidate_id": "team-acme.pi05-ft-7", "checkpoint_id": "pi05-ft-7",
                       "license_to_run_granted": True, "policy_self_grading_permitted": False,
@@ -56,7 +57,7 @@ def _inputs(**overrides: Any) -> dict[str, Any]:
                       "adp_qualified_evidence_permitted": False}, "rights_digest")
     lease = {"schema_version": "blueprint.team_policy_credential_lease_availability.v1", "kind": "kms_bearer_lease",
              "status": "available", "single_use": True, "lease_id": "lease-1",
-             "credential_ref_digest": "sha256:" + "6" * 64, "credential_env": "BLUEPRINT_TEAM_POLICY_BEARER",
+             "credential_ref_digest": "sha256:" + "6" * 64, "credential_env": "BLUEPRINT_TEAM_POLICY_BEARER_FILE",
              "origin": ORIGIN, "candidate_id": "team-acme.pi05-ft-7", "secret_material_recorded": False,
              "expires_at_iso": "2026-10-15T18:00:00Z"}
     budget = {"payer": "blueprint", "customer_price_usd": 0, "max_attempts": 1, "episodes": 10,
@@ -81,7 +82,7 @@ def _blockers(**overrides: Any) -> list[str]:
     return raised.value.blockers
 
 
-def test_an_admitted_team_candidate_seals_exactly_what_the_runtime_may_run(monkeypatch) -> None:
+def test_an_admitted_team_candidate_seals_exactly_what_the_runtime_may_run(tmp_path, monkeypatch) -> None:
     values = _inputs()
     admission = admit_team_candidate(**values, now=NOW)
     assert admission["status"] == "admitted" and admission["runtime"] == "policy_canary_quick10_team_candidate"
@@ -94,7 +95,13 @@ def test_an_admitted_team_candidate_seals_exactly_what_the_runtime_may_run(monke
                           prompt="open the dishwasher door", max_policy_queries=40)
     assert spec["candidate_id"] == "team-acme.pi05-ft-7" and spec["policy_interface_id"] == "openpi_droid_https.v1"
     assert spec["execution_spec_digest"] == canonical_digest(spec, digest_field="execution_spec_digest")
-    monkeypatch.setenv("BLUEPRINT_TEAM_POLICY_BEARER", "team-secret-token")
+    token = tmp_path / "team-policy-bearer"
+    token.write_text("team-secret-token\n", encoding="utf-8")
+    token.chmod(0o644)
+    monkeypatch.setenv("BLUEPRINT_TEAM_POLICY_BEARER_FILE", str(token))
+    with pytest.raises(ValueError):
+        canary_policy_client(spec)  # a group- or world-readable token file is refused
+    token.chmod(0o600)
     client = canary_policy_client(spec)
     assert type(client).__name__ == "DroidHttpsTeamPolicyClient"
     assert "team-secret-token" not in str(spec)

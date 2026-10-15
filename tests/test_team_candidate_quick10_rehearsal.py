@@ -48,8 +48,9 @@ from tests import test_native_task_arena_policy_canary_lifecycle_rehearsal as pa
 
 TEAM = "team-acme.pi05-ft-7"
 ORIGIN = "https://policy.acme-robotics.example"
-TOKEN_ENV = "BLUEPRINT_TEAM_POLICY_BEARER"
+TOKEN_ENV = "BLUEPRINT_TEAM_POLICY_BEARER_FILE"
 MODEL_DIGEST = "sha256:" + "7" * 64
+TEAM_POLICY_ID = "acme-pi05-ft-7"
 
 
 def _admission(contract: dict[str, Any]) -> dict[str, Any]:
@@ -63,7 +64,7 @@ def _admission(contract: dict[str, Any]) -> dict[str, Any]:
         "embodiment_preset_id": "droid_franka_panda_robotiq_2f85_v1",
         "delivery": {"mode": "https_policy", "endpoint_url": ORIGIN + "/v1/act",
                      "metadata_url": ORIGIN + "/v1/metadata", "action_chunk_rows": 10, "open_loop_horizon": 8,
-                     "model_identity_digest": MODEL_DIGEST},
+                     "model_identity_digest": MODEL_DIGEST, "team_policy_id": TEAM_POLICY_ID},
         "credential": {"lease_id": "lease-1", "credential_ref_digest": "sha256:" + "6" * 64,
                        "credential_env": TOKEN_ENV, "origin": ORIGIN},
         "scene_revision_digest": "sha256:" + "9" * 64, "task_spec_digest": "sha256:" + "5" * 64,
@@ -77,6 +78,16 @@ def _admission(contract: dict[str, Any]) -> dict[str, Any]:
     }
     value["admission_digest"] = canonical_digest(value, digest_field="admission_digest")
     return value
+
+
+def _token_file(tmp_path: Path) -> str:
+    """The private file the provider bootstrap writes; the runtime reads it, never argv or bundle bytes."""
+    secrets = tmp_path / "runtime-secrets"
+    secrets.mkdir(mode=0o700)
+    token = secrets / "team-policy-bearer"
+    token.write_text("team-secret-token\n", encoding="utf-8")
+    token.chmod(0o600)
+    return str(token)
 
 
 def _stage_team_runtime(tmp_path: Path) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
@@ -133,7 +144,7 @@ class _TeamService:
         self.requests.append({"url": url, "method": kwargs["method"],
                               "body": json.loads(kwargs["data"]) if kwargs["data"] else None})
         if url == ORIGIN + "/v1/metadata":
-            body = {"schema_version": https_client.METADATA_SCHEMA, "policy_id": TEAM,
+            body = {"schema_version": https_client.METADATA_SCHEMA, "policy_id": TEAM_POLICY_ID,
                     "policy_interface_id": "openpi_droid_https.v1", "action_space": "joint_position",
                     "action_chunk_rows": 10, "model_identity_digest": MODEL_DIGEST}
         else:
@@ -169,7 +180,7 @@ def test_quick10_runs_ten_simulator_scored_episodes_of_one_team_candidate(tmp_pa
     runtime_root, provider_output, inputs, admission = _stage_team_runtime(tmp_path)
     service = _TeamService()
     monkeypatch.setattr(https_client, "fetch_bounded_https", service)
-    monkeypatch.setenv(TOKEN_ENV, "team-secret-token")
+    monkeypatch.setenv(TOKEN_ENV, _token_file(tmp_path))
     isaacs: list[Any] = []
 
     exit_code = worker._run_isolated_cell_processes(
@@ -252,7 +263,7 @@ def test_a_refused_team_response_keeps_the_run_out_of_recommendation_evidence(tm
     # On the fourth episode the team's service adds a field of its own: the client
     # refuses the envelope after the query, so no action reaches the robot.
     monkeypatch.setattr(https_client, "fetch_bounded_https", _TeamService(malformed_post=4))
-    monkeypatch.setenv(TOKEN_ENV, "team-secret-token")
+    monkeypatch.setenv(TOKEN_ENV, _token_file(tmp_path))
     isaacs: list[Any] = []
     assert worker._run_isolated_cell_processes(
         runtime_root=runtime_root, output_root=provider_output,
