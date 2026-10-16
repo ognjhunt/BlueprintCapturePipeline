@@ -142,6 +142,20 @@ def _write_episode_failure_gap(
                 "reason": progress["media_integrity_failure"],
             },
         }
+    # Cause and execution stage are independent: a broken media finalizer
+    # must not turn a policy timeout or rejected action into an excluded void.
+    policy_failure = (
+        action_rejected
+        or (query_attempted and progress.get("policy_inference_failed") is True
+            and progress.get("policy_request_retention_failed") is not True
+            and not raw_message.startswith(("droid_https_policy_observation_", "team_policy_https_observation_")))
+        or (candidate_action_returned and not (
+            progress.get("candidate_action_shape_validated") is True
+            and progress.get("candidate_action_finite_validated") is True))
+        or (query_attempted and raw_message.startswith(("droid_https_policy_response_", "team_policy_https_response_",
+                                                       "droid_https_policy_identity_mismatch")))
+    )
+    failure_cause = "policy" if policy_failure else "media" if progress.get("media_integrity_failure") else "infrastructure"
     evidence_artifacts: dict[str, Any] = {}
     media_root = output_root / "episodes"
     if media_artifacts:
@@ -195,6 +209,8 @@ def _write_episode_failure_gap(
         "cell_id": context.get("cell_id"),
         "seed": context.get("seed"),
         "episode_failure_stage": failure_stage,
+        "episode_failure_cause": failure_cause,
+        "media_failure_observed": bool(visual_evidence.get("media_gap")),
         "scientific_reset": progress.get("scientific_reset"),
         "prestart_readiness": progress.get("prestart_readiness"),
         "policy_inference_evidence": progress.get("policy_inference_evidence"),

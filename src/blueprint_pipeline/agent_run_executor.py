@@ -251,7 +251,19 @@ class AgentRunWebAppClient:
             },
         )
 
-    def report_blocked(self, row: Mapping[str, Any], pipeline_run_id: str, reason: str) -> None:
+    def heartbeat(self, run_id: str, pipeline_run_id: str, admission_digest: str) -> dict[str, Any]:
+        """Renew liveness for the claimed owner; this never extends its hard deadline."""
+        return self._json(
+            f"/api/internal/pipeline/agent-runs/{run_id}/heartbeat", method="POST",
+            payload={"pipeline_run_id": pipeline_run_id, "execution_admission_digest": admission_digest},
+        )
+
+    def report_blocked(self, row: Mapping[str, Any], pipeline_run_id: str, reason: str, *,
+                       execution_progress: Mapping[str, Any] | None = None) -> None:
+        progress = dict(execution_progress or {"observed_attempted_episode_count": 0, "scored_episode_count": 0,
+            "succeeded_episode_count": 0, "failed_episode_count": 0, "void_episode_count": 0,
+            "measurement_complete": True})
+        observed = int(progress["observed_attempted_episode_count"])
         self._json(
             "/api/internal/pipeline/agent-run-settlements",
             method="POST",
@@ -261,9 +273,11 @@ class AgentRunWebAppClient:
                 "run_id": pipeline_run_id,
                 "pipeline_run_id": pipeline_run_id,
                 "execution_admission_digest": row["execution_admission_digest"],
-                "episodes_run": 0,
+                "episodes_run": int(progress["scored_episode_count"]),
                 "rate_usd": 0,
-                "blocked_before_any_episode": True,
+                "blocked_before_any_episode": progress.get("measurement_complete") is True and observed == 0,
+                "execution_status": "blocked",
+                "execution_progress": progress,
                 "reason": reason[:400],
             },
         )
@@ -690,6 +704,7 @@ def poll_once(
         canonical = _mapping(_mapping(row.get("execution_admission")).get("canonical_execution_request"))
         from .controlled_native_queue import routes_controlled_request, execute_staged_controlled_request
         launch_allowed = _free_beta_run(row)
+        current_run: dict[str, Any] = {}
         if launch_allowed:
             try:
                 current_run = client.get_run(str(row["run_id"]))
@@ -715,6 +730,14 @@ def poll_once(
             execute_staged_team_candidate_request(row=row, request=canonical,
                 job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
                 pipeline_run_id=journal.get("pipeline_run_id"), **dict(team_launch_hooks or {}))
+        elif _requests_team_candidate_runtime(canonical) and (
+                not _free_beta_run(row) or current_run.get("cancellation_requested") is True or current_run.get("money_resolved") is True
+                or (current_run.get("state") and current_run.get("state") != "requested")):
+            from .team_candidate_quick10_launch import cancel_unlaunched_team_candidate_request
+            cancel_unlaunched_team_candidate_request(request=canonical,
+                job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
+                reason=("team_evaluation_funding_expired_or_invalid" if not _free_beta_run(row)
+                        else "team_evaluation_cancellation_requested"))
         terminal = terminal_reader(
             job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
             expected_job_id=str(journal["canonical_job_id"]),
@@ -728,11 +751,17 @@ def poll_once(
             continue
         try:
             if status == "blocked":
-                client.report_blocked(
-                    row,
-                    str(journal["pipeline_run_id"]),
-                    ";".join(str(item) for item in terminal.get("blockers", [])),
-                )
+                progress = _mapping(terminal.get("execution_progress"))
+                if _requests_team_candidate_runtime(canonical):
+                    if not progress:
+                        progress = {"observed_attempted_episode_count": 0, "scored_episode_count": 0,
+                            "succeeded_episode_count": 0, "failed_episode_count": 0, "void_episode_count": 0,
+                            "measurement_complete": False}
+                    client.report_blocked(row, str(journal["pipeline_run_id"]),
+                        ";".join(str(item) for item in terminal.get("blockers", [])), execution_progress=progress)
+                else:
+                    client.report_blocked(row, str(journal["pipeline_run_id"]),
+                        ";".join(str(item) for item in terminal.get("blockers", [])))
                 journal["state"] = "reported_blocked"
                 summary["blocked"] += 1
             elif status == "completed":

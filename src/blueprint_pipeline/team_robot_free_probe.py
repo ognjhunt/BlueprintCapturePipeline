@@ -1,4 +1,4 @@
-"""Record a rigid scene's robot-free success check in a team's first evaluation cell, then retain it.
+"""Plan and retain a rigid scene's robot-free success check.
 
 Beta journey step: L5 team policy evaluation. Owner decision 2026-10-12: no
 team is scored on a scene until its robot-free probe passed
@@ -8,15 +8,13 @@ that probe could not run: its Isaac launcher was never wired, and it scored the
 configured revision's task specification, not the one a team is scored with,
 so even a pass could not admit a scored run.
 
-The probe now runs where the scene already exists: the first cell of the first
-evaluation on a scene whose probe has not been decided. It is planned here, on
-the control plane, against the exact task specification and success contract
-the team is scored with (``scored_task_spec``); the GPU host executes the plan
-in the built scene with the robot idle at its reset pose, scores it with the
-same scorer (``team_embodiment_runtime.probe_status``) and runs no team
-episode unless it passed. Closeout scores the recorded trace again, retains the
-receipt where the gate reads it (a decided receipt is never replaced), and
-republishes the job's offer; a failed probe closes the scene to every team.
+The request is bound to the exact task specification and success contract the
+team is scored with (``scored_task_spec``). Retention scores a recorded trace,
+keeps the receipt where the gate reads it (a decided receipt is never replaced),
+and republishes the job's offer. New team evaluations require the passed receipt
+before listing or paid allocation. The worker's ability to record a trace in an
+existing scene remains a compatibility primitive; an undecided scene no longer
+authorizes a paid team session to obtain its own prerequisite.
 """
 
 from __future__ import annotations

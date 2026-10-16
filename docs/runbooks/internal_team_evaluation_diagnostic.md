@@ -25,7 +25,8 @@ python -m blueprint_pipeline.internal_team_evaluation_diagnostic fixture \
   --runtime-source-receipt "$SDK_RECEIPT"
 python -m blueprint_pipeline.internal_team_evaluation_diagnostic stage \
   --root "$ROOT" --policy-url "$POLICY_HTTPS_URL" \
-  --owner-approval "$OWNER_APPROVAL" --source-commit "$MERGED_COMMIT"
+  --owner-approval "$OWNER_APPROVAL" --source-commit "$MERGED_COMMIT" \
+  --robot-free-probe-root "$PASSED_PROBE_ROOT"
 ```
 
 The owner approval is JSON with schema
@@ -36,6 +37,11 @@ The owner approval is JSON with schema
 an actual `approval_reference`, and an unexpired, timezone-aware `expires_at_iso`.
 Retain the owner's actual instruction as the reference; generating this file
 does not grant spending authority.
+
+Before staging, retain the real robot-free probe for this exact scene revision,
+scored task specification and success contract in `PASSED_PROBE_ROOT`. A missing,
+unavailable or failed probe refuses staging before issuing the diagnostic token.
+The diagnostic cannot use its first paid team session to discover that prerequisite.
 
 Staging seals eight 25-cell sessions at $2.50 each, with a $0.80/hour rate ceiling,
 and checks authenticated provider-zero. It does not allocate. Expose the policy
@@ -52,8 +58,10 @@ python -m blueprint_pipeline.internal_team_evaluation_diagnostic run --root "$RO
 Run the policy and evaluation in separately owned service units. The evaluation
 unit must preserve the canonical watchdog's caller-exit survival contract and
 load the normal protected provider settings. Do not enable a globally held
-dispatcher. The first shard must record and pass the robot-free probe and its
-interface-failure gate before the remaining shards run with concurrency two.
+dispatcher. The first shard must pass its interface-failure gate before the
+remaining shards run with concurrency two. The runner observes the dispatcher
+hold even though its internal authority comes from the immutable owner approval,
+and stops at the earlier of approval expiry and its fixed 16-hour deadline.
 Keep the total $20 cap; a failed first shard is a failure to inspect, not authority
 for another paid attempt.
 

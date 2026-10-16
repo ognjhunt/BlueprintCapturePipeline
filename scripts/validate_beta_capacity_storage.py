@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-
 EXPECTED_MAX_UPLOAD_BYTES = 20 * 1024 * 1024 * 1024
 EXPECTED_MAX_DURATION_SECONDS = 45 * 60
 EXPECTED_INLINE_EXTRACT_BYTES = 1_500_000_000
@@ -62,11 +61,33 @@ EXPECTED_STORAGE_DATA_CLASSES = {
 }
 
 
+def _validate_retention_authority(retention_policy: dict[str, Any]) -> None:
+    authority = retention_policy.get("retention_authority")
+    if not isinstance(authority, dict):
+        raise AssertionError("beta retention authority clarification is required")  # noqa: TRY004 - validator contract
+    required = {
+        "original_collection_terms_supersede_archive_default": True,
+        "verified_legal_holds_and_rights_privacy_decisions_supersede_archive_default": True,
+        "retention_extension_authorized_by_this_artifact": False,
+        "later_account_acceptance_extends_existing_recordings": False,
+        "training_authorized_by_this_artifact": False,
+        "retention_change_requires_lawful_review_and_applicable_notice_authorization": True,
+    }
+    for key, expected in required.items():
+        if authority.get(key) is not expected:
+            raise AssertionError(f"beta retention authority {key} must be {expected}")
+    metadata = authority.get("website_capture_retention_metadata")
+    if not isinstance(metadata, dict) or metadata.get("policy_id") != "website_capture_retention_review.v1":
+        raise AssertionError("beta retention authority must preserve website capture retention metadata")
+    if metadata.get("preserve_unmodified") is not True or metadata.get("unknown_collection_policy_must_remain_unknown") is not True:
+        raise AssertionError("beta retention authority must retain original metadata and unknown collection terms")
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, dict):
-        raise AssertionError(f"{path} must contain a JSON object")
+        raise AssertionError(f"{path} must contain a JSON object")  # noqa: TRY004 - validator contract
     return payload
 
 
@@ -347,6 +368,7 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
         raise AssertionError("unexpected beta data retention policy schema_version")
     if retention_policy.get("status") != EXPECTED_BETA_DATA_RETENTION_STATUS:
         raise AssertionError("beta data retention policy must be validator-enforced with operator signoff required")
+    _validate_retention_authority(retention_policy)
     if retention_policy.get("effective_for", {}).get("external_users") != 100:
         raise AssertionError("beta data retention policy must target 100 external users")
     if retention_policy.get("effective_for", {}).get("modeled_captures_per_month") != EXPECTED_MODELED_CAPTURES_PER_MONTH:
@@ -362,7 +384,7 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
     for class_name, expected in EXPECTED_STORAGE_DATA_CLASSES.items():
         observed = policy_data_classes.get(class_name)
         if not isinstance(observed, dict):
-            raise AssertionError(f"beta data retention policy missing data class {class_name}")
+            raise AssertionError(f"beta data retention policy missing data class {class_name}")  # noqa: TRY004 - validator contract
         for key, value in expected.items():
             if observed.get(key) != value:
                 raise AssertionError(f"beta data retention policy {class_name}.{key} mismatch")

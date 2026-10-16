@@ -27,10 +27,9 @@ stay unlisted. An operator row always wins.
 :func:`offer_eligibility` is the one rule both the offer publisher and the
 launch apply (``team_evaluation_plan``): the scene's packet resolves its
 nominal cell, strict per-cell controls are not required, the scene's secret matrix
-salt is present, and the robot-free probe either passed at the inputs' current
-scene revision for the scene's task or, on a rigid scene, is still undecided
-(the evaluation's first cell then records and scores it before any team
-episode). A scene whose probe was decided and failed is closed to every team.
+salt is present, and the robot-free probe passed at the inputs' current
+scene revision for the scene's task before any paid team allocation. Missing,
+unavailable, or failed probes keep the evaluation unlisted.
 
 Anything else fails closed with a typed reason, and that offer is not listed.
 """
@@ -312,12 +311,8 @@ def offer_eligibility(profile: Mapping[str, Any] | None,
                 task_spec.get("task_kind"), facts["inputs"]["task_success_contract"]))
         facts["probe_receipt"] = receipt
     except RobotFreeProbeGateError as exc:
-        # Undecided: the evaluation's first cell records and scores the probe before any team episode.
-        # Decided and failed: closed to every team.
         facts["probe"], facts["probe_receipt"] = None, receipt
-        if (task_spec.get("task_kind") != "rigid_pick_place"
-                or (receipt or {}).get("status") not in (None, "probe_unavailable")):
-            blockers.append(str(exc))
+        blockers.append(str(exc))
     salt = profile.get("scored_matrix_salt")
     if purpose == SCORED and (not isinstance(salt, str) or len(salt) < 32):
         blockers.append("team_scored_matrix_salt_missing")

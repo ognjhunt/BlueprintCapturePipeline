@@ -2,13 +2,51 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import scripts.run_beta_intake_soak_test as soak
 from scripts.run_beta_intake_soak_test import build_capacity_cost_summary, build_dry_run_report
+from scripts.validate_beta_capacity_storage import (
+    _load_json,
+    _validate_retention_authority,
+    validate_files,
+)
 from scripts.validate_capture_truth_backup_policy import (
     validate_backup_policy,
     validate_restore_drill_artifact,
 )
-from scripts.validate_beta_capacity_storage import validate_files
+
+
+def test_retention_authority_cannot_be_dropped_from_the_declared_policy() -> None:
+    with pytest.raises(AssertionError, match="authority clarification is required"):
+        _validate_retention_authority({})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("original_collection_terms_supersede_archive_default", False),
+    ("verified_legal_holds_and_rights_privacy_decisions_supersede_archive_default", False),
+    ("retention_extension_authorized_by_this_artifact", True),
+    ("later_account_acceptance_extends_existing_recordings", True),
+    ("training_authorized_by_this_artifact", True),
+    ("retention_change_requires_lawful_review_and_applicable_notice_authorization", False),
+])
+def test_retention_defaults_cannot_override_collection_authority(field: str, value: bool) -> None:
+    policy = _load_json(Path(__file__).resolve().parents[1] / "docs/beta_data_retention_policy_2026-07-09.json")
+    policy["retention_authority"][field] = value
+    with pytest.raises(AssertionError, match=field):
+        _validate_retention_authority(policy)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("policy_id", "standard_blueprint_site_capture"),
+    ("preserve_unmodified", False),
+    ("unknown_collection_policy_must_remain_unknown", False),
+])
+def test_website_retention_metadata_must_survive_archive_projection(field: str, value: object) -> None:
+    policy = _load_json(Path(__file__).resolve().parents[1] / "docs/beta_data_retention_policy_2026-07-09.json")
+    policy["retention_authority"]["website_capture_retention_metadata"][field] = value
+    with pytest.raises(AssertionError, match="beta retention authority"):
+        _validate_retention_authority(policy)
 
 
 def test_beta_capacity_storage_artifacts_are_complete() -> None:

@@ -19,6 +19,7 @@ from blueprint_pipeline.team_candidate_quick10_admission import (
     admit_team_candidate,
     execution_spec,
     runtime_binding,
+    validate_candidate_rights,
 )
 from blueprint_pipeline.team_candidate_policy_client import canary_policy_client
 from tests.test_robot_free_probe_gate import REVISION, scored_probe_receipt
@@ -149,6 +150,17 @@ def test_the_robot_free_probe_is_mandatory_for_this_scene_revision_and_task() ->
         "team_evaluation_robot_free_probe_scene_revision_mismatch"]
     rigid = {**_inputs()["scene"], "task_spec": {**_spec(), "task_kind": "rigid_pick_place"}}
     assert "team_evaluation_robot_free_probe_task_kind_mismatch" in _blockers(scene=rigid)
+    assert "team_evaluation_robot_free_probe_receipt_missing" in _blockers(scene=rigid, probe_receipt=None)
+    unavailable = _sealed({**scored_probe_receipt(REVISION), "status": "probe_unavailable"}, "receipt_digest")
+    assert "team_evaluation_robot_free_probe_task_kind_mismatch" in _blockers(scene=rigid, probe_receipt=unavailable)
+
+
+def test_static_rights_can_be_checked_before_consuming_the_bearer_lease() -> None:
+    base = _inputs()
+    identity = {key: base["candidate"][key] for key in ("team_id", "checkpoint_id", "candidate_id")}
+    validate_candidate_rights(base["rights"], **identity)
+    with pytest.raises(TeamCandidateAdmissionError, match="rights_record_missing_or_mismatched"):
+        validate_candidate_rights(base["rights"], **{**identity, "checkpoint_id": "unlicensed"})
 
 
 def test_interface_and_delivery_mismatches_are_refused_by_name() -> None:

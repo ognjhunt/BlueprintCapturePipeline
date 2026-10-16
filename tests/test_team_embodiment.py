@@ -21,10 +21,15 @@ from blueprint_pipeline import (
     adp_task_scoring,
     episode_visual_evidence,
     native_task_episode_environment,
+    policy_request_evidence,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_runtime import camera_runtime_parameters
 from blueprint_pipeline.policy_canary_worker_evidence import _write_episode_failure_gap
-from blueprint_pipeline.team_candidate_quick10_result import episode_outcome
+from blueprint_pipeline.team_candidate_quick10_result import (
+    episode_outcome,
+    team_candidate_terminal,
+)
 from blueprint_pipeline.team_embodiment import (
     TeamEmbodimentError,
     apply_team_embodiment,
@@ -316,6 +321,159 @@ class _Policy:
         return self.chunks[min(len(self.observations), len(self.chunks)) - 1]
 
 
+def _team_loop(tmp_path, monkeypatch):
+    declared, sealed = binding(tmp_path)
+    plan = {**apply_team_embodiment(station_plan(), sealed), "scenario": {"seed": 7}}
+    built = type("Built", (), {"env": _Env(), "camera_scene_names": {
+        "team_camera_0": "team_camera_0", "team_camera_1": "team_camera_1", "overview": "external_camera_2"}})()
+    monkeypatch.setattr(episode_visual_evidence, "finalize_multicamera_visual_evidence",
+                        lambda **kwargs: ({"status": "complete"}, []))
+    spec = TeamPolicySpec(policy_id="acme-arm-pick", endpoint_url=ORIGIN + "/v1/act",
+                          metadata_url=ORIGIN + "/v1/metadata", allowed_origin=ORIGIN,
+                          model_identity_digest="sha256:" + "7" * 64, embodiment_id=declared["embodiment_id"],
+                          action_chunk_rows=4, open_loop_horizon=4, camera_names=["wrist_rgb", "scene_rgb"])
+    return built, plan, spec
+
+
+@pytest.mark.parametrize("fault", ["timeout", "request_retention", "media", "task_readback"])
+def test_own_robot_runtime_preserves_policy_timeout_and_infrastructure_causes(tmp_path, monkeypatch, fault):
+    from blueprint_pipeline.native_task_arena_policy_worker import _PolicyQueryTracker
+
+    built, plan, spec = _team_loop(tmp_path, monkeypatch)
+    monkeypatch.setattr(native_task_episode_environment, "NativeRigidScoringEnvironment", _Scoring)
+    calls = []
+
+    def transport(*, url, method, body, headers):
+        calls.append(method)
+        if method == "GET":
+            return json.dumps(spec.expected_metadata()).encode()
+        if fault == "timeout":
+            raise TimeoutError("own robot policy transport timed out")
+        return json.dumps({"actions": [[0.1, 0.2, 0.3, 0.0]] * 4}).encode()
+
+    def disk_failure(*args, **kwargs):
+        raise OSError("evidence disk full")
+
+    if fault == "request_retention":
+        monkeypatch.setattr(policy_request_evidence, "persist_request_evidence", disk_failure)
+    elif fault == "media":
+        persist_observation = episode_visual_evidence.persist_multicamera_observation
+
+        def persist_before_action(*args, **kwargs):
+            if built.env.steps:
+                disk_failure()
+            return persist_observation(*args, **kwargs)
+
+        monkeypatch.setattr(episode_visual_evidence, "persist_multicamera_observation", persist_before_action)
+    elif fault == "task_readback":
+        def read_before_action(self):
+            if built.env.steps:
+                disk_failure()
+            return self.environment.read_object_sample()
+
+        monkeypatch.setattr(_Scoring, "read_object_sample", read_before_action)
+    client = _PolicyQueryTracker(TeamPolicyHttpsClient(spec=spec, bearer_token="hermetic-test-token",
+                                                       transport=transport))
+    progress = {}
+    with pytest.raises((TimeoutError, OSError)) as failure:
+        run_team_episode(built=built, task_readback=None, policy=client, plan=plan, prompt="Put the mug away",
+                         max_policy_queries=2, open_loop_horizon=4, media_root=tmp_path / "episodes",
+                         episode_id="run--cell--team", progress=progress, to_action=lambda t: [t])
+    path = _write_episode_failure_gap(output_root=tmp_path, run_id="run", progress=progress,
+                                      context={"cell_id": "cell", "candidate_id": "team"}, failure=failure.value)
+    evidence = json.loads(path.read_text())
+    assert evidence["episode_failure_cause"] == ("policy" if fault == "timeout" else "infrastructure")
+    assert episode_outcome(evidence)[0] == ("failure" if fault == "timeout" else "void")
+    assert progress.get("policy_inference_failed", False) is (fault in ("timeout", "request_retention"))
+    assert progress.get("policy_request_retention_failed", False) is (fault == "request_retention")
+    assert calls == (["GET"] if fault == "request_retention" else ["GET", "POST"])
+    assert len(built.env.steps) == ({"media": 4, "task_readback": 2}.get(fault, 0))
+
+
+@pytest.mark.parametrize("runtime", ["own_robot", "droid"])
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+def test_worker_interruption_is_not_marked_as_team_policy_failure(tmp_path, monkeypatch, runtime, interruption):
+    progress = {}
+
+    class StoppedPolicy:
+        def infer(self, observation):
+            raise interruption("worker stopped")
+
+    with pytest.raises(interruption):
+        if runtime == "droid":
+            from tests.test_adp009d_policy_episode import _run
+
+            _run(policy=StoppedPolicy(), max_policy_queries=1, progress=progress)
+        else:
+            built, plan, _spec = _team_loop(tmp_path, monkeypatch)
+            monkeypatch.setattr(native_task_episode_environment, "NativeRigidScoringEnvironment", _Scoring)
+            run_team_episode(built=built, task_readback=None, policy=StoppedPolicy(), plan=plan,
+                             prompt="Put the mug away", max_policy_queries=1, open_loop_horizon=4,
+                             media_root=tmp_path / "episodes", episode_id="run--cell--team", progress=progress,
+                             to_action=lambda t: [t])
+    assert progress["candidate_policy_query_attempted"] is True
+    assert progress.get("policy_inference_failed") is not True
+
+
+@pytest.mark.parametrize("settle_steps", [5, 6])
+def test_own_robot_native_task_samples_bind_full_simulator_cycle_to_terminal_metrics(
+        tmp_path, monkeypatch, settle_steps):
+    from tests.test_adp_task_scoring import _rigid_v2_spec
+    from tests.test_native_task_episode_environment import _rigid_scoring_task_spec
+    from tests.test_team_candidate_quick10_rehearsal import (
+        _fake_closed_team_result,
+        _stage_team_runtime,
+    )
+
+    built, plan, spec = _team_loop(tmp_path, monkeypatch)
+    plan["task_spec"] = {**_rigid_v2_spec(), **_rigid_scoring_task_spec()}
+    plan["cadence"].update(maximum_action_steps=8, settle_window_samples=settle_steps)
+
+    class NativeTaskReadback:
+        def read_task_sample(self):
+            index = min(len(built.env.steps) // plan["cadence"]["task_sample_stride"], 3)
+            position = [[1.0, 2.0, 0.8], [1.0, 2.0, 0.83], [1.15, 2.0, 0.83], [1.15, 2.0, 0.8]][index]
+            return {"task_scoring_pose_world": [*position, 0.0, 0.0, 0.0, 1.0],
+                    "task_robot_contact_peak_force_n": 0.0, "task_support_contact_peak_force_n": 1.0,
+                    "task_scene_collision_peak_force_n": 0.0, "robot_scene_contact_peak_force_n": 0.0,
+                    "robot_task_forbidden_collision_peak_force_n": 0.0, "locked_joint_containment_violation": False}
+
+    def transport(*, url, method, body, headers):
+        return json.dumps(spec.expected_metadata() if method == "GET" else {
+            "actions": [[0.1, 0.2, 0.3, 0.0]] * 4}).encode()
+
+    client = TeamPolicyHttpsClient(spec=spec, bearer_token="hermetic-test-token", transport=transport)
+    episode = run_team_episode(built=built, task_readback=NativeTaskReadback(), policy=client, plan=plan,
+                               prompt="Put the mug away", max_policy_queries=2, open_loop_horizon=4,
+                               media_root=tmp_path / "episodes", episode_id="run--cell--team", progress={},
+                               to_action=lambda t: [t])
+    assert episode["score"]["task_succeeded"] is True
+    trace = episode["state_trace"]
+    assert trace["trace_digest"] == canonical_digest(trace, digest_field="trace_digest")
+    total_steps = 8 + settle_steps
+    sampled_steps = [*range(0, total_steps, 2), total_steps]
+    assert [row["simulation_time_s"] for row in trace["task_state_samples"]] == pytest.approx(
+        [step / 30.0 for step in sampled_steps])
+    assert len(episode["policy_request_artifacts"]) == 2
+    for artifact in episode["policy_request_artifacts"]:
+        assert b"hermetic-test-token" not in (tmp_path / "episodes" / artifact["relative_path"]).read_bytes()
+    _root, _out, inputs, _admission = _stage_team_runtime(tmp_path / "terminal")
+    result = _fake_closed_team_result(inputs)
+    for row in result["episodes"]:
+        row["episode"] = copy.deepcopy(episode)
+        row["state_trace_digest"] = canonical_digest({"value": trace})
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    terminal = team_candidate_terminal(session_results=[result], runtime_binding=inputs["team_candidate_admission"],
+                                       purpose="scored", episodes=10)
+    assert terminal["median_cycle_seconds"] == pytest.approx(total_steps / 30.0)
+    assert terminal["cycle_seconds_p10"] == terminal["cycle_seconds_p90"] == terminal["median_cycle_seconds"]
+    # Mutating the actual task-state clock without resealing cannot become measured evidence.
+    result["episodes"][0]["episode"]["state_trace"]["task_state_samples"][-1]["simulation_time_s"] += 1.0
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    assert team_candidate_terminal(session_results=[result], runtime_binding=inputs["team_candidate_admission"],
+                                   purpose="scored", episodes=10)["median_cycle_seconds"] is None
+
+
 @pytest.mark.parametrize("base_quaternion_xyzw", [
     [0.0, 0.0, 0.0, 1.0],
     [0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5)],
@@ -351,8 +509,9 @@ def test_the_team_policy_drives_the_team_arm_and_an_out_of_limit_row_never_reach
     # A closure of 1 drives the declared gripper joint to its closed position; arm targets pass through.
     assert built.env.steps[0] == [0.1, 0.2, 0.3, 0.0] and policy.observations[1]["state"]["gripper_position"] == [1.0]
     # 180 control steps at 30 Hz plus the settle window, task state sampled every second step.
-    assert len(built.env.steps) == 180 + 2 and len(scored[0]) == 91
-    assert scored[0][0]["gripper_width_m"] == 0.0 and [s["step_index"] for s in scored[0][:3]] == [1, 2, 3]
+    assert len(built.env.steps) == 180 + 2 and len(scored[0]) == 92
+    assert scored[0][0]["gripper_width_m"] == 0.08 and [s["step_index"] for s in scored[0][:3]] == [0, 1, 2]
+    assert scored[0][1]["gripper_width_m"] == 0.0
     assert episode["score"]["status"] == "scored" and episode["motion_evidence"]["arm_moved"] is True
 
     env = _Env()

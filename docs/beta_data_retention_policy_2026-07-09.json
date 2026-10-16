@@ -26,6 +26,22 @@
     "local_retention_tool": "scripts/manage_output_artifact_retention.py",
     "support_incident_runbook": "docs/runbooks/beta-ops-incident-response.md"
   },
+  "retention_authority": {
+    "clarification_date": "2026-10-16",
+    "interpretation": "historical_internal_storage_defaults_subordinate_to_original_collection_terms",
+    "original_collection_terms_supersede_archive_default": true,
+    "verified_legal_holds_and_rights_privacy_decisions_supersede_archive_default": true,
+    "retention_extension_authorized_by_this_artifact": false,
+    "later_account_acceptance_extends_existing_recordings": false,
+    "training_authorized_by_this_artifact": false,
+    "retention_change_requires_lawful_review_and_applicable_notice_authorization": true,
+    "website_capture_retention_metadata": {
+      "policy_id": "website_capture_retention_review.v1",
+      "preserve_unmodified": true,
+      "unknown_collection_policy_must_remain_unknown": true
+    },
+    "claim_boundary": "Historical support-purpose wording and storage defaults provide no retention extension or training permission. This clarification is not counsel approval, notice delivery, bucket deployment, or deletion execution proof."
+  },
   "data_classes": {
     "raw_capture_truth": {
       "prefixes": [

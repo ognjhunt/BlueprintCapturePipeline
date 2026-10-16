@@ -8,6 +8,32 @@ launch model. The canonical JSON artifact is
 `docs/beta_data_retention_policy_2026-07-09.json`; the validator is
 `python scripts/validate_beta_capacity_storage.py`.
 
+## Collection-Terms Clarification — October 16, 2026
+
+This additive clarification governs the historical storage defaults below for
+the beta recording/consent journey (L2). The defaults describe storage classes
+and maintenance, not permission to retain every recording indefinitely, extend
+its original terms, or train a model on it. Original collection terms and
+verified legal holds or rights/privacy decisions supersede internal archive
+defaults. A later account acceptance does not extend existing recordings.
+
+Before changing a recording's retention period, verify its collection-time
+terms and obtain the lawful review and applicable notice/authorization. The
+previous website policy's 180 days after job closure remains applicable to
+recordings collected under it, subject to verified legal holds. Neither a new
+policy's publication/effective date nor storage configuration supplies that
+authority. Unknown collection terms remain unknown until verified; no longer
+period is authorized by this artifact. Training needs separate authorization.
+
+Preserve `website_capture_retention_review.v1` metadata unmodified with the
+original manifest and rights record, including first receipt, unknown collection
+policy, review requirements and the absence of extension authority. Projecting
+or archiving a capture must not replace those fields with the internal default.
+This clarification changes no bucket rule, deletes no recording, and proves
+neither counsel approval nor notice delivery or deletion execution. Existing
+rights/privacy and legal workflows continue to govern those actions. The
+machine-readable counterpart is `retention_authority` in the JSON policy.
+
 ## Policy Classes
 
 | Data class | Scope | Retention |

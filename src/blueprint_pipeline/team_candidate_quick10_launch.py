@@ -16,9 +16,9 @@ agent-run dispatcher:
   queued shards through the canonical allocator (``paid_resource_allocator
   gpu-canary``): the first shard alone, then the rest at most
   ``SHARD_CONCURRENCY`` at once, and seals the single terminal the executor
-  reports. After the first shard (``first_shard_gate``) the evaluation stops
-  when the scene's robot-free check, recorded there, did not pass, or when most
-  of its episodes failed at the interface rather than the task, so a broken
+  reports. A passed revision-bound robot-free check is required before any
+  paid session. After the first shard (``first_shard_gate``) the evaluation stops
+  when most of its episodes failed at the interface rather than the task, so a broken
   integration costs one GPU session, not eight.
 
 As before, customer JSON chooses nothing: the operator profile binds the scene;
@@ -38,6 +38,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -45,6 +46,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
 from .checkpoint_policy_credentials import bearer_lease_id
@@ -59,6 +61,7 @@ from .team_candidate_quick10_admission import (
     FOUNDER_SCHEMA,
     LEASE_SCHEMA,
     admit_team_candidate,
+    validate_candidate_rights,
 )
 from .team_candidate_quick10_registry import offer_eligibility, profile_for_request, rights_record
 from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
@@ -97,6 +100,11 @@ SHARD_CONCURRENCY = 2
 # A shard refused before any allocation (all slots busy) is re-staged at most this often.
 MAX_UNALLOCATED_RESTAGES = 48
 POLL_SECONDS = 60
+CONTROL_FILENAME = "team_evaluation_control.json"
+MAX_PRELAUNCH_ATTEMPTS = 3
+MONITOR_UNAVAILABLE_SECONDS = 10 * 60
+STOP_TEARDOWN_GRACE_SECONDS = 5 * 60
+DISPATCH_HOLD_PATH = Path("/var/lib/blueprint-operator-door/requests/holds/blueprint-agent-run-dispatcher.timer.json")
 _METADATA_KEYS = {"schema_version", "policy_id", "policy_interface_id", "action_space", "action_chunk_rows",
                   "model_identity_digest"}
 EMBODIMENT_BINDING_FILENAME = "team_embodiment_binding.json"
@@ -278,7 +286,11 @@ def _start_allocator(argv: Sequence[str], *, log_path: Path) -> int:
     log_path.chmod(0o600)
     process = subprocess.Popen(  # nosec B603 - fixed module, operator-bound argv
         [sys.executable, "-m", "blueprint_pipeline.paid_resource_allocator", *argv],
-        cwd=Path(__file__).resolve().parents[2], stdout=stream, stderr=subprocess.STDOUT)
+        cwd=Path(__file__).resolve().parents[2], stdout=stream, stderr=subprocess.STDOUT,
+        # A founder stop must reach the adapter's finally/teardown path. The
+        # local experiment opt-out must never suppress a team's deliberate stop.
+        env={**os.environ, "BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN": "false"},
+        start_new_session=True)
     stream.close()
     return int(process.pid)
 
@@ -286,6 +298,8 @@ def _start_allocator(argv: Sequence[str], *, log_path: Path) -> int:
 def _alive(pid: Any) -> bool:
     try:
         os.kill(int(pid), 0)
+    except PermissionError:
+        return True  # existence without authority to inspect is not proof of exit
     except (OSError, TypeError, ValueError):
         return False
     try:  # reap our own exited child so it is not reported alive as a zombie
@@ -338,19 +352,12 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
         plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
         steps = int(plan["cadence"]["maximum_action_steps"]) * hz // 15
         max_queries = -(-steps // int(admission["delivery"]["open_loop_horizon"]))
-    # The first session on a scene whose robot-free probe is undecided records and scores it first.
-    probe = None
-    if index == 0 and facts.get("probe") is None:
-        from .team_robot_free_probe import probe_request
-
-        probe = probe_request(task_spec=facts["scene"]["task_spec"],
-                              scene_revision_digest=str(facts["scene"]["scene_revision_digest"]))
-        if probe is None:  # no team episode may run on a scene whose check cannot be recorded
-            raise TeamCandidateLaunchError("team_evaluation_robot_free_probe_unrecordable")
+    if facts.get("probe") is None:
+        raise TeamCandidateLaunchError("team_evaluation_robot_free_probe_receipt_missing")
     paths = stage_team_runtime(
         root=root, run_id=run_id, scene_inputs=facts["inputs"], admission=admission, prompt=facts["prompt"],
         max_policy_queries=max_queries, hard_cap_usd=cap_usd, hard_ttl_seconds=ttl,
-        cells=list(cells), team_embodiment=binding, robot_free_probe=probe)
+        cells=list(cells), team_embodiment=binding, robot_free_probe=None)
     bundle = build_team_candidate_session_bundle(
         job_dir=root / "bundle", packet_dir=facts["packet_dir"],
         runtime_source_packet_receipt=facts["runtime_source_packet_receipt"],
@@ -387,11 +394,23 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
         raise TeamCandidateLaunchError(";".join(blockers) or "team_candidate_profile_missing")
     funding = _funding(row, profile)
     payload = _endpoint(request)
-    # The single-use lease the admission seals: the WebApp releases the token for it once.
-    lease_id = bearer_lease_id(credential_ref=str(payload["credential_ref"]), job_id=request["job_id"],
-                               pipeline_run_id=pipeline_run_id)
-    access = hooks["credential_client"](request=request, payload=payload,
-                                        pipeline_run_id=pipeline_run_id).release_bearer_lease(lease_id=lease_id)
+    team_id = str(row.get("team_id") or "")
+    checkpoint_id = str(_m(row.get("checkpoint")).get("checkpoint_id") or "")
+    validate_candidate_rights(rights_record(profile, team_id=team_id, checkpoint_id=checkpoint_id) or {},
+                              team_id=team_id, checkpoint_id=checkpoint_id,
+                              candidate_id=f"team-{team_id}.{checkpoint_id}")
+    manifest = request_embodiment(request)
+    if manifest is not None:
+        _stage_robot_model(job_dir=job_dir, manifest=manifest, facts=facts, fetch=hooks.get("model_fetch"))
+    zero = dict(hooks["provider_zero"]())
+    _write(job_dir / "initial_provider_zero.json", zero)
+    if zero.get("provider_zero_verified") is not True:
+        raise TeamCandidateLaunchError("team_candidate_initial_provider_zero_unproven")
+    # All checks that do not need the authenticated team service precede the
+    # release. Its token is then retained privately for a bounded prelaunch
+    # repair, never released a second time and never bundled.
+    access = _credential_access(request=request, payload=payload, pipeline_run_id=pipeline_run_id,
+                                job_dir=job_dir, credential_client=hooks["credential_client"])
     credential = _m(access.get("credential"))
     token = credential.get("bearer_token")
     if (access.get("kind") != "bearer" or credential.get("endpoint_url") != payload["endpoint_url"]
@@ -401,7 +420,6 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     token = token.strip()
     endpoint = str(payload["endpoint_url"])
     origin = f"{urlsplit(endpoint).scheme}://{urlsplit(endpoint).netloc}"
-    manifest = request_embodiment(request)
     metadata = _team_metadata(endpoint, origin, token, hooks.get("metadata_transport"), manifest)
     records = _candidate_records(row=row, request=request, profile=profile, facts=facts, funding=funding,
                                  access=access, metadata=metadata, pipeline_run_id=pipeline_run_id, purpose=purpose)
@@ -409,8 +427,6 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
                                      purpose=purpose)
     _write(job_dir / "team_candidate_admission.json", admission)
     _write(job_dir / REQUEST_FILENAME, dict(request))
-    if manifest is not None:
-        _stage_robot_model(job_dir=job_dir, manifest=manifest, facts=facts, fetch=hooks.get("model_fetch"))
     commit = hooks.get("implementation_commit") or _source_commit()
     base_run_id = f"team-{purpose}-" + canonical_digest({"job_id": request["job_id"], "run": pipeline_run_id})[7:31]
     cells = _session_cells(purpose=purpose, facts=facts, profile=profile)
@@ -423,23 +439,54 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     from .team_candidate_quick10_bundle import assert_secret_absent
     for shard in staged:
         assert_secret_absent(shard["bundle_path"], token)
-    zero = dict(hooks["provider_zero"]())
-    _write(job_dir / "initial_provider_zero.json", zero)
-    if zero.get("provider_zero_verified") is not True:
-        raise TeamCandidateLaunchError("team_candidate_initial_provider_zero_unproven")
+    _write(job_dir / CONTROL_FILENAME, {"run_id": row["run_id"], "pipeline_run_id": pipeline_run_id,
+                                        "execution_admission_digest": row["execution_admission_digest"]})
     _write(job_dir / INTENT_FILENAME, {"job_id": request["job_id"], "canonical_request_digest":
                                         canonical_request_digest(request), "pipeline_run_id": pipeline_run_id,
                                         "admission_digest": admission["admission_digest"], "run_id": base_run_id,
                                         "evaluation_purpose": purpose, "episodes": len(cells),
                                         "shard_count": len(staged), "source_commit": commit,
                                         "observed_at_iso": utc_now_iso()})
-    secrets_dir = job_dir / ".team-credential"
-    secrets_dir.mkdir(mode=0o700)
-    descriptor = os.open(secrets_dir / "bearer", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        stream.write(token + "\n")
     queue = Path(hooks.get("queue_root") or _queue_root()) / "pending"
     _write(queue / f"{request['job_id']}.json", {"job_dir": str(job_dir), "queued_at_iso": utc_now_iso()})
+
+
+def _credential_access(*, request: Mapping[str, Any], payload: Mapping[str, Any], pipeline_run_id: str,
+                       job_dir: Path, credential_client: Callable[..., Any]) -> dict[str, Any]:
+    """Persist one secret delivery privately, so prelaunch repair does not consume a new lease."""
+    from .team_candidate_quick10_vast import credential_file_blockers
+
+    root = job_dir / ".team-credential"
+    root.mkdir(mode=0o700, exist_ok=True)
+    path = root / "delivery.json"
+    binding = {"job_id": request["job_id"], "pipeline_run_id": pipeline_run_id,
+               "canonical_request_digest": canonical_request_digest(request)}
+    if path.exists():
+        if credential_file_blockers(path):
+            raise TeamCandidateLaunchError("team_candidate_private_delivery_invalid")
+        retained = _read(path)
+        if any(retained.get(key) != value for key, value in binding.items()):
+            raise TeamCandidateLaunchError("team_candidate_private_delivery_binding_mismatch")
+        access = _m(retained.get("access"))
+    else:
+        lease_id = bearer_lease_id(credential_ref=str(payload["credential_ref"]), job_id=request["job_id"],
+                                   pipeline_run_id=pipeline_run_id)
+        access = credential_client(request=request, payload=payload,
+                                    pipeline_run_id=pipeline_run_id).release_bearer_lease(lease_id=lease_id)
+        _write(path, {**binding, "access": access})
+    token = _m(access.get("credential")).get("bearer_token")
+    if not isinstance(token, str) or not 16 <= len(token.strip()) <= 4096 or any(c in token for c in "\r\n\x00"):
+        raise TeamCandidateLaunchError("team_candidate_bearer_credential_invalid")
+    bearer = root / "bearer"
+    if not bearer.exists():
+        with bearer.open("x", encoding="utf-8") as stream:
+            bearer.chmod(0o600)
+            stream.write(token.strip() + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    elif credential_file_blockers(bearer) or bearer.read_text().strip() != token.strip():
+        raise TeamCandidateLaunchError("team_candidate_private_delivery_binding_mismatch")
+    return access
 
 
 def _fetch_model(url: str, target: Path) -> None:
@@ -481,11 +528,83 @@ def _current_shard(job_dir: Path, index: int) -> dict[str, Any]:
 def _shard_state(shard: Mapping[str, Any]) -> str:
     root = Path(shard["root"])
     if (root / "allocator_result.json").is_file():
-        return "returned"
+        try:
+            result = _read(root / "allocator_result.json")
+            return "returned" if isinstance(result.get("status"), str) and result["status"] else "unknown"
+        except (OSError, ValueError):
+            return "unknown"
     process = root / "allocator_process.json"
     if not process.is_file():
-        return "staged"
-    return "running" if _alive(_read(process).get("pid")) else "lost"
+        # A crash after spawn but before recording its pid is not permission
+        # to allocate again. Provider reconciliation must close that attempt.
+        return "unknown" if (root / "allocator_launch_intent.json").is_file() else "staged"
+    try:
+        recorded = _read(process)
+        pid = int(recorded["pid"])
+        if pid <= 0:
+            return "unknown"
+        if not _alive(pid):
+            return "lost"
+        current = _process_start_ticks(pid)
+        if current is None or not recorded.get("start_ticks"):
+            return "unknown"
+        return "running" if current == recorded["start_ticks"] else "lost"
+    except (OSError, ValueError, KeyError, TypeError):
+        return "unknown"
+
+
+def _process_start_ticks(pid: int) -> str | None:
+    """Linux process identity prevents a reused pid from receiving a founder stop."""
+    try:
+        # comm may contain spaces and parentheses; fields after its final ')' start at field 3.
+        return Path(f"/proc/{int(pid)}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _stop_allocator(shard: Mapping[str, Any]) -> None:
+    """Ask only this recorded allocator to unwind through its provider teardown."""
+    path = Path(shard["root"]) / "allocator_process.json"
+    process = _read(path)
+    pid = int(process["pid"])
+    if not process.get("start_ticks") or _process_start_ticks(pid) != process["start_ticks"]:
+        raise TeamCandidateLaunchError("team_evaluation_allocator_stop_identity_unproven")
+    os.kill(pid, signal.SIGTERM)
+
+
+def _execution_monitor(control: Mapping[str, Any]) -> dict[str, Any]:
+    """Signed liveness/cancellation check, independent of the dispatcher process."""
+    from .agent_run_executor import AgentRunWebAppClient
+    from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
+
+    endpoint = os.environ.get("BLUEPRINT_WEBAPP_URL", "")
+    if not endpoint.startswith("https://"):
+        raise TeamCandidateLaunchError("team_evaluation_control_service_unconfigured")
+    token = load_pipeline_sync_token(token_file_path=Path(os.environ.get("BLUEPRINT_PIPELINE_SYNC_TOKEN_FILE", "")),
+                                     require_file=True)
+    client = AgentRunWebAppClient(base_url=endpoint, token=token, timeout_seconds=30)
+    try:
+        return client.heartbeat(str(control["run_id"]), str(control["pipeline_run_id"]),
+                                 str(control["execution_admission_digest"]))
+    except HTTPError as exc:
+        if exc.code == 409:
+            return {"cancellation_requested": True, "reason": "team_evaluation_control_heartbeat_refused"}
+        raise
+
+
+def _control_stop_reason(control: Mapping[str, Any], *, monitor: Callable[..., Any],
+                         hold_path: Path) -> str | None:
+    if hold_path.exists():
+        return "team_evaluation_founder_dispatch_hold"
+    observed = monitor(control)
+    if observed.get("cancellation_requested") is True:
+        return "team_evaluation_cancellation_requested"
+    deadline = observed.get("execution_deadline_at_ms")
+    if type(deadline) not in (int, float) or deadline <= time.time() * 1000:
+        return "team_evaluation_execution_deadline_missing_or_expired"
+    if observed.get("ok") is not True or observed.get("run_id") != control["run_id"]:
+        raise TeamCandidateLaunchError("team_evaluation_control_response_invalid")
+    return None
 
 
 def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = None,
@@ -493,19 +612,76 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
     """Run every staged shard (bounded concurrency), then seal the terminal; idempotent after a crash."""
 
     from .task_evaluation_scene_execution_authority import proves_no_provider_allocation
-    from .team_candidate_quick10_closeout import seal_blocked_terminal, seal_team_candidate_terminal
+    from .team_candidate_quick10_closeout import (
+        allocator_running,
+        seal_blocked_terminal,
+        seal_team_candidate_terminal,
+    )
 
     hooks = {"allocator_starter": _start_allocator, "provider_zero": _default_provider_zero,
-             "restage": _restage_shard, "sleep": time.sleep, **dict(hooks or {})}
+             "restage": _restage_shard, "sleep": time.sleep, "execution_monitor": _execution_monitor,
+             "allocator_stopper": _stop_allocator, "monotonic": time.monotonic,
+             "dispatch_hold_path": DISPATCH_HOLD_PATH, **dict(hooks or {})}
     limit = max(1, min(int(concurrency or os.environ.get(CONCURRENCY_ENV) or SHARD_CONCURRENCY), 3))
     request = _read(job_dir / REQUEST_FILENAME)
     if (job_dir / TERMINAL_FILENAME).exists():
         return _read(job_dir / TERMINAL_FILENAME)
     intent = _read(job_dir / INTENT_FILENAME)
+    last_contact = hooks["monotonic"]()
+    stopping_since = None
+    stop_reason = _read(job_dir / "stop_requested.json").get("reason") if (job_dir / "stop_requested.json").exists() else None
     try:
+        if not (job_dir / CONTROL_FILENAME).is_file():
+            raise TeamCandidateLaunchError("team_evaluation_control_binding_missing")
+        control = _read(job_dir / CONTROL_FILENAME)
         while True:
+            control_unavailable = False
+            if stop_reason is None:
+                try:
+                    stop_reason = _control_stop_reason(control, monitor=hooks["execution_monitor"],
+                                                       hold_path=Path(hooks["dispatch_hold_path"]))
+                    last_contact = hooks["monotonic"]()
+                except (OSError, ValueError):
+                    control_unavailable = True
+                    if hooks["monotonic"]() - last_contact >= MONITOR_UNAVAILABLE_SECONDS:
+                        stop_reason = "team_evaluation_control_unavailable_timeout"
+                if stop_reason:
+                    _write(job_dir / "stop_requested.json", {"reason": stop_reason, "observed_at_iso": utc_now_iso()})
             shard_rows = [_current_shard(job_dir, index) for index in range(int(intent["shard_count"]))]
             states = [_shard_state(row) for row in shard_rows]
+            if stop_reason:
+                for row, state in zip(shard_rows, states, strict=True):
+                    stop_path = Path(row["root"]) / "allocator_stop_requested.json"
+                    if state == "running" and not stop_path.exists():
+                        hooks["allocator_stopper"](row)
+                        _write(stop_path, {"reason": stop_reason, "observed_at_iso": utc_now_iso()})
+                if not any(state in {"running", "unknown"} for state in states):
+                    raise TeamCandidateLaunchError(stop_reason)
+                if stopping_since is None:
+                    stopping_since = hooks["monotonic"]()
+                if hooks["monotonic"]() - stopping_since >= STOP_TEARDOWN_GRACE_SECONDS:
+                    # Never kill the adapter past its teardown handler or claim
+                    # provider zero. Independent provider TTL/watchdogs remain
+                    # responsible while a later queue pass reconciles it.
+                    pending = job_dir / "stop_teardown_pending.json"
+                    if not pending.exists():
+                        _write(pending, {"status": "pending_provider_teardown", "reason": stop_reason,
+                                         "observed_at_iso": utc_now_iso()})
+                    return None
+                hooks["sleep"](poll_seconds)
+                continue
+            if "unknown" in states:
+                # A spawned allocator may not yet have recorded its PID or
+                # allocated its provider instance. A global zero snapshot
+                # cannot close that window. Wait for its actual result or
+                # verified process reconciliation, without starting new work.
+                pending = job_dir / "allocator_reconciliation_pending.json"
+                if not pending.exists():
+                    _write(pending, {"status": "allocator_identity_unknown",
+                        "shard_indices": [row["index"] for row, state in zip(shard_rows, states, strict=True)
+                                          if state == "unknown"], "observed_at_iso": utc_now_iso()})
+                hooks["sleep"](poll_seconds)
+                continue
             for row, state in zip(shard_rows, states, strict=True):
                 if state == "lost":
                     raise TeamCandidateLaunchError("team_evaluation_shard_allocator_lost:" + str(row["index"]))
@@ -522,10 +698,12 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
                                                                    shard=shard_rows[0])
             running = states.count("running")
             for row, state in zip(shard_rows, states, strict=True):
-                if state == "staged" and running < limit and (row["index"] == 0 or opened):
+                if not control_unavailable and state == "staged" and running < limit and (row["index"] == 0 or opened):
                     root = Path(row["root"])
+                    _write(root / "allocator_launch_intent.json", {"observed_at_iso": utc_now_iso()})
                     pid = hooks["allocator_starter"](row["argv"], log_path=root / "allocator.log")
-                    _write(root / "allocator_process.json", {"pid": pid, "started_at_iso": utc_now_iso()})
+                    _write(root / "allocator_process.json", {"pid": pid, "start_ticks": _process_start_ticks(pid),
+                                                             "started_at_iso": utc_now_iso()})
                     running += 1
             if all(_shard_state(row) == "returned" for row in shard_rows):
                 break
@@ -534,8 +712,7 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
         seal_blocked_terminal(request=request, job_dir=job_dir, error=exc, provider_zero=hooks["provider_zero"])
         return None
     finally:
-        if all(_shard_state(_current_shard(job_dir, index)) != "running"
-               for index in range(int(intent["shard_count"]))):
+        if not allocator_running(job_dir):
             shutil.rmtree(job_dir / ".team-credential", ignore_errors=True)
     try:
         return seal_team_candidate_terminal(request=request, job_dir=job_dir, provider_zero=hooks["provider_zero"])
@@ -618,7 +795,7 @@ def execute_staged_team_candidate_request(*, row: Mapping[str, Any], request: Ma
     hooks = {"credential_client": CheckpointPolicyCredentialClient, "provider_zero": _default_provider_zero,
              **overrides}
     job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if (job_dir / TERMINAL_FILENAME).exists() or (job_dir / INTENT_FILENAME).exists():
+    if (job_dir / TERMINAL_FILENAME).exists():
         return
     with (job_dir / "team_candidate_quick10.lock").open("a") as lock:
         try:
@@ -627,13 +804,58 @@ def execute_staged_team_candidate_request(*, row: Mapping[str, Any], request: Ma
             return
         try:
             if (job_dir / INTENT_FILENAME).exists():
+                # Recover the local crash window after sealing the intent but
+                # before queueing. No new staging or allocation is performed.
+                pending = Path(hooks.get("queue_root") or _queue_root()) / "pending" / f"{request['job_id']}.json"
+                if not pending.exists():
+                    _write(pending, {"job_dir": str(job_dir), "queued_at_iso": utc_now_iso()})
                 return
             if not isinstance(pipeline_run_id, str) or not pipeline_run_id:
                 raise TeamCandidateLaunchError("team_candidate_dispatch_owner_missing")
+            attempt = len(list(job_dir.glob("preflight_attempt_*.json"))) + 1
+            # Failed prelaunch artifacts are retained separately. They have no
+            # allocation authority and cannot be mistaken for completed work.
+            archive = job_dir / "preflight_attempts" / f"{attempt - 1:02d}"
+            for name in ("shards", "team_embodiment", EMBODIMENT_BINDING_FILENAME, "team_candidate_admission.json",
+                         REQUEST_FILENAME, CONTROL_FILENAME, "initial_provider_zero.json"):
+                source = job_dir / name
+                if source.exists():
+                    archive.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    source.rename(archive / name)
             _stage(row=row, request=request, job_dir=job_dir, pipeline_run_id=pipeline_run_id, hooks=hooks)
         except Exception as exc:  # noqa: BLE001 - every failure is sealed, and released only at provider zero
+            if ((job_dir / ".team-credential" / "delivery.json").is_file()
+                    and not (job_dir / INTENT_FILENAME).exists()
+                    and str(exc) not in {"team_candidate_secret_in_bundle", "team_candidate_bearer_credential_invalid",
+                                         "team_candidate_private_delivery_binding_mismatch"}):
+                # The one paid attempt has not started. A corrected metadata
+                # endpoint or packaging input may replay complete preflight
+                # using this private delivery, without another token release.
+                attempt = len(list(job_dir.glob("preflight_attempt_*.json"))) + 1
+                _write(job_dir / f"preflight_attempt_{attempt:02d}.json",
+                       {"status": "refused_before_allocation", "error_class": type(exc).__name__,
+                        "retry_remaining": max(0, MAX_PRELAUNCH_ATTEMPTS - attempt), "observed_at_iso": utc_now_iso()})
+                if attempt < MAX_PRELAUNCH_ATTEMPTS:
+                    return
             shutil.rmtree(job_dir / ".team-credential", ignore_errors=True)
             seal_blocked_terminal(request=request, job_dir=job_dir, error=exc, provider_zero=hooks["provider_zero"])
+
+
+def cancel_unlaunched_team_candidate_request(*, request: Mapping[str, Any], job_dir: Path,
+                                            reason: str = "team_evaluation_cancellation_requested") -> None:
+    """Remove a retained prelaunch delivery when the claimed run is definitely cancelled."""
+    from .team_candidate_quick10_closeout import seal_blocked_terminal
+
+    if not job_dir.is_dir() or (job_dir / INTENT_FILENAME).exists():
+        return  # an intent belongs to the independent runner's teardown path
+    with (job_dir / "team_candidate_quick10.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        shutil.rmtree(job_dir / ".team-credential", ignore_errors=True)
+        seal_blocked_terminal(request=request, job_dir=job_dir,
+            error=TeamCandidateLaunchError(reason), provider_zero=_default_provider_zero)
 
 
 def run_queue(queue_root: Path | None = None, *, hooks: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:

@@ -9,7 +9,7 @@ import base64
 import hashlib
 import json
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
@@ -161,6 +161,26 @@ def persist_request_evidence(value: Mapping[str, Any], *, root: Path, episode_id
             "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw),
             "query_index": query_index, "request_digest": receipt["request_digest"],
             "serialization_verified": receipt["serialization_verified"]}
+
+
+def request_evidence_sink(
+    *, root: Path | None, episode_id: str | None, query_index: int,
+    progress: MutableMapping[str, Any], artifacts: list[dict[str, Any]],
+    binding: Callable[[], Mapping[str, Any]],
+) -> Callable[[Mapping[str, Any]], None]:
+    """Keep storage failures distinguishable from policy inference failures."""
+    def retain(value: Mapping[str, Any]) -> None:
+        if root is None or episode_id is None:
+            return
+        try:
+            artifacts.append(persist_request_evidence(
+                value, root=root, episode_id=episode_id, query_index=query_index, binding=binding(),
+            ))
+        except Exception:
+            progress["policy_request_retention_failed"] = True
+            raise
+
+    return retain
 
 
 class ObservedWebsocket:

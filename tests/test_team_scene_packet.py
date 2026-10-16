@@ -185,6 +185,7 @@ def test_a_completed_source_launch_is_compiled_and_recorded_where_the_team_regis
         REGISTRY_SCHEMA,
         offer_eligibility,
         profile_for_capture,
+        scene_facts,
     )
     from blueprint_pipeline.team_scene_packet import prepare_team_scene
 
@@ -216,6 +217,7 @@ def test_a_completed_source_launch_is_compiled_and_recorded_where_the_team_regis
     assert prepared["registry"]["status"] == "written"
     profile = profile_for_capture(capture)
     assert profile["team_scene_inputs_path"] == prepared["path"] and profile["robot_free_probe_root"] == str(run)
-    # Listed for every team: its probe is still undecided, so the first cell of the first shard records it.
+    # The compiled scene is readable, but a paid team offer waits for its actual passed probe.
     facts, blockers = offer_eligibility(profile)
-    assert blockers == [] and facts["probe"] is None and facts["inputs"] == read_team_scene_inputs(prepared["path"])
+    assert facts is None and blockers == ["team_evaluation_robot_free_probe_receipt_missing"]
+    assert scene_facts(profile)["inputs"] == read_team_scene_inputs(prepared["path"])

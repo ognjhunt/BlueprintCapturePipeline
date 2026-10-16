@@ -42,6 +42,8 @@ from .team_candidate_quick10_launch import (
     TERMINAL_FILENAME,
     TERMINAL_SCHEMA,
     TeamCandidateLaunchError,
+    _current_shard,
+    _shard_state,
 )
 from .team_candidate_quick10_result import team_candidate_terminal
 
@@ -170,6 +172,7 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
     adapters = [(root, _read(root / "allocator_result.json")) for root in roots]
     if all(proves_no_provider_allocation(adapter) for _, adapter in adapters):
         return _seal(job_dir, request, {"status": "blocked", "provider_allocation_performed": False,
+                                        "execution_progress": blocked_execution_progress(job_dir),
                                         "blockers": sorted({str(item) for _, adapter in adapters
                                                             for item in adapter.get("blockers") or []})
                                         or ["team_candidate_provider_not_allocated"]})
@@ -233,7 +236,8 @@ def seal_blocked_terminal(*, request: Mapping[str, Any], job_dir: Path, error: E
     if not (job_dir / INTENT_FILENAME).exists():
         # Refused before any launch was recorded: nothing could have been allocated.
         _seal(job_dir, request, {"status": "blocked", "blockers": _read(failure)["blockers"],
-                                 "provider_zero_not_applicable": True})
+                                 "provider_zero_not_applicable": True,
+                                 "execution_progress": blocked_execution_progress(job_dir)})
         return
     try:
         zero = dict(provider_zero())
@@ -243,20 +247,90 @@ def seal_blocked_terminal(*, request: Mapping[str, Any], job_dir: Path, error: E
         return
     _replace(job_dir / "failed_provider_zero.json", zero)
     _seal(job_dir, request, {"status": "blocked", "blockers": _read(failure)["blockers"],
-                             "provider_zero_verified": True})
+                             "provider_zero_verified": True,
+                             "execution_progress": blocked_execution_progress(job_dir)})
+
+
+def blocked_execution_progress(job_dir: Path) -> dict[str, Any]:
+    """Retain observed partial outcomes; missing worker output is unknown, never zero proof."""
+    from .team_candidate_quick10_result import episode_outcome
+
+    progress = {"observed_attempted_episode_count": 0, "scored_episode_count": 0,
+                "succeeded_episode_count": 0, "failed_episode_count": 0, "void_episode_count": 0,
+                "measurement_complete": True}
+    seen = set()
+    intent_path = job_dir / INTENT_FILENAME
+    if intent_path.exists():
+        try:
+            count = int(_read(intent_path)["shard_count"])
+            if count <= 0:
+                raise ValueError("team_evaluation_shard_count_invalid")
+            shard_roots = [job_dir / "shards" / f"{index:02d}" for index in range(count)]
+        except (OSError, ValueError, KeyError, TypeError):
+            progress["measurement_complete"] = False
+            shard_roots = sorted((job_dir / "shards").glob("*"))
+    else:
+        shard_roots = sorted((job_dir / "shards").glob("*"))
+    for shard in shard_roots:
+        stages = sorted(shard.glob(f"stage-*/{SHARD_FILENAME}"))
+        if not stages:
+            progress["measurement_complete"] = False
+            continue
+        root = stages[-1].parent
+        adapter_path = root / "allocator_result.json"
+        if not adapter_path.is_file():
+            if (root / "allocator_process.json").is_file() or (root / "allocator_launch_intent.json").is_file():
+                progress["measurement_complete"] = False
+            continue
+        try:
+            adapter = _read(adapter_path)
+            if proves_no_provider_allocation(adapter):
+                continue
+            inner = _read(Path(str(adapter.get("native_control_result_path") or "")))
+            validate_native_result_binding(inner, expected_digest=adapter.get("native_control_result_digest"))
+            rows = inner.get("episodes")
+            if not isinstance(rows, list):
+                raise TeamCandidateLaunchError("team_candidate_episodes_incomplete")
+            if len(rows) != _read(stages[-1]).get("cell_count"):
+                progress["measurement_complete"] = False
+            for row in rows:
+                cell_id = row.get("cell_id") if isinstance(row, Mapping) else None
+                if not cell_id or cell_id in seen:
+                    progress["measurement_complete"] = False
+                    continue
+                seen.add(cell_id)
+                outcome, _reason = episode_outcome(row)
+                progress["observed_attempted_episode_count"] += 1
+                field = {"success": "succeeded_episode_count", "failure": "failed_episode_count"}.get(
+                    outcome, "void_episode_count")
+                progress[field] += 1
+                if outcome in {"success", "failure"}:
+                    progress["scored_episode_count"] += 1
+        except (OSError, ValueError, TypeError):
+            progress["measurement_complete"] = False
+    return progress
 
 
 def allocator_running(job_dir: Path) -> bool:
-    """True while any shard's recorded allocator process for this job is still alive."""
-
-    for path in job_dir.glob("shards/*/stage-*/allocator_process.json"):
-        if (path.parent / "allocator_result.json").exists():
-            continue
+    """True while a current allocator is running or its ability to allocate remains unknown."""
+    intent = job_dir / INTENT_FILENAME
+    if intent.is_file():
         try:
-            os.kill(int(_read(path)["pid"]), 0)
-        except (OSError, KeyError, TypeError, ValueError):
-            continue
-        return True
+            count = int(_read(intent)["shard_count"])
+            if count <= 0:
+                return True
+            for index in range(count):
+                if _shard_state(_current_shard(job_dir, index)) in {"running", "unknown"}:
+                    return True
+        except (OSError, ValueError, KeyError, TypeError):
+            return True
+    else:
+        for path in job_dir.glob(f"shards/*/stage-*/{SHARD_FILENAME}"):
+            try:
+                if _shard_state(_read(path)) in {"running", "unknown"}:
+                    return True
+            except (OSError, ValueError, KeyError, TypeError):
+                return True
     return False
 
 
@@ -278,10 +352,10 @@ def read_team_candidate_terminal(*, job_dir: Path, expected_job_id: str,
 
 
 __all__ = [
-    "validate_native_result_binding",
     "allocator_running",
     "join_team_session_closeout",
     "read_team_candidate_terminal",
     "seal_blocked_terminal",
     "seal_team_candidate_terminal",
+    "validate_native_result_binding",
 ]
