@@ -70,6 +70,7 @@ from .team_embodiment import (
 from .team_evaluation_plan import (
     EPISODES,
     PRELAUNCH_RESERVE_SECONDS,
+    ALLOCATOR_STARTUP_RESERVE_SECONDS,
     campaign_ttl_seconds,
     profile_purpose,
     runtime_cells,
@@ -393,7 +394,7 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     manifest = request_embodiment(request)
     required_ttl = campaign_ttl_seconds(control_hz=int(manifest["control_hz"]) if manifest else 15)
     funding_expiry = datetime.fromisoformat(funding["expires_at_iso"].replace("Z", "+00:00")).timestamp()
-    if funding_expiry - time.time() < required_ttl + PRELAUNCH_RESERVE_SECONDS:
+    if funding_expiry - time.time() < required_ttl + PRELAUNCH_RESERVE_SECONDS + ALLOCATOR_STARTUP_RESERVE_SECONDS:
         raise TeamCandidateLaunchError("team_evaluation_funding_window_below_planned_runtime")
     funded_minutes = _remaining_session_live_minutes(
         job=job_dir, hard_cap_usd=float(funding["cap_usd"]), hard_ttl_seconds=required_ttl,
@@ -715,7 +716,7 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
                 if not control_unavailable and state == "staged" and running < limit and (row["index"] == 0 or opened):
                     root = Path(row["root"])
                     execution_deadline = float(observed_control["execution_deadline_at_ms"]) / 1000
-                    if execution_deadline - time.time() < int(row["hard_ttl_seconds"]):
+                    if execution_deadline - time.time() < int(row["hard_ttl_seconds"]) + ALLOCATOR_STARTUP_RESERVE_SECONDS:
                         raise TeamCandidateLaunchError("team_evaluation_execution_window_below_planned_runtime")
                     _write(root / "allocator_launch_intent.json", {"observed_at_iso": utc_now_iso(),
                                                                   "execution_deadline_epoch": execution_deadline})

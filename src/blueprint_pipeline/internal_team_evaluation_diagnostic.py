@@ -327,9 +327,9 @@ def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: s
     if facts is None:
         raise ValueError(";".join(blockers))
     approval = _read(owner_approval)
-    from .team_evaluation_plan import campaign_ttl_seconds, PRELAUNCH_RESERVE_SECONDS
+    from .team_evaluation_plan import campaign_ttl_seconds, PRELAUNCH_RESERVE_SECONDS, ALLOCATOR_STARTUP_RESERVE_SECONDS
     expiry = datetime.fromisoformat(approval["expires_at_iso"].replace("Z", "+00:00")).timestamp()
-    if expiry - datetime.now(timezone.utc).timestamp() < campaign_ttl_seconds() + PRELAUNCH_RESERVE_SECONDS:
+    if expiry - datetime.now(timezone.utc).timestamp() < campaign_ttl_seconds() + PRELAUNCH_RESERVE_SECONDS + ALLOCATOR_STARTUP_RESERVE_SECONDS:
         raise ValueError("team_evaluation_funding_window_below_planned_runtime")
     token = secrets.token_urlsafe(48)
     token_digest = canonical_digest({"credential_sha256": hashlib.sha256(token.encode()).hexdigest()})

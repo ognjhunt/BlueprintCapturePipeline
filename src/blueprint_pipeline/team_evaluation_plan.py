@@ -75,6 +75,9 @@ SECONDS_PER_CELL = 300
 SHARD_OVERHEAD_SECONDS = 1800
 # Additional admission slack for metadata, sealing and the initial queue handoff.
 PRELAUNCH_RESERVE_SECONDS = 1800
+# Allocator reserve includes five minutes for its provider-object staging.
+ALLOCATOR_STARTUP_RESERVE_SECONDS = 600
+PROVIDER_STAGING_RESERVE_SECONDS = 300
 SCORED_FAMILY_SHARES = (
     ("canonical_anchor", 0.02),
     ("placement_approach", 0.23),

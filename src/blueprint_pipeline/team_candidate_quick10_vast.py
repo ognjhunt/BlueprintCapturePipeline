@@ -85,6 +85,8 @@ def _blocked(blockers: list[str], **extra: Any) -> dict[str, Any]:
 def team_execution_deadline(authority: Mapping[str, Any], execution_deadline_epoch: float | None,
                             *, now: float | None = None) -> tuple[float | None, list[str]]:
     """An execution window may shorten funding, but must fit the whole declared session."""
+    from .team_evaluation_plan import PROVIDER_STAGING_RESERVE_SECONDS
+
     moment = time.time() if now is None else now
     deadlines = [authority["hard_deadline_epoch"]] if "hard_deadline_epoch" in authority else []
     if execution_deadline_epoch is not None:
@@ -95,7 +97,7 @@ def team_execution_deadline(authority: Mapping[str, Any], execution_deadline_epo
     if deadline is not None:
         if deadline - moment < 1800:
             return deadline, ["team_evaluation_execution_deadline_below_minimum_live_window"]
-        if deadline - moment < int(authority["hard_ttl_seconds"]):
+        if deadline - moment < int(authority["hard_ttl_seconds"]) + PROVIDER_STAGING_RESERVE_SECONDS:
             return deadline, ["team_evaluation_execution_window_below_planned_runtime"]
     return deadline, []
 

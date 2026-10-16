@@ -21,7 +21,10 @@ allocation. The same canonical cost-window calculation runs before claiming
 the one-use policy credential; supported faster rates still require a profile
 whose approved cap covers their full plan. The service timeout covers the maximum supported planner window
 instead of silently truncating it to 16 hours. Dispatch also reserves 30 minutes
-for metadata, sealing and the initial queue handoff before claiming the token.
+for metadata, sealing and the initial queue handoff, plus ten minutes for
+allocator startup before claiming the token. The runner reserves those ten
+minutes before writing a launch intent; canonical authority consumption retains
+five minutes for provider-object staging before the full rental TTL.
 Queue delays can still cause a later refusal; they never extend an approval.
 A lost allocated session cannot authorize a replacement
 GPU. Only a refusal proving zero allocation may be restaged.
