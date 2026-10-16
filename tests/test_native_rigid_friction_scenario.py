@@ -218,3 +218,37 @@ def test_rigid_friction_contract_rejects_invalid_values_and_link_selector(change
         'application_tolerance': 1e-6, **change,
     }], errors=errors)
     assert rows == [] and errors
+
+
+@pytest.mark.parametrize('nominal,second_shape,accepted', [(.25, .25, True), (.5, .25, False), (.25, .3, False)])
+def test_native_fallback_checks_sealed_nominal_for_every_shape_before_writing(nominal, second_shape, accepted):
+    baseline = np.array([[[.7, .25, .1], [.7, second_shape, .1]]], dtype=np.float32)
+    state = {'values': baseline.copy(), 'writes': 0}
+    def write(values, indices):
+        state['values'] = values.copy()
+        state['writes'] += 1
+    view = SimpleNamespace(get_material_properties=lambda: state['values'], set_material_properties=write)
+    env = SimpleNamespace(unwrapped=SimpleNamespace(scene={'task_object': SimpleNamespace(root_physx_view=view)}))
+    overrides = {'dynamic_friction': {'runtime_name': 'task_object', 'expected_dynamic_friction': .441,
+        'application_mode': 'native_material_properties_before_reset', 'nominal_value': nominal,
+        'application_tolerance': 1e-6}}
+    if accepted:
+        assert friction.apply_native_overrides(env, overrides)['dynamic_friction']['nominal_value'] == nominal
+        assert state['writes'] == 1
+    else:
+        with pytest.raises(ValueError, match='nominal_mismatch'):
+            friction.apply_native_overrides(env, overrides)
+        assert state['writes'] == 0 and np.array_equal(state['values'], baseline)
+
+
+def test_prepare_retains_sealed_nominal_and_tolerance_for_native_fallback(tmp_path):
+    path = tmp_path / 'unbound-sealed.usda'
+    source_asset(path)
+    stage = Usd.Stage.Open(str(path))
+    UsdShade.MaterialBindingAPI(stage.GetPrimAtPath('/Object/shape0')).UnbindAllBindings()
+    stage.GetRootLayer().Save()
+    pending = friction.prepare([{'task_subject': True, 'usd_path': str(path)}], [{
+        'readback_kind': friction.KIND, 'parameter_id': 'dynamic_friction', 'runtime_name': 'task_object',
+        'expected_native_value': .441, 'nominal_value': .25, 'application_tolerance': 1e-5}])
+    assert pending['dynamic_friction']['nominal_value'] == .25
+    assert pending['dynamic_friction']['application_tolerance'] == 1e-5

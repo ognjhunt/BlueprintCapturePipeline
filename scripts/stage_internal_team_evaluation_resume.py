@@ -28,6 +28,16 @@ from blueprint_pipeline.team_candidate_quick10_closeout import join_team_session
 from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, offer_eligibility
 from blueprint_pipeline.vast_official_billing_extractor import extract_vast_official_instance_charge
 
+# Historical download metadata retained size, not an archive checksum. Pin the
+# operator-observed closed-run bytes in reviewed source, independently of the
+# mutable local download/child/manifest records. This is a retained-host pin,
+# not a retroactive provider-transfer attestation. No other legacy archive is
+# authorized by this repair.
+REVIEWED_RETAINED_ARCHIVES = {
+    "sha256:f43b01a3bc5a0a02bb9a6683bb56799557c7ea0f3f99f4a5228528f60c3602f1":
+        "sha256:0f438087e65030036fd866f4f35b764f227eeea4ce49f494651678c89ec2b5a9",
+}
+
 
 def recover_partial(shard: dict, adapter: dict, destination: Path) -> tuple[dict, dict, dict]:
     """Reaggregate authenticated child bytes; preserve the failed parent and child."""
@@ -44,6 +54,8 @@ def recover_partial(shard: dict, adapter: dict, destination: Path) -> tuple[dict
             or download.get("output_zip_path") != str(archive)
             or download.get("output_zip_size_bytes") != archive.stat().st_size):
         raise ValueError("diagnostic_partial_archive_binding_invalid")
+    if diagnostic._record(archive)["sha256"] != REVIEWED_RETAINED_ARCHIVES.get(adapter.get("bundle_sha256")):
+        raise ValueError("diagnostic_partial_archive_reviewed_digest_mismatch")
     inputs = validate_runtime_input_manifest(diagnostic._read(source / "runtime_inputs/policy_canary_runtime_inputs.json"))
     authority = validate_session_authority(diagnostic._read(source / "runtime_inputs/policy_canary_session_authority.json"))
     if inputs["cells"] != shard["cells"] or inputs["runtime_inputs_digest"] != authority["runtime_inputs_digest"]:

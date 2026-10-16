@@ -67,7 +67,7 @@ def test_partial_batch_cannot_silently_drop_unproven_policy_attempt(tmp_path, mo
             child_results=children, output_root=tmp_path, construction_lineage_mode='diagnostic')
 
 
-@pytest.mark.parametrize('fault', [None, 'archive', 'manifest', 'digest', 'runtime', 'unknown_failure'])
+@pytest.mark.parametrize('fault', [None, 'archive', 'manifest', 'digest', 'runtime', 'unknown_failure', 'same_length_replacement'])
 def test_historical_partial_adoption_requires_original_archive_manifest_and_prepolicy_failure(tmp_path, monkeypatch, fault):
     import hashlib
     import json
@@ -122,6 +122,23 @@ def test_historical_partial_adoption_requires_original_archive_manifest_and_prep
     adapter = {'native_control_result_path': str(evidence / session.PROVIDER_RESULT_FILENAME),
                'bundle_sha256': 'bundle', 'artifact_manifest_path': str(manifest)}
     write(source / 'allocator_result.json', adapter)
+    pinned = hashlib.sha256(archive.read_bytes()).hexdigest()
+    monkeypatch.setattr(staging, 'REVIEWED_RETAINED_ARCHIVES', {'bundle': 'sha256:' + pinned})
+    if fault == 'same_length_replacement':
+        original_size = archive.stat().st_size
+        children[0]['episodes'][0]['status'] = 'subverted'
+        children[0]['result_digest'] = canonical_digest(children[0], digest_field='result_digest')
+        records = []
+        with zipfile.ZipFile(archive, 'w') as bundle:
+            for i, child in enumerate(children):
+                data = json.dumps(child).encode()
+                relative = f'cell_runs/{i:02d}/{session.PROVIDER_RESULT_FILENAME}'
+                (evidence / relative).write_bytes(data)
+                bundle.writestr(relative, data)
+                records.append({'relative_path': 'immutable_execution/' + relative,
+                    'size_bytes': len(data), 'sha256': 'sha256:' + hashlib.sha256(data).hexdigest()})
+        assert archive.stat().st_size == original_size
+        write(manifest, {'binding': {'bundle_sha256': 'bundle'}, 'files': records})
     monkeypatch.setattr(session, 'validate_runtime_input_manifest', lambda value: value)
     monkeypatch.setattr(session, 'validate_session_authority', lambda value: value)
     monkeypatch.setattr(worker, '_write_policy_canary_telemetry', lambda *args, **kwargs: ({}, []))

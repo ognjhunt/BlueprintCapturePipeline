@@ -91,6 +91,8 @@ def prepare(runtime_objects, applications):
             "runtime_name": application["runtime_name"], "source_usd": str(source),
             "source_material_prim_path": None, "source_dynamic_friction": None,
             "expected_dynamic_friction": value,
+            "nominal_value": application.get("nominal_value"),
+            "application_tolerance": application.get("application_tolerance", 1e-6),
         }}
     fd, name = tempfile.mkstemp(prefix="blueprint-rigid-friction-", suffix=".usda")
     os.close(fd)
@@ -142,6 +144,15 @@ def apply_native_overrides(env, overrides):
             continue
         view = _material_view(env, record)
         before = _material_array(view)
+        nominal = record.get("nominal_value")
+        tolerance = float(record.get("application_tolerance", 1e-6))
+        if not math.isfinite(tolerance) or tolerance < 0:
+            raise ValueError("rigid_friction_tolerance_invalid")
+        if nominal is not None:
+            nominal = float(nominal)
+            if (not math.isfinite(nominal) or nominal < 0
+                    or not np.allclose(before[..., 1], nominal, rtol=0, atol=tolerance)):
+                raise ValueError("rigid_friction_nominal_mismatch")
         expected = float(record["expected_dynamic_friction"])
         if not math.isfinite(expected) or expected < 0:
             raise ValueError("rigid_friction_value_invalid")
