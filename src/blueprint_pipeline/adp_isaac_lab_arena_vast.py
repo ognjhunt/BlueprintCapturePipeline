@@ -542,6 +542,14 @@ def run_arena_native_control_vast(
         if type(hard_deadline_epoch) not in (int, float) or not math.isfinite(hard_deadline_epoch):
             raise ValueError("adp_arena_hard_deadline_invalid")
         remaining_live_minutes = min(remaining_live_minutes, math.floor((hard_deadline_epoch - time.time()) / 60))
+    full_team_session = bundle.get("run_kind") == "team_candidate_evaluation"
+    if full_team_session and remaining_live_minutes * 60 < hard_ttl_seconds:
+        result = {"schema_version": result_schema_version, "generated_at": generated,
+                  "status": "blocked", "provider_mutations_performed": 0,
+                  "remaining_live_minutes": remaining_live_minutes,
+                  "blockers": ["team_evaluation_window_or_budget_below_planned_runtime"], **delivery_record}
+        _write_run_result(job, attempt_root, result)
+        return result
     if remaining_live_minutes < 30:
         result = {
             "schema_version": result_schema_version,
@@ -759,7 +767,8 @@ def run_arena_native_control_vast(
         watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
             job_dir=attempt_root,
             # Staging itself may have used up the minimum safe startup window.
-            max_live_minutes=(0 if hard_deadline_epoch is not None and hard_deadline_epoch - time.time() < 1800
+            max_live_minutes=(0 if hard_deadline_epoch is not None and hard_deadline_epoch - time.time()
+                              < (hard_ttl_seconds if full_team_session else 1800)
                               else remaining_live_minutes),
             generated_at=generated,
             allowed_active_instance_ids=allowed_active_instance_ids,

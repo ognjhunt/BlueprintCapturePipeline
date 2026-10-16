@@ -60,7 +60,7 @@ from .robot_free_probe_gate import (
 )
 from .team_embodiment import POLICY_INTERFACE_ID as TEAM_ROBOT_INTERFACE
 from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
-from .team_embodiment import TeamEmbodimentError, camera_names, validate_embodiment_manifest
+from .team_embodiment import CONTROL_HZ, TeamEmbodimentError, camera_names, validate_embodiment_manifest
 from .team_evaluation_plan import (
     EPISODES,
     PURPOSES,
@@ -76,7 +76,7 @@ EXECUTION_SPEC_SCHEMA = "native_task_arena_policy_canary_execution_spec.v1"
 RUNTIME = "team_evaluation"
 FREE_BETA_PROVIDER_CAP_USD = 20.0
 # One campaign lease; legacy shorter admissions remain valid.
-MAX_TTL_SECONDS = campaign_ttl_seconds()
+MAX_TTL_SECONDS = campaign_ttl_seconds(control_hz=max(CONTROL_HZ))
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,58}_FILE$")

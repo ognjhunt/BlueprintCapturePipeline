@@ -82,6 +82,24 @@ def _blocked(blockers: list[str], **extra: Any) -> dict[str, Any]:
             "provider_allocations_observed": 0, "retry_cap": 0, "blockers": blockers, **extra}
 
 
+def team_execution_deadline(authority: Mapping[str, Any], execution_deadline_epoch: float | None,
+                            *, now: float | None = None) -> tuple[float | None, list[str]]:
+    """An execution window may shorten funding, but must fit the whole declared session."""
+    moment = time.time() if now is None else now
+    deadlines = [authority["hard_deadline_epoch"]] if "hard_deadline_epoch" in authority else []
+    if execution_deadline_epoch is not None:
+        deadlines.append(execution_deadline_epoch)
+    if any(type(value) not in (int, float) or not math.isfinite(value) or value <= moment for value in deadlines):
+        return None, ["team_evaluation_execution_deadline_invalid_or_expired"]
+    deadline = min(deadlines) if deadlines else None
+    if deadline is not None:
+        if deadline - moment < 1800:
+            return deadline, ["team_evaluation_execution_deadline_below_minimum_live_window"]
+        if deadline - moment < int(authority["hard_ttl_seconds"]):
+            return deadline, ["team_evaluation_execution_window_below_planned_runtime"]
+    return deadline, []
+
+
 def run_team_candidate_session_vast(
     *,
     job_dir: str | Path,
@@ -113,13 +131,9 @@ def run_team_candidate_session_vast(
         blockers.append("team_candidate_bundle_credential_binding_invalid")
     if blockers:
         return _blocked(sorted(set(blockers)))
-    deadlines = [authority["hard_deadline_epoch"]] if "hard_deadline_epoch" in authority else []
-    if execution_deadline_epoch is not None:
-        deadlines.append(execution_deadline_epoch)
-    if any(type(value) not in (int, float) or not math.isfinite(value) or value <= time.time()
-           for value in deadlines):
-        return _blocked(["team_evaluation_execution_deadline_invalid_or_expired"])
-    deadline = min(deadlines) if deadlines else None
+    deadline, blockers = team_execution_deadline(authority, execution_deadline_epoch)
+    if blockers:
+        return _blocked(blockers)
     environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
     consumption = consume_session_authority_once(
         authority, consumption_path=Path(job_dir) / "policy_canary_session_consumption.json") if execute else None
@@ -145,8 +159,8 @@ def run_team_candidate_session_vast(
         expected_provider_download_bytes=POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES + POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES,
         expected_provider_upload_bytes=team_result_upload_bytes(authority["episodes_per_policy"]),
         provider_runtime_environment=environment,
-        # Outputs download after the session (the launcher default); only the frozen
-        # Quick-10 session streams provider outputs.
+        # The fixed-pair stream's 8 GB/640 MiB contracts never govern a team archive.
+        provider_output_delivery="download",
         runtime_secret_file_paths={credential_env: Path(str(credential_file))},
     )
 

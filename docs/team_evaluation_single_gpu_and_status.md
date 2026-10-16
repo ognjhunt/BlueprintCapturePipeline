@@ -10,13 +10,16 @@ eleven sequential rentals. A machine boundary was being used as a batch
 boundary, despite the existing worker already isolating each simulator cell.
 
 New admissions seal all 200 cells into one canonical paid session, with one
-cumulative funding cap, bounded TTL, single-use authority and independent
+cumulative funding cap, a TTL covering the selected control rate, single-use authority and independent
 watchdog. The watchdog's absolute deadline is capped by the sealed funding
 expiry and the current authenticated execution deadline, including after time
 spent queued or staging. The execution deadline can only shorten the sealed
 funding expiry. The existing execution
 monitor still stops on founder hold, cancellation, deadline or prolonged loss
-of control contact. A lost allocated session cannot authorize a replacement
+of control contact. Insufficient funding, execution time or runtime budget refuses before paid
+allocation; the service timeout covers the maximum supported planner window
+instead of silently truncating it to 16 hours. No existing approval is extended.
+A lost allocated session cannot authorize a replacement
 GPU. Only a refusal proving zero allocation may be restaged.
 
 The worker retains its fresh-interpreter/Isaac process per case. It fsyncs a
@@ -29,7 +32,7 @@ Checkpoints are provider-local until the normal output transfer completes;
 they do not claim protection from loss of the provider disk itself. The independent transport and sealed-bundle checks accept at most 200 team
 cases; the frozen-pair canary remains at ten cells/twenty rollouts. Fallback
 SSH progress retains only the latest bounded milestones and uses the sealed
-bundle's cell count, including cells100-199, without widening legacy
+bundle's cell count, including cells 100-199, without widening legacy
 canary scopes. Existing
 multi-shard admissions and completed diagnostic evidence remain readable.
 
@@ -67,3 +70,11 @@ These hermetic tests make no new GPU execution, customer performance, physical
 safety or ADP qualification claim. Promotion additionally requires exact-source
 CI/signing, reviewed merge, canonical deployment, live version readback and
 preserved operational holds.
+
+A review concern about the paired stream's 8 GB archive / 640 MiB needed-set
+limits was checked against the actual dispatch: team sessions explicitly use
+full download; only the frozen pair enters the streaming resolver. A sparse
+ZIP regression exceeding 8 GB extracts through the actual download path with
+the stream budget reduced to 1 byte. The team transport still quotes its
+cell-scaled output allowance (80 GB for 200 cases); no global stream cap is
+raised and no missing evidence is treated as present.

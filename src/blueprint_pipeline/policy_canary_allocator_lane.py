@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import time
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -43,7 +42,7 @@ from .adp_isaac_lab_arena_vast import (
     _remaining_session_live_minutes,
     _vast_credential_file_present,
 )
-from .team_candidate_quick10_vast import credential_file_blockers, run_team_candidate_session_vast
+from .team_candidate_quick10_vast import credential_file_blockers, run_team_candidate_session_vast, team_execution_deadline
 
 
 REQUIRE_INTEGRATION_CANARY_ENV = "BLUEPRINT_REQUIRE_POLICY_INTEGRATION_CANARY"
@@ -125,6 +124,8 @@ def _launch_environment_blockers(args: Any, authority: Mapping[str, Any], bundle
     )
     if minutes < 30:
         blockers.append("adp_arena_cumulative_budget_below_minimum_live_window")
+    if authority.get("run_kind") == TEAM_RUN_KIND and minutes * 60 < int(args.adp_hard_ttl_seconds):
+        blockers.append("team_evaluation_budget_below_planned_runtime")
     credential_present = _vast_credential_file_present()
     try:
         require_pre_spend_preflight(
@@ -193,14 +194,11 @@ def run_policy_canary_allocator_lane(
     team = authority is not None and authority.get("run_kind") == TEAM_RUN_KIND
     credential_file = getattr(args, "team_candidate_credential_file", None)
     execution_deadline = getattr(args, "team_candidate_execution_deadline_epoch", None)
-    if execution_deadline is not None and (not team or not math.isfinite(execution_deadline)
-                                           or execution_deadline <= time.time()):
-        blockers.append("team_evaluation_execution_deadline_invalid_or_expired")
-    deadlines = ([authority["hard_deadline_epoch"]] if authority and "hard_deadline_epoch" in authority else [])
-    if execution_deadline is not None and math.isfinite(execution_deadline):
-        deadlines.append(execution_deadline)
-    if deadlines and min(deadlines) - time.time() < 1800:
-        blockers.append("team_evaluation_execution_deadline_below_minimum_live_window")
+    if execution_deadline is not None and not team:
+        blockers.append("team_evaluation_execution_deadline_unexpected")
+    if team:
+        _deadline, window_blockers = team_execution_deadline(authority, execution_deadline)
+        blockers.extend(window_blockers)
     if team:
         blockers.extend(credential_file_blockers(credential_file))
     elif credential_file:

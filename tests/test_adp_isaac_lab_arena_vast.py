@@ -54,6 +54,8 @@ def test_policy_query_blocker_does_not_invent_query_when_receipt_is_missing() ->
         _candidate_policy_query_blocker({}, blocker_prefix="adp009d")
         == "adp009d_candidate_policy_query_status_missing"
     )
+
+
     assert (
         _candidate_policy_query_blocker(
             {"candidate_policy_queried": True}, blocker_prefix="adp009d"
@@ -1065,3 +1067,23 @@ def test_native_pre_spend_stale_wait_is_bounded(monkeypatch: pytest.MonkeyPatch)
             provider_bundle_kind="native_task_arena", preflight_args={}
         )
     assert len(attempts) == 17 and sleeps == [15] * 16
+
+
+def test_download_extraction_does_not_use_the_paired_stream_size_limits(tmp_path, monkeypatch):
+    from blueprint_pipeline import arena_provider_output_streaming as streamed
+    from blueprint_pipeline import policy_canary_output_members as members
+    archive = tmp_path / "large-sparse-output.zip"
+    # A large ZIP offset needs only a few filesystem blocks, not an 8 GB write.
+    with archive.open("wb") as stream:
+        stream.seek(streamed.OUTPUT_ARCHIVE_MAXIMUM_BYTES + 1)
+        stream.write(b"padding")
+    name = "native_task_arena_policy_canary_session_result.v1.json"
+    result = {"status": "runtime_completed_unqualified_pending_closeout",
+              "run_kind": "team_candidate_evaluation", "learned_policy_rollout_count": 200}
+    with zipfile.ZipFile(archive, "a", allowZip64=True) as zipped:
+        zipped.writestr(name, json.dumps(result))
+    assert archive.stat().st_size > streamed.OUTPUT_ARCHIVE_MAXIMUM_BYTES
+    assert archive.stat().st_blocks * 512 < 1024 * 1024
+    monkeypatch.setattr(members, "NEEDED_SET_BUDGET_BYTES", 1)
+    extracted = arena._extract_provider_output(archive, tmp_path / "downloaded", result_name=name)
+    assert extracted["status"] == "completed" and extracted["execution"] == result

@@ -216,9 +216,9 @@ def scored_cells(*, scene_revision_digest: str, scene_id: str, salt: str, task_s
     return cells
 
 
-def campaign_ttl_seconds() -> int:
-    """One cumulative lease, bounded by the runner's existing 16-hour window."""
-    return min(shard_ttl_seconds(EPISODES[SCORED]), 16 * 3600)
+def campaign_ttl_seconds(*, control_hz: int = 15) -> int:
+    """One cumulative lease covering every planned cell at the selected rate."""
+    return shard_ttl_seconds(EPISODES[SCORED], control_hz=control_hz)
 
 
 def runtime_cells(cells: Sequence[Mapping[str, Any]], *, control_diagnostic: Mapping[str, Any]) -> list[dict[str, Any]]:

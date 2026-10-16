@@ -327,6 +327,10 @@ def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: s
     if facts is None:
         raise ValueError(";".join(blockers))
     approval = _read(owner_approval)
+    from .team_evaluation_plan import campaign_ttl_seconds
+    expiry = datetime.fromisoformat(approval["expires_at_iso"].replace("Z", "+00:00")).timestamp()
+    if expiry - datetime.now(timezone.utc).timestamp() < campaign_ttl_seconds():
+        raise ValueError("team_evaluation_funding_window_below_planned_runtime")
     token = secrets.token_urlsafe(48)
     token_digest = canonical_digest({"credential_sha256": hashlib.sha256(token.encode()).hexdigest()})
     admission = internal_admission(facts=facts, approval=approval, policy_url=policy_url, credential_digest=token_digest)
@@ -368,7 +372,7 @@ def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: s
         "evaluation_purpose": "scored", "episodes": len(cells), "shard_count": len(groups), "source_commit": source_commit})
     expires = datetime.fromisoformat(approval["expires_at_iso"].replace("Z", "+00:00")).timestamp() * 1000
     _write(job / launch.CONTROL_FILENAME, {"run_id": base_run_id, "internal_diagnostic": True,
-        "execution_deadline_at_ms": min(expires, datetime.now(timezone.utc).timestamp() * 1000 + 16 * 60 * 60 * 1000),
+        "execution_deadline_at_ms": expires,
         "owner_approval": _record(owner_approval)})
     result = {"schema_version": "blueprint.internal_team_diagnostic.v1", "policy_url": policy_url,
               "source_commit": source_commit, "job_dir": str(job.resolve()), "registry_path": str(registry_path.resolve()),

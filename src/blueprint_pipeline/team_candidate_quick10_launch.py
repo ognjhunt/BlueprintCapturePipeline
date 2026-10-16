@@ -260,7 +260,7 @@ def _candidate_records(*, row: Mapping[str, Any], request: Mapping[str, Any], pr
     budget = {"payer": funding.get("payer"), "customer_price_usd": funding.get("customer_price_usd"),
               "max_attempts": funding.get("max_attempts"), "cap_usd": funding.get("cap_usd"),
               "episodes": _m(request.get("execution_authorization")).get("episodes"),
-              "hard_ttl_seconds": campaign_ttl_seconds()}
+              "hard_ttl_seconds": campaign_ttl_seconds(control_hz=int(manifest["control_hz"]) if manifest else 15)}
     founder = {"schema_version": FOUNDER_SCHEMA, "approved_by": funding["approved_by"],
                "approval_reference": "webapp_free_beta_funding:" + str(funding.get("approval_digest")),
                "expires_at_iso": funding["expires_at_iso"],
@@ -338,7 +338,9 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
     binding_path = job_dir / EMBODIMENT_BINDING_FILENAME
     binding = _read(binding_path) if binding_path.is_file() else None
     hz = int(binding["manifest"]["control_hz"]) if binding else 15
-    ttl = min(shard_ttl_seconds(len(cells), control_hz=hz), int(admission["budget"]["hard_ttl_seconds"]))
+    ttl = shard_ttl_seconds(len(cells), control_hz=hz)
+    if ttl > int(admission["budget"]["hard_ttl_seconds"]):
+        raise TeamCandidateLaunchError("team_evaluation_session_ttl_below_planned_runtime")
     max_queries = facts["max_policy_queries"]
     if binding is not None:
         # The team's chunk runs whole at its own rate over the scene's time budget.
@@ -386,6 +388,11 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     if facts is None or profile is None:
         raise TeamCandidateLaunchError(";".join(blockers) or "team_candidate_profile_missing")
     funding = _funding(row, profile)
+    manifest = request_embodiment(request)
+    required_ttl = campaign_ttl_seconds(control_hz=int(manifest["control_hz"]) if manifest else 15)
+    funding_expiry = datetime.fromisoformat(funding["expires_at_iso"].replace("Z", "+00:00")).timestamp()
+    if funding_expiry - time.time() < required_ttl:
+        raise TeamCandidateLaunchError("team_evaluation_funding_window_below_planned_runtime")
     payload = _endpoint(request)
     team_id = str(row.get("team_id") or "")
     checkpoint_id = str(_m(row.get("checkpoint")).get("checkpoint_id") or "")
@@ -701,6 +708,8 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
                 if not control_unavailable and state == "staged" and running < limit and (row["index"] == 0 or opened):
                     root = Path(row["root"])
                     execution_deadline = float(observed_control["execution_deadline_at_ms"]) / 1000
+                    if execution_deadline - time.time() < int(row["hard_ttl_seconds"]):
+                        raise TeamCandidateLaunchError("team_evaluation_execution_window_below_planned_runtime")
                     _write(root / "allocator_launch_intent.json", {"observed_at_iso": utc_now_iso(),
                                                                   "execution_deadline_epoch": execution_deadline})
                     argv = [*row["argv"], "--team-candidate-execution-deadline-epoch", str(execution_deadline)]

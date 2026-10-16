@@ -459,6 +459,7 @@ def _every_file(root: Path) -> list[Path]:
 @pytest.mark.parametrize("monitor_deadline_ms", [4_000_000_000_000, 5_000_000_000_000])
 def test_a_request_runs_200_hidden_cells_on_one_gpu_and_reports_one_scored_result(
         tmp_path, monkeypatch, monitor_deadline_ms) -> None:
+    monkeypatch.setenv("BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY", "stream")
     world = _world(tmp_path, monkeypatch)
     world["runner"]["execution_monitor"] = lambda control: {
         "ok": True, "run_id": control["run_id"], "execution_deadline_at_ms": monitor_deadline_ms}
@@ -476,6 +477,9 @@ def test_a_request_runs_200_hidden_cells_on_one_gpu_and_reports_one_scored_resul
     assert gate["status"] == "passed" and gate["episodes"] == 25
     caps = [float(argv[argv.index("--adp-max-spend-usd") + 1]) for argv in calls]
     assert sum(caps) <= 20.0 and set(caps) == {20.0}
+    # The paired Quick-10 stream's 8 GB/640 MiB bounds never route a team run.
+    assert world["provider"].calls[0]["provider_output_delivery"] == "download"
+    assert "provider_output_member_contract" not in world["provider"].calls[0]
     from datetime import datetime
     funding_expiry = datetime.fromisoformat(admission["execution_deadline_at_iso"].replace("Z", "+00:00")).timestamp()
     assert world["provider"].calls[0]["hard_deadline_epoch"] == min(monitor_deadline_ms / 1000, funding_expiry)
