@@ -11,9 +11,7 @@ from .vast_create_failure_diagnosis import definite_create_refusal_without_insta
 
 def provider_allocation_fields(*, adapter: Mapping[str, Any], watchdog: Mapping[str, Any],
                                teardown: Mapping[str, Any], cleanup: Mapping[str, Any]) -> dict[str, Any]:
-    """Preserve unknowns; prove zero compute mutations only from matching explicit absence."""
-    fields = {key: adapter[key] for key in ("vast_instance_ids", "provider_create_attempted",
-        "vast_side_effects_may_have_occurred", "provider_mutations_performed") if key in adapter}
+    """Promote proven absence only; preserve existing paid/unknown receipt bytes."""
     if (adapter.get("provider_create_attempted") is False and adapter.get("vast_instance_ids") == []
             and adapter.get("vast_side_effects_may_have_occurred") is False
             and ("provider_mutations_performed" not in adapter
@@ -22,8 +20,9 @@ def provider_allocation_fields(*, adapter: Mapping[str, Any], watchdog: Mapping[
             and type(watchdog.get("provider_mutations_performed")) is int and watchdog["provider_mutations_performed"] == 0
             and teardown.get("vast_instance_ids") == [] and teardown.get("continuing_spend_from_this_run") is False
             and cleanup.get("all_objects_absent") is True):
-        fields["provider_mutations_performed"] = 0
-    return fields
+        return {"vast_instance_ids": [], "provider_create_attempted": False,
+                "vast_side_effects_may_have_occurred": False, "provider_mutations_performed": 0}
+    return {}
 
 
 def proven_provider_null_closeout(

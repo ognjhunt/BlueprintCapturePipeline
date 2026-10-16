@@ -37,10 +37,8 @@ def test_no_offer_allocation_fields_require_complete_explicit_absence(fault):
     fields = provider_allocation_fields(adapter=adapter, watchdog=watchdog, teardown=teardown, cleanup=cleanup)
     if fault is None:
         assert fields["provider_mutations_performed"] == 0
-    elif fault == "contradictory_mutations":
-        assert fields["provider_mutations_performed"] == 1
     else:
-        assert "provider_mutations_performed" not in fields
+        assert fields == {}
 
 
 def _record(path: Path) -> dict[str, object]:
