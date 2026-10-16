@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import json
+import hashlib
+import hmac
 import os
 import re
 import time
@@ -62,6 +64,7 @@ OWNER_OBSERVATION_REASON_CODES = frozenset({
     'capture_owner_source_invalid',
     'capture_owner_timeout_invalid',
     'capture_owner_webapp_url_missing',
+    'capture_owner_claim_evidence_invalid',
 })
 
 
@@ -145,7 +148,8 @@ def validate_observation(
         _refuse("capture_owner_capture_identity_invalid")
     if expected_purpose not in {None, "scene_preparation"}:
         _refuse("capture_owner_purpose_invalid")
-    value = _object(value, _RESPONSE_KEYS | ({"purpose"} if expected_purpose else set()))
+    value = _object(value, _RESPONSE_KEYS | ({"purpose"} if expected_purpose else set())
+                    | ({"claim_evidence"} if type(value) is dict and "claim_evidence" in value else set()))
     if expected_purpose and value.get("purpose") != expected_purpose:
         _refuse("capture_owner_purpose_mismatch")
     raw_prefix = f"scenes/{scene_id}/captures/{capture_id}/raw"
@@ -231,7 +235,110 @@ def validate_observation(
             or value["observation_digest"] != cross_runtime_canonical_digest(
                 value, digest_field="observation_digest")):
         _refuse("capture_owner_observation_digest_invalid")
+    if "claim_evidence" in value:
+        validate_claim_evidence(value)
     return dict(value)
+
+
+def validate_claim_evidence(value):
+    """Website HMAC binds one verified claim to the complete fresh source."""
+    if type(value.get("claim_evidence")) is not dict:
+        _refuse("capture_owner_claim_evidence_invalid")
+    evidence = _object(value.get("claim_evidence"), {
+        "schema_version", "claimant_user_id", "claimed_at_iso", "source_projection_digest",
+        "observed_at_epoch", "valid_until_epoch", "signature"})
+    if (value.get("purpose") != "scene_preparation"
+            or evidence["schema_version"] != "website_capture_claim.v1"
+            or not _identifier(evidence["claimant_user_id"])
+            or not _iso(evidence["claimed_at_iso"])
+            or evidence["observed_at_epoch"] != value["observed_at_epoch"]
+            or evidence["valid_until_epoch"] != value["valid_until_epoch"]
+            or not _sha(evidence["source_projection_digest"]) or not _sha(evidence["signature"])):
+        _refuse("capture_owner_claim_evidence_invalid")
+    if datetime.fromisoformat(evidence["claimed_at_iso"].replace("Z", "+00:00")).timestamp() > value["observed_at_epoch"] + 5:
+        _refuse("capture_owner_claim_evidence_invalid")
+    owner = value["capture_owner"]
+    if (owner is not None and (owner["user_id"] != evidence["claimant_user_id"]
+            or value["ownership_record"]["claimed_at_iso"] != evidence["claimed_at_iso"])
+            or owner is None and value["ownership_record"]["claimed_at_iso"] is not None):
+        _refuse("capture_owner_claim_evidence_invalid")
+    # A normalized upload-owner projection retains the signed claim separately.
+    # Reconstruct its current-owner source before verifying the website's digest.
+    source = {key: value[key] for key in (*_SOURCE_KEYS, "purpose")}
+    source.update(capture_owner={"user_id": evidence["claimant_user_id"],
+                                 "basis": "inboundRequests.account_owner_uid"},
+                  ownership_record={"claimed_at_iso": evidence["claimed_at_iso"]})
+    if cross_runtime_canonical_digest(source) != evidence["source_projection_digest"]:
+        _refuse("capture_owner_claim_evidence_invalid")
+    unsigned = {k: v for k, v in evidence.items() if k != "signature"}
+    message = "website_capture_claim.v1:" + cross_runtime_canonical_digest(unsigned)
+    signature = "sha256:" + hmac.new(load_pipeline_sync_token().encode(), message.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(evidence["signature"], signature):
+        _refuse("capture_owner_claim_evidence_invalid")
+    return dict(evidence)
+
+
+def recorded_guest_claim(ledger):
+    """The first retained claim survives the ordinary lease's history copy."""
+    claims = [row["assessment_resume_claim"] for row in ledger.get("attempt_history", [])
+              if type(row) is dict and "assessment_resume_claim" in row]
+    if "assessment_resume_claim" in ledger:
+        claims.append(ledger["assessment_resume_claim"])
+    if not claims:
+        return None
+    if any(type(claim) is not dict or claim != claims[0] for claim in claims):
+        _refuse("capture_owner_claim_evidence_invalid")
+    return claims[0]
+
+
+def project_birth_owner_observation(*, capture_root, observation, require_recorded_claim=True):
+    """Rule B: admit only a signed guest claim; leave birth/source truth intact.
+
+    The current website claim is separate evidence. The upload-owner view keeps
+    the original source fields for all strict birth and membership validators.
+    No ledger mutation occurs here, including on read-only status/replay paths.
+    """
+    from .handoff_job_state import _read_job_ledger
+    from .task_evaluation_scene_retirement_generations import capture_birth_source_projection, _raw_reference
+    birth = capture_birth_source_projection(capture_root, expected_purpose="scene_preparation")
+    if birth is None:
+        return observation, None
+    original = _raw_reference(birth["owner_observation_raw_ref"])
+    ledger = _read_job_ledger(capture_root)
+    accepted = recorded_guest_claim(ledger)
+    uid = (observation["capture_owner"] or {}).get("user_id")
+    if accepted is not None and (type(accepted) is not dict
+            or accepted.get("generation_id") != birth["generation_id"]
+            or accepted.get("claimant_user_id") != uid):
+        _refuse("capture_owner_identity_mismatch")
+    if uid == birth["capture_owner_user_id"]:
+        if uid is None and observation["ownership_record"] != original["ownership_record"]:
+            _refuse("capture_owner_identity_mismatch")
+        return observation, None
+    if (birth["capture_owner_user_id"] is not None or uid is None
+            or birth.get("capture_observation_purpose") != "scene_preparation"
+            or observation.get("purpose") != "scene_preparation"
+            or original["ownership_record"]["claimed_at_iso"] is not None
+            or ledger.get("assessment_resume") is None and accepted is None):
+        _refuse("capture_owner_identity_mismatch")
+    evidence = validate_claim_evidence(observation)
+    if (evidence["claimant_user_id"] != uid
+            or evidence["claimed_at_iso"] != observation["ownership_record"]["claimed_at_iso"]
+            or datetime.fromisoformat(evidence["claimed_at_iso"].replace("Z", "+00:00")).timestamp()
+               < original["observed_at_epoch"]):
+        _refuse("capture_owner_claim_evidence_invalid")
+    receipt = {"generation_id": birth["generation_id"], "claimant_user_id": uid,
+               "evidence": evidence}
+    if require_recorded_claim and accepted is None:
+        _refuse("capture_owner_claim_evidence_invalid")
+    projected = {**observation, "capture_owner": original["capture_owner"],
+                 "ownership_record": original["ownership_record"]}
+    source = {key: projected[key] for key in (*_SOURCE_KEYS, "purpose")}
+    if cross_runtime_canonical_digest(source) != original["source_projection_digest"]:
+        _refuse("capture_owner_identity_mismatch")
+    projected["source_projection_digest"] = original["source_projection_digest"]
+    projected["observation_digest"] = cross_runtime_canonical_digest(projected, digest_field="observation_digest")
+    return projected, receipt
 
 
 def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -253,7 +360,11 @@ def load_original_owner_observation(
     include_response_bytes: bool = False,
     expected_purpose: str | None = None,
 ) -> dict[str, Any] | tuple[dict[str, Any], int]:
-    """One signed read through the installed Pipeline sync credential and API origin."""
+    """One signed website read, including separately signed current claim evidence.
+
+    Parked guests use project_birth_owner_observation before treating this as
+    immutable upload-owner evidence. A claim never rewrites the original birth.
+    """
     if not _integer(remaining_timeout_ms, 1, 10_000):
         _refuse("capture_owner_timeout_invalid")
     if not _generation(marker_generation) or not capture_id.startswith("walkthrough-"):

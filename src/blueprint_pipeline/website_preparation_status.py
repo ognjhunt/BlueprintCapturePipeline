@@ -26,10 +26,14 @@ _UNAVAILABLE = "website_preparation_status_unavailable"
 class PreparationStatusUnavailable(ValueError):
     """Fixed public refusal; internal paths/errors never cross this boundary."""
 
+    def __init__(self, message=_UNAVAILABLE, *, blocker_code=_UNAVAILABLE):
+        super().__init__(message)
+        self.blocker_code = blocker_code
 
-def _require(condition: bool) -> None:
+
+def _require(condition: bool, *, blocker_code: str = _UNAVAILABLE) -> None:
     if not condition:
-        raise PreparationStatusUnavailable(_UNAVAILABLE)
+        raise PreparationStatusUnavailable(blocker_code=blocker_code)
 
 
 def validate_selectors(value: Any) -> dict[str, str]:
@@ -65,9 +69,9 @@ def _retained_context(root: Path) -> dict[str, Any]:
     return _read(root / "pipeline" / "website_task_context.json")
 
 
-def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any]) -> dict[str, Any]:
+def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any], claim_evidence_sink=None) -> dict[str, Any]:
     """Read an as-of snapshot; refuse missing, changed or unverified authority."""
-    from .capture_original_owner_observer import load_original_owner_observation
+    from .capture_original_owner_observer import load_original_owner_observation, project_birth_owner_observation
     from .consent_takedown import read_consent_state
     from .handoff_job_state import _read_job_ledger, _output_commit
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
@@ -97,7 +101,13 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any])
         owner = load_original_owner_observation(bucket=delivery["source_finalize"]["bucket"], scene_id=selected["scene_id"],
             capture_id=selected["capture_id"], marker_generation=selected["completion_marker_generation"],
             **({"expected_purpose": purpose} if purpose else {}))
-        _require((owner["capture_owner"] or {}).get("user_id") == birth["capture_owner_user_id"])
+        if birth["capture_owner_user_id"] is not None:
+            _require((owner["capture_owner"] or {}).get("user_id") == birth["capture_owner_user_id"],
+                     blocker_code="website_preparation_original_owner_mismatch")
+        owner, claim = project_birth_owner_observation(capture_root=root, observation=owner,
+                                                       require_recorded_claim=False)
+        _require((owner["capture_owner"] or {}).get("user_id") == birth["capture_owner_user_id"],
+                 blocker_code="website_preparation_original_owner_mismatch")
         _require(owner["producer_delivery"] == delivery["producer_delivery"])
         _require(owner["producer_delivery"]["delivery_key"] == selected["producer_delivery_key"])
         _require(owner["producer_delivery"]["raw_video"]["generation"] == birth["raw_video"]["generation"])
@@ -139,6 +149,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any])
                   "correlation_id": cross_runtime_canonical_digest({**selected,
                       "attempt_count": before["attempt_count"], "revision": before["revision"]})}
         result["status_digest"] = cross_runtime_canonical_digest(result)
+        if claim is not None and claim_evidence_sink is not None:
+            claim_evidence_sink.append(claim)
         return result
     except PreparationStatusUnavailable:
         raise

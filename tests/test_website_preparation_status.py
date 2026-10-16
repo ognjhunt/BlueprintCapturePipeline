@@ -47,14 +47,23 @@ def test_signed_status_refuses_unconfigured_server_root(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def prepared_source(tmp_path, monkeypatch):
+def prepared_source(tmp_path, monkeypatch, request):
     _, _, root, owner, member, raw = _fixture(tmp_path, monkeypatch)
-    birth_capture_member(root, observation=owner, membership_selector=member, membership_raw=raw)
+    purpose = "scene_preparation" if getattr(request, "param", None) == "guest" else None
+    if purpose:
+        owner.update(capture_owner=None, purpose=purpose)
+        owner["source_projection_digest"] = cross_runtime_canonical_digest({
+            key: owner[key] for key in (*observer._SOURCE_KEYS, "purpose")})
+        owner["observation_digest"] = cross_runtime_canonical_digest(owner, digest_field="observation_digest")
+    birth_capture_member(root, observation=owner, membership_selector=member, membership_raw=raw,
+                         expected_purpose=purpose)
     context = {"schema_version": "website_site_task_context.v1", **{key: owner[key]
                 for key in ("request_id", "scene_id", "capture_id")}, "confirmed": True,
                "confirmed_at": "2026-10-08T00:00:00Z", "description": "Synthetic owned preparation control",
                "success_criteria": {"successDefinition": None, "successRate": None,
                                     "cycleTimeSeconds": None, "unknown": True}}
+    if purpose:
+        context["purpose"] = purpose
     context["context_digest"] = canonical_digest(context, digest_field="context_digest")
     write_json(root / "pipeline/website_task_context.json", context)
     def fresh_owner(**kwargs):
