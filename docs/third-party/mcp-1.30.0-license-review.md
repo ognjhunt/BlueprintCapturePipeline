@@ -1,6 +1,8 @@
 # MCP 1.30.0 license review
 
-Status: pending owner approval. No new owner approval is recorded here.
+Status: approved by owner Nijel Hunt on 2026-10-15 for the Blueprint runtime.
+In the deployment continuation chat, the owner answered the exact-version
+approval question: "Approve MCP 1.30.0 under MIT".
 
 The main-only dependency gate requires MCP 1.30.0 to clear CVE-2026-59951.
 All 12 full-suite shards passed on d0053829db05a988b7be11677a1f010ca5393c45;
@@ -20,6 +22,6 @@ The [upstream security advisory](https://github.com/modelcontextprotocol/python-
 identifies 1.30.0 as the patched 1.x release. This review concerns that exact
 package and license; it grants no spending, dispatch, capture, or physical-evidence authority.
 
-The proposed policy record stays `approved: false`. The owner decision is
-whether to approve MCP 1.30.0 under the unchanged MIT terms for the Blueprint
-runtime. Approval would allow source signing and normal deployment to proceed.
+The policy record now marks this exact version `approved: true` under the
+unchanged MIT terms. This records the owner's license decision and permits
+the source-signing and normal deployment gates to evaluate the release.
