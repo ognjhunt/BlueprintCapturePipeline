@@ -276,3 +276,28 @@ def test_the_pair_lane_never_takes_a_credential_file(tmp_path, monkeypatch) -> N
     assert "policy_canary_credential_file_unexpected" in json.loads(
         (tmp_path / "adapter.json").read_text())["blockers"]
     assert os.stat(token_file).st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("deadline, reason", [
+    ("nan", "team_evaluation_execution_deadline_invalid_or_expired"),
+    ("1", "team_evaluation_execution_deadline_invalid_or_expired"),
+    ("near", "team_evaluation_execution_deadline_below_minimum_live_window"),
+])
+def test_invalid_execution_deadline_refuses_dry_and_execute_before_transport(tmp_path, monkeypatch, deadline, reason):
+    import time
+    staged = stage_team_bundle(tmp_path)
+    token_file = private_token_file(tmp_path)
+    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers",
+                        lambda: ([], {"orchestrator_source_commit": "d" * 40}))
+    monkeypatch.setattr(lane, "_launch_environment_blockers", lambda *args: [])
+    monkeypatch.setattr(lane, "run_team_candidate_session_vast",
+                        lambda **kwargs: pytest.fail("a refused deadline reached a provider transport"))
+    value = str(time.time() + 600) if deadline == "near" else deadline
+    for execute in (False, True):
+        for name in ("admission.json", "adapter.json"):
+            (tmp_path / name).unlink(missing_ok=True)
+        argv = _allocator_argv(tmp_path, staged, "--team-candidate-credential-file", str(token_file),
+                               "--team-candidate-execution-deadline-epoch", value)
+        assert allocator.main(argv + (["--execute"] if execute else [])) == 2
+        result = json.loads((tmp_path / "adapter.json").read_text())
+        assert reason in result["blockers"] and result["provider_mutations_performed"] == 0

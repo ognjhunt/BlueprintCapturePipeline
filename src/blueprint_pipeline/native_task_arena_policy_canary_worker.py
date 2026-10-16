@@ -1464,17 +1464,6 @@ def _run_isolated_cell_processes(
                 f"exit_{exit_code}"
             )
         child_results.append(_read(child_result_path))
-        if inputs.get("run_kind") == TEAM_RUN_KIND:
-            _team_checkpoint(output_root=output_root, inputs=inputs, authority=authority, children=child_results)
-            from blueprint_pipeline.team_policy_episode_outcome import FIRST_BATCH_CELLS, first_batch_failure
-            if len(child_results) == FIRST_BATCH_CELLS:
-                first_rows = [row for child in child_results for row in child.get("episodes", [])]
-                reason = first_batch_failure(first_rows)
-                if reason:
-                    _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
-                        children=child_results, construction_lineage_mode=construction_lineage_mode,
-                        reason=reason, stopped_before_next_cell=True)
-                    return 1
         if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
             # The scene failed its robot-free check in cell 0: no further team episode runs on it.
             blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
@@ -1487,6 +1476,17 @@ def _run_isolated_cell_processes(
             blocked["result_digest"] = canonical_digest(blocked, digest_field="result_digest")
             _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=blocked)
             return 1
+        if inputs.get("run_kind") == TEAM_RUN_KIND:
+            _team_checkpoint(output_root=output_root, inputs=inputs, authority=authority, children=child_results)
+            from blueprint_pipeline.team_policy_episode_outcome import FIRST_BATCH_CELLS, first_batch_failure
+            if len(child_results) == FIRST_BATCH_CELLS:
+                first_rows = [row for child in child_results for row in child.get("episodes", [])]
+                reason = first_batch_failure(first_rows)
+                if reason:
+                    _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                        children=child_results, construction_lineage_mode=construction_lineage_mode,
+                        reason=reason, stopped_before_next_cell=True)
+                    return 1
         if index == 0 and inputs.get("diagnostic_continuation_protocol") is not None:
             from blueprint_pipeline.native_policy_canary_diagnostic_continuation import assess_diagnostic_first_cell, GATE_FILENAME
             diagnostic_continuation_gate = assess_diagnostic_first_cell(runtime_root=runtime, child_root=child_root)

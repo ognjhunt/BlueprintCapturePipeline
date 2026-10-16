@@ -456,9 +456,12 @@ def _every_file(root: Path) -> list[Path]:
     return [path for path in root.rglob("*") if path.is_file()]
 
 
+@pytest.mark.parametrize("monitor_deadline_ms", [4_000_000_000_000, 5_000_000_000_000])
 def test_a_request_runs_200_hidden_cells_on_one_gpu_and_reports_one_scored_result(
-        tmp_path, monkeypatch) -> None:
+        tmp_path, monkeypatch, monitor_deadline_ms) -> None:
     world = _world(tmp_path, monkeypatch)
+    world["runner"]["execution_monitor"] = lambda control: {
+        "ok": True, "run_id": control["run_id"], "execution_deadline_at_ms": monitor_deadline_ms}
     staged, summary = _staged_run_reported(world)
     assert staged["claimed"] == 1 and staged["staged"] == 1 and staged["pending"] == 1, staged
     assert summary["completed"] == 1, summary
@@ -473,6 +476,10 @@ def test_a_request_runs_200_hidden_cells_on_one_gpu_and_reports_one_scored_resul
     assert gate["status"] == "passed" and gate["episodes"] == 25
     caps = [float(argv[argv.index("--adp-max-spend-usd") + 1]) for argv in calls]
     assert sum(caps) <= 20.0 and set(caps) == {20.0}
+    from datetime import datetime
+    funding_expiry = datetime.fromisoformat(admission["execution_deadline_at_iso"].replace("Z", "+00:00")).timestamp()
+    assert world["provider"].calls[0]["hard_deadline_epoch"] == min(monitor_deadline_ms / 1000, funding_expiry)
+    assert float(calls[0][calls[0].index("--team-candidate-execution-deadline-epoch") + 1]) == monitor_deadline_ms / 1000
     # The terminal the executor reported, and the scoring statement it sent.
     (path, result), (_settlement_path, settlement) = world["client"].posted
     assert path == "/api/internal/pipeline/agent-run-results" and settlement["rate_usd"] == 0
@@ -652,7 +659,7 @@ def test_a_metadata_repair_reuses_one_private_delivery_without_spending_another_
     executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
     launch.run_queue(world["queue"], hooks=world["runner"])
     final = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert final["completed"] == 1 and len(_Broker.leases) == 1 and len(world["allocator_calls"]) == 8
+    assert final["completed"] == 1 and len(_Broker.leases) == 1 and len(world["allocator_calls"]) == 1
     assert not delivery.exists()
 
 
@@ -898,11 +905,11 @@ def test_closeout_waits_for_provider_zero_before_reporting(tmp_path, monkeypatch
     observations = iter([dict(ZERO), live])  # zero before launch, then a live instance at closeout
     world["provider_zero"] = lambda: next(observations, dict(ZERO))
     _staged, pending = _staged_run_reported(world)
-    assert pending["pending"] == 1 and world["client"].posted == [] and len(world["allocator_calls"]) == 8
+    assert pending["pending"] == 1 and world["client"].posted == [] and len(world["allocator_calls"]) == 1
     assert not (world["job_dir"] / TERMINAL_FILENAME).exists()
     launch.run_queue(world["queue"], hooks=world["runner"])
     second = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert second["completed"] == 1 and len(world["allocator_calls"]) == 8  # recovered, never re-allocated
+    assert second["completed"] == 1 and len(world["allocator_calls"]) == 1  # recovered, never re-allocated
 
 
 def test_the_offer_lists_each_team_evaluation_only_while_eligible(tmp_path, monkeypatch) -> None:

@@ -22,6 +22,8 @@ host itself has no egress firewall here.
 from __future__ import annotations
 
 import os
+import math
+import time
 import re
 import stat
 from collections.abc import Mapping, Sequence
@@ -88,6 +90,7 @@ def run_team_candidate_session_vast(
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
     credential_file: str | Path | None,
+    execution_deadline_epoch: float | None = None,
     machine_avoidlist_path: str | Path | None = None,
     max_hourly_rate_usd: float = 0.80,
     hard_cap_usd: float = 4.00,
@@ -110,6 +113,13 @@ def run_team_candidate_session_vast(
         blockers.append("team_candidate_bundle_credential_binding_invalid")
     if blockers:
         return _blocked(sorted(set(blockers)))
+    deadlines = [authority["hard_deadline_epoch"]] if "hard_deadline_epoch" in authority else []
+    if execution_deadline_epoch is not None:
+        deadlines.append(execution_deadline_epoch)
+    if any(type(value) not in (int, float) or not math.isfinite(value) or value <= time.time()
+           for value in deadlines):
+        return _blocked(["team_evaluation_execution_deadline_invalid_or_expired"])
+    deadline = min(deadlines) if deadlines else None
     environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
     consumption = consume_session_authority_once(
         authority, consumption_path=Path(job_dir) / "policy_canary_session_consumption.json") if execute else None
@@ -129,7 +139,7 @@ def run_team_candidate_session_vast(
         vast_launch_lock_file=None, candidate_policy_query_expected=True, forward_hf_token=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"), minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
-        **({"hard_deadline_epoch": authority["hard_deadline_epoch"]} if "hard_deadline_epoch" in authority else {}),
+        **({"hard_deadline_epoch": deadline} if deadline is not None else {}),
         allowed_geolocation_country_codes=NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES,
         authorization_consumption=consumption, stale_offer_create_retry_limit=0,
         expected_provider_download_bytes=POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES + POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES,

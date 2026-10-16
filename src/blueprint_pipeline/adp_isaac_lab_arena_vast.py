@@ -538,6 +538,10 @@ def run_arena_native_control_vast(
         hard_ttl_seconds=hard_ttl_seconds,
         max_hourly_rate_usd=max_hourly_rate_usd,
     )
+    if hard_deadline_epoch is not None:
+        if type(hard_deadline_epoch) not in (int, float) or not math.isfinite(hard_deadline_epoch):
+            raise ValueError("adp_arena_hard_deadline_invalid")
+        remaining_live_minutes = min(remaining_live_minutes, math.floor((hard_deadline_epoch - time.time()) / 60))
     if remaining_live_minutes < 30:
         result = {
             "schema_version": result_schema_version,
@@ -754,7 +758,9 @@ def run_arena_native_control_vast(
     if require_independent_watchdog:
         watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
             job_dir=attempt_root,
-            max_live_minutes=remaining_live_minutes,
+            # Staging itself may have used up the minimum safe startup window.
+            max_live_minutes=(0 if hard_deadline_epoch is not None and hard_deadline_epoch - time.time() < 1800
+                              else remaining_live_minutes),
             generated_at=generated,
             allowed_active_instance_ids=allowed_active_instance_ids,
             allowed_active_resource_names=allowed_active_resource_names,

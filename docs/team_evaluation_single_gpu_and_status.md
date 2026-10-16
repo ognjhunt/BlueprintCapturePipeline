@@ -12,7 +12,9 @@ boundary, despite the existing worker already isolating each simulator cell.
 New admissions seal all 200 cells into one canonical paid session, with one
 cumulative funding cap, bounded TTL, single-use authority and independent
 watchdog. The watchdog's absolute deadline is capped by the sealed funding
-expiry, including after time spent queued or staging. The existing execution
+expiry and the current authenticated execution deadline, including after time
+spent queued or staging. The execution deadline can only shorten the sealed
+funding expiry. The existing execution
 monitor still stops on founder hold, cancellation, deadline or prolonged loss
 of control contact. A lost allocated session cannot authorize a replacement
 GPU. Only a refusal proving zero allocation may be restaged.

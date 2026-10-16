@@ -632,7 +632,13 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
             control_unavailable = False
             if stop_reason is None:
                 try:
-                    stop_reason = _control_stop_reason(control, monitor=hooks["execution_monitor"],
+                    observed_control = {}
+
+                    def observe_control(binding):
+                        observed_control.update(hooks["execution_monitor"](binding))
+                        return observed_control
+
+                    stop_reason = _control_stop_reason(control, monitor=observe_control,
                                                        hold_path=Path(hooks["dispatch_hold_path"]))
                     last_contact = hooks["monotonic"]()
                 except (OSError, ValueError):
@@ -694,8 +700,11 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
             for row, state in zip(shard_rows, states, strict=True):
                 if not control_unavailable and state == "staged" and running < limit and (row["index"] == 0 or opened):
                     root = Path(row["root"])
-                    _write(root / "allocator_launch_intent.json", {"observed_at_iso": utc_now_iso()})
-                    pid = hooks["allocator_starter"](row["argv"], log_path=root / "allocator.log")
+                    execution_deadline = float(observed_control["execution_deadline_at_ms"]) / 1000
+                    _write(root / "allocator_launch_intent.json", {"observed_at_iso": utc_now_iso(),
+                                                                  "execution_deadline_epoch": execution_deadline})
+                    argv = [*row["argv"], "--team-candidate-execution-deadline-epoch", str(execution_deadline)]
+                    pid = hooks["allocator_starter"](argv, log_path=root / "allocator.log")
                     _write(root / "allocator_process.json", {"pid": pid, "start_ticks": _process_start_ticks(pid),
                                                              "started_at_iso": utc_now_iso()})
                     running += 1
