@@ -162,16 +162,20 @@ def test_the_adapter_binds_teardown_and_members_to_the_run_kind(tmp_path: Path) 
             validate_policy_canary_provider_manifest(forged)
 
 
-def test_a_team_transport_completion_needs_its_ten_rollouts() -> None:
+@pytest.mark.parametrize("episode_count", [10, 25])
+def test_team_transport_accepts_supported_session_sizes(episode_count: int) -> None:
     result = {"status": "runtime_completed_unqualified_pending_closeout",
               "schema_version": "native_task_arena_policy_canary_session_result.v1",
               "run_kind": "team_candidate_evaluation", "claim_ceiling": "diagnostic_policy_execution",
-              "learned_policy_rollout_count": 10, "candidate_policy_queried": True,
+              "learned_policy_rollout_count": episode_count, "candidate_policy_queried": True,
               "scene_promotion_performed": False, "official_ranking_performed": False}
     name = "native_task_arena_policy_canary_session_result.v1.json"
     assert native_task_arena_execution_transport_completed(result, expected_output_filename=name)
     assert not native_task_arena_execution_transport_completed(
         {**result, "learned_policy_rollout_count": 20}, expected_output_filename=name)
+    for malformed in (True, False, 25.0, "25", None, 0, -1, 26, 50):
+        assert not native_task_arena_execution_transport_completed(
+            {**result, "learned_policy_rollout_count": malformed}, expected_output_filename=name)
 
 
 def test_the_token_reaches_the_provider_only_through_the_runtime_secret_channel(tmp_path, monkeypatch) -> None:
