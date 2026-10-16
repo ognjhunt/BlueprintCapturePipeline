@@ -52,12 +52,21 @@ def recovery_arguments(plan: Mapping[str, Any], *, request_digest: str,
     cells = [cell for shard in shards for cell in shard["cells"]]
     if cells != plan.get("expected_cells") or len(cells) != episodes:
         raise ValueError("team_candidate_recovery_frozen_cells_mismatch")
-    return {"expected_cells": cells, "pre_policy_recovery_cells": plan["recovery_cell_ids"]}
+    retained = {}
+    for session in sources["retained_native_session"]:
+        for row in session["episodes"]:
+            cell_id = row["cell_id"]
+            if cell_id in retained:
+                raise ValueError("team_candidate_recovery_retained_cell_duplicate")
+            retained[cell_id] = canonical_digest(row)
+    return {"expected_cells": cells, "pre_policy_recovery_cells": plan["recovery_cell_ids"],
+            "retained_episode_digests": retained}
 
 
 def select_pre_policy_reset_recovery(
     session_rows: Sequence[tuple[str, Mapping[str, Any]]], *,
     expected_cells: Sequence[Mapping[str, Any]], recovery_cell_ids: Sequence[str],
+    retained_episode_digests: Mapping[str, str],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     expected, allowed = [cell["cell_id"] for cell in expected_cells], list(recovery_cell_ids)
     frozen = {cell["cell_id"]: cell for cell in expected_cells}
@@ -71,6 +80,12 @@ def select_pre_policy_reset_recovery(
         grouped[str(row.get("cell_id") or "")].append((digest, row))
     if set(grouped) != set(expected):
         raise ValueError("team_candidate_recovery_frozen_cells_mismatch")
+    if (not retained_episode_digests or not set(allowed).issubset(retained_episode_digests)
+            or not set(retained_episode_digests).issubset(expected)):
+        raise ValueError("team_candidate_recovery_retained_bindings_missing")
+    for cell_id, digest in retained_episode_digests.items():
+        if sum(canonical_digest(row) == digest for _, row in grouped[cell_id]) != 1:
+            raise ValueError("team_candidate_recovery_retained_episode_changed")
     duplicate = {key for key, rows in grouped.items() if len(rows) > 1}
     if duplicate != set(allowed):
         raise ValueError("team_candidate_recovery_duplicate_cells_mismatch")
@@ -115,6 +130,7 @@ def select_pre_policy_reset_recovery(
     receipt = {"schema_version": "team_candidate_pre_policy_reset_recovery.v1",
         "selected_episode_count": len(selected), "selected_episode_sources": selected_sources,
         "superseded_pre_policy_refusals": refusals, "original_session_results_preserved": True,
+        "authenticated_retained_episode_count": len(retained_episode_digests),
         "completed_policy_attempts_replaced": 0, "receipt_digest": ""}
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     return selected, receipt

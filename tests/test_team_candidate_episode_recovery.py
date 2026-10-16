@@ -50,7 +50,8 @@ def test_recovery_plan_binds_original_frozen_inputs_and_immutable_receipts(tmp_p
             recovery_arguments(plan, request_digest=request_digest, admission_digest="admitted", episodes=2)
     else:
         assert recovery_arguments(plan, request_digest=request_digest, admission_digest="admitted", episodes=2) == {
-            "expected_cells": [scored("a"), scored("b")], "pre_policy_recovery_cells": ["b"]}
+            "expected_cells": [scored("a"), scored("b")], "pre_policy_recovery_cells": ["b"],
+            "retained_episode_digests": {"a": canonical_digest(scored("a")), "b": canonical_digest(refused("b"))}}
 
 
 def scored(cell, success=False):
@@ -92,12 +93,26 @@ def test_recovery_keeps_task_failures_and_preserves_every_original_record():
     rows = [("old", scored("a")), ("old", refused("b")), ("new", scored("b"))]
     original = deepcopy(rows)
     selected, receipt = select_pre_policy_reset_recovery(
-        rows, expected_cells=[scored("a"), scored("b")], recovery_cell_ids=["b"]
+        rows, expected_cells=[scored("a"), scored("b")], recovery_cell_ids=["b"],
+        retained_episode_digests={row["cell_id"]: canonical_digest(row) for _, row in rows[:-1]}
     )
     assert [row["cell_id"] for row in selected] == ["a", "b"]
     assert all(row["episode"]["score"]["task_succeeded"] is False for row in selected)
     assert rows == original and receipt["completed_policy_attempts_replaced"] == 0
     assert receipt["superseded_pre_policy_refusals"][0]["session_result_digest"] == "old"
+
+
+@pytest.mark.parametrize("fault", ["refusal_changed", "bindings_missing"])
+def test_recovery_authenticates_every_retained_row_including_the_refusal(fault):
+    rows = [("old", scored("a")), ("old", refused("b")), ("new", scored("b"))]
+    retained = {row["cell_id"]: canonical_digest(row) for _, row in rows[:2]}
+    if fault == "refusal_changed":
+        rows[1][1]["failure_detail"] = "substituted"
+    else:
+        retained = {}
+    with pytest.raises(ValueError, match="team_candidate_recovery_retained"):
+        select_pre_policy_reset_recovery(rows, expected_cells=[scored("a"), scored("b")],
+            recovery_cell_ids=["b"], retained_episode_digests=retained)
 
 
 @pytest.mark.parametrize(
@@ -141,5 +156,6 @@ def test_recovery_never_replaces_policy_results_or_unknown_attempts(fault):
         rows.append(("new", scored("c")))
     with pytest.raises(ValueError, match="team_candidate_recovery"):
         select_pre_policy_reset_recovery(
-            rows, expected_cells=[scored("a"), scored("b")], recovery_cell_ids=allowed
+            rows, expected_cells=[scored("a"), scored("b")], recovery_cell_ids=allowed,
+            retained_episode_digests={row["cell_id"]: canonical_digest(row) for _, row in rows[:2]}
         )

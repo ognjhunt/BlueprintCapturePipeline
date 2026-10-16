@@ -95,7 +95,8 @@ def episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
 def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], runtime_binding: Mapping[str, Any],
                             purpose: str, episodes: int | None = None,
                             expected_cells: Sequence[Mapping[str, Any]] | None = None,
-                            pre_policy_recovery_cells: Sequence[str] = ()) -> dict[str, Any]:
+                            pre_policy_recovery_cells: Sequence[str] = (),
+                            retained_episode_digests: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Return the terminal receipt (outcomes, counts, scoring) for the agent-run executor."""
 
     if purpose not in PURPOSES or not session_results:
@@ -122,7 +123,8 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
         from .team_candidate_episode_recovery import select_pre_policy_reset_recovery
         try:
             rows, recovery = select_pre_policy_reset_recovery(session_rows,
-                expected_cells=expected_cells or (), recovery_cell_ids=pre_policy_recovery_cells)
+                expected_cells=expected_cells or (), recovery_cell_ids=pre_policy_recovery_cells,
+                retained_episode_digests=retained_episode_digests or {})
         except ValueError as exc:
             raise TeamCandidateResultError(str(exc)) from exc
     cell_ids = [str(row.get("cell_id") or "") for row in rows]
