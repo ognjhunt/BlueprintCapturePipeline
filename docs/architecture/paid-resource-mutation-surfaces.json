@@ -563,6 +563,16 @@
         "upload_file",
         "delete_object"
       ]
+    },
+    {
+      "path": "src/blueprint_pipeline/website_capture_withdrawal_deletion.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": [
+        "list_object_versions",
+        "delete_object",
+        "authorize_complete_deletion",
+        "object_versions_remaining"
+      ]
     }
   ]
 }

@@ -2,6 +2,14 @@
 
 Registry secrets go directly from the credential broker to the isolated worker.
 Bearer tokens are bound to one HTTPS endpoint and kept in private runtime inputs.
+
+A scored team evaluation (beta journey step L5) claims its bearer token as a
+single-use lease (``release_bearer_lease``): the request names the lease id the
+admission seals, ``bearer_lease_id(credential_ref, job_id, pipeline_run_id)``,
+and the WebApp must release the token for that lease at most once, bound to the
+claimed run, and say so in its reply. A reply that does not confirm the one
+release is refused, so the admission's ``single_use`` is enforced by the
+WebApp, not only asserted here.
 """
 from __future__ import annotations
 
@@ -12,6 +20,20 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .controlled_policy_configuration import canonical_request_digest
+from .decision_evidence_contracts import canonical_digest
+
+BEARER_LEASE_ACTION = "bearer_lease_release"
+
+
+def bearer_lease_id(*, credential_ref: str, job_id: str, pipeline_run_id: str) -> str:
+    """The one bearer lease a claimed run may hold; the WebApp recomputes it from the same three values.
+
+    ``"policy-access-"`` plus the first 32 hex digits of SHA-256 over the compact,
+    key-sorted JSON of ``{"credential_ref", "job_id", "pipeline_run_id"}``.
+    """
+
+    return "policy-access-" + canonical_digest({"credential_ref": credential_ref, "job_id": job_id,
+                                                "pipeline_run_id": pipeline_run_id})[7:39]
 
 
 class CheckpointPolicyCredentialClient:
@@ -68,6 +90,29 @@ class CheckpointPolicyCredentialClient:
         row = self._request("access")
         if row.get("credential_ref") != self.reference or row.get("kind") != self.kind:
             raise ValueError("checkpoint_policy_credential_kind_mismatch")
+        return row
+
+    def release_bearer_lease(self, *, lease_id: str) -> dict[str, Any]:
+        """Claim the run's single-use bearer lease; the WebApp must confirm its one release.
+
+        A WebApp without the lease contract refuses the action, and a second claim
+        of the same lease must be refused by the WebApp (both surface as
+        ``delivery_unavailable``); a reply that does not confirm exactly one
+        release bound to this run is ``bearer_lease_unenforced``.
+        """
+
+        expected = bearer_lease_id(credential_ref=self.reference, job_id=self.binding["job_id"],
+                                   pipeline_run_id=self.binding["pipeline_run_id"])
+        if self.kind != "bearer" or lease_id != expected:
+            raise ValueError("checkpoint_policy_bearer_lease_invalid")
+        row = self._request(BEARER_LEASE_ACTION, lease_id=lease_id)
+        lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
+        if (row.get("credential_ref") != self.reference or row.get("kind") != "bearer"
+                or lease.get("lease_id") != lease_id or lease.get("single_use") is not True
+                or lease.get("status") != "released" or lease.get("release_count") != 1
+                or lease.get("credential_ref") != self.reference
+                or any(lease.get(key) != self.binding[key] for key in ("job_id", "pipeline_run_id"))):
+            raise ValueError("checkpoint_policy_bearer_lease_unenforced")
         return row
 
     def registry_lease(self, *, contract: Mapping[str, Any], tenant_id: str) -> str:

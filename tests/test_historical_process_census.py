@@ -487,10 +487,7 @@ def test_disappearing_fd_cannot_skip_final_process_identity(disappearing_descrip
     assert state.inspections == ['1', '2'] and state.fd_censuses == 2
 
 
-@pytest.mark.parametrize('change', ['mount_bytes', 'root_identity'])
-def test_disappearing_fd_cannot_skip_final_user_filesystem_view(
-    disappearing_descriptor, monkeypatch, change,
-):
+def test_disappearing_fd_cannot_skip_final_user_root_identity(disappearing_descriptor, monkeypatch):
     state = disappearing_descriptor
     process = state.proc / '2'
     (process / 'mountinfo').write_bytes(b'fixture mount view')
@@ -500,24 +497,43 @@ def test_disappearing_fd_cannot_skip_final_user_filesystem_view(
         scan.views[view] = (scan.read(directory, 'mountinfo'), ())
 
     monkeypatch.setattr(processes, '_known_filesystem_view', filesystem_view)
-    read, current_stat = processes._Scan.read, processes.os.stat
-
-    def final_read(scan, directory, name, cap=1024**2):
-        if name == 'mountinfo' and state.fd_censuses == 2 and change == 'mount_bytes':
-            return b'different fixture mount view'
-        return read(scan, directory, name, cap)
+    current_stat = processes.os.stat
 
     def final_stat(path, *args, **kwargs):
         result = current_stat(path, *args, **kwargs)
-        if path == 'root' and state.fd_censuses == 2 and change == 'root_identity':
+        if path == 'root' and state.fd_censuses == 2:
             return SimpleNamespace(st_dev=result.st_dev, st_ino=result.st_ino + 1)
         return result
 
-    monkeypatch.setattr(processes._Scan, 'read', final_read)
     monkeypatch.setattr(processes.os, 'stat', final_stat)
     with pytest.raises(processes.HistoricalProcessError, match='process_view_unknown'):
         run(state)
     assert state.inspections == ['1', '2'] and state.fd_censuses == 2
+
+
+def test_disappearing_fd_cannot_skip_final_user_mount_view_check(disappearing_descriptor, monkeypatch):
+    """Every final read sees new mount bytes: each pass stays incomplete, never cleared."""
+    state = disappearing_descriptor
+    monkeypatch.setattr(processes, 'kernel_has_no_user_memory', lambda *args: False)
+
+    def filesystem_view(scan, directory, view, *args):
+        scan.views[view] = (scan.read(directory, 'mountinfo'), ())
+
+    monkeypatch.setattr(processes, '_known_filesystem_view', filesystem_view)
+    read, generation = processes._Scan.read, iter(range(1000))
+
+    def churning_read(scan, directory, name, cap=1024**2):
+        if name == 'mountinfo':
+            return b'fixture mount view %d' % next(generation)
+        return read(scan, directory, name, cap)
+
+    monkeypatch.setattr(processes._Scan, 'read', churning_read)
+    with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_unknown$') as raised:
+        run(state)
+    # The descriptor vanished in the first pass, and its final view check still ran.
+    assert state.failures == [1]
+    assert [reasons['mount_view_changed'] for reasons in raised.value.census_attempt_reasons] == [1, 1, 1]
+    assert state.inspections == ['1', '2', '3'] * 3
 
 
 @pytest.mark.parametrize('limit', ['entries', 'raw_bytes', 'clock'])
@@ -774,7 +790,7 @@ def test_exhausted_three_passes_retains_only_fixed_reason_counts(census):
     assert type(raised.value) is processes.HistoricalProcessError
     assert raised.value.census_attempt_reasons == tuple({
         'pid_open_disappeared': 1, 'descriptor_membership_changed': 0,
-        'corroborated_process_exit': 0, 'pid_census_changed': 0,
+        'corroborated_process_exit': 0, 'pid_census_changed': 0, 'mount_view_changed': 0,
     } for _ in range(3))
     assert len(census.scans) == 3
 
@@ -790,3 +806,95 @@ def test_exhaustion_evidence_attachment_failure_preserves_original_refusal(censu
     with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_unknown$'):
         run(census)
     assert len(census.scans) == 3
+
+
+@pytest.fixture
+def mount_view_census(descriptor_census, monkeypatch):
+    """A user process whose namespace mount bytes change while it is inspected.
+
+    Retained cause (nightly 2026-10-15, f635f96): a host mount event changed
+    PID 1049's mountinfo in the 14 ms between its view derivation and the final
+    view check, and the whole native action refused as process_view_unknown.
+    """
+    state = descriptor_census
+    state.churn_at_second_census = False
+    process = state.proc / '2'
+    descriptors = (process / 'fd').stat().st_ino
+    state.changes, state.generation, state.view_derivations = 1, 0, 0
+    (process / 'mountinfo').write_bytes(b'fixture mount view 0')
+    monkeypatch.setattr(processes, 'kernel_has_no_user_memory', lambda *args: False)
+
+    def filesystem_view(scan, directory, view, *args):
+        # The real view check's cache contract: derive once, later reads must match.
+        raw = scan.read(directory, 'mountinfo')
+        if view not in scan.views:
+            state.view_derivations += 1
+            scan.views[view] = (raw, ())
+        processes._view_unchanged(scan.views[view][0] == raw)
+
+    names = processes._Scan.names
+
+    def churning_names(scan, directory, limit):
+        result = names(scan, directory, limit)
+        if os.fstat(directory).st_ino == descriptors and state.fd_censuses % 2 == 1 and state.changes:
+            state.changes -= 1
+            state.generation += 1
+            (process / 'mountinfo').write_bytes(b'fixture mount view %d' % state.generation)
+        return result
+
+    monkeypatch.setattr(processes, '_known_filesystem_view', filesystem_view)
+    monkeypatch.setattr(processes._Scan, 'names', churning_names)
+    return state
+
+
+def test_mount_view_change_during_inspection_requires_fresh_complete_pass(mount_view_census):
+    state = mount_view_census
+    budget = ReferenceCollectionBudget()
+    assert run(state, budget=budget) is None
+    # The changed pass could not clear; the next pass re-derived the view and was stable.
+    assert state.inspections == ['1', '2', '3', '1', '2', '3']
+    assert state.view_derivations == 2 and state.generation == 1
+    assert len({id(scan) for scan in state.scans}) == 1
+    assert budget.counts['entries'] == state.scans[0].entries
+
+
+def test_continual_mount_view_churn_refuses_after_three_passes(mount_view_census):
+    state = mount_view_census
+    state.changes = 1000
+    with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_unknown$') as raised:
+        run(state)
+    assert [reasons['mount_view_changed'] for reasons in raised.value.census_attempt_reasons] == [1, 1, 1]
+    assert state.inspections == ['1', '2', '3'] * 3 and state.view_derivations == 3
+
+
+@pytest.mark.parametrize('channel', ['fd', 'cwd'])
+def test_mount_view_churn_never_discards_an_observed_reference(mount_view_census, channel):
+    state = mount_view_census
+    selected = state.proc.parent / 'selected'
+    selected.mkdir()
+    state.manifest['target_path'] = str(selected)
+    link = state.proc / '2' / ('fd/0' if channel == 'fd' else 'cwd')
+    link.unlink()
+    link.symlink_to(selected)
+    with pytest.raises(processes.HistoricalProcessError, match='process_reference'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.generation == 1
+
+
+def test_changed_cached_kernel_view_is_a_view_change_and_unknown_views_still_refuse(tmp_path):
+    directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        scan = processes._Scan(lambda: None)
+        identities = {(os.makedev(8, 1), 7)}
+        (tmp_path / 'mountinfo').write_bytes(b'36 1 0:5 / /proc rw - proc proc rw\n')
+        processes._isolated_kernel_view(scan, directory, 'mnt:[9]', identities, None)
+        (tmp_path / 'mountinfo').write_bytes(b'37 1 0:6 / /sys rw - sysfs sysfs rw\n')
+        with pytest.raises(processes._MountViewChanged, match='process_view_unknown'):
+            processes._isolated_kernel_view(scan, directory, 'mnt:[9]', identities, None)
+        # A view that includes a member device is unknown, not churn, and is not retried.
+        (tmp_path / 'mountinfo').write_bytes(b'38 1 8:1 / /data rw - ext4 /dev/sda1 rw\n')
+        with pytest.raises(processes.HistoricalProcessError, match='process_view_unknown') as unknown:
+            processes._isolated_kernel_view(processes._Scan(lambda: None), directory, 'mnt:[9]', identities, None)
+        assert type(unknown.value) is processes.HistoricalProcessError
+    finally:
+        os.close(directory)

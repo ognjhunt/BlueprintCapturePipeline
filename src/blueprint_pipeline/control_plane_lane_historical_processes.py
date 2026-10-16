@@ -1,8 +1,10 @@
 """Strict current native process channels after the historical write fence.
 
 This bounded scan cannot replace the owner decision, future-writer fence or
-queue/pin/release checks. Every unreadable, changing or unknown process view refuses.
-Transient PID/FD census churn requires a fresh complete pass within the original budget.
+queue/pin/release checks. Every unreadable or unknown process view refuses.
+Transient PID/FD census churn, and mount bytes of an already parsed view that
+change during the scan, require a fresh complete pass within the original budget;
+that pass re-derives every view from fresh bytes and must itself be stable.
 The invoking worker's held descriptors are skipped only for its actual PID.
 """
 from __future__ import annotations
@@ -29,6 +31,20 @@ class _DescriptorCensusChanged(HistoricalProcessError):
 
 class _ProcessExited(HistoricalProcessError):
     """Channel ESRCH corroborated by disappearance on the retained PID descriptor."""
+
+
+class _MountViewChanged(HistoricalProcessError):
+    """Parsed mount bytes changed mid-scan: an incomplete pass, never clearance.
+
+    Host mount events (a unit's credential or runtime mount, a snap refresh)
+    propagate into every namespace. Unparseable, hidden or remapped views, and a
+    changed root identity, still refuse at once as ``process_view_unknown``.
+    """
+
+
+def _view_unchanged(value):
+    if not value:
+        raise _MountViewChanged('historical_generation_process_view_unknown')
 
 
 def _require(value, code='process_unknown'):
@@ -192,9 +208,9 @@ def _isolated_kernel_view(scan, directory, view, identities, observed_root):
     _require(_kernel_view_disjoint(raw, {device for device, _ in identities}, tick=scan.tick),
              'process_view_unknown')
     if key in scan.kernel_views:
-        _require(scan.kernel_views[key] == raw, 'process_view_unknown')
+        _view_unchanged(scan.kernel_views[key] == raw)
     scan.kernel_views[key] = raw
-    _require(scan.read(directory, 'mountinfo') == raw, 'process_view_unknown')
+    _view_unchanged(scan.read(directory, 'mountinfo') == raw)
     return raw
 
 
@@ -216,7 +232,7 @@ def _known_filesystem_view(scan, directory, view, target, identities, root_ident
         try:
             raw = scan.read(own, 'mountinfo')
             physical = _physical_target(raw, target, current.st_dev, tick=scan.tick)
-            _require(scan.read(own, 'mountinfo') == raw, 'process_view_unknown')
+            _view_unchanged(scan.read(own, 'mountinfo') == raw)
             scan.physical_target = physical
         finally:
             os.close(own)
@@ -224,7 +240,7 @@ def _known_filesystem_view(scan, directory, view, target, identities, root_ident
     if view not in scan.views:
         _require(len(scan.views) < 16, 'process_view_unknown')
         scan.views[view] = (raw, _view_routes(raw, scan.physical_target, current.st_dev, tick=scan.tick))
-    _require(scan.views[view][0] == raw, 'process_view_unknown')
+    _view_unchanged(scan.views[view][0] == raw)
     for route in scan.views[view][1]:
         with ExitStack() as stack:
             root = os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=directory)
@@ -246,7 +262,7 @@ def _known_filesystem_view(scan, directory, view, target, identities, root_ident
             info = os.fstat(parent)
             _require((info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
                 == (current.st_dev, current.st_ino, current.st_mode, 0, 0), 'process_view_unknown')
-    _require(scan.read(directory, 'mountinfo') == raw, 'process_view_unknown')
+    _view_unchanged(scan.read(directory, 'mountinfo') == raw)
 
 
 def _inspect_process(scan, directory, pid, target, identities, namespaces, host_mount, root_identity):
@@ -345,11 +361,16 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
              and (not kernel or kernel_has_no_user_memory(
                  lambda name, cap: scan.read(directory, name, cap), pid)))
     if not kernel:
-        _require(scan.read(directory, 'mountinfo') == scan.views[view[2]][0], 'process_view_unknown')
+        if scan.read(directory, 'mountinfo') != scan.views[view[2]][0]:
+            # An observed reference is terminal even when the mount view churns.
+            _require(not channels, 'process_reference')
+            _view_unchanged(False)
         current_root = os.stat('root', dir_fd=directory)
         _require((current_root.st_dev, current_root.st_ino) == root_identity, 'process_view_unknown')
     elif isolated:
-        _require(scan.read(directory, 'mountinfo') == kernel_mounts, 'process_view_unknown')
+        if scan.read(directory, 'mountinfo') != kernel_mounts:
+            _require(not channels, 'process_reference')
+            _view_unchanged(False)
         try:
             current_root = os.stat('root', dir_fd=directory)
         except FileNotFoundError:
@@ -390,12 +411,14 @@ def refuse_historical_process_references(manifest, *, tick, restore_bounds=None,
         # its descriptor membership can also change during an otherwise readable view.
         # Discard that incomplete pass, never the process: only a fresh complete
         # stable census may clear references. Keep the same clock, counters,
-        # mount observations and shared budget across all bounded attempts.
+        # mount observations and shared budget across all bounded attempts;
+        # only mount bytes observed to change are dropped, so the next views
+        # are re-derived from fresh bytes and must stay stable for a whole pass.
         attempt_reasons = []
         for _attempt in range(3):
             incomplete = False
             reasons = dict(pid_open_disappeared=0, descriptor_membership_changed=0,
-                           corroborated_process_exit=0, pid_census_changed=0)
+                           corroborated_process_exit=0, pid_census_changed=0, mount_view_changed=0)
             names = [name for name in scan.names(proc, 10000) if name.isdigit()]
             _require(len(names) <= 4096)
             for pid in names:
@@ -413,10 +436,17 @@ def refuse_historical_process_references(manifest, *, tick, restore_bounds=None,
                     channels = _inspect_process(scan, directory, pid, target, identities, namespaces,
                                                 host_namespace[2], root_identity)
                     _require(not channels, 'process_reference')
-                except (_DescriptorCensusChanged, _ProcessExited) as error:
+                except (_DescriptorCensusChanged, _ProcessExited, _MountViewChanged) as error:
                     reason = ('descriptor_membership_changed' if isinstance(error, _DescriptorCensusChanged)
+                              else 'mount_view_changed' if isinstance(error, _MountViewChanged)
                               else 'corroborated_process_exit')
                     reasons[reason] += 1
+                    if isinstance(error, _MountViewChanged):
+                        # Stale bytes would refuse every later process in that view.
+                        # The clock, entry and byte allowances are not renewed.
+                        scan.views.clear()
+                        scan.kernel_views.clear()
+                        scan.physical_target = None
                     # This pass can never clear, but a later process may hold
                     # a conclusive reference. Do not starve that refusal behind
                     # unrelated transient churn. Fatal unknowns still propagate.
