@@ -71,6 +71,26 @@ def private_token_file(tmp_path: Path, value: str = TOKEN) -> Path:
     return path
 
 
+def test_staged_team_authorities_pass_the_real_watchdog_name_gate(tmp_path: Path) -> None:
+    from blueprint_pipeline.vast_independent_watchdog_control import validate_independent_vast_watchdog_names
+
+    _packet, _runtime, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path)
+    frozen = json.loads(pair_inputs.read_text())
+    names = []
+    for index in range(2):
+        paths = stage_team_runtime(
+            root=tmp_path / f"shard-{index}", run_id=f"team-evaluation-s{index:02d}",
+            scene_inputs=scene_inputs_from_frozen_pair(pair_inputs, pair_activation),
+            admission=_admission(frozen["task_success_contract"]),
+            prompt="Push the mug onto the green target marker.", max_policy_queries=10,
+            hard_cap_usd=2.5, hard_ttl_seconds=9_300, cells=frozen["cells"])
+        name = json.loads(paths["session_authority"].read_text())["resource_name"]
+        validate_independent_vast_watchdog_names(pod_name_prefix="blueprint-native-task-policy-canary-",
+                                                resource_name_exact=name)
+        names.append(name)
+    assert len(set(names)) == 2  # Each shard has its own teardown/watchdog identity.
+
+
 def test_team_bundle_seals_one_candidate_without_weights_servers_or_secret(tmp_path: Path) -> None:
     staged = stage_team_bundle(tmp_path)
     receipt = staged["receipt"]
