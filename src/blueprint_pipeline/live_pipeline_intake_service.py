@@ -14,6 +14,7 @@ executes a paid provider in the HTTP request or promotes proof claims.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hmac
 import json
 import os
@@ -1526,15 +1527,47 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
     }
 
 
+DEPLOYMENT_DIAGNOSTIC_TIMEOUT_SECONDS = 2.0
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Blueprint Live Pipeline Intake", version=INTAKE_SCHEMA_VERSION)
     from .agent_execution.http_routes import register_agent_execution_routes
 
     register_agent_execution_routes(app, require_admission=_require_admission)
 
+    # Sync intake handlers share AnyIO's finite worker pool. A busy handler
+    # must not queue release identity behind that work (including shutdown
+    # diagnostics). Keep at most one independent probe in flight; a timeout
+    # does not cancel it and polling cannot create an unbounded thread queue.
+    identity_probe: asyncio.Task | None = None
+
     @app.get("/api/live-pipeline/version")
-    def deployment_identity() -> JSONResponse:
-        payload = deployment_identity_payload()
+    async def deployment_identity() -> JSONResponse:
+        nonlocal identity_probe
+        if identity_probe is None or identity_probe.done():
+            identity_probe = asyncio.create_task(asyncio.to_thread(deployment_identity_payload))
+        try:
+            payload = await asyncio.wait_for(asyncio.shield(identity_probe),
+                                             DEPLOYMENT_DIAGNOSTIC_TIMEOUT_SECONDS)
+        except TimeoutError:
+            payload = {
+                "schema_version": DEPLOYMENT_IDENTITY_SCHEMA_VERSION,
+                "service_schema_version": INTAKE_SCHEMA_VERSION,
+                "commit_proven": False, "source_commit": None,
+                "source_commit_source": "unavailable",
+                "blockers": ["deployment_identity_probe_timeout"],
+                "claim_ceiling": "deployed_service_identity_only",
+                "default_object_removal": {
+                    "policy": DEFAULT_REMOVAL_PIPELINE_POLICY,
+                    "paired_target_pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+                    "maximum_replacement_objects": 5,
+                    "generated_appearance_is_physical_evidence": False,
+                },
+                "disk_headroom": {"schema_version": "control_plane_disk_headroom.v1",
+                                  "status": "unknown_fail_closed", "refused_roles": list(CHAIN_ROLES),
+                                  "error_code": "deployment_identity_probe_timeout"},
+            }
         return JSONResponse(status_code=200 if payload["commit_proven"] else 503, content=payload)
 
     @app.get("/health")
