@@ -74,3 +74,26 @@ def test_slow_identity_probe_is_bounded_and_not_multiplied_by_polling(monkeypatc
             assert response.json()["source_commit"] == "b" * 40
 
     asyncio.run(exercise())
+
+
+def test_python310_asyncio_timeout_also_returns_unknown_503(monkeypatch):
+    class LegacyAsyncioTimeout(Exception):
+        pass
+
+    async def expired(*args, **kwargs):
+        raise LegacyAsyncioTimeout()
+
+    monkeypatch.setattr(service, 'deployment_identity_payload', lambda: {'commit_proven': True})
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=service.create_app()),
+                                    base_url='http://test') as client:
+            with monkeypatch.context() as patch:
+                patch.setattr(service.asyncio, 'TimeoutError', LegacyAsyncioTimeout)
+                patch.setattr(service.asyncio, 'wait_for', expired)
+                response = await client.get('/api/live-pipeline/version')
+            assert response.status_code == 503
+            assert response.json()['source_commit'] is None
+            assert response.json()['blockers'] == ['deployment_identity_probe_timeout']
+
+    asyncio.run(exercise())

@@ -17,7 +17,9 @@ spent queued or staging. The execution deadline can only shorten the sealed
 funding expiry. The existing execution
 monitor still stops on founder hold, cancellation, deadline or prolonged loss
 of control contact. Insufficient funding, execution time or runtime budget refuses before paid
-allocation; the service timeout covers the maximum supported planner window
+allocation. The same canonical cost-window calculation runs before claiming
+the one-use policy credential; supported faster rates still require a profile
+whose approved cap covers their full plan. The service timeout covers the maximum supported planner window
 instead of silently truncating it to 16 hours. No existing approval is extended.
 A lost allocated session cannot authorize a replacement
 GPU. Only a refusal proving zero allocation may be restaged.
@@ -40,7 +42,8 @@ The version endpoint was a synchronous FastAPI handler. It competed for the
 same finite AnyIO worker pool as long intake handlers. A regression test
 occupying that pool reproduces the timeout in the previous implementation.
 The endpoint now runs one shared in-flight probe outside that pool, with a
-two-second response deadline. Polling cannot multiply hung probes. A slow
+two-second response deadline, including the supported Python 3.10 asyncio
+timeout type. Polling cannot multiply hung probes. A slow
 probe returns 503 with unknown identity and all disk roles refused, never a
 cached success; normal responses retain current source-identity checks.
 

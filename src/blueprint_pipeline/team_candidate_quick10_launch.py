@@ -43,6 +43,7 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
+from .adp_isaac_lab_arena_vast import _remaining_session_live_minutes
 from .checkpoint_policy_credentials import bearer_lease_id
 from .common import utc_now_iso
 from .controlled_policy_configuration import canonical_request_digest
@@ -393,6 +394,11 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     funding_expiry = datetime.fromisoformat(funding["expires_at_iso"].replace("Z", "+00:00")).timestamp()
     if funding_expiry - time.time() < required_ttl:
         raise TeamCandidateLaunchError("team_evaluation_funding_window_below_planned_runtime")
+    funded_minutes = _remaining_session_live_minutes(
+        job=job_dir, hard_cap_usd=float(funding["cap_usd"]), hard_ttl_seconds=required_ttl,
+        max_hourly_rate_usd=float(profile["max_hourly_rate_usd"]))
+    if funded_minutes * 60 < required_ttl:
+        raise TeamCandidateLaunchError("team_evaluation_budget_below_planned_runtime")
     payload = _endpoint(request)
     team_id = str(row.get("team_id") or "")
     checkpoint_id = str(_m(row.get("checkpoint")).get("checkpoint_id") or "")

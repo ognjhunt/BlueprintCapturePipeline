@@ -1550,7 +1550,7 @@ def create_app() -> FastAPI:
         try:
             payload = await asyncio.wait_for(asyncio.shield(identity_probe),
                                              DEPLOYMENT_DIAGNOSTIC_TIMEOUT_SECONDS)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             payload = {
                 "schema_version": DEPLOYMENT_IDENTITY_SCHEMA_VERSION,
                 "service_schema_version": INTAKE_SCHEMA_VERSION,

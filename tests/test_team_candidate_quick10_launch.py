@@ -980,7 +980,7 @@ def test_a_team_brings_its_own_arm_and_cameras_to_its_evaluation(tmp_path, monke
     from tests.test_team_embodiment import manifest, write_robot_usd
 
     model = write_robot_usd(tmp_path / "acme_arm.usda")
-    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model), "model": model})
+    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model, control_hz=15), "model": model})
     staged, summary = _staged_run_reported(world)
     assert staged["staged"] == 1 and summary["completed"] == 1, (staged, summary)
     job = world["job_dir"]
@@ -1004,7 +1004,7 @@ def test_a_team_arm_that_cannot_reach_the_task_is_refused_before_any_allocation(
     from tests.test_team_embodiment import manifest, write_robot_usd
 
     model = write_robot_usd(tmp_path / "acme_arm.usda")
-    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model, reach_m=0.1), "model": model})
+    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model, reach_m=0.1, control_hz=15), "model": model})
     summary = executor.poll_once(client=world["client"], capture_root=world["capture"],
                                  team_launch_hooks=world["hooks"])
     assert summary["blocked"] == 1 and world["allocator_calls"] == []

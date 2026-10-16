@@ -1,6 +1,7 @@
 """A full campaign needs its entire declared runtime before it can spend."""
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import os
 
 import pytest
 
@@ -53,3 +54,26 @@ def test_short_execution_window_refuses_before_the_only_allocation(tmp_path, mon
     assert result["blocked"] == 1 and world["allocator_calls"] == []
     assert world["client"].blocked == ["team_evaluation_execution_window_below_planned_runtime"]
     assert not (world["job_dir"] / ".team-credential").exists()
+
+
+@pytest.mark.parametrize('hourly_rate, accepted', [(0.8, False), (0.4, True)])
+def test_faster_robot_must_fit_the_cap_before_claiming_its_one_use_credential(tmp_path, monkeypatch, hourly_rate, accepted):
+    import json
+    from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV
+    from tests.test_team_embodiment import manifest, write_robot_usd
+    from tests.test_team_candidate_quick10_launch import _sealed
+
+    model = write_robot_usd(tmp_path / 'arm.usda')
+    world = _world(tmp_path, monkeypatch, robot={'manifest': manifest(model, control_hz=30), 'model': model})
+    registry_path = Path(os.environ[REGISTRY_ENV])
+    registry = json.loads(registry_path.read_text())
+    registry['profiles'][0]['max_hourly_rate_usd'] = hourly_rate
+    registry_path.write_text(json.dumps(_sealed(registry, 'registry_digest')))
+    result = executor.poll_once(client=world['client'], capture_root=world['capture'], team_launch_hooks=world['hooks'])
+    if accepted:
+        assert result['staged'] == 1 and len(_Broker.accessed) == 1
+    else:
+        assert result['blocked'] == 1 and _Broker.accessed == []
+        assert world['client'].blocked == ['team_evaluation_budget_below_planned_runtime']
+        assert not (world['job_dir'] / '.team-credential').exists()
+    assert world['allocator_calls'] == []
