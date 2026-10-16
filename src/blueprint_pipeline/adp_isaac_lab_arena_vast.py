@@ -445,6 +445,7 @@ def run_arena_native_control_vast(
     ),
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     require_independent_watchdog: bool = False,
+    hard_deadline_epoch: float | None = None,
     authorization_consumption: Mapping[str, Any] | None = None,
     retain_warm_instance: bool = False,
     expected_provider_download_bytes: int = 0,
@@ -759,6 +760,7 @@ def run_arena_native_control_vast(
             allowed_active_resource_names=allowed_active_resource_names,
             pod_name_prefix=instance_label_prefix,
             resource_name_exact=instance_label_exact,
+            **({"deadline_cap_epoch": hard_deadline_epoch} if hard_deadline_epoch is not None else {}),
         )
         if watchdog_handle is None:
             cleanup = cleanup_staged_wam_provider_objects(staging_dir)

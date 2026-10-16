@@ -1322,6 +1322,44 @@ def _emit_cell_progress(stage: str, index: int, *, progress_path: Path | None = 
         return
 
 
+def _team_checkpoint(*, output_root: Path, inputs: Mapping[str, Any],
+                     authority: Mapping[str, Any], children: list[Mapping[str, Any]]) -> None:
+    """Fsync a digest-bound completed prefix; never authorize replay or another GPU."""
+    refs = []
+    for index, child in enumerate(children):
+        # Earlier children were checked before their checkpoint and are never
+        # changed here. Rehashing all media-bearing records on every cell
+        # would turn a 200-cell campaign into quadratic serialization work.
+        if (child.get("selected_cell_index") != index or (index == len(children) - 1
+                and child.get("result_digest") != canonical_digest(child, digest_field="result_digest"))):
+            raise RuntimeError("team_evaluation_checkpoint_child_binding_invalid")
+        refs.append({"cell_id": inputs["cells"][index]["cell_id"],
+                     "relative_path": f"cell_runs/{index:02d}/{PROVIDER_RESULT_FILENAME}",
+                     "result_digest": child["result_digest"]})
+    value = {"schema_version": "team_evaluation_checkpoint.v1", "status": "in_progress",
+             "runtime_inputs_digest": inputs["runtime_inputs_digest"],
+             "authority_digest": authority["authority_digest"], "planned_cells": len(inputs["cells"]),
+             "completed_child_results": refs, "provider_allocations_authorized": 1,
+             "completed_attempt_replay_authorized": False, "result_digest": ""}
+    value["result_digest"] = canonical_digest(value, digest_field="result_digest")
+    _seal_result(result_path=output_root / "team_evaluation_checkpoint.json", result=value)
+
+
+def _seal_team_prefix(*, output_root: Path, inputs: Mapping[str, Any], authority: Mapping[str, Any],
+                      children: list[Mapping[str, Any]], construction_lineage_mode: str,
+                      reason: str, stopped_before_next_cell: bool = False) -> None:
+    if inputs.get("run_kind") != TEAM_RUN_KIND or not children:
+        return
+    result = _aggregate_isolated_cell_results(
+        inputs={**inputs, "cells": inputs["cells"][:len(children)]}, authority=authority,
+        child_results=children, output_root=output_root, construction_lineage_mode=construction_lineage_mode)
+    result.update(status="blocked", blockers=[reason], planned_episodes_per_policy=len(inputs["cells"]),
+                  execution_stopped_after_cell=len(children),
+                  stopped_before_next_cell=stopped_before_next_cell)
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+
+
 def _run_isolated_cell_processes(
     *,
     runtime_root: Path | None = None,
@@ -1387,6 +1425,11 @@ def _run_isolated_cell_processes(
                 reason="policy_canary_isolated_cell_process_timeout",
                 timeout_seconds=ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
             )
+            if inputs.get("run_kind") == TEAM_RUN_KIND and child_results:
+                _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                    children=child_results, construction_lineage_mode=construction_lineage_mode,
+                    reason="policy_canary_isolated_cell_process_timeout")
+                return 1
             result = {
                 "schema_version": "native_task_arena_policy_canary_session_result.v1",
                 "status": "blocked", "run_kind": inputs.get("run_kind") or "internal_policy_canary",
@@ -1406,13 +1449,32 @@ def _run_isolated_cell_processes(
             result["result_digest"] = canonical_digest(result, digest_field="result_digest")
             _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
             return 1
+        except Exception:
+            _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                children=child_results, construction_lineage_mode=construction_lineage_mode,
+                reason="policy_canary_isolated_cell_process_failed")
+            raise
         child_result_path = child_root / PROVIDER_RESULT_FILENAME
         if not child_result_path.is_file():
+            _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                children=child_results, construction_lineage_mode=construction_lineage_mode,
+                reason="policy_canary_isolated_cell_result_missing")
             raise RuntimeError(
                 f"policy_canary_isolated_cell_result_missing:{index}:"
                 f"exit_{exit_code}"
             )
         child_results.append(_read(child_result_path))
+        if inputs.get("run_kind") == TEAM_RUN_KIND:
+            _team_checkpoint(output_root=output_root, inputs=inputs, authority=authority, children=child_results)
+            from blueprint_pipeline.team_policy_episode_outcome import FIRST_BATCH_CELLS, first_batch_failure
+            if len(child_results) == FIRST_BATCH_CELLS:
+                first_rows = [row for child in child_results for row in child.get("episodes", [])]
+                reason = first_batch_failure(first_rows)
+                if reason:
+                    _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                        children=child_results, construction_lineage_mode=construction_lineage_mode,
+                        reason=reason, stopped_before_next_cell=True)
+                    return 1
         if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
             # The scene failed its robot-free check in cell 0: no further team episode runs on it.
             blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",

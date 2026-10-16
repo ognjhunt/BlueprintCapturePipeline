@@ -30,8 +30,10 @@ the object, the task or the success contract.
 The matrix mixes, for 200 cells: canonical anchors, single-family cells
 stratified across each family's range (placement, illumination, camera,
 physics), pairwise stress cells and a held-out composition of every family at
-once. Cells run in shards of at most 25 on separate GPU sessions so a 200-cell
-evaluation finishes in hours, not a day, and one lost machine costs one shard.
+once. New team evaluations execute all cells on one GPU allocation. Batches
+of at most 25 remain an early interface gate and a checkpoint boundary, not
+a reason to rent another machine. Legacy staged shards remain readable.
+
 """
 
 from __future__ import annotations
@@ -212,6 +214,11 @@ def scored_cells(*, scene_revision_digest: str, scene_id: str, salt: str, task_s
     if len(cells) != count or len(set(seeds)) != count:
         raise TeamEvaluationPlanError("team_scored_matrix_not_unique")
     return cells
+
+
+def campaign_ttl_seconds() -> int:
+    """One cumulative lease, bounded by the runner's existing 16-hour window."""
+    return min(shard_ttl_seconds(EPISODES[SCORED]), 16 * 3600)
 
 
 def runtime_cells(cells: Sequence[Mapping[str, Any]], *, control_diagnostic: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -210,6 +210,8 @@ def _provider_session_result(runtime: Path, spec: dict[str, Any], *, probe_statu
                                         "episode_terminal_status": "failed_after_first_observation",
                                         "terminal_observation_invented": False})
         episodes.append(row)
+        if service_down and len(episodes) == 25:
+            break  # the real worker's first-batch gate is rehearsed separately
     result = {"schema_version": "native_task_arena_policy_canary_session_result.v1",
               "status": "runtime_completed_unqualified_pending_closeout", "run_kind": inputs["run_kind"],
               "claim_ceiling": "diagnostic_policy_execution", "candidate_ids": inputs["candidate_ids"],
@@ -221,6 +223,10 @@ def _provider_session_result(runtime: Path, spec: dict[str, Any], *, probe_statu
               "scene_promotion_performed": False, "official_ranking_performed": False,
               "candidate_policy_queried": True, "blockers": [],
               **(probe if spec.get("robot_free_probe") is not None else {})}
+    if service_down and len(inputs["cells"]) > 25:
+        result.update(status="blocked", planned_episodes_per_policy=len(inputs["cells"]),
+                      execution_stopped_after_cell=25, stopped_before_next_cell=True,
+                      blockers=["team_policy_interface_failures:25_episodes:policy_service_did_not_answer=25"])
     return _sealed(result, "result_digest")
 
 
@@ -450,7 +456,7 @@ def _every_file(root: Path) -> list[Path]:
     return [path for path in root.rglob("*") if path.is_file()]
 
 
-def test_a_request_runs_200_hidden_cells_first_shard_alone_and_reports_one_scored_result(
+def test_a_request_runs_200_hidden_cells_on_one_gpu_and_reports_one_scored_result(
         tmp_path, monkeypatch) -> None:
     world = _world(tmp_path, monkeypatch)
     staged, summary = _staged_run_reported(world)
@@ -460,14 +466,13 @@ def test_a_request_runs_200_hidden_cells_first_shard_alone_and_reports_one_score
     # The admission seals the very lease the WebApp released once.
     admission = json.loads((world["job_dir"] / "team_candidate_admission.json").read_text())
     assert _Broker.leases == [admission["credential"]["lease_id"]]
-    # Eight GPU sessions of 25 cells, each its own allocation inside its share of the cap; the
-    # first ran alone and its gate opened the rest.
+    # One guarded allocation holds the entire matrix; the worker gates after its first 25 cells.
     calls = world["allocator_calls"]
-    assert len(calls) == 8 and len(world["provider"].calls) == 8 and "/shards/00/" in " ".join(calls[0])
+    assert len(calls) == 1 and len(world["provider"].calls) == 1 and "/shards/00/" in " ".join(calls[0])
     gate = json.loads((world["job_dir"] / launch.FIRST_SHARD_GATE_FILENAME).read_text())
     assert gate["status"] == "passed" and gate["episodes"] == 25
     caps = [float(argv[argv.index("--adp-max-spend-usd") + 1]) for argv in calls]
-    assert sum(caps) <= 20.0 and set(caps) == {2.5}
+    assert sum(caps) <= 20.0 and set(caps) == {20.0}
     # The terminal the executor reported, and the scoring statement it sent.
     (path, result), (_settlement_path, settlement) = world["client"].posted
     assert path == "/api/internal/pipeline/agent-run-results" and settlement["rate_usd"] == 0
@@ -508,7 +513,7 @@ def test_a_request_runs_200_hidden_cells_first_shard_alone_and_reports_one_score
     # A second pass neither re-launches nor re-reports.
     launch.run_queue(world["queue"], hooks=world["runner"])
     again = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert again["completed"] == 0 and len(world["allocator_calls"]) == 8 and len(world["client"].posted) == 2
+    assert again["completed"] == 0 and len(world["allocator_calls"]) == 1 and len(world["client"].posted) == 2
 
 
 def test_a_policy_failing_at_the_interface_stops_after_the_first_shard(tmp_path, monkeypatch) -> None:

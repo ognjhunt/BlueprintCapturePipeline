@@ -65,8 +65,7 @@ from .team_evaluation_plan import (
     EPISODES,
     PURPOSES,
     SCORED,
-    SHARD_CELLS,
-    shard_ttl_seconds,
+    campaign_ttl_seconds,
 )
 
 CANDIDATE_SCHEMA = "blueprint.team_policy_candidate.v1"
@@ -76,8 +75,8 @@ FOUNDER_SCHEMA = "blueprint.team_candidate_founder_admission.v1"
 EXECUTION_SPEC_SCHEMA = "native_task_arena_policy_canary_execution_spec.v1"
 RUNTIME = "team_evaluation"
 FREE_BETA_PROVIDER_CAP_USD = 20.0
-# Per GPU session (one shard): the longest shard is SHARD_CELLS cells.
-MAX_TTL_SECONDS = shard_ttl_seconds(SHARD_CELLS)
+# One campaign lease; legacy shorter admissions remain valid.
+MAX_TTL_SECONDS = campaign_ttl_seconds()
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,58}_FILE$")
@@ -277,6 +276,7 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
         "robot_free_probe_receipt_digest": probe.get("receipt_digest"),
         "rights_digest": rights["rights_digest"], "founder_approval_digest": founder_admission["approval_digest"],
         "budget": {key: budget[key] for key in ("cap_usd", "hard_ttl_seconds", "max_attempts", "episodes")},
+        "execution_deadline_at_iso": founder_admission["expires_at_iso"],
         "claim_ceiling": CLAIM_CEILING, "evidence_scope": "development_only",
         "adp_qualified_evidence_eligible": False, "physical_performance_claimed": False,
         "admission_digest": "",

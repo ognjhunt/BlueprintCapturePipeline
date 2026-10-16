@@ -53,9 +53,9 @@ CLAIM_CEILING = "diagnostic_policy_execution"
 CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 EPISODES_PER_POLICY = 10
 LEARNED_ROLLOUT_COUNT = 20
-# A team run carries its own cell list: one shard of its scored evaluation.
+# A team run carries its full bounded evaluation (or a retained legacy shard).
 # Only the internal paired canary is fixed at ten.
-TEAM_MAX_CELLS_PER_SESSION = 50
+TEAM_MAX_CELLS_PER_SESSION = 200
 PROBE_KIND = "native-task-arena-policy-canary-session"
 PROVIDER_BUNDLE_SCHEMA_VERSION = (
     "native_task_arena_policy_canary_provider_bundle.v1"
@@ -401,6 +401,9 @@ def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
         )
     ):
         raise PolicyCanarySessionError("policy_canary_session_resource_bounds_invalid")
+    if "hard_deadline_epoch" in payload and (payload.get("run_kind") != TEAM_RUN_KIND
+            or not _finite_positive(payload["hard_deadline_epoch"])):
+        raise PolicyCanarySessionError("policy_canary_session_deadline_invalid")
     if payload.get("authority_digest") != canonical_digest(
         payload, digest_field="authority_digest"
     ):
@@ -493,6 +496,7 @@ def build_session_authority(
     hard_cap_usd: float,
     hard_ttl_seconds: int,
     execution_release: Mapping[str, Any] | None = None,
+    hard_deadline_epoch: float | None = None,
 ) -> dict[str, Any]:
     inputs = validate_runtime_input_manifest(runtime_inputs)
     candidate_ids = _candidate_set(inputs["candidate_ids"], inputs["run_kind"])
@@ -530,6 +534,7 @@ def build_session_authority(
         "resource_name": resource_name,
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
+        **({"hard_deadline_epoch": hard_deadline_epoch} if hard_deadline_epoch is not None else {}),
         "maximum_provider_allocations": 1,
         "retry_cap": 0,
         "automatic_retry_authorized": False,

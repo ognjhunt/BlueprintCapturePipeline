@@ -129,6 +129,7 @@ def run_team_candidate_session_vast(
         vast_launch_lock_file=None, candidate_policy_query_expected=True, forward_hf_token=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"), minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        **({"hard_deadline_epoch": authority["hard_deadline_epoch"]} if "hard_deadline_epoch" in authority else {}),
         allowed_geolocation_country_codes=NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES,
         authorization_consumption=consumption, stale_offer_create_retry_limit=0,
         expected_provider_download_bytes=POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES + POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES,

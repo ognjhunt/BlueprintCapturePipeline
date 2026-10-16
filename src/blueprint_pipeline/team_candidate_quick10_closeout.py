@@ -291,7 +291,15 @@ def blocked_execution_progress(job_dir: Path) -> dict[str, Any]:
             rows = inner.get("episodes")
             if not isinstance(rows, list):
                 raise TeamCandidateLaunchError("team_candidate_episodes_incomplete")
-            if len(rows) != _read(stages[-1]).get("cell_count"):
+            planned = _read(stages[-1])
+            # A sealed first-batch stop proves the suffix was never attempted.
+            stopped_prefix = (inner.get("stopped_before_next_cell") is True
+                and inner.get("execution_stopped_after_cell") == len(rows) == 25
+                and inner.get("planned_episodes_per_policy") == planned.get("cell_count")
+                and [row.get("cell_id") for row in rows] == [cell["cell_id"] for cell in planned["cells"][:25]]
+                and any(str(reason).startswith("team_policy_interface_failures:25_episodes:")
+                        for reason in inner.get("blockers", [])))
+            if len(rows) != planned.get("cell_count") and not stopped_prefix:
                 progress["measurement_complete"] = False
             for row in rows:
                 cell_id = row.get("cell_id") if isinstance(row, Mapping) else None

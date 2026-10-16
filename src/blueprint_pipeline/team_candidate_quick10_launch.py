@@ -4,22 +4,16 @@ Beta journey step: L5 team policy evaluation. Two processes share the work, so
 a scored evaluation of 200 episodes (hours of GPU time) never holds the
 agent-run dispatcher:
 
-- the **dispatcher** (``execute_staged_team_candidate_request``) admits and
-  stages: it re-checks the scene's eligibility, reads the founder's
-  free-beta funding approval, claims the job-bound bearer credential, reads the
-  team's declared metadata once, seals the admission, and stages every GPU
-  session (one per shard of at most 25 cells) with its own runtime inputs,
-  session authority and sealed bundle. The
-  token is written to one private 0600 file and the job is queued;
-- the **runner** (``python -m blueprint_pipeline.team_candidate_quick10_launch
-  run-queue``, a path-activated unit with its own cgroup and timeout) runs the
-  queued shards through the canonical allocator (``paid_resource_allocator
-  gpu-canary``): the first shard alone, then the rest at most
-  ``SHARD_CONCURRENCY`` at once, and seals the single terminal the executor
-  reports. A passed revision-bound robot-free check is required before any
-  paid session. After the first shard (``first_shard_gate``) the evaluation stops
-  when most of its episodes failed at the interface rather than the task, so a broken
-  integration costs one GPU session, not eight.
+- the **dispatcher** admits the scene, policy, single-use credential and funding,
+  then seals one session containing all 200 cells;
+- the **runner** uses the canonical paid-resource allocator once for that
+  session, with one cumulative cap, TTL and independent watchdog. The provider
+  worker starts a fresh simulator process for each cell, checkpoints completed
+  child results, and stops after its first 25 cells if most fail at the policy
+  interface. A task failure is an observed score, not an interface refusal.
+
+Previously sealed multi-shard jobs remain readable and resumable without
+rewriting their inputs or repeating finished attempts.
 
 As before, customer JSON chooses nothing: the operator profile binds the scene;
 an execution lock and a sealed intent make a second launch impossible after a
@@ -74,12 +68,11 @@ from .team_embodiment import (
 )
 from .team_evaluation_plan import (
     EPISODES,
-    SHARD_CELLS,
+    campaign_ttl_seconds,
     profile_purpose,
     runtime_cells,
     scored_cells,
     shard_ttl_seconds,
-    shards,
 )
 from .team_policy_https_client import INTERFACE_ID as TEAM_ROBOT_INTERFACE
 from .team_policy_https_client import METADATA_KEYS as TEAM_METADATA_KEYS
@@ -267,7 +260,7 @@ def _candidate_records(*, row: Mapping[str, Any], request: Mapping[str, Any], pr
     budget = {"payer": funding.get("payer"), "customer_price_usd": funding.get("customer_price_usd"),
               "max_attempts": funding.get("max_attempts"), "cap_usd": funding.get("cap_usd"),
               "episodes": _m(request.get("execution_authorization")).get("episodes"),
-              "hard_ttl_seconds": shard_ttl_seconds(min(EPISODES[purpose], SHARD_CELLS))}
+              "hard_ttl_seconds": campaign_ttl_seconds()}
     founder = {"schema_version": FOUNDER_SCHEMA, "approved_by": funding["approved_by"],
                "approval_reference": "webapp_free_beta_funding:" + str(funding.get("approval_digest")),
                "expires_at_iso": funding["expires_at_iso"],
@@ -345,7 +338,7 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
     binding_path = job_dir / EMBODIMENT_BINDING_FILENAME
     binding = _read(binding_path) if binding_path.is_file() else None
     hz = int(binding["manifest"]["control_hz"]) if binding else 15
-    ttl = shard_ttl_seconds(len(cells), control_hz=hz)
+    ttl = min(shard_ttl_seconds(len(cells), control_hz=hz), int(admission["budget"]["hard_ttl_seconds"]))
     max_queries = facts["max_policy_queries"]
     if binding is not None:
         # The team's chunk runs whole at its own rate over the scene's time budget.
@@ -430,8 +423,9 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     commit = hooks.get("implementation_commit") or _source_commit()
     base_run_id = f"team-{purpose}-" + canonical_digest({"job_id": request["job_id"], "run": pipeline_run_id})[7:31]
     cells = _session_cells(purpose=purpose, facts=facts, profile=profile)
-    # A faster control rate renders more frames per episode, so its shards hold fewer cells.
-    groups = shards(cells, size=max(1, SHARD_CELLS * 15 // (int(manifest["control_hz"]) if manifest else 15)))
+    # One paid session owns the whole matrix, its cumulative cap and watchdog.
+    # The provider worker preserves per-cell isolation and the first-25 gate.
+    groups = [cells]
     total_cap = float(funding["cap_usd"])
     staged = [_stage_shard(job_dir=job_dir, index=index, cells=group, admission=admission, facts=facts,
                            profile=profile, cap_usd=round(total_cap * len(group) / len(cells), 2),
@@ -706,6 +700,9 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
                                                              "started_at_iso": utc_now_iso()})
                     running += 1
             if all(_shard_state(row) == "returned" for row in shard_rows):
+                # A fast allocator can return during the launch pass. With a
+                # single session there is no later shard forcing another poll.
+                first_shard_gate(job_dir=job_dir, request=request, shard=shard_rows[0])
                 break
             hooks["sleep"](poll_seconds)
     except Exception as exc:  # noqa: BLE001 - sealed blocked, released only at provider zero
@@ -752,7 +749,7 @@ def first_shard_gate(*, job_dir: Path, request: Mapping[str, Any], shard: Mappin
         _retain_probe(job_dir, request, inner["robot_free_probe_trace"])
         if _read(job_dir / "robot_free_probe_retention.json").get("receipt_status") != "passed":
             raise TeamCandidateLaunchError("team_scene_robot_free_probe_not_passed")
-    rows = [row for row in inner.get("episodes") or [] if isinstance(row, Mapping)]
+    rows = [row for row in inner.get("episodes") or [] if isinstance(row, Mapping)][:25]
     if not rows:
         raise TeamCandidateLaunchError(";".join(map(str, inner.get("blockers") or [])) or "team_evaluation_shard_blocked")
     reasons: dict[str, int] = {}

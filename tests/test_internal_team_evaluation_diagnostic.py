@@ -80,9 +80,9 @@ def test_stages_all_200_real_cells_and_keeps_owner_issued_credential_separate(tm
     assert admission["customer_recommendation_permitted"] is False
     assert admission["credential"]["kms_lease_claimed"] is False
     assert admission["credential"]["authority"] == "owner_issued_local_single_run"
-    shards = [launch._current_shard(job, i) for i in range(8)]
+    shards = [launch._current_shard(job, i) for i in range(1)]
     assert sum(row["cap_usd"] for row in shards) == 20
-    assert {row["cell_count"] for row in shards} == {25}
+    assert {row["cell_count"] for row in shards} == {200}
     cells = [cell for row in shards for cell in row["cells"]]
     assert len({cell["cell_id"] for cell in cells}) == 200
     assert (job / ".team-credential" / "bearer").stat().st_mode & 0o077 == 0
