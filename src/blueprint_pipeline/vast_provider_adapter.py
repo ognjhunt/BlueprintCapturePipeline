@@ -8404,8 +8404,7 @@ def run_vast_provider_adapter(
                 timeout_seconds=45,
             )
             offers = _offers_from_response(search_response)
-            selected_offer = _select_offer(
-                offers,
+            selection_kwargs = dict(
                 max_hourly_rate=max_hourly_rate,
                 min_gpu_ram_mb=resolved_min_gpu_ram_mb,
                 min_compute_cap=resolved_min_compute_cap,
@@ -8419,7 +8418,6 @@ def run_vast_provider_adapter(
                 preferred_gpu_keywords=resolved_preferred_gpu_keywords,
                 preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
-                require_isaac_rt_candidate=_is_isaac_provider_bundle(provider_bundle_kind),
                 gpu_selection_policy=gpu_selection_policy,
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
@@ -8429,8 +8427,16 @@ def run_vast_provider_adapter(
                 expected_provider_download_bytes=expected_provider_download_bytes,
                 expected_provider_upload_bytes=expected_provider_upload_bytes,
             )
+            require_rt = _is_isaac_provider_bundle(provider_bundle_kind)
+            selected_offer = _select_offer(
+                offers, require_isaac_rt_candidate=require_rt, **selection_kwargs
+            )
+            only_rt_blocked = bool(
+                require_rt and not selected_offer
+                and _select_offer(offers, require_isaac_rt_candidate=False, **selection_kwargs) is not None
+            )
             offer_blockers: list[str] = []
-            if not selected_offer:
+            if not selected_offer and not only_rt_blocked:
                 if expected_provider_download_bytes or expected_provider_upload_bytes:
                     offer_blockers.append(
                         "no_vast_offer_with_transfer_rates_and_total_cost_under_hard_cap"
@@ -8450,6 +8456,8 @@ def run_vast_provider_adapter(
                     if require_known_supported_isaac_driver
                     else "no_vast_offer_at_or_below_max_hourly_rate"
                 )
+            if only_rt_blocked:
+                offer_blockers.append("no_vast_offer_with_required_isaac_rt_capability")
             retry_empty_offer_search = bool(
                 not selected_offer
                 and empty_offer_search_retry_count < max_empty_offer_search_retries
@@ -8515,7 +8523,9 @@ def run_vast_provider_adapter(
                     empty_offer_search_retry_count += 1
                     time.sleep(empty_offer_search_retry_interval)
                     continue
-                raise RuntimeError("no_vast_offer_selected")
+                raise RuntimeError(
+                    "no_vast_offer_with_required_isaac_rt_capability" if only_rt_blocked else "no_vast_offer_selected"
+                )
 
             projected_transfer_cost = _projected_provider_transfer_cost_usd(
                 selected_offer,
@@ -9735,6 +9745,8 @@ def run_vast_provider_adapter(
                 if require_known_supported_isaac_driver
                 else "no_vast_offer_at_or_below_max_hourly_rate"
             )
+            if exc_text == "no_vast_offer_with_required_isaac_rt_capability":
+                exception_blockers = [exc_text]
         else:
             exception_status = "failed"
             exception_reason = "vast_probe_failed"

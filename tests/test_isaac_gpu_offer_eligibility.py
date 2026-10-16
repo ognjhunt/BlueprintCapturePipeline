@@ -70,3 +70,14 @@ def test_real_adapter_forwards_native_requirement_before_rental(tmp_path, monkey
     assert observed == [True] and "teardown" in events
     manifest = json.loads((tmp_path / "vast_offer_selection_manifest.json").read_text())
     assert manifest["require_isaac_rt_candidate"] is True
+
+
+def test_native_price_refusal_keeps_price_reason_when_rt_is_not_the_cause(tmp_path, monkeypatch):
+    from tests.test_vast_provider_adapter import _run_with_staged_output
+
+    events = []
+    result, _ = _run_with_staged_output(tmp_path, monkeypatch, events,
+                                       provider_bundle_kind="isaac", max_hourly_rate=.1)
+    manifest = json.loads((tmp_path / "vast_offer_selection_manifest.json").read_text())
+    assert manifest["blockers"] == ["no_vast_offer_at_or_below_max_hourly_rate"]
+    assert result["blockers"] == manifest["blockers"] and not events

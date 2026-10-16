@@ -7843,6 +7843,8 @@ def test_vast_adapter_non_rt_gpu_and_gpu_failure_block_isaac_and_provider(
         assert result["continuing_spend_from_this_run"] is False
         assert ("PUT", "/asks/606/") not in api_calls
         assert manifest["selected_offer"] is None and manifest["quality_filtered_offer_count"] == 0
+        assert manifest["blockers"] == ["no_vast_offer_with_required_isaac_rt_capability"]
+        assert result["blockers"] == manifest["blockers"]
         return
     assert ("PUT", "/asks/606/") in api_calls
     isaac = _read_json(tmp_path / "non-rt" / "vast_isaac_smoke_result.json")
