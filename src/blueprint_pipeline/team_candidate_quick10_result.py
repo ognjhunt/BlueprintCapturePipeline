@@ -31,7 +31,9 @@ evidence.
 from __future__ import annotations
 
 import math
+import statistics
 from collections.abc import Mapping, Sequence
+from itertools import pairwise
 from typing import Any
 
 from .agent_run_result_scoring import SIMULATOR_SCORED, TEAM_RUNTIMES, scoring_statement
@@ -44,7 +46,8 @@ from .native_task_arena_policy_canary_session import (
 )
 from .team_evaluation_plan import EPISODES, MAXIMUM_VOID_SHARE, PURPOSES
 
-_POLICY_ERROR_PREFIXES = ("droid_https_policy_", "team_policy_https_")
+_POLICY_ERROR_PREFIXES = ("droid_https_policy_response_", "team_policy_https_response_",
+                          "droid_https_policy_identity_mismatch")
 
 
 class TeamCandidateResultError(ValueError):
@@ -79,17 +82,56 @@ def episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
     attempted = row.get("candidate_policy_query_attempted") is True or row.get("candidate_policy_queried") is True
     message = str(row.get("failure_message") or "")
     if attempted:
-        if row.get("policy_response_status") not in (None, "received"):
-            return "failure", "policy_service_did_not_answer"
+        if row.get("episode_failure_cause") == "policy":
+            return "failure", "policy_service_error"
         if row.get("candidate_action_returned") is True and not (
                 row.get("candidate_action_shape_validated") is True
                 and row.get("candidate_action_finite_validated") is True):
             return "failure", "policy_action_invalid"
         if message.startswith(_POLICY_ERROR_PREFIXES):
             return "failure", "policy_service_error"
+        if (row.get("episode_failure_cause") not in ("infrastructure", "media")
+                and row.get("policy_response_status") not in (None, "received")):
+            return "failure", "policy_service_did_not_answer"
+    visual = row.get("visual_evidence") if isinstance(row.get("visual_evidence"), Mapping) else {}
+    gap = visual.get("media_gap") if isinstance(visual.get("media_gap"), Mapping) else {}
+    if str(gap.get("type") or "").startswith("after_first_observation_media_"):
+        return "void", "episode_media_unavailable"
     if row.get("episode_failure_stage") == "after_first_observation":
         return "void", "simulator_failed_during_episode"
     return "void", "simulator_failed_before_policy"
+
+
+def _cycle_seconds(row: Mapping[str, Any]) -> float | None:
+    """Conservative completed-episode duration on the simulator's own clock.
+
+    Includes the terminal settling window; never substitutes wall-clock
+    render, provider, or policy-service timings. Old receipts stay unmeasured.
+    """
+
+    episode = row.get("episode") if isinstance(row.get("episode"), Mapping) else {}
+    trace = episode.get("state_trace") if isinstance(episode.get("state_trace"), Mapping) else {}
+    samples = trace.get("task_state_samples")
+    if (trace.get("trace_digest") != canonical_digest(trace, digest_field="trace_digest")
+            or row.get("state_trace_digest") != canonical_digest({"value": trace})
+            or not isinstance(samples, list) or len(samples) < 2):
+        return None
+    times = []
+    for sample in samples:
+        value = sample.get("simulation_time_s") if isinstance(sample, Mapping) else None
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            return None
+        times.append(float(value))
+    if any(right <= left for left, right in pairwise(times)):
+        return None
+    return times[-1] - times[0]
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * fraction
+    lower = math.floor(index)
+    return ordered[lower] + (ordered[math.ceil(index)] - ordered[lower]) * (index - lower)
 
 
 def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], runtime_binding: Mapping[str, Any],
@@ -145,17 +187,23 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
     void = len(outcomes) - len(counted)
     if void > math.floor(MAXIMUM_VOID_SHARE * len(outcomes)):
         raise TeamCandidateResultError("team_scored_run_void_share_exceeded")
+    successful_rows = [row for row in rows if episode_outcome(row)[0] == "success"]
+    cycles = [_cycle_seconds(row) for row in successful_rows]
+    measured_cycles = [value for value in cycles if value is not None]
+    complete_cycles = bool(cycles) and len(measured_cycles) == len(cycles)
     return {
         "status": "completed",
         **({"pre_policy_reset_recovery": recovery} if recovery is not None else {}),
         "episodes_run": len(counted),
         "episodes_succeeded": succeeded,
-        "median_cycle_seconds": None,
-        "cycle_seconds_p10": None,
-        "cycle_seconds_p90": None,
+        "median_cycle_seconds": statistics.median(measured_cycles) if complete_cycles else None,
+        "cycle_seconds_p10": _percentile(measured_cycles, 0.1) if complete_cycles else None,
+        "cycle_seconds_p90": _percentile(measured_cycles, 0.9) if complete_cycles else None,
         "note": (f"Scored evaluation of one team's own policy: {len(counted)} episodes scored by the simulator against "
                  f"the sealed success contract, {succeeded} succeeded"
                  + (f", {void} void (simulator failure, not counted)" if void else "")
+                 + (". Cycle time is completed-episode simulator duration, including settling"
+                    if complete_cycles else ". Cycle time unmeasured")
                  + ". Simulation estimate; not physical performance or safety."),
         "artifact_uri": None,
         "evaluation_purpose": purpose,

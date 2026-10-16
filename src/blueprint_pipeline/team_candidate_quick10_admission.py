@@ -22,9 +22,8 @@ the scene's 200 hidden cells (the only evidence a recommendation may rest on;
 - the founder admitted exactly this team, candidate and scene revision, and
   the admission has not expired;
 - the scene's robot-free success probe passed at this revision for the exact
-  task specification (``robot_free_probe_gate``), or is still undecided: the
-  evaluation's first cell then records and scores it before any team episode,
-  and runs none unless it passed. A scene whose probe failed is refused; and
+  task specification (``robot_free_probe_gate``) before a paid team allocation;
+  missing, unavailable, and failed probes are refused; and
 - the scene's success contract and embodiment are the ones the run scores.
 
 Every refusal is collected and raised together with typed reasons. A sealed
@@ -168,6 +167,16 @@ def _rights_blockers(rights: Mapping[str, Any], candidate: Mapping[str, Any]) ->
     return []
 
 
+def validate_candidate_rights(rights: Mapping[str, Any], *, team_id: str,
+                              checkpoint_id: str, candidate_id: str) -> None:
+    """Validate static run rights before consuming a team's bearer lease."""
+
+    blockers = _rights_blockers(_m(rights), {"team_id": team_id, "checkpoint_id": checkpoint_id,
+                                            "candidate_id": candidate_id})
+    if blockers:
+        raise TeamCandidateAdmissionError(blockers)
+
+
 def _lease_blockers(lease: Mapping[str, Any], candidate: Mapping[str, Any], now: datetime) -> list[str]:
     delivery = _m(candidate.get("delivery"))
     endpoint = str(delivery.get("endpoint_url") or "")
@@ -247,11 +256,7 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
                                          task_success_contract_digest=task_success_contract_binding(
                                              task_spec.get("task_kind"), scene.get("task_success_contract")))
     except RobotFreeProbeGateError as exc:
-        # Undecided on a rigid scene: recorded and scored in the first cell, before any team
-        # episode. Decided and failed, or a kind no evaluation can record: refused.
-        if (task_spec.get("task_kind") != "rigid_pick_place"
-                or _m(probe_receipt).get("status") not in (None, "probe_unavailable")):
-            blockers.append(str(exc))
+        blockers.append(str(exc))
     if blockers:
         raise TeamCandidateAdmissionError(blockers)
     delivery = candidate["delivery"]
@@ -307,8 +312,8 @@ def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mappi
 
     A candidate on its own robot carries the staged ``team_embodiment`` binding
     (``team_embodiment.team_embodiment_binding``) for the admitted manifest. The
-    first session on a scene whose robot-free probe is undecided carries the
-    probe to record (``team_robot_free_probe.probe_request``).
+    Optional probe payloads remain readable for development-runtime replay;
+    admission already requires a passed probe before a paid team allocation.
     """
 
     value = validate_admission(admission)
@@ -360,4 +365,5 @@ __all__ = [
     "runtime_binding",
     "team_robot_manifest",
     "validate_admission",
+    "validate_candidate_rights",
 ]

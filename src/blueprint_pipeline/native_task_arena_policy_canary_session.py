@@ -561,10 +561,9 @@ def _episode_evidence_valid(episode: Mapping[str, Any]) -> bool:
     visual = _mapping(episode.get("visual_evidence"))
     gap = _mapping(visual.get("media_gap"))
     if episode.get("status") != "completed":
-        if gap:
+        if gap and gap.get("type") == "before_first_observation":
             return (
-                gap.get("type") == "before_first_observation"
-                and bool(str(gap.get("reason") or ""))
+                bool(str(gap.get("reason") or ""))
                 and episode.get("candidate_policy_queried") is False
                 and episode.get("actions_reached_robot") is False
                 and episode.get("policy_outcome_interpretable") is False
@@ -575,17 +574,33 @@ def _episode_evidence_valid(episode: Mapping[str, Any]) -> bool:
             "action_delivery_rejected",
         }:
             return False
+        # A typed media failure is an invalid team episode, not an invalid
+        # entire session. Preserve it for cause-based classification and the
+        # run's bounded void allowance. It can never become a scored success.
+        team_media_gap = (
+            episode.get("run_kind") == TEAM_RUN_KIND
+            and gap.get("type") in {
+                "after_first_observation_media_seal_failed",
+                "after_first_observation_media_finalizer_missing",
+                "after_first_observation_media_integrity_failed",
+            }
+            and bool(str(gap.get("reason") or ""))
+            and visual.get("status") == "incomplete_after_first_observation"
+        )
         if (
-            visual.get("status") != "complete"
-            or visual.get("episode_terminal_status")
-            != "failed_after_first_observation"
-            or visual.get("human_review_available") is not True
-            or visual.get("terminal_observation_invented") is not False
-            or episode.get("first_observation_retained") is not True
+            episode.get("first_observation_retained") is not True
             or not isinstance(episode.get("candidate_policy_queried"), bool)
             or not isinstance(episode.get("actions_reached_robot"), bool)
             or not isinstance(episode.get("arm_moved"), bool)
             or episode.get("policy_outcome_interpretable") is not False
+        ):
+            return False
+        if not team_media_gap and (
+            gap
+            or visual.get("status") != "complete"
+            or visual.get("episode_terminal_status") != "failed_after_first_observation"
+            or visual.get("human_review_available") is not True
+            or visual.get("terminal_observation_invented") is not False
             or not _digest(episode.get("lossless_frame_manifest_digest"))
             or not _digest(episode.get("review_video_digest"))
         ):

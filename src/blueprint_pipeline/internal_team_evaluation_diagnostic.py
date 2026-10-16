@@ -290,7 +290,8 @@ def internal_admission(*, facts: dict[str, Any], approval: dict[str, Any], polic
                             "origin": origin, "authority": "owner_issued_local_single_run", "kms_lease_claimed": False},
              "scene_revision_digest": facts["scene"]["scene_revision_digest"],
              "task_spec_digest": canonical_digest(facts["scene"]["task_spec"]),
-             "task_success_contract_digest": contract["contract_digest"], "robot_free_probe_receipt_digest": None,
+             "task_success_contract_digest": contract["contract_digest"],
+             "robot_free_probe_receipt_digest": facts["probe"]["receipt_digest"],
              "rights_digest": canonical_digest({"author": "Blueprint", "policy": POLICY_DEFINITION,
                                                 "permission": "owner_authorized_internal_execution_only"}),
              "founder_approval_digest": canonical_digest(approval),
@@ -303,7 +304,8 @@ def internal_admission(*, facts: dict[str, Any], approval: dict[str, Any], polic
     return validate_admission(value)
 
 
-def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: str) -> dict[str, Any]:
+def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: str,
+          robot_free_probe_root: Path | None = None) -> dict[str, Any]:
     """Seal all eight sessions before the first GPU allocation. Does not launch."""
     from .controlled_policy_configuration import canonical_request_digest
     from . import team_candidate_quick10_launch as launch
@@ -314,21 +316,13 @@ def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: s
     if launch._source_commit() != source_commit:
         raise ValueError("internal_diagnostic_source_commit_mismatch")
     job = root / "evaluation"
-    job.mkdir(mode=0o700)
     capture = root / "capture"
-    capture.mkdir()
-    _write(capture / "capture_descriptor.json", {"development_only": True, "source": "authored_internal_diagnostic"})
     scene_inputs = _read(root / "scene" / "team_scene_inputs.v1.json")
     profile = {"capture_root": str(capture.resolve()), "scene_id": SCENE_ID, "task_id": TASK_ID, "scenario_id": "nominal",
                "scene_revision_digest": scene_inputs["scene_revision_digest"],
                "team_scene_inputs_path": str((root / "scene" / "team_scene_inputs.v1.json").resolve()),
-               "robot_free_probe_root": str((root / "probe").resolve()), "open_loop_horizon": 10,
+               "robot_free_probe_root": str((robot_free_probe_root or root / "probe").resolve()), "open_loop_horizon": 10,
                "max_hourly_rate_usd": 0.8, "nominal_dynamic_friction": 0.5, "scored_matrix_salt": secrets.token_hex(32)}
-    (root / "probe").mkdir()
-    registry = {"schema_version": REGISTRY_SCHEMA, "profiles": [profile], "registry_digest": ""}
-    registry["registry_digest"] = canonical_digest(registry, digest_field="registry_digest")
-    registry_path = _write(root / "registry.json", registry)
-    os.environ[REGISTRY_ENV] = str(registry_path.resolve())
     facts, blockers = offer_eligibility(profile)
     if facts is None:
         raise ValueError(";".join(blockers))
@@ -336,6 +330,13 @@ def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: s
     token = secrets.token_urlsafe(48)
     token_digest = canonical_digest({"credential_sha256": hashlib.sha256(token.encode()).hexdigest()})
     admission = internal_admission(facts=facts, approval=approval, policy_url=policy_url, credential_digest=token_digest)
+    job.mkdir(mode=0o700)
+    capture.mkdir()
+    _write(capture / "capture_descriptor.json", {"development_only": True, "source": "authored_internal_diagnostic"})
+    registry = {"schema_version": REGISTRY_SCHEMA, "profiles": [profile], "registry_digest": ""}
+    registry["registry_digest"] = canonical_digest(registry, digest_field="registry_digest")
+    registry_path = _write(root / "registry.json", registry)
+    os.environ[REGISTRY_ENV] = str(registry_path.resolve())
     # Real HTTPS metadata is checked separately before any paid launch, once the
     # policy service is running. The private credential is issued exactly once.
     with (root / "policy-bearer").open("x") as stream:
@@ -365,6 +366,10 @@ def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: s
     _write(job / launch.INTENT_FILENAME, {"job_id": request["job_id"], "canonical_request_digest": canonical_request_digest(request),
         "pipeline_run_id": base_run_id, "admission_digest": admission["admission_digest"], "run_id": base_run_id,
         "evaluation_purpose": "scored", "episodes": len(cells), "shard_count": len(groups), "source_commit": source_commit})
+    expires = datetime.fromisoformat(approval["expires_at_iso"].replace("Z", "+00:00")).timestamp() * 1000
+    _write(job / launch.CONTROL_FILENAME, {"run_id": base_run_id, "internal_diagnostic": True,
+        "execution_deadline_at_ms": min(expires, datetime.now(timezone.utc).timestamp() * 1000 + 16 * 60 * 60 * 1000),
+        "owner_approval": _record(owner_approval)})
     result = {"schema_version": "blueprint.internal_team_diagnostic.v1", "policy_url": policy_url,
               "source_commit": source_commit, "job_dir": str(job.resolve()), "registry_path": str(registry_path.resolve()),
               "owner_approval": _record(owner_approval), "episodes": len(cells), "cap_usd": 20.,
@@ -407,13 +412,27 @@ def run(root: Path) -> dict[str, Any] | None:
     # operator entrypoint must enforce the same single-writer rule itself.
     with (root / "execution.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        terminal = launch.run_staged_evaluation(job_dir=Path(diagnostic["job_dir"]))
+        terminal = launch.run_staged_evaluation(job_dir=Path(diagnostic["job_dir"]),
+            hooks={"execution_monitor": _diagnostic_execution_monitor})
     if terminal is not None:
         path = root / "internal_diagnostic_result.json"
         if not path.exists():
             _write(path, {"evidence_scope": "development_only", "trained_policy_evaluated": False,
                           "customer_recommendation_permitted": False, "terminal": terminal})
     return terminal
+
+
+def _diagnostic_execution_monitor(control: dict[str, Any]) -> dict[str, Any]:
+    """Internal authored diagnostics have owner authority, never a fabricated WebApp claim."""
+    record = control.get("owner_approval") or {}
+    path = Path(str(record.get("path") or ""))
+    if control.get("internal_diagnostic") is not True or _record(path) != record:
+        return {"cancellation_requested": True}
+    approval = _read(path)
+    expires = datetime.fromisoformat(str(approval.get("expires_at_iso")).replace("Z", "+00:00"))
+    if expires.tzinfo is None or expires <= datetime.now(timezone.utc):
+        return {"cancellation_requested": True}
+    return {"ok": True, "run_id": control["run_id"], "execution_deadline_at_ms": control["execution_deadline_at_ms"]}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -431,6 +450,8 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--policy-url", required=True)
     prepare.add_argument("--owner-approval", type=Path, required=True)
     prepare.add_argument("--source-commit", required=True)
+    prepare.add_argument("--robot-free-probe-root", type=Path,
+                         help="Directory retaining a real passed probe at this exact scene revision.")
     execute = sub.add_parser("run")
     execute.add_argument("--root", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -441,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         serve_policy(args.root, port=args.port)
     elif args.command == "stage":
         print(json.dumps(stage(args.root, policy_url=args.policy_url, owner_approval=args.owner_approval,
-                               source_commit=args.source_commit)))
+                               source_commit=args.source_commit, robot_free_probe_root=args.robot_free_probe_root)))
     else:
         result = run(args.root)
         print(json.dumps(result))

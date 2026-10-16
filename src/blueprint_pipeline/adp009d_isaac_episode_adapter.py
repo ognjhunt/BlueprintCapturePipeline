@@ -1443,6 +1443,8 @@ class IsaacEpisodeAdapter:
         sample["gripper_body_midpoint_world_m"] = [
             (left[axis] + right[axis]) / 2.0 for axis in range(3)
         ]
+        if self._simulation_step_seconds is not None:
+            sample["simulation_time_s"] = self._control_step_index * self._simulation_step_seconds
         sample["grasp_frame_position_world_m"] = (
             semantic_finger_tool_midpoint_world_m(
                 left_finger_pose_world_xyzw=left_pose,
@@ -1517,6 +1519,8 @@ class IsaacEpisodeAdapter:
             0, self._end_effector_index, :7
         ]
         result = dict(sample)
+        if self._simulation_step_seconds is not None:
+            result["simulation_time_s"] = self._control_step_index * self._simulation_step_seconds
         result["controlled_body_orientation_world_xyzw"] = [
             float(value) for value in controlled_body_pose[3:7]
         ]

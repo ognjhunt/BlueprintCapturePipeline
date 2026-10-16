@@ -465,6 +465,7 @@ def _adapter(
     *,
     with_contact_sensor=False,
     diagnostic_checkpoint_reset_callback=None,
+    simulation_step_seconds=None,
 ):
     robot = _Robot()
     return IsaacEpisodeAdapter(
@@ -473,6 +474,7 @@ def _adapter(
         rigid_task_object=_Can(),
         action_dim=8,
         reset_seed=20260806,
+        simulation_step_seconds=simulation_step_seconds,
         to_torch=_to_torch,
         gripper_closed_width_m=0.0,
         gripper_open_width_m=0.06,
@@ -886,13 +888,16 @@ def test_droid_gripper_state_is_closed_fraction_from_the_measured_probe_span() -
 def test_object_sample_matches_the_scorer_schema() -> None:
     from blueprint_pipeline.adp009d_task_scoring import normalize_object_samples
 
-    adapter = _adapter()
+    adapter = _adapter(simulation_step_seconds=1.0 / 15.0)
     sample = dict(adapter.read_object_sample())
     sample["step_index"] = 0
 
     normalized = normalize_object_samples([sample], require_sealed_start_pose=False)
     assert normalized[0]["step_index"] == 0
     assert len(sample["can_pose_world"]) == 7
+    assert sample["simulation_time_s"] == 0.0
+    adapter._control_step_index = 3
+    assert adapter.read_object_sample()["simulation_time_s"] == pytest.approx(0.2)
 
 
 def test_a_wrong_width_action_never_reaches_the_simulator() -> None:
@@ -1489,6 +1494,7 @@ def test_articulated_fixture_reads_native_task_state_without_a_canned_object() -
         rigid_task_object=None,
         action_dim=8,
         reset_seed=20260806,
+        simulation_step_seconds=1.0 / 15.0,
         to_torch=_to_torch,
         gripper_closed_width_m=0.0,
         gripper_open_width_m=0.06,
@@ -1505,6 +1511,7 @@ def test_articulated_fixture_reads_native_task_state_without_a_canned_object() -
     )
 
     sample = adapter.read_task_sample()
+    assert sample["simulation_time_s"] == 0.0
     assert {key: sample[key] for key in observed} == observed
     assert sample["grasp_frame_position_world_m"] == [9.0, 8.0, 7.0]
     assert sample["grasp_frame_orientation_world_xyzw"] == [0.5] * 4

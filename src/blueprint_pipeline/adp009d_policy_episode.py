@@ -1409,10 +1409,14 @@ def run_policy_episode(
 
         def retain_request(evidence, index=query_index):
             if media_root is not None and episode_id is not None:
-                policy_request_artifacts.append(persist_request_evidence(evidence,
-                    root=media_root, episode_id=episode_id, query_index=index,
-                    binding={**dict((scientific_reset or {}).get("binding") or {}),
-                             "candidate_id": candidate_id, "task_spec_digest": canonical_digest(resolved_task_spec)}))
+                try:
+                    policy_request_artifacts.append(persist_request_evidence(evidence,
+                        root=media_root, episode_id=episode_id, query_index=index,
+                        binding={**dict((scientific_reset or {}).get("binding") or {}),
+                                 "candidate_id": candidate_id, "task_spec_digest": canonical_digest(resolved_task_spec)}))
+                except Exception:
+                    episode_progress["policy_request_retention_failed"] = True
+                    raise
 
         bind_request_sink = getattr(policy, "bind_request_evidence_sink", None)
         if callable(bind_request_sink):
@@ -1422,6 +1426,7 @@ def run_policy_episode(
         try:
             chunk = policy.infer(observation)
         except BaseException as exc:
+            episode_progress["policy_inference_failed"] = True
             timings_seconds["policy_inference"] += time.monotonic() - phase_started
             inference_evidence_reader = getattr(
                 policy, "last_inference_evidence", None

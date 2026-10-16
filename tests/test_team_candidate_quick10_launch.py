@@ -143,7 +143,7 @@ class _WebApp(executor.AgentRunWebAppClient):
                     "dispatch": {"pipeline_run_id": self.owner},
                     "execution_admission_digest": self.row["execution_admission_digest"]}
         self.posted.append((path, payload))
-        if payload.get("blocked_before_any_episode"):
+        if payload.get("blocked_before_any_episode") or payload.get("execution_status") == "blocked":
             self.blocked.append(payload["reason"])
         return {"ok": True}
 
@@ -425,7 +425,9 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
     if robot is not None:
         hooks["model_fetch"] = lambda url, target: shutil.copyfile(robot["model"], target)
     runner = {"allocator_starter": start_allocator, "provider_zero": lambda: world["provider_zero"](),
-              "sleep": lambda _seconds: None}
+              "sleep": lambda _seconds: None,
+              "execution_monitor": lambda control: {"ok": True, "run_id": control["run_id"],
+                                                     "execution_deadline_at_ms": 4_000_000_000_000}}
     world = {"capture": capture, "row": row, "client": _WebApp(row), "hooks": hooks, "runner": runner,
              "probe_receipt": probe, "operator": operator,
              "queue": queue, "provider": provider, "provider_zero": provider_zero, "service": service,
@@ -517,6 +519,11 @@ def test_a_policy_failing_at_the_interface_stops_after_the_first_shard(tmp_path,
     assert len(world["allocator_calls"]) == 1 and summary["blocked"] == 1, summary
     [reason] = world["client"].blocked
     assert reason == "team_policy_interface_failures:25_episodes:policy_service_did_not_answer=25"
+    [(_path, settlement)] = world["client"].posted
+    assert settlement["episodes_run"] == 25 and settlement["blocked_before_any_episode"] is False
+    assert settlement["execution_progress"] == {"observed_attempted_episode_count": 25,
+        "scored_episode_count": 25, "succeeded_episode_count": 0, "failed_episode_count": 25,
+        "void_episode_count": 0, "measurement_complete": True}
 
 
 def test_an_unadmitted_funding_approver_never_reaches_the_credential_or_the_allocator(tmp_path, monkeypatch) -> None:
@@ -565,31 +572,33 @@ def _probe_retention(world: dict[str, Any], monkeypatch: pytest.MonkeyPatch, *, 
     return retained
 
 
-def test_a_rigid_scene_with_an_undecided_check_records_it_in_the_first_cell_and_binds_it(
+def test_a_rigid_scene_with_a_missing_probe_is_refused_before_paid_allocation(
         tmp_path, monkeypatch) -> None:
     world = _world(tmp_path, monkeypatch)
     retained = _probe_retention(world, monkeypatch, passes=True)
-    _staged, summary = _staged_run_reported(world)
-    assert summary["completed"] == 1 and len(world["allocator_calls"]) == 8 and len(retained) == 1
-    # Only the first shard carried the probe; its pass is the receipt the scoring statement binds.
-    job = world["job_dir"]
-    specs = sorted(job.glob("shards/*/stage-00/runtime_inputs/policy_execution_spec.*.json"))
-    assert [json.loads(path.read_text()).get("robot_free_probe") is not None for path in specs] == (
-        [True] + [False] * 7)
-    receipt = json.loads((world["operator"] / "probe" / probe_gate.RECEIPT_FILENAME).read_text())
-    (_path, result), _settlement = world["client"].posted
-    assert result["scoring"]["robot_free_probe_receipt_digest"] == receipt["receipt_digest"]
+    staged, summary = _staged_run_reported(world)
+    assert staged["blocked"] + summary["blocked"] == 1 and world["allocator_calls"] == [] and retained == []
+    assert world["client"].blocked == ["agent_execution_team_candidate_not_offered"]
+    from blueprint_pipeline.team_candidate_quick10_registry import (
+        offer_eligibility,
+        profile_for_capture,
+    )
+
+    assert offer_eligibility(profile_for_capture(world["capture"]))[1] == [
+        "team_evaluation_robot_free_probe_receipt_missing"]
 
 
-def test_a_scene_that_fails_its_check_in_the_first_cell_stops_and_closes_to_every_team(
+def test_a_rigid_scene_with_an_unavailable_probe_is_refused_before_paid_allocation(
         tmp_path, monkeypatch) -> None:
     world = _world(tmp_path, monkeypatch)
-    _probe_retention(world, monkeypatch, passes=False)
-    world["provider"].probe_status = "failed"
-    _staged, summary = _staged_run_reported(world)
-    assert len(world["allocator_calls"]) == 1 and summary["blocked"] == 1, summary
-    assert world["client"].blocked == ["team_scene_robot_free_probe_not_passed"]
-    # The decided failure is retained: the next team is refused before any spend.
+    receipt_path = world["operator"] / "probe" / probe_gate.RECEIPT_FILENAME
+    unavailable = {**world["probe_receipt"], "status": "probe_unavailable",
+                   "learned_policy_evaluation_admitted": False}
+    receipt_path.write_text(json.dumps(_sealed(unavailable, "receipt_digest")))
+    staged, summary = _staged_run_reported(world)
+    assert world["allocator_calls"] == [] and staged["blocked"] + summary["blocked"] == 1, summary
+    assert world["client"].blocked == ["agent_execution_team_candidate_not_offered"]
+    # Every next team is also refused before spending.
     from blueprint_pipeline.team_candidate_quick10_registry import (
         offer_eligibility,
         profile_for_capture,
@@ -611,6 +620,163 @@ def test_a_token_in_the_sealed_bundle_stops_the_launch_before_the_allocator(tmp_
     failure = json.loads((world["job_dir"] / "team_candidate_quick10_failure.json").read_text())
     assert failure["blockers"] == ["team_candidate_secret_in_bundle"]
     assert world["client"].blocked == ["team_candidate_secret_in_bundle"]
+
+
+def test_rights_and_provider_zero_are_checked_before_releasing_the_single_use_lease(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    world["provider_zero"] = lambda: {**ZERO, "provider_zero_verified": False}
+    executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    assert _Broker.accessed == [] and world["allocator_calls"] == []
+    assert world["client"].blocked == ["team_candidate_initial_provider_zero_unproven"]
+
+
+def test_a_metadata_repair_reuses_one_private_delivery_without_spending_another_attempt(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    calls = []
+    def metadata(**kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise OSError("synthetic transport failure")
+        return world["service"].transport(**kwargs)
+    world["hooks"]["metadata_transport"] = metadata
+    first = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    assert first["pending"] == 1 and world["allocator_calls"] == [] and len(_Broker.leases) == 1
+    assert not (world["job_dir"] / TERMINAL_FILENAME).exists()
+    delivery = world["job_dir"] / ".team-credential" / "delivery.json"
+    assert delivery.stat().st_mode & 0o777 == 0o600
+    executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    launch.run_queue(world["queue"], hooks=world["runner"])
+    final = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    assert final["completed"] == 1 and len(_Broker.leases) == 1 and len(world["allocator_calls"]) == 8
+    assert not delivery.exists()
+
+
+def test_prelaunch_retries_are_bounded_and_cancelled_deliveries_are_removed(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    def unavailable(**_kwargs):
+        raise OSError("synthetic metadata unavailable")
+    world["hooks"]["metadata_transport"] = unavailable
+    for _ in range(launch.MAX_PRELAUNCH_ATTEMPTS):
+        executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    assert len(_Broker.leases) == 1 and world["allocator_calls"] == []
+    assert len(list(world["job_dir"].glob("preflight_attempt_*.json"))) == launch.MAX_PRELAUNCH_ATTEMPTS
+    assert not (world["job_dir"] / ".team-credential").exists()
+    assert (world["job_dir"] / TERMINAL_FILENAME).is_file()
+
+
+def test_cancelling_during_prelaunch_repair_removes_the_private_delivery(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    def unavailable(**_kwargs):
+        raise OSError("synthetic metadata unavailable")
+    world["hooks"]["metadata_transport"] = unavailable
+    executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
+    assert (world["job_dir"] / ".team-credential").is_dir()
+    request = world["row"]["execution_admission"]["canonical_execution_request"]
+    launch.cancel_unlaunched_team_candidate_request(request=request, job_dir=world["job_dir"])
+    assert not (world["job_dir"] / ".team-credential").exists()
+    assert json.loads((world["job_dir"] / TERMINAL_FILENAME).read_text())["execution_progress"]["measurement_complete"] is True
+
+
+def test_cancellation_before_the_first_allocation_closes_without_spend(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    world["runner"]["execution_monitor"] = lambda _control: {"cancellation_requested": True}
+    _, summary = _staged_run_reported(world)
+    assert summary["blocked"] == 1 and world["allocator_calls"] == []
+    assert world["client"].blocked == ["team_evaluation_cancellation_requested"]
+    assert not (world["job_dir"] / ".team-credential").exists()
+
+
+def test_founder_hold_stops_the_running_allocator_and_waits_for_teardown(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    hold = tmp_path / "founder-hold.json"
+    world["runner"]["dispatch_hold_path"] = hold
+    running = set()
+    stopped = []
+    def starter(argv, *, log_path):
+        running.add("00")
+        hold.write_text('{}')
+        return 12345678
+    original_state = launch._shard_state
+    def state(shard):
+        if shard["index"] == 0 and "00" in running:
+            return "running"
+        return original_state(shard)
+    def stopper(shard):
+        stopped.append(shard["index"])
+        running.clear()
+    monkeypatch.setattr(launch, "_shard_state", state)
+    world["runner"].update(allocator_starter=starter, allocator_stopper=stopper)
+    _, summary = _staged_run_reported(world)
+    assert summary["blocked"] == 1 and stopped == [0]
+    assert world["client"].blocked == ["team_evaluation_founder_dispatch_hold"]
+    assert not (world["job_dir"] / ".team-credential").exists()
+
+
+def test_transient_monitor_outage_defers_allocation_then_recovers(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    healthy = world["runner"]["execution_monitor"]
+    calls = []
+    def monitor(control):
+        calls.append(len(world["allocator_calls"]))
+        if len(calls) == 1:
+            raise OSError("synthetic 503")
+        return healthy(control)
+    world["runner"]["execution_monitor"] = monitor
+    _, summary = _staged_run_reported(world)
+    assert summary["completed"] == 1 and calls[:2] == [0, 0]
+
+
+def test_allocator_stop_refuses_a_reused_process_identity(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "allocator_process.json"
+    path.write_text(json.dumps({"pid": 1234, "start_ticks": "original"}))
+    monkeypatch.setattr(launch, "_process_start_ticks", lambda _pid: "different")
+    with pytest.raises(launch.TeamCandidateLaunchError, match="allocator_stop_identity_unproven"):
+        launch._stop_allocator({"root": str(tmp_path)})
+
+
+def test_an_unobservable_control_plane_stops_before_the_stale_watchdog(tmp_path, monkeypatch) -> None:
+    world = _world(tmp_path, monkeypatch)
+    world["runner"]["monotonic"] = iter([0, launch.MONITOR_UNAVAILABLE_SECONDS]).__next__
+    def unavailable(_control):
+        raise OSError("synthetic outage")
+    world["runner"]["execution_monitor"] = unavailable
+    _, summary = _staged_run_reported(world)
+    assert summary["blocked"] == 1 and world["allocator_calls"] == []
+    assert world["client"].blocked == ["team_evaluation_control_unavailable_timeout"]
+
+
+def test_a_spawn_without_a_pid_receipt_cannot_allocate_a_second_time(tmp_path) -> None:
+    (tmp_path / "allocator_launch_intent.json").write_text('{}')
+    assert launch._shard_state({"root": str(tmp_path)}) == "lost"
+
+
+def test_missing_planned_shard_artifacts_cannot_prove_zero_episodes(tmp_path) -> None:
+    from blueprint_pipeline.team_candidate_quick10_closeout import blocked_execution_progress
+
+    (tmp_path / launch.INTENT_FILENAME).write_text(json.dumps({"shard_count": 1}))
+    progress = blocked_execution_progress(tmp_path)
+    assert progress["observed_attempted_episode_count"] == 0
+    assert progress["measurement_complete"] is False
+
+
+def test_slow_stop_teardown_stays_pending_after_the_local_grace(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "shards" / "00" / "stage-00"
+    root.mkdir(parents=True)
+    (root / launch.SHARD_FILENAME).write_text(json.dumps({"index": 0, "root": str(root)}))
+    for name, value in ((launch.REQUEST_FILENAME, {"job_id": "synthetic-job"}),
+                        (launch.INTENT_FILENAME, {"shard_count": 1}), (launch.CONTROL_FILENAME, {}),
+                        ("stop_requested.json", {"reason": "founder_stop"})):
+        (tmp_path / name).write_text(json.dumps(value))
+    monkeypatch.setattr(launch, "_shard_state", lambda _shard: "running")
+    stopped = []
+    terminal = launch.run_staged_evaluation(job_dir=tmp_path, hooks={
+        "allocator_stopper": lambda shard: stopped.append(shard["index"]),
+        "monotonic": iter([0, 0, launch.STOP_TEARDOWN_GRACE_SECONDS]).__next__,
+        "sleep": lambda _seconds: None,
+        "provider_zero": lambda: pytest.fail("running allocator cannot prove provider zero")})
+    assert terminal is None and stopped == [0]
+    assert (tmp_path / "stop_teardown_pending.json").is_file()
+    assert not (tmp_path / TERMINAL_FILENAME).exists()
 
 
 def test_closeout_waits_for_provider_zero_before_reporting(tmp_path, monkeypatch) -> None:
@@ -652,11 +818,11 @@ def test_the_offer_lists_each_team_evaluation_only_while_eligible(tmp_path, monk
     assert contract["scored"]["episodes"] == 200 and contract["scored"]["cells_published"] is False
     assert "practice" not in contract and contract["instruction"]
     assert contract["task_success_contract"]["contract_digest"].startswith("sha256:")
-    # A rigid scene whose check is undecided stays listed: the first cell records it.
+    # A rigid scene whose check is undecided is unlisted until a separate probe passes.
     receipt_path = tmp_path / "operator" / "probe" / probe_gate.RECEIPT_FILENAME
     receipt_path.unlink()
     publish_agent_execution_offer(root, transport=lambda **kwargs: sent.append(kwargs["payload"]))
-    assert sent[-1]["offer"]["policy_execution_profiles"] == ["team_evaluation_scored_v1"]
+    assert sent[-1].get("offer") is None or "team_evaluation" not in sent[-1]["offer"]
     # A scene whose check failed is not listed at all, and says why.
     failed = {key: value for key, value in world["probe_receipt"].items() if key != "receipt_digest"}
     failed.update(status="failed", learned_policy_evaluation_admitted=False)
@@ -719,6 +885,7 @@ def test_a_team_arm_that_cannot_reach_the_task_is_refused_before_any_allocation(
                                  team_launch_hooks=world["hooks"])
     assert summary["blocked"] == 1 and world["allocator_calls"] == []
     assert world["client"].blocked == ["team_embodiment_station_out_of_reach"]
+    assert _Broker.accessed == []
 
 
 def test_a_scene_written_in_by_its_own_records_runs_without_a_hand_written_profile(
