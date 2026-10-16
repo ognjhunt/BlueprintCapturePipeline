@@ -2,12 +2,22 @@
 
 import hashlib
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 from blueprint_pipeline import team_candidate_quick10_vast as team_vast
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.vast_provider_adapter import _select_offer
+
+
+@pytest.fixture(autouse=True)
+def fixed_decision_clock(monkeypatch):
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 16, 18, tzinfo=timezone.utc).astimezone(tz)
+    monkeypatch.setattr(team_vast, "datetime", Clock)
 
 
 @pytest.mark.parametrize("name", ["A800 PCIE", "A100 SXM4", "Unregistered accelerator"])
@@ -25,6 +35,7 @@ def _authority(tmp_path, **changes):
         "candidate_ids": ["blueprint-internal.hold-position-v1"],
         "scene_revision_digest": "sha256:e0fd71e52b0fcc8f16f42668e13bd9a9bd727d2db3cc0df95b785ee0191d2a81",
         "task_success_contract_digest": "sha256:c4faf026331e9bf3687b96f5b3c80a484f4a975a7e3812fec96f9524158bb962",
+        "team_candidate_admission": {"admission_digest": "sha256:" + "c" * 64},
         "runtime_inputs_digest": "", **changes,
     }
     inputs["runtime_inputs_digest"] = canonical_digest(inputs, digest_field="runtime_inputs_digest")
@@ -45,7 +56,50 @@ def test_team_country_default_stays_us_without_reading_internal_fixture(monkeypa
 
 def test_singapore_opt_in_requires_exact_bound_authored_fixture(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "SG")
-    assert team_vast.team_candidate_country_codes(_authority(tmp_path)) == ("SG",)
+    authority = _authority(tmp_path)
+    with pytest.raises(ValueError, match="internal_diagnostic_country_approval_invalid"):
+        team_vast.team_candidate_country_codes(authority)
+    _country_approval(tmp_path, monkeypatch)
+    bound = team_vast.bind_team_candidate_country_approval(authority)
+    assert bound["provider_country_approval"]["path"] == str(tmp_path / "country-approval.json")
+    assert bound["authority_digest"] == canonical_digest(bound, digest_field="authority_digest")
+    assert team_vast.team_candidate_country_codes(bound) == ("SG",)
+
+
+def _country_approval(tmp_path, monkeypatch, **changes):
+    value = {"schema_version": "blueprint.internal_diagnostic_country_approval.v1",
+             "approved_by": "@ognjhunt", "country_codes": ["SG"],
+             "scene_id": "internal-team-runtime-diagnostic", "candidate_id": "blueprint-internal.hold-position-v1",
+             "admission_digest": "sha256:" + "c" * 64, "total_cap_usd": 20,
+             "remaining_episodes": 102, "approval_reference": "Hermetic owner decision fixture",
+             "approved_at_iso": "2026-10-16T17:00:00Z",
+             "expires_at_iso": "2026-10-17T04:00:00Z", **changes}
+    path = tmp_path / "country-approval.json"
+    path.write_text(json.dumps(value))
+    monkeypatch.setenv("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_COUNTRY_APPROVAL_FILE", str(path))
+
+
+@pytest.mark.parametrize("changes", [
+    {"country_codes": ["US"]}, {"admission_digest": "sha256:" + "d" * 64},
+    {"expires_at_iso": "2026-10-17T04:00:01Z"}, {"expires_at_iso": "2026-10-15T00:00:00Z"},
+    {"total_cap_usd": 21}, {"approval_reference": ""}, {"approval_reference": None},
+    {"approved_at_iso": "2026-10-17T03:00:00Z"},
+])
+def test_country_decision_must_authorize_this_run_inside_original_bounds(tmp_path, monkeypatch, changes):
+    monkeypatch.setenv("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "SG")
+    _country_approval(tmp_path, monkeypatch, **changes)
+    with pytest.raises(ValueError, match="internal_diagnostic_country_approval_invalid"):
+        team_vast.bind_team_candidate_country_approval(_authority(tmp_path))
+
+
+def test_replacing_country_decision_after_sealing_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "SG")
+    _country_approval(tmp_path, monkeypatch)
+    bound = team_vast.bind_team_candidate_country_approval(_authority(tmp_path))
+    path = tmp_path / "country-approval.json"
+    path.write_text(path.read_text().replace("@ognjhunt", "@someoneX"))
+    with pytest.raises(ValueError, match="internal_diagnostic_country_approval_invalid"):
+        team_vast.team_candidate_country_codes(bound)
 
 
 @pytest.mark.parametrize("changes", [

@@ -27,6 +27,7 @@ import os
 import re
 import stat
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +93,49 @@ def team_candidate_country_codes(authority: Mapping[str, Any]) -> tuple[str, ...
             != "sha256:c4faf026331e9bf3687b96f5b3c80a484f4a975a7e3812fec96f9524158bb962"
             or authority.get("task_success_contract_digest") != inputs["task_success_contract_digest"]):
         raise ValueError("internal_diagnostic_country_scope_invalid")
+    try:
+        record = authority["provider_country_approval"]
+        data = Path(record["path"]).read_bytes()
+        if (len(data) != record["size_bytes"]
+                or "sha256:" + hashlib.sha256(data).hexdigest() != record["sha256"]):
+            raise ValueError("binding")
+        approval = json.loads(data)
+        approved_at = datetime.fromisoformat(approval["approved_at_iso"].replace("Z", "+00:00"))
+        expires_at = datetime.fromisoformat(approval["expires_at_iso"].replace("Z", "+00:00"))
+        if (approval["schema_version"] != "blueprint.internal_diagnostic_country_approval.v1"
+                or approval["approved_by"] != "@ognjhunt" or approval["country_codes"] != ["SG"]
+                or approval["scene_id"] != "internal-team-runtime-diagnostic"
+                or approval["candidate_id"] != inputs["candidate_ids"][0]
+                or approval["admission_digest"] != inputs["team_candidate_admission"]["admission_digest"]
+                or approval["total_cap_usd"] != 20 or approval["remaining_episodes"] != 102
+                or not isinstance(approval["approval_reference"], str) or not approval["approval_reference"].strip()
+                or not approved_at <= datetime.now(timezone.utc) < expires_at
+                or expires_at > datetime(2026, 10, 17, 4, tzinfo=timezone.utc)):
+            raise ValueError("scope")
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise ValueError("internal_diagnostic_country_approval_invalid") from error
     return ("SG",)
+
+
+def bind_team_candidate_country_approval(authority: Mapping[str, Any]) -> dict[str, Any]:
+    """Seal the retained operator decision into the executable authority at staging.
+
+    Setting the country switch on a US-staged authority cannot add this record.
+    The stager alone reseals the authority before the provider bundle is built.
+    """
+    result = dict(authority)
+    country = os.environ.get("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "US").strip().upper() or "US"
+    if country != "US":
+        try:
+            path = Path(os.environ["BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_COUNTRY_APPROVAL_FILE"]).resolve()
+            data = path.read_bytes()
+        except (KeyError, OSError) as error:
+            raise ValueError("internal_diagnostic_country_approval_invalid") from error
+        result["provider_country_approval"] = {"path": str(path), "size_bytes": len(data),
+            "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+        result["authority_digest"] = canonical_digest(result, digest_field="authority_digest")
+    team_candidate_country_codes(result)
+    return result
 
 
 def team_result_upload_bytes(episodes: int) -> int:
@@ -183,4 +226,4 @@ def run_team_candidate_session_vast(
 
 
 __all__ = ["credential_file_blockers", "run_team_candidate_session_vast", "team_result_upload_bytes",
-           "team_candidate_country_codes"]
+           "team_candidate_country_codes", "bind_team_candidate_country_approval"]

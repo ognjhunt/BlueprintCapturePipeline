@@ -132,6 +132,8 @@ def stage_team_runtime(*, root: Path, run_id: str, scene_inputs: Mapping[str, An
         runtime_input_record=_record(inputs_path),
         resource_name="blueprint-native-task-policy-canary-" + canonical_digest({"run_id": run_id})[7:39],
         hard_cap_usd=float(hard_cap_usd), hard_ttl_seconds=int(hard_ttl_seconds))
+    from .team_candidate_quick10_vast import bind_team_candidate_country_approval
+    authority = bind_team_candidate_country_approval(authority)
     spec = execution_spec(admitted, task_success_contract=inputs["task_success_contract"], prompt=prompt,
                           max_policy_queries=max_policy_queries, team_embodiment=team_embodiment,
                           robot_free_probe=robot_free_probe)

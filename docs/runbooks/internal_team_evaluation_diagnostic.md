@@ -63,13 +63,22 @@ and teardown receipts, staged-object absence and fresh provider-zero. Afterwards
 stop the temporary policy service, remove its exact proxy path and private token,
 and retain the diagnostic evidence. `internal_diagnostic_result.json` always says
 development-only, no trained policy evaluation and no customer recommendation.
-# Internal diagnostic capacity fallback
+
+## Internal diagnostic capacity fallback
 
 Beta L5's authored hold-position diagnostic defaults to the same US-only Vast
 filter as other native sessions. If US RTX capacity is unavailable, an operator
 with retained owner approval for this country change can set
 `BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY=SG` on this diagnostic's
-controller only. It selects Singapore only, not a worldwide pool. Leave it unset
+controller only. During staging, also provide
+`BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_COUNTRY_APPROVAL_FILE` pointing to the retained
+country decision. The stager seals that file's path, size and SHA-256 into the
+session authority before bundling. At execution, a country switch alone on an
+old US authority is refused; the bound decision must match the admitted
+checkpoint digest, exact internal candidate, SG-only scope, original total cap,
+remaining 102 episodes and original expiry (2026-10-17 04:00 UTC). It must contain
+the actual owner reference and an approval timestamp, and remain unexpired.
+It selects Singapore only, not a worldwide pool. Leave it unset
 for the US default; do not add it to the shared service environment.
 
 The exception authenticates the session authority's runtime-input file and its
