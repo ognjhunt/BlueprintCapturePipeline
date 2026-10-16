@@ -1935,6 +1935,7 @@ def _select_offer(
     preferred_gpu_keywords: Sequence[str] = (),
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool = True,
+    require_isaac_rt_candidate: bool = False,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
@@ -1947,6 +1948,8 @@ def _select_offer(
 ) -> dict[str, Any] | None:
     if type(require_virtual_machine) is not bool:
         raise ValueError("vast_virtual_machine_flag_invalid")
+    if type(require_isaac_rt_candidate) is not bool:
+        raise ValueError("vast_isaac_rt_requirement_invalid")
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
     allowed_countries = normalize_vast_country_allowlist(
@@ -1988,6 +1991,7 @@ def _select_offer(
         )
         and (not require_direct_port or int(_number(item.get("direct_port_count")) or 0) > 0)
         and gpu_allowed_by_policy(item, policy)
+        and (not require_isaac_rt_candidate or item["isaac_rt_candidate"])
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and (not require_avx or item.get("has_avx") is True)
@@ -2101,6 +2105,7 @@ def _offer_selection_manifest(
     preferred_gpu_keywords: Sequence[str] = (),
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool = True,
+    require_isaac_rt_candidate: bool = False,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     create_retry_attempts: Sequence[Mapping[str, Any]] = (),
     offer_search_retry_attempts: Sequence[Mapping[str, Any]] = (),
@@ -2167,6 +2172,7 @@ def _offer_selection_manifest(
         )
         and (not require_direct_port or int(_number(item.get("direct_port_count")) or 0) > 0)
         and gpu_allowed_by_policy(item, policy)
+        and (not require_isaac_rt_candidate or item["isaac_rt_candidate"])
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and _version_at_least(item.get("driver_version"), minimum_driver_version)
@@ -2232,6 +2238,7 @@ def _offer_selection_manifest(
         "preferred_geolocation_regex": preferred_geolocation_regex,
         **vast_country_policy_manifest(summaries, allowed_countries),
         "prefer_isaac_rt": prefer_isaac_rt,
+        "require_isaac_rt_candidate": require_isaac_rt_candidate,
         "gpu_selection_policy": policy_manifest(policy),
         "quality_filtered_offer_count": quality_filtered_offer_count,
         "disk_capacity_filtered_offer_count": sum(
@@ -8371,6 +8378,7 @@ def run_vast_provider_adapter(
         create_response: dict[str, Any] = {}
         create_payload: dict[str, Any] = {}
         image_login_summary: dict[str, Any] = {}
+        require_rt = _is_isaac_provider_bundle(provider_bundle_kind)
         while True:
             search_request = _search_payload(
                 limit=100,
@@ -8397,8 +8405,7 @@ def run_vast_provider_adapter(
                 timeout_seconds=45,
             )
             offers = _offers_from_response(search_response)
-            selected_offer = _select_offer(
-                offers,
+            selection_kwargs = dict(
                 max_hourly_rate=max_hourly_rate,
                 min_gpu_ram_mb=resolved_min_gpu_ram_mb,
                 min_compute_cap=resolved_min_compute_cap,
@@ -8421,8 +8428,56 @@ def run_vast_provider_adapter(
                 expected_provider_download_bytes=expected_provider_download_bytes,
                 expected_provider_upload_bytes=expected_provider_upload_bytes,
             )
+            selected_offer = _select_offer(
+                offers, require_isaac_rt_candidate=require_rt, **selection_kwargs
+            )
+            search_coverage = []
+            coverage_incomplete = False
+            search_transport_error_type = None
+            while require_rt:
+                ids_digest = canonical_digest({"offer_ids": sorted(_offer_id(o) or -1 for o in offers)})
+                repeated_page = bool(search_coverage and search_coverage[-1]["offer_ids_digest"] == ids_digest)
+                search_coverage.append({"limit": search_request["limit"],
+                                        "offer_count": len(offers), "http_status": status_code or None,
+                                        "offer_ids_digest": ids_digest,
+                                        "transport_error_type": search_transport_error_type})
+                coverage_incomplete = status_code != 200 or (not selected_offer and (len(offers) >= 10000 or repeated_page))
+                write_json(resolved_job_dir / "vast_native_offer_search_coverage.json", {
+                    "searches": search_coverage, "coverage_incomplete": coverage_incomplete,
+                    "provider_mutations_performed": 0,
+                })
+                if coverage_incomplete:
+                    selected_offer = None
+                    break
+                if selected_offer or len(offers) < search_request["limit"]:
+                    break
+                # A full page with no selectable native offer is inconclusive.
+                # Expand only the read window; all selection constraints stay
+                # fixed. A saturated read bound reports unknown before rental.
+                search_request["limit"] *= 10
+                try:
+                    status_code, search_response = _api_json(
+                        method="POST", path="/bundles/", api_key=api_key,
+                        payload=search_request, timeout_seconds=45,
+                    )
+                except Exception as exc:
+                    status_code, search_response = 0, {}
+                    search_transport_error_type = type(exc).__name__
+                offers = _offers_from_response(search_response)
+                selected_offer = _select_offer(
+                    offers, require_isaac_rt_candidate=True, **selection_kwargs
+                )
+            only_rt_blocked = bool(
+                require_rt and not selected_offer and not coverage_incomplete
+                and _select_offer(offers, require_isaac_rt_candidate=False, **selection_kwargs) is not None
+                # A mixed inventory can contain RT hardware that fails price or
+                # another frozen filter. Preserve those existing refusal causes.
+                and not any(_is_isaac_rt_candidate(_gpu_name(offer)) for offer in offers)
+            )
             offer_blockers: list[str] = []
-            if not selected_offer:
+            if coverage_incomplete:
+                offer_blockers.append("vast_native_offer_search_coverage_incomplete")
+            elif not selected_offer and not only_rt_blocked:
                 if expected_provider_download_bytes or expected_provider_upload_bytes:
                     offer_blockers.append(
                         "no_vast_offer_with_transfer_rates_and_total_cost_under_hard_cap"
@@ -8442,8 +8497,10 @@ def run_vast_provider_adapter(
                     if require_known_supported_isaac_driver
                     else "no_vast_offer_at_or_below_max_hourly_rate"
                 )
+            if only_rt_blocked:
+                offer_blockers.append("no_vast_offer_with_required_isaac_rt_capability")
             retry_empty_offer_search = bool(
-                not selected_offer
+                not selected_offer and not coverage_incomplete
                 and empty_offer_search_retry_count < max_empty_offer_search_retries
             )
             if retry_empty_offer_search:
@@ -8481,6 +8538,7 @@ def run_vast_provider_adapter(
                 preferred_gpu_keywords=resolved_preferred_gpu_keywords,
                 preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
+                require_isaac_rt_candidate=_is_isaac_provider_bundle(provider_bundle_kind),
                 gpu_selection_policy=gpu_selection_policy,
                 create_retry_attempts=create_retry_attempts,
                 offer_search_retry_attempts=offer_search_retry_attempts,
@@ -8502,11 +8560,15 @@ def run_vast_provider_adapter(
                 create_attempt_index=create_attempt_index,
             )
             if not selected_offer:
+                if coverage_incomplete:
+                    raise RuntimeError("vast_native_offer_search_coverage_incomplete")
                 if retry_empty_offer_search:
                     empty_offer_search_retry_count += 1
                     time.sleep(empty_offer_search_retry_interval)
                     continue
-                raise RuntimeError("no_vast_offer_selected")
+                raise RuntimeError(
+                    "no_vast_offer_with_required_isaac_rt_capability" if only_rt_blocked else "no_vast_offer_selected"
+                )
 
             projected_transfer_cost = _projected_provider_transfer_cost_usd(
                 selected_offer,
@@ -8711,6 +8773,7 @@ def run_vast_provider_adapter(
                     preferred_gpu_keywords=resolved_preferred_gpu_keywords,
                     preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                     prefer_isaac_rt=resolved_prefer_isaac_rt,
+                    require_isaac_rt_candidate=_is_isaac_provider_bundle(provider_bundle_kind),
                     gpu_selection_policy=gpu_selection_policy,
                     create_retry_attempts=create_retry_attempts,
                     offer_search_retry_attempts=offer_search_retry_attempts,
@@ -9725,6 +9788,8 @@ def run_vast_provider_adapter(
                 if require_known_supported_isaac_driver
                 else "no_vast_offer_at_or_below_max_hourly_rate"
             )
+            if exc_text == "no_vast_offer_with_required_isaac_rt_capability":
+                exception_blockers = [exc_text]
         else:
             exception_status = "failed"
             exception_reason = "vast_probe_failed"
