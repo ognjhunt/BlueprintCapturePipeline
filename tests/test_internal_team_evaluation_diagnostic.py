@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,31 @@ from blueprint_pipeline.droid_https_policy_client import INTERFACE_ID, REQUEST_S
 from blueprint_pipeline.team_candidate_quick10_registry import offer_eligibility
 from tests.test_native_task_arena_bundle import _runtime_source_packet
 from tests.test_native_task_arena_packet import _request
+
+
+def test_authored_fixture_binds_the_real_native_rigid_scorer(tmp_path):
+    from blueprint_pipeline.native_task_episode_environment import NativeRigidScoringEnvironment
+
+    root = _fixture(tmp_path)
+    plan = json.loads((root / "scene/native-task-packet/native_task_arena_scene_plan.v1.json").read_text())
+    # This is the actual adapter constructor that refused the retained GPU run.
+    NativeRigidScoringEnvironment(environment=object(),
+        task_readback=SimpleNamespace(read_task_sample=lambda: {}), task_spec=plan["task_spec"])
+
+
+def test_review_camera_has_room_for_placement_variations(tmp_path):
+    from blueprint_pipeline.native_task_camera_framing_expectation import camera_framing_expectation
+
+    root = _fixture(tmp_path)
+    plan = json.loads((root / "scene/native-task-packet/native_task_arena_scene_plan.v1.json").read_text())
+    overview = next(camera for camera in plan["cameras"] if camera["role"] == "overview")
+    assert overview["policy_input"] is False
+    # Retained cells 07/08/12 had only 62-63 interior pixels against 64 required.
+    # Keep the runtime guard and give the authored review view a larger target.
+    positions = [[.5 + x, y, .78] for x in [-.03, 0., .03] for y in [-.03, .03, .17, .23]]
+    framing = camera_framing_expectation(camera=overview, object_extent_m=[.06] * 3,
+                                        object_positions_world=positions)
+    assert framing["expected_bbox_area_px"] >= 225
 
 
 def _approval() -> dict:

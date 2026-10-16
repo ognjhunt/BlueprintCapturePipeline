@@ -62,17 +62,9 @@ class NativeRigidScoringEnvironment:
     deterministic task outcome interpretable.
     """
 
-    def __init__(
-        self,
-        *,
-        environment: Any,
-        task_readback: Any,
-        task_spec: Mapping[str, Any],
-    ) -> None:
-        if not callable(getattr(task_readback, "read_task_sample", None)):
-            raise NativeTaskEpisodeEnvironmentError(
-                ["native_task_rigid_scoring_readback_missing"]
-            )
+    @staticmethod
+    def validate_task_spec(task_spec: Mapping[str, Any]) -> tuple[float, float, list[float], list[float]]:
+        """Validate the execution contract during preparation without opening Isaac."""
         try:
             contact_threshold = float(task_spec["task_contact_minimum_force_n"])
             collision_threshold = float(
@@ -104,6 +96,20 @@ class NativeRigidScoringEnvironment:
             raise NativeTaskEpisodeEnvironmentError(
                 ["native_task_rigid_scoring_contract_invalid"]
             )
+        return contact_threshold, collision_threshold, lower, upper
+
+    def __init__(
+        self,
+        *,
+        environment: Any,
+        task_readback: Any,
+        task_spec: Mapping[str, Any],
+    ) -> None:
+        if not callable(getattr(task_readback, "read_task_sample", None)):
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_rigid_scoring_readback_missing"]
+            )
+        contact_threshold, collision_threshold, lower, upper = self.validate_task_spec(task_spec)
         self._telemetry = NativeRigidEpisodeTelemetry(task_spec)
         self._environment = environment
         self._task_readback = task_readback
