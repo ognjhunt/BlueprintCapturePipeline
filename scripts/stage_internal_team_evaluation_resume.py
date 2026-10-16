@@ -129,10 +129,17 @@ def verify_media(native: Path, rows: list[dict]) -> dict:
     from blueprint_pipeline.policy_request_evidence import restore_request, validate_request_evidence
 
     counts = {"episodes": 0, "policy_request_frame_pairs": 0, "review_videos": 0}
+    inner = diagnostic._read(native)
+    planned = inner.get("planned_episodes_per_policy", len(rows))
+    failed = {failure["raw_child_result"]["selected_cell_index"] for failure in inner.get("isolated_cell_failures", [])}
+    indices = [index for index in range(planned) if index not in failed]
+    if (any(type(index) is not int or not 0 <= index < planned for index in failed)
+            or len(indices) != len(rows)):
+        raise ValueError("diagnostic_retained_child_indices_invalid")
     for index, row in enumerate(rows):
         if row["status"] != "completed":
             continue
-        cell = native.parent / "cell_runs" / f"{index:02d}"
+        cell = native.parent / "cell_runs" / f"{indices[index]:02d}"
         child = diagnostic._read(cell / native.name)
         child_row = child["episodes"][0]
         if ({key: value for key, value in child_row.items() if key != "evidence_artifacts"}

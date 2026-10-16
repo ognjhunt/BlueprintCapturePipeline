@@ -146,3 +146,29 @@ def test_historical_partial_adoption_requires_original_archive_manifest_and_prep
         with pytest.raises(ValueError, match='existing_adoption_changed'):
             staging.recover_partial({'root': str(source), 'cells': inputs['cells']}, adapter, tmp_path / 'derived')
     assert (evidence / session.PROVIDER_RESULT_FILENAME).read_bytes() == before
+
+
+def test_partial_media_follows_original_child_indices_after_a_middle_refusal(tmp_path, monkeypatch):
+    import json
+    from scripts.stage_internal_team_evaluation_resume import verify_media
+    from blueprint_pipeline import policy_canary_media_integrity as integrity
+
+    rows = [{'cell_id': 'first', 'status': 'completed', 'episode': {
+        'candidate_exact_policy_input_frames': [], 'policy_request_artifacts': [], 'policy_queries': 0,
+        'media_artifacts': []}}, {'cell_id': 'third', 'status': 'completed', 'episode': {
+        'candidate_exact_policy_input_frames': [], 'policy_request_artifacts': [], 'policy_queries': 0,
+        'media_artifacts': []}}]
+    for index, row in zip((0, 2), rows, strict=True):
+        path = tmp_path / 'cell_runs' / f'{index:02d}' / 'result.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({'episodes': [row]}))
+    failed = tmp_path / 'cell_runs/01/result.json'
+    failed.parent.mkdir(parents=True)
+    failed.write_text(json.dumps({'episodes': []}))
+    native = tmp_path / 'result.json'
+    native.write_text(json.dumps({'planned_episodes_per_policy': 3, 'isolated_cell_failures': [
+        {'raw_child_result': {'selected_cell_index': 1}}], 'episodes': rows}))
+    checked = []
+    monkeypatch.setattr(integrity, 'require_completed_episode_media', lambda root, episode: checked.append(root.name))
+    assert verify_media(native, rows)['episodes'] == 2
+    assert checked == ['00', '02']
