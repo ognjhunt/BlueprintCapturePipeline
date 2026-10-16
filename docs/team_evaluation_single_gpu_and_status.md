@@ -20,12 +20,17 @@ of control contact. Insufficient funding, execution time or runtime budget refus
 allocation. The same canonical cost-window calculation runs before claiming
 the one-use policy credential; supported faster rates still require a profile
 whose approved cap covers their full plan. The service timeout covers the maximum supported planner window
-instead of silently truncating it to 16 hours. No existing approval is extended.
+instead of silently truncating it to 16 hours. Dispatch also reserves 30 minutes
+for metadata, sealing and the initial queue handoff before claiming the token.
+Queue delays can still cause a later refusal; they never extend an approval.
 A lost allocated session cannot authorize a replacement
 GPU. Only a refusal proving zero allocation may be restaged.
 
 The worker retains its fresh-interpreter/Isaac process per case. It fsyncs a
-digest-bound completed-child checkpoint after each case. After the first 25
+digest-bound completed-child checkpoint after each case. The shared aggregation
+validator checks each new child, its scenario/contract/candidate bindings and
+its native episode evidence before another case starts. A malformed child is
+retained raw while only the validated prefix is sealed. After the first 25
 cases, more than half failing at the policy interface stops the session and
 seals that prefix before normal provider teardown. Ordinary task failures do
 not trigger this gate. A missing/timed-out later child preserves the previously

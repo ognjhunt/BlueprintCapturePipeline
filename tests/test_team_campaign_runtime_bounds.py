@@ -77,3 +77,17 @@ def test_faster_robot_must_fit_the_cap_before_claiming_its_one_use_credential(tm
         assert world['client'].blocked == ['team_evaluation_budget_below_planned_runtime']
         assert not (world['job_dir'] / '.team-credential').exists()
     assert world['allocator_calls'] == []
+
+
+def test_funding_with_only_one_second_of_staging_slack_refuses_before_claim(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    original = launch._funding
+
+    def funding(row, profile):
+        return {**original(row, profile), 'expires_at_iso':
+                (datetime.now(timezone.utc) + timedelta(seconds=campaign_ttl_seconds() + 1)).isoformat()}
+
+    monkeypatch.setattr(launch, '_funding', funding)
+    result = executor.poll_once(client=world['client'], capture_root=world['capture'], team_launch_hooks=world['hooks'])
+    assert result['blocked'] == 1 and _Broker.accessed == [] and world['allocator_calls'] == []
+    assert world['client'].blocked == ['team_evaluation_funding_window_below_planned_runtime']

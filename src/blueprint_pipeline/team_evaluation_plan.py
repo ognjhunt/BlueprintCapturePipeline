@@ -73,6 +73,8 @@ MAXIMUM_VOID_SHARE = 0.05
 # and a fixed allowance for provisioning and download.
 SECONDS_PER_CELL = 300
 SHARD_OVERHEAD_SECONDS = 1800
+# Additional admission slack for metadata, sealing and the initial queue handoff.
+PRELAUNCH_RESERVE_SECONDS = 1800
 SCORED_FAMILY_SHARES = (
     ("canonical_anchor", 0.02),
     ("placement_approach", 0.23),

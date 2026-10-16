@@ -1136,6 +1136,54 @@ def _prefix_episode_evidence_paths(
     return value
 
 
+def _validate_isolated_cell_result(*, child: Mapping[str, Any], inputs: Mapping[str, Any], index: int) -> bool:
+    """Validate one completed child; False denotes the retained pre-policy failure shape."""
+    candidate_ids = tuple(str(value) for value in inputs["candidate_ids"])
+    if type(child.get("selected_cell_index")) is not int or child["selected_cell_index"] != index:
+        raise RuntimeError("policy_canary_isolated_cell_result_invalid")
+    if (child.get("result_digest") == canonical_digest(child, digest_field="result_digest")
+            and child.get("task_success_contract") == inputs.get("task_success_contract")
+            and child.get("task_success_contract_digest") == inputs.get("task_success_contract_digest")
+            and child.get("status") == "blocked" and child.get("episodes") == []
+            and child.get("policy_loads") == [] and child.get("candidate_policy_queried") is False
+            and child.get("preload_observation_gate") is None
+            and (child.get("session_closeout") or {}).get("runtime_closed") is True
+            and (child.get("telemetry") or {}).get("message_count") == 0
+            and (child.get("telemetry") or {}).get("channel_message_counts")
+                == {"observations": 0, "episode_envelopes": 0}
+            and child.get("session_failure_type")
+            and any(frame.get("function") == "prepolicy_observation_gate"
+                for frame in child.get("session_failure_source_trace") or [])):
+        # Retain the raw pre-policy failure separately. It is not an episode,
+        # policy outcome, loaded candidate, or measured runtime identity.
+        return False
+    if (
+        child.get("selected_cell_index") != index
+        or child.get("status")
+        != "runtime_selected_cell_completed_pending_aggregation"
+        or not isinstance(child.get("episodes"), list)
+        or len(child["episodes"]) != len(candidate_ids)
+        or child.get("task_success_contract")
+        != inputs.get("task_success_contract")
+        or child.get("task_success_contract_digest")
+        != inputs.get("task_success_contract_digest")
+        or child.get("result_digest") != canonical_digest(child, digest_field="result_digest")
+    ):
+        raise RuntimeError("policy_canary_isolated_cell_result_invalid")
+    cell = inputs["cells"][index]
+    for row in child["episodes"]:
+        if not isinstance(row, Mapping):
+            raise RuntimeError("policy_canary_isolated_cell_result_invalid")
+        if any(row.get(field) != cell.get(field) for field in (
+            "cell_id", "seed", "cell_spec_digest", "family",
+            "resolved_scenario", "resolved_scenario_digest",
+        )):
+            raise RuntimeError("policy_canary_isolated_cell_scenario_binding_invalid")
+    if {str(row.get("candidate_id")) for row in child["episodes"]} != set(candidate_ids):
+        raise RuntimeError("policy_canary_isolated_cell_pairing_invalid")
+    return True
+
+
 def _aggregate_isolated_cell_results(
     *,
     authority: Mapping[str, Any],
@@ -1155,43 +1203,9 @@ def _aggregate_isolated_cell_results(
     episodes: list[dict[str, Any]] = []
     failed_cells: list[dict[str, Any]] = []
     for index, child in enumerate(child_results):
-        if (child.get("result_digest") == canonical_digest(child, digest_field="result_digest")
-                and child.get("task_success_contract") == inputs.get("task_success_contract")
-                and child.get("task_success_contract_digest") == inputs.get("task_success_contract_digest")
-                and child.get("status") == "blocked" and child.get("episodes") == []
-                and child.get("policy_loads") == [] and child.get("candidate_policy_queried") is False
-                and child.get("preload_observation_gate") is None
-                and (child.get("session_closeout") or {}).get("runtime_closed") is True
-                and (child.get("telemetry") or {}).get("message_count") == 0
-                and (child.get("telemetry") or {}).get("channel_message_counts")
-                    == {"observations": 0, "episode_envelopes": 0}
-                and child.get("session_failure_type")
-                and any(frame.get("function") == "prepolicy_observation_gate"
-                    for frame in child.get("session_failure_source_trace") or [])):
-            # Retain the raw pre-policy failure separately. It is not an episode,
-            # policy outcome, loaded candidate, or measured runtime identity.
+        if not _validate_isolated_cell_result(child=child, inputs=inputs, index=index):
             failed_cells.append({"cell": inputs["cells"][index], "raw_child_result": dict(child)})
             continue
-        if (
-            child.get("selected_cell_index") != index
-            or child.get("status")
-            != "runtime_selected_cell_completed_pending_aggregation"
-            or not isinstance(child.get("episodes"), list)
-            or len(child["episodes"]) != len(candidate_ids)
-            or child.get("task_success_contract")
-            != inputs.get("task_success_contract")
-            or child.get("task_success_contract_digest")
-            != inputs.get("task_success_contract_digest")
-            or child.get("result_digest") != canonical_digest(child, digest_field="result_digest")
-        ):
-            raise RuntimeError("policy_canary_isolated_cell_result_invalid")
-        cell = inputs["cells"][index]
-        for row in child["episodes"]:
-            if any(row.get(field) != cell.get(field) for field in (
-                "cell_id", "seed", "cell_spec_digest", "family",
-                "resolved_scenario", "resolved_scenario_digest",
-            )):
-                raise RuntimeError("policy_canary_isolated_cell_scenario_binding_invalid")
         prefix = f"cell_runs/{index:02d}"
         episodes.extend(
             _prefix_episode_evidence_paths(row, prefix=prefix)
@@ -1325,13 +1339,20 @@ def _emit_cell_progress(stage: str, index: int, *, progress_path: Path | None = 
 def _team_checkpoint(*, output_root: Path, inputs: Mapping[str, Any],
                      authority: Mapping[str, Any], children: list[Mapping[str, Any]]) -> None:
     """Fsync a digest-bound completed prefix; never authorize replay or another GPU."""
+    from blueprint_pipeline.native_task_arena_policy_canary_session import _episode_evidence_valid
+
+    newest = children[-1]
+    if newest.get("schema_version") != "native_task_arena_policy_canary_session_result.v1":
+        raise RuntimeError("team_evaluation_checkpoint_child_schema_invalid")
+    _validate_isolated_cell_result(child=newest, inputs=inputs, index=len(children) - 1)
+    if any(not _episode_evidence_valid(row) for row in newest.get("episodes", [])):
+        raise RuntimeError("team_evaluation_checkpoint_episode_evidence_invalid")
     refs = []
     for index, child in enumerate(children):
         # Earlier children were checked before their checkpoint and are never
         # changed here. Rehashing all media-bearing records on every cell
         # would turn a 200-cell campaign into quadratic serialization work.
-        if (child.get("selected_cell_index") != index or (index == len(children) - 1
-                and child.get("result_digest") != canonical_digest(child, digest_field="result_digest"))):
+        if child.get("selected_cell_index") != index:
             raise RuntimeError("team_evaluation_checkpoint_child_binding_invalid")
         refs.append({"cell_id": inputs["cells"][index]["cell_id"],
                      "relative_path": f"cell_runs/{index:02d}/{PROVIDER_RESULT_FILENAME}",
@@ -1477,7 +1498,13 @@ def _run_isolated_cell_processes(
             _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=blocked)
             return 1
         if inputs.get("run_kind") == TEAM_RUN_KIND:
-            _team_checkpoint(output_root=output_root, inputs=inputs, authority=authority, children=child_results)
+            try:
+                _team_checkpoint(output_root=output_root, inputs=inputs, authority=authority, children=child_results)
+            except Exception as exc:  # noqa: BLE001 - preserve validated prefix and stop paid work
+                _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                    children=child_results[:-1], construction_lineage_mode=construction_lineage_mode,
+                    reason=str(exc))
+                raise
             from blueprint_pipeline.team_policy_episode_outcome import FIRST_BATCH_CELLS, first_batch_failure
             if len(child_results) == FIRST_BATCH_CELLS:
                 first_rows = [row for child in child_results for row in child.get("episodes", [])]

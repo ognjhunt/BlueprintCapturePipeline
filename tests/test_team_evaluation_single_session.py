@@ -64,7 +64,12 @@ def _campaign(tmp_path, monkeypatch, *, interface_failures=0, missing_at=None):
         row = dict(rows[index], family=inputs["cells"][index]["family"])
         if index < interface_failures:
             row.update(status="failed", episode={}, candidate_policy_query_attempted=True,
-                       policy_response_status="timeout", failure_message="team_policy_https_timeout")
+                       policy_response_status="timeout", failure_message="team_policy_https_timeout",
+                       episode_failure_stage="after_first_observation", first_observation_retained=True,
+                       policy_outcome_interpretable=False,
+                       visual_evidence={"status": "complete", "human_review_available": True,
+                                        "episode_terminal_status": "failed_after_first_observation",
+                                        "terminal_observation_invented": False})
         else:
             row.update(status="completed", scoring_authority="deterministic_simulator_state",
                        episode={"score": {"status": "scored", "task_succeeded": False}})
@@ -118,3 +123,41 @@ def test_authority_refuses_invalid_absolute_deadline(tmp_path, monkeypatch, dead
         authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
     with pytest.raises(ValueError):
         validate_session_authority(authority)
+
+
+@pytest.mark.parametrize('damage', ['status', 'contract', 'scenario', 'candidate', 'episodes', 'media', 'schema'])
+def test_malformed_child_stops_before_the_next_paid_case_and_retains_valid_prefix(tmp_path, monkeypatch, damage):
+    runtime, output, _inputs, _authority, seen, spawn = _campaign(tmp_path, monkeypatch)
+
+    def damaged_spawn(**kwargs):
+        result = spawn(**kwargs)
+        if kwargs['index'] == 3:
+            path = kwargs['child_root'] / PROVIDER_RESULT_FILENAME
+            child = json.loads(path.read_text())
+            if damage == 'schema':
+                child['schema_version'] = 'invented'
+            elif damage == 'status':
+                child['status'] = 'invented'
+            elif damage == 'contract':
+                child['task_success_contract_digest'] = 'sha256:' + '0' * 64
+            elif damage == 'scenario':
+                child['episodes'][0]['seed'] = -1
+            elif damage == 'candidate':
+                child['episodes'][0]['candidate_id'] = 'another-policy'
+            elif damage == 'episodes':
+                child['episodes'] = []
+            elif damage == 'media':
+                child['episodes'][0]['lossless_frame_manifest_digest'] = 'unbound'
+            child['result_digest'] = canonical_digest(child, digest_field='result_digest')
+            worker._seal_result(result_path=path, result=child)
+        return result
+
+    with pytest.raises(RuntimeError):
+        worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=damaged_spawn)
+    assert seen == list(range(4))
+    checkpoint = json.loads((output / 'team_evaluation_checkpoint.json').read_text())
+    assert len(checkpoint['completed_child_results']) == 3
+    result = json.loads((output / PROVIDER_RESULT_FILENAME).read_text())
+    assert result['status'] == 'blocked' and len(result['episodes']) == 3
+    assert result['planned_episodes_per_policy'] == 200
+    assert (output / 'cell_runs/03' / PROVIDER_RESULT_FILENAME).is_file()

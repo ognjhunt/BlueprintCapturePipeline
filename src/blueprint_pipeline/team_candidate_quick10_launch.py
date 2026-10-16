@@ -69,6 +69,7 @@ from .team_embodiment import (
 )
 from .team_evaluation_plan import (
     EPISODES,
+    PRELAUNCH_RESERVE_SECONDS,
     campaign_ttl_seconds,
     profile_purpose,
     runtime_cells,
@@ -392,7 +393,7 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     manifest = request_embodiment(request)
     required_ttl = campaign_ttl_seconds(control_hz=int(manifest["control_hz"]) if manifest else 15)
     funding_expiry = datetime.fromisoformat(funding["expires_at_iso"].replace("Z", "+00:00")).timestamp()
-    if funding_expiry - time.time() < required_ttl:
+    if funding_expiry - time.time() < required_ttl + PRELAUNCH_RESERVE_SECONDS:
         raise TeamCandidateLaunchError("team_evaluation_funding_window_below_planned_runtime")
     funded_minutes = _remaining_session_live_minutes(
         job=job_dir, hard_cap_usd=float(funding["cap_usd"]), hard_ttl_seconds=required_ttl,
