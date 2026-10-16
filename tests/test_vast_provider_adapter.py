@@ -9877,7 +9877,11 @@ def _run_with_staged_output(tmp_path: Path, monkeypatch, events: list[str], *,
                 query = kwargs["payload"]
                 if search_requests is not None:
                     search_requests.append(dict(query))
-                limit = query["limit"] if provider_offer_limit is None else min(query["limit"], provider_offer_limit)
+                if query["limit"] > 100 and provider_offer_limit == "timeout":
+                    raise TimeoutError("simulated expanded offer search timeout")
+                if query["limit"] > 100 and provider_offer_limit == "http503":
+                    return 503, {}
+                limit = query["limit"] if not isinstance(provider_offer_limit, int) else min(query["limit"], provider_offer_limit)
                 return 200, {"offers": provider_offers[:limit]}
             return 200, {"offers": [{"id": 303, "ask_contract_id": 303, "gpu_name": "RTX 4090",
                                      "dph_total": 0.31, "driver_version": "580.95.05", "num_gpus": 1,

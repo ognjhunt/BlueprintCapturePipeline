@@ -142,7 +142,7 @@ def test_native_search_can_select_rt_offer_after_first_hundred_compute_offers(tm
     assert manifest["selected_offer_isaac_rt_candidate"] is True and "teardown" in events
 
 
-@pytest.mark.parametrize("provider_offer_limit", [None, 100])
+@pytest.mark.parametrize("provider_offer_limit", [None, 100, "timeout", "http503"])
 def test_native_search_reports_incomplete_coverage_at_read_bound_before_rental(tmp_path, monkeypatch, provider_offer_limit):
     from tests.test_vast_provider_adapter import _run_with_staged_output
 
@@ -155,3 +155,7 @@ def test_native_search_reports_incomplete_coverage_at_read_bound_before_rental(t
                                        provider_offer_limit=provider_offer_limit)
     assert not events and result["continuing_spend_from_this_run"] is False
     assert "vast_native_offer_search_coverage_incomplete" in result["blockers"]
+    manifest = json.loads((tmp_path / "vast_offer_selection_manifest.json").read_text())
+    assert manifest["offer_search_performed"] is True
+    assert manifest["require_isaac_rt_candidate"] is True
+    assert manifest["blockers"] == ["vast_native_offer_search_coverage_incomplete"]

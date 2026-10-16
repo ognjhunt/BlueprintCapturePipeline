@@ -8432,42 +8432,52 @@ def run_vast_provider_adapter(
                 offers, require_isaac_rt_candidate=require_rt, **selection_kwargs
             )
             search_coverage = []
+            coverage_incomplete = False
+            search_transport_error_type = None
             while require_rt:
                 ids_digest = canonical_digest({"offer_ids": sorted(_offer_id(o) or -1 for o in offers)})
                 repeated_page = bool(search_coverage and search_coverage[-1]["offer_ids_digest"] == ids_digest)
                 search_coverage.append({"limit": search_request["limit"],
-                                        "offer_count": len(offers), "http_status": status_code,
-                                        "offer_ids_digest": ids_digest})
-                incomplete = status_code != 200 or (not selected_offer and (len(offers) >= 10000 or repeated_page))
+                                        "offer_count": len(offers), "http_status": status_code or None,
+                                        "offer_ids_digest": ids_digest,
+                                        "transport_error_type": search_transport_error_type})
+                coverage_incomplete = status_code != 200 or (not selected_offer and (len(offers) >= 10000 or repeated_page))
                 write_json(resolved_job_dir / "vast_native_offer_search_coverage.json", {
-                    "searches": search_coverage, "coverage_incomplete": incomplete,
+                    "searches": search_coverage, "coverage_incomplete": coverage_incomplete,
                     "provider_mutations_performed": 0,
                 })
-                if incomplete:
-                    raise RuntimeError("vast_native_offer_search_coverage_incomplete")
+                if coverage_incomplete:
+                    selected_offer = None
+                    break
                 if selected_offer or len(offers) < search_request["limit"]:
                     break
                 # A full page with no selectable native offer is inconclusive.
                 # Expand only the read window; all selection constraints stay
                 # fixed. A saturated read bound reports unknown before rental.
                 search_request["limit"] *= 10
-                status_code, search_response = _api_json(
-                    method="POST", path="/bundles/", api_key=api_key,
-                    payload=search_request, timeout_seconds=45,
-                )
+                try:
+                    status_code, search_response = _api_json(
+                        method="POST", path="/bundles/", api_key=api_key,
+                        payload=search_request, timeout_seconds=45,
+                    )
+                except Exception as exc:
+                    status_code, search_response = 0, {}
+                    search_transport_error_type = type(exc).__name__
                 offers = _offers_from_response(search_response)
                 selected_offer = _select_offer(
                     offers, require_isaac_rt_candidate=True, **selection_kwargs
                 )
             only_rt_blocked = bool(
-                require_rt and not selected_offer
+                require_rt and not selected_offer and not coverage_incomplete
                 and _select_offer(offers, require_isaac_rt_candidate=False, **selection_kwargs) is not None
                 # A mixed inventory can contain RT hardware that fails price or
                 # another frozen filter. Preserve those existing refusal causes.
                 and not any(_is_isaac_rt_candidate(_gpu_name(offer)) for offer in offers)
             )
             offer_blockers: list[str] = []
-            if not selected_offer and not only_rt_blocked:
+            if coverage_incomplete:
+                offer_blockers.append("vast_native_offer_search_coverage_incomplete")
+            elif not selected_offer and not only_rt_blocked:
                 if expected_provider_download_bytes or expected_provider_upload_bytes:
                     offer_blockers.append(
                         "no_vast_offer_with_transfer_rates_and_total_cost_under_hard_cap"
@@ -8490,7 +8500,7 @@ def run_vast_provider_adapter(
             if only_rt_blocked:
                 offer_blockers.append("no_vast_offer_with_required_isaac_rt_capability")
             retry_empty_offer_search = bool(
-                not selected_offer
+                not selected_offer and not coverage_incomplete
                 and empty_offer_search_retry_count < max_empty_offer_search_retries
             )
             if retry_empty_offer_search:
@@ -8550,6 +8560,8 @@ def run_vast_provider_adapter(
                 create_attempt_index=create_attempt_index,
             )
             if not selected_offer:
+                if coverage_incomplete:
+                    raise RuntimeError("vast_native_offer_search_coverage_incomplete")
                 if retry_empty_offer_search:
                     empty_offer_search_retry_count += 1
                     time.sleep(empty_offer_search_retry_interval)
