@@ -130,6 +130,20 @@ finish_session() {{
 }}
 trap finish_session EXIT INT TERM HUP
 
+# This entrypoint replaces the base arena entrypoint, including its media
+# bootstrap. Both tools must exist before any isolated simulator cell starts.
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:started"
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && \\
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >>"$OUT_DIR/media_toolchain_install.log" 2>&1
+fi
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:blocked"
+  write_fallback_result policy_canary_media_toolchain_unavailable 86
+  exit 86
+fi
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:completed"
+
 /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \\
   --source-receipt "$SOURCE_RECEIPT" --source-packet "$SOURCE_PACKET" \\
   --extraction-dir "$RUNTIME_DIR/provisioned_runtime_sources" \\
