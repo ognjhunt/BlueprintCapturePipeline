@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import zipfile
 
 from blueprint_pipeline import internal_team_evaluation_diagnostic as diagnostic
 from blueprint_pipeline import team_candidate_quick10_launch as launch
@@ -27,6 +28,110 @@ from blueprint_pipeline.team_candidate_quick10_closeout import join_team_session
 from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, offer_eligibility
 from blueprint_pipeline.vast_official_billing_extractor import extract_vast_official_instance_charge
 
+# Historical download metadata retained size, not an archive checksum. Pin the
+# operator-observed closed-run bytes in reviewed source, independently of the
+# mutable local download/child/manifest records. This is a retained-host pin,
+# not a retroactive provider-transfer attestation. No other legacy archive is
+# authorized by this repair.
+REVIEWED_RETAINED_ARCHIVES = {
+    "sha256:f43b01a3bc5a0a02bb9a6683bb56799557c7ea0f3f99f4a5228528f60c3602f1":
+        "sha256:0f438087e65030036fd866f4f35b764f227eeea4ce49f494651678c89ec2b5a9",
+}
+
+
+def recover_partial(shard: dict, adapter: dict, destination: Path) -> tuple[dict, dict, dict]:
+    """Reaggregate authenticated child bytes; preserve the failed parent and child."""
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import _aggregate_isolated_cell_results, _prefix_episode_evidence_paths
+    from blueprint_pipeline.native_task_arena_policy_canary_session import validate_runtime_input_manifest, validate_session_authority
+    from blueprint_pipeline.policy_canary_recovered_output_adoption import _adoption_copier
+
+    source = Path(shard["root"])
+    evidence = Path(adapter["native_control_result_path"]).parent
+    attempt = evidence.parent
+    archive = attempt / "vast_provider_run/vast_provider_runtime_output.zip"
+    download = diagnostic._read(attempt / "vast_provider_run/vast_provider_output_download_manifest.json")
+    if (archive.is_symlink() or not archive.is_file() or download.get("status") != "completed"
+            or download.get("output_zip_path") != str(archive)
+            or download.get("output_zip_size_bytes") != archive.stat().st_size):
+        raise ValueError("diagnostic_partial_archive_binding_invalid")
+    if diagnostic._record(archive)["sha256"] != REVIEWED_RETAINED_ARCHIVES.get(adapter.get("bundle_sha256")):
+        raise ValueError("diagnostic_partial_archive_reviewed_digest_mismatch")
+    inputs = validate_runtime_input_manifest(diagnostic._read(source / "runtime_inputs/policy_canary_runtime_inputs.json"))
+    authority = validate_session_authority(diagnostic._read(source / "runtime_inputs/policy_canary_session_authority.json"))
+    if inputs["cells"] != shard["cells"] or inputs["runtime_inputs_digest"] != authority["runtime_inputs_digest"]:
+        raise ValueError("diagnostic_partial_runtime_binding_invalid")
+    children, bindings = [], []
+    manifest_path = Path(adapter["artifact_manifest_path"])
+    manifest = diagnostic._read(manifest_path)
+    inventory = {row["relative_path"]: row for row in manifest["files"]}
+    if manifest.get("binding", {}).get("bundle_sha256") != adapter["bundle_sha256"]:
+        raise ValueError("diagnostic_partial_artifact_manifest_binding_invalid")
+    with zipfile.ZipFile(archive) as bundle:
+        for index in range(len(inputs["cells"])):
+            relative = f"cell_runs/{index:02d}/native_task_arena_policy_canary_session_result.v1.json"
+            path = evidence / relative
+            data = path.read_bytes()
+            if path.is_symlink() or bundle.read(relative) != data:
+                raise ValueError("diagnostic_partial_child_archive_mismatch")
+            original = inventory.get("immutable_execution/" + relative) or {}
+            if original.get("sha256") != "sha256:" + hashlib.sha256(data).hexdigest() or original.get("size_bytes") != len(data):
+                raise ValueError("diagnostic_partial_child_manifest_mismatch")
+            child = json.loads(data)
+            if child.get("result_digest") != canonical_digest(child, digest_field="result_digest"):
+                raise ValueError("diagnostic_partial_child_digest_invalid")
+            children.append(child)
+            bindings.append(diagnostic._record(path))
+    # Only the observed material failure is authorized for automatic continuation.
+    failed = [child for child in children if child.get("status") == "blocked" and child.get("episodes") == []]
+    if not failed or any(child.get("session_failure_type") != "ValueError" or
+            [(row.get("file"), row.get("function")) for row in child.get("session_failure_source_trace", [])][-3:]
+            != [("native_task_arena_runtime.py", "build_native_task_arena_environment"),
+                ("native_rigid_friction_scenario.py", "prepare"), ("native_rigid_friction_scenario.py", "_source_material")]
+            for child in failed):
+        raise ValueError("diagnostic_partial_failure_not_known_prepolicy_material")
+    proof = {"archive": diagnostic._record(archive), "children": bindings,
+        "original_artifact_manifest": diagnostic._record(manifest_path),
+        "original_adapter": diagnostic._record(source / "allocator_result.json"),
+        "original_parent": diagnostic._record(evidence / "native_task_arena_policy_canary_session_result.v1.json"),
+        "provider_mutations": 0, "completed_episodes_rerun": 0, "original_evidence_edited": False}
+    native = destination / "native_task_arena_policy_canary_session_result.v1.json"
+    if destination.exists():
+        result = diagnostic._read(native)
+        expected_rows = [_prefix_episode_evidence_paths(row, prefix=f"cell_runs/{index:02d}")
+            for index, child in enumerate(children) for row in child["episodes"]]
+        if (destination.is_symlink() or result.get("partial_adoption") != proof
+                or result.get("status") != "runtime_partial_pending_closeout"
+                or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")
+                or result.get("episodes") != expected_rows
+                or result.get("isolated_cell_failures") != [
+                    {"cell": inputs["cells"][child["selected_cell_index"]], "raw_child_result": child}
+                    for child in failed]):
+            raise ValueError("diagnostic_partial_existing_adoption_changed")
+        retained_ids = {row["cell_id"] for row in result["episodes"]}
+        return ({**shard, "cells": [cell for cell in shard["cells"] if cell["cell_id"] in retained_ids],
+                    "cell_count": len(retained_ids), "original_planned_cell_count": len(shard["cells"])},
+            {**adapter, "native_control_result_path": str(native), "native_control_result_digest": result["result_digest"],
+                "partial_adoption": proof}, result)
+    shutil.copytree(evidence, destination, copy_function=_adoption_copier(evidence))
+    modes = {child.get("construction_lineage_mode") for child in children}
+    if len(modes) != 1 or not next(iter(modes)):
+        raise ValueError("diagnostic_partial_construction_lineage_invalid")
+    result = _aggregate_isolated_cell_results(authority=authority, inputs=inputs, child_results=children,
+        output_root=destination, construction_lineage_mode=next(iter(modes)))
+    if result["status"] != "runtime_partial_pending_closeout":
+        raise ValueError("diagnostic_partial_result_not_partial")
+    result["partial_adoption"] = proof
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    (destination / "native_task_arena_policy_canary_session_result.v1.json").rename(
+        destination / "original_failed_parent_result.json")
+    native = diagnostic._write(destination / "native_task_arena_policy_canary_session_result.v1.json", result)
+    # Explicit derived binding, while physical teardown/instance references remain original.
+    derived_adapter = {**adapter, "native_control_result_path": str(native),
+        "native_control_result_digest": result["result_digest"], "partial_adoption": result["partial_adoption"]}
+    retained_ids = {row["cell_id"] for row in result["episodes"]}
+    return {**shard, "cells": [cell for cell in shard["cells"] if cell["cell_id"] in retained_ids],
+        "cell_count": len(retained_ids), "original_planned_cell_count": len(shard["cells"])}, derived_adapter, result
+
 
 def verify_media(native: Path, rows: list[dict]) -> dict:
     """Compare retained PNG pixels with losslessly restored policy requests."""
@@ -36,10 +141,17 @@ def verify_media(native: Path, rows: list[dict]) -> dict:
     from blueprint_pipeline.policy_request_evidence import restore_request, validate_request_evidence
 
     counts = {"episodes": 0, "policy_request_frame_pairs": 0, "review_videos": 0}
+    inner = diagnostic._read(native)
+    planned = inner.get("planned_episodes_per_policy", len(rows))
+    failed = {failure["raw_child_result"]["selected_cell_index"] for failure in inner.get("isolated_cell_failures", [])}
+    indices = [index for index in range(planned) if index not in failed]
+    if (any(type(index) is not int or not 0 <= index < planned for index in failed)
+            or len(indices) != len(rows)):
+        raise ValueError("diagnostic_retained_child_indices_invalid")
     for index, row in enumerate(rows):
         if row["status"] != "completed":
             continue
-        cell = native.parent / "cell_runs" / f"{index:02d}"
+        cell = native.parent / "cell_runs" / f"{indices[index]:02d}"
         child = diagnostic._read(cell / native.name)
         child_row = child["episodes"][0]
         if ({key: value for key, value in child_row.items() if key != "evidence_artifacts"}
@@ -72,12 +184,12 @@ def remaining_groups(cells: list[dict], retained: list[dict]) -> tuple[list[list
     """Never rerun a scored cell. Put proven pre-policy refusals first."""
     by_id = {cell["cell_id"]: cell for cell in cells}
     completed, refused = set(), []
-    observed = set()
+    observed = {}
     for row in retained:
         cell_id = row["cell_id"]
-        if cell_id not in by_id or cell_id in observed:
+        if cell_id not in by_id or row["status"] in observed.get(cell_id, set()):
             raise ValueError("diagnostic_retained_cell_not_unique_or_frozen")
-        observed.add(cell_id)
+        observed.setdefault(cell_id, set()).add(row["status"])
         if any(row.get(key) != by_id[cell_id].get(key) for key in ("seed", "cell_spec_digest", "resolved_scenario_digest")):
             raise ValueError("diagnostic_retained_cell_identity_mismatch")
         if row["status"] == "completed":
@@ -98,7 +210,7 @@ def remaining_groups(cells: list[dict], retained: list[dict]) -> tuple[list[list
                     or (episode.get("score") or {}).get("status") == "scored"):
                 raise ValueError("diagnostic_refusal_not_proven_before_policy")
             refused.append(cell_id)
-    pending = [by_id[key] for key in refused] + [cell for cell in cells
+    pending = [by_id[key] for key in refused if key not in completed] + [cell for cell in cells
         if cell["cell_id"] not in completed and cell["cell_id"] not in refused]
     return [pending[index:index + 25] for index in range(0, len(pending), 25)], refused
 
@@ -126,7 +238,12 @@ def stage(prior: Path, root: Path, billing_path: Path, commit: str) -> dict:
     facts, blockers = offer_eligibility(profile)
     if facts is None or blockers:
         raise ValueError(";".join(blockers))
-    cells = [cell for shard in originals for cell in shard["cells"]]
+    previous_plan = intent.get("pre_policy_reset_recovery")
+    if previous_plan is not None:
+        cells = recovery_arguments(previous_plan, request_digest=canonical_request_digest(request),
+            admission_digest=admission["admission_digest"], episodes=200)["expected_cells"]
+    else:
+        cells = [cell for shard in originals for cell in shard["cells"]]
     if len(cells) != 200 or len({cell["cell_id"] for cell in cells}) != 200 or cells != launch._session_cells(
             purpose="scored", facts=facts, profile=profile):
         raise ValueError("diagnostic_resume_original_cells_changed")
@@ -136,15 +253,29 @@ def stage(prior: Path, root: Path, billing_path: Path, commit: str) -> dict:
                        ("original_request", job / launch.REQUEST_FILENAME),
                        ("original_admission", job / "team_candidate_admission.json")]:
         records.append({"role": role, **diagnostic._record(path)})
+    if previous_plan is not None:
+        records.extend(row for row in previous_plan["source_records"] if row["role"] == "original_shard")
     for shard in originals:
         source = Path(shard["root"])
+        if launch._shard_state(shard) == "staged" and not (source / "allocator_process.json").exists():
+            if list(source.glob("allocator/attempts/*")):
+                raise ValueError("diagnostic_resume_staged_shard_has_attempt")
+            absence.append({"original": diagnostic._record(source / launch.SHARD_FILENAME),
+                "allocator_never_started": True, "fresh_provider_zero_verified": True})
+            continue
         if launch._shard_state(shard) != "returned":
             raise ValueError("diagnostic_resume_prior_allocator_not_returned")
-        records.append({"role": "original_shard", **diagnostic._record(source / launch.SHARD_FILENAME)})
+        if previous_plan is None:
+            records.append({"role": "original_shard", **diagnostic._record(source / launch.SHARD_FILENAME)})
         adapter = diagnostic._read(source / "allocator_result.json")
         native = Path(str(adapter.get("native_control_result_path") or ""))
         if native.is_file():
             inner = diagnostic._read(native)
+            if (inner.get("episodes") in (None, []) and inner.get("status") == "blocked"
+                    and inner.get("blockers") == ["policy_canary_worker_failed_without_result"]):
+                shard, adapter, inner = recover_partial(shard, adapter,
+                    prior / "partial_recovered_children" / f"{shard['index']:02d}")
+                native = Path(adapter["native_control_result_path"])
             validate_native_result_binding(inner, expected_digest=adapter["native_control_result_digest"])
             validate_session_result(join_team_session_closeout(inner=inner, adapter=adapter,
                 provider_zero=zero, adapter_path=source / "allocator_result.json"))
@@ -152,7 +283,7 @@ def stage(prior: Path, root: Path, billing_path: Path, commit: str) -> dict:
             media.append({"native": diagnostic._record(native), **verify_media(native, inner["episodes"])})
             ids.update(adapter_instance_ids(adapter, result_path=source / "allocator_result.json",
                 read_json=lambda path, code: diagnostic._read(path), error_factory=ValueError))
-            adopted.append(shard)
+            adopted.append((shard, adapter))
             records.append({"role": "retained_native_session", **diagnostic._record(native)})
         else:
             nested = diagnostic._read(Path(adapter["adapter_result_path"]))
@@ -199,12 +330,13 @@ def stage(prior: Path, root: Path, billing_path: Path, commit: str) -> dict:
     for path in (root / "policy-bearer", private / "bearer"):
         with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
             stream.write(token + "\n")
-    for index, shard in enumerate(adopted):
+    for index, (shard, adapter) in enumerate(adopted):
         target = newjob / "shards" / f"{index:02d}" / "stage-00"
         (target / "bundle").mkdir(parents=True, mode=0o700)
         source = Path(shard["root"])
-        for relative in ("allocator_result.json", "bundle/team_candidate_quick10_session_bundle_receipt.v1.json"):
+        for relative in ("bundle/team_candidate_quick10_session_bundle_receipt.v1.json",):
             shutil.copy2(source / relative, target / relative)
+        diagnostic._write(target / "allocator_result.json", adapter)
         diagnostic._write(target / launch.SHARD_FILENAME, {**shard, "index": index, "root": str(target),
             "restage": 0, "original_shard": diagnostic._record(source / launch.SHARD_FILENAME)})
     probe = job / "robot_free_probe_retention.json"

@@ -1623,6 +1623,7 @@ def build_native_task_arena_environment(
         from .native_task_direct_camera_aim import install_native_wrist_camera_attachment
         native_camera_attachment = install_native_wrist_camera_attachment(
             env=env, camera_name=camera_names["wrist"])
+    rigid_material_overrides = native_rigid_friction_scenario.apply_native_overrides(env, rigid_material_overrides)
     scenario_native_readback: dict[str, Any] = native_rigid_friction_scenario.verify(env, rigid_material_overrides)
     if light_application is not None or any(
         row.get("readback_kind") == "task_subject_link_dynamic_friction"

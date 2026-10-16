@@ -159,3 +159,15 @@ def test_recovery_never_replaces_policy_results_or_unknown_attempts(fault):
             rows, expected_cells=[scored("a"), scored("b")], recovery_cell_ids=allowed,
             retained_episode_digests={row["cell_id"]: canonical_digest(row) for _, row in rows[:2]}
         )
+
+
+def test_second_recovery_authenticates_both_already_retained_camera_attempts():
+    rows = [('old', scored('a')), ('old', refused('b')), ('previous_recovery', scored('b')), ('new', scored('c'))]
+    retained = {'a': canonical_digest(rows[0][1]), 'b': [canonical_digest(rows[1][1]), canonical_digest(rows[2][1])]}
+    selected, receipt = select_pre_policy_reset_recovery(rows, expected_cells=[scored(x) for x in ('a', 'b', 'c')],
+        recovery_cell_ids=['b'], retained_episode_digests=retained)
+    assert len(selected) == 3 and receipt['authenticated_retained_episode_count'] == 3
+    rows[2][1]['episode']['score']['task_succeeded'] = True
+    with pytest.raises(ValueError, match='retained_episode_changed'):
+        select_pre_policy_reset_recovery(rows, expected_cells=[scored(x) for x in ('a', 'b', 'c')],
+            recovery_cell_ids=['b'], retained_episode_digests=retained)
