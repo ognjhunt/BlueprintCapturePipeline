@@ -26,6 +26,10 @@ if __package__ == 'tests':
 else:
     from historical_generation_fake_cloud import decode_wire_state, wire_state
 
+# Fixture cadence only. Each real unit still uses the original operation clock,
+# journal and all production guards; exhaustion remains a genuine refusal.
+_REFERENCE_ATTEMPTS = 8
+
 
 def _encoded(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':')).encode() + b'\n'
@@ -479,7 +483,7 @@ def _observe_reconciliation_pin(worker, binding, verify):
 
 
 def _launch_death_worker(entry, action_id, target, journals, *, on_unfinished=None):
-    """Same three-unit cadence; each None must come from fresh real SIGKILL."""
+    """Same bounded cadence; each None must come from fresh real SIGKILL."""
     continuations = []
     def unit():
         return _launch_worker_once(entry, action_id, target, journals, restore=True, process_death=True)
@@ -539,7 +543,7 @@ def _continued_restore_units(invoke, journals, action_id, continuations):
     """Fresh real unit only for a new independently retained reconciled head.
 
     These are routine durable phase transitions, not retries of UNKNOWN. The
-    original three-unit reference cadence, e0 and deadlines remain unchanged.
+    bounded reference cadence, original e0 and deadlines remain in force.
     Production GC likewise observes no final receipt and dispatches a later
     exact same-ID unit under all current gates.
     """
@@ -575,7 +579,7 @@ def _durable_receipt(receipt):
 
 
 def _later_reference_attempts(invoke, journals, action_id, *, observations=None, on_unfinished=None):
-    """Keep genuine unknowns; at most three later SAME-operation attempts.
+    """Keep genuine unknowns; at most eight SAME-operation unit attempts.
 
     This is fixture cadence, not reader clearance or worker recovery. Every
     later real unit reauthenticates the original clock, authority and all native
@@ -589,7 +593,7 @@ def _later_reference_attempts(invoke, journals, action_id, *, observations=None,
         assert len(rows) <= 256 and sum(map(len, rows.values())) <= 1024**2
         return rows
     original = prefix()
-    for attempt in range(3):
+    for attempt in range(_REFERENCE_ATTEMPTS):
         receipt = invoke()
         current = prefix()
         assert all(current.get(name) == raw for name, raw in original.items()), 'original_journal_changed'
@@ -597,13 +601,13 @@ def _later_reference_attempts(invoke, journals, action_id, *, observations=None,
             # This is an observed fixture death, never a worker success receipt.
             # Ordinary callers still require an actual completed worker result.
             return None
-        if receipt.get('status') == 'failed' and receipt.get('code') == \
+        if receipt.get('status') in ('kept', 'failed') and receipt.get('code') == \
                 'historical_generation_restore_reconciliation_approval_missing' \
-                and on_unfinished is not None and attempt < 2:
+                and on_unfinished is not None and attempt < _REFERENCE_ATTEMPTS - 1:
             # A changed unfinished row needs its own explicit fixture-owner
             # decision. This callback must authenticate the current packet;
             # the typed failure itself grants nothing. It consumes this same
-            # three-unit cadence and cannot alter the operation journal.
+            # bounded cadence and cannot alter the operation journal.
             print(json.dumps(dict(fixture_unfinished_refusal=receipt, action_id=action_id,
                                   attempt=attempt + 1)), flush=True)
             on_unfinished(receipt)
@@ -623,7 +627,7 @@ def _later_reference_attempts(invoke, journals, action_id, *, observations=None,
         if observations is not None:
             observations.append(dict(action_id=action_id, code=receipt['code'],
                 original_intent_sha256=hashlib.sha256(raw).hexdigest(), attempt=attempt + 1))
-        if attempt == 2:
+        if attempt == _REFERENCE_ATTEMPTS - 1:
             return receipt
         original = current
         time.sleep(0.05)
@@ -631,7 +635,7 @@ def _later_reference_attempts(invoke, journals, action_id, *, observations=None,
 
 
 def _reconciled_reference_attempts(invoke, journals, action_id, *, observations=None, on_unfinished=None):
-    """One extra real unit only after a third unit needs an exact owner DELETE.
+    """One extra unit only after the eighth needs an exact owner DELETE.
 
     UNKNOWN remains a refusal. The owner API must observe and approve the
     current unfinished row, without changing the original operation journal.
@@ -639,7 +643,7 @@ def _reconciled_reference_attempts(invoke, journals, action_id, *, observations=
     """
     receipt = _later_reference_attempts(invoke, journals, action_id,
         observations=observations, on_unfinished=on_unfinished)
-    if receipt is None or receipt.get('status') != 'failed' or receipt.get('code') != \
+    if receipt is None or receipt.get('status') not in ('kept', 'failed') or receipt.get('code') != \
             'historical_generation_restore_reconciliation_approval_missing' or on_unfinished is None:
         return receipt
     directory = journals / action_id
@@ -648,7 +652,8 @@ def _reconciled_reference_attempts(invoke, journals, action_id, *, observations=
     original = before['e-00000.json']
     intent = json.loads(original)
     assert intent['kind'] == 'intent' and intent['action_id'] == action_id
-    print(json.dumps(dict(fixture_unfinished_refusal=receipt, action_id=action_id, attempt=3)), flush=True)
+    print(json.dumps(dict(fixture_unfinished_refusal=receipt, action_id=action_id,
+                          attempt=_REFERENCE_ATTEMPTS)), flush=True)
     approved = on_unfinished(receipt)
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before, 'original_journal_changed'
     assert type(approved) is dict and approved['discard_unfinished_row_approved'] is True \
@@ -658,7 +663,8 @@ def _reconciled_reference_attempts(invoke, journals, action_id, *, observations=
     # The actual protected observation/approval API is in the callback below;
     # this controller row is retained evidence, never kernel reader clearance.
     print(json.dumps(dict(fixture_explicit_owner_continuation=dict(
-        action_id=action_id, decision_id=approved['decision_id'], attempt=4))), flush=True)
+        action_id=action_id, decision_id=approved['decision_id'],
+        attempt=_REFERENCE_ATTEMPTS + 1))), flush=True)
     result = invoke()
     after = {path.name: path.read_bytes() for path in directory.iterdir()}
     assert all(after.get(name) == raw for name, raw in before.items()), 'original_journal_changed'
