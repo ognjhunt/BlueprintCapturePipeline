@@ -27,7 +27,8 @@ import os
 import re
 import stat
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +113,38 @@ def team_candidate_country_codes(authority: Mapping[str, Any]) -> tuple[str, ...
                 or not approved_at <= datetime.now(timezone.utc) < expires_at
                 or expires_at > datetime(2026, 10, 17, 4, tzinfo=timezone.utc)):
             raise ValueError("scope")
-    except (OSError, KeyError, TypeError, ValueError) as error:
+        sessions = approval["session_bindings"]
+        if not isinstance(sessions, list) or not 1 <= len(sessions) <= 5:
+            raise ValueError("session count")
+        cells = [cell for row in sessions for cell in row["cell_ids"]]
+        if (not 0 < len(cells) <= approval["remaining_episodes"]
+                or len(set(cells)) != len(cells)
+                or len({row["runtime_inputs_digest"] for row in sessions}) != len(sessions)
+                or len({row["run_id"] for row in sessions}) != len(sessions)
+                or len({row["resource_name"] for row in sessions}) != len(sessions)):
+            raise ValueError("episode set")
+        for row in sessions:
+            count = row["episodes_per_policy"]
+            if (type(count) is not int or not 1 <= count <= 25 or count != len(row["cell_ids"])
+                    or not 0 < row["hard_cap_usd"] <= (2.6 if count == 25 else .8)
+                    or type(row["hard_ttl_seconds"]) is not int or row["hard_ttl_seconds"] <= 0):
+                raise ValueError("session limits")
+        future_caps = sum(Decimal(str(row["hard_cap_usd"])) for row in sessions)
+        settled = Decimal(str(approval["settled_cost_usd"]))
+        if not (future_caps <= Decimal("11.2") and Decimal("2.829") <= settled
+                and settled + future_caps <= Decimal(str(approval["total_cap_usd"]))):
+            raise ValueError("combined budget")
+        matches = [row for row in sessions if row["runtime_inputs_digest"] == inputs["runtime_inputs_digest"]]
+        if len(matches) != 1:
+            raise ValueError("session missing")
+        row = matches[0]
+        fields = ("run_id", "resource_name", "runtime_inputs_digest", "episodes_per_policy",
+                  "hard_cap_usd", "hard_ttl_seconds")
+        if (any(row[field] != authority[field] for field in fields)
+                or row["cell_ids"] != [cell["cell_id"] for cell in inputs["cells"]]
+                or datetime.now(timezone.utc) + timedelta(seconds=authority["hard_ttl_seconds"]) > expires_at):
+            raise ValueError("executable limits")
+    except (OSError, KeyError, TypeError, ValueError, InvalidOperation) as error:
         raise ValueError("internal_diagnostic_country_approval_invalid") from error
     return ("SG",)
 

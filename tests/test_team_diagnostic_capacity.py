@@ -36,6 +36,7 @@ def _authority(tmp_path, **changes):
         "scene_revision_digest": "sha256:e0fd71e52b0fcc8f16f42668e13bd9a9bd727d2db3cc0df95b785ee0191d2a81",
         "task_success_contract_digest": "sha256:c4faf026331e9bf3687b96f5b3c80a484f4a975a7e3812fec96f9524158bb962",
         "team_candidate_admission": {"admission_digest": "sha256:" + "c" * 64},
+        "cells": [{"cell_id": f"diagnostic.{index:03d}"} for index in range(98, 123)],
         "runtime_inputs_digest": "", **changes,
     }
     inputs["runtime_inputs_digest"] = canonical_digest(inputs, digest_field="runtime_inputs_digest")
@@ -43,6 +44,8 @@ def _authority(tmp_path, **changes):
     data = json.dumps(inputs).encode()
     path.write_bytes(data)
     return {"run_id": inputs["run_id"], "candidate_ids": inputs["candidate_ids"],
+            "resource_name": "blueprint-native-task-policy-canary-test-s04",
+            "episodes_per_policy": 25, "hard_cap_usd": 2.6, "hard_ttl_seconds": 9300,
             "task_success_contract_digest": inputs["task_success_contract_digest"],
             "runtime_inputs_digest": inputs["runtime_inputs_digest"],
             "runtime_inputs": {"path": str(path), "size_bytes": len(data),
@@ -67,11 +70,28 @@ def test_singapore_opt_in_requires_exact_bound_authored_fixture(tmp_path, monkey
 
 
 def _country_approval(tmp_path, monkeypatch, **changes):
+    authority = _authority(tmp_path)
+    keys = ("run_id", "resource_name", "runtime_inputs_digest", "episodes_per_policy",
+            "hard_cap_usd", "hard_ttl_seconds")
+    bindings = []
+    start = 98
+    for index, count in enumerate([25, 25, 25, 25, 2]):
+        row = {key: authority[key] for key in keys}
+        if index:
+            row.update(run_id=f"internal-team-diag-recovery-test-s{index + 4:02d}",
+                       resource_name=f"blueprint-native-task-policy-canary-test-s{index + 4:02d}",
+                       runtime_inputs_digest="sha256:" + str(index) * 64)
+        row.update(episodes_per_policy=count, hard_cap_usd=2.6 if count == 25 else .8,
+                   hard_ttl_seconds=9300 if count == 25 else 2100,
+                   cell_ids=[f"diagnostic.{cell:03d}" for cell in range(start, start + count)])
+        bindings.append(row)
+        start += count
     value = {"schema_version": "blueprint.internal_diagnostic_country_approval.v1",
              "approved_by": "@ognjhunt", "country_codes": ["SG"],
              "scene_id": "internal-team-runtime-diagnostic", "candidate_id": "blueprint-internal.hold-position-v1",
              "admission_digest": "sha256:" + "c" * 64, "total_cap_usd": 20,
              "remaining_episodes": 102, "approval_reference": "Hermetic owner decision fixture",
+             "settled_cost_usd": 2.829, "session_bindings": bindings,
              "approved_at_iso": "2026-10-16T17:00:00Z",
              "expires_at_iso": "2026-10-17T04:00:00Z", **changes}
     path = tmp_path / "country-approval.json"
@@ -80,10 +100,44 @@ def _country_approval(tmp_path, monkeypatch, **changes):
 
 
 @pytest.mark.parametrize("changes", [
+    {"hard_cap_usd": 21}, {"hard_cap_usd": 3}, {"episodes_per_policy": 26},
+    {"hard_ttl_seconds": 9400}, {"resource_name": "blueprint-native-task-policy-canary-other"},
+])
+def test_approved_session_limits_are_the_executable_limits(tmp_path, monkeypatch, changes):
+    monkeypatch.setenv("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "SG")
+    _country_approval(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="internal_diagnostic_country_approval_invalid"):
+        team_vast.bind_team_candidate_country_approval({**_authority(tmp_path), **changes})
+
+
+@pytest.mark.parametrize("change", ["over_budget", "extra_session", "duplicate_cell", "duplicate_run", "extra_episode"])
+def test_country_decision_limits_all_sessions_together(tmp_path, monkeypatch, change):
+    monkeypatch.setenv("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "SG")
+    _country_approval(tmp_path, monkeypatch)
+    path = tmp_path / "country-approval.json"
+    value = json.loads(path.read_text())
+    if change == "over_budget":
+        value["settled_cost_usd"] = 19
+    elif change == "extra_session":
+        value["session_bindings"].append(value["session_bindings"][0])
+    elif change == "duplicate_cell":
+        value["session_bindings"][1]["cell_ids"][0] = value["session_bindings"][0]["cell_ids"][0]
+    elif change == "duplicate_run":
+        value["session_bindings"][1]["run_id"] = value["session_bindings"][0]["run_id"]
+    else:
+        value["session_bindings"][-1]["cell_ids"].append("diagnostic.200")
+        value["session_bindings"][-1]["episodes_per_policy"] += 1
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="internal_diagnostic_country_approval_invalid"):
+        team_vast.bind_team_candidate_country_approval(_authority(tmp_path))
+
+
+@pytest.mark.parametrize("changes", [
     {"country_codes": ["US"]}, {"admission_digest": "sha256:" + "d" * 64},
     {"expires_at_iso": "2026-10-17T04:00:01Z"}, {"expires_at_iso": "2026-10-15T00:00:00Z"},
     {"total_cap_usd": 21}, {"approval_reference": ""}, {"approval_reference": None},
     {"approved_at_iso": "2026-10-17T03:00:00Z"},
+    {"expires_at_iso": "2026-10-16T19:00:00Z"},
 ])
 def test_country_decision_must_authorize_this_run_inside_original_bounds(tmp_path, monkeypatch, changes):
     monkeypatch.setenv("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "SG")

@@ -81,6 +81,17 @@ the actual owner reference and an approval timestamp, and remain unexpired.
 It selects Singapore only, not a worldwide pool. Leave it unset
 for the US default; do not add it to the shared service environment.
 
+The decision's `session_bindings` name at most five prepared batches by run ID,
+resource label, runtime-input digest, exact ordered cell IDs, episode count,
+allocation cap and watchdog TTL. The transport compares those fields to the
+executable authority and inputs. Cells must be disjoint and total at most 102;
+caps retain the existing 2.60/0.80 limits and at most 11.20 in aggregate, and
+settled charges plus those caps must fit USD20. The current allocation's TTL must
+end before the original owner deadline. Prepare these bindings from the canonical
+runtime stager with the country unset, then seal the approved decision before
+building the executable Singapore bundles. Preview input digests must match the
+final staged inputs; preview artifacts authorize no rental.
+
 The exception authenticates the session authority's runtime-input file and its
 self-digest, then requires the reserved internal run prefix and hold-position
 candidate, exact authored scene revision, and exact diagnostic task contract.
