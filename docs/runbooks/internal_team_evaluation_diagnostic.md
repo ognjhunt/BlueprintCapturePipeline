@@ -63,3 +63,25 @@ and teardown receipts, staged-object absence and fresh provider-zero. Afterwards
 stop the temporary policy service, remove its exact proxy path and private token,
 and retain the diagnostic evidence. `internal_diagnostic_result.json` always says
 development-only, no trained policy evaluation and no customer recommendation.
+# Internal diagnostic capacity fallback
+
+Beta L5's authored hold-position diagnostic defaults to the same US-only Vast
+filter as other native sessions. If US RTX capacity is unavailable, an operator
+with retained owner approval for this country change can set
+`BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY=SG` on this diagnostic's
+controller only. It selects Singapore only, not a worldwide pool. Leave it unset
+for the US default; do not add it to the shared service environment.
+
+The exception authenticates the session authority's runtime-input file and its
+self-digest, then requires the reserved internal run prefix and hold-position
+candidate, exact authored scene revision, and exact diagnostic task contract.
+Customer scenes and other fixtures cannot use it. Other native transports are
+unchanged. The GPU model, driver, memory, paid-resource admission, active-ID
+allowlist, watchdog, per-allocation caps, original USD20 total and owner deadline
+still apply. Retain the country approval and selected offer with the launch
+receipt, and run all remaining allocation dry runs with the selected country
+before execution. A read-only marketplace search is not launch proof.
+
+Isaac offer selection also requires membership in its existing RT-capable model
+list before rental. A800 and unknown accelerators cannot fall through to a paid
+attempt; explicit generation/training/open hardware policies remain separate.

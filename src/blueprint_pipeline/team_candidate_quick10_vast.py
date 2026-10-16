@@ -21,6 +21,8 @@ host itself has no egress firewall here.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import stat
@@ -29,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
+from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_policy_canary_session import (
     PROVIDER_RESULT_FILENAME,
     RESULT_SCHEMA_VERSION,
@@ -52,6 +55,44 @@ from .paid_resource_admission import PaidResourceAdmissionGrant
 _SECRET_FILE_ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,58}_FILE$")
 # Ten episodes of per-query frames and review media (the pair budgets 8 GB for twenty).
 TEAM_RESULT_UPLOAD_BYTES = 4 * POLICY_RESULT_UPLOAD_BYTES
+
+
+def team_candidate_country_codes(authority: Mapping[str, Any]) -> tuple[str, ...]:
+    """Default US; an operator may opt only this authored internal fixture into SG.
+
+    This is host configuration, never GPU-supplied input. The operator must
+    retain owner authority for the country change alongside the paid launch.
+    Customer scenes and all other native transports retain their US default.
+    """
+    country = os.environ.get("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "US").strip().upper() or "US"
+    if country == "US":
+        return NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+    if country != "SG":
+        raise ValueError("internal_diagnostic_country_invalid")
+    try:
+        record = authority["runtime_inputs"]
+        data = Path(record["path"]).read_bytes()
+        if (len(data) != record["size_bytes"]
+                or "sha256:" + hashlib.sha256(data).hexdigest() != record["sha256"]):
+            raise ValueError("binding")
+        inputs = json.loads(data)
+        if (not isinstance(inputs, dict)
+                or inputs.get("runtime_inputs_digest") != authority.get("runtime_inputs_digest")
+                or inputs.get("runtime_inputs_digest") != canonical_digest(inputs, digest_field="runtime_inputs_digest")):
+            raise ValueError("binding")
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise ValueError("internal_diagnostic_country_input_binding_invalid") from error
+    if (inputs.get("run_id") != authority.get("run_id")
+            or not str(inputs.get("run_id") or "").startswith("internal-team-diag-")
+            or inputs.get("candidate_ids") != ["blueprint-internal.hold-position-v1"]
+            or authority.get("candidate_ids") != inputs["candidate_ids"]
+            or inputs.get("scene_revision_digest")
+            != "sha256:e0fd71e52b0fcc8f16f42668e13bd9a9bd727d2db3cc0df95b785ee0191d2a81"
+            or inputs.get("task_success_contract_digest")
+            != "sha256:c4faf026331e9bf3687b96f5b3c80a484f4a975a7e3812fec96f9524158bb962"
+            or authority.get("task_success_contract_digest") != inputs["task_success_contract_digest"]):
+        raise ValueError("internal_diagnostic_country_scope_invalid")
+    return ("SG",)
 
 
 def team_result_upload_bytes(episodes: int) -> int:
@@ -111,6 +152,7 @@ def run_team_candidate_session_vast(
     if blockers:
         return _blocked(sorted(set(blockers)))
     environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
+    country_codes = team_candidate_country_codes(authority)
     consumption = consume_session_authority_once(
         authority, consumption_path=Path(job_dir) / "policy_canary_session_consumption.json") if execute else None
     if consumption is not None and consumption.get("status") != "consumed":
@@ -129,7 +171,7 @@ def run_team_candidate_session_vast(
         vast_launch_lock_file=None, candidate_policy_query_expected=True, forward_hf_token=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"), minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
-        allowed_geolocation_country_codes=NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+        allowed_geolocation_country_codes=country_codes,
         authorization_consumption=consumption, stale_offer_create_retry_limit=0,
         expected_provider_download_bytes=POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES + POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES,
         expected_provider_upload_bytes=team_result_upload_bytes(authority["episodes_per_policy"]),
@@ -140,4 +182,5 @@ def run_team_candidate_session_vast(
     )
 
 
-__all__ = ["credential_file_blockers", "run_team_candidate_session_vast", "team_result_upload_bytes"]
+__all__ = ["credential_file_blockers", "run_team_candidate_session_vast", "team_result_upload_bytes",
+           "team_candidate_country_codes"]

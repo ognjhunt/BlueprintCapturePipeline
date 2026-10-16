@@ -28,7 +28,7 @@ OPEN_GPU_POLICY = "open"
 
 # Datacenter parts without RT cores: unusable for Isaac's RTX rendering path,
 # but among the best available hardware for generation and training.
-DISALLOWED_ISAAC_GPU_KEYWORDS = ("A100", "H100", "H200", "B200", "GB200")
+DISALLOWED_ISAAC_GPU_KEYWORDS = ("A100", "A800", "H100", "H200", "B200", "GB200")
 
 GPU_SELECTION_POLICIES: dict[str, dict[str, Any]] = {
     ISAAC_RENDERING_GPU_POLICY: {
@@ -142,6 +142,11 @@ def gpu_allowed_by_policy(
     if isinstance(gpu_name, Mapping):
         cuda_max_good = gpu_name.get("cuda_max_good")
         gpu_name = _text(gpu_name.get("gpu_name"))
+    # The native adapter rejects non-RT devices after creation. Apply that same
+    # eligibility before spending, including unknown accelerators outside the
+    # short denylist. Explicit generation/training/open policies stay separate.
+    if policy.get("policy_id") == ISAAC_RENDERING_GPU_POLICY and not _is_isaac_rt_candidate(gpu_name):
+        return False
     upper = _text(gpu_name).upper()
     denied = tuple(policy.get("denied_gpu_keywords") or ())
     allowed = tuple(policy.get("allowed_gpu_keywords") or ())
