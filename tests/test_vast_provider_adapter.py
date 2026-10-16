@@ -7768,25 +7768,29 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
     )
 
 
+@pytest.mark.parametrize("gpu_name", ["GTX 1080", "RTX 4090"])
 def test_vast_adapter_non_rt_gpu_and_gpu_failure_block_isaac_and_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    gpu_name: str,
 ) -> None:
     secret = _configure_live_gates(tmp_path, monkeypatch)
     monkeypatch.setenv("NGC_API_KEY_FILE", str(tmp_path / "missing-ngc-key"))
     monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
     bundle = tmp_path / "bundle.zip"
     _write_valid_provider_bundle(bundle)
+    api_calls = []
 
     def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
         assert kwargs["api_key"] == secret
+        api_calls.append((kwargs["method"], kwargs["path"]))
         if kwargs["method"] == "POST":
             return 200, {
                 "offers": [
                     {
                         "id": 606,
                         "ask_contract_id": 606,
-                        "gpu_name": "GTX 1080",
+                        "gpu_name": gpu_name,
                         "dph_total": 0.2,
                         "driver_version": "565.57.01",
                         "machine_id": 6060,
@@ -7833,8 +7837,16 @@ def test_vast_adapter_non_rt_gpu_and_gpu_failure_block_isaac_and_provider(
     )
 
     assert result["status"] == "blocked"
+    manifest = _read_json(tmp_path / "non-rt" / "vast_offer_selection_manifest.json")
+    assert manifest["require_isaac_rt_candidate"] is True
+    if gpu_name == "GTX 1080":
+        assert result["continuing_spend_from_this_run"] is False
+        assert ("PUT", "/asks/606/") not in api_calls
+        assert manifest["selected_offer"] is None and manifest["quality_filtered_offer_count"] == 0
+        return
+    assert ("PUT", "/asks/606/") in api_calls
     isaac = _read_json(tmp_path / "non-rt" / "vast_isaac_smoke_result.json")
-    assert "selected_gpu_not_in_isaac_rt_candidate_allowlist" in isaac["blockers"]
+    assert "selected_gpu_not_in_isaac_rt_candidate_allowlist" not in isaac["blockers"]
     assert "ngc_api_key_file_missing_or_empty_for_required_ngc_login" not in isaac["blockers"]
     assert "gpu_sanity_not_proven" in isaac["blockers"]
     provider = _read_json(tmp_path / "non-rt" / "vast_provider_command_result.json")

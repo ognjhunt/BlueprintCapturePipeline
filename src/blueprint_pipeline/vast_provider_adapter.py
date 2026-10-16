@@ -1935,6 +1935,7 @@ def _select_offer(
     preferred_gpu_keywords: Sequence[str] = (),
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool = True,
+    require_isaac_rt_candidate: bool = False,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
@@ -1947,6 +1948,8 @@ def _select_offer(
 ) -> dict[str, Any] | None:
     if type(require_virtual_machine) is not bool:
         raise ValueError("vast_virtual_machine_flag_invalid")
+    if type(require_isaac_rt_candidate) is not bool:
+        raise ValueError("vast_isaac_rt_requirement_invalid")
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
     allowed_countries = normalize_vast_country_allowlist(
@@ -1988,6 +1991,7 @@ def _select_offer(
         )
         and (not require_direct_port or int(_number(item.get("direct_port_count")) or 0) > 0)
         and gpu_allowed_by_policy(item, policy)
+        and (not require_isaac_rt_candidate or item["isaac_rt_candidate"])
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and (not require_avx or item.get("has_avx") is True)
@@ -2101,6 +2105,7 @@ def _offer_selection_manifest(
     preferred_gpu_keywords: Sequence[str] = (),
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool = True,
+    require_isaac_rt_candidate: bool = False,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     create_retry_attempts: Sequence[Mapping[str, Any]] = (),
     offer_search_retry_attempts: Sequence[Mapping[str, Any]] = (),
@@ -2167,6 +2172,7 @@ def _offer_selection_manifest(
         )
         and (not require_direct_port or int(_number(item.get("direct_port_count")) or 0) > 0)
         and gpu_allowed_by_policy(item, policy)
+        and (not require_isaac_rt_candidate or item["isaac_rt_candidate"])
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and _version_at_least(item.get("driver_version"), minimum_driver_version)
@@ -2232,6 +2238,7 @@ def _offer_selection_manifest(
         "preferred_geolocation_regex": preferred_geolocation_regex,
         **vast_country_policy_manifest(summaries, allowed_countries),
         "prefer_isaac_rt": prefer_isaac_rt,
+        "require_isaac_rt_candidate": require_isaac_rt_candidate,
         "gpu_selection_policy": policy_manifest(policy),
         "quality_filtered_offer_count": quality_filtered_offer_count,
         "disk_capacity_filtered_offer_count": sum(
@@ -8412,6 +8419,7 @@ def run_vast_provider_adapter(
                 preferred_gpu_keywords=resolved_preferred_gpu_keywords,
                 preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
+                require_isaac_rt_candidate=_is_isaac_provider_bundle(provider_bundle_kind),
                 gpu_selection_policy=gpu_selection_policy,
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
@@ -8481,6 +8489,7 @@ def run_vast_provider_adapter(
                 preferred_gpu_keywords=resolved_preferred_gpu_keywords,
                 preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
+                require_isaac_rt_candidate=_is_isaac_provider_bundle(provider_bundle_kind),
                 gpu_selection_policy=gpu_selection_policy,
                 create_retry_attempts=create_retry_attempts,
                 offer_search_retry_attempts=offer_search_retry_attempts,
@@ -8711,6 +8720,7 @@ def run_vast_provider_adapter(
                     preferred_gpu_keywords=resolved_preferred_gpu_keywords,
                     preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                     prefer_isaac_rt=resolved_prefer_isaac_rt,
+                    require_isaac_rt_candidate=_is_isaac_provider_bundle(provider_bundle_kind),
                     gpu_selection_policy=gpu_selection_policy,
                     create_retry_attempts=create_retry_attempts,
                     offer_search_retry_attempts=offer_search_retry_attempts,
