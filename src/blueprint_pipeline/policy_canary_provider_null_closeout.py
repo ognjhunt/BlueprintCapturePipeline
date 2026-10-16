@@ -9,6 +9,22 @@ from typing import Any, Callable, Mapping
 from .vast_create_failure_diagnosis import definite_create_refusal_without_instance
 
 
+def provider_allocation_fields(*, adapter: Mapping[str, Any], watchdog: Mapping[str, Any],
+                               teardown: Mapping[str, Any], cleanup: Mapping[str, Any]) -> dict[str, Any]:
+    """Promote proven absence only; preserve existing paid/unknown receipt bytes."""
+    if (adapter.get("provider_create_attempted") is False and adapter.get("vast_instance_ids") == []
+            and adapter.get("vast_side_effects_may_have_occurred") is False
+            and ("provider_mutations_performed" not in adapter
+                 or type(adapter["provider_mutations_performed"]) is int and adapter["provider_mutations_performed"] == 0)
+            and watchdog.get("status") == "cancelled_no_allocation"
+            and type(watchdog.get("provider_mutations_performed")) is int and watchdog["provider_mutations_performed"] == 0
+            and teardown.get("vast_instance_ids") == [] and teardown.get("continuing_spend_from_this_run") is False
+            and cleanup.get("all_objects_absent") is True):
+        return {"vast_instance_ids": [], "provider_create_attempted": False,
+                "vast_side_effects_may_have_occurred": False, "provider_mutations_performed": 0}
+    return {}
+
+
 def proven_provider_null_closeout(
     allocator: Mapping[str, Any],
     *,
@@ -77,4 +93,4 @@ def proven_provider_null_closeout(
     }
 
 
-__all__ = ["proven_provider_null_closeout"]
+__all__ = ["proven_provider_null_closeout", "provider_allocation_fields"]

@@ -347,6 +347,66 @@ def _fake_closed_team_result(inputs: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def test_projection_recovers_only_an_explicit_pre_policy_reset_refusal(tmp_path):
+    from copy import deepcopy
+    import hashlib
+    from blueprint_pipeline.controlled_policy_configuration import canonical_request_digest
+    from blueprint_pipeline.team_candidate_episode_recovery import recovery_arguments
+    _runtime, _output, inputs, _admission_record = _stage_team_runtime(tmp_path)
+    original = _fake_closed_team_result(inputs)
+    retry = deepcopy(original)
+    retry.update(episodes=[retry["episodes"][-1]], episodes_per_policy=1, learned_policy_rollout_count=1)
+    retry["result_digest"] = canonical_digest(retry, digest_field="result_digest")
+    bad = original["episodes"][-1]
+    bad.update(status="blocked", episode_failure_stage="before_first_observation",
+        failure_message="scientific_reset_scenario_application_mismatch",
+        candidate_policy_query_attempted=False, candidate_policy_queried=False, actions_reached_robot=False,
+        policy_outcome_interpretable=False, visual_evidence={"status": "unavailable_before_first_observation",
+            "media_gap": {"type": "before_first_observation", "reason": "scientific_reset_scenario_application_mismatch"}},
+        episode={"candidate_policy_query_attempted": False, "policy_response_status": "not_attempted",
+                 "score": {"status": "undetermined", "task_succeeded": None}})
+    original["status"] = "blocked"
+    original["result_digest"] = canonical_digest(original, digest_field="result_digest")
+    before = deepcopy(original)
+    request = {"job_id": "diagnostic-recovery", "capture_root": "/capture"}
+    request_digest = canonical_request_digest(request)
+    sources = {"original_request": request, "original_admission": _admission_record,
+        "prior_terminal": {"status": "blocked", "provider_zero_verified": True,
+                           "canonical_request_digest": request_digest},
+        "original_shard": {"index": 0, "cells": inputs["cells"]}, "retained_native_session": original}
+    records = []
+    for role, value in sources.items():
+        path = tmp_path / (role + ".json")
+        data = json.dumps(value).encode()
+        path.write_bytes(data)
+        records.append({"role": role, "path": str(path), "size_bytes": len(data),
+                        "sha256": "sha256:" + hashlib.sha256(data).hexdigest()})
+    plan = {"schema_version": "team_candidate_pre_policy_reset_recovery_plan.v1",
+        "canonical_request_digest": request_digest, "admission_digest": _admission_record["admission_digest"],
+        "source_records": records, "expected_cells": inputs["cells"], "recovery_cell_ids": [bad["cell_id"]]}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    recovery_kwargs = recovery_arguments(plan, request_digest=request_digest,
+        admission_digest=_admission_record["admission_digest"], episodes=10)
+    kwargs = dict(session_results=[original, retry], purpose="scored", episodes=10,
+                  runtime_binding=inputs["team_candidate_admission"])
+    with pytest.raises(TeamCandidateResultError, match="episode_count_invalid"):
+        team_candidate_terminal(**kwargs)
+    terminal = team_candidate_terminal(**kwargs, **recovery_kwargs)
+    assert terminal["episodes_run"] == 10 and terminal["scoring"]["scored_episode_count"] == 10
+    assert len(terminal["pre_policy_reset_recovery"]["superseded_pre_policy_refusals"]) == 1
+    assert original == before
+    # A substituted, self-consistent result may pass the normal session
+    # validator; recovery must still match the authenticated original bytes.
+    forged = deepcopy(original)
+    forged["episodes"][0]["episode"]["score"]["task_succeeded"] = False
+    forged["result_digest"] = canonical_digest(forged, digest_field="result_digest")
+    validate_session_result(forged)
+    with pytest.raises(TeamCandidateResultError, match="retained_episode_changed"):
+        team_candidate_terminal(**{**kwargs, "session_results": [forged, retry]}, **recovery_kwargs)
+    assert json.loads((tmp_path / "retained_native_session.json").read_text()) == before
+    assert terminal["pre_policy_reset_recovery"]["authenticated_retained_episode_count"] == 10
+
+
 def test_projection_counts_only_simulator_verdicts(tmp_path) -> None:
     _runtime, _output, inputs, _admission_record = _stage_team_runtime(tmp_path)
     closed = _fake_closed_team_result(inputs)

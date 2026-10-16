@@ -93,7 +93,10 @@ def episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
 
 
 def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], runtime_binding: Mapping[str, Any],
-                            purpose: str, episodes: int | None = None) -> dict[str, Any]:
+                            purpose: str, episodes: int | None = None,
+                            expected_cells: Sequence[Mapping[str, Any]] | None = None,
+                            pre_policy_recovery_cells: Sequence[str] = (),
+                            retained_episode_digests: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Return the terminal receipt (outcomes, counts, scoring) for the agent-run executor."""
 
     if purpose not in PURPOSES or not session_results:
@@ -101,6 +104,7 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
     binding = dict(runtime_binding)
     rows: list[dict[str, Any]] = []
     result_digests: list[str] = []
+    session_rows: list[tuple[str, Mapping[str, Any]]] = []
     for value in session_results:
         try:
             result = validate_session_result(value)
@@ -111,7 +115,18 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
                 or result["task_success_contract_digest"] != binding.get("task_success_contract_digest")):
             raise TeamCandidateResultError("team_candidate_session_result_binding_mismatch")
         rows.extend(row for row in result["episodes"] if row.get("candidate_id") == binding["candidate_id"])
+        session_rows.extend((result["result_digest"], row) for row in result["episodes"]
+                            if row.get("candidate_id") == binding["candidate_id"])
         result_digests.append(result["result_digest"])
+    recovery = None
+    if pre_policy_recovery_cells:
+        from .team_candidate_episode_recovery import select_pre_policy_reset_recovery
+        try:
+            rows, recovery = select_pre_policy_reset_recovery(session_rows,
+                expected_cells=expected_cells or (), recovery_cell_ids=pre_policy_recovery_cells,
+                retained_episode_digests=retained_episode_digests or {})
+        except ValueError as exc:
+            raise TeamCandidateResultError(str(exc)) from exc
     cell_ids = [str(row.get("cell_id") or "") for row in rows]
     # Exactly the admitted episode count (the admission's; the purpose's by default).
     if len(rows) != (EPISODES[purpose] if episodes is None else int(episodes)) or len(set(cell_ids)) != len(rows):
@@ -132,6 +147,7 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
         raise TeamCandidateResultError("team_scored_run_void_share_exceeded")
     return {
         "status": "completed",
+        **({"pre_policy_reset_recovery": recovery} if recovery is not None else {}),
         "episodes_run": len(counted),
         "episodes_succeeded": succeeded,
         "median_cycle_seconds": None,

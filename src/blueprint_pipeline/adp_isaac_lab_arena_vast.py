@@ -39,6 +39,7 @@ from .vast_independent_watchdog_control import (
     close_independent_vast_watchdog,
 )
 from .vast_create_failure_diagnosis import definite_create_refusal_without_instance
+from .policy_canary_provider_null_closeout import provider_allocation_fields
 from .vast_provider_adapter import (
     DEFAULT_VAST_API_KEY_FILE,
     VAST_API_KEY_FILE_ENV,
@@ -1085,6 +1086,7 @@ def run_arena_native_control_vast(
         "status": "completed" if not blockers else "blocked",
         "attempt_number": attempt_number,
         "attempt_root": str(attempt_root),
+        **provider_allocation_fields(adapter=adapter, watchdog=watchdog_close, teardown=teardown, cleanup=cleanup),
         "protocol_digest": bundle.get("protocol_digest"),
         "bundle_sha256": bundle.get("bundle_sha256"),
         "native_control_result_path": extracted.get("result_path"),
