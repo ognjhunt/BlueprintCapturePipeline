@@ -298,6 +298,8 @@ def _start_allocator(argv: Sequence[str], *, log_path: Path) -> int:
 def _alive(pid: Any) -> bool:
     try:
         os.kill(int(pid), 0)
+    except PermissionError:
+        return True  # existence without authority to inspect is not proof of exit
     except (OSError, TypeError, ValueError):
         return False
     try:  # reap our own exited child so it is not reported alive as a zombie
@@ -526,13 +528,29 @@ def _current_shard(job_dir: Path, index: int) -> dict[str, Any]:
 def _shard_state(shard: Mapping[str, Any]) -> str:
     root = Path(shard["root"])
     if (root / "allocator_result.json").is_file():
-        return "returned"
+        try:
+            result = _read(root / "allocator_result.json")
+            return "returned" if isinstance(result.get("status"), str) and result["status"] else "unknown"
+        except (OSError, ValueError):
+            return "unknown"
     process = root / "allocator_process.json"
     if not process.is_file():
         # A crash after spawn but before recording its pid is not permission
         # to allocate again. Provider reconciliation must close that attempt.
-        return "lost" if (root / "allocator_launch_intent.json").is_file() else "staged"
-    return "running" if _alive(_read(process).get("pid")) else "lost"
+        return "unknown" if (root / "allocator_launch_intent.json").is_file() else "staged"
+    try:
+        recorded = _read(process)
+        pid = int(recorded["pid"])
+        if pid <= 0:
+            return "unknown"
+        if not _alive(pid):
+            return "lost"
+        current = _process_start_ticks(pid)
+        if current is None or not recorded.get("start_ticks"):
+            return "unknown"
+        return "running" if current == recorded["start_ticks"] else "lost"
+    except (OSError, ValueError, KeyError, TypeError):
+        return "unknown"
 
 
 def _process_start_ticks(pid: int) -> str | None:
@@ -594,7 +612,11 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
     """Run every staged shard (bounded concurrency), then seal the terminal; idempotent after a crash."""
 
     from .task_evaluation_scene_execution_authority import proves_no_provider_allocation
-    from .team_candidate_quick10_closeout import seal_blocked_terminal, seal_team_candidate_terminal
+    from .team_candidate_quick10_closeout import (
+        allocator_running,
+        seal_blocked_terminal,
+        seal_team_candidate_terminal,
+    )
 
     hooks = {"allocator_starter": _start_allocator, "provider_zero": _default_provider_zero,
              "restage": _restage_shard, "sleep": time.sleep, "execution_monitor": _execution_monitor,
@@ -633,7 +655,7 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
                     if state == "running" and not stop_path.exists():
                         hooks["allocator_stopper"](row)
                         _write(stop_path, {"reason": stop_reason, "observed_at_iso": utc_now_iso()})
-                if "running" not in states:
+                if not any(state in {"running", "unknown"} for state in states):
                     raise TeamCandidateLaunchError(stop_reason)
                 if stopping_since is None:
                     stopping_since = hooks["monotonic"]()
@@ -646,6 +668,18 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
                         _write(pending, {"status": "pending_provider_teardown", "reason": stop_reason,
                                          "observed_at_iso": utc_now_iso()})
                     return None
+                hooks["sleep"](poll_seconds)
+                continue
+            if "unknown" in states:
+                # A spawned allocator may not yet have recorded its PID or
+                # allocated its provider instance. A global zero snapshot
+                # cannot close that window. Wait for its actual result or
+                # verified process reconciliation, without starting new work.
+                pending = job_dir / "allocator_reconciliation_pending.json"
+                if not pending.exists():
+                    _write(pending, {"status": "allocator_identity_unknown",
+                        "shard_indices": [row["index"] for row, state in zip(shard_rows, states, strict=True)
+                                          if state == "unknown"], "observed_at_iso": utc_now_iso()})
                 hooks["sleep"](poll_seconds)
                 continue
             for row, state in zip(shard_rows, states, strict=True):
@@ -678,8 +712,7 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
         seal_blocked_terminal(request=request, job_dir=job_dir, error=exc, provider_zero=hooks["provider_zero"])
         return None
     finally:
-        if all(_shard_state(_current_shard(job_dir, index)) != "running"
-               for index in range(int(intent["shard_count"]))):
+        if not allocator_running(job_dir):
             shutil.rmtree(job_dir / ".team-credential", ignore_errors=True)
     try:
         return seal_team_candidate_terminal(request=request, job_dir=job_dir, provider_zero=hooks["provider_zero"])

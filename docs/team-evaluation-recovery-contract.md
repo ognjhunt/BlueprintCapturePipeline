@@ -27,6 +27,16 @@ crash between creation and recording the PID is an unknown allocation, not
 permission to spawn again. Re-staging remains restricted to allocator receipts
 that prove no provider allocation occurred.
 
+An unresolved spawn intent also prevents terminal settlement and deletion of the
+private credential. A momentary global provider-zero snapshot cannot prove that
+an already spawned allocator will not allocate later. New shards remain paused
+until the original allocator returns its result or its exact process identity is
+reconciled. Recorded PID liveness is checked against Linux process-start identity:
+a reused PID belongs to another process and is not treated as this allocator or
+signalled. A live PID whose identity cannot be established remains unknown.
+An incomplete allocator result also leaves that uncertainty unresolved. Secret
+cleanup and terminal closeout share the same planned-shard liveness predicate.
+
 ## Running work and stop
 
 The runner sends a signed request every 60 seconds:
@@ -112,6 +122,12 @@ to a site-specific recommendation. Owner acceptance alone cannot supply them.
 
 ## Release order and verification
 
+The historical beta retention policy now records that original collection terms,
+verified legal holds and rights/privacy decisions override internal archive
+defaults. It cannot authorize a retention extension or training use. The existing
+`website_capture_retention_review.v1` metadata remains unchanged, including unknown
+original terms; this is no proof of notice, counsel approval or bucket changes.
+
 Deploy the WebApp heartbeat and partial-blocked-settlement APIs before this
 Pipeline runner. Merge first, then use the supported operator door to deploy the
 merged immutable commit. At the read-only production baseline on 2026-10-16,
@@ -134,6 +150,10 @@ Focused hermetic verification:
   bundle import after installing its declared test dependencies.
 - Internal diagnostic: four passed with an explicit hermetic probe fixture;
   production still requires the actual retained probe.
+- After independent review, nine crash-window/PID/unknown-result/stop regressions
+  passed, and the 200-cell happy run, first-shard failure gate and founder-stop
+  rehearsals passed again (three cases). Retention authority validation passed
+  nineteen tests and its repository validator command.
 - Changed launch/closeout/result/admission/registry tests pass Ruff. Older touched
   files have no new lint findings against their committed baseline.
 

@@ -747,7 +747,115 @@ def test_an_unobservable_control_plane_stops_before_the_stale_watchdog(tmp_path,
 
 def test_a_spawn_without_a_pid_receipt_cannot_allocate_a_second_time(tmp_path) -> None:
     (tmp_path / "allocator_launch_intent.json").write_text('{}')
-    assert launch._shard_state({"root": str(tmp_path)}) == "lost"
+    assert launch._shard_state({"root": str(tmp_path)}) == "unknown"
+
+
+def _unreconciled_spawn(tmp_path):
+    request = {"job_id": "synthetic-crash-window"}
+    root = tmp_path / "shards" / "00" / "stage-00"
+    root.mkdir(parents=True)
+    shard = {"index": 0, "root": str(root), "cell_count": 1}
+    (root / launch.SHARD_FILENAME).write_text(json.dumps(shard))
+    (root / "allocator_launch_intent.json").write_text('{}')
+    for name, value in ((launch.REQUEST_FILENAME, request), (launch.INTENT_FILENAME, {"shard_count": 1}),
+                        (launch.CONTROL_FILENAME, {"run_id": "synthetic-run"})):
+        (tmp_path / name).write_text(json.dumps(value))
+    private = tmp_path / ".team-credential"
+    private.mkdir(mode=0o700)
+    (private / "bearer").write_text("synthetic-private-bearer")
+    (private / "bearer").chmod(0o600)
+    return request, shard
+
+
+def test_unknown_spawn_cannot_close_on_a_momentary_provider_zero(tmp_path) -> None:
+    from blueprint_pipeline.team_candidate_quick10_closeout import (
+        allocator_running,
+        seal_blocked_terminal,
+    )
+
+    request, _shard = _unreconciled_spawn(tmp_path)
+    assert allocator_running(tmp_path) is True
+    seal_blocked_terminal(request=request, job_dir=tmp_path, error=ValueError("synthetic-parent-crash"),
+        provider_zero=lambda: pytest.fail("zero snapshot cannot resolve a child that may allocate later"))
+    assert not (tmp_path / TERMINAL_FILENAME).exists()
+    assert (tmp_path / ".team-credential" / "bearer").is_file()
+
+
+def test_cancelled_unknown_spawn_retains_secret_and_stays_pending_without_a_second_allocation(tmp_path) -> None:
+    _unreconciled_spawn(tmp_path)
+    (tmp_path / "stop_requested.json").write_text(json.dumps({"reason": "founder_stop"}))
+    terminal = launch.run_staged_evaluation(job_dir=tmp_path, hooks={
+        "monotonic": iter([0, 0, launch.STOP_TEARDOWN_GRACE_SECONDS]).__next__,
+        "allocator_starter": lambda *_args, **_kwargs: pytest.fail("unreconciled spawn cannot allocate again"),
+        "allocator_stopper": lambda *_args: pytest.fail("unknown process cannot be signalled"),
+        "provider_zero": lambda: pytest.fail("unreconciled spawn cannot settle on global zero")})
+    assert terminal is None and not (tmp_path / TERMINAL_FILENAME).exists()
+    assert (tmp_path / ".team-credential" / "bearer").is_file()
+    assert (tmp_path / "stop_teardown_pending.json").is_file()
+
+
+def test_reused_pid_is_lost_without_waiting_for_or_signalling_the_unrelated_process(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline.team_candidate_quick10_closeout import (
+        allocator_running,
+        seal_blocked_terminal,
+    )
+
+    request, shard = _unreconciled_spawn(tmp_path)
+    (Path(shard["root"]) / "allocator_process.json").write_text(json.dumps({"pid": 1234, "start_ticks": "old"}))
+    monkeypatch.setattr(launch, "_alive", lambda _pid: True)
+    monkeypatch.setattr(launch, "_process_start_ticks", lambda _pid: "new")
+    assert launch._shard_state(shard) == "lost"
+    assert allocator_running(tmp_path) is False
+    zeros = []
+    seal_blocked_terminal(request=request, job_dir=tmp_path, error=ValueError("synthetic-original-process-exited"),
+        provider_zero=lambda: zeros.append(True) or dict(ZERO))
+    assert zeros == [True] and (tmp_path / TERMINAL_FILENAME).is_file()
+    with pytest.raises(launch.TeamCandidateLaunchError, match="stop_identity_unproven"):
+        launch._stop_allocator(shard)
+
+
+def test_live_pid_without_start_identity_remains_unknown(tmp_path, monkeypatch) -> None:
+    _request, shard = _unreconciled_spawn(tmp_path)
+    (Path(shard["root"]) / "allocator_process.json").write_text(json.dumps({"pid": 1234, "start_ticks": None}))
+    monkeypatch.setattr(launch, "_alive", lambda _pid: True)
+    monkeypatch.setattr(launch, "_process_start_ticks", lambda _pid: "current")
+    assert launch._shard_state(shard) == "unknown"
+
+
+def test_unknown_spawn_pauses_other_shards_until_result_or_identity_reconciliation(tmp_path) -> None:
+    from itertools import count
+
+    _request, first = _unreconciled_spawn(tmp_path)
+    first_root = Path(first["root"])
+    (first_root / "allocator_result.json").write_text(json.dumps({"status": "completed"}))
+    for index in (1, 2):
+        root = tmp_path / "shards" / f"{index:02d}" / "stage-00"
+        root.mkdir(parents=True)
+        (root / launch.SHARD_FILENAME).write_text(json.dumps({"index": index, "root": str(root), "cell_count": 1}))
+        if index == 1:
+            (root / "allocator_launch_intent.json").write_text('{}')
+    (tmp_path / launch.INTENT_FILENAME).write_text(json.dumps({"shard_count": 3}))
+    monitored = []
+    def monitor(control):
+        monitored.append(True)
+        return ({"ok": True, "run_id": control["run_id"], "execution_deadline_at_ms": 4_000_000_000_000}
+                if len(monitored) == 1 else {"cancellation_requested": True})
+    terminal = launch.run_staged_evaluation(job_dir=tmp_path, hooks={
+        "execution_monitor": monitor, "monotonic": count(0, launch.STOP_TEARDOWN_GRACE_SECONDS).__next__,
+        "sleep": lambda _seconds: None,
+        "allocator_starter": lambda *_args, **_kwargs: pytest.fail("unknown shard must pause other allocations"),
+        "provider_zero": lambda: pytest.fail("unknown shard cannot settle on global zero")})
+    assert terminal is None and len(monitored) == 2
+    assert (tmp_path / "allocator_reconciliation_pending.json").is_file()
+    assert (tmp_path / ".team-credential" / "bearer").is_file()
+
+
+def test_partial_allocator_result_does_not_resolve_an_unknown_spawn(tmp_path) -> None:
+    from blueprint_pipeline.team_candidate_quick10_closeout import allocator_running
+
+    _request, shard = _unreconciled_spawn(tmp_path)
+    (Path(shard["root"]) / "allocator_result.json").write_text('{"status":')
+    assert launch._shard_state(shard) == "unknown" and allocator_running(tmp_path) is True
 
 
 def test_missing_planned_shard_artifacts_cannot_prove_zero_episodes(tmp_path) -> None:

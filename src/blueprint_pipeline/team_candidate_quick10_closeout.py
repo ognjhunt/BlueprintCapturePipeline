@@ -42,6 +42,8 @@ from .team_candidate_quick10_launch import (
     TERMINAL_FILENAME,
     TERMINAL_SCHEMA,
     TeamCandidateLaunchError,
+    _current_shard,
+    _shard_state,
 )
 from .team_candidate_quick10_result import team_candidate_terminal
 
@@ -310,16 +312,25 @@ def blocked_execution_progress(job_dir: Path) -> dict[str, Any]:
 
 
 def allocator_running(job_dir: Path) -> bool:
-    """True while any shard's recorded allocator process for this job is still alive."""
-
-    for path in job_dir.glob("shards/*/stage-*/allocator_process.json"):
-        if (path.parent / "allocator_result.json").exists():
-            continue
+    """True while a current allocator is running or its ability to allocate remains unknown."""
+    intent = job_dir / INTENT_FILENAME
+    if intent.is_file():
         try:
-            os.kill(int(_read(path)["pid"]), 0)
-        except (OSError, KeyError, TypeError, ValueError):
-            continue
-        return True
+            count = int(_read(intent)["shard_count"])
+            if count <= 0:
+                return True
+            for index in range(count):
+                if _shard_state(_current_shard(job_dir, index)) in {"running", "unknown"}:
+                    return True
+        except (OSError, ValueError, KeyError, TypeError):
+            return True
+    else:
+        for path in job_dir.glob(f"shards/*/stage-*/{SHARD_FILENAME}"):
+            try:
+                if _shard_state(_read(path)) in {"running", "unknown"}:
+                    return True
+            except (OSError, ValueError, KeyError, TypeError):
+                return True
     return False
 
 
