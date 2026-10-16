@@ -31,7 +31,7 @@ from blueprint_pipeline.vast_official_billing_extractor import extract_vast_offi
 
 def recover_partial(shard: dict, adapter: dict, destination: Path) -> tuple[dict, dict, dict]:
     """Reaggregate authenticated child bytes; preserve the failed parent and child."""
-    from blueprint_pipeline.native_task_arena_policy_canary_worker import _aggregate_isolated_cell_results
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import _aggregate_isolated_cell_results, _prefix_episode_evidence_paths
     from blueprint_pipeline.native_task_arena_policy_canary_session import validate_runtime_input_manifest, validate_session_authority
     from blueprint_pipeline.policy_canary_recovered_output_adoption import _adoption_copier
 
@@ -77,8 +77,28 @@ def recover_partial(shard: dict, adapter: dict, destination: Path) -> tuple[dict
                 ("native_rigid_friction_scenario.py", "prepare"), ("native_rigid_friction_scenario.py", "_source_material")]
             for child in failed):
         raise ValueError("diagnostic_partial_failure_not_known_prepolicy_material")
+    proof = {"archive": diagnostic._record(archive), "children": bindings,
+        "original_artifact_manifest": diagnostic._record(manifest_path),
+        "original_adapter": diagnostic._record(source / "allocator_result.json"),
+        "original_parent": diagnostic._record(evidence / "native_task_arena_policy_canary_session_result.v1.json"),
+        "provider_mutations": 0, "completed_episodes_rerun": 0, "original_evidence_edited": False}
+    native = destination / "native_task_arena_policy_canary_session_result.v1.json"
     if destination.exists():
-        raise ValueError("diagnostic_partial_destination_exists")
+        result = diagnostic._read(native)
+        expected_rows = [_prefix_episode_evidence_paths(row, prefix=f"cell_runs/{index:02d}")
+            for index, child in enumerate(children) for row in child["episodes"]]
+        if (destination.is_symlink() or result.get("partial_adoption") != proof
+                or result.get("status") != "runtime_partial_pending_closeout"
+                or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")
+                or result.get("episodes") != expected_rows
+                or result.get("isolated_cell_failures") != [
+                    {"cell": inputs["cells"][child["selected_cell_index"]], "raw_child_result": child}
+                    for child in failed]):
+            raise ValueError("diagnostic_partial_existing_adoption_changed")
+        retained_ids = {row["cell_id"] for row in result["episodes"]}
+        return ({**shard, "cells": [cell for cell in shard["cells"] if cell["cell_id"] in retained_ids]},
+            {**adapter, "native_control_result_path": str(native), "native_control_result_digest": result["result_digest"],
+                "partial_adoption": proof}, result)
     shutil.copytree(evidence, destination, copy_function=_adoption_copier(evidence))
     modes = {child.get("construction_lineage_mode") for child in children}
     if len(modes) != 1 or not next(iter(modes)):
@@ -87,11 +107,7 @@ def recover_partial(shard: dict, adapter: dict, destination: Path) -> tuple[dict
         output_root=destination, construction_lineage_mode=next(iter(modes)))
     if result["status"] != "runtime_partial_pending_closeout":
         raise ValueError("diagnostic_partial_result_not_partial")
-    result["partial_adoption"] = {"archive": diagnostic._record(archive), "children": bindings,
-        "original_artifact_manifest": diagnostic._record(manifest_path),
-        "original_adapter": diagnostic._record(source / "allocator_result.json"),
-        "original_parent": diagnostic._record(evidence / "native_task_arena_policy_canary_session_result.v1.json"),
-        "provider_mutations": 0, "completed_episodes_rerun": 0, "original_evidence_edited": False}
+    result["partial_adoption"] = proof
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     (destination / "native_task_arena_policy_canary_session_result.v1.json").rename(
         destination / "original_failed_parent_result.json")

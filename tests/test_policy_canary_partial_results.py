@@ -136,4 +136,12 @@ def test_historical_partial_adoption_requires_original_archive_manifest_and_prep
         assert result['isolated_cell_failures'][0]['raw_child_result'] == children[1]
         assert derived_adapter['native_control_result_digest'] == result['result_digest']
         assert result['partial_adoption']['provider_mutations'] == 0
+        repeated = staging.recover_partial({'root': str(source), 'cells': inputs['cells']}, adapter, tmp_path / 'derived')
+        assert repeated[2] == result
+        changed = deepcopy(result)
+        changed['episodes'][0]['status'] = 'substituted'
+        changed['result_digest'] = canonical_digest(changed, digest_field='result_digest')
+        write(tmp_path / 'derived' / session.PROVIDER_RESULT_FILENAME, changed)
+        with pytest.raises(ValueError, match='existing_adoption_changed'):
+            staging.recover_partial({'root': str(source), 'cells': inputs['cells']}, adapter, tmp_path / 'derived')
     assert (evidence / session.PROVIDER_RESULT_FILENAME).read_bytes() == before
