@@ -151,7 +151,7 @@ def test_historical_partial_adoption_requires_original_archive_manifest_and_prep
 def test_partial_media_follows_original_child_indices_after_a_middle_refusal(tmp_path, monkeypatch):
     import json
     from scripts.stage_internal_team_evaluation_resume import verify_media
-    from blueprint_pipeline import policy_canary_media_integrity as integrity
+    from scripts import stage_internal_team_evaluation_resume as staging
 
     rows = [{'cell_id': 'first', 'status': 'completed', 'episode': {
         'candidate_exact_policy_input_frames': [], 'policy_request_artifacts': [], 'policy_queries': 0,
@@ -169,6 +169,6 @@ def test_partial_media_follows_original_child_indices_after_a_middle_refusal(tmp
     native.write_text(json.dumps({'planned_episodes_per_policy': 3, 'isolated_cell_failures': [
         {'raw_child_result': {'selected_cell_index': 1}}], 'episodes': rows}))
     checked = []
-    monkeypatch.setattr(integrity, 'require_completed_episode_media', lambda root, episode: checked.append(root.name))
+    monkeypatch.setattr(staging, 'require_completed_episode_media', lambda root, episode: checked.append(root.name))
     assert verify_media(native, rows)['episodes'] == 2
     assert checked == ['00', '02']
