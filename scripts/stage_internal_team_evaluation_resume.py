@@ -23,7 +23,7 @@ from blueprint_pipeline.policy_canary_retained_billing import adapter_instance_i
 from blueprint_pipeline.task_evaluation_scene_execution_authority import proves_no_provider_allocation
 from blueprint_pipeline.team_candidate_episode_recovery import recovery_arguments
 from blueprint_pipeline.team_candidate_quick10_bundle import assert_secret_absent
-from blueprint_pipeline.team_candidate_quick10_closeout import join_team_session_closeout
+from blueprint_pipeline.team_candidate_quick10_closeout import join_team_session_closeout, validate_native_result_binding
 from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, offer_eligibility
 from blueprint_pipeline.vast_official_billing_extractor import extract_vast_official_instance_charge
 
@@ -145,8 +145,7 @@ def stage(prior: Path, root: Path, billing_path: Path, commit: str) -> dict:
         native = Path(str(adapter.get("native_control_result_path") or ""))
         if native.is_file():
             inner = diagnostic._read(native)
-            if inner["result_digest"] != adapter["native_control_result_digest"]:
-                raise ValueError("diagnostic_resume_native_binding_invalid")
+            validate_native_result_binding(inner, expected_digest=adapter["native_control_result_digest"])
             validate_session_result(join_team_session_closeout(inner=inner, adapter=adapter,
                 provider_zero=zero, adapter_path=source / "allocator_result.json"))
             retained.extend(inner["episodes"])

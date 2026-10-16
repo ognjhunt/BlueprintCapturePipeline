@@ -60,6 +60,25 @@ def test_source_joint_camera_prediction_preserves_task_aligned_start():
     )
 
 
+def test_camera_perturbation_preserves_the_custom_start_sealed_camera_plan():
+    from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan
+
+    plan = fixture()
+    plan.update(task_kind="rigid_pick_place",
+        objects=[{"name": "task_object", "task_subject": True}],
+        cadence={"control_frequency_hz": 15., "physics_frequency_hz": 120.,
+                 "physics_dt_seconds": 1/120, "maximum_action_steps": 30, "settle_window_samples": 4})
+    cell = {"cell_id": "sealed-custom-camera", "seed": 74,
+        "resolved_scenario": {"family": "camera_sensor", "parameters": {"external_camera_x_delta_m": -.0113}}}
+    resolved = resolved_scene_plan(plan, cell, task_success_contract=plan["task_spec"]["task_success_contract"])
+    assert resolved["cameras"] == plan["cameras"]
+    binding = plan["policy_canary_camera_start_configuration"]
+    assert validate_camera_start_configuration(resolved, binding) == binding
+    application = resolved["scenario"]["parameter_applications"][0]
+    assert application["expected_native_value"] == external_camera_offset_position(resolved)[0]
+    assert application["application_tolerance"] == 0
+
+
 def test_articulated_framing_uses_assembly_extent_and_frozen_stroke():
     plan = fixture()
     plan['task_kind'] = 'articulated_open_close'

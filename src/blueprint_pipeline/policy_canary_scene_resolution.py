@@ -141,7 +141,8 @@ def resolved_scene_plan(
         from blueprint_pipeline.native_task_camera_start_configuration import (
             external_camera_offset_position,
         )
-        camera["frame_from_camera_matrix"][3] += delta
+        if plan.get("policy_canary_camera_start_configuration") is None:
+            camera["frame_from_camera_matrix"][3] += delta
         expected_camera_x = external_camera_offset_position({**plan, "scenario": scenario})[0]
         applications.append(
             {

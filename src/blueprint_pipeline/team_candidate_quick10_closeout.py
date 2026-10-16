@@ -81,6 +81,13 @@ def _zero_verified(value: Mapping[str, Any]) -> bool:
             and value.get("live_instance_count") == 0 and value.get("blockers") == [])
 
 
+def validate_native_result_binding(inner: Mapping[str, Any], *, expected_digest: str) -> None:
+    """Authenticate raw content before a closeout join derives a new sealed result."""
+    if (inner.get("result_digest") != expected_digest
+            or inner.get("result_digest") != canonical_digest(inner, digest_field="result_digest")):
+        raise TeamCandidateLaunchError("team_candidate_provider_result_binding_mismatch")
+
+
 def join_team_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[str, Any],
                                provider_zero: Mapping[str, Any], adapter_path: Path | None = None) -> dict[str, Any]:
     """The session result with its provider closeout bound in (one allocation, every planned episode)."""
@@ -181,8 +188,7 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
         if not native_path.is_file():
             raise TeamCandidateLaunchError("team_candidate_provider_result_missing")
         inner = _read(native_path)
-        if inner.get("result_digest") != adapter.get("native_control_result_digest"):
-            raise TeamCandidateLaunchError("team_candidate_provider_result_binding_mismatch")
+        validate_native_result_binding(inner, expected_digest=adapter.get("native_control_result_digest"))
         if isinstance(inner.get("robot_free_probe_trace"), Mapping):
             _retain_probe(job_dir, request, inner["robot_free_probe_trace"])
         joined = join_team_session_closeout(inner=inner, adapter=adapter, provider_zero=zero,
@@ -272,6 +278,7 @@ def read_team_candidate_terminal(*, job_dir: Path, expected_job_id: str,
 
 
 __all__ = [
+    "validate_native_result_binding",
     "allocator_running",
     "join_team_session_closeout",
     "read_team_candidate_terminal",
