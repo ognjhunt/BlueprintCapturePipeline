@@ -100,3 +100,46 @@ def test_native_mixed_inventory_keeps_price_refusal_for_expensive_rt_offer(tmp_p
     manifest = json.loads((tmp_path / "vast_offer_selection_manifest.json").read_text())
     assert manifest["blockers"] == ["no_vast_offer_at_or_below_max_hourly_rate"]
     assert result["blockers"] == manifest["blockers"] and not events
+
+
+def test_native_search_can_select_rt_offer_after_first_hundred_compute_offers(tmp_path, monkeypatch):
+    from blueprint_pipeline import vast_provider_adapter as adapter
+    from tests.test_vast_provider_adapter import _run_with_staged_output, _runtime_output_archive
+
+    offers = [{"ask_contract_id": n + 1, "gpu_name": "A800 PCIE", "gpu_ram": 81920,
+               "dph_total": .2, "compute_cap": 800, "driver_version": "580.178.04"}
+              for n in range(100)]
+    offers.append({"ask_contract_id": 303, "gpu_name": "RTX 4090", "gpu_ram": 24564,
+                   "dph_total": .31, "compute_cap": 890, "driver_version": "580.95.05"})
+
+    def download(**kwargs):
+        path = kwargs["output_path"]
+        path.write_bytes(_runtime_output_archive())
+        return {"status": "completed", "downloaded_size_bytes": path.stat().st_size}
+
+    monkeypatch.setattr(adapter, "_download_provider_output_with_capacity_guard", download)
+    events = []
+    searches = []
+    _run_with_staged_output(tmp_path, monkeypatch, events, provider_bundle_kind="isaac",
+                           provider_offers=offers, gpu_names=["A800 PCIE", "RTX 4090", "L40S"],
+                           search_requests=searches)
+    assert len(searches) == 2
+    assert searches[1].pop("gpu_name") == {"in": ["L40S", "RTX 4090"]}
+    assert searches[0] == searches[1] and searches[0]["limit"] == 100
+    manifest = json.loads((tmp_path / "vast_offer_selection_manifest.json").read_text())
+    assert manifest["selected_offer_isaac_rt_candidate"] is True and "teardown" in events
+
+
+@pytest.mark.parametrize("gpu_names", [[], ["A800 PCIE"], "invalid"])
+def test_native_full_compute_page_refuses_unusable_catalog_before_rental(tmp_path, monkeypatch, gpu_names):
+    from tests.test_vast_provider_adapter import _run_with_staged_output
+
+    offers = [{"ask_contract_id": n + 1, "gpu_name": "A800 PCIE", "dph_total": .2,
+               "gpu_ram": 81920, "compute_cap": 800, "driver_version": "580.178.04"}
+              for n in range(100)]
+    events = []
+    result, _ = _run_with_staged_output(tmp_path, monkeypatch, events,
+                                       provider_bundle_kind="isaac", provider_offers=offers,
+                                       gpu_names=gpu_names)
+    assert not events and result["continuing_spend_from_this_run"] is False
+    assert any("catalog" in b for b in result["blockers"])

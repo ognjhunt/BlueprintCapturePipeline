@@ -9858,7 +9858,8 @@ def _runtime_output_archive(*, mp4_members: int = 2) -> bytes:
     return buffer.getvalue()
 
 
-def _run_with_staged_output(tmp_path: Path, monkeypatch, events: list[str], **adapter_options):
+def _run_with_staged_output(tmp_path: Path, monkeypatch, events: list[str], *,
+                            provider_offers=None, gpu_names=None, search_requests=None, **adapter_options):
     """Drive the real adapter to its output collection with a staged GET URL."""
 
     _configure_live_gates(tmp_path, monkeypatch)
@@ -9871,7 +9872,16 @@ def _run_with_staged_output(tmp_path: Path, monkeypatch, events: list[str], **ad
     def api(*, method, path, **kwargs):
         if method == "GET" and path == "/instances/":
             return 200, {"instances": []}
+        if method == "GET" and path == "/gpu_names/unique/" and gpu_names is not None:
+            return 200, {"gpu_names": gpu_names}
         if method == "POST" and path == "/bundles/":
+            if provider_offers is not None:
+                query = kwargs["payload"]
+                if search_requests is not None:
+                    search_requests.append(dict(query))
+                names = query.get("gpu_name", {}).get("in")
+                found = [offer for offer in provider_offers if names is None or offer["gpu_name"] in names]
+                return 200, {"offers": found[:query["limit"]]}
             return 200, {"offers": [{"id": 303, "ask_contract_id": 303, "gpu_name": "RTX 4090",
                                      "dph_total": 0.31, "driver_version": "580.95.05", "num_gpus": 1,
                                      "rentable": True, "verified": True}]}
