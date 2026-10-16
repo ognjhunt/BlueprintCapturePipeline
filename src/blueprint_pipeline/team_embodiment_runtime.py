@@ -307,6 +307,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     )
     from .native_task_episode_environment import NativeRigidScoringEnvironment
     from .policy_episode_trace_evidence import episode_trace_evidence
+    from .policy_request_evidence import capture_request, persist_request_evidence
 
     env = built.env
     unwrapped = env.unwrapped
@@ -403,8 +404,20 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     joint_trace: list[list[float]] = []
     commanded: list[dict[str, Any]] = []
     queries: list[dict[str, Any]] = []
+    request_artifacts: list[dict[str, Any]] = []
+    progress["policy_request_artifacts"] = request_artifacts
 
     fell = False
+
+    def sample_task_state() -> None:
+        q = joint_positions()
+        joint_trace.append([float(q[i]) for i in declared_index])
+        sample = scoring.read_object_sample()
+        sample["step_index"] = len(samples)
+        # Task readback shares the control loop's simulator clock, not the
+        # policy service's latency or the camera persistence wall clock.
+        sample["simulation_time_s"] = step * step_seconds
+        samples.append(sample)
 
     def advance(targets: Sequence[float]) -> None:
         nonlocal step, fell
@@ -413,14 +426,11 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         if fall_height is not None and float(_array(robot.data.root_pose_w)[0][2]) < fall_height:
             fell = True
         if step % stride == 0:
-            q = joint_positions()
-            joint_trace.append([float(q[i]) for i in declared_index])
-            sample = scoring.read_object_sample()
-            sample["step_index"] = step // stride
-            samples.append(sample)
+            sample_task_state()
 
     q0 = joint_positions()
     base0 = base_state()["position_world_m"]
+    sample_task_state()
     # Hold: every position joint (and the gripper) where it is; every wheel at rest.
     last = ([float(q0[declared_index[j]]) for j in position_columns] + [float(q0[i]) for i in gripper_index]
             + [0.0] * len(velocity_columns))
@@ -438,7 +448,28 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         progress["first_observation_retained"] = True
         progress.update(candidate_policy_query_attempted=True, candidate_action_applied=False, phase="policy_query")
         started = time.monotonic()
-        chunk = policy.infer(observation)
+
+        def retain_request(evidence: Mapping[str, Any], index: int = query_index) -> None:
+            try:
+                request_artifacts.append(persist_request_evidence(
+                    evidence, root=media_root, episode_id=episode_id, query_index=index,
+                    binding={**identity, "task_spec_digest": canonical_digest(task_spec)}))
+            except Exception:
+                progress["policy_request_retention_failed"] = True
+                raise
+
+        bind_request_sink = getattr(policy, "bind_request_evidence_sink", None)
+        if callable(bind_request_sink):
+            bind_request_sink(retain_request)
+        else:
+            retain_request(capture_request(observation, transport="injected_policy_client"))
+        try:
+            chunk = policy.infer(observation)
+        except Exception:
+            # Only an inference exception marks a policy failure. The retained
+            # request sink marks its own disk/media failures as infrastructure.
+            progress["policy_inference_failed"] = True
+            raise
         latency = time.monotonic() - started
         progress.update(candidate_policy_queried=True, candidate_action_returned=True)
         try:
@@ -480,8 +511,13 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         last = [*last[:len(last) - len(velocity_columns)], *([0.0] * len(velocity_columns))]
     for _ in range(settle_steps):  # hold the last command while the task object settles
         advance(last)
+    if samples[-1]["simulation_time_s"] != step * step_seconds:
+        # A fall can leave a partial sample stride before the settling window.
+        # Retain that actual terminal state so its clock includes every step.
+        sample_task_state()
     score = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
     visual, artifacts = seal_media()
+    artifacts.extend(request_artifacts)
     state_trace, contacts, trajectory = episode_trace_evidence(
         joint_trace=joint_trace, task_samples=samples, task_pose_field="task_object_pose_world")
     moved = (bool(joint_trace) and max(abs(a - b) for row_q in joint_trace
@@ -496,6 +532,9 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         "policy_query_latency": {"seconds": [row_q["latency_seconds"] for row_q in queries]},
         "camera_calibration": None, "resource_telemetry": None, "telemetry_channels": None,
         "scientific_reset": None, "embodiment_digest": row["embodiment_digest"],
+        "policy_request_artifacts": request_artifacts,
+        "policy_request_evidence_complete": bool(request_artifacts)
+            and all(item["serialization_verified"] for item in request_artifacts),
     }
 
 

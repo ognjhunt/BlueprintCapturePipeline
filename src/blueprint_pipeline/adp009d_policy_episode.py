@@ -1425,7 +1425,7 @@ def run_policy_episode(
             retain_request(capture_request(observation, transport="injected_policy_client"))
         try:
             chunk = policy.infer(observation)
-        except BaseException as exc:
+        except Exception as exc:
             episode_progress["policy_inference_failed"] = True
             timings_seconds["policy_inference"] += time.monotonic() - phase_started
             inference_evidence_reader = getattr(

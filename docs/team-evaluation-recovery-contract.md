@@ -81,6 +81,12 @@ successful episode. The conservative duration includes terminal settling. An
 incomplete clock leaves the measurement null. It is neither provider wall time
 nor measured physical latency.
 
+The own-robot HTTPS runtime retains its actual request artifacts and marks
+inference exceptions as policy failures, while request-persistence faults remain
+infrastructure voids. Both runtimes keep process interruptions out of policy
+failure classification. Own-robot task-state clocks include the initial state
+and any final partial sampling stride before their trace digests are sealed.
+
 An incomplete or stopped run sends settlement `execution_status: "blocked"`
 and `execution_progress`:
 
@@ -154,6 +160,9 @@ Focused hermetic verification:
   passed, and the 200-cell happy run, first-shard failure gate and founder-stop
   rehearsals passed again (three cases). Retention authority validation passed
   nineteen tests and its repository validator command.
+- Own-robot/result timing and cause-classification tests: twenty-five passed.
+  Lifecycle/import closure plus the DROID transport-failure regression:
+  twenty-six passed. Scene/probe tests: seven passed.
 - Changed launch/closeout/result/admission/registry tests pass Ruff. Older touched
   files have no new lint findings against their committed baseline.
 
