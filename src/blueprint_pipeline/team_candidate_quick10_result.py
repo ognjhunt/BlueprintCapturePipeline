@@ -96,7 +96,7 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
                             purpose: str, episodes: int | None = None,
                             expected_cells: Sequence[Mapping[str, Any]] | None = None,
                             pre_policy_recovery_cells: Sequence[str] = (),
-                            retained_episode_digests: Mapping[str, str] | None = None) -> dict[str, Any]:
+                            retained_episode_digests: Mapping[str, str | list[str]] | None = None) -> dict[str, Any]:
     """Return the terminal receipt (outcomes, counts, scoring) for the agent-run executor."""
 
     if purpose not in PURPOSES or not session_results:

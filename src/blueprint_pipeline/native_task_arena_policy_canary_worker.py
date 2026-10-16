@@ -1153,7 +1153,25 @@ def _aggregate_isolated_cell_results(
         raise RuntimeError("policy_canary_isolated_cell_indices_invalid")
     child_results = sorted(child_results, key=lambda child: child["selected_cell_index"])
     episodes: list[dict[str, Any]] = []
+    failed_cells: list[dict[str, Any]] = []
     for index, child in enumerate(child_results):
+        if (child.get("result_digest") == canonical_digest(child, digest_field="result_digest")
+                and child.get("task_success_contract") == inputs.get("task_success_contract")
+                and child.get("task_success_contract_digest") == inputs.get("task_success_contract_digest")
+                and child.get("status") == "blocked" and child.get("episodes") == []
+                and child.get("policy_loads") == [] and child.get("candidate_policy_queried") is False
+                and child.get("preload_observation_gate") is None
+                and (child.get("session_closeout") or {}).get("runtime_closed") is True
+                and (child.get("telemetry") or {}).get("message_count") == 0
+                and (child.get("telemetry") or {}).get("channel_message_counts")
+                    == {"observations": 0, "episode_envelopes": 0}
+                and child.get("session_failure_type")
+                and any(frame.get("function") == "prepolicy_observation_gate"
+                    for frame in child.get("session_failure_source_trace") or [])):
+            # Retain the raw pre-policy failure separately. It is not an episode,
+            # policy outcome, loaded candidate, or measured runtime identity.
+            failed_cells.append({"cell": inputs["cells"][index], "raw_child_result": dict(child)})
+            continue
         if (
             child.get("selected_cell_index") != index
             or child.get("status")
@@ -1183,23 +1201,24 @@ def _aggregate_isolated_cell_results(
         (candidate, str(cell["cell_id"]), int(cell["seed"]))
         for candidate in candidate_ids
         for cell in inputs["cells"]
+        if cell not in [failure["cell"] for failure in failed_cells]
     }
     observed = {
         (str(row.get("candidate_id")), str(row.get("cell_id")), int(row.get("seed")))
         for row in episodes
     }
-    if observed != expected:
+    if observed != expected or not episodes:
         raise RuntimeError("policy_canary_isolated_cell_pairing_invalid")
     result: dict[str, Any] = {
         "schema_version": "native_task_arena_policy_canary_session_result.v1",
-        "status": "runtime_completed_unqualified_pending_closeout",
+        "status": "runtime_partial_pending_closeout" if failed_cells else "runtime_completed_unqualified_pending_closeout",
         "run_kind": inputs.get("run_kind") or "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": list(candidate_ids),
         "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
-        "episodes_per_policy": len(inputs["cells"]),
-        "learned_policy_rollout_count": len(candidate_ids) * len(inputs["cells"]),
+        "episodes_per_policy": len(inputs["cells"]) - len(failed_cells),
+        "learned_policy_rollout_count": len(episodes),
         "provider_allocations_observed": None,
         "retry_cap": 0,
         "warm_session_open_count": 1,
@@ -1226,6 +1245,9 @@ def _aggregate_isolated_cell_results(
         "matrix_digest": inputs.get("matrix_digest") or _digest(inputs["cells"]),
         "result_digest": "",
     }
+    if failed_cells:
+        result["planned_episodes_per_policy"] = len(inputs["cells"])
+        result["isolated_cell_failures"] = failed_cells
     telemetry_index, telemetry_artifacts = _write_policy_canary_telemetry(output_root, result["episodes"], **(
         {"archive_members": archive_members} if archive_members is not None else {}))
     result["telemetry"] = telemetry_index

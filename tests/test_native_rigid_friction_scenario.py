@@ -87,12 +87,93 @@ def test_scenarios_without_friction_do_not_change_assets():
     assert friction.verify(None, {}) == {}
 
 
+def test_unbound_collision_material_uses_measured_runtime_values_without_editing_usd(tmp_path):
+    path = tmp_path / 'unbound.usda'
+    source_asset(path)
+    stage = Usd.Stage.Open(str(path))
+    UsdShade.MaterialBindingAPI(stage.GetPrimAtPath('/Object/shape0')).UnbindAllBindings()
+    stage.GetRootLayer().Save()
+    original = path.read_bytes()
+    objects, pending = prepare(path)
+    record = pending['dynamic_friction']
+    assert objects[0]['usd_path'] == str(path)
+    assert path.read_bytes() == original
+    assert record['application_mode'] == 'native_material_properties_before_reset'
+    assert record['source_dynamic_friction'] is None
+    assert record['source_material_prim_path'] is None
+
+
+@pytest.mark.parametrize('corrupt_other_property', [False, True])
+def test_unbound_runtime_update_preserves_measured_static_friction_and_restitution(corrupt_other_property):
+    baseline = np.array([[[.7, .25, .1], [.9, .3, .05]]], dtype=np.float32)
+    state = {'materials': baseline.copy(), 'writes': []}
+
+    def write(materials, indices):
+        assert np.array_equal(indices, np.array([0], dtype=np.int32))
+        state['writes'].append(materials.copy())
+        state['materials'] = materials.copy()
+        if corrupt_other_property:
+            state['materials'][0, 0, 0] = .2
+
+    view = SimpleNamespace(get_material_properties=lambda: state['materials'], set_material_properties=write)
+    env = SimpleNamespace(unwrapped=SimpleNamespace(scene={'task_object': SimpleNamespace(root_physx_view=view)}))
+    overrides = {'dynamic_friction': {
+        'application_mode': 'native_material_properties_before_reset',
+        'runtime_name': 'task_object', 'expected_dynamic_friction': .441,
+        'source_dynamic_friction': None, 'source_material_prim_path': None,
+    }}
+    if corrupt_other_property:
+        with pytest.raises(ValueError, match='unrequested_material_property_changed'):
+            friction.apply_native_overrides(env, overrides)
+    else:
+        applied = friction.apply_native_overrides(env, overrides)
+        assert np.array_equal(state['materials'][..., 0], baseline[..., 0])
+        assert np.array_equal(state['materials'][..., 2], baseline[..., 2])
+        assert state['materials'][..., 1] == pytest.approx(.441)
+        assert applied['dynamic_friction']['source_native_material_properties'] == baseline.tolist()
+        assert applied['dynamic_friction']['unrequested_material_properties_preserved'] is True
+        assert friction.verify(env, applied)['dynamic_friction']['observed_dynamic_friction'] == pytest.approx(.441)
+    assert len(state['writes']) == 1
+    assert overrides['dynamic_friction']['source_dynamic_friction'] is None
+
+
 def test_articulated_subject_keeps_explicit_link_binding_gap():
     applications, gaps = [], []
     friction.add_application({'dynamic_friction': 0.45}, {'object_type': 'ARTICULATION'}, applications, gaps)
     assert applications == []
     assert gaps == [{'family': 'bounded_physics', 'reason': 'runtime_material_link_binding_unavailable',
                      'fallback': 'canonical_task_material'}]
+
+
+def test_pinned_sdk_warp_setter_receives_float_materials_and_cpu_int32_indices():
+    wp = pytest.importorskip('warp')
+    baseline = np.array([[[.7, .25, .1]]], dtype=np.float32)
+    state = {'values': wp.array(baseline, dtype=wp.float32, device='cpu')}
+
+    def write(values, indices):
+        assert values.dtype == wp.float32 and indices.dtype == wp.int32
+        assert str(indices.device) == 'cpu' and indices.numpy().tolist() == [0]
+        state['values'] = values
+
+    view = SimpleNamespace(get_material_properties=lambda: state['values'], set_material_properties=write)
+    subject = SimpleNamespace(root_view=view)
+    env = SimpleNamespace(unwrapped=SimpleNamespace(scene={'task_object': subject}))
+    applied = friction.apply_native_overrides(env, {'dynamic_friction': {
+        'application_mode': 'native_material_properties_before_reset',
+        'runtime_name': 'task_object', 'expected_dynamic_friction': .441,
+    }})
+    assert friction.verify(env, applied)['dynamic_friction']['observed_dynamic_friction'] == pytest.approx(.441)
+    assert np.array_equal(state['values'].numpy()[..., (0, 2)], baseline[..., (0, 2)])
+
+
+def test_mixed_bound_and_unbound_materials_still_refuse_to_guess(tmp_path):
+    path = tmp_path / 'mixed.usda'
+    source_asset(path, material_count=2)
+    stage = Usd.Stage.Open(str(path))
+    UsdShade.MaterialBindingAPI(stage.GetPrimAtPath('/Object/shape0')).UnbindAllBindings()
+    stage.GetRootLayer().Save()
+    with pytest.raises(ValueError, match='collision_material_missing'):
+        prepare(path)
 
 
 @pytest.mark.parametrize('nominal,accepted', [(0.25, True), (0.5, False)])

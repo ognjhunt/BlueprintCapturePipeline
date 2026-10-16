@@ -64,3 +64,16 @@ def test_resume_layout_adopts_scores_and_places_refused_cell_first():
     with pytest.raises(ValueError, match="not_unique"):
         remaining_groups(cells, retained + [cells[0]])
 
+
+
+def test_second_resume_keeps_recovered_camera_score_and_does_not_rerun_it():
+    from scripts.stage_internal_team_evaluation_resume import remaining_groups
+
+    cells = [scored(str(index)) for index in range(200)]
+    retained = [refused('74'), *cells[:98]]
+    groups, refused_ids = remaining_groups(cells, retained)
+    assert [len(group) for group in groups] == [25, 25, 25, 25, 2]
+    assert groups[0][0]['cell_id'] == '98' and refused_ids == ['74']
+    assert {row['cell_id'] for group in groups for row in group}.isdisjoint({str(i) for i in range(98)})
+    with pytest.raises(ValueError, match='not_unique'):
+        remaining_groups(cells, retained + [scored('74')])
