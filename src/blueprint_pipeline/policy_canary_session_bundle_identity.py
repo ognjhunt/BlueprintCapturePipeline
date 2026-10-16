@@ -30,7 +30,7 @@ PAIR = ["pi05_droid", "groot_n17_droid"]
 PAIR_SHAPE = ("internal_policy_canary_paired_session", "internal_policy_canary", 20)
 TEAM_SHAPE = ("team_candidate_evaluation_session", "team_candidate_evaluation", 10)
 # Mirrors native_task_arena_policy_canary_session.TEAM_MAX_CELLS_PER_SESSION (kept equal by a test).
-TEAM_MAX_CELLS_PER_SESSION = 50
+TEAM_MAX_CELLS_PER_SESSION = 200
 # Written by the team entrypoint in place of the pair's local-server teardown.
 TEAM_ENTRYPOINT_MARKER = "blueprint_team_candidate_remote_policy_session"
 _TEAM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -52,7 +52,7 @@ def _shape(payload: Mapping[str, Any]) -> tuple[str, str, int] | None:
 
 
 def _episode_shape_valid(payload: Mapping[str, Any], shape: tuple[str, str, int]) -> bool:
-    """The pair runs its ten cells twice; a team session runs its own 1-50 cells once."""
+    """The pair runs its ten cells twice; a team session runs its own 1-200 cells once."""
 
     episodes, rollouts = payload.get("episodes_per_policy"), payload.get("learned_policy_rollout_count")
     if shape is TEAM_SHAPE:

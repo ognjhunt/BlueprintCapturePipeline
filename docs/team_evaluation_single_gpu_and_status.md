@@ -26,7 +26,11 @@ seals that prefix before normal provider teardown. Ordinary task failures do
 not trigger this gate. A missing/timed-out later child preserves the previously
 completed prefix and raw child evidence; incomplete measurement stays unknown.
 Checkpoints are provider-local until the normal output transfer completes;
-they do not claim protection from loss of the provider disk itself. Existing
+they do not claim protection from loss of the provider disk itself. The independent transport and sealed-bundle checks accept at most 200 team
+cases; the frozen-pair canary remains at ten cells/twenty rollouts. Fallback
+SSH progress retains only the latest bounded milestones and uses the sealed
+bundle's cell count, including cells100-199, without widening legacy
+canary scopes. Existing
 multi-shard admissions and completed diagnostic evidence remain readable.
 
 The version endpoint was a synchronous FastAPI handler. It competed for the

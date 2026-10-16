@@ -27,7 +27,7 @@ _CELL_STAGES = frozenset({
 _REMOTE_STAGES = frozenset({
     "runtime_source_receipt", "media_toolchain_receipt", "cell_directory",
 })
-_CELL_LINE = re.compile(r"BLUEPRINT_POLICY_CANARY_PROGRESS:cell=([0-9]{1,2}):stage=([a-z_]+)")
+_CELL_LINE = re.compile(r"BLUEPRINT_POLICY_CANARY_PROGRESS:cell=([0-9]{1,3}):stage=([a-z_]+)")
 _REMOTE_LINE = re.compile(r"REMOTE_STAGE:([a-z_]+)")
 _MAX_OUTPUT_BYTES = 8192
 
@@ -38,19 +38,21 @@ for root in /workspace /tmp/blueprint_vast_work; do
   [ -f "$out/native_task_runtime_source_provisioning.v1.json" ] && printf 'REMOTE_STAGE:runtime_source_receipt\\n'
   [ -f "$out/adp009d_media_toolchain_status.json" ] && printf 'REMOTE_STAGE:media_toolchain_receipt\\n'
   [ -d "$out/cell_runs" ] && printf 'REMOTE_STAGE:cell_directory\\n'
-  for file in "$out"/cell_runs/[0-9][0-9]/cell_progress.log; do
-    [ -f "$file" ] && cat "$file"
+  for file in "$out"/cell_runs/[0-9][0-9]/cell_progress.log "$out"/cell_runs/1[0-9][0-9]/cell_progress.log; do
+    [ -f "$file" ] && tail -n 6 "$file"
   done
 done
-} | head -c 8193
+} | tail -n 64 | tail -c 8192
 """
 
 
 def probe_policy_canary_remote_progress(
-    connection: Mapping[str, Any], *, attempt_dir: Path,
+    connection: Mapping[str, Any], *, attempt_dir: Path, maximum_cell_count: int = 10,
 ) -> dict[str, Any]:
     """Return at most 100 validated milestones over attempt-pinned SSH."""
 
+    if type(maximum_cell_count) is not int or not 1 <= maximum_cell_count <= 200:
+        return {"status": "unavailable", "milestones": [], "reason": "cell_count_invalid"}
     endpoint = _vast_ssh_endpoint(connection)
     identity = _identity_file()
     if endpoint is None or identity is None:
@@ -90,7 +92,7 @@ def probe_policy_canary_remote_progress(
             milestones.append(raw_line)
             continue
         cell_match = _CELL_LINE.fullmatch(raw_line)
-        if cell_match and int(cell_match.group(1)) < 10 and cell_match.group(2) in _CELL_STAGES:
+        if cell_match and int(cell_match.group(1)) < maximum_cell_count and cell_match.group(2) in _CELL_STAGES:
             milestones.append(raw_line)
     if len(milestones) > 100:
         return {"status": "unavailable", "milestones": [], "reason": "milestone_count_exceeded"}

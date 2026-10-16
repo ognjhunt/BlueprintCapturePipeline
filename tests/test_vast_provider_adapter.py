@@ -1483,8 +1483,8 @@ def test_remote_progress_probe_is_only_bound_for_policy_canary(
 
     calls: list[tuple[object, Path]] = []
 
-    def fake_probe(connection: object, *, attempt_dir: Path) -> dict[str, object]:
-        calls.append((connection, attempt_dir))
+    def fake_probe(connection: object, *, attempt_dir: Path, maximum_cell_count: int = 10) -> dict[str, object]:
+        calls.append((connection, attempt_dir, maximum_cell_count))
         return {"status": "observed", "milestones": []}
 
     monkeypatch.setattr(vpa, "probe_policy_canary_remote_progress", fake_probe)
@@ -1497,9 +1497,14 @@ def test_remote_progress_probe_is_only_bound_for_policy_canary(
     )
     assert canary is not None
     assert canary({"status": "running"}) == {"status": "observed", "milestones": []}
+    team = vpa._remote_progress_probe_for_bundle("native_task_arena_policy_canary_session", tmp_path, cell_count=200)
+    assert team is not None
+    team({"status": "running"})
     assert calls == [
-        ({"status": "running"}, tmp_path / "policy_remote_progress_ssh")
+        ({"status": "running"}, tmp_path / "policy_remote_progress_ssh", 10),
+        ({"status": "running"}, tmp_path / "policy_remote_progress_ssh", 200),
     ]
+    assert vpa._remote_progress_probe_for_bundle("native_task_arena_policy_canary_session", tmp_path, cell_count=201) is None
 
 
 def test_request_logs_tolerates_null_diagnostic_probe(

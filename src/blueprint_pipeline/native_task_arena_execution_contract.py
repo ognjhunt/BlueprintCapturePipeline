@@ -369,13 +369,13 @@ def native_task_arena_execution_transport_completed(
             == "runtime_completed_unqualified_pending_closeout"
             and result.get("schema_version")
             == "native_task_arena_policy_canary_session_result.v1"
-            # The pair runs twenty. Team authorities admit 1..25 cells, so
+            # The pair runs twenty. Team authorities admit 1..200 cells, so
             # a recovery's last partial shard has the same transport seam.
             and type(result.get("learned_policy_rollout_count")) is int
             and (
                 (result.get("run_kind") == "internal_policy_canary" and result.get("learned_policy_rollout_count") == 20)
                 or (result.get("run_kind") == "team_candidate_evaluation"
-                    and 1 <= result["learned_policy_rollout_count"] <= 25)
+                    and 1 <= result["learned_policy_rollout_count"] <= 200)
             )
             and result.get("claim_ceiling") == "diagnostic_policy_execution"
             and result.get("candidate_policy_queried") is True

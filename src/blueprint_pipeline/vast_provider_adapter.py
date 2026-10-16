@@ -3778,6 +3778,8 @@ def _blueprint_bundle_preflight(
         "provider_bundle_readiness_source": readiness_source,
         "provider_bundle_readiness_member": readiness_member,
         "provider_bundle_readiness_parse_error": readiness_parse_error,
+        **({"policy_cell_count": readiness.get("episodes_per_policy")}
+           if provider_bundle_kind == "native_task_arena_policy_canary_session" else {}),
         "provider_bundle_local_ready_for_remote_staging": readiness.get(
             "local_bundle_ready_for_remote_staging"
         ),
@@ -6328,14 +6330,16 @@ def _provider_output_probe(get_url: str) -> Callable[[], bool] | None:
 
 
 def _remote_progress_probe_for_bundle(
-    provider_bundle_kind: str, job_dir: Path
+    provider_bundle_kind: str, job_dir: Path, *, cell_count: int = 10
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]] | None:
     """Only the policy canary has an SSH milestone probe."""
 
-    if provider_bundle_kind != "native_task_arena_policy_canary_session":
+    if (provider_bundle_kind != "native_task_arena_policy_canary_session"
+            or type(cell_count) is not int or not 1 <= cell_count <= 200):
         return None
     return lambda connection: probe_policy_canary_remote_progress(
-        connection, attempt_dir=job_dir / "policy_remote_progress_ssh"
+        connection, attempt_dir=job_dir / "policy_remote_progress_ssh",
+        **({"maximum_cell_count": cell_count} if cell_count != 10 else {}),
     )
 
 
@@ -8969,7 +8973,8 @@ def run_vast_provider_adapter(
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
             remote_progress_probe=_remote_progress_probe_for_bundle(
-                provider_bundle_kind, resolved_job_dir
+                provider_bundle_kind, resolved_job_dir,
+                cell_count=bundle_preflight.get("policy_cell_count") or 10,
             ),
         )
         # Result and log transport are independent. Preserve an observed upload
