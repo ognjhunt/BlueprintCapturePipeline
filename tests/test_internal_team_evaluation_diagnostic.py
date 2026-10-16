@@ -66,6 +66,22 @@ def test_stages_all_200_real_cells_and_keeps_owner_issued_credential_separate(tm
         with pytest.raises(ValueError, match="owner_approval_invalid"):
             diagnostic.internal_admission(facts=facts, approval={**_approval(), **change},
                 policy_url=result["policy_url"], credential_digest="sha256:" + "4" * 64)
+    called = []
+    monkeypatch.setattr(launch, "_team_metadata", lambda *_args: diagnostic.metadata())
+
+    def completed(*, job_dir):
+        called.append(job_dir)
+        terminal = {"status": "completed", "episodes_run": 200}
+        (job_dir / launch.TERMINAL_FILENAME).write_text(json.dumps(terminal))
+        return terminal
+
+    monkeypatch.setattr(launch, "run_staged_evaluation", completed)
+    assert diagnostic.run(root)["episodes_run"] == 200
+    result = json.loads((root / "internal_diagnostic_result.json").read_text())
+    assert result["trained_policy_evaluated"] is False and result["customer_recommendation_permitted"] is False
+    # A completed operator command reads its terminal, without renting again or needing its policy service.
+    (root / "policy-bearer").unlink()
+    assert diagnostic.run(root)["episodes_run"] == 200 and called == [job]
 
 
 def test_policy_repeats_only_observed_robot_state_and_never_claims_success() -> None:
