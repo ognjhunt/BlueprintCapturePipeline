@@ -125,7 +125,7 @@ def test_authority_refuses_invalid_absolute_deadline(tmp_path, monkeypatch, dead
         validate_session_authority(authority)
 
 
-@pytest.mark.parametrize('damage', ['status', 'contract', 'scenario', 'candidate', 'episodes', 'media', 'schema', 'kind', 'claims', 'identity'])
+@pytest.mark.parametrize('damage', ['status', 'contract', 'scenario', 'candidate', 'episodes', 'media', 'schema', 'kind', 'claims', 'identity', 'telemetry', 'json'])
 def test_malformed_child_stops_before_the_next_paid_case_and_retains_valid_prefix(tmp_path, monkeypatch, damage):
     runtime, output, _inputs, _authority, seen, spawn = _campaign(tmp_path, monkeypatch)
 
@@ -134,6 +134,11 @@ def test_malformed_child_stops_before_the_next_paid_case_and_retains_valid_prefi
         if kwargs['index'] == 3:
             path = kwargs['child_root'] / PROVIDER_RESULT_FILENAME
             child = json.loads(path.read_text())
+            if damage == 'json':
+                malformed = path.with_suffix('.malformed')
+                malformed.write_text('{incomplete')
+                malformed.replace(path)
+                return result
             if damage == 'schema':
                 child['schema_version'] = 'invented'
             elif damage == 'status':
@@ -146,6 +151,8 @@ def test_malformed_child_stops_before_the_next_paid_case_and_retains_valid_prefi
                 child['episodes'][0]['candidate_id'] = 'another-policy'
             elif damage == 'episodes':
                 child['episodes'] = []
+            elif damage == 'telemetry':
+                child['episodes'][0]['telemetry'] = 'malformed'
             elif damage == 'kind':
                 child['episodes'][0]['run_kind'] = 'internal_policy_canary'
             elif damage == 'claims':
@@ -158,7 +165,7 @@ def test_malformed_child_stops_before_the_next_paid_case_and_retains_valid_prefi
             worker._seal_result(result_path=path, result=child)
         return result
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises((RuntimeError, ValueError)):
         worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=damaged_spawn)
     assert seen == list(range(4))
     checkpoint = json.loads((output / 'team_evaluation_checkpoint.json').read_text())

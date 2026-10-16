@@ -1172,7 +1172,8 @@ def _validate_isolated_cell_result(*, child: Mapping[str, Any], inputs: Mapping[
         raise RuntimeError("policy_canary_isolated_cell_result_invalid")
     cell = inputs["cells"][index]
     for row in child["episodes"]:
-        if not isinstance(row, Mapping):
+        if (not isinstance(row, Mapping)
+                or (row.get("telemetry") is not None and not isinstance(row["telemetry"], Mapping))):
             raise RuntimeError("policy_canary_isolated_cell_result_invalid")
         if any(row.get(field) != cell.get(field) for field in (
             "cell_id", "seed", "cell_spec_digest", "family",
@@ -1491,7 +1492,14 @@ def _run_isolated_cell_processes(
                 f"policy_canary_isolated_cell_result_missing:{index}:"
                 f"exit_{exit_code}"
             )
-        child_results.append(_read(child_result_path))
+        try:
+            child_result = _read(child_result_path)
+        except Exception:  # noqa: BLE001 - retain measured prefix even if a child file is unreadable
+            _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                children=child_results, construction_lineage_mode=construction_lineage_mode,
+                reason="policy_canary_isolated_cell_result_unreadable")
+            raise
+        child_results.append(child_result)
         if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
             # The scene failed its robot-free check in cell 0: no further team episode runs on it.
             blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
