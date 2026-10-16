@@ -21,19 +21,14 @@ host itself has no egress firewall here.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import re
 import stat
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
-from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_policy_canary_session import (
     PROVIDER_RESULT_FILENAME,
     RESULT_SCHEMA_VERSION,
@@ -57,117 +52,6 @@ from .paid_resource_admission import PaidResourceAdmissionGrant
 _SECRET_FILE_ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,58}_FILE$")
 # Ten episodes of per-query frames and review media (the pair budgets 8 GB for twenty).
 TEAM_RESULT_UPLOAD_BYTES = 4 * POLICY_RESULT_UPLOAD_BYTES
-
-
-def team_candidate_country_codes(authority: Mapping[str, Any]) -> tuple[str, ...]:
-    """Default US; an operator may opt only this authored internal fixture into SG.
-
-    This is host configuration, never GPU-supplied input. The operator must
-    retain owner authority for the country change alongside the paid launch.
-    Customer scenes and all other native transports retain their US default.
-    """
-    country = os.environ.get("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "US").strip().upper() or "US"
-    if country == "US":
-        return NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
-    if country != "SG":
-        raise ValueError("internal_diagnostic_country_invalid")
-    try:
-        record = authority["runtime_inputs"]
-        data = Path(record["path"]).read_bytes()
-        if (len(data) != record["size_bytes"]
-                or "sha256:" + hashlib.sha256(data).hexdigest() != record["sha256"]):
-            raise ValueError("binding")
-        inputs = json.loads(data)
-        if (not isinstance(inputs, dict)
-                or inputs.get("runtime_inputs_digest") != authority.get("runtime_inputs_digest")
-                or inputs.get("runtime_inputs_digest") != canonical_digest(inputs, digest_field="runtime_inputs_digest")):
-            raise ValueError("binding")
-    except (OSError, KeyError, TypeError, ValueError) as error:
-        raise ValueError("internal_diagnostic_country_input_binding_invalid") from error
-    if (inputs.get("run_id") != authority.get("run_id")
-            or not str(inputs.get("run_id") or "").startswith("internal-team-diag-")
-            or inputs.get("candidate_ids") != ["blueprint-internal.hold-position-v1"]
-            or authority.get("candidate_ids") != inputs["candidate_ids"]
-            or inputs.get("scene_revision_digest")
-            != "sha256:e0fd71e52b0fcc8f16f42668e13bd9a9bd727d2db3cc0df95b785ee0191d2a81"
-            or inputs.get("task_success_contract_digest")
-            != "sha256:c4faf026331e9bf3687b96f5b3c80a484f4a975a7e3812fec96f9524158bb962"
-            or authority.get("task_success_contract_digest") != inputs["task_success_contract_digest"]):
-        raise ValueError("internal_diagnostic_country_scope_invalid")
-    try:
-        record = authority["provider_country_approval"]
-        data = Path(record["path"]).read_bytes()
-        if (len(data) != record["size_bytes"]
-                or "sha256:" + hashlib.sha256(data).hexdigest() != record["sha256"]):
-            raise ValueError("binding")
-        approval = json.loads(data)
-        approved_at = datetime.fromisoformat(approval["approved_at_iso"].replace("Z", "+00:00"))
-        expires_at = datetime.fromisoformat(approval["expires_at_iso"].replace("Z", "+00:00"))
-        if (approval["schema_version"] != "blueprint.internal_diagnostic_country_approval.v1"
-                or approval["approved_by"] != "@ognjhunt" or approval["country_codes"] != ["SG"]
-                or approval["scene_id"] != "internal-team-runtime-diagnostic"
-                or approval["candidate_id"] != inputs["candidate_ids"][0]
-                or approval["admission_digest"] != inputs["team_candidate_admission"]["admission_digest"]
-                or approval["total_cap_usd"] != 20 or approval["remaining_episodes"] != 102
-                or not isinstance(approval["approval_reference"], str) or not approval["approval_reference"].strip()
-                or not approved_at <= datetime.now(timezone.utc) < expires_at
-                or expires_at > datetime(2026, 10, 17, 4, tzinfo=timezone.utc)):
-            raise ValueError("scope")
-        sessions = approval["session_bindings"]
-        if not isinstance(sessions, list) or not 1 <= len(sessions) <= 5:
-            raise ValueError("session count")
-        cells = [cell for row in sessions for cell in row["cell_ids"]]
-        if (not 0 < len(cells) <= approval["remaining_episodes"]
-                or len(set(cells)) != len(cells)
-                or len({row["runtime_inputs_digest"] for row in sessions}) != len(sessions)
-                or len({row["run_id"] for row in sessions}) != len(sessions)
-                or len({row["resource_name"] for row in sessions}) != len(sessions)):
-            raise ValueError("episode set")
-        for row in sessions:
-            count = row["episodes_per_policy"]
-            if (type(count) is not int or not 1 <= count <= 25 or count != len(row["cell_ids"])
-                    or not 0 < row["hard_cap_usd"] <= (2.6 if count == 25 else .8)
-                    or type(row["hard_ttl_seconds"]) is not int or row["hard_ttl_seconds"] <= 0):
-                raise ValueError("session limits")
-        future_caps = sum(Decimal(str(row["hard_cap_usd"])) for row in sessions)
-        settled = Decimal(str(approval["settled_cost_usd"]))
-        if not (future_caps <= Decimal("11.2") and Decimal("2.829") <= settled
-                and settled + future_caps <= Decimal(str(approval["total_cap_usd"]))):
-            raise ValueError("combined budget")
-        matches = [row for row in sessions if row["runtime_inputs_digest"] == inputs["runtime_inputs_digest"]]
-        if len(matches) != 1:
-            raise ValueError("session missing")
-        row = matches[0]
-        fields = ("run_id", "resource_name", "runtime_inputs_digest", "episodes_per_policy",
-                  "hard_cap_usd", "hard_ttl_seconds")
-        if (any(row[field] != authority[field] for field in fields)
-                or row["cell_ids"] != [cell["cell_id"] for cell in inputs["cells"]]
-                or datetime.now(timezone.utc) + timedelta(seconds=authority["hard_ttl_seconds"]) > expires_at):
-            raise ValueError("executable limits")
-    except (OSError, KeyError, TypeError, ValueError, InvalidOperation) as error:
-        raise ValueError("internal_diagnostic_country_approval_invalid") from error
-    return ("SG",)
-
-
-def bind_team_candidate_country_approval(authority: Mapping[str, Any]) -> dict[str, Any]:
-    """Seal the retained operator decision into the executable authority at staging.
-
-    Setting the country switch on a US-staged authority cannot add this record.
-    The stager alone reseals the authority before the provider bundle is built.
-    """
-    result = dict(authority)
-    country = os.environ.get("BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_VAST_COUNTRY", "US").strip().upper() or "US"
-    if country != "US":
-        try:
-            path = Path(os.environ["BLUEPRINT_INTERNAL_TEAM_DIAGNOSTIC_COUNTRY_APPROVAL_FILE"]).resolve()
-            data = path.read_bytes()
-        except (KeyError, OSError) as error:
-            raise ValueError("internal_diagnostic_country_approval_invalid") from error
-        result["provider_country_approval"] = {"path": str(path), "size_bytes": len(data),
-            "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
-        result["authority_digest"] = canonical_digest(result, digest_field="authority_digest")
-    team_candidate_country_codes(result)
-    return result
 
 
 def team_result_upload_bytes(episodes: int) -> int:
@@ -227,7 +111,6 @@ def run_team_candidate_session_vast(
     if blockers:
         return _blocked(sorted(set(blockers)))
     environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
-    country_codes = team_candidate_country_codes(authority)
     consumption = consume_session_authority_once(
         authority, consumption_path=Path(job_dir) / "policy_canary_session_consumption.json") if execute else None
     if consumption is not None and consumption.get("status") != "consumed":
@@ -246,7 +129,7 @@ def run_team_candidate_session_vast(
         vast_launch_lock_file=None, candidate_policy_query_expected=True, forward_hf_token=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"), minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
-        allowed_geolocation_country_codes=country_codes,
+        allowed_geolocation_country_codes=NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES,
         authorization_consumption=consumption, stale_offer_create_retry_limit=0,
         expected_provider_download_bytes=POLICY_RUNTIME_DEPENDENCY_DOWNLOAD_BYTES + POLICY_PROVIDER_BUNDLE_DOWNLOAD_BYTES,
         expected_provider_upload_bytes=team_result_upload_bytes(authority["episodes_per_policy"]),
@@ -257,5 +140,4 @@ def run_team_candidate_session_vast(
     )
 
 
-__all__ = ["credential_file_blockers", "run_team_candidate_session_vast", "team_result_upload_bytes",
-           "team_candidate_country_codes", "bind_team_candidate_country_approval"]
+__all__ = ["credential_file_blockers", "run_team_candidate_session_vast", "team_result_upload_bytes"]
