@@ -639,6 +639,37 @@ def test_builder_preserves_official_droid_policy_cameras_and_adds_target_marker(
     assert marker.object_cfg.init_state.pos == pytest.approx((1.2, 2.0, 0.737))
 
 
+@pytest.mark.parametrize("yaw_pi, expected_x", [(False, 0.0387), (True, 0.0613)])
+def test_camera_variation_without_custom_start_uses_official_droid_sensor(monkeypatch, yaw_pi, expected_x):
+    from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan
+    from blueprint_pipeline.native_task_arena_readback import read_native_task_arena_scenario_parameters
+    from tests.test_task_evaluation_policy_canary_setup import _setup
+
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    plan["task_spec"] = {"manipulation_strategy": "planar_push", "source_subject_identity": "cube",
+                         "target_position_world_m": [0.5, 0.2, 0.78]}
+    plan["robot"]["base_pose_world"] = {"position_world_m": [0., 0., .75],
+        "orientation_xyzw": [0., 0., 1., 0.] if yaw_pi else [0., 0., 0., 1.]}
+    subject = next(row for row in plan["objects"] if row.get("semantic_role") == "task_object")
+    subject.update(task_subject=True, name="task_object")
+    plan["cadence"].update(control_frequency_hz=15., physics_frequency_hz=120.,
+        physics_dt_seconds=1/120, maximum_action_steps=30, settle_window_samples=4)
+    cell = {"cell_id": "camera-74", "seed": 1784317348,
+        "resolved_scenario": {"family": "camera_sensor", "parameters": {"external_camera_x_delta_m": -.0113}}}
+    resolved = resolved_scene_plan(plan, cell, task_success_contract=_setup()["task_success_contract"])
+    assert "policy_canary_camera_start_configuration" not in resolved
+    application = resolved["scenario"]["parameter_applications"][0]
+    assert application["expected_native_value"] == pytest.approx(expected_x)
+    assert application["application_tolerance"] == 0
+    built = build_native_task_arena_environment(resolved)
+    camera = built.native_configuration_readback["cameras"]["external"]
+    assert camera["offset_position_m"] == pytest.approx([expected_x, .57, .66])
+    assert read_native_task_arena_scenario_parameters(built)["passed"] is True
+    camera["offset_position_m"][0] += .0001
+    assert read_native_task_arena_scenario_parameters(built)["passed"] is False
+
+
 def test_builder_clones_lightweight_control_search_without_rendering(
     monkeypatch,
 ) -> None:

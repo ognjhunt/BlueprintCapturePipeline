@@ -437,6 +437,7 @@ def test_policy_transport_seals_typed_media_gap_before_first_observation(
             "vast_instance_ids": [48650527] if provider_create_attempted and not definite_refusal else [],
             "continuing_spend_from_this_run": False,
             "provider_create_attempted": provider_create_attempted,
+            "vast_side_effects_may_have_occurred": provider_create_attempted,
         }
         if definite_refusal:
             adapter.update(
@@ -505,7 +506,8 @@ def test_policy_transport_seals_typed_media_gap_before_first_observation(
                     "provider_terminal"
                     if provider_create_attempted and not definite_refusal
                     else "cancelled_no_allocation"
-                )
+                ),
+                "provider_mutations_performed": 0 if not provider_create_attempted else None,
             }
             if kwargs["provider_allocation_impossible"] is (not provider_create_attempted or definite_refusal)
             else pytest.fail("watchdog close did not bind allocation truth")
@@ -530,6 +532,8 @@ def test_policy_transport_seals_typed_media_gap_before_first_observation(
     assert result["candidate_policy_queried"] is False
     assert result["first_observation_reached"] is False
     assert result["scientific_attempt_started"] is False
+    from blueprint_pipeline.task_evaluation_scene_execution_authority import proves_no_provider_allocation
+    assert proves_no_provider_allocation(result) is (not provider_create_attempted)
     assert result["visual_evidence"] == {
         "status": "unavailable_before_first_observation",
         "media_gap": {

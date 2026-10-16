@@ -135,14 +135,14 @@ def resolved_scene_plan(
     if "external_camera_x_delta_m" in parameters:
         delta = float(parameters["external_camera_x_delta_m"])
         camera = next(row for row in plan["cameras"] if row["role"] == "external")
-        if plan.get("policy_canary_camera_start_configuration") is not None:
-            from blueprint_pipeline.native_task_camera_start_configuration import (
-                external_camera_offset_position,
-            )
-            expected_camera_x = external_camera_offset_position({**plan, "scenario": scenario})[0]
-        else:
-            camera["frame_from_camera_matrix"][3] += delta
-            expected_camera_x = camera["frame_from_camera_matrix"][3]
+        # The DROID profile below preserves its official sensor even without
+        # a custom start binding. Generic scene-camera coordinates are not
+        # that sensor's parent-frame coordinates.
+        from blueprint_pipeline.native_task_camera_start_configuration import (
+            external_camera_offset_position,
+        )
+        camera["frame_from_camera_matrix"][3] += delta
+        expected_camera_x = external_camera_offset_position({**plan, "scenario": scenario})[0]
         applications.append(
             {
                 "parameter_id": "external_camera_x_delta_m",

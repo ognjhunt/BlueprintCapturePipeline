@@ -200,8 +200,15 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
         if facts is None or facts.get("probe") is None:
             raise TeamCandidateLaunchError("team_scene_robot_free_probe_not_passed")
         binding = {**binding, "robot_free_probe_receipt_digest": facts["probe"]["receipt_digest"]}
+    recovery_kwargs = {}
+    if intent.get("pre_policy_reset_recovery") is not None:
+        from .team_candidate_episode_recovery import recovery_arguments
+        recovery_kwargs = recovery_arguments(intent["pre_policy_reset_recovery"],
+            request_digest=canonical_request_digest(request), admission_digest=admission["admission_digest"],
+            episodes=int(admission["episodes"]))
     receipt = team_candidate_terminal(session_results=joined_results, runtime_binding=binding,
-                                      purpose=str(admission["evaluation_purpose"]), episodes=int(admission["episodes"]))
+                                      purpose=str(admission["evaluation_purpose"]), episodes=int(admission["episodes"]),
+                                      **recovery_kwargs)
     return _seal(job_dir, request, {**receipt, "provider_zero_verified": True,
                                     "admission_digest": admission["admission_digest"]})
 

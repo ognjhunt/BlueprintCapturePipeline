@@ -249,6 +249,7 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
             {"role": "external", "frame_from_camera_matrix": [1.0] * 16}
         ],
         "robot": {
+            "base_pose_world": {"position_world_m": [0., 0., 0.], "orientation_xyzw": [0., 0., 0., 1.]},
             "joint_reset_positions_rad": {
                 f"panda_joint{index}": 0.1 for index in range(1, 8)
             }

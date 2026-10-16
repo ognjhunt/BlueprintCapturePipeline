@@ -4,7 +4,43 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.policy_canary_provider_null_closeout import proven_provider_null_closeout
+
+
+@pytest.mark.parametrize("fault", [None, "create_unknown", "ids_unknown", "effects_unknown", "watchdog_unknown",
+    "watchdog_bool", "teardown_unknown", "cleanup_unknown", "contradictory_mutations"])
+def test_no_offer_allocation_fields_require_complete_explicit_absence(fault):
+    from blueprint_pipeline.policy_canary_provider_null_closeout import provider_allocation_fields
+
+    adapter = {"provider_create_attempted": False, "vast_instance_ids": [], "vast_side_effects_may_have_occurred": False}
+    watchdog = {"status": "cancelled_no_allocation", "provider_mutations_performed": 0}
+    teardown = {"vast_instance_ids": [], "continuing_spend_from_this_run": False}
+    cleanup = {"all_objects_absent": True}
+    if fault == "create_unknown":
+        adapter.pop("provider_create_attempted")
+    if fault == "ids_unknown":
+        adapter.pop("vast_instance_ids")
+    if fault == "effects_unknown":
+        adapter.pop("vast_side_effects_may_have_occurred")
+    if fault == "watchdog_unknown":
+        watchdog.pop("provider_mutations_performed")
+    if fault == "watchdog_bool":
+        watchdog["provider_mutations_performed"] = False
+    if fault == "teardown_unknown":
+        teardown.pop("continuing_spend_from_this_run")
+    if fault == "cleanup_unknown":
+        cleanup.pop("all_objects_absent")
+    if fault == "contradictory_mutations":
+        adapter["provider_mutations_performed"] = 1
+    fields = provider_allocation_fields(adapter=adapter, watchdog=watchdog, teardown=teardown, cleanup=cleanup)
+    if fault is None:
+        assert fields["provider_mutations_performed"] == 0
+    elif fault == "contradictory_mutations":
+        assert fields["provider_mutations_performed"] == 1
+    else:
+        assert "provider_mutations_performed" not in fields
 
 
 def _record(path: Path) -> dict[str, object]:

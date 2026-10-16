@@ -347,6 +347,36 @@ def _fake_closed_team_result(inputs: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def test_projection_recovers_only_an_explicit_pre_policy_reset_refusal(tmp_path):
+    from copy import deepcopy
+    _runtime, _output, inputs, _admission_record = _stage_team_runtime(tmp_path)
+    original = _fake_closed_team_result(inputs)
+    retry = deepcopy(original)
+    retry.update(episodes=[retry["episodes"][-1]], episodes_per_policy=1, learned_policy_rollout_count=1)
+    retry["result_digest"] = canonical_digest(retry, digest_field="result_digest")
+    bad = original["episodes"][-1]
+    bad.update(status="blocked", episode_failure_stage="before_first_observation",
+        failure_message="scientific_reset_scenario_application_mismatch",
+        candidate_policy_query_attempted=False, candidate_policy_queried=False, actions_reached_robot=False,
+        policy_outcome_interpretable=False, visual_evidence={"status": "unavailable_before_first_observation",
+            "media_gap": {"type": "before_first_observation", "reason": "scientific_reset_scenario_application_mismatch"}},
+        episode={"candidate_policy_query_attempted": False, "policy_response_status": "not_attempted",
+                 "score": {"status": "undetermined", "task_succeeded": None}})
+    original["status"] = "blocked"
+    original["result_digest"] = canonical_digest(original, digest_field="result_digest")
+    before = deepcopy(original)
+    kwargs = dict(session_results=[original, retry], purpose="scored", episodes=10,
+                  runtime_binding=inputs["team_candidate_admission"])
+    with pytest.raises(TeamCandidateResultError, match="episode_count_invalid"):
+        team_candidate_terminal(**kwargs)
+    terminal = team_candidate_terminal(**kwargs,
+        expected_cells=inputs["cells"],
+        pre_policy_recovery_cells=[bad["cell_id"]])
+    assert terminal["episodes_run"] == 10 and terminal["scoring"]["scored_episode_count"] == 10
+    assert len(terminal["pre_policy_reset_recovery"]["superseded_pre_policy_refusals"]) == 1
+    assert original == before
+
+
 def test_projection_counts_only_simulator_verdicts(tmp_path) -> None:
     _runtime, _output, inputs, _admission_record = _stage_team_runtime(tmp_path)
     closed = _fake_closed_team_result(inputs)
