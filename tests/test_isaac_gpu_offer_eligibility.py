@@ -102,15 +102,26 @@ def test_native_mixed_inventory_keeps_price_refusal_for_expensive_rt_offer(tmp_p
     assert result["blockers"] == manifest["blockers"] and not events
 
 
-def test_native_search_can_select_rt_offer_after_first_hundred_compute_offers(tmp_path, monkeypatch):
+@pytest.mark.parametrize("visible_rt_failure", [None, "country", "reliability", "direct_port", "country_after_1000"])
+def test_native_search_can_select_rt_offer_after_first_hundred_compute_offers(tmp_path, monkeypatch, visible_rt_failure):
     from blueprint_pipeline import vast_provider_adapter as adapter
     from tests.test_vast_provider_adapter import _run_with_staged_output, _runtime_output_archive
 
     offers = [{"ask_contract_id": n + 1, "gpu_name": "A800 PCIE", "gpu_ram": 81920,
                "dph_total": .2, "compute_cap": 800, "driver_version": "580.178.04"}
               for n in range(100)]
-    offers.append({"ask_contract_id": 303, "gpu_name": "RTX 4090", "gpu_ram": 24564,
-                   "dph_total": .31, "compute_cap": 890, "driver_version": "580.95.05"})
+    good = {"ask_contract_id": 303, "gpu_name": "RTX 4090", "gpu_ram": 24564,
+            "dph_total": .31, "compute_cap": 890, "driver_version": "580.95.05",
+            "geolocation": "US", "reliability": .99, "direct_port_count": 2}
+    if visible_rt_failure == "country_after_1000":
+        offers = [dict(good, ask_contract_id=n + 1000, geolocation="SG") for n in range(1000)]
+    elif visible_rt_failure:
+        bad = dict(good, ask_contract_id=302)
+        bad[{"country": "geolocation", "reliability": "reliability",
+             "direct_port": "direct_port_count"}[visible_rt_failure]] = {
+                 "country": "SG", "reliability": .5, "direct_port": 0}[visible_rt_failure]
+        offers[0] = bad
+    offers.append(good)
 
     def download(**kwargs):
         path = kwargs["output_path"]
@@ -121,25 +132,26 @@ def test_native_search_can_select_rt_offer_after_first_hundred_compute_offers(tm
     events = []
     searches = []
     _run_with_staged_output(tmp_path, monkeypatch, events, provider_bundle_kind="isaac",
-                           provider_offers=offers, gpu_names=["A800 PCIE", "RTX 4090", "L40S"],
-                           search_requests=searches)
-    assert len(searches) == 2
-    assert searches[1].pop("gpu_name") == {"in": ["L40S", "RTX 4090"]}
-    assert searches[0] == searches[1] and searches[0]["limit"] == 100
+                           provider_offers=offers,
+                           search_requests=searches, allowed_geolocation_country_codes=["US"],
+                           min_reliability=.95, require_direct_port=True)
+    assert [q["limit"] for q in searches] == ([100, 1000, 10000] if visible_rt_failure == "country_after_1000" else [100, 1000])
+    assert all({k: v for k, v in q.items() if k != "limit"} ==
+               {k: v for k, v in searches[0].items() if k != "limit"} for q in searches)
     manifest = json.loads((tmp_path / "vast_offer_selection_manifest.json").read_text())
     assert manifest["selected_offer_isaac_rt_candidate"] is True and "teardown" in events
 
 
-@pytest.mark.parametrize("gpu_names", [[], ["A800 PCIE"], "invalid"])
-def test_native_full_compute_page_refuses_unusable_catalog_before_rental(tmp_path, monkeypatch, gpu_names):
+@pytest.mark.parametrize("provider_offer_limit", [None, 100])
+def test_native_search_reports_incomplete_coverage_at_read_bound_before_rental(tmp_path, monkeypatch, provider_offer_limit):
     from tests.test_vast_provider_adapter import _run_with_staged_output
 
     offers = [{"ask_contract_id": n + 1, "gpu_name": "A800 PCIE", "dph_total": .2,
                "gpu_ram": 81920, "compute_cap": 800, "driver_version": "580.178.04"}
-              for n in range(100)]
+              for n in range(10000)]
     events = []
     result, _ = _run_with_staged_output(tmp_path, monkeypatch, events,
                                        provider_bundle_kind="isaac", provider_offers=offers,
-                                       gpu_names=gpu_names)
+                                       provider_offer_limit=provider_offer_limit)
     assert not events and result["continuing_spend_from_this_run"] is False
-    assert any("catalog" in b for b in result["blockers"])
+    assert "vast_native_offer_search_coverage_incomplete" in result["blockers"]

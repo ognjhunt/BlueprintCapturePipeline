@@ -8405,30 +8405,6 @@ def run_vast_provider_adapter(
                 timeout_seconds=45,
             )
             offers = _offers_from_response(search_response)
-            if (require_rt and status_code == 200 and len(offers) >= search_request["limit"]
-                    and not any(_is_isaac_rt_candidate(_gpu_name(offer)) for offer in offers)):
-                # A full compute-only page is not evidence that no RT capacity
-                # exists. Resolve current provider spellings from its catalog,
-                # then narrow the same query before applying the page limit.
-                catalog_status, catalog = _api_json(
-                    method="GET", path="/gpu_names/unique/", api_key=api_key, timeout_seconds=30,
-                )
-                names = catalog.get("gpu_names")
-                if catalog_status != 200 or not isinstance(names, list):
-                    raise RuntimeError("vast_isaac_rt_gpu_catalog_unavailable")
-                rt_names = sorted({name for name in names if isinstance(name, str) and _is_isaac_rt_candidate(name)})
-                if not rt_names:
-                    raise RuntimeError("vast_isaac_rt_gpu_catalog_has_no_recognized_models")
-                search_request["gpu_name"] = {"in": rt_names}
-                write_json(resolved_job_dir / "vast_isaac_rt_catalog_search.json", {
-                    "catalog_http_status": catalog_status, "recognized_rt_model_names": rt_names,
-                    "search_request": search_request, "provider_mutations_performed": 0,
-                })
-                status_code, search_response = _api_json(
-                    method="POST", path="/bundles/", api_key=api_key,
-                    payload=search_request, timeout_seconds=45,
-                )
-                offers = _offers_from_response(search_response)
             selection_kwargs = dict(
                 max_hourly_rate=max_hourly_rate,
                 min_gpu_ram_mb=resolved_min_gpu_ram_mb,
@@ -8455,6 +8431,34 @@ def run_vast_provider_adapter(
             selected_offer = _select_offer(
                 offers, require_isaac_rt_candidate=require_rt, **selection_kwargs
             )
+            search_coverage = []
+            while require_rt:
+                ids_digest = canonical_digest({"offer_ids": sorted(_offer_id(o) or -1 for o in offers)})
+                repeated_page = bool(search_coverage and search_coverage[-1]["offer_ids_digest"] == ids_digest)
+                search_coverage.append({"limit": search_request["limit"],
+                                        "offer_count": len(offers), "http_status": status_code,
+                                        "offer_ids_digest": ids_digest})
+                incomplete = status_code != 200 or (not selected_offer and (len(offers) >= 10000 or repeated_page))
+                write_json(resolved_job_dir / "vast_native_offer_search_coverage.json", {
+                    "searches": search_coverage, "coverage_incomplete": incomplete,
+                    "provider_mutations_performed": 0,
+                })
+                if incomplete:
+                    raise RuntimeError("vast_native_offer_search_coverage_incomplete")
+                if selected_offer or len(offers) < search_request["limit"]:
+                    break
+                # A full page with no selectable native offer is inconclusive.
+                # Expand only the read window; all selection constraints stay
+                # fixed. A saturated read bound reports unknown before rental.
+                search_request["limit"] *= 10
+                status_code, search_response = _api_json(
+                    method="POST", path="/bundles/", api_key=api_key,
+                    payload=search_request, timeout_seconds=45,
+                )
+                offers = _offers_from_response(search_response)
+                selected_offer = _select_offer(
+                    offers, require_isaac_rt_candidate=True, **selection_kwargs
+                )
             only_rt_blocked = bool(
                 require_rt and not selected_offer
                 and _select_offer(offers, require_isaac_rt_candidate=False, **selection_kwargs) is not None
