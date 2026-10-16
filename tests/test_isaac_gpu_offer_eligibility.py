@@ -81,3 +81,22 @@ def test_native_price_refusal_keeps_price_reason_when_rt_is_not_the_cause(tmp_pa
     manifest = json.loads((tmp_path / "vast_offer_selection_manifest.json").read_text())
     assert manifest["blockers"] == ["no_vast_offer_at_or_below_max_hourly_rate"]
     assert result["blockers"] == manifest["blockers"] and not events
+
+
+def test_native_mixed_inventory_keeps_price_refusal_for_expensive_rt_offer(tmp_path, monkeypatch):
+    from blueprint_pipeline import vast_provider_adapter as adapter
+    from tests.test_vast_provider_adapter import _run_with_staged_output
+
+    offers = [
+        {"ask_contract_id": 1, "gpu_name": "A800 PCIE", "gpu_ram": 81920,
+         "dph_total": .4, "compute_cap": 800, "driver_version": "580.178.04"},
+        {"ask_contract_id": 2, "gpu_name": "RTX 4090", "gpu_ram": 24564,
+         "dph_total": 1.2, "compute_cap": 890, "driver_version": "580.178.04"},
+    ]
+    monkeypatch.setattr(adapter, "_offers_from_response", lambda _: offers)
+    events = []
+    result, _ = _run_with_staged_output(tmp_path, monkeypatch, events,
+                                       provider_bundle_kind="isaac", max_hourly_rate=.9)
+    manifest = json.loads((tmp_path / "vast_offer_selection_manifest.json").read_text())
+    assert manifest["blockers"] == ["no_vast_offer_at_or_below_max_hourly_rate"]
+    assert result["blockers"] == manifest["blockers"] and not events

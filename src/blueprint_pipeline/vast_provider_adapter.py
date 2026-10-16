@@ -8434,6 +8434,9 @@ def run_vast_provider_adapter(
             only_rt_blocked = bool(
                 require_rt and not selected_offer
                 and _select_offer(offers, require_isaac_rt_candidate=False, **selection_kwargs) is not None
+                # A mixed inventory can contain RT hardware that fails price or
+                # another frozen filter. Preserve those existing refusal causes.
+                and not any(_is_isaac_rt_candidate(_gpu_name(offer)) for offer in offers)
             )
             offer_blockers: list[str] = []
             if not selected_offer and not only_rt_blocked:
