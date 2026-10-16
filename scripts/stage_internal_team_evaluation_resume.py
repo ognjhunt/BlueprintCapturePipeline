@@ -96,7 +96,8 @@ def recover_partial(shard: dict, adapter: dict, destination: Path) -> tuple[dict
                     for child in failed]):
             raise ValueError("diagnostic_partial_existing_adoption_changed")
         retained_ids = {row["cell_id"] for row in result["episodes"]}
-        return ({**shard, "cells": [cell for cell in shard["cells"] if cell["cell_id"] in retained_ids]},
+        return ({**shard, "cells": [cell for cell in shard["cells"] if cell["cell_id"] in retained_ids],
+                    "cell_count": len(retained_ids), "original_planned_cell_count": len(shard["cells"])},
             {**adapter, "native_control_result_path": str(native), "native_control_result_digest": result["result_digest"],
                 "partial_adoption": proof}, result)
     shutil.copytree(evidence, destination, copy_function=_adoption_copier(evidence))
@@ -116,7 +117,8 @@ def recover_partial(shard: dict, adapter: dict, destination: Path) -> tuple[dict
     derived_adapter = {**adapter, "native_control_result_path": str(native),
         "native_control_result_digest": result["result_digest"], "partial_adoption": result["partial_adoption"]}
     retained_ids = {row["cell_id"] for row in result["episodes"]}
-    return {**shard, "cells": [cell for cell in shard["cells"] if cell["cell_id"] in retained_ids]}, derived_adapter, result
+    return {**shard, "cells": [cell for cell in shard["cells"] if cell["cell_id"] in retained_ids],
+        "cell_count": len(retained_ids), "original_planned_cell_count": len(shard["cells"])}, derived_adapter, result
 
 
 def verify_media(native: Path, rows: list[dict]) -> dict:

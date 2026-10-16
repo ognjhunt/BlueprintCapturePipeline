@@ -133,6 +133,7 @@ def test_historical_partial_adoption_requires_original_archive_manifest_and_prep
         shard, derived_adapter, result = staging.recover_partial(
             {'root': str(source), 'cells': inputs['cells']}, adapter, tmp_path / 'derived')
         assert len(shard['cells']) == len(result['episodes']) == 1
+        assert shard['cell_count'] == 1 and shard['original_planned_cell_count'] == 2
         assert result['isolated_cell_failures'][0]['raw_child_result'] == children[1]
         assert derived_adapter['native_control_result_digest'] == result['result_digest']
         assert result['partial_adoption']['provider_mutations'] == 0
