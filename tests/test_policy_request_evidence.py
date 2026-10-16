@@ -4,11 +4,17 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from blueprint_pipeline import policy_request_evidence
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.groot_n17_wire_client import encode_wire_message, decode_wire_message
+from blueprint_pipeline.groot_n17_wire_client import decode_wire_message, encode_wire_message
 from blueprint_pipeline.policy_request_evidence import (
-    ObservedWebsocket, capture_request, persist_request_evidence, restore_request,
-    snapshot_request, validate_request_evidence,
+    ObservedWebsocket,
+    capture_request,
+    persist_request_evidence,
+    request_evidence_sink,
+    restore_request,
+    snapshot_request,
+    validate_request_evidence,
 )
 
 
@@ -31,6 +37,52 @@ def test_exact_values_dtype_order_prompt_and_wire_replay(tmp_path):
     assert artifact["serialization_verified"] is True
     with pytest.raises(FileExistsError):
         persist_request_evidence(receipt, root=tmp_path, episode_id="pair-a", query_index=0)
+
+
+def test_retained_request_keeps_artifact_binding_and_progress(tmp_path):
+    receipt = capture_request(request(), transport="test")
+    progress = {"candidate_policy_query_attempted": True}
+    artifacts = []
+    sink = request_evidence_sink(
+        root=tmp_path, episode_id="episode-a", query_index=2,
+        progress=progress, artifacts=artifacts, binding=lambda: {"candidate_id": "candidate-a"},
+    )
+    sink(receipt)
+    artifact, = artifacts
+    assert artifact["query_index"] == 2
+    assert artifact["request_digest"] == receipt["request_digest"]
+    assert progress == {"candidate_policy_query_attempted": True}
+
+
+@pytest.mark.parametrize("failure", [OSError("disk full"), KeyboardInterrupt("stopped")])
+def test_retained_request_preserves_failure_and_marks_storage_errors(tmp_path, monkeypatch, failure):
+    def failed_persistence(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(policy_request_evidence, "persist_request_evidence", failed_persistence)
+    progress = {}
+    sink = request_evidence_sink(
+        root=tmp_path, episode_id="episode-a", query_index=0,
+        progress=progress, artifacts=[], binding=dict,
+    )
+    with pytest.raises(type(failure)) as caught:
+        sink({})
+    assert caught.value is failure
+    assert progress.get("policy_request_retention_failed", False) is isinstance(failure, Exception)
+
+
+def test_request_binding_failure_is_retention_failure(tmp_path):
+    def broken_binding():
+        raise ValueError("task digest unavailable")
+
+    progress = {}
+    sink = request_evidence_sink(
+        root=tmp_path, episode_id="episode-a", query_index=0,
+        progress=progress, artifacts=[], binding=broken_binding,
+    )
+    with pytest.raises(ValueError, match="task digest unavailable"):
+        sink({})
+    assert progress["policy_request_retention_failed"] is True
 
 
 @pytest.mark.parametrize("mutation", ["channel", "dtype", "prompt", "shape"])

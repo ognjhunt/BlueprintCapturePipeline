@@ -1403,20 +1403,14 @@ def run_policy_episode(
         episode_progress["candidate_policy_query_attempted"] = True
         _emit_progress("policy_query_started")
         try:
-            from policy_request_evidence import capture_request, persist_request_evidence
+            from policy_request_evidence import capture_request, request_evidence_sink
         except ModuleNotFoundError:
-            from .policy_request_evidence import capture_request, persist_request_evidence
+            from .policy_request_evidence import capture_request, request_evidence_sink
 
-        def retain_request(evidence, index=query_index):
-            if media_root is not None and episode_id is not None:
-                try:
-                    policy_request_artifacts.append(persist_request_evidence(evidence,
-                        root=media_root, episode_id=episode_id, query_index=index,
-                        binding={**dict((scientific_reset or {}).get("binding") or {}),
-                                 "candidate_id": candidate_id, "task_spec_digest": canonical_digest(resolved_task_spec)}))
-                except Exception:
-                    episode_progress["policy_request_retention_failed"] = True
-                    raise
+        retain_request = request_evidence_sink(root=media_root, episode_id=episode_id, query_index=query_index,
+            progress=episode_progress, artifacts=policy_request_artifacts,
+            binding=lambda: {**dict((scientific_reset or {}).get("binding") or {}),
+                             "candidate_id": candidate_id, "task_spec_digest": canonical_digest(resolved_task_spec)})
 
         bind_request_sink = getattr(policy, "bind_request_evidence_sink", None)
         if callable(bind_request_sink):

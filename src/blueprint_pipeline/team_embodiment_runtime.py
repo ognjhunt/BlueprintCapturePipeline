@@ -307,7 +307,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     )
     from .native_task_episode_environment import NativeRigidScoringEnvironment
     from .policy_episode_trace_evidence import episode_trace_evidence
-    from .policy_request_evidence import capture_request, persist_request_evidence
+    from .policy_request_evidence import capture_request, request_evidence_sink
 
     env = built.env
     unwrapped = env.unwrapped
@@ -449,14 +449,10 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         progress.update(candidate_policy_query_attempted=True, candidate_action_applied=False, phase="policy_query")
         started = time.monotonic()
 
-        def retain_request(evidence: Mapping[str, Any], index: int = query_index) -> None:
-            try:
-                request_artifacts.append(persist_request_evidence(
-                    evidence, root=media_root, episode_id=episode_id, query_index=index,
-                    binding={**identity, "task_spec_digest": canonical_digest(task_spec)}))
-            except Exception:
-                progress["policy_request_retention_failed"] = True
-                raise
+        retain_request = request_evidence_sink(
+            root=media_root, episode_id=episode_id, query_index=query_index, progress=progress,
+            artifacts=request_artifacts, binding=lambda: {**identity, "task_spec_digest": canonical_digest(task_spec)},
+        )
 
         bind_request_sink = getattr(policy, "bind_request_evidence_sink", None)
         if callable(bind_request_sink):
