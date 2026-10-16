@@ -1345,8 +1345,15 @@ def _team_checkpoint(*, output_root: Path, inputs: Mapping[str, Any],
     if newest.get("schema_version") != "native_task_arena_policy_canary_session_result.v1":
         raise RuntimeError("team_evaluation_checkpoint_child_schema_invalid")
     _validate_isolated_cell_result(child=newest, inputs=inputs, index=len(children) - 1)
-    if any(not _episode_evidence_valid(row) for row in newest.get("episodes", [])):
-        raise RuntimeError("team_evaluation_checkpoint_episode_evidence_invalid")
+    first_rows = next((child["episodes"] for child in children if child.get("episodes")), [])
+    identities = {row["candidate_id"]: (row.get("checkpoint_digest"), row.get("runtime_identity_digest"))
+                  for row in first_rows}
+    for row in newest.get("episodes", []):
+        if (row.get("run_kind") != TEAM_RUN_KIND or row.get("claim_ceiling") != "diagnostic_policy_execution"
+                or row.get("ranking_eligible") is not False or not _episode_evidence_valid(row)):
+            raise RuntimeError("team_evaluation_checkpoint_episode_evidence_invalid")
+        if (row.get("checkpoint_digest"), row.get("runtime_identity_digest")) != identities[row["candidate_id"]]:
+            raise RuntimeError("policy_canary_session_candidate_identity_drift")
     refs = []
     for index, child in enumerate(children):
         # Earlier children were checked before their checkpoint and are never

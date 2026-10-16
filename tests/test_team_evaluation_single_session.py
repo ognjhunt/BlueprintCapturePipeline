@@ -125,7 +125,7 @@ def test_authority_refuses_invalid_absolute_deadline(tmp_path, monkeypatch, dead
         validate_session_authority(authority)
 
 
-@pytest.mark.parametrize('damage', ['status', 'contract', 'scenario', 'candidate', 'episodes', 'media', 'schema'])
+@pytest.mark.parametrize('damage', ['status', 'contract', 'scenario', 'candidate', 'episodes', 'media', 'schema', 'kind', 'claims', 'identity'])
 def test_malformed_child_stops_before_the_next_paid_case_and_retains_valid_prefix(tmp_path, monkeypatch, damage):
     runtime, output, _inputs, _authority, seen, spawn = _campaign(tmp_path, monkeypatch)
 
@@ -146,6 +146,12 @@ def test_malformed_child_stops_before_the_next_paid_case_and_retains_valid_prefi
                 child['episodes'][0]['candidate_id'] = 'another-policy'
             elif damage == 'episodes':
                 child['episodes'] = []
+            elif damage == 'kind':
+                child['episodes'][0]['run_kind'] = 'internal_policy_canary'
+            elif damage == 'claims':
+                child['episodes'][0]['ranking_eligible'] = True
+            elif damage == 'identity':
+                child['episodes'][0]['checkpoint_digest'] = 'sha256:' + '0' * 64
             elif damage == 'media':
                 child['episodes'][0]['lossless_frame_manifest_digest'] = 'unbound'
             child['result_digest'] = canonical_digest(child, digest_field='result_digest')
