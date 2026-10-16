@@ -1,0 +1,81 @@
+"""The internal beta L5 fixture exercises production staging without customer authority."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+import blueprint_pipeline.internal_team_evaluation_diagnostic as diagnostic
+from blueprint_pipeline import team_candidate_quick10_launch as launch
+from blueprint_pipeline.droid_https_policy_client import INTERFACE_ID, REQUEST_SCHEMA
+from blueprint_pipeline.team_candidate_quick10_registry import offer_eligibility
+from tests.test_native_task_arena_bundle import _runtime_source_packet
+from tests.test_native_task_arena_packet import _request
+
+
+def _approval() -> dict:
+    return {"schema_version": "blueprint.internal_team_diagnostic_owner_approval.v1",
+            "approved_by": "@ognjhunt", "episodes": 200, "cap_usd": 20, "max_attempts": 1,
+            "scene_id": diagnostic.SCENE_ID, "candidate_id": diagnostic.CANDIDATE_ID,
+            "customer_recommendation_permitted": False, "expires_at_iso": "2099-01-01T00:00:00Z",
+            "approval_reference": "test-only-owner-authorization"}
+
+
+def _fixture(tmp_path: Path) -> Path:
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps(_request(tmp_path / "profile-assets", articulated=False)))
+    runtime = _runtime_source_packet(tmp_path)
+    root = tmp_path / "isolated"
+    root.mkdir()
+    diagnostic.materialize_fixture(root / "scene", droid_profile=profile, runtime_source=runtime)
+    return root
+
+
+def test_stages_all_200_real_cells_and_keeps_owner_issued_credential_separate(tmp_path, monkeypatch) -> None:
+    root = _fixture(tmp_path)
+    approval = tmp_path / "owner.json"
+    approval.write_text(json.dumps(_approval()))
+    commit = "6" * 40
+    monkeypatch.setattr(launch, "_source_commit", lambda: commit)
+    monkeypatch.setattr(launch, "_default_provider_zero", lambda: {"provider_zero_verified": True})
+    result = diagnostic.stage(root, policy_url="https://policy.example/internal-diagnostic", owner_approval=approval,
+                              source_commit=commit)
+    job = Path(result["job_dir"])
+    admission = json.loads((job / "team_candidate_admission.json").read_text())
+    assert admission["internal_diagnostic"] and admission["trained_model"] is False
+    assert admission["customer_recommendation_permitted"] is False
+    assert admission["credential"]["kms_lease_claimed"] is False
+    assert admission["credential"]["authority"] == "owner_issued_local_single_run"
+    shards = [launch._current_shard(job, i) for i in range(8)]
+    assert sum(row["cap_usd"] for row in shards) == 20
+    assert {row["cell_count"] for row in shards} == {25}
+    cells = [cell for row in shards for cell in row["cells"]]
+    assert len({cell["cell_id"] for cell in cells}) == 200
+    assert (job / ".team-credential" / "bearer").stat().st_mode & 0o077 == 0
+    assert (root / "policy-bearer").read_bytes() == (job / ".team-credential" / "bearer").read_bytes()
+    # Preparing cannot launch or silently issue a second credential.
+    assert not list(job.rglob("allocator_process.json"))
+    with pytest.raises(FileExistsError):
+        diagnostic.stage(root, policy_url=result["policy_url"], owner_approval=approval, source_commit=commit)
+    registry = json.loads((root / "registry.json").read_text())
+    facts, blockers = offer_eligibility(registry["profiles"][0])
+    assert facts is not None and blockers == []
+    assert facts["probe"] is None  # A real GPU probe must pass before any policy episode.
+    for change in ({"cap_usd": 21}, {"customer_recommendation_permitted": True}, {"approved_by": "someone-else"}):
+        with pytest.raises(ValueError, match="owner_approval_invalid"):
+            diagnostic.internal_admission(facts=facts, approval={**_approval(), **change},
+                policy_url=result["policy_url"], credential_digest="sha256:" + "4" * 64)
+
+
+def test_policy_repeats_only_observed_robot_state_and_never_claims_success() -> None:
+    state = [0., -0.6, 0., -2.4, 0., 1.8, 0.]
+    request = {"schema_version": REQUEST_SCHEMA, "policy_interface_id": INTERFACE_ID,
+               "observation": {"observation/joint_position": state, "observation/gripper_position": [0.9],
+                               "prompt": "move the cube", "pretend_success": True}}
+    result = diagnostic.hold_position(request)
+    assert result == {"actions": [state + [0.9]] * 10}
+    for bad in ([float("nan")] * 7, [0.] * 6):
+        with pytest.raises(ValueError, match="state_invalid"):
+            diagnostic.hold_position({**request, "observation": {**request["observation"],
+                                                                 "observation/joint_position": bad}})
