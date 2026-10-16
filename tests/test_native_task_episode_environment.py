@@ -58,6 +58,15 @@ def _rigid_scoring_task_spec():
     }
 
 
+@pytest.mark.parametrize("missing", ["task_contact_minimum_force_n", "collision_failure_minimum_force_n",
+                                      "workspace_position_bounds_world_m"])
+def test_rigid_scoring_preparation_refuses_incomplete_contract(missing):
+    spec = _rigid_scoring_task_spec()
+    del spec[missing]
+    with pytest.raises(NativeTaskEpisodeEnvironmentError, match="native_task_rigid_scoring_contract_invalid"):
+        NativeRigidScoringEnvironment.validate_task_spec(spec)
+
+
 def test_rigid_scoring_environment_joins_native_safety_and_support_readback():
     base = _RigidEpisodeEnvironment()
     environment = NativeRigidScoringEnvironment(

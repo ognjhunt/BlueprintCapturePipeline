@@ -192,8 +192,13 @@ def materialize_fixture(root: Path, *, droid_profile: Path, runtime_source: Path
             "reset_translation_tolerance_m": 0.002, "reset_orientation_tolerance_rad": 0.01,
             "release_gripper_width_min_m": 0.06, "task_contact_minimum_force_n": 0.5, "release_required": True,
             "collision_failure_minimum_force_n": 1.,
+            "workspace_position_bounds_world_m": {"minimum": [-0.2, -0.6, 0.70],
+                                                   "maximum": [1.2, 0.6, 1.4]},
             "minimum_translation_m": 0.1, "minimum_lift_m": 0., "control_frequency_hz": 15,
             "maximum_action_steps": 30, "settle_window_samples": 4}
+    from .native_task_episode_environment import NativeRigidScoringEnvironment
+
+    NativeRigidScoringEnvironment.validate_task_spec(spec)
     affordance = {"schema_version": "native_rigid_interaction_affordance.v1",
                   "subject_asset_id": "diagnostic_cube", "scoring_frame_id": "task_scoring_frame",
                   "asset_root_from_scoring_frame": {"position_m": [0., 0., 0.], "orientation_xyzw": [0., 0., 0., 1.]},
@@ -211,7 +216,7 @@ def materialize_fixture(root: Path, *, droid_profile: Path, runtime_source: Path
     intrinsics = {"fx": 300., "fy": 300., "cx": 159.5, "cy": 89.5, "width": 320, "height": 180}
     wrist = next(row for row in profile["cameras"] if row["role"] == "wrist")
     cameras = [_world_camera("external", position=[1.2, -0.8, 1.4], target=[0.5, 0., 0.78], intrinsics=intrinsics),
-               wrist, _world_camera("overview", position=[1.3, 1.2, 1.9], target=[0.4, 0., 0.75], intrinsics=intrinsics)]
+               wrist, _world_camera("overview", position=[0.95, 0.75, 1.45], target=[0.5, 0.1, 0.78], intrinsics=intrinsics)]
     cameras[-1]["policy_input"] = False
     context = {"schema_version": "adp009d_scenario_instance.v1", "program_id": "internal-beta-diagnostic",
                "cell_id": "diagnostic.nominal", "seed": 0, "policy_neutral": True,
