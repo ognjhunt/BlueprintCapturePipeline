@@ -153,8 +153,11 @@ def test_download_url_to_file_does_not_record_signed_url(tmp_path, monkeypatch) 
         def __exit__(self, *args):
             return None
 
-        def read(self) -> bytes:
-            return b"provider-output"
+        def read(self, size=-1) -> bytes:
+            import io
+            if not hasattr(self, "body"):
+                self.body = io.BytesIO(b"provider-output")
+            return self.body.read(size)
 
     monkeypatch.setattr(
         "blueprint_pipeline.wam_async_runner_common.urllib.request.urlopen",
@@ -199,3 +202,69 @@ def test_download_url_to_file_rejects_unsafe_url_schemes_and_credentials(
 
     assert result["status"] == "blocked"
     assert result["error_type"] == "ValueError"
+
+
+def test_provider_download_streams_bounded_reads_and_atomically_keeps_complete_bytes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import wam_async_runner_common as common
+    total = 20 * 1024**2 + 17
+    class Response:
+        status = 200
+        headers = {"Content-Length": str(total)}
+        remaining = total
+        reads = []
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, size=-1):
+            assert 0 < size <= 1024**2, "unbounded provider-output read"
+            self.reads.append(size)
+            count = min(size, self.remaining)
+            self.remaining -= count
+            return b"x" * count
+    response = Response()
+    monkeypatch.setattr(common.urllib.request, 'urlopen', lambda *a, **kw: response)
+    monkeypatch.setattr('shutil.disk_usage', lambda _path: SimpleNamespace(free=total + 1024**2))
+    output = tmp_path / 'result.zip'
+    result = common.download_url_to_file(url='https://example.invalid/result', output_path=output,
+                                        user_agent='test', timeout_seconds=1)
+    assert result['status'] == 'completed'
+    assert output.stat().st_size == total and result['downloaded_size_bytes'] == total
+    with output.open('rb') as stream:
+        assert all(chunk == b'x' * len(chunk) for chunk in iter(lambda: stream.read(1024**2), b''))
+    assert len(response.reads) > 20 and list(tmp_path.iterdir()) == [output]
+
+
+@pytest.mark.parametrize('failure', ['short_body', 'network', 'capacity_before', 'capacity_during'])
+def test_provider_download_failure_preserves_previous_file_and_removes_partial(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+    from blueprint_pipeline import wam_async_runner_common as common
+    output = tmp_path / 'result.zip'
+    output.write_bytes(b'previous')
+    class Response:
+        status = 200
+        headers = {'Content-Length': str(2 * 1024**2)}
+        reads = 0
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, size):
+            self.reads += 1
+            if self.reads == 1:
+                return b'x' * size
+            if failure == 'network':
+                raise OSError('network failure')
+            return b''
+    response = Response()
+    checks = []
+    def capacity(_path):
+        checks.append(True)
+        free = 0 if failure == 'capacity_before' or (failure == 'capacity_during' and len(checks) > 1) else 10 * 1024**2
+        return SimpleNamespace(free=free)
+    monkeypatch.setattr(common.urllib.request, 'urlopen', lambda *a, **kw: response)
+    monkeypatch.setattr('shutil.disk_usage', capacity)
+    result = common.download_url_to_file(url='https://example.invalid/result?secret=hidden',
+        output_path=output, user_agent='test', timeout_seconds=1)
+    assert result['status'] == 'blocked'
+    assert output.read_bytes() == b'previous' and list(tmp_path.iterdir()) == [output]
+    assert 'hidden' not in json.dumps(result)
+    if failure == 'capacity_before':
+        assert response.reads == 0

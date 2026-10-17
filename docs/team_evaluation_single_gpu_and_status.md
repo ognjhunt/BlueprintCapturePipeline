@@ -124,3 +124,11 @@ The additive summary contract is explicit:
   this read is orchestration metadata, not full result or policy qualification.
 
 Legacy full-body records and the frozen pair retain their existing formats.
+
+The full-download collector streams in at most 1 MiB reads to a temporary file,
+checks destination capacity and declared response length, then atomically
+publishes only a complete transfer. Interrupted or short downloads remove the
+partial file and preserve an existing destination. The existing provider-output
+capacity guard remains in place. Remote progress uses a validated monotonic
+cell/stage cursor, so rotation of the bounded 64-line tail still advances the
+watchdog through cell 199. Reordered or repeated milestones cannot advance it.

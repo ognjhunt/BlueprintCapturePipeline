@@ -79,3 +79,17 @@ def test_remote_progress_requires_pinned_ssh(tmp_path: Path, monkeypatch) -> Non
         "status": "unavailable", "milestones": [],
         "reason": "endpoint_or_identity_unavailable",
     }
+
+
+def test_remote_cursor_is_ordered_by_execution_and_cannot_advance_with_replays():
+    def cursor(*rows):
+        return progress.remote_progress_cursor({'status': 'observed', 'milestones': list(rows)})
+    first = 'BLUEPRINT_POLICY_CANARY_PROGRESS:cell=10:stage=episode_completed'
+    next_cell = 'BLUEPRINT_POLICY_CANARY_PROGRESS:cell=11:stage=static_preflight_passed'
+    late = 'BLUEPRINT_POLICY_CANARY_PROGRESS:cell=199:stage=episode_completed'
+    assert cursor(first) < cursor(next_cell) < cursor(late)
+    assert cursor(first, next_cell) == cursor(next_cell, first, first)
+    assert cursor(late, first) == cursor(late)
+    assert cursor('BLUEPRINT_POLICY_CANARY_PROGRESS:cell=200:stage=episode_completed') is None
+    assert cursor('BLUEPRINT_POLICY_CANARY_PROGRESS:cell=199:stage=unknown') is None
+    assert cursor('raw noise') is None

@@ -20,10 +20,11 @@ from .gpu_render_providers import (
 from .vast_provider_output_recovery import _identity_file, _ssh_command
 
 
-_CELL_STAGES = frozenset({
+_CELL_STAGE_ORDER = (
     "static_preflight_passed", "isaac_launch_started", "isaac_launch_completed",
     "observation_gate_passed", "policy_loaded", "episode_completed",
-})
+)
+_CELL_STAGES = frozenset(_CELL_STAGE_ORDER)
 _REMOTE_STAGES = frozenset({
     "runtime_source_receipt", "media_toolchain_receipt", "cell_directory",
 })
@@ -102,6 +103,27 @@ def probe_policy_canary_remote_progress(
         "strict_host_key_checking": True,
         "raw_remote_output_recorded": False,
     }
+
+
+def remote_progress_cursor(result: Mapping[str, Any]) -> int | None:
+    """A validated high-water mark survives bounded tail rotation; replay cannot advance it."""
+    rows = result.get("milestones")
+    if result.get("status") != "observed" or not isinstance(rows, list) or not 1 <= len(rows) <= 100:
+        return None
+    ranks = []
+    stages = ("runtime_source_receipt", "media_toolchain_receipt", "cell_directory")
+    for row in rows:
+        if not isinstance(row, str):
+            return None
+        remote = _REMOTE_LINE.fullmatch(row)
+        cell = _CELL_LINE.fullmatch(row)
+        if remote and remote.group(1) in stages:
+            ranks.append(stages.index(remote.group(1)))
+        elif cell and int(cell.group(1)) < 200 and cell.group(2) in _CELL_STAGES:
+            ranks.append(3 + int(cell.group(1)) * len(_CELL_STAGE_ORDER) + _CELL_STAGE_ORDER.index(cell.group(2)))
+        else:
+            return None
+    return max(ranks)
 
 
 __all__ = ["probe_policy_canary_remote_progress"]

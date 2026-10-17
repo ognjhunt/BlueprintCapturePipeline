@@ -10033,3 +10033,35 @@ def test_absent_remote_output_keeps_the_ssh_recovery_path_without_mp4_copies(
     assert inspection["mp4_count"] == 2 and inspection["mp4_validation"]["files"] == []
     assert "mp4_ffprobe_validation_not_requested" in inspection["mp4_validation"]["blockers"]
     assert provider["runtime_result_status"] == "blocked_controller_runtime_unavailable"
+
+
+def test_request_logs_recognizes_advancing_remote_tail_after_64_milestones(tmp_path, monkeypatch):
+    clock = {'now': 0.0}
+    def monotonic():
+        clock['now'] += 1
+        return clock['now']
+    monkeypatch.setattr(vpa.time, 'monotonic', monotonic)
+    monkeypatch.setattr(vpa.time, 'sleep', lambda *a: None)
+    monkeypatch.setattr(vpa, '_api_json', lambda **kw: (200, {'result_url': 'https://example.invalid/log'}))
+    snapshots = iter(['BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\n'] * 80 +
+                     ['BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED\n'])
+    monkeypatch.setattr(vpa, '_fetch_text', lambda *a, **kw: next(snapshots))
+    monkeypatch.setattr(vpa, '_instance_liveness', lambda **kw: {'observed': True, 'exited': False})
+    calls = []
+    stages = ('static_preflight_passed', 'isaac_launch_started', 'isaac_launch_completed',
+              'observation_gate_passed', 'policy_loaded', 'episode_completed')
+    def probe(_connection):
+        end = min(199, 10 + len(calls) * 10)
+        rows = [f'BLUEPRINT_POLICY_CANARY_PROGRESS:cell={cell}:stage={stage}'
+                for cell in range(end + 1) for stage in stages][-64:]
+        calls.append(rows)
+        return {'status': 'observed', 'milestones': rows}
+    result = vpa._request_logs_and_fetch(instance_id=123, api_key='secret',
+        output_log_path=tmp_path / 'log', secret_values=['secret'], wait_seconds=0,
+        retry_interval_seconds=1, max_wait_seconds=999,
+        success_markers=['BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED'],
+        no_progress_seconds=50, remote_progress_probe=probe)
+    assert result['break_reason'] == 'success_marker_found'
+    assert any('cell=199:stage=episode_completed' in row for row in result['remote_progress_milestones'])
+    assert all(len(rows) == 64 for rows in calls)
+    assert sum(row['remote_progress_observed'] for row in result['log_poll_attempts']) >= 20
