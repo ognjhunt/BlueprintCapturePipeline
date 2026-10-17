@@ -143,6 +143,7 @@ def test_download_url_to_file_does_not_record_signed_url(tmp_path, monkeypatch) 
     class Response:
         status = 200
         headers = {
+            "Content-Length": str(len(b"provider-output")),
             "Last-Modified": "Wed, 29 Jul 2026 11:37:00 GMT",
             "ETag": '"safe-object-etag"',
         }
@@ -268,3 +269,56 @@ def test_provider_download_failure_preserves_previous_file_and_removes_partial(t
     assert 'hidden' not in json.dumps(result)
     if failure == 'capacity_before':
         assert response.reads == 0
+
+
+def test_provider_download_refuses_unknown_size_before_any_body_read(tmp_path, monkeypatch):
+    from blueprint_pipeline import wam_async_runner_common as common
+    class Response:
+        status = 200
+        headers = {}
+        reads = 0
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, size):
+            self.reads += 1
+            return b''
+    response = Response()
+    monkeypatch.setattr(common.urllib.request, 'urlopen', lambda *a, **kw: response)
+    result = common.download_url_to_file(url='https://example.invalid/unknown',
+        output_path=tmp_path / 'result', user_agent='test', timeout_seconds=1)
+    assert result['status'] == 'blocked' and response.reads == 0
+    assert not list(tmp_path.iterdir())
+
+
+def test_provider_download_respects_other_live_disk_reservations(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as budget
+    from blueprint_pipeline import wam_async_runner_common as common
+    usage = SimpleNamespace(total=200 * 1024**3, free=100 * 1024**3, used=100 * 1024**3)
+    expected = 20 * 1024**2
+    ledger = os.environ['BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT']
+    real_reserve = budget.reserve_control_plane_disk
+    other_bytes = usage.free - budget.floor_bytes(usage.total, role='policy_canary_output') - expected // 2
+    class Response:
+        status = 200
+        headers = {'Content-Length': str(expected)}
+        reads = 0
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, size):
+            self.reads += 1
+            return b''
+    response = Response()
+    monkeypatch.setattr(common.urllib.request, 'urlopen', lambda *a, **kw: response)
+    monkeypatch.setattr('shutil.disk_usage', lambda _path: usage)
+    def reserve(*args, **kwargs):
+        kwargs['disk_usage'] = lambda _path: usage
+        return real_reserve(*args, **kwargs)
+    monkeypatch.setattr(budget, 'reserve_control_plane_disk', reserve)
+    with real_reserve('policy_canary_output', target_root=tmp_path, expected_bytes=other_bytes,
+                      reservation_root=ledger, disk_usage=lambda _path: usage):
+        result = common.download_url_to_file(url='https://example.invalid/big',
+            output_path=tmp_path / 'result', user_agent='test', timeout_seconds=1)
+    assert result['status'] == 'blocked' and response.reads == 0
+    assert not (tmp_path / 'result').exists() and not list(tmp_path.glob('*.partial'))

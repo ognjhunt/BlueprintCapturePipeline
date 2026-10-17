@@ -156,4 +156,9 @@ def _isolated_control_plane_disk_reservation_root(tmp_path_factory, monkeypatch)
         from types import SimpleNamespace
         monkeypatch.setattr(arena, 'extraction_disk_usage', lambda _path: SimpleNamespace(
             total=2 * 1024**4, free=1024**4, used=1024**4))
+    common = sys.modules.get('blueprint_pipeline.wam_async_runner_common')
+    if common is not None:
+        from types import SimpleNamespace
+        monkeypatch.setattr(common, 'download_disk_usage', lambda _path: SimpleNamespace(
+            total=2 * 1024**4, free=1024**4, used=1024**4))
     return root

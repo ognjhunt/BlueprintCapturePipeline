@@ -347,6 +347,16 @@ def build_arena_native_control_bundle(
     return receipt
 
 
+def _cleanup_downloaded_provider_objects(*, staging_dir: Path, output_zip: Path,
+                                         adapter: Mapping[str, Any]) -> dict[str, Any]:
+    """Never discard the paid run's remote result when local collection was refused."""
+    if output_zip.is_file() or adapter.get("provider_create_attempted") is False:
+        return cleanup_staged_wam_provider_objects(staging_dir)
+    return {"status": "blocked", "blockers": ["provider_output_uncollected_objects_retained"],
+            "remote_objects_retained_for_recovery": True, "signed_url_files_preserved": True,
+            "raw_secret_values_recorded": False}
+
+
 extraction_disk_usage = shutil.disk_usage
 
 
@@ -949,7 +959,8 @@ def run_arena_native_control_vast(
                     observation=output_collector.observation, local_archive=output_zip,
                     cleanup=lambda: cleanup_staged_wam_provider_objects(staging_dir))
             else:
-                cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+                cleanup = _cleanup_downloaded_provider_objects(
+                    staging_dir=staging_dir, output_zip=output_zip, adapter=adapter)
             runtime_dependency_closeout = (
                 close_cached_runtime_dependency_staging(
                     runtime_dependency_dir

@@ -139,3 +139,9 @@ writers and the normal floor. The downloaded ZIP is already included in that
 filesystem usage. Admission precedes replacement of any earlier extraction;
 refusal preserves both it and the ZIP. The hold is released on success or write
 failure, and a partial extraction cannot supply a completed runtime result.
+
+Download admission also holds the declared response size in that shared ledger
+before the partial file is opened, respecting floors and other live writers.
+Responses without a declared length refuse before a body read. An uncollected
+paid output retains its remote objects and protected recovery references;
+normal cleanup follows a complete local collection or proof of no allocation.

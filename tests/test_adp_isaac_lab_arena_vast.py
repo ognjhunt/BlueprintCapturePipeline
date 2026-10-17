@@ -1147,3 +1147,29 @@ def test_archive_extraction_holds_exact_expanded_bytes_and_releases_on_all_paths
     assert source.is_file()
     if fail_extraction:
         assert result['execution'] == {}
+
+
+@pytest.mark.parametrize('allocated,collected', [(True, False), (None, False), (False, False), (True, True)])
+def test_failed_download_keeps_paid_remote_evidence_and_recovery_access(tmp_path, monkeypatch, allocated, collected):
+    staging = tmp_path / 'stage'
+    staging.mkdir()
+    access = staging / 'provider_output_get_url.txt'
+    access.write_text('test-only-protected-reference')
+    access.chmod(0o600)
+    remote = {'input': b'bootstrap', 'output': b'complete-paid-evidence'}
+    output = tmp_path / 'fresh-attempt-output.zip'
+    if collected:
+        output.write_bytes(remote['output'])
+    def cleanup(_staging):
+        remote.clear()
+        access.unlink()
+        return {'status': 'completed', 'blockers': []}
+    monkeypatch.setattr(arena, 'cleanup_staged_wam_provider_objects', cleanup)
+    result = arena._cleanup_downloaded_provider_objects(staging_dir=staging, output_zip=output,
+                                                       adapter={'provider_create_attempted': allocated})
+    if allocated is not False and not collected:
+        assert result['status'] == 'blocked' and result['remote_objects_retained_for_recovery'] is True
+        assert remote['output'] == b'complete-paid-evidence' and access.is_file()
+        assert 'test-only-protected-reference' not in json.dumps(result)
+    else:
+        assert result['status'] == 'completed' and not remote and not access.exists()

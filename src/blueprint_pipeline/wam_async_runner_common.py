@@ -248,6 +248,9 @@ def read_sensitive_url_file(
     }
 
 
+download_disk_usage = shutil.disk_usage
+
+
 def download_url_to_file(
     *,
     url: str,
@@ -280,13 +283,19 @@ def download_url_to_file(
             response_etag = response_headers.get("ETag") if hasattr(response_headers, "get") else None
             length = response_headers.get("Content-Length") if hasattr(response_headers, "get") else None
             expected = int(length) if length is not None else None
-            if expected is not None and expected < 0:
-                raise ValueError("provider_artifact_length_invalid")
+            if expected is None or expected < 0:
+                raise ValueError("provider_artifact_declared_length_required")
             if expected is not None and shutil.disk_usage(output_path.parent).free < expected:
                 raise OSError("provider_artifact_disk_capacity_insufficient")
             downloaded = 0
-            with tempfile.NamedTemporaryFile(dir=output_path.parent, prefix=output_path.name + ".",
-                                             suffix=".partial", delete=False) as target:
+            from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
+            reservation = reserve_control_plane_disk(
+                "policy_canary_output", target_root=output_path.parent, expected_bytes=max(1, expected),
+                reservation_root=os.environ.get("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT") or DEFAULT_RESERVATION_ROOT,
+                workload="provider_archive_download", lock_nonblocking=True,
+                disk_usage=lambda target: download_disk_usage(target))
+            with reservation, tempfile.NamedTemporaryFile(dir=output_path.parent, prefix=output_path.name + ".",
+                                                          suffix=".partial", delete=False) as target:
                 partial = Path(target.name)
                 while chunk := response.read(1024 * 1024):
                     if not isinstance(chunk, bytes) or len(chunk) > 1024 * 1024:
@@ -305,6 +314,7 @@ def download_url_to_file(
             "status": "completed",
             "http_status_code": http_status,
             "downloaded_size_bytes": downloaded,
+            "download_disk_reservation": reservation.receipt(),
             "output_present": output_path.is_file(),
             # Safe response metadata lets an authorized runner prove that a
             # recovered callback object was written during the current paid run,
