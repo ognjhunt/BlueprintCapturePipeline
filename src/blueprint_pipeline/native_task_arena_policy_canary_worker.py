@@ -36,6 +36,7 @@ from blueprint_pipeline.appearance_render_backend import (
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     EXECUTION_MODES, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND,
+    PROVIDER_STATUS_FILENAME, PROVIDER_STATUS_SCHEMA,
     execute_paired_session,
     validate_runtime_input_manifest,
     validate_session_authority,
@@ -1051,7 +1052,11 @@ def _validate_provider_manifest(
 def _sha256(path: Path) -> str:
     import hashlib
 
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def _seal_result(*, result_path: Path, result: Mapping[str, Any]) -> None:
@@ -1093,6 +1098,22 @@ def _seal_result(*, result_path: Path, result: Mapping[str, Any]) -> None:
         if descriptor >= 0:
             os.close(descriptor)
         temporary.unlink(missing_ok=True)
+    if result_path.name == PROVIDER_RESULT_FILENAME and value.get("run_kind") == TEAM_RUN_KIND:
+        _write_team_status_sidecar(result_path=result_path, result=value)
+
+
+def _write_team_status_sidecar(*, result_path: Path, result: Mapping[str, Any]) -> None:
+    """Bind small diagnostic status to the exact sealed terminal bytes, without grading them."""
+    summary = {"schema_version": PROVIDER_STATUS_SCHEMA, "run_kind": TEAM_RUN_KIND,
+               "claim_ceiling": "diagnostic_policy_execution", "status": result.get("status"),
+               "blockers": result.get("blockers") or [],
+               "source_result": {"file_name": result_path.name, "size_bytes": result_path.stat().st_size,
+                                 "sha256": _sha256(result_path), "result_digest": result["result_digest"]},
+               "inspection_scope": "hash_bound_status_metadata_only", "result_digest": ""}
+    summary["result_digest"] = canonical_digest(summary, digest_field="result_digest")
+    if len(json.dumps(summary).encode()) > 64 * 1024:
+        raise RuntimeError("team_status_summary_budget_exceeded")
+    _seal_result(result_path=result_path.with_name(PROVIDER_STATUS_FILENAME), result=summary)
 
 
 def _seal_result_before_simulation_close(
@@ -1339,6 +1360,34 @@ def _emit_cell_progress(stage: str, index: int, *, progress_path: Path | None = 
         return
 
 
+def _compact_team_child_result(child: Mapping[str, Any], *, child_root: Path, output_root: Path) -> dict[str, Any]:
+    """Keep bounded scoring envelopes in memory; retain the sealed complete child on disk."""
+    import hashlib
+
+    path = child_root / PROVIDER_RESULT_FILENAME
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    source = {"relative_path": path.relative_to(output_root).as_posix(), "size_bytes": path.stat().st_size,
+              "sha256": "sha256:" + digest.hexdigest(), "result_digest": child["result_digest"]}
+    rows = []
+    for row in child.get("episodes", []):
+        episode = row.get("episode") if isinstance(row.get("episode"), Mapping) else {}
+        motion = episode.get("motion_evidence") if isinstance(episode.get("motion_evidence"), Mapping) else {}
+        summary = {**row, "episode_summary_kind": "team_terminal_episode_summary.v1",
+                   "source_child_result": source,
+                   "episode": {**({"score": episode["score"]} if "score" in episode else {}),
+                               "motion_evidence": dict(motion)}}
+        if len(json.dumps(summary, sort_keys=True, allow_nan=False).encode()) > 512 * 1024:
+            raise RuntimeError("team_evaluation_episode_summary_budget_exceeded")
+        rows.append(summary)
+    result = {key: value for key, value in child.items() if key not in {"episodes", "artifact_inventory", "result_digest"}}
+    result.update(episodes=rows, source_child_result=source)
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
+
+
 def _team_checkpoint(*, output_root: Path, inputs: Mapping[str, Any],
                      authority: Mapping[str, Any], children: list[Mapping[str, Any]]) -> None:
     """Fsync a digest-bound completed prefix; never authorize replay or another GPU."""
@@ -1366,7 +1415,8 @@ def _team_checkpoint(*, output_root: Path, inputs: Mapping[str, Any],
             raise RuntimeError("team_evaluation_checkpoint_child_binding_invalid")
         refs.append({"cell_id": inputs["cells"][index]["cell_id"],
                      "relative_path": f"cell_runs/{index:02d}/{PROVIDER_RESULT_FILENAME}",
-                     "result_digest": child["result_digest"]})
+                     "result_digest": (child["result_digest"] if index == len(children) - 1 else
+                         (child.get("source_child_result") or {}).get("result_digest", child["result_digest"]))})
     value = {"schema_version": "team_evaluation_checkpoint.v1", "status": "in_progress",
              "runtime_inputs_digest": inputs["runtime_inputs_digest"],
              "authority_digest": authority["authority_digest"], "planned_cells": len(inputs["cells"]),
@@ -1530,6 +1580,8 @@ def _run_isolated_cell_processes(
         if inputs.get("run_kind") == TEAM_RUN_KIND:
             try:
                 _team_checkpoint(output_root=output_root, inputs=inputs, authority=authority, children=child_results)
+                child_results[-1] = _compact_team_child_result(child_results[-1], child_root=child_root, output_root=output_root)
+                child_result = None  # only the current raw child may occupy memory
             except Exception as exc:  # noqa: BLE001 - preserve validated prefix and stop paid work
                 _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
                     children=child_results[:-1], construction_lineage_mode=construction_lineage_mode,

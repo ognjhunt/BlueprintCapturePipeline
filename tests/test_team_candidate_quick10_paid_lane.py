@@ -319,8 +319,3 @@ def test_real_bundle_preflight_binds_progress_to_the_full_200_case_session(tmp_p
         provider_output_put_url="https://storage.example.com/output.zip")
     assert preflight["status"] == "passed", preflight["blockers"]
     assert preflight["policy_cell_count"] == 200
-    script = vast_provider_adapter._probe_shell_script(
-        "https://heartbeat.example", enable_blueprint_bundle=True,
-        provider_bundle_kind="native_task_arena_policy_canary_session",
-        policy_cell_count=preflight["policy_cell_count"])
-    assert "required_result_max_bytes = 5368709120" in script

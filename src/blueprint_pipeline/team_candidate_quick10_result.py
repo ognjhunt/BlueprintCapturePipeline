@@ -31,6 +31,9 @@ evidence.
 from __future__ import annotations
 
 import math
+import hashlib
+import json
+from pathlib import Path
 import statistics
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
@@ -54,7 +57,35 @@ class TeamCandidateResultError(ValueError):
 
 
 
-def _cycle_seconds(row: Mapping[str, Any]) -> float | None:
+def load_bound_state_trace(row: Mapping[str, Any], *, roots: Sequence[Path]) -> dict[str, Any]:
+    """Read one digest-bound trace, never the complete multi-case history."""
+    artifacts = row.get("evidence_artifacts")
+    record = artifacts.get("state_trace") if isinstance(artifacts, Mapping) else None
+    if not isinstance(record, Mapping) or not isinstance(record.get("relative_path"), str):
+        return {}
+    relative = Path(record["relative_path"])
+    if relative.is_absolute() or ".." in relative.parts:
+        return {}
+    for root in roots:
+        path = root / relative
+        try:
+            if path.is_symlink() or root.resolve() not in path.resolve().parents:
+                continue
+            size = path.stat().st_size
+            if not 0 < size <= 100_000_000 or size != record.get("size_bytes"):
+                continue
+            data = path.read_bytes()
+            if "sha256:" + hashlib.sha256(data).hexdigest() != record.get("sha256"):
+                continue
+            value = json.loads(data)
+            if isinstance(value, dict):
+                return value
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
+def _cycle_seconds(row: Mapping[str, Any], *, state_trace_loader=None) -> float | None:
     """Conservative completed-episode duration on the simulator's own clock.
 
     Includes the terminal settling window; never substitutes wall-clock
@@ -63,6 +94,8 @@ def _cycle_seconds(row: Mapping[str, Any]) -> float | None:
 
     episode = row.get("episode") if isinstance(row.get("episode"), Mapping) else {}
     trace = episode.get("state_trace") if isinstance(episode.get("state_trace"), Mapping) else {}
+    if not trace and row.get("episode_summary_kind") == "team_terminal_episode_summary.v1" and state_trace_loader:
+        trace = state_trace_loader(row) or {}
     samples = trace.get("task_state_samples")
     if (trace.get("trace_digest") != canonical_digest(trace, digest_field="trace_digest")
             or row.get("state_trace_digest") != canonical_digest({"value": trace})
@@ -90,7 +123,8 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
                             purpose: str, episodes: int | None = None,
                             expected_cells: Sequence[Mapping[str, Any]] | None = None,
                             pre_policy_recovery_cells: Sequence[str] = (),
-                            retained_episode_digests: Mapping[str, str | list[str]] | None = None) -> dict[str, Any]:
+                            retained_episode_digests: Mapping[str, str | list[str]] | None = None,
+                            state_trace_loader=None) -> dict[str, Any]:
     """Return the terminal receipt (outcomes, counts, scoring) for the agent-run executor."""
 
     if purpose not in PURPOSES or not session_results:
@@ -140,7 +174,7 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
     if void > math.floor(MAXIMUM_VOID_SHARE * len(outcomes)):
         raise TeamCandidateResultError("team_scored_run_void_share_exceeded")
     successful_rows = [row for row in rows if episode_outcome(row)[0] == "success"]
-    cycles = [_cycle_seconds(row) for row in successful_rows]
+    cycles = [_cycle_seconds(row, state_trace_loader=state_trace_loader) for row in successful_rows]
     measured_cycles = [value for value in cycles if value is not None]
     complete_cycles = bool(cycles) and len(measured_cycles) == len(cycles)
     return {

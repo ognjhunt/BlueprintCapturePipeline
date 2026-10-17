@@ -61,6 +61,8 @@ PROVIDER_BUNDLE_SCHEMA_VERSION = (
     "native_task_arena_policy_canary_provider_bundle.v1"
 )
 PROVIDER_RESULT_FILENAME = "native_task_arena_policy_canary_session_result.v1.json"
+PROVIDER_STATUS_FILENAME = "native_task_arena_policy_canary_status.v1.json"
+PROVIDER_STATUS_SCHEMA = "native_task_arena_policy_canary_status.v1"
 CANONICAL_ALLOCATOR = (
     "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
 )

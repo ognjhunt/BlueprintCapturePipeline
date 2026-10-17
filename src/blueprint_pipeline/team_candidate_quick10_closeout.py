@@ -1,7 +1,7 @@
 """Close one team's scored evaluation and seal the terminal the agent-run executor reports.
 
-Beta journey step: L5 team policy evaluation. A run is one GPU session per
-shard of its 200 cells. The terminal
+Beta journey step: L5 team policy evaluation. New runs use one GPU session for
+all 200 cells; retained multi-shard jobs remain readable. The terminal
 receipt (``team_candidate_quick10_terminal.json`` in the run's job directory,
 read by the executor's default terminal reader) is written only after:
 
@@ -45,7 +45,7 @@ from .team_candidate_quick10_launch import (
     _current_shard,
     _shard_state,
 )
-from .team_candidate_quick10_result import team_candidate_terminal
+from .team_candidate_quick10_result import team_candidate_terminal, load_bound_state_trace
 
 ZERO_SCHEMA = "task_evaluation_policy_canary_vast_provider_zero.v1"
 
@@ -181,6 +181,7 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
     if not _zero_verified(zero):
         return None
     joined_results = []
+    trace_roots: list[Path] = []
     for root, adapter in adapters:
         if proves_no_provider_allocation(adapter):
             raise TeamCandidateLaunchError("team_evaluation_shard_not_allocated:" + root.parent.name)
@@ -191,6 +192,7 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
         if not native_path.is_file():
             raise TeamCandidateLaunchError("team_candidate_provider_result_missing")
         inner = _read(native_path)
+        trace_roots.append(native_path.parent)
         validate_native_result_binding(inner, expected_digest=adapter.get("native_control_result_digest"))
         if isinstance(inner.get("robot_free_probe_trace"), Mapping):
             _retain_probe(job_dir, request, inner["robot_free_probe_trace"])
@@ -217,6 +219,7 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
             episodes=int(admission["episodes"]))
     receipt = team_candidate_terminal(session_results=joined_results, runtime_binding=binding,
                                       purpose=str(admission["evaluation_purpose"]), episodes=int(admission["episodes"]),
+                                      state_trace_loader=lambda row: load_bound_state_trace(row, roots=trace_roots),
                                       **recovery_kwargs)
     return _seal(job_dir, request, {**receipt, "provider_zero_verified": True,
                                     "admission_digest": admission["admission_digest"]})

@@ -366,13 +366,17 @@ def _extract_provider_output(
     root = destination.resolve()
     try:
         with zipfile.ZipFile(path) as archive:
+            if result_name == "native_task_arena_policy_canary_session_result.v1.json":
+                from .wam_provider_output import NATIVE_TERMINAL_MAX_BYTES
+                if archive.getinfo(result_name).file_size > NATIVE_TERMINAL_MAX_BYTES:
+                    blockers.append(f"{blocker_prefix}_terminal_read_budget_exceeded")
             for member in archive.infolist():
                 target = (destination / member.filename).resolve()
                 if root not in target.parents and target != root:
                     blockers.append(f"{blocker_prefix}_provider_output_zip_path_traversal")
             if not blockers:
                 archive.extractall(destination)
-    except (OSError, zipfile.BadZipFile):
+    except (OSError, KeyError, zipfile.BadZipFile):
         blockers.append(f"{blocker_prefix}_provider_output_zip_invalid")
     result_path = destination / result_name
     execution = _read_json(result_path)

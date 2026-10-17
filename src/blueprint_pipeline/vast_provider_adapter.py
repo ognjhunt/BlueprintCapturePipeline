@@ -4306,10 +4306,7 @@ def _probe_shell_script(
     provider_bundle_kind: str = "isaac",
     expected_provider_bundle_sha256: str | None = None,
     virtual_machine: bool = False,
-    policy_cell_count: int = 10,
 ) -> str:
-    if type(policy_cell_count) is not int or not 1 <= policy_cell_count <= 200:
-        raise ValueError("policy_canary_terminal_cell_count_invalid")
     if type(virtual_machine) is not bool:
         raise ValueError("virtual_machine_flag_invalid")
     if virtual_machine:
@@ -4856,12 +4853,7 @@ def _probe_shell_script(
                     g1_provider_output_contract(provider_bundle_kind)[2]
                 )
                 + "\n"
-                # Keep the paired twenty-rollout allowance per equivalent row
-                # count. Only a validated team manifest can carry >10 cells.
-                "required_result_max_bytes = "
-                + repr(512 * 1024 * 1024 * (max(1, (policy_cell_count + 19) // 20)
-                       if provider_bundle_kind == "native_task_arena_policy_canary_session" else 1))
-                + "\n"
+                "required_result_max_bytes = 512 * 1024 * 1024\n"
                 "if required_result_name is not None:\n"
                 "    required_result = output_dir / required_result_name\n"
                 "    if required_result.is_symlink() or not required_result.is_file():\n"
@@ -8613,7 +8605,6 @@ def run_vast_provider_adapter(
                 enable_blueprint_bundle=enable_blueprint_bundle,
                 provider_bundle_kind=provider_bundle_kind,
                 expected_provider_bundle_sha256=expected_provider_bundle_sha256,
-                policy_cell_count=bundle_preflight.get("policy_cell_count") or 10,
             )
             probe_env = _probe_env(
                 job_dir=resolved_job_dir,

@@ -94,10 +94,33 @@ the stream budget reduced to 1 byte. The team transport still quotes its
 cell-scaled output allowance (80 GB for 200 cases); no global stream cap is
 raised and no missing evidence is treated as present.
 
-The generated provider archiver had a separate 512 MiB terminal-result bound
-that also applied to full download. Its allowance now scales from the sealed
-cell count, retaining the existing 512 MiB per twenty-rollout budget: at most
-200 team cases / 5 GiB. The frozen pair keeps its original bound. A sparse
-2,522,303,830-byte capacity stand-in (ten times the retained V25 twenty-row
-size) is archived byte-for-byte; one byte above the scaled bound is refused.
-That is a CPU retention-capacity test, not measured 200-case GPU output.
+Team terminal rows now contain scoring/motion summaries and digest-bound
+references to the complete sealed child files. The parent releases each raw
+episode history before starting the next case; raw children and episode
+artifacts stay in the output archive. Cycle-time scoring loads and verifies
+one state-trace artifact at a time and retains the original simulator-clock
+formula. The terminal cap remains 512 MiB rather than being raised to 5 GiB.
+Native archive inspection reads a small status sidecar, verifies its own digest
+and streams the sealed result bytes to verify their hash. It reports that the
+inspection covers status metadata rather than full JSON validation; normal
+extraction/scoring validates the compact result. Old archives keep their bounded
+JSON fallback. Extraction enforces the original 512 MiB terminal-size bound.
+No parser dependency is introduced.
+
+The additive summary contract is explicit:
+
+- `episode_summary_kind=team_terminal_episode_summary.v1` means `episode`
+  retains the unchanged score and motion evidence; its complete original body
+  remains in the sealed child file referenced by `source_child_result`.
+- `source_child_result` records the relative path, byte size, SHA-256 and
+  original child result digest. Checkpoints continue to reference that original
+  digest, rather than the in-memory summary digest.
+- `evidence_artifacts.state_trace` remains the original digest-bound trace.
+  Closeout loads it per successful case for the unchanged simulator-clock
+  cycle calculation. Missing/invalid evidence keeps cycle time unmeasured.
+- `native_task_arena_policy_canary_status.v1.json` is a small status sidecar
+  bound to the exact terminal bytes. `runtime_result_parse_scope` declares
+  `hash_bound_status_metadata_only`, with `runtime_result_json_validated=false`;
+  this read is orchestration metadata, not full result or policy qualification.
+
+Legacy full-body records and the frozen pair retain their existing formats.
