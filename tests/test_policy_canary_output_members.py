@@ -407,7 +407,7 @@ def _keyword_names(call: ast.Call, where) -> list[str]:
 
 
 def test_other_arena_callers_never_stream():
-    """Only the Quick-10 session passes a delivery mode; every other caller keeps the download default."""
+    """The frozen pair resolves delivery; the team explicitly downloads and other callers use the default."""
     parameters = inspect.signature(arena.run_arena_native_control_vast).parameters
     assert parameters["provider_output_delivery"].default == "download"
     assert parameters["provider_output_member_contract"].default is None
@@ -430,7 +430,17 @@ def test_other_arena_callers_never_stream():
             if any(name.startswith("provider_output_") for name in _keyword_names(node, (path.name, function))):
                 streaming_calls.append((path.name, function))
     assert lane_calls >= 10
-    assert streaming_calls == [("native_task_arena_vast.py", "run_native_task_arena_policy_canary_session_vast")]
+    assert streaming_calls == [
+        ("native_task_arena_vast.py", "run_native_task_arena_policy_canary_session_vast"),
+        ("team_candidate_quick10_vast.py", "run_team_candidate_session_vast"),
+    ]
+    team_tree = ast.parse((SRC / "team_candidate_quick10_vast.py").read_text())
+    team_calls = [node for node in ast.walk(team_tree) if isinstance(node, ast.Call)
+                  and getattr(node.func, "id", None) == "run_arena_native_control_vast"]
+    assert len(team_calls) == 1
+    delivery = next(keyword.value for keyword in team_calls[0].keywords
+                    if keyword.arg == "provider_output_delivery")
+    assert isinstance(delivery, ast.Constant) and delivery.value == "download"
     # Only the contract module reads the flag: no other module holds its name as a value.
     readers = sorted(path.name for path, source in sources.items() if members.DELIVERY_ENV in source and any(
         isinstance(node, ast.Constant) and node.value == members.DELIVERY_ENV for node in ast.walk(ast.parse(source))))
