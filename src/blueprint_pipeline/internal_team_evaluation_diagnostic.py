@@ -257,7 +257,7 @@ def internal_admission(*, facts: dict[str, Any], approval: dict[str, Any], polic
     from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
     from .native_task_arena_policy_canary_session import TEAM_ADMISSION_SCHEMA_VERSION, TEAM_RUN_KIND
     from .team_candidate_quick10_admission import validate_admission
-    from .team_evaluation_plan import shard_ttl_seconds
+    from .team_evaluation_plan import campaign_ttl_seconds
 
     expires = datetime.fromisoformat(str(approval.get("expires_at_iso")).replace("Z", "+00:00"))
     if (approval.get("schema_version") != "blueprint.internal_team_diagnostic_owner_approval.v1"
@@ -295,7 +295,8 @@ def internal_admission(*, facts: dict[str, Any], approval: dict[str, Any], polic
              "rights_digest": canonical_digest({"author": "Blueprint", "policy": POLICY_DEFINITION,
                                                 "permission": "owner_authorized_internal_execution_only"}),
              "founder_approval_digest": canonical_digest(approval),
-             "budget": {"cap_usd": 20., "hard_ttl_seconds": shard_ttl_seconds(25), "max_attempts": 1, "episodes": 200},
+             "execution_deadline_at_iso": approval["expires_at_iso"],
+             "budget": {"cap_usd": 20., "hard_ttl_seconds": campaign_ttl_seconds(), "max_attempts": 1, "episodes": 200},
              "claim_ceiling": "diagnostic_policy_execution", "evidence_scope": "development_only",
              "adp_qualified_evidence_eligible": False, "physical_performance_claimed": False,
              "customer_recommendation_permitted": False, "internal_diagnostic": True, "trained_model": False,
@@ -306,12 +307,11 @@ def internal_admission(*, facts: dict[str, Any], approval: dict[str, Any], polic
 
 def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: str,
           robot_free_probe_root: Path | None = None) -> dict[str, Any]:
-    """Seal all eight sessions before the first GPU allocation. Does not launch."""
+    """Seal one 200-cell session before its sole GPU allocation. Does not launch."""
     from .controlled_policy_configuration import canonical_request_digest
     from . import team_candidate_quick10_launch as launch
     from .team_candidate_quick10_bundle import assert_secret_absent
     from .team_candidate_quick10_registry import REGISTRY_ENV, REGISTRY_SCHEMA, offer_eligibility
-    from .team_evaluation_plan import shards
 
     if launch._source_commit() != source_commit:
         raise ValueError("internal_diagnostic_source_commit_mismatch")
@@ -327,6 +327,10 @@ def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: s
     if facts is None:
         raise ValueError(";".join(blockers))
     approval = _read(owner_approval)
+    from .team_evaluation_plan import campaign_ttl_seconds, PRELAUNCH_RESERVE_SECONDS, ALLOCATOR_STARTUP_RESERVE_SECONDS
+    expiry = datetime.fromisoformat(approval["expires_at_iso"].replace("Z", "+00:00")).timestamp()
+    if expiry - datetime.now(timezone.utc).timestamp() < campaign_ttl_seconds() + PRELAUNCH_RESERVE_SECONDS + ALLOCATOR_STARTUP_RESERVE_SECONDS:
+        raise ValueError("team_evaluation_funding_window_below_planned_runtime")
     token = secrets.token_urlsafe(48)
     token_digest = canonical_digest({"credential_sha256": hashlib.sha256(token.encode()).hexdigest()})
     admission = internal_admission(facts=facts, approval=approval, policy_url=policy_url, credential_digest=token_digest)
@@ -348,11 +352,11 @@ def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: s
     _write(job / "team_candidate_admission.json", admission)
     _write(job / launch.REQUEST_FILENAME, request)
     cells = launch._session_cells(purpose="scored", facts=facts, profile=profile)
-    groups = shards(cells)
+    groups = [cells]
     base_run_id = "internal-team-diag-" + source_commit[:12]
     for index, group in enumerate(groups):
         shard = launch._stage_shard(job_dir=job, index=index, cells=group, admission=admission, facts=facts,
-            profile=profile, cap_usd=2.5, base_run_id=base_run_id, commit=source_commit)
+            profile=profile, cap_usd=20., base_run_id=base_run_id, commit=source_commit)
         assert_secret_absent(shard["bundle_path"], token)
     zero = launch._default_provider_zero()
     _write(job / "initial_provider_zero.json", zero)
@@ -368,7 +372,7 @@ def stage(root: Path, *, policy_url: str, owner_approval: Path, source_commit: s
         "evaluation_purpose": "scored", "episodes": len(cells), "shard_count": len(groups), "source_commit": source_commit})
     expires = datetime.fromisoformat(approval["expires_at_iso"].replace("Z", "+00:00")).timestamp() * 1000
     _write(job / launch.CONTROL_FILENAME, {"run_id": base_run_id, "internal_diagnostic": True,
-        "execution_deadline_at_ms": min(expires, datetime.now(timezone.utc).timestamp() * 1000 + 16 * 60 * 60 * 1000),
+        "execution_deadline_at_ms": expires,
         "owner_approval": _record(owner_approval)})
     result = {"schema_version": "blueprint.internal_team_diagnostic.v1", "policy_url": policy_url,
               "source_commit": source_commit, "job_dir": str(job.resolve()), "registry_path": str(registry_path.resolve()),

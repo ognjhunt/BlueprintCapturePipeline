@@ -10,6 +10,7 @@ from blueprint_pipeline.team_evaluation_plan import (
     shard_ttl_seconds,
     shards,
     variation_bounds,
+    campaign_ttl_seconds,
 )
 
 SPEC = {"task_kind": "rigid_pick_place", "start_pose_world": [0.5, 0.0, 0.8, 0, 0, 0, 1],
@@ -56,3 +57,8 @@ def test_a_scored_run_is_eight_shards_that_each_fit_their_time_limit() -> None:
     groups = shards(_cells())
     assert [len(group) for group in groups] == [25] * 8
     assert shard_ttl_seconds(25) <= 4 * 3600
+
+
+@pytest.mark.parametrize("control_hz", [15, 30, 60, 120])
+def test_full_campaign_lease_covers_the_planned_work_at_the_selected_rate(control_hz):
+    assert campaign_ttl_seconds(control_hz=control_hz) == shard_ttl_seconds(200, control_hz=control_hz)

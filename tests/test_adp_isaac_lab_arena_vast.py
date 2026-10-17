@@ -54,6 +54,8 @@ def test_policy_query_blocker_does_not_invent_query_when_receipt_is_missing() ->
         _candidate_policy_query_blocker({}, blocker_prefix="adp009d")
         == "adp009d_candidate_policy_query_status_missing"
     )
+
+
     assert (
         _candidate_policy_query_blocker(
             {"candidate_policy_queried": True}, blocker_prefix="adp009d"
@@ -1065,3 +1067,109 @@ def test_native_pre_spend_stale_wait_is_bounded(monkeypatch: pytest.MonkeyPatch)
             provider_bundle_kind="native_task_arena", preflight_args={}
         )
     assert len(attempts) == 17 and sleeps == [15] * 16
+
+
+def test_download_extraction_does_not_use_the_paired_stream_size_limits(tmp_path, monkeypatch):
+    from blueprint_pipeline import arena_provider_output_streaming as streamed
+    from blueprint_pipeline import policy_canary_output_members as members
+    archive = tmp_path / "large-sparse-output.zip"
+    # A large ZIP offset needs only a few filesystem blocks, not an 8 GB write.
+    with archive.open("wb") as stream:
+        stream.seek(streamed.OUTPUT_ARCHIVE_MAXIMUM_BYTES + 1)
+        stream.write(b"padding")
+    name = "native_task_arena_policy_canary_session_result.v1.json"
+    result = {"status": "runtime_completed_unqualified_pending_closeout",
+              "run_kind": "team_candidate_evaluation", "learned_policy_rollout_count": 200}
+    with zipfile.ZipFile(archive, "a", allowZip64=True) as zipped:
+        zipped.writestr(name, json.dumps(result))
+    assert archive.stat().st_size > streamed.OUTPUT_ARCHIVE_MAXIMUM_BYTES
+    assert archive.stat().st_blocks * 512 < 1024 * 1024
+    monkeypatch.setattr(members, "NEEDED_SET_BUDGET_BYTES", 1)
+    extracted = arena._extract_provider_output(archive, tmp_path / "downloaded", result_name=name)
+    assert extracted["status"] == "completed" and extracted["execution"] == result
+
+
+def test_team_archive_extraction_refuses_expanded_capacity_before_replacing_existing_result(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as budget
+    name = 'native_task_arena_policy_canary_session_result.v1.json'
+    source = tmp_path / 'output.zip'
+    with zipfile.ZipFile(source, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, json.dumps({'status': 'completed'}))
+        archive.writestr('raw-evidence.bin', b'x' * (4 * 1024**2))
+    destination = tmp_path / 'extracted'
+    destination.mkdir()
+    (destination / 'previous').write_bytes(b'keep')
+    original = budget.reserve_control_plane_disk
+    calls = []
+    def reserve(*args, **kwargs):
+        calls.append(kwargs['expected_bytes'])
+        kwargs['reservation_root'] = tmp_path / 'ledger'
+        kwargs['disk_usage'] = lambda _path: SimpleNamespace(total=100 * 1024**3, used=0, free=2 * 1024**2)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(budget, 'reserve_control_plane_disk', reserve)
+    assert source.stat().st_size < 2 * 1024**2
+    result = arena._extract_provider_output(source, destination, result_name=name)
+    assert result['status'] == 'blocked'
+    assert 'adp_arena_provider_output_extraction_disk_refused' in result['blockers']
+    assert calls == [4 * 1024**2 + len(json.dumps({'status': 'completed'}))]
+    assert (destination / 'previous').read_bytes() == b'keep'
+    assert source.is_file() and not (destination / 'raw-evidence.bin').exists()
+
+
+@pytest.mark.parametrize('fail_extraction', [False, True])
+def test_archive_extraction_holds_exact_expanded_bytes_and_releases_on_all_paths(tmp_path, monkeypatch, fail_extraction):
+    from blueprint_pipeline import control_plane_disk_budget as budget
+    source = tmp_path / 'output.zip'
+    body = json.dumps({'status': 'completed'})
+    with zipfile.ZipFile(source, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('adp_arena_native_canary.json', body)
+        archive.writestr('evidence.bin', b'x' * 4096)
+    original_reserve, original_extract = budget.reserve_control_plane_disk, zipfile.ZipFile.extractall
+    holds = []
+    def reserve(*args, **kwargs):
+        kwargs['reservation_root'] = tmp_path / 'ledger'
+        hold = original_reserve(*args, **kwargs)
+        holds.append(hold)
+        return hold
+    def extract(archive, *args, **kwargs):
+        assert source.is_file() and len(holds) == 1
+        assert holds[0].path.is_file() and not holds[0].released
+        assert holds[0].expected_bytes == len(body) + 4096
+        if fail_extraction:
+            raise OSError('simulated write failure')
+        return original_extract(archive, *args, **kwargs)
+    monkeypatch.setattr(budget, 'reserve_control_plane_disk', reserve)
+    monkeypatch.setattr(zipfile.ZipFile, 'extractall', extract)
+    result = arena._extract_provider_output(source, tmp_path / 'out')
+    assert result['status'] == ('blocked' if fail_extraction else 'completed')
+    assert len(holds) == 1 and holds[0].released and not holds[0].path.exists()
+    assert source.is_file()
+    if fail_extraction:
+        assert result['execution'] == {}
+
+
+@pytest.mark.parametrize('allocated,collected', [(True, False), (None, False), (False, False), (True, True)])
+def test_failed_download_keeps_paid_remote_evidence_and_recovery_access(tmp_path, monkeypatch, allocated, collected):
+    staging = tmp_path / 'stage'
+    staging.mkdir()
+    access = staging / 'provider_output_get_url.txt'
+    access.write_text('test-only-protected-reference')
+    access.chmod(0o600)
+    remote = {'input': b'bootstrap', 'output': b'complete-paid-evidence'}
+    output = tmp_path / 'fresh-attempt-output.zip'
+    if collected:
+        output.write_bytes(remote['output'])
+    def cleanup(_staging):
+        remote.clear()
+        access.unlink()
+        return {'status': 'completed', 'blockers': []}
+    monkeypatch.setattr(arena, 'cleanup_staged_wam_provider_objects', cleanup)
+    result = arena._cleanup_downloaded_provider_objects(staging_dir=staging, output_zip=output,
+                                                       adapter={'provider_create_attempted': allocated})
+    if allocated is not False and not collected:
+        assert result['status'] == 'blocked' and result['remote_objects_retained_for_recovery'] is True
+        assert remote['output'] == b'complete-paid-evidence' and access.is_file()
+        assert 'test-only-protected-reference' not in json.dumps(result)
+    else:
+        assert result['status'] == 'completed' and not remote and not access.exists()

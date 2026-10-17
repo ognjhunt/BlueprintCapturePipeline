@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import urllib.error
 from pathlib import Path
@@ -1015,8 +1016,12 @@ def test_poll_downloads_direct_provider_output_get_url_without_leaking_query(
         def __exit__(self, *_args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return b"zip-bytes"
+        def __init__(self):
+            self.body = io.BytesIO(b"zip-bytes")
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     requested_urls: list[str] = []
 

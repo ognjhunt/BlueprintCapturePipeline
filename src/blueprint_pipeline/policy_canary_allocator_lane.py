@@ -42,13 +42,15 @@ from .adp_isaac_lab_arena_vast import (
     _remaining_session_live_minutes,
     _vast_credential_file_present,
 )
-from .team_candidate_quick10_vast import credential_file_blockers, run_team_candidate_session_vast
+from .team_candidate_quick10_vast import credential_file_blockers, run_team_candidate_session_vast, team_execution_deadline
 
 
 REQUIRE_INTEGRATION_CANARY_ENV = "BLUEPRINT_REQUIRE_POLICY_INTEGRATION_CANARY"
 
 
 def add_policy_canary_allocator_arguments(parser: Any) -> None:
+    parser.add_argument("--team-candidate-execution-deadline-epoch", type=float,
+                        help="Current authenticated execution deadline; can only shorten the sealed funding expiry.")
     parser.add_argument("--native-task-arena-policy-canary-session-authority")
     parser.add_argument("--native-task-arena-policy-canary-session-bundle-receipt")
     parser.add_argument(
@@ -122,6 +124,8 @@ def _launch_environment_blockers(args: Any, authority: Mapping[str, Any], bundle
     )
     if minutes < 30:
         blockers.append("adp_arena_cumulative_budget_below_minimum_live_window")
+    if authority.get("run_kind") == TEAM_RUN_KIND and minutes * 60 < int(args.adp_hard_ttl_seconds):
+        blockers.append("team_evaluation_budget_below_planned_runtime")
     credential_present = _vast_credential_file_present()
     try:
         require_pre_spend_preflight(
@@ -189,6 +193,12 @@ def run_policy_canary_allocator_lane(
     # Beta L5: a team-candidate authority needs its private credential file; the pair never takes one.
     team = authority is not None and authority.get("run_kind") == TEAM_RUN_KIND
     credential_file = getattr(args, "team_candidate_credential_file", None)
+    execution_deadline = getattr(args, "team_candidate_execution_deadline_epoch", None)
+    if execution_deadline is not None and not team:
+        blockers.append("team_evaluation_execution_deadline_unexpected")
+    if team:
+        _deadline, window_blockers = team_execution_deadline(authority, execution_deadline)
+        blockers.extend(window_blockers)
     if team:
         blockers.extend(credential_file_blockers(credential_file))
     elif credential_file:
@@ -266,6 +276,7 @@ def run_policy_canary_allocator_lane(
         result = run_team_candidate_session_vast(
             job_dir=args.adp_job_dir, prepared_bundle=prepared_bundle, session_authority=authority,
             paid_resource_admission_grant=grant, execute=args.execute, credential_file=credential_file,
+            execution_deadline_epoch=execution_deadline,
             machine_avoidlist_path=args.adp_machine_avoidlist, max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
             hard_cap_usd=args.adp_max_spend_usd, hard_ttl_seconds=args.adp_hard_ttl_seconds,
             allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
 import re
 import time
 import urllib.error
@@ -245,6 +248,9 @@ def read_sensitive_url_file(
     }
 
 
+download_disk_usage = shutil.disk_usage
+
+
 def download_url_to_file(
     *,
     url: str,
@@ -252,8 +258,9 @@ def download_url_to_file(
     user_agent: str,
     timeout_seconds: int,
 ) -> dict[str, Any]:
-    """Download one provider artifact without recording its signed source URL."""
+    """Stream atomically to a capacity-checked file, without retaining its signed URL."""
 
+    partial: Path | None = None
     try:
         parsed_url = urlsplit(url)
         if (
@@ -266,7 +273,6 @@ def download_url_to_file(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         request = urllib.request.Request(url, headers={"User-Agent": user_agent})
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
-            data = response.read()
             http_status = int(getattr(response, "status", 200))
             response_headers = getattr(response, "headers", None)
             response_last_modified = (
@@ -275,11 +281,40 @@ def download_url_to_file(
                 else None
             )
             response_etag = response_headers.get("ETag") if hasattr(response_headers, "get") else None
-        output_path.write_bytes(data)
+            length = response_headers.get("Content-Length") if hasattr(response_headers, "get") else None
+            expected = int(length) if length is not None else None
+            if expected is None or expected < 0:
+                raise ValueError("provider_artifact_declared_length_required")
+            if expected is not None and shutil.disk_usage(output_path.parent).free < expected:
+                raise OSError("provider_artifact_disk_capacity_insufficient")
+            downloaded = 0
+            from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
+            reservation = reserve_control_plane_disk(
+                "policy_canary_output", target_root=output_path.parent, expected_bytes=max(1, expected),
+                reservation_root=os.environ.get("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT") or DEFAULT_RESERVATION_ROOT,
+                workload="provider_archive_download", lock_nonblocking=True,
+                disk_usage=lambda target: download_disk_usage(target))
+            with reservation, tempfile.NamedTemporaryFile(dir=output_path.parent, prefix=output_path.name + ".",
+                                                          suffix=".partial", delete=False) as target:
+                partial = Path(target.name)
+                while chunk := response.read(1024 * 1024):
+                    if not isinstance(chunk, bytes) or len(chunk) > 1024 * 1024:
+                        raise ValueError("provider_artifact_chunk_invalid")
+                    if ((expected is not None and downloaded + len(chunk) > expected)
+                            or shutil.disk_usage(output_path.parent).free < len(chunk)):
+                        raise OSError("provider_artifact_size_or_capacity_exceeded")
+                    target.write(chunk)
+                    downloaded += len(chunk)
+                if expected is not None and downloaded != expected:
+                    raise OSError("provider_artifact_download_incomplete")
+                target.flush()
+                os.fsync(target.fileno())
+            partial.replace(output_path)
         return {
             "status": "completed",
             "http_status_code": http_status,
-            "downloaded_size_bytes": len(data),
+            "downloaded_size_bytes": downloaded,
+            "download_disk_reservation": reservation.receipt(),
             "output_present": output_path.is_file(),
             # Safe response metadata lets an authorized runner prove that a
             # recovered callback object was written during the current paid run,
@@ -303,3 +338,6 @@ def download_url_to_file(
             "output_present": output_path.is_file(),
             "raw_secret_values_recorded": False,
         }
+    finally:
+        if partial is not None:
+            partial.unlink(missing_ok=True)

@@ -212,14 +212,17 @@ def test_close_reports_lane_terminal_while_another_paid_lane_is_observed(
     assert result["provider_absence_confirmed"] is True
 
 
+@pytest.mark.parametrize("deadline_cap_seconds", [None, 150])
 def test_watchdog_is_armed_detached_before_allocation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deadline_cap_seconds
 ) -> None:
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.delenv(control.CALLER_EXIT_SURVIVAL_ENV, raising=False)
     monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
 
+    cap = control.time.time() + deadline_cap_seconds if deadline_cap_seconds else None
     handoff, handle = control.arm_independent_vast_watchdog(
+        deadline_cap_epoch=cap,
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-07-27T00:00:00+00:00",
@@ -229,7 +232,10 @@ def test_watchdog_is_armed_detached_before_allocation(
 
     assert handoff["status"] == "armed"
     assert handoff["watchdog_armed_before_allocation"] is True
-    assert handoff["watchdog_deadline_epoch"] - handoff["watchdog_started_epoch"] == 180
+    if cap is None:
+        assert handoff["watchdog_deadline_epoch"] - handoff["watchdog_started_epoch"] == 180
+    else:
+        assert handoff["watchdog_deadline_epoch"] == cap
     assert handle is not None
     assert handle.process.kwargs["start_new_session"] is True
     assert handle.process.kwargs["stdin"] is control.subprocess.DEVNULL

@@ -210,6 +210,8 @@ def _provider_session_result(runtime: Path, spec: dict[str, Any], *, probe_statu
                                         "episode_terminal_status": "failed_after_first_observation",
                                         "terminal_observation_invented": False})
         episodes.append(row)
+        if service_down and len(episodes) == 25:
+            break  # the real worker's first-batch gate is rehearsed separately
     result = {"schema_version": "native_task_arena_policy_canary_session_result.v1",
               "status": "runtime_completed_unqualified_pending_closeout", "run_kind": inputs["run_kind"],
               "claim_ceiling": "diagnostic_policy_execution", "candidate_ids": inputs["candidate_ids"],
@@ -221,6 +223,10 @@ def _provider_session_result(runtime: Path, spec: dict[str, Any], *, probe_statu
               "scene_promotion_performed": False, "official_ranking_performed": False,
               "candidate_policy_queried": True, "blockers": [],
               **(probe if spec.get("robot_free_probe") is not None else {})}
+    if service_down and len(inputs["cells"]) > 25:
+        result.update(status="blocked", planned_episodes_per_policy=len(inputs["cells"]),
+                      execution_stopped_after_cell=25, stopped_before_next_cell=True,
+                      blockers=["team_policy_interface_failures:25_episodes:policy_service_did_not_answer=25"])
     return _sealed(result, "result_digest")
 
 
@@ -420,7 +426,8 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
         zeros.append(dict(ZERO))
         return dict(ZERO)
 
-    hooks = {"credential_client": _Broker, "metadata_transport": service.transport, "queue_root": queue,
+    hooks = {"execution_monitor": lambda control: {"ok": True, "run_id": control["run_id"],
+                 "execution_deadline_at_ms": 4_000_000_000_000}, "credential_client": _Broker, "metadata_transport": service.transport, "queue_root": queue,
              "provider_zero": lambda: world["provider_zero"](), "implementation_commit": "a" * 40}
     if robot is not None:
         hooks["model_fetch"] = lambda url, target: shutil.copyfile(robot["model"], target)
@@ -450,9 +457,13 @@ def _every_file(root: Path) -> list[Path]:
     return [path for path in root.rglob("*") if path.is_file()]
 
 
-def test_a_request_runs_200_hidden_cells_first_shard_alone_and_reports_one_scored_result(
-        tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("monitor_deadline_ms", [4_000_000_000_000, 5_000_000_000_000])
+def test_a_request_runs_200_hidden_cells_on_one_gpu_and_reports_one_scored_result(
+        tmp_path, monkeypatch, monitor_deadline_ms) -> None:
+    monkeypatch.setenv("BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY", "stream")
     world = _world(tmp_path, monkeypatch)
+    world["runner"]["execution_monitor"] = lambda control: {
+        "ok": True, "run_id": control["run_id"], "execution_deadline_at_ms": monitor_deadline_ms}
     staged, summary = _staged_run_reported(world)
     assert staged["claimed"] == 1 and staged["staged"] == 1 and staged["pending"] == 1, staged
     assert summary["completed"] == 1, summary
@@ -460,14 +471,20 @@ def test_a_request_runs_200_hidden_cells_first_shard_alone_and_reports_one_score
     # The admission seals the very lease the WebApp released once.
     admission = json.loads((world["job_dir"] / "team_candidate_admission.json").read_text())
     assert _Broker.leases == [admission["credential"]["lease_id"]]
-    # Eight GPU sessions of 25 cells, each its own allocation inside its share of the cap; the
-    # first ran alone and its gate opened the rest.
+    # One guarded allocation holds the entire matrix; the worker gates after its first 25 cells.
     calls = world["allocator_calls"]
-    assert len(calls) == 8 and len(world["provider"].calls) == 8 and "/shards/00/" in " ".join(calls[0])
+    assert len(calls) == 1 and len(world["provider"].calls) == 1 and "/shards/00/" in " ".join(calls[0])
     gate = json.loads((world["job_dir"] / launch.FIRST_SHARD_GATE_FILENAME).read_text())
     assert gate["status"] == "passed" and gate["episodes"] == 25
     caps = [float(argv[argv.index("--adp-max-spend-usd") + 1]) for argv in calls]
-    assert sum(caps) <= 20.0 and set(caps) == {2.5}
+    assert sum(caps) <= 20.0 and set(caps) == {20.0}
+    # The paired Quick-10 stream's 8 GB/640 MiB bounds never route a team run.
+    assert world["provider"].calls[0]["provider_output_delivery"] == "download"
+    assert "provider_output_member_contract" not in world["provider"].calls[0]
+    from datetime import datetime
+    funding_expiry = datetime.fromisoformat(admission["execution_deadline_at_iso"].replace("Z", "+00:00")).timestamp()
+    assert world["provider"].calls[0]["hard_deadline_epoch"] == min(monitor_deadline_ms / 1000, funding_expiry)
+    assert float(calls[0][calls[0].index("--team-candidate-execution-deadline-epoch") + 1]) == monitor_deadline_ms / 1000
     # The terminal the executor reported, and the scoring statement it sent.
     (path, result), (_settlement_path, settlement) = world["client"].posted
     assert path == "/api/internal/pipeline/agent-run-results" and settlement["rate_usd"] == 0
@@ -508,7 +525,7 @@ def test_a_request_runs_200_hidden_cells_first_shard_alone_and_reports_one_score
     # A second pass neither re-launches nor re-reports.
     launch.run_queue(world["queue"], hooks=world["runner"])
     again = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert again["completed"] == 0 and len(world["allocator_calls"]) == 8 and len(world["client"].posted) == 2
+    assert again["completed"] == 0 and len(world["allocator_calls"]) == 1 and len(world["client"].posted) == 2
 
 
 def test_a_policy_failing_at_the_interface_stops_after_the_first_shard(tmp_path, monkeypatch) -> None:
@@ -647,7 +664,7 @@ def test_a_metadata_repair_reuses_one_private_delivery_without_spending_another_
     executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
     launch.run_queue(world["queue"], hooks=world["runner"])
     final = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert final["completed"] == 1 and len(_Broker.leases) == 1 and len(world["allocator_calls"]) == 8
+    assert final["completed"] == 1 and len(_Broker.leases) == 1 and len(world["allocator_calls"]) == 1
     assert not delivery.exists()
 
 
@@ -893,11 +910,11 @@ def test_closeout_waits_for_provider_zero_before_reporting(tmp_path, monkeypatch
     observations = iter([dict(ZERO), live])  # zero before launch, then a live instance at closeout
     world["provider_zero"] = lambda: next(observations, dict(ZERO))
     _staged, pending = _staged_run_reported(world)
-    assert pending["pending"] == 1 and world["client"].posted == [] and len(world["allocator_calls"]) == 8
+    assert pending["pending"] == 1 and world["client"].posted == [] and len(world["allocator_calls"]) == 1
     assert not (world["job_dir"] / TERMINAL_FILENAME).exists()
     launch.run_queue(world["queue"], hooks=world["runner"])
     second = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert second["completed"] == 1 and len(world["allocator_calls"]) == 8  # recovered, never re-allocated
+    assert second["completed"] == 1 and len(world["allocator_calls"]) == 1  # recovered, never re-allocated
 
 
 def test_the_offer_lists_each_team_evaluation_only_while_eligible(tmp_path, monkeypatch) -> None:
@@ -964,7 +981,7 @@ def test_a_team_brings_its_own_arm_and_cameras_to_its_evaluation(tmp_path, monke
     from tests.test_team_embodiment import manifest, write_robot_usd
 
     model = write_robot_usd(tmp_path / "acme_arm.usda")
-    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model), "model": model})
+    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model, control_hz=15), "model": model})
     staged, summary = _staged_run_reported(world)
     assert staged["staged"] == 1 and summary["completed"] == 1, (staged, summary)
     job = world["job_dir"]
@@ -988,7 +1005,7 @@ def test_a_team_arm_that_cannot_reach_the_task_is_refused_before_any_allocation(
     from tests.test_team_embodiment import manifest, write_robot_usd
 
     model = write_robot_usd(tmp_path / "acme_arm.usda")
-    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model, reach_m=0.1), "model": model})
+    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model, reach_m=0.1, control_hz=15), "model": model})
     summary = executor.poll_once(client=world["client"], capture_root=world["capture"],
                                  team_launch_hooks=world["hooks"])
     assert summary["blocked"] == 1 and world["allocator_calls"] == []

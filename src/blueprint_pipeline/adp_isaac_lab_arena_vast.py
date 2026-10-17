@@ -347,6 +347,19 @@ def build_arena_native_control_bundle(
     return receipt
 
 
+def _cleanup_downloaded_provider_objects(*, staging_dir: Path, output_zip: Path,
+                                         adapter: Mapping[str, Any]) -> dict[str, Any]:
+    """Never discard the paid run's remote result when local collection was refused."""
+    if output_zip.is_file() or adapter.get("provider_create_attempted") is False:
+        return cleanup_staged_wam_provider_objects(staging_dir)
+    return {"status": "blocked", "blockers": ["provider_output_uncollected_objects_retained"],
+            "remote_objects_retained_for_recovery": True, "signed_url_files_preserved": True,
+            "raw_secret_values_recorded": False}
+
+
+extraction_disk_usage = shutil.disk_usage
+
+
 def _extract_provider_output(
     path: Path,
     destination: Path,
@@ -360,28 +373,56 @@ def _extract_provider_output(
             "status": "blocked",
             "blockers": [f"{blocker_prefix}_provider_output_zip_missing"],
         }
-    if destination.exists():
-        shutil.rmtree(destination)
-    ensure_dir(destination)
+    from .control_plane_disk_budget import (
+        DEFAULT_RESERVATION_ROOT, ControlPlaneDiskBudgetError, reserve_control_plane_disk,
+    )
+    ensure_dir(destination.parent)
     root = destination.resolve()
+    extraction_capacity: dict[str, Any] = {}
+    hold = None
     try:
         with zipfile.ZipFile(path) as archive:
+            if result_name == "native_task_arena_policy_canary_session_result.v1.json":
+                from .wam_provider_output import NATIVE_TERMINAL_MAX_BYTES
+                if archive.getinfo(result_name).file_size > NATIVE_TERMINAL_MAX_BYTES:
+                    blockers.append(f"{blocker_prefix}_terminal_read_budget_exceeded")
             for member in archive.infolist():
                 target = (destination / member.filename).resolve()
                 if root not in target.parents and target != root:
                     blockers.append(f"{blocker_prefix}_provider_output_zip_path_traversal")
             if not blockers:
-                archive.extractall(destination)
-    except (OSError, zipfile.BadZipFile):
+                # The ZIP already consumes space on its filesystem. Reserve the
+                # additional expanded bytes against current free space and all
+                # other live writers before replacing any existing extraction.
+                with reserve_control_plane_disk(
+                    "policy_canary_output", target_root=destination.parent,
+                    expected_bytes=max(1, sum(member.file_size for member in archive.infolist())),
+                    reservation_root=os.environ.get("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT") or DEFAULT_RESERVATION_ROOT,
+                    workload="team_archive_extraction", lock_nonblocking=True,
+                    disk_usage=lambda target: extraction_disk_usage(target),
+                ) as hold:
+                    extraction_capacity = hold.receipt()
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                    ensure_dir(destination)
+                    archive.extractall(destination)
+    except ControlPlaneDiskBudgetError as exc:
+        blockers.append(f"{blocker_prefix}_provider_output_extraction_disk_refused")
+        extraction_capacity = {"status": "refused", "reason": str(exc)}
+    except (OSError, KeyError, zipfile.BadZipFile):
         blockers.append(f"{blocker_prefix}_provider_output_zip_invalid")
+    finally:
+        if hold is not None:
+            extraction_capacity = hold.receipt()
     result_path = destination / result_name
-    execution = _read_json(result_path)
+    execution = _read_json(result_path) if not blockers else {}
     if not execution:
         blockers.append(f"{blocker_prefix}_runtime_result_missing")
     return {
         "status": "completed" if not blockers else "blocked",
         "result_path": str(result_path),
         "execution": execution,
+        "extraction_disk_reservation": extraction_capacity,
         "blockers": sorted(set(blockers)),
     }
 
@@ -445,6 +486,7 @@ def run_arena_native_control_vast(
     ),
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     require_independent_watchdog: bool = False,
+    hard_deadline_epoch: float | None = None,
     authorization_consumption: Mapping[str, Any] | None = None,
     retain_warm_instance: bool = False,
     expected_provider_download_bytes: int = 0,
@@ -537,6 +579,18 @@ def run_arena_native_control_vast(
         hard_ttl_seconds=hard_ttl_seconds,
         max_hourly_rate_usd=max_hourly_rate_usd,
     )
+    if hard_deadline_epoch is not None:
+        if type(hard_deadline_epoch) not in (int, float) or not math.isfinite(hard_deadline_epoch):
+            raise ValueError("adp_arena_hard_deadline_invalid")
+        remaining_live_minutes = min(remaining_live_minutes, math.floor((hard_deadline_epoch - time.time()) / 60))
+    full_team_session = bundle.get("run_kind") == "team_candidate_evaluation"
+    if full_team_session and remaining_live_minutes * 60 < hard_ttl_seconds:
+        result = {"schema_version": result_schema_version, "generated_at": generated,
+                  "status": "blocked", "provider_mutations_performed": 0,
+                  "remaining_live_minutes": remaining_live_minutes,
+                  "blockers": ["team_evaluation_window_or_budget_below_planned_runtime"], **delivery_record}
+        _write_run_result(job, attempt_root, result)
+        return result
     if remaining_live_minutes < 30:
         result = {
             "schema_version": result_schema_version,
@@ -753,12 +807,16 @@ def run_arena_native_control_vast(
     if require_independent_watchdog:
         watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
             job_dir=attempt_root,
-            max_live_minutes=remaining_live_minutes,
+            # Staging itself may have used up the minimum safe startup window.
+            max_live_minutes=(0 if hard_deadline_epoch is not None and hard_deadline_epoch - time.time()
+                              < (hard_ttl_seconds if full_team_session else 1800)
+                              else remaining_live_minutes),
             generated_at=generated,
             allowed_active_instance_ids=allowed_active_instance_ids,
             allowed_active_resource_names=allowed_active_resource_names,
             pod_name_prefix=instance_label_prefix,
             resource_name_exact=instance_label_exact,
+            **({"deadline_cap_epoch": hard_deadline_epoch} if hard_deadline_epoch is not None else {}),
         )
         if watchdog_handle is None:
             cleanup = cleanup_staged_wam_provider_objects(staging_dir)
@@ -901,7 +959,8 @@ def run_arena_native_control_vast(
                     observation=output_collector.observation, local_archive=output_zip,
                     cleanup=lambda: cleanup_staged_wam_provider_objects(staging_dir))
             else:
-                cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+                cleanup = _cleanup_downloaded_provider_objects(
+                    staging_dir=staging_dir, output_zip=output_zip, adapter=adapter)
             runtime_dependency_closeout = (
                 close_cached_runtime_dependency_staging(
                     runtime_dependency_dir

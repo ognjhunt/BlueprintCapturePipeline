@@ -1,3 +1,5 @@
+# Covers (shared worker retention):
+#   src/blueprint_pipeline/team_evaluation_worker_retention.py
 """The sealed policy-canary bundle must import on a provider before any GPU is paid for."""
 
 from __future__ import annotations

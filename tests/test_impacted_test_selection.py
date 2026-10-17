@@ -231,6 +231,7 @@ def test_policy_canary_hermetic_rehearsals_follow_their_production_modules() -> 
     closure = "tests/test_provider_runtime_import_closure.py"
     expectations = {
         "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": {rehearsal, closure},
+        "src/blueprint_pipeline/team_evaluation_worker_retention.py": {rehearsal, closure},
         "src/blueprint_pipeline/native_task_arena_policy_canary_bundle.py": {closure},
         "src/blueprint_pipeline/native_task_arena_policy_canary_session.py": {rehearsal},
         "src/blueprint_pipeline/adp009d_policy_episode.py": {rehearsal},

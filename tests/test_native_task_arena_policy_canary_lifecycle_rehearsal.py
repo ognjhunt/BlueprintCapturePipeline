@@ -1,3 +1,5 @@
+# Covers (shared worker retention):
+#   src/blueprint_pipeline/team_evaluation_worker_retention.py
 """Hermetic full-lifecycle rehearsal of the paired policy canary worker.
 
 Every paid Quick-10 attempt before this test existed discovered a defect that

@@ -12,6 +12,7 @@ GPU, network or spend.
 from __future__ import annotations
 
 import json
+import copy
 import os
 import zipfile
 from pathlib import Path
@@ -43,17 +44,21 @@ from tests.test_team_candidate_quick10_rehearsal import TEAM, TOKEN_ENV, _admiss
 TOKEN = "team-secret-token-0123456789"
 
 
-def stage_team_bundle(tmp_path: Path, *, admission: dict[str, Any] | None = None) -> dict[str, Any]:
+def stage_team_bundle(tmp_path: Path, *, admission: dict[str, Any] | None = None, episodes: int | None = None) -> dict[str, Any]:
     """A real sealed team bundle over the frozen pair's real Quick-10 inputs (shared with the launch tests)."""
 
     packet, runtime_receipt, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path)
     frozen = json.loads(pair_inputs.read_text())
+    cells = frozen["cells"]
+    if episodes is not None:
+        cells = [dict(copy.deepcopy(cells[index % len(cells)]), cell_id=f"full-campaign-{index:03d}",
+                      seed=5000 + index) for index in range(episodes)]
     paths = stage_team_runtime(
         root=tmp_path / "team", run_id="team-quick10-run-1",
         scene_inputs=scene_inputs_from_frozen_pair(pair_inputs, pair_activation),
         admission=admission or _admission(frozen["task_success_contract"]),
         prompt="Push the mug onto the green target marker.", max_policy_queries=10,
-        hard_cap_usd=20.0, hard_ttl_seconds=9_000, cells=frozen["cells"])
+        hard_cap_usd=20.0, hard_ttl_seconds=9_000, cells=cells)
     receipt = build_team_candidate_session_bundle(
         job_dir=tmp_path / "team-job", packet_dir=packet, runtime_source_packet_receipt=runtime_receipt,
         runtime_input_manifest_path=paths["runtime_inputs"], session_authority_path=paths["session_authority"],
@@ -162,7 +167,7 @@ def test_the_adapter_binds_teardown_and_members_to_the_run_kind(tmp_path: Path) 
             validate_policy_canary_provider_manifest(forged)
 
 
-@pytest.mark.parametrize("episode_count", [1, 10, 20, 24, 25])
+@pytest.mark.parametrize("episode_count", [1, 10, 20, 24, 25, 26, 50, 199, 200])
 def test_team_transport_accepts_supported_session_sizes(episode_count: int) -> None:
     result = {"status": "runtime_completed_unqualified_pending_closeout",
               "schema_version": "native_task_arena_policy_canary_session_result.v1",
@@ -171,7 +176,7 @@ def test_team_transport_accepts_supported_session_sizes(episode_count: int) -> N
               "scene_promotion_performed": False, "official_ranking_performed": False}
     name = "native_task_arena_policy_canary_session_result.v1.json"
     assert native_task_arena_execution_transport_completed(result, expected_output_filename=name)
-    for malformed in (True, False, 25.0, "25", None, 0, -1, 26, 50):
+    for malformed in (True, False, 25.0, "25", None, 0, -1, 201, 200.0, "200"):
         assert not native_task_arena_execution_transport_completed(
             {**result, "learned_policy_rollout_count": malformed}, expected_output_filename=name)
 
@@ -189,8 +194,9 @@ def test_the_token_reaches_the_provider_only_through_the_runtime_secret_channel(
     sent = calls[0]
     assert sent["runtime_secret_file_paths"] == {TOKEN_ENV: token_file}
     assert sent["allowed_geolocation_country_codes"] == ("US",)
-    # No streaming: the session passes no delivery mode, so the launcher's download default applies.
-    assert sent["forward_hf_token"] is False and not any(key.startswith("provider_output_") for key in sent)
+    # The team transport pins full download even if the paired canary streams.
+    assert sent["forward_hf_token"] is False and sent["provider_output_delivery"] == "download"
+    assert "provider_output_member_contract" not in sent
     assert sent["provider_bundle_kind"] == "native_task_arena_policy_canary_session"
     assert "paired_witness_binding" not in sent and sent["candidate_policy_query_expected"] is True
     assert TOKEN not in json.dumps({key: str(value) for key, value in sent.items()})
@@ -276,3 +282,40 @@ def test_the_pair_lane_never_takes_a_credential_file(tmp_path, monkeypatch) -> N
     assert "policy_canary_credential_file_unexpected" in json.loads(
         (tmp_path / "adapter.json").read_text())["blockers"]
     assert os.stat(token_file).st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("deadline, reason", [
+    ("nan", "team_evaluation_execution_deadline_invalid_or_expired"),
+    ("1", "team_evaluation_execution_deadline_invalid_or_expired"),
+    ("near", "team_evaluation_execution_deadline_below_minimum_live_window"),
+])
+def test_invalid_execution_deadline_refuses_dry_and_execute_before_transport(tmp_path, monkeypatch, deadline, reason):
+    import time
+    staged = stage_team_bundle(tmp_path)
+    token_file = private_token_file(tmp_path)
+    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers",
+                        lambda: ([], {"orchestrator_source_commit": "d" * 40}))
+    monkeypatch.setattr(lane, "_launch_environment_blockers", lambda *args: [])
+    monkeypatch.setattr(lane, "run_team_candidate_session_vast",
+                        lambda **kwargs: pytest.fail("a refused deadline reached a provider transport"))
+    value = str(time.time() + 600) if deadline == "near" else deadline
+    for execute in (False, True):
+        for name in ("admission.json", "adapter.json"):
+            (tmp_path / name).unlink(missing_ok=True)
+        argv = _allocator_argv(tmp_path, staged, "--team-candidate-credential-file", str(token_file),
+                               "--team-candidate-execution-deadline-epoch", value)
+        assert allocator.main(argv + (["--execute"] if execute else [])) == 2
+        result = json.loads((tmp_path / "adapter.json").read_text())
+        assert reason in result["blockers"] and result["provider_mutations_performed"] == 0
+
+
+def test_real_bundle_preflight_binds_progress_to_the_full_200_case_session(tmp_path):
+    staged = stage_team_bundle(tmp_path, episodes=200)
+    receipt = staged["receipt"]
+    preflight = vast_provider_adapter._blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight-full", generated_at="fixed", enable_blueprint_bundle=True,
+        enable_isaac_smoke=True, provider_bundle_kind="native_task_arena_policy_canary_session",
+        bundle_path=Path(receipt["bundle_path"]), provider_bundle_url="https://storage.example.com/bundle.zip",
+        provider_output_put_url="https://storage.example.com/output.zip")
+    assert preflight["status"] == "passed", preflight["blockers"]
+    assert preflight["policy_cell_count"] == 200

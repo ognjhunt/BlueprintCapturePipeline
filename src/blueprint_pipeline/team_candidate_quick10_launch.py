@@ -4,22 +4,16 @@ Beta journey step: L5 team policy evaluation. Two processes share the work, so
 a scored evaluation of 200 episodes (hours of GPU time) never holds the
 agent-run dispatcher:
 
-- the **dispatcher** (``execute_staged_team_candidate_request``) admits and
-  stages: it re-checks the scene's eligibility, reads the founder's
-  free-beta funding approval, claims the job-bound bearer credential, reads the
-  team's declared metadata once, seals the admission, and stages every GPU
-  session (one per shard of at most 25 cells) with its own runtime inputs,
-  session authority and sealed bundle. The
-  token is written to one private 0600 file and the job is queued;
-- the **runner** (``python -m blueprint_pipeline.team_candidate_quick10_launch
-  run-queue``, a path-activated unit with its own cgroup and timeout) runs the
-  queued shards through the canonical allocator (``paid_resource_allocator
-  gpu-canary``): the first shard alone, then the rest at most
-  ``SHARD_CONCURRENCY`` at once, and seals the single terminal the executor
-  reports. A passed revision-bound robot-free check is required before any
-  paid session. After the first shard (``first_shard_gate``) the evaluation stops
-  when most of its episodes failed at the interface rather than the task, so a broken
-  integration costs one GPU session, not eight.
+- the **dispatcher** admits the scene, policy, single-use credential and funding,
+  then seals one session containing all 200 cells;
+- the **runner** uses the canonical paid-resource allocator once for that
+  session, with one cumulative cap, TTL and independent watchdog. The provider
+  worker starts a fresh simulator process for each cell, checkpoints completed
+  child results, and stops after its first 25 cells if most fail at the policy
+  interface. A task failure is an observed score, not an interface refusal.
+
+Previously sealed multi-shard jobs remain readable and resumable without
+rewriting their inputs or repeating finished attempts.
 
 As before, customer JSON chooses nothing: the operator profile binds the scene;
 an execution lock and a sealed intent make a second launch impossible after a
@@ -35,6 +29,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import re
 import shutil
@@ -49,6 +44,7 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
+from .adp_isaac_lab_arena_vast import _remaining_session_live_minutes
 from .checkpoint_policy_credentials import bearer_lease_id
 from .common import utc_now_iso
 from .controlled_policy_configuration import canonical_request_digest
@@ -74,12 +70,13 @@ from .team_embodiment import (
 )
 from .team_evaluation_plan import (
     EPISODES,
-    SHARD_CELLS,
+    PRELAUNCH_RESERVE_SECONDS,
+    ALLOCATOR_STARTUP_RESERVE_SECONDS,
+    campaign_ttl_seconds,
     profile_purpose,
     runtime_cells,
     scored_cells,
     shard_ttl_seconds,
-    shards,
 )
 from .team_policy_https_client import INTERFACE_ID as TEAM_ROBOT_INTERFACE
 from .team_policy_https_client import METADATA_KEYS as TEAM_METADATA_KEYS
@@ -267,7 +264,7 @@ def _candidate_records(*, row: Mapping[str, Any], request: Mapping[str, Any], pr
     budget = {"payer": funding.get("payer"), "customer_price_usd": funding.get("customer_price_usd"),
               "max_attempts": funding.get("max_attempts"), "cap_usd": funding.get("cap_usd"),
               "episodes": _m(request.get("execution_authorization")).get("episodes"),
-              "hard_ttl_seconds": shard_ttl_seconds(min(EPISODES[purpose], SHARD_CELLS))}
+              "hard_ttl_seconds": campaign_ttl_seconds(control_hz=int(manifest["control_hz"]) if manifest else 15)}
     founder = {"schema_version": FOUNDER_SCHEMA, "approved_by": funding["approved_by"],
                "approval_reference": "webapp_free_beta_funding:" + str(funding.get("approval_digest")),
                "expires_at_iso": funding["expires_at_iso"],
@@ -346,6 +343,8 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
     binding = _read(binding_path) if binding_path.is_file() else None
     hz = int(binding["manifest"]["control_hz"]) if binding else 15
     ttl = shard_ttl_seconds(len(cells), control_hz=hz)
+    if ttl > int(admission["budget"]["hard_ttl_seconds"]):
+        raise TeamCandidateLaunchError("team_evaluation_session_ttl_below_planned_runtime")
     max_queries = facts["max_policy_queries"]
     if binding is not None:
         # The team's chunk runs whole at its own rate over the scene's time budget.
@@ -393,6 +392,16 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     if facts is None or profile is None:
         raise TeamCandidateLaunchError(";".join(blockers) or "team_candidate_profile_missing")
     funding = _funding(row, profile)
+    manifest = request_embodiment(request)
+    required_ttl = campaign_ttl_seconds(control_hz=int(manifest["control_hz"]) if manifest else 15)
+    funding_expiry = datetime.fromisoformat(funding["expires_at_iso"].replace("Z", "+00:00")).timestamp()
+    if funding_expiry - time.time() < required_ttl + PRELAUNCH_RESERVE_SECONDS + ALLOCATOR_STARTUP_RESERVE_SECONDS:
+        raise TeamCandidateLaunchError("team_evaluation_funding_window_below_planned_runtime")
+    funded_minutes = _remaining_session_live_minutes(
+        job=job_dir, hard_cap_usd=float(funding["cap_usd"]), hard_ttl_seconds=required_ttl,
+        max_hourly_rate_usd=float(profile["max_hourly_rate_usd"]))
+    if funded_minutes * 60 < required_ttl:
+        raise TeamCandidateLaunchError("team_evaluation_budget_below_planned_runtime")
     payload = _endpoint(request)
     team_id = str(row.get("team_id") or "")
     checkpoint_id = str(_m(row.get("checkpoint")).get("checkpoint_id") or "")
@@ -409,6 +418,15 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     # All checks that do not need the authenticated team service precede the
     # release. Its token is then retained privately for a bounded prelaunch
     # repair, never released a second time and never bundled.
+    control = {"run_id": row["run_id"], "pipeline_run_id": pipeline_run_id,
+               "execution_admission_digest": row["execution_admission_digest"]}
+    stop_reason, observed = _checked_execution_control(
+        control, monitor=hooks["execution_monitor"], hold_path=Path(hooks["dispatch_hold_path"]))
+    if stop_reason:
+        raise TeamCandidateLaunchError(stop_reason)
+    approved_deadline = min(funding_expiry, float(observed["execution_deadline_at_ms"]) / 1000)
+    if approved_deadline - time.time() < required_ttl + PRELAUNCH_RESERVE_SECONDS + ALLOCATOR_STARTUP_RESERVE_SECONDS:
+        raise TeamCandidateLaunchError("team_evaluation_execution_window_below_planned_runtime")
     access = _credential_access(request=request, payload=payload, pipeline_run_id=pipeline_run_id,
                                 job_dir=job_dir, credential_client=hooks["credential_client"])
     credential = _m(access.get("credential"))
@@ -430,8 +448,9 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     commit = hooks.get("implementation_commit") or _source_commit()
     base_run_id = f"team-{purpose}-" + canonical_digest({"job_id": request["job_id"], "run": pipeline_run_id})[7:31]
     cells = _session_cells(purpose=purpose, facts=facts, profile=profile)
-    # A faster control rate renders more frames per episode, so its shards hold fewer cells.
-    groups = shards(cells, size=max(1, SHARD_CELLS * 15 // (int(manifest["control_hz"]) if manifest else 15)))
+    # One paid session owns the whole matrix, its cumulative cap and watchdog.
+    # The provider worker preserves per-cell isolation and the first-25 gate.
+    groups = [cells]
     total_cap = float(funding["cap_usd"])
     staged = [_stage_shard(job_dir=job_dir, index=index, cells=group, admission=admission, facts=facts,
                            profile=profile, cap_usd=round(total_cap * len(group) / len(cells), 2),
@@ -439,8 +458,7 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     from .team_candidate_quick10_bundle import assert_secret_absent
     for shard in staged:
         assert_secret_absent(shard["bundle_path"], token)
-    _write(job_dir / CONTROL_FILENAME, {"run_id": row["run_id"], "pipeline_run_id": pipeline_run_id,
-                                        "execution_admission_digest": row["execution_admission_digest"]})
+    _write(job_dir / CONTROL_FILENAME, control)
     _write(job_dir / INTENT_FILENAME, {"job_id": request["job_id"], "canonical_request_digest":
                                         canonical_request_digest(request), "pipeline_run_id": pipeline_run_id,
                                         "admission_digest": admission["admission_digest"], "run_id": base_run_id,
@@ -600,11 +618,22 @@ def _control_stop_reason(control: Mapping[str, Any], *, monitor: Callable[..., A
     if observed.get("cancellation_requested") is True:
         return "team_evaluation_cancellation_requested"
     deadline = observed.get("execution_deadline_at_ms")
-    if type(deadline) not in (int, float) or deadline <= time.time() * 1000:
+    if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline <= time.time() * 1000:
         return "team_evaluation_execution_deadline_missing_or_expired"
     if observed.get("ok") is not True or observed.get("run_id") != control["run_id"]:
         raise TeamCandidateLaunchError("team_evaluation_control_response_invalid")
     return None
+
+
+def _checked_execution_control(control: Mapping[str, Any], *, monitor: Callable[..., Any],
+                               hold_path: Path) -> tuple[str | None, dict[str, Any]]:
+    """Use one authenticated observation, preserving the founder-hold-before-contact order."""
+    observed: dict[str, Any] = {}
+    def capture(binding):
+        observed.update(monitor(binding))
+        return observed
+    reason = _control_stop_reason(control, monitor=capture, hold_path=hold_path)
+    return reason, observed
 
 
 def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = None,
@@ -638,8 +667,8 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
             control_unavailable = False
             if stop_reason is None:
                 try:
-                    stop_reason = _control_stop_reason(control, monitor=hooks["execution_monitor"],
-                                                       hold_path=Path(hooks["dispatch_hold_path"]))
+                    stop_reason, observed_control = _checked_execution_control(
+                        control, monitor=hooks["execution_monitor"], hold_path=Path(hooks["dispatch_hold_path"]))
                     last_contact = hooks["monotonic"]()
                 except (OSError, ValueError):
                     control_unavailable = True
@@ -700,12 +729,20 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
             for row, state in zip(shard_rows, states, strict=True):
                 if not control_unavailable and state == "staged" and running < limit and (row["index"] == 0 or opened):
                     root = Path(row["root"])
-                    _write(root / "allocator_launch_intent.json", {"observed_at_iso": utc_now_iso()})
-                    pid = hooks["allocator_starter"](row["argv"], log_path=root / "allocator.log")
+                    execution_deadline = float(observed_control["execution_deadline_at_ms"]) / 1000
+                    if execution_deadline - time.time() < int(row["hard_ttl_seconds"]) + ALLOCATOR_STARTUP_RESERVE_SECONDS:
+                        raise TeamCandidateLaunchError("team_evaluation_execution_window_below_planned_runtime")
+                    _write(root / "allocator_launch_intent.json", {"observed_at_iso": utc_now_iso(),
+                                                                  "execution_deadline_epoch": execution_deadline})
+                    argv = [*row["argv"], "--team-candidate-execution-deadline-epoch", str(execution_deadline)]
+                    pid = hooks["allocator_starter"](argv, log_path=root / "allocator.log")
                     _write(root / "allocator_process.json", {"pid": pid, "start_ticks": _process_start_ticks(pid),
                                                              "started_at_iso": utc_now_iso()})
                     running += 1
             if all(_shard_state(row) == "returned" for row in shard_rows):
+                # A fast allocator can return during the launch pass. With a
+                # single session there is no later shard forcing another poll.
+                first_shard_gate(job_dir=job_dir, request=request, shard=shard_rows[0])
                 break
             hooks["sleep"](poll_seconds)
     except Exception as exc:  # noqa: BLE001 - sealed blocked, released only at provider zero
@@ -752,7 +789,7 @@ def first_shard_gate(*, job_dir: Path, request: Mapping[str, Any], shard: Mappin
         _retain_probe(job_dir, request, inner["robot_free_probe_trace"])
         if _read(job_dir / "robot_free_probe_retention.json").get("receipt_status") != "passed":
             raise TeamCandidateLaunchError("team_scene_robot_free_probe_not_passed")
-    rows = [row for row in inner.get("episodes") or [] if isinstance(row, Mapping)]
+    rows = [row for row in inner.get("episodes") or [] if isinstance(row, Mapping)][:25]
     if not rows:
         raise TeamCandidateLaunchError(";".join(map(str, inner.get("blockers") or [])) or "team_evaluation_shard_blocked")
     reasons: dict[str, int] = {}
@@ -793,7 +830,7 @@ def execute_staged_team_candidate_request(*, row: Mapping[str, Any], request: Ma
     from .team_candidate_quick10_closeout import seal_blocked_terminal
 
     hooks = {"credential_client": CheckpointPolicyCredentialClient, "provider_zero": _default_provider_zero,
-             **overrides}
+             "execution_monitor": _execution_monitor, "dispatch_hold_path": DISPATCH_HOLD_PATH, **overrides}
     job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     if (job_dir / TERMINAL_FILENAME).exists():
         return

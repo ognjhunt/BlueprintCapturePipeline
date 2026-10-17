@@ -142,3 +142,30 @@ def _materialize_generated_manifest_publication_fixture(
     monkeypatch.setattr(
         live_profile, "bind_live_profile_manifest_publication", bind_fixture
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_control_plane_disk_reservation_root(tmp_path_factory, monkeypatch):
+    """Exercise real disk admission without writing the host's production ledger."""
+    root = tmp_path_factory.mktemp('control-plane-disk-reservations')
+    from blueprint_pipeline import control_plane_disk_budget as budget
+    original_reserve = budget.reserve_control_plane_disk
+    def reserve(*args, **kwargs):
+        if (kwargs.get('workload') in {'provider_archive_download', 'team_archive_extraction'}
+                and kwargs.get('reservation_root') == budget.DEFAULT_RESERVATION_ROOT):
+            kwargs['reservation_root'] = root
+        return original_reserve(*args, **kwargs)
+    monkeypatch.setattr(budget, 'reserve_control_plane_disk', reserve)
+    # Hermetic archive extraction exercises the real shared reservation ledger;
+    # deterministic capacity must not depend on the developer/CI host's free disk.
+    arena = sys.modules.get('blueprint_pipeline.adp_isaac_lab_arena_vast')
+    if arena is not None:
+        from types import SimpleNamespace
+        monkeypatch.setattr(arena, 'extraction_disk_usage', lambda _path: SimpleNamespace(
+            total=2 * 1024**4, free=1024**4, used=1024**4))
+    common = sys.modules.get('blueprint_pipeline.wam_async_runner_common')
+    if common is not None:
+        from types import SimpleNamespace
+        monkeypatch.setattr(common, 'download_disk_usage', lambda _path: SimpleNamespace(
+            total=2 * 1024**4, free=1024**4, used=1024**4))
+    return root

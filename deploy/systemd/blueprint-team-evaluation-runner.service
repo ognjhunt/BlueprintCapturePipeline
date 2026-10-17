@@ -1,5 +1,5 @@
 [Unit]
-Description=Run staged robot-team evaluations: shards on rented GPUs, then one sealed terminal
+Description=Run staged robot-team evaluations: one GPU per evaluation, then one sealed terminal
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 Wants=network-online.target blueprint-gpu-spend-guard.service
 After=network-online.target blueprint-gpu-spend-guard.service
@@ -7,10 +7,12 @@ After=network-online.target blueprint-gpu-spend-guard.service
 [Service]
 Type=oneshot
 # The dispatcher stages and queues; this unit holds a scored evaluation's
-# shards (hours of GPU time) in its own cgroup so dispatch never waits on it.
-# Each shard's allocator keeps its own hard cap, TTL and watchdog, and survives
+# single-session campaign in its own cgroup so dispatch never waits on it.
+# The allocator keeps one cumulative cap, TTL and watchdog, and survives
 # a restart of this unit (KillMode=process); the next run waits on it again.
-TimeoutStartSec=16h
+# The 120 Hz maximum plans 481800s. Actual execution/funding expiry and the
+# independent watchdog remain tighter bounds; this service must not truncate it.
+TimeoutStartSec=7d
 KillMode=process
 Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
 User=blueprint

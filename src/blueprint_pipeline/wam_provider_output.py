@@ -6,13 +6,61 @@ import json
 import shutil
 import subprocess
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from .core.common import ensure_dir
 
 
 VideoProbe = Callable[[Path], dict[str, Any]]
+
+
+NATIVE_TERMINAL_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _native_status_projection(archive: zipfile.ZipFile, member: str) -> tuple[dict[str, Any], str]:
+    """Stream-verify status metadata; old archives retain a bounded JSON fallback."""
+    import hashlib
+    from .decision_evidence_contracts import canonical_digest
+    from .native_task_arena_execution_contract import PROVIDER_STATUS_FILENAME, PROVIDER_STATUS_SCHEMA
+
+    size = archive.getinfo(member).file_size
+    if not 0 < size <= NATIVE_TERMINAL_MAX_BYTES:
+        raise ValueError("native_terminal_read_budget_exceeded")
+    status_member = str(PurePosixPath(member).with_name(PROVIDER_STATUS_FILENAME))
+    if status_member not in archive.namelist():
+        with archive.open(member) as stream:
+            data = stream.read(size)
+        return json.loads(data), "complete_bounded_legacy_json"
+    if not 0 < archive.getinfo(status_member).file_size <= 64 * 1024:
+        raise ValueError("native_status_metadata_budget_exceeded")
+    with archive.open(status_member) as stream:
+        summary = json.loads(stream.read(64 * 1024 + 1))
+    if not isinstance(summary, dict):
+        raise ValueError("native_status_metadata_invalid")
+    source = summary.get("source_result")
+    if (summary.get("schema_version") != PROVIDER_STATUS_SCHEMA or summary.get("run_kind") != "team_candidate_evaluation"
+            or summary.get("inspection_scope") != "hash_bound_status_metadata_only"
+            or summary.get("claim_ceiling") != "diagnostic_policy_execution"
+            or summary.get("result_digest") != canonical_digest(summary, digest_field="result_digest")
+            or not isinstance(source, dict) or source.get("file_name") != Path(member).name
+            or type(source.get("size_bytes")) is not int or source.get("size_bytes") != size
+            or not isinstance(summary.get("status"), str)
+            or not isinstance(summary.get("blockers"), list)
+            or any(not isinstance(item, str) for item in summary["blockers"])):
+        raise ValueError("native_status_metadata_invalid")
+    digest = hashlib.sha256()
+    count = 0
+    with archive.open(member) as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            count += len(chunk)
+            if count > size:
+                raise ValueError("native_terminal_read_budget_exceeded")
+            digest.update(chunk)
+    if count != size or source.get("sha256") != "sha256:" + digest.hexdigest():
+        raise ValueError("native_status_source_bytes_mismatch")
+    return {"status": summary["status"], "blockers": summary["blockers"]}, "hash_bound_status_metadata_only"
+
 
 RUNTIME_RESULT_FILENAMES = (
     "isaac_runtime_result.json",
@@ -304,6 +352,7 @@ def inspect_provider_runtime_output_archive(
     names: list[str] = []
     runtime_result: dict[str, Any] | None = None
     runtime_result_member: str | None = None
+    runtime_result_parse_scope = "unavailable"
     entrypoint_diagnostic: dict[str, Any] | None = None
     json_parse_errors: list[str] = []
     mp4s: list[str] = []
@@ -325,7 +374,11 @@ def inspect_provider_runtime_output_archive(
         for candidate in result_candidates:
             if Path(candidate).name in RUNTIME_RESULT_FILENAMES:
                 try:
-                    parsed = json.loads(archive.read(candidate).decode("utf-8"))
+                    if Path(candidate).name == "native_task_arena_policy_canary_session_result.v1.json":
+                        parsed, runtime_result_parse_scope = _native_status_projection(archive, candidate)
+                    else:
+                        parsed = json.loads(archive.read(candidate).decode("utf-8"))
+                        runtime_result_parse_scope = "complete_json"
                     if isinstance(parsed, Mapping):
                         if Path(candidate).name == "adp009d_source_calibration_gpu_render_result.v1.json" and (
                             parsed.get("schema_version") != "adp009d_source_calibration_gpu_render_result.v1"
@@ -382,6 +435,8 @@ def inspect_provider_runtime_output_archive(
         "zip_members_preview": names[:50],
         "runtime_result_present": runtime_result is not None,
         "runtime_result_member": runtime_result_member,
+        "runtime_result_parse_scope": runtime_result_parse_scope,
+        "runtime_result_json_validated": runtime_result is not None and runtime_result_parse_scope.startswith("complete"),
         "runtime_result": runtime_result_summary,
         "runtime_result_status": (
             runtime_result_summary.get("status") if runtime_result_summary else None

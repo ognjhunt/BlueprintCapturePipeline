@@ -20,6 +20,7 @@ Nothing here touches a network, a provider or a secret.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -131,7 +132,9 @@ def stage_team_runtime(*, root: Path, run_id: str, scene_inputs: Mapping[str, An
         activation_manifest=team_activation, activation_record=_record(activation_path), runtime_inputs=inputs,
         runtime_input_record=_record(inputs_path),
         resource_name="blueprint-native-task-policy-canary-" + canonical_digest({"run_id": run_id})[7:39],
-        hard_cap_usd=float(hard_cap_usd), hard_ttl_seconds=int(hard_ttl_seconds))
+        hard_cap_usd=float(hard_cap_usd), hard_ttl_seconds=int(hard_ttl_seconds),
+        hard_deadline_epoch=(datetime.fromisoformat(admitted["execution_deadline_at_iso"].replace("Z", "+00:00")).timestamp()
+                             if admitted.get("execution_deadline_at_iso") else None))
     spec = execution_spec(admitted, task_success_contract=inputs["task_success_contract"], prompt=prompt,
                           max_policy_queries=max_policy_queries, team_embodiment=team_embodiment,
                           robot_free_probe=robot_free_probe)

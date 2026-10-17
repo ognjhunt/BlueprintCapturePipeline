@@ -1438,8 +1438,12 @@ def test_runpod_poll_downloads_provider_output_get_url_file(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return downloaded_zip.read_bytes()
+        def __init__(self):
+            self.body = io.BytesIO(downloaded_zip.read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     monkeypatch.setattr(
         runner,
@@ -2165,8 +2169,12 @@ def test_runpod_output_download_rejects_empty_zip(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return b""
+        def __init__(self):
+            self.body = io.BytesIO(b"")
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     monkeypatch.setattr(runner.urllib.request, "urlopen", lambda *args, **kwargs: EmptyResponse())
 
@@ -2228,8 +2236,12 @@ def test_runpod_poll_blocks_downloaded_zip_without_provider_result_manifest(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return downloaded_zip.read_bytes()
+        def __init__(self):
+            self.body = io.BytesIO(downloaded_zip.read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     def fake_runpod_request(**kwargs):
         requests.append(dict(kwargs))
@@ -2571,8 +2583,12 @@ def test_runpod_poll_accepts_unitree_unifolm_output_without_video_requirement(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return downloaded_zip.read_bytes()
+        def __init__(self):
+            self.body = io.BytesIO(downloaded_zip.read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     monkeypatch.setattr(
         runner,
@@ -2656,8 +2672,12 @@ def test_runpod_poll_accepts_unitree_groot_sonic_persistent_output(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return downloaded_zip.read_bytes()
+        def __init__(self):
+            self.body = io.BytesIO(downloaded_zip.read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     monkeypatch.setattr(
         runner,
@@ -2767,10 +2787,14 @@ def test_runpod_poll_ignores_unitree_groot_sonic_nonterminal_heartbeat(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
+        def __init__(self):
             index = min(read_count["value"], len(zip_sequence) - 1)
             read_count["value"] += 1
-            return zip_sequence[index].read_bytes()
+            self.body = io.BytesIO(zip_sequence[index].read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     monkeypatch.setattr(
         runner,
@@ -2860,8 +2884,12 @@ def test_runpod_poll_accepts_completed_policy_output_with_stale_wam_heartbeat(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return completed_zip.read_bytes()
+        def __init__(self):
+            self.body = io.BytesIO(completed_zip.read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     monkeypatch.setattr(
         runner,
@@ -2949,10 +2977,14 @@ def test_runpod_poll_tolerates_transient_pod_status_url_error(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
+        def __init__(self):
             index = min(read_count["value"], len(zip_sequence) - 1)
             read_count["value"] += 1
-            return zip_sequence[index].read_bytes()
+            self.body = io.BytesIO(zip_sequence[index].read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     monkeypatch.setattr(
         runner,
@@ -3052,10 +3084,14 @@ def test_runpod_poll_recognizes_oscar_wam_provider_output_heartbeat(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
+        def __init__(self):
             index = min(read_count["value"], len(zip_sequence) - 1)
             read_count["value"] += 1
-            return zip_sequence[index].read_bytes()
+            self.body = io.BytesIO(zip_sequence[index].read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     monkeypatch.setattr(
         runner,
@@ -3130,8 +3166,12 @@ def test_runpod_poll_preserves_running_nonterminal_output(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return running_zip.read_bytes()
+        def __init__(self):
+            self.body = io.BytesIO(running_zip.read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     def fake_delete(**kwargs):
         delete_called["value"] = True
@@ -3434,8 +3474,12 @@ def test_runpod_poll_deletes_pod_after_nonterminal_heartbeat_stalls(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return running_zip.read_bytes()
+        def __init__(self):
+            self.body = io.BytesIO(running_zip.read_bytes())
+            self.headers = {"Content-Length": str(self.body.getbuffer().nbytes)}
+
+        def read(self, size=-1) -> bytes:
+            return self.body.read(size)
 
     def fake_runpod_request(**kwargs):
         requests.append(dict(kwargs))

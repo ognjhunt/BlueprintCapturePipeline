@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
@@ -402,6 +403,7 @@ def arm_independent_vast_watchdog(
     allowed_active_instance_ids: Sequence[int] = (),
     allowed_active_resource_names: Sequence[str] = (),
     resource_name_exact: str | None = None,
+    deadline_cap_epoch: float | None = None,
 ) -> tuple[dict[str, Any], VastWatchdogHandle | None]:
     """Start a detached name-bound watchdog and prove it is armed before create."""
 
@@ -411,7 +413,11 @@ def arm_independent_vast_watchdog(
     )
     ensure_dir(out_dir)
     prefix = exact_name or f"{prefix_base}{_safe_suffix(generated_at)}-"
-    if int(max_live_minutes) < 2:
+    started_epoch = time.time()
+    if deadline_cap_epoch is not None and (type(deadline_cap_epoch) not in (int, float)
+            or not math.isfinite(deadline_cap_epoch) or deadline_cap_epoch <= 0):
+        raise ValueError("independent_vast_watchdog_deadline_cap_invalid")
+    if int(max_live_minutes) < 2 or (deadline_cap_epoch is not None and deadline_cap_epoch - started_epoch < 120):
         blocked = {
             "schema_version": HANDOFF_SCHEMA,
             "generated_at": generated_at,
@@ -428,9 +434,10 @@ def arm_independent_vast_watchdog(
         write_json(out_dir / EVIDENCE_NAME, blocked)
         write_json(job_dir / HANDOFF_NAME, blocked)
         return blocked, None
-    started_epoch = time.time()
     caller_exit_survival = _caller_exit_survival_contract()
     deadline = started_epoch + max(1, int(max_live_minutes)) * 60
+    if deadline_cap_epoch is not None:
+        deadline = min(deadline, deadline_cap_epoch)
     if not _caller_exit_survival_proven(caller_exit_survival):
         blocked = {
             "schema_version": HANDOFF_SCHEMA,
