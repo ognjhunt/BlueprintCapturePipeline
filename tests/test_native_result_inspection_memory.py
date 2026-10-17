@@ -54,12 +54,22 @@ assert result['runtime_result_status'] == 'blocked', result
 assert result['runtime_result_blockers'] == ['retained'], result
 assert result['runtime_result_json_validated'] is False, result
 assert result['runtime_result_parse_scope'] == 'hash_bound_status_metadata_only', result
-peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == 'darwin' else 1024)
+if sys.platform == 'linux':
+    # getrusage's high-water mark survives exec from the large pytest parent.
+    # VmHWM measures this executable's address space; RLIMIT_AS still enforces128MiB.
+    peak_line = next(line for line in __import__('pathlib').Path('/proc/self/status').read_text().splitlines()
+                     if line.startswith('VmHWM:'))
+    peak = int(peak_line.split()[1]) * 1024
+else:
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == 'darwin' else 1024)
 assert peak < 128 * 1024**2, peak
 print(json.dumps({'status': result['runtime_result_status'], 'peak_rss_bytes': peak}))
 '''
+    # Keep the launcher's RSS above the child's limit to catch Linux exec inheritance.
+    parent_pressure = bytearray(160 * 1024**2)
     done = subprocess.run([sys.executable, '-c', program, str(path)], capture_output=True, text=True, timeout=90,
                           env={**os.environ, 'PYTHONPATH': str(Path(__file__).resolve().parents[1] / 'src')})
+    assert parent_pressure[0] == 0
     assert done.returncode == 0, done.stderr + done.stdout
 
 
