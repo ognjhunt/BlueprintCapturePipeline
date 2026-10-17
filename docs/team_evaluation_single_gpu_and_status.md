@@ -89,3 +89,11 @@ ZIP regression exceeding 8 GB extracts through the actual download path with
 the stream budget reduced to 1 byte. The team transport still quotes its
 cell-scaled output allowance (80 GB for 200 cases); no global stream cap is
 raised and no missing evidence is treated as present.
+
+The generated provider archiver had a separate 512 MiB terminal-result bound
+that also applied to full download. Its allowance now scales from the sealed
+cell count, retaining the existing 512 MiB per twenty-rollout budget: at most
+200 team cases / 5 GiB. The frozen pair keeps its original bound. A sparse
+2,522,303,830-byte capacity stand-in (ten times the retained V25 twenty-row
+size) is archived byte-for-byte; one byte above the scaled bound is refused.
+That is a CPU retention-capacity test, not measured 200-case GPU output.
