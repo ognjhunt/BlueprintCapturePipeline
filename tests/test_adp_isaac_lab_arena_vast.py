@@ -1087,3 +1087,63 @@ def test_download_extraction_does_not_use_the_paired_stream_size_limits(tmp_path
     monkeypatch.setattr(members, "NEEDED_SET_BUDGET_BYTES", 1)
     extracted = arena._extract_provider_output(archive, tmp_path / "downloaded", result_name=name)
     assert extracted["status"] == "completed" and extracted["execution"] == result
+
+
+def test_team_archive_extraction_refuses_expanded_capacity_before_replacing_existing_result(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as budget
+    name = 'native_task_arena_policy_canary_session_result.v1.json'
+    source = tmp_path / 'output.zip'
+    with zipfile.ZipFile(source, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, json.dumps({'status': 'completed'}))
+        archive.writestr('raw-evidence.bin', b'x' * (4 * 1024**2))
+    destination = tmp_path / 'extracted'
+    destination.mkdir()
+    (destination / 'previous').write_bytes(b'keep')
+    original = budget.reserve_control_plane_disk
+    calls = []
+    def reserve(*args, **kwargs):
+        calls.append(kwargs['expected_bytes'])
+        kwargs['reservation_root'] = tmp_path / 'ledger'
+        kwargs['disk_usage'] = lambda _path: SimpleNamespace(total=100 * 1024**3, used=0, free=2 * 1024**2)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(budget, 'reserve_control_plane_disk', reserve)
+    assert source.stat().st_size < 2 * 1024**2
+    result = arena._extract_provider_output(source, destination, result_name=name)
+    assert result['status'] == 'blocked'
+    assert 'adp_arena_provider_output_extraction_disk_refused' in result['blockers']
+    assert calls == [4 * 1024**2 + len(json.dumps({'status': 'completed'}))]
+    assert (destination / 'previous').read_bytes() == b'keep'
+    assert source.is_file() and not (destination / 'raw-evidence.bin').exists()
+
+
+@pytest.mark.parametrize('fail_extraction', [False, True])
+def test_archive_extraction_holds_exact_expanded_bytes_and_releases_on_all_paths(tmp_path, monkeypatch, fail_extraction):
+    from blueprint_pipeline import control_plane_disk_budget as budget
+    source = tmp_path / 'output.zip'
+    body = json.dumps({'status': 'completed'})
+    with zipfile.ZipFile(source, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('adp_arena_native_canary.json', body)
+        archive.writestr('evidence.bin', b'x' * 4096)
+    original_reserve, original_extract = budget.reserve_control_plane_disk, zipfile.ZipFile.extractall
+    holds = []
+    def reserve(*args, **kwargs):
+        kwargs['reservation_root'] = tmp_path / 'ledger'
+        hold = original_reserve(*args, **kwargs)
+        holds.append(hold)
+        return hold
+    def extract(archive, *args, **kwargs):
+        assert source.is_file() and len(holds) == 1
+        assert holds[0].path.is_file() and not holds[0].released
+        assert holds[0].expected_bytes == len(body) + 4096
+        if fail_extraction:
+            raise OSError('simulated write failure')
+        return original_extract(archive, *args, **kwargs)
+    monkeypatch.setattr(budget, 'reserve_control_plane_disk', reserve)
+    monkeypatch.setattr(zipfile.ZipFile, 'extractall', extract)
+    result = arena._extract_provider_output(source, tmp_path / 'out')
+    assert result['status'] == ('blocked' if fail_extraction else 'completed')
+    assert len(holds) == 1 and holds[0].released and not holds[0].path.exists()
+    assert source.is_file()
+    if fail_extraction:
+        assert result['execution'] == {}

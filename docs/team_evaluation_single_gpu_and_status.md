@@ -132,3 +132,10 @@ partial file and preserve an existing destination. The existing provider-output
 capacity guard remains in place. Remote progress uses a validated monotonic
 cell/stage cursor, so rotation of the bounded 64-line tail still advances the
 watchdog through cell 199. Reordered or repeated milestones cannot advance it.
+
+Before full archive extraction, the existing shared disk ledger reserves the
+sum of all uncompressed member sizes against current free space, other live
+writers and the normal floor. The downloaded ZIP is already included in that
+filesystem usage. Admission precedes replacement of any earlier extraction;
+refusal preserves both it and the ZIP. The hold is released on success or write
+failure, and a partial extraction cannot supply a completed runtime result.

@@ -142,3 +142,18 @@ def _materialize_generated_manifest_publication_fixture(
     monkeypatch.setattr(
         live_profile, "bind_live_profile_manifest_publication", bind_fixture
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_control_plane_disk_reservation_root(tmp_path_factory, monkeypatch):
+    """Exercise real disk admission without writing the host's production ledger."""
+    root = tmp_path_factory.mktemp('control-plane-disk-reservations')
+    monkeypatch.setenv('BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT', str(root))
+    # Hermetic archive extraction exercises the real shared reservation ledger;
+    # deterministic capacity must not depend on the developer/CI host's free disk.
+    arena = sys.modules.get('blueprint_pipeline.adp_isaac_lab_arena_vast')
+    if arena is not None:
+        from types import SimpleNamespace
+        monkeypatch.setattr(arena, 'extraction_disk_usage', lambda _path: SimpleNamespace(
+            total=2 * 1024**4, free=1024**4, used=1024**4))
+    return root

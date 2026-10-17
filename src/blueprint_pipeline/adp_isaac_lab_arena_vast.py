@@ -347,6 +347,9 @@ def build_arena_native_control_bundle(
     return receipt
 
 
+extraction_disk_usage = shutil.disk_usage
+
+
 def _extract_provider_output(
     path: Path,
     destination: Path,
@@ -360,10 +363,13 @@ def _extract_provider_output(
             "status": "blocked",
             "blockers": [f"{blocker_prefix}_provider_output_zip_missing"],
         }
-    if destination.exists():
-        shutil.rmtree(destination)
-    ensure_dir(destination)
+    from .control_plane_disk_budget import (
+        DEFAULT_RESERVATION_ROOT, ControlPlaneDiskBudgetError, reserve_control_plane_disk,
+    )
+    ensure_dir(destination.parent)
     root = destination.resolve()
+    extraction_capacity: dict[str, Any] = {}
+    hold = None
     try:
         with zipfile.ZipFile(path) as archive:
             if result_name == "native_task_arena_policy_canary_session_result.v1.json":
@@ -375,17 +381,38 @@ def _extract_provider_output(
                 if root not in target.parents and target != root:
                     blockers.append(f"{blocker_prefix}_provider_output_zip_path_traversal")
             if not blockers:
-                archive.extractall(destination)
+                # The ZIP already consumes space on its filesystem. Reserve the
+                # additional expanded bytes against current free space and all
+                # other live writers before replacing any existing extraction.
+                with reserve_control_plane_disk(
+                    "policy_canary_output", target_root=destination.parent,
+                    expected_bytes=max(1, sum(member.file_size for member in archive.infolist())),
+                    reservation_root=os.environ.get("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT") or DEFAULT_RESERVATION_ROOT,
+                    workload="team_archive_extraction", lock_nonblocking=True,
+                    disk_usage=lambda target: extraction_disk_usage(target),
+                ) as hold:
+                    extraction_capacity = hold.receipt()
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                    ensure_dir(destination)
+                    archive.extractall(destination)
+    except ControlPlaneDiskBudgetError as exc:
+        blockers.append(f"{blocker_prefix}_provider_output_extraction_disk_refused")
+        extraction_capacity = {"status": "refused", "reason": str(exc)}
     except (OSError, KeyError, zipfile.BadZipFile):
         blockers.append(f"{blocker_prefix}_provider_output_zip_invalid")
+    finally:
+        if hold is not None:
+            extraction_capacity = hold.receipt()
     result_path = destination / result_name
-    execution = _read_json(result_path)
+    execution = _read_json(result_path) if not blockers else {}
     if not execution:
         blockers.append(f"{blocker_prefix}_runtime_result_missing")
     return {
         "status": "completed" if not blockers else "blocked",
         "result_path": str(result_path),
         "execution": execution,
+        "extraction_disk_reservation": extraction_capacity,
         "blockers": sorted(set(blockers)),
     }
 
