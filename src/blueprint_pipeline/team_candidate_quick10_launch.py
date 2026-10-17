@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import re
 import shutil
@@ -417,6 +418,15 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     # All checks that do not need the authenticated team service precede the
     # release. Its token is then retained privately for a bounded prelaunch
     # repair, never released a second time and never bundled.
+    control = {"run_id": row["run_id"], "pipeline_run_id": pipeline_run_id,
+               "execution_admission_digest": row["execution_admission_digest"]}
+    stop_reason, observed = _checked_execution_control(
+        control, monitor=hooks["execution_monitor"], hold_path=Path(hooks["dispatch_hold_path"]))
+    if stop_reason:
+        raise TeamCandidateLaunchError(stop_reason)
+    approved_deadline = min(funding_expiry, float(observed["execution_deadline_at_ms"]) / 1000)
+    if approved_deadline - time.time() < required_ttl + PRELAUNCH_RESERVE_SECONDS + ALLOCATOR_STARTUP_RESERVE_SECONDS:
+        raise TeamCandidateLaunchError("team_evaluation_execution_window_below_planned_runtime")
     access = _credential_access(request=request, payload=payload, pipeline_run_id=pipeline_run_id,
                                 job_dir=job_dir, credential_client=hooks["credential_client"])
     credential = _m(access.get("credential"))
@@ -448,8 +458,7 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     from .team_candidate_quick10_bundle import assert_secret_absent
     for shard in staged:
         assert_secret_absent(shard["bundle_path"], token)
-    _write(job_dir / CONTROL_FILENAME, {"run_id": row["run_id"], "pipeline_run_id": pipeline_run_id,
-                                        "execution_admission_digest": row["execution_admission_digest"]})
+    _write(job_dir / CONTROL_FILENAME, control)
     _write(job_dir / INTENT_FILENAME, {"job_id": request["job_id"], "canonical_request_digest":
                                         canonical_request_digest(request), "pipeline_run_id": pipeline_run_id,
                                         "admission_digest": admission["admission_digest"], "run_id": base_run_id,
@@ -609,11 +618,22 @@ def _control_stop_reason(control: Mapping[str, Any], *, monitor: Callable[..., A
     if observed.get("cancellation_requested") is True:
         return "team_evaluation_cancellation_requested"
     deadline = observed.get("execution_deadline_at_ms")
-    if type(deadline) not in (int, float) or deadline <= time.time() * 1000:
+    if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline <= time.time() * 1000:
         return "team_evaluation_execution_deadline_missing_or_expired"
     if observed.get("ok") is not True or observed.get("run_id") != control["run_id"]:
         raise TeamCandidateLaunchError("team_evaluation_control_response_invalid")
     return None
+
+
+def _checked_execution_control(control: Mapping[str, Any], *, monitor: Callable[..., Any],
+                               hold_path: Path) -> tuple[str | None, dict[str, Any]]:
+    """Use one authenticated observation, preserving the founder-hold-before-contact order."""
+    observed: dict[str, Any] = {}
+    def capture(binding):
+        observed.update(monitor(binding))
+        return observed
+    reason = _control_stop_reason(control, monitor=capture, hold_path=hold_path)
+    return reason, observed
 
 
 def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = None,
@@ -647,14 +667,8 @@ def run_staged_evaluation(*, job_dir: Path, hooks: Mapping[str, Any] | None = No
             control_unavailable = False
             if stop_reason is None:
                 try:
-                    observed_control = {}
-
-                    def observe_control(binding):
-                        observed_control.update(hooks["execution_monitor"](binding))
-                        return observed_control
-
-                    stop_reason = _control_stop_reason(control, monitor=observe_control,
-                                                       hold_path=Path(hooks["dispatch_hold_path"]))
+                    stop_reason, observed_control = _checked_execution_control(
+                        control, monitor=hooks["execution_monitor"], hold_path=Path(hooks["dispatch_hold_path"]))
                     last_contact = hooks["monotonic"]()
                 except (OSError, ValueError):
                     control_unavailable = True
@@ -816,7 +830,7 @@ def execute_staged_team_candidate_request(*, row: Mapping[str, Any], request: Ma
     from .team_candidate_quick10_closeout import seal_blocked_terminal
 
     hooks = {"credential_client": CheckpointPolicyCredentialClient, "provider_zero": _default_provider_zero,
-             **overrides}
+             "execution_monitor": _execution_monitor, "dispatch_hold_path": DISPATCH_HOLD_PATH, **overrides}
     job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     if (job_dir / TERMINAL_FILENAME).exists():
         return

@@ -45,6 +45,13 @@ def _campaign(tmp_path, monkeypatch, *, interface_failures=0, missing_at=None):
         resource_name="blueprint-native-task-policy-canary-" + "1" * 32,
         hard_cap_usd=20, hard_ttl_seconds=57600, hard_deadline_epoch=4_000_000_000.)
     (runtime / "runtime_inputs/policy_canary_session_authority.json").write_text(json.dumps(authority))
+    provider_path = runtime / "adp_arena_provider_manifest.json"
+    provider = json.loads(provider_path.read_text())
+    provider.update(authority_digest=authority["authority_digest"],
+                    runtime_inputs_digest=inputs["runtime_inputs_digest"],
+                    episodes_per_policy=200, learned_policy_rollout_count=200)
+    provider["input_digest"] = canonical_digest(provider, digest_field="input_digest")
+    provider_path.write_text(json.dumps(provider))
     spec = json.loads(next((runtime / "runtime_inputs").glob("policy_execution_spec.*.json")).read_text())
     rows = _provider_session_result(runtime, spec)["episodes"]
     seen = []
@@ -174,3 +181,60 @@ def test_malformed_child_stops_before_the_next_paid_case_and_retains_valid_prefi
     assert result['status'] == 'blocked' and len(result['episodes']) == 3
     assert result['planned_episodes_per_policy'] == 200
     assert (output / 'cell_runs/03' / PROVIDER_RESULT_FILENAME).is_file()
+
+
+@pytest.mark.parametrize("failure", ["missing", "unreadable", "timeout", "recovery_failed", "all_prepolicy"])
+def test_a_prefix_with_only_prepolicy_failures_is_retained_without_invented_episodes(tmp_path, monkeypatch, failure):
+    import subprocess
+    runtime, output, inputs, _authority, seen, spawn = _campaign(
+        tmp_path, monkeypatch, missing_at=3 if failure == "missing" else None)
+    from blueprint_pipeline import policy_canary_interrupted_cell_recovery as recovery
+    def recover(**kwargs):
+        if failure == 'recovery_failed':
+            raise RuntimeError('recovery_unavailable')
+        return {'candidate_policy_queried': None, 'episodes': []}
+    monkeypatch.setattr(recovery, 'recover_interrupted_cell_result', recover)
+    def prepolicy_spawn(**kwargs):
+        index = kwargs['index']
+        result = spawn(**kwargs)
+        if index == 3 and failure == 'missing':
+            return result
+        path = kwargs['child_root'] / PROVIDER_RESULT_FILENAME
+        if index == 3 and failure == 'unreadable':
+            temporary = path.with_suffix('.malformed')
+            temporary.write_text('{incomplete')
+            temporary.replace(path)
+            return result
+        if index == 3 and failure in ('timeout', 'recovery_failed'):
+            raise subprocess.TimeoutExpired('isolated-child', 2700)
+        child = {'schema_version': 'native_task_arena_policy_canary_session_result.v1',
+                 'selected_cell_index': index, 'status': 'blocked',
+                 'task_success_contract': inputs['task_success_contract'],
+                 'task_success_contract_digest': inputs['task_success_contract_digest'],
+                 'episodes': [], 'policy_loads': [], 'candidate_policy_queried': False,
+                 'preload_observation_gate': None, 'session_closeout': {'runtime_closed': True},
+                 'telemetry': {'message_count': 0, 'channel_message_counts': {'observations': 0, 'episode_envelopes': 0}},
+                 'session_failure_type': 'CameraGateError',
+                 'session_failure_source_trace': [{'function': 'prepolicy_observation_gate'}]}
+        child['result_digest'] = canonical_digest(child, digest_field='result_digest')
+        worker._seal_result(result_path=path, result=child)
+        return result
+    if failure in ('missing', 'unreadable', 'recovery_failed'):
+        with pytest.raises((RuntimeError, ValueError)):
+            worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=prepolicy_spawn)
+    else:
+        assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=prepolicy_spawn) == 1
+    result = json.loads((output / PROVIDER_RESULT_FILENAME).read_text())
+    expected = 25 if failure == 'all_prepolicy' else 3
+    assert result['status'] == 'blocked'
+    assert len(result['isolated_cell_failures']) == expected
+    assert result['episodes'] == [] and result['learned_policy_rollout_count'] == 0
+    if failure == 'all_prepolicy':
+        assert result['policy_loads'] == [] and result['candidate_policy_queried'] is False
+    else:
+        assert result['policy_loads'] is None and result['candidate_policy_queried'] is None
+        assert result['interrupted_cell_index'] == 3
+    assert result['planned_episodes_per_policy'] == 200
+    assert result['result_digest'] == canonical_digest(result, digest_field='result_digest')
+    checkpoint = json.loads((output / 'team_evaluation_checkpoint.json').read_text())
+    assert len(checkpoint['completed_child_results']) == expected

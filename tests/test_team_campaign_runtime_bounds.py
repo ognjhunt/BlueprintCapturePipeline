@@ -93,3 +93,34 @@ def test_funding_without_enough_dispatch_and_allocator_slack_refuses_before_clai
     result = executor.poll_once(client=world['client'], capture_root=world['capture'], team_launch_hooks=world['hooks'])
     assert result['blocked'] == 1 and _Broker.accessed == [] and world['allocator_calls'] == []
     assert world['client'].blocked == ['team_evaluation_funding_window_below_planned_runtime']
+
+
+@pytest.mark.parametrize("window, reason", [(61801, "team_evaluation_execution_window_below_planned_runtime"),
+    (float("nan"), "team_evaluation_execution_deadline_missing_or_expired"),
+    (float("inf"), "team_evaluation_execution_deadline_missing_or_expired")])
+def test_short_authenticated_execution_window_refuses_before_credential_claim(tmp_path, monkeypatch, window, reason):
+    import time
+    world = _world(tmp_path, monkeypatch)
+    observed = []
+    def monitor(control):
+        assert _Broker.accessed == []
+        observed.append(control)
+        return {"ok": True, "run_id": control["run_id"],
+                "execution_deadline_at_ms": (time.time() + window) * 1000}
+    world['hooks']['execution_monitor'] = monitor
+    result = executor.poll_once(client=world['client'], capture_root=world['capture'], team_launch_hooks=world['hooks'])
+    assert result['blocked'] == 1 and observed
+    assert _Broker.accessed == [] and world['allocator_calls'] == []
+    assert not (world['job_dir'] / '.team-credential').exists()
+    assert world['client'].blocked == [reason]
+
+
+def test_dispatch_hold_refuses_before_monitor_contact_or_credential_claim(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    hold = tmp_path / 'founder-hold.json'
+    hold.write_text('{}')
+    world['hooks']['dispatch_hold_path'] = hold
+    world['hooks']['execution_monitor'] = lambda control: pytest.fail('contacted while held')
+    result = executor.poll_once(client=world['client'], capture_root=world['capture'], team_launch_hooks=world['hooks'])
+    assert result['blocked'] == 1 and _Broker.accessed == [] and world['allocator_calls'] == []
+    assert world['client'].blocked == ['team_evaluation_founder_dispatch_hold']

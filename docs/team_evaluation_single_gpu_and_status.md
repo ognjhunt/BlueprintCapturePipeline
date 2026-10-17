@@ -25,6 +25,8 @@ for metadata, sealing and the initial queue handoff, plus ten minutes for
 allocator startup before claiming the token. The runner reserves those ten
 minutes before writing a launch intent; canonical authority consumption retains
 five minutes for provider-object staging before the full rental TTL.
+The current authenticated execution window is checked immediately before
+credential claim, with the same hold/cancellation/identity checks as the runner.
 Queue delays can still cause a later refusal; they never extend an approval.
 A lost allocated session cannot authorize a replacement
 GPU. Only a refusal proving zero allocation may be restaged.
@@ -33,7 +35,9 @@ The worker retains its fresh-interpreter/Isaac process per case. It fsyncs a
 digest-bound completed-child checkpoint after each case. The shared aggregation
 validator checks each new child, its scenario/contract/candidate bindings and
 its native episode evidence before another case starts. A malformed child is
-retained raw while only the validated prefix is sealed. After the first 25
+retained raw while only the validated prefix is sealed. Prefixes containing
+only valid pre-policy failures are retained with zero episode rows and no
+policy-load claim, including when interruption recovery fails. After the first 25
 cases, more than half failing at the policy interface stops the session and
 seals that prefix before normal provider teardown. Ordinary task failures do
 not trigger this gate. A missing/timed-out later child preserves the previously

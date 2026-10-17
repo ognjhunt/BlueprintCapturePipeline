@@ -1222,7 +1222,9 @@ def _aggregate_isolated_cell_results(
         (str(row.get("candidate_id")), str(row.get("cell_id")), int(row.get("seed")))
         for row in episodes
     }
-    if observed != expected or not episodes:
+    prepolicy_only = (inputs.get("run_kind") == TEAM_RUN_KIND and bool(failed_cells)
+                      and len(failed_cells) == len(child_results))
+    if observed != expected or (not episodes and not prepolicy_only):
         raise RuntimeError("policy_canary_isolated_cell_pairing_invalid")
     result: dict[str, Any] = {
         "schema_version": "native_task_arena_policy_canary_session_result.v1",
@@ -1241,7 +1243,7 @@ def _aggregate_isolated_cell_results(
         "policy_loads": [
             {"candidate_id": candidate, "loaded_once": True}
             for candidate in candidate_ids
-        ],
+        ] if episodes else [],
         "episodes": episodes,
         "session_closeout": {
             "status": "runtime_closed_pending_provider_teardown",
@@ -1376,7 +1378,8 @@ def _team_checkpoint(*, output_root: Path, inputs: Mapping[str, Any],
 
 def _seal_team_prefix(*, output_root: Path, inputs: Mapping[str, Any], authority: Mapping[str, Any],
                       children: list[Mapping[str, Any]], construction_lineage_mode: str,
-                      reason: str, stopped_before_next_cell: bool = False) -> None:
+                      reason: str, stopped_before_next_cell: bool = False,
+                      interrupted_cell_index: int | None = None) -> None:
     if inputs.get("run_kind") != TEAM_RUN_KIND or not children:
         return
     result = _aggregate_isolated_cell_results(
@@ -1385,6 +1388,12 @@ def _seal_team_prefix(*, output_root: Path, inputs: Mapping[str, Any], authority
     result.update(status="blocked", blockers=[reason], planned_episodes_per_policy=len(inputs["cells"]),
                   execution_stopped_after_cell=len(children),
                   stopped_before_next_cell=stopped_before_next_cell)
+    if interrupted_cell_index is not None:
+        result["interrupted_cell_index"] = interrupted_cell_index
+        if result.get("candidate_policy_queried") is not True:
+            result["candidate_policy_queried"] = None
+        if not result.get("policy_loads"):
+            result["policy_loads"] = None
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
 
@@ -1448,16 +1457,22 @@ def _run_isolated_cell_processes(
         except subprocess.TimeoutExpired:
             from blueprint_pipeline.policy_canary_interrupted_cell_recovery import recover_interrupted_cell_result
 
-            child = recover_interrupted_cell_result(
-                runtime_root=runtime, child_root=child_root,
-                selected_cell_index=index,
-                reason="policy_canary_isolated_cell_process_timeout",
-                timeout_seconds=ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
-            )
+            try:
+                child = recover_interrupted_cell_result(
+                    runtime_root=runtime, child_root=child_root,
+                    selected_cell_index=index,
+                    reason="policy_canary_isolated_cell_process_timeout",
+                    timeout_seconds=ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
+                )
+            except Exception:  # noqa: BLE001 - earlier completed children must survive recovery failure
+                _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                    children=child_results, construction_lineage_mode=construction_lineage_mode,
+                    reason="policy_canary_isolated_cell_timeout_recovery_failed", interrupted_cell_index=index)
+                raise
             if inputs.get("run_kind") == TEAM_RUN_KIND and child_results:
                 _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
                     children=child_results, construction_lineage_mode=construction_lineage_mode,
-                    reason="policy_canary_isolated_cell_process_timeout")
+                    reason="policy_canary_isolated_cell_process_timeout", interrupted_cell_index=index)
                 return 1
             result = {
                 "schema_version": "native_task_arena_policy_canary_session_result.v1",
@@ -1481,13 +1496,13 @@ def _run_isolated_cell_processes(
         except Exception:
             _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
                 children=child_results, construction_lineage_mode=construction_lineage_mode,
-                reason="policy_canary_isolated_cell_process_failed")
+                reason="policy_canary_isolated_cell_process_failed", interrupted_cell_index=index)
             raise
         child_result_path = child_root / PROVIDER_RESULT_FILENAME
         if not child_result_path.is_file():
             _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
                 children=child_results, construction_lineage_mode=construction_lineage_mode,
-                reason="policy_canary_isolated_cell_result_missing")
+                reason="policy_canary_isolated_cell_result_missing", interrupted_cell_index=index)
             raise RuntimeError(
                 f"policy_canary_isolated_cell_result_missing:{index}:"
                 f"exit_{exit_code}"
@@ -1497,7 +1512,7 @@ def _run_isolated_cell_processes(
         except Exception:  # noqa: BLE001 - retain measured prefix even if a child file is unreadable
             _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
                 children=child_results, construction_lineage_mode=construction_lineage_mode,
-                reason="policy_canary_isolated_cell_result_unreadable")
+                reason="policy_canary_isolated_cell_result_unreadable", interrupted_cell_index=index)
             raise
         child_results.append(child_result)
         if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
@@ -1518,12 +1533,12 @@ def _run_isolated_cell_processes(
             except Exception as exc:  # noqa: BLE001 - preserve validated prefix and stop paid work
                 _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
                     children=child_results[:-1], construction_lineage_mode=construction_lineage_mode,
-                    reason=str(exc))
+                    reason=str(exc), interrupted_cell_index=index)
                 raise
             from blueprint_pipeline.team_policy_episode_outcome import FIRST_BATCH_CELLS, first_batch_failure
             if len(child_results) == FIRST_BATCH_CELLS:
                 first_rows = [row for child in child_results for row in child.get("episodes", [])]
-                reason = first_batch_failure(first_rows)
+                reason = first_batch_failure(first_rows) if first_rows else "team_evaluation_shard_blocked"
                 if reason:
                     _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
                         children=child_results, construction_lineage_mode=construction_lineage_mode,

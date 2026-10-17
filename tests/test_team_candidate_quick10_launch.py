@@ -426,7 +426,8 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approver: str = "
         zeros.append(dict(ZERO))
         return dict(ZERO)
 
-    hooks = {"credential_client": _Broker, "metadata_transport": service.transport, "queue_root": queue,
+    hooks = {"execution_monitor": lambda control: {"ok": True, "run_id": control["run_id"],
+                 "execution_deadline_at_ms": 4_000_000_000_000}, "credential_client": _Broker, "metadata_transport": service.transport, "queue_root": queue,
              "provider_zero": lambda: world["provider_zero"](), "implementation_commit": "a" * 40}
     if robot is not None:
         hooks["model_fetch"] = lambda url, target: shutil.copyfile(robot["model"], target)
