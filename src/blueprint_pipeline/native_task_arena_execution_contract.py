@@ -12,6 +12,10 @@ import json
 from collections.abc import Mapping
 
 
+PROVIDER_STATUS_FILENAME = "native_task_arena_policy_canary_status.v1.json"
+PROVIDER_STATUS_SCHEMA = "native_task_arena_policy_canary_status.v1"
+
+
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_camera_start_configuration.py",
     "franka_kinematics.py",

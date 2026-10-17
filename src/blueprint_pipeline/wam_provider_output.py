@@ -22,7 +22,7 @@ def _native_status_projection(archive: zipfile.ZipFile, member: str) -> tuple[di
     """Stream-verify status metadata; old archives retain a bounded JSON fallback."""
     import hashlib
     from .decision_evidence_contracts import canonical_digest
-    from .native_task_arena_policy_canary_session import PROVIDER_STATUS_FILENAME, PROVIDER_STATUS_SCHEMA
+    from .native_task_arena_execution_contract import PROVIDER_STATUS_FILENAME, PROVIDER_STATUS_SCHEMA
 
     size = archive.getinfo(member).file_size
     if not 0 < size <= NATIVE_TERMINAL_MAX_BYTES:

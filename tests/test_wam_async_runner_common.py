@@ -290,14 +290,13 @@ def test_provider_download_refuses_unknown_size_before_any_body_read(tmp_path, m
     assert not list(tmp_path.iterdir())
 
 
-def test_provider_download_respects_other_live_disk_reservations(tmp_path, monkeypatch):
-    import os
+def test_provider_download_respects_other_live_disk_reservations(tmp_path, monkeypatch, _isolated_control_plane_disk_reservation_root):
     from types import SimpleNamespace
     from blueprint_pipeline import control_plane_disk_budget as budget
     from blueprint_pipeline import wam_async_runner_common as common
     usage = SimpleNamespace(total=200 * 1024**3, free=100 * 1024**3, used=100 * 1024**3)
     expected = 20 * 1024**2
-    ledger = os.environ['BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT']
+    ledger = _isolated_control_plane_disk_reservation_root
     real_reserve = budget.reserve_control_plane_disk
     other_bytes = usage.free - budget.floor_bytes(usage.total, role='policy_canary_output') - expected // 2
     class Response:

@@ -1458,7 +1458,8 @@ def _run_isolated_cell_processes(
         if inputs.get("run_kind") == TEAM_RUN_KIND:
             try:
                 _team_checkpoint(output_root=output_root, inputs=inputs, authority=authority, children=child_results)
-                child_results[-1] = _compact_team_child_result(child_results[-1], child_root=child_root, output_root=output_root)
+                if len(inputs["cells"]) > 25:
+                    child_results[-1] = _compact_team_child_result(child_results[-1], child_root=child_root, output_root=output_root)
                 child_result = None  # only the current raw child may occupy memory
             except Exception as exc:  # noqa: BLE001 - preserve validated prefix and stop paid work
                 _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,

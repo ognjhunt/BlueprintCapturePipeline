@@ -145,3 +145,9 @@ before the partial file is opened, respecting floors and other live writers.
 Responses without a declared length refuse before a body read. An uncollected
 paid output retains its remote objects and protected recovery references;
 normal cleanup follows a complete local collection or proof of no allocation.
+
+Compaction applies to planned sessions above 25 cases; Quick-10 and legacy
+small sessions retain their full episode bodies. Status schema constants live
+in the existing dependency-free execution contract and are re-exported by the
+session module. Archive status inspection does not load NumPy or the scoring
+runtime. Its 128 MiB process-memory bound and 90-second test timeout remain.

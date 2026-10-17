@@ -28,7 +28,7 @@ def test_large_native_json_is_inspected_under_a_bounded_process_memory_budget(tm
                 stream.write(block)
             stream.write(b']}')
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-    from blueprint_pipeline.native_task_arena_policy_canary_session import PROVIDER_STATUS_FILENAME, PROVIDER_STATUS_SCHEMA
+    from blueprint_pipeline.native_task_arena_execution_contract import PROVIDER_STATUS_FILENAME, PROVIDER_STATUS_SCHEMA
     with zipfile.ZipFile(path) as archive:
         digest = hashlib.sha256()
         with archive.open(NAME) as stream:
@@ -47,6 +47,8 @@ from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_outp
 if sys.platform != 'darwin':
     resource.setrlimit(resource.RLIMIT_AS, (128 * 1024**2, 128 * 1024**2))
 result = inspect_provider_runtime_output_zip(__import__('pathlib').Path(sys.argv[1]))
+assert 'numpy' not in sys.modules
+assert 'blueprint_pipeline.native_task_arena_policy_canary_session' not in sys.modules
 assert result['runtime_result_present'], result
 assert result['runtime_result_status'] == 'blocked', result
 assert result['runtime_result_blockers'] == ['retained'], result
