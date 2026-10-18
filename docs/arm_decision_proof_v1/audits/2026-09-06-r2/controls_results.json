@@ -1,0 +1,20 @@
+{
+  "actual_installer_catalog_schema": "task_evaluation_controls_robot_content_catalog.v1",
+  "actual_consumer_resolves": "task_evaluation_controls_robot_catalog.v1",
+  "preflight_for_real_installer": [
+    "controls_autoprovision_robot_catalog_unsealed"
+  ],
+  "activation_producer_root": "/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/activation-audit-n94bdqnf/production/task-evaluation-inputs/scene-configuration-activation-intents",
+  "activation_env_override_exported": false,
+  "activation_consumer_unit_root": "Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_ACTIVATION_INTENT_ROOT=/etc/blueprint/task-evaluation-scene-configuration-activation-intents",
+  "intake_accepts_arbitrary_checkpoint_digests": [
+    {
+      "id": "pi05_droid",
+      "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "id": "groot_n17_droid",
+      "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ]
+}

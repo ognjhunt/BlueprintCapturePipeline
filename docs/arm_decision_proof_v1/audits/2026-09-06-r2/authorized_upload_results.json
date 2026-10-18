@@ -1,0 +1,18 @@
+{
+  "schema_version": "task_evaluation_scene_progression_run.v1",
+  "status": "processed",
+  "source_commit": "0662bb89ff29df030dd893a0b170edbdd27a30d5",
+  "results": [
+    {
+      "intent_id": "scene-ef2c0cce259c092e9d748f91115932a36225bc3786b8d8dd2f889acd47bba5a0",
+      "status": "blocked",
+      "phase": "preparation",
+      "blockers": [
+        "scene_intake_attempt_spend_invalid"
+      ],
+      "progression_digest": "sha256:487d49984695f8c85d4a0e37b3d13e43c48d9ef300264f4372c8c5afed10c78e"
+    }
+  ],
+  "provider_allocation_performed": false,
+  "run_digest": "sha256:ed5055c7a75f21ff6a83f8956834ab2fba853ef78bd608117db52fdf7329e012"
+}
