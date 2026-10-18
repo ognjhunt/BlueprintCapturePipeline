@@ -81,6 +81,17 @@ def main() -> None:
         return observer.validate_observation(current, **kwargs)
     monkeypatch.setattr(observer, "load_original_owner_observation", fresh_owner)
     monkeypatch.setattr(context_reader, "load_current_website_task_context", lambda **_: json.loads(args.fixture.read_text())["task_context"])
+    # Browser deliveries are admitted against the current assessment before the
+    # runner (website_assessment_resume.admit_browser_preparation). A synthetic
+    # current admission, as tests/test_website_preparation_status.py uses; the
+    # runner still reaches the original reconstruction refusal.
+    monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", lambda **_: {
+        "assessment_preparation_proposal": {"schema_version": "site_assessment_preparation_proposal.v1",
+            "request_id": owner["request_id"], "capture_id": owner["capture_id"],
+            "job_id": "advisory-" + "a" * 64, "run_id": "site-assessment-synthetic",
+            "source_key": "sha256:" + "b" * 64, "context_digest": "c" * 64, "packet_sha256": "d" * 64,
+            "questions_pending": True, "scope": "scene_preparation_only",
+            "robot_suitability_verified": False, "physical_trial_authorized": False}})
 
     rows = {}
     contents = {}
@@ -197,6 +208,16 @@ def main() -> None:
                           "delivery_counts": counts, "delivery": delivery, "acceptance": delivery.get("acceptance")}
             elif command == "retry":
                 process()
+                result = listener._read_job_ledger(root)
+            elif command == "exhaust":
+                # What the listener sweep records once nothing has claimed this
+                # source for a full silence window of continuous listening.
+                from datetime import datetime, timedelta, timezone
+                from blueprint_pipeline.website_preparation_status import retain_preparation_wakeup
+                from blueprint_pipeline import website_preparation_terminal as terminal
+                terminal.record_unretried_preparation(root, alive_since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    now=datetime.now(timezone.utc) + timedelta(seconds=terminal.silence_seconds() + 1))
+                retain_preparation_wakeup(root)
                 result = listener._read_job_ledger(root)
             elif command == "status":
                 result = read_preparation_status(capture_root=root, selectors=selectors)

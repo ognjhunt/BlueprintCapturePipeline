@@ -1,4 +1,5 @@
 """Signed readback on the existing intake app; callers cannot select local paths."""
+import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -7,7 +8,31 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .common import read_json_any
-from .website_preparation_status import PreparationStatusUnavailable, read_preparation_status, validate_selectors
+from .website_preparation_status import (
+    VERSION_HEADER, PreparationStatusUnavailable, read_preparation_status, requested_status_version,
+    validate_selectors,
+)
+
+# The listener's tree, from the shared control-plane environment file. Unset
+# means no fallback: the explicit capture-root mapping alone answers, as before.
+HANDOFF_STORAGE_ROOT_ENV = "BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT"
+
+
+def website_capture_root(selected: Mapping[str, str]) -> Path | None:
+    """The listener's own workspace for these validated selectors, or None.
+
+    Server-owned: the storage root comes from this service's environment and
+    the names from validate_selectors, which admits no path syntax. Exactly one
+    bucket may hold the capture; read_preparation_status still proves the
+    ledger, birth, owner and context before anything is returned.
+    """
+    configured = os.getenv(HANDOFF_STORAGE_ROOT_ENV, "").strip()
+    storage = Path(configured)
+    if not configured or not storage.is_absolute() or not storage.is_dir():
+        return None
+    matches = [path for path in storage.glob(f"*/scenes/{selected['scene_id']}/captures/{selected['capture_id']}")
+               if path.is_dir()]
+    return matches[0] if len(matches) == 1 else None
 
 
 def register_website_preparation_status_routes(app: FastAPI, *, require_admission: Callable,
@@ -21,6 +46,7 @@ def register_website_preparation_status_routes(app: FastAPI, *, require_admissio
             selected = validate_selectors(await request.json())
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail="website_preparation_status_selectors_invalid") from exc
+        schema_version = requested_status_version(request.headers.get(VERSION_HEADER))
         try:
             manifest_path = manifest_path_provider()
             manifest = read_json_any(manifest_path) if manifest_path.is_file() else {}
@@ -29,9 +55,14 @@ def register_website_preparation_status_routes(app: FastAPI, *, require_admissio
                     client_id=request.state.intake_client_id,
                     manifest_capture_root=Path(manifest_root).expanduser().absolute()
                         if type(manifest_root) is str and manifest_root else None)
+            # A configured map or control-plane manifest names at most one
+            # capture; every other website capture lives in the listener's tree.
+            if root is None or Path(root).name != selected["capture_id"]:
+                root = website_capture_root(selected)
             if root is None:
                 raise PreparationStatusUnavailable("website_preparation_status_unavailable")
-            result = await run_in_threadpool(read_preparation_status, capture_root=root, selectors=selected)
+            result = await run_in_threadpool(read_preparation_status, capture_root=root, selectors=selected,
+                                             schema_version=schema_version)
         except HTTPException:
             raise
         except Exception as exc:
