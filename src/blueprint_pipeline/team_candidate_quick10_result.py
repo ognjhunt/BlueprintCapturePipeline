@@ -124,12 +124,20 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
                             expected_cells: Sequence[Mapping[str, Any]] | None = None,
                             pre_policy_recovery_cells: Sequence[str] = (),
                             retained_episode_digests: Mapping[str, str | list[str]] | None = None,
+                            site_task_qualification_receipt: Mapping[str, Any] | None = None,
                             state_trace_loader=None) -> dict[str, Any]:
     """Return the terminal receipt (outcomes, counts, scoring) for the agent-run executor."""
 
     if purpose not in PURPOSES or not session_results:
         raise TeamCandidateResultError("team_candidate_result_purpose_invalid")
     binding = dict(runtime_binding)
+    qualification = None
+    if site_task_qualification_receipt is not None:
+        from .site_task_simulation_qualification import validate_receipt
+        qualification = validate_receipt(site_task_qualification_receipt)
+        if (qualification["binding"]["scene_revision_digest"] != binding.get("scene_revision_digest")
+                or qualification["binding"]["success_contract_digest"] != binding.get("task_success_contract_digest")):
+            raise TeamCandidateResultError("team_candidate_qualification_binding_mismatch")
     rows: list[dict[str, Any]] = []
     result_digests: list[str] = []
     session_rows: list[tuple[str, Mapping[str, Any]]] = []
@@ -159,6 +167,8 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
     # Exactly the admitted episode count (the admission's; the purpose's by default).
     if len(rows) != (EPISODES[purpose] if episodes is None else int(episodes)) or len(set(cell_ids)) != len(rows):
         raise TeamCandidateResultError("team_candidate_session_result_episode_count_invalid")
+    if qualification is not None and len(rows) != EPISODES[purpose]:
+        raise TeamCandidateResultError("team_candidate_qualified_episode_count_invalid")
     outcomes = []
     for row in rows:
         outcome, reason = episode_outcome(row)
@@ -196,7 +206,8 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
         "episode_outcomes": outcomes,
         "scoring": scoring_statement(
             runtime=TEAM_RUNTIMES[purpose], success_source=SIMULATOR_SCORED,
-            scored_episode_count=len(counted), claim_ceiling=CLAIM_CEILING,
+            scored_episode_count=len(counted), claim_ceiling="site_task_simulation" if qualification else CLAIM_CEILING,
+            site_task_qualification=qualification["qualification"] if qualification else None,
             success_contract_digest=binding.get("task_success_contract_digest"),
             scene_revision_digest=binding.get("scene_revision_digest"),
             robot_free_probe_receipt_digest=binding.get("robot_free_probe_receipt_digest"),

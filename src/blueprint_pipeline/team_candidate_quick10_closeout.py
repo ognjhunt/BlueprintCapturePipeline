@@ -203,6 +203,17 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
             raise TeamCandidateLaunchError(";".join(joined["session_closeout"]["blockers"]))
         joined_results.append(joined)
     binding = runtime_binding(admission)
+    qualification = None
+    if admission.get("evidence_scope") == "simulation":
+        from .site_task_simulation_qualification import require_current_qualification
+        from .team_candidate_quick10_registry import offer_eligibility, profile_for_request
+        from .team_candidate_quick10_launch import EMBODIMENT_MODEL_PATH
+        profile = profile_for_request(request)
+        facts, blockers = offer_eligibility(profile)
+        if facts is None or profile is None:
+            raise TeamCandidateLaunchError(";".join(blockers) or "site_task_qualification_scene_unavailable")
+        qualification = require_current_qualification(receipt=admission["site_task_qualification_receipt"],
+            operator_profile=profile, request=request, facts=facts, robot_model_path=job_dir / EMBODIMENT_MODEL_PATH)
     if binding.get("robot_free_probe_receipt_digest") is None:
         # The scene's probe was recorded and passed in this evaluation's first cell: bind that receipt.
         from .team_candidate_quick10_registry import offer_eligibility, profile_for_request
@@ -219,6 +230,7 @@ def seal_team_candidate_terminal(*, request: Mapping[str, Any], job_dir: Path,
             episodes=int(admission["episodes"]))
     receipt = team_candidate_terminal(session_results=joined_results, runtime_binding=binding,
                                       purpose=str(admission["evaluation_purpose"]), episodes=int(admission["episodes"]),
+                                      site_task_qualification_receipt=qualification,
                                       state_trace_loader=lambda row: load_bound_state_trace(row, roots=trace_roots),
                                       **recovery_kwargs)
     return _seal(job_dir, request, {**receipt, "provider_zero_verified": True,
