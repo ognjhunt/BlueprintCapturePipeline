@@ -690,7 +690,6 @@ def _claim_job_lease(
     retired_ended_producer_delivery_keys: Sequence[str] = (),
     expected_assessment_resume: Mapping[str, Any] | None = None,
     require_unattempted_delivery: bool = False,
-    final_delivery_attempt: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     if producer_delivery_key is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", producer_delivery_key) is None:
         raise PipelineError('capture_delivery_key_invalid')
@@ -811,10 +810,6 @@ def _claim_job_lease(
                 **({'producer_delivery_key': producer_delivery_key,
                     'source_payload_sha256': payload_sha256}
                    if producer_delivery_key is not None else {}),
-                # Pub/Sub dead-letters this delivery if the attempt never
-                # finishes, so an expired lease here has no redelivery coming
-                # (website_preparation_terminal reads it). Unset otherwise.
-                **({"final_delivery_attempt": True} if final_delivery_attempt else {}),
             },
             previous_revision=revision,
         )
@@ -1548,7 +1543,7 @@ def _finish_terminal_authority_ending(
 
 
 @scene_participant('storage_root')
-def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None, expected_assessment_resume: Mapping[str, Any] | None=None, require_unattempted_delivery: bool=False, expected_preparation_purpose: str | None=None, final_delivery_attempt: bool=False) -> dict[str, Any]:
+def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None, expected_assessment_resume: Mapping[str, Any] | None=None, require_unattempted_delivery: bool=False, expected_preparation_purpose: str | None=None) -> dict[str, Any]:
     import sys
     from contextlib import ExitStack
     from .pubsub_handoff_scene_operations import _process_handoff_payload_body
@@ -1568,7 +1563,7 @@ def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage
                         'capture_root': str(root), 'staging_reason': 'capture_original_birth_refused',
                         'blockers': ['capture_source_membership_unavailable']}
         try:
-            return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest, expected_assessment_resume=expected_assessment_resume, **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}), **({"expected_preparation_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}), **({"final_delivery_attempt": True} if final_delivery_attempt else {}))
+            return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest, expected_assessment_resume=expected_assessment_resume, **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}), **({"expected_preparation_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}))
         finally:
             # Separate durable wake-up only; never let delivery reopen or fail processing.
             try:

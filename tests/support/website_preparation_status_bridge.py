@@ -210,11 +210,13 @@ def main() -> None:
                 process()
                 result = listener._read_job_ledger(root)
             elif command == "exhaust":
-                # What the listener records after this source's last Pub/Sub
-                # delivery stays retryable (pubsub_handoff_scene_operations).
+                # What the listener sweep records once nothing has claimed this
+                # source for a full silence window of continuous listening.
+                from datetime import datetime, timedelta, timezone
                 from blueprint_pipeline.website_preparation_status import retain_preparation_wakeup
-                from blueprint_pipeline.website_preparation_terminal import record_delivery_exhaustion
-                record_delivery_exhaustion(root, payload_sha256=listener.payload_sha256(payload))
+                from blueprint_pipeline import website_preparation_terminal as terminal
+                terminal.record_unretried_preparation(root, alive_since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    now=datetime.now(timezone.utc) + timedelta(seconds=terminal.silence_seconds() + 1))
                 retain_preparation_wakeup(root)
                 result = listener._read_job_ledger(root)
             elif command == "status":

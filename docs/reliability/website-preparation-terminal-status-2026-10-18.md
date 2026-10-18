@@ -45,24 +45,37 @@ that version before it consumes the wake-up.
 ## When preparation ends for good
 
 `website_preparation_terminal.py` adds one record,
-`website_preparation_terminal.v1`, to the ledger's current attempt:
+`website_preparation_terminal.v1`, to the ledger's current attempt. It is
+written when nothing has claimed the ledger since:
 
-- The listener records it after the final Pub/Sub delivery attempt of the
-  ledger's own source stays retryable. Pub/Sub dead-letters that delivery and
-  nothing re-drives it automatically. The reason is `budget_exhausted` for the
-  WebApp's typed 409 `website_scene_preparation_budget_exhausted`,
-  `capacity_blocked` for a capacity-only wait, and `retry_exhausted` otherwise.
-  Another source's dead letter (for example the storage trigger's duplicate
-  handoff, which never claims) records nothing.
-- A claim made on the final delivery attempt stores `final_delivery_attempt`.
-  If that worker dies, its lease expires unrenewed; the listener tick's sweep
-  records `retry_exhausted` ten minutes after the expiry. An expired lease on
-  an earlier attempt waits for its redelivery as before.
+- the last attempt finished retryably (`failed_retryable` or
+  `retryable_blocked`); or
+- a worker's lease expired unrenewed (status still `processing`).
+
+The record waits for a full silence window
+(`BLUEPRINT_WEBSITE_PREPARATION_SILENCE_SECONDS`, default 2 h, never under
+30 min) of this listener pulling continuously. A Pub/Sub delivery attempt
+number is not used as proof, because the dead-letter count is best-effort:
+Pub/Sub may forward early, deliver past the maximum, or reset the count
+(https://docs.cloud.google.com/pubsub/docs/handling-failures). A redelivery
+that is still coming arrives within about 20 minutes and its claim drops the
+record. The existing listener sweep notes each tick in
+`.website_preparation_sweep_liveness.json`; a gap of more than 15 minutes (an
+outage, or one tick busy with a long run) restarts the clock, so a backlog is
+never mistaken for silence.
+
+The reason is `budget_exhausted` for the WebApp's typed 409
+`website_scene_preparation_budget_exhausted`, `capacity_blocked` for a
+capacity-only wait, and `retry_exhausted` otherwise (including an expired
+lease). The explicit assessment wait (`website_assessment_preparation_pending`
+with a resume record, resumed by `reconcile_waiting_assessments`) is never
+ended by silence. The listener's processing path is unchanged.
 
 The record is an annotation, not a status: claim, retry, acknowledgement and
 workspace retirement are unchanged. It counts only while its observed status,
 attempt, source payload and lease token still match the ledger, and the next
-claim (an operator re-drive) drops it with the rest of the attempt.
+claim (an operator re-drive, or a late delivery) drops it with the rest of the
+attempt.
 
 ## Other changes
 

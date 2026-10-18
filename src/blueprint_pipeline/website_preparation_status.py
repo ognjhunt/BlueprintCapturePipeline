@@ -277,10 +277,16 @@ def accepted_status_version(acceptance: Mapping[str, Any]) -> str:
 def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dict[str, int]:
     """Existing listener tick retries delivery independently of provider work."""
     from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
-    from .website_preparation_terminal import record_abandoned_final_delivery
+    from .website_preparation_terminal import note_sweep_liveness, record_unretried_preparation
     from .website_task_context import website_webapp_request
     counts = {"attempted": 0, "delivered": 0, "unavailable": 0}
     storage_root = Path(storage_root)
+    try:
+        # This drain runs on every listener tick, so its own cadence is the
+        # evidence that a redelivery could have been received.
+        alive_since = note_sweep_liveness(storage_root)
+    except OSError:
+        alive_since = None
     roots = sorted(path.parent for path in storage_root.glob("*/scenes/site-*/captures/*/pipeline_job_ledger.json")
                    if path.parent.name.startswith(("walkthrough-", "supplement-")))
     cursor_path = storage_root / ".website_preparation_delivery_cursor.json"
@@ -295,9 +301,10 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dic
     bounded = roots[:max(0, min(limit, 50))]
     for root in bounded:
         try:
-            # A final attempt whose worker died is dead-lettered with nothing
-            # left to retry it; record that before reporting the ledger.
-            record_abandoned_final_delivery(root)
+            # A preparation nothing retried within the silence window has ended;
+            # record that before reporting the ledger.
+            if alive_since is not None:
+                record_unretried_preparation(root, alive_since=alive_since)
             retain_preparation_wakeup(root)
             path = root / DELIVERY_FILE
             if not path.is_file():

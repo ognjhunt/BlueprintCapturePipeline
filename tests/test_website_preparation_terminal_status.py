@@ -6,16 +6,15 @@
 #   src/blueprint_pipeline/pubsub_handoff_scene_operations.py
 """Beta journey L3/L6: every website capture's preparation reaches a state the site is told.
 
-Real birth, lease, ledger, signed status route, wake-up and Pub/Sub pull code
-run here; only the owner/context transport, the WebApp callback and the Pub/Sub
-client are local fakes. No provider, network or production state is touched.
+Real birth, lease, ledger, signed status route, wake-up and sweep code run here;
+only the owner/context transport and the WebApp callback are local fakes, and
+time is passed explicitly. No provider, network or production state is touched.
 """
 import json
 import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import google.cloud
 import pytest
 from fastapi.testclient import TestClient
 
@@ -81,11 +80,10 @@ def website_capture(tmp_path, monkeypatch):
                                  data=data, digest=digest, selected=selected, storage_root=storage_root)
 
 
-def _claim(source, *, final=False, lease_seconds=900, now=None):
+def _claim(source, *, lease_seconds=900, now=None):
     state, ledger = listener._claim_job_lease(source.root, scene_id=source.owner["scene_id"],
         capture_id=source.owner["capture_id"], owner="synthetic-worker", lease_seconds=lease_seconds,
-        producer_delivery_key=source.selected["producer_delivery_key"], payload_sha256=source.digest,
-        final_delivery_attempt=final, now=now)
+        producer_delivery_key=source.selected["producer_delivery_key"], payload_sha256=source.digest, now=now)
     assert state == "claimed"
     return ledger
 
@@ -162,51 +160,26 @@ def test_status_version_is_opt_in_and_capped_at_newest_known(header, expected):
     assert status_reader.requested_status_version(header) == expected
 
 
-# ------------------------------------------------------------ dead-lettering
+# ------------------------------------------- endings proven by silence
 
-class _Subscriber:
-    def __init__(self, received):
-        self.received, self.acknowledged, self.deadlines = list(received), [], []
-
-    def pull(self, *, request, timeout):
-        rows, self.received = self.received, []
-        return types.SimpleNamespace(received_messages=rows)
-
-    def acknowledge(self, *, request):
-        self.acknowledged.extend(request["ack_ids"])
-
-    def modify_ack_deadline(self, *, request):
-        self.deadlines.append(request)
+LONG_AGO = datetime(2026, 1, 1, tzinfo=timezone.utc)  # The listener has been pulling since.
+WINDOW = timedelta(seconds=terminal.DEFAULT_SILENCE_SECONDS)
 
 
-def _pull(monkeypatch, source, *, attempt, process, data=None):
-    pubsub_v1 = types.SimpleNamespace()
-    monkeypatch.setattr(google.cloud, "pubsub_v1", pubsub_v1, raising=False)
-    subscriber = _Subscriber([types.SimpleNamespace(ack_id="ack-1", delivery_attempt=attempt,
-        message=types.SimpleNamespace(message_id="msg-1", data=data or source.data, attributes={}))])
-    monkeypatch.setattr(pubsub_v1, "SubscriberClient", lambda: subscriber, raising=False)
-    monkeypatch.setattr(listener, "process_handoff_payload", process)
-
-    def webapp_unavailable(**_):
-        # The tick's own delivery retry may run first; it keeps the wake-up pending.
-        raise RuntimeError("synthetic WebApp unavailable")
-    monkeypatch.setattr(context_reader, "website_webapp_request", webapp_unavailable)
-    assert listener.pull_and_process(subscription="projects/p/subscriptions/s", storage_root=source.storage_root,
-                                     provider="openai", max_messages=1) == 0
-    assert subscriber.acknowledged == []  # Pub/Sub still owns the dead-letter hand-off.
-    return subscriber
+def _stop(source, *, at, **update):
+    """One claimed attempt that finished retryably at a fixed time."""
+    return _finish(source, _claim(source), updated_at=at.isoformat(), **update)
 
 
-def _failing_worker(source, received, **update):
-    def process(payload, **kwargs):
-        received.append(kwargs)
-        ledger = _claim(source, final=kwargs.get("final_delivery_attempt", False))
-        _finish(source, ledger, **update)
-        if update["status"] == "retryable_blocked":
-            return {"schema_version": "v1", "status": "retryable_blocked", "queue_disposition": "retryable",
-                    "capture_root": str(source.root), "blockers": update.get("retry_blockers", [])}
-        raise RuntimeError("synthetic retryable failure")
-    return process
+def _end_silently(source, *, stopped):
+    """What the sweep records once a full window of continuous listening has passed."""
+    return terminal.record_unretried_preparation(source.root, alive_since=LONG_AGO,
+                                                 now=stopped + WINDOW + timedelta(seconds=1))
+
+
+def _listening_since(source, since, *, last_tick):
+    write_json(source.storage_root / terminal.LIVENESS_FILE, {"schema_version": terminal.LIVENESS_SCHEMA_VERSION,
+               "continuous_since": since.isoformat(), "last_tick_at": last_tick.isoformat()})
 
 
 @pytest.mark.parametrize("update, reason", [
@@ -215,68 +188,118 @@ def _failing_worker(source, received, **update):
     ({"status": "failed_retryable", "last_error": "website_scene_assembly_coverage_key_missing"}, "retry_exhausted"),
     ({"status": "retryable_blocked", "retry_blockers": ["website_reconstruction_pending"]}, "retry_exhausted"),
 ])
-def test_last_delivery_records_terminal_reason_and_queues_one_wakeup(website_capture, monkeypatch, update, reason):
-    received = []
-    _pull(monkeypatch, website_capture, attempt=5, process=_failing_worker(website_capture, received, **update))
-    assert received[0]["final_delivery_attempt"] is True
+def test_unretried_outcome_ends_through_the_sweep_with_its_reason(website_capture, monkeypatch, update, reason):
+    now = datetime.now(timezone.utc)
+    _stop(website_capture, at=now - WINDOW - timedelta(minutes=5), **update)
+    _listening_since(website_capture, now - WINDOW - timedelta(minutes=10), last_tick=now - timedelta(minutes=1))
+    monkeypatch.setattr(context_reader, "website_webapp_request",
+                        lambda **_: _acceptance(website_capture, status_reader.STATUS_V2))
+    assert status_reader.reconcile_preparation_wakeups(website_capture.storage_root)["delivered"] == 1
     ledger = listener._read_job_ledger(website_capture.root)
     record = ledger[terminal.TERMINAL_FIELD]
-    assert record["reason"] == reason and record["basis"] == "delivery_attempts_exhausted"
+    assert record["reason"] == reason and record["basis"] == "no_claim_within_silence_window"
     assert ledger["status"] == update["status"]  # The job status itself is unchanged.
     v2 = _read(website_capture, status_reader.STATUS_V2)
     assert v2["state"] == "failed_terminal" and v2["terminal_reason"] == reason
     assert v2["code"] == "preparation_failed_terminal"
     # A WebApp that predates v2 still reads the exact v1 meaning of the ledger.
     assert _read(website_capture)["state"] == status_reader._LEDGER_STATES[update["status"]]
-    pending = json.loads((website_capture.root / status_reader.DELIVERY_FILE).read_text())
-    assert pending["state"] == "pending" and pending["revision"] == ledger["revision"]
-    assert pending["selectors"] == website_capture.selected
+    delivered = json.loads((website_capture.root / status_reader.DELIVERY_FILE).read_text())
+    assert delivered["state"] == "delivered" and delivered["acceptance"]["state"] == "failed_terminal"
 
 
-def test_earlier_delivery_or_other_source_records_nothing(website_capture, monkeypatch):
-    received = []
-    update = {"status": "failed_retryable", "last_error": BUDGET}
-    _pull(monkeypatch, website_capture, attempt=4, process=_failing_worker(website_capture, received, **update))
-    assert "final_delivery_attempt" not in received[0]
-    assert terminal.TERMINAL_FIELD not in listener._read_job_ledger(website_capture.root)
+def test_a_redelivery_inside_the_window_is_not_an_ending(website_capture):
+    stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    _stop(website_capture, at=stopped, status="failed_retryable", last_error=BUDGET)
+    assert terminal.record_unretried_preparation(website_capture.root, alive_since=LONG_AGO,
+                                                 now=stopped + WINDOW - timedelta(seconds=1)) is None
+    _claim(website_capture)  # Pub/Sub delivered again after all (its count is best-effort).
+    assert _end_silently(website_capture, stopped=stopped) is None  # A live lease is not silence.
+    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "preparing"
+
+
+def test_a_listener_gap_restarts_the_silence_clock(website_capture):
+    now = datetime.now(timezone.utc)
+    _stop(website_capture, at=now - 3 * WINDOW, status="failed_retryable", last_error="x")
+    # Last tick 30 minutes ago: an outage or one busy run, so nothing could be received.
+    _listening_since(website_capture, now - 4 * WINDOW, last_tick=now - timedelta(minutes=30))
+    alive = terminal.note_sweep_liveness(website_capture.storage_root, now=now)
+    assert abs((alive - now).total_seconds()) < 1
+    assert terminal.record_unretried_preparation(website_capture.root, alive_since=alive, now=now) is None
+    later = now + WINDOW + timedelta(seconds=1)
+    assert terminal.record_unretried_preparation(website_capture.root, alive_since=alive, now=later)
+    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_terminal"
+
+
+def test_liveness_is_continuous_only_across_short_gaps(tmp_path):
+    start = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    assert terminal.note_sweep_liveness(tmp_path, now=start) == start
+    assert terminal.note_sweep_liveness(tmp_path, now=start + timedelta(minutes=14)) == start
+    assert terminal.note_sweep_liveness(tmp_path, now=start + timedelta(minutes=40)) == start + timedelta(minutes=40)
+    (tmp_path / terminal.LIVENESS_FILE).write_text("{not json")
+    assert terminal.note_sweep_liveness(tmp_path, now=start + timedelta(hours=1)) == start + timedelta(hours=1)
+
+
+def test_the_assessment_wait_is_never_ended_by_silence(website_capture):
+    stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    pending = "website_control_scene-sponsorship_http_409:website_assessment_preparation_pending"
+    _stop(website_capture, at=stopped, status="failed_retryable", last_error=pending,
+          assessment_resume={"schema_version": "website_assessment_resume.v1"})
+    assert _end_silently(website_capture, stopped=stopped) is None
+
+
+def test_a_dead_worker_lease_ends_only_after_it_expires_and_the_window_passes(website_capture):
+    started = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    ledger = _claim(website_capture, lease_seconds=60, now=started)
+    expires = started + timedelta(seconds=60)
+    assert terminal.record_unretried_preparation(website_capture.root, alive_since=LONG_AGO,
+                                                 now=started + timedelta(seconds=30)) is None
+    assert terminal.record_unretried_preparation(website_capture.root, alive_since=LONG_AGO,
+                                                 now=expires + WINDOW - timedelta(seconds=1)) is None
+    committed = terminal.record_unretried_preparation(website_capture.root, alive_since=LONG_AGO,
+                                                      now=expires + WINDOW + timedelta(seconds=1))
+    assert committed[terminal.TERMINAL_FIELD]["basis"] == "lease_expired_without_reclaim"
+    assert committed[terminal.TERMINAL_FIELD]["lease_token"] == ledger["lease_token"]
+    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_terminal"
+    # A slow worker that finishes after all supersedes the record for the processing attempt.
+    _finish(website_capture, ledger, status="failed_retryable", last_error="late failure")
     assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_retryable"
-    # The storage trigger's duplicate handoff (no membership selector) dead-letters
-    # too, but it never claimed this ledger, so it cannot end the site's preparation.
-    dud = json.dumps({key: value for key, value in website_capture.payload.items()
-                      if key != "source_membership_selector"}, sort_keys=True).encode()
-    _pull(monkeypatch, website_capture, attempt=5, data=dud,
-          process=lambda payload, **_: {"status": "capture_original_birth_unavailable_retryable",
-                                        "queue_disposition": "retryable", "capture_root": str(website_capture.root),
-                                        "blockers": ["capture_original_birth_unavailable"]})
-    assert terminal.TERMINAL_FIELD not in listener._read_job_ledger(website_capture.root)
+
+
+@pytest.mark.parametrize("update", [{"status": "completed"}, {"status": "terminal_authority_ended"}])
+def test_final_states_are_never_ended_by_silence(website_capture, update):
+    stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    _stop(website_capture, at=stopped, **update)
+    assert _end_silently(website_capture, stopped=stopped) is None
 
 
 def test_terminal_record_is_dropped_by_the_next_claim(website_capture):
-    ledger = _claim(website_capture)
-    _finish(website_capture, ledger, status="failed_retryable", last_error=BUDGET)
-    assert terminal.record_delivery_exhaustion(website_capture.root, payload_sha256=website_capture.digest)
-    assert terminal.record_delivery_exhaustion(website_capture.root, payload_sha256=website_capture.digest) is None
+    stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    _stop(website_capture, at=stopped, status="failed_retryable", last_error=BUDGET)
+    assert _end_silently(website_capture, stopped=stopped)
+    assert _end_silently(website_capture, stopped=stopped) is None
     assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_terminal"
     redrive = _claim(website_capture)  # An operator re-drive starts a fresh attempt.
     assert terminal.TERMINAL_FIELD not in redrive
     assert _read(website_capture, status_reader.STATUS_V2)["state"] == "preparing"
 
 
-def test_record_refuses_other_payloads_and_live_leases(website_capture):
-    ledger = _claim(website_capture)
-    assert terminal.record_delivery_exhaustion(website_capture.root, payload_sha256=website_capture.digest) is None
-    _finish(website_capture, ledger, status="failed_retryable", last_error="x")
-    assert terminal.record_delivery_exhaustion(website_capture.root, payload_sha256="0" * 64) is None
-    assert terminal.record_delivery_exhaustion(website_capture.root, payload_sha256="not-a-digest") is None
-    assert terminal.record_delivery_exhaustion(website_capture.root / "absent", payload_sha256=website_capture.digest) is None
+def test_unbound_or_absent_ledgers_record_nothing(website_capture):
+    stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    ledger = _stop(website_capture, at=stopped, status="failed_retryable", last_error="x")
+    legacy = {key: value for key, value in ledger.items() if key != "source_payload_sha256"}
+    write_json(website_capture.root / listener.JOB_LEDGER_FILENAME, legacy)
+    assert _end_silently(website_capture, stopped=stopped) is None
+    assert terminal.record_unretried_preparation(website_capture.root / "absent", alive_since=LONG_AGO,
+                                                 now=stopped + 2 * WINDOW) is None
 
 
 @pytest.mark.parametrize("mutation", ["observed_status", "attempt_count", "source_payload_sha256", "lease_token",
                                       "reason", "schema_version"])
 def test_stale_or_forged_terminal_record_is_ignored(website_capture, mutation):
-    ledger = _claim(website_capture)
-    ledger = _finish(website_capture, ledger, status="failed_retryable", last_error="x")
-    committed = terminal.record_delivery_exhaustion(website_capture.root, payload_sha256=website_capture.digest)
+    stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    _stop(website_capture, at=stopped, status="failed_retryable", last_error="x")
+    committed = _end_silently(website_capture, stopped=stopped)
     record = dict(committed[terminal.TERMINAL_FIELD])
     record[mutation] = {"observed_status": "processing", "attempt_count": 99, "source_payload_sha256": "f" * 64,
                         "lease_token": "other", "reason": "provider_failed", "schema_version": "v0"}[mutation]
@@ -285,49 +308,14 @@ def test_stale_or_forged_terminal_record_is_ignored(website_capture, mutation):
     assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_retryable"
 
 
-# -------------------------------------------------- crashed final attempts
-
-def test_abandoned_final_lease_becomes_terminal_through_the_sweep(website_capture, monkeypatch):
-    started = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
-    ledger = _claim(website_capture, final=True, lease_seconds=900, now=started)
-    assert ledger["final_delivery_attempt"] is True
-    expires = started + timedelta(seconds=900)
-    grace = timedelta(seconds=terminal.ABANDONED_LEASE_GRACE_SECONDS)
-    assert terminal.record_abandoned_final_delivery(website_capture.root, now=expires + grace - timedelta(seconds=1)) is None
-    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "preparing"
-    calls = []
-
-    def webapp(**kwargs):
-        calls.append(kwargs)
-        return _acceptance(website_capture, status_reader.STATUS_V2)
-    monkeypatch.setattr(context_reader, "website_webapp_request", webapp)
-    real = terminal.record_abandoned_final_delivery
-    monkeypatch.setattr(terminal, "record_abandoned_final_delivery",
-                        lambda root, **_: real(root, now=expires + grace + timedelta(seconds=1)))
-    assert status_reader.reconcile_preparation_wakeups(website_capture.storage_root)["delivered"] == 1
-    current = listener._read_job_ledger(website_capture.root)
-    assert current["status"] == "processing"
-    assert current[terminal.TERMINAL_FIELD]["basis"] == "final_delivery_lease_abandoned"
-    assert current[terminal.TERMINAL_FIELD]["lease_token"] == ledger["lease_token"]
-    delivered = json.loads((website_capture.root / status_reader.DELIVERY_FILE).read_text())
-    assert delivered["state"] == "delivered" and delivered["acceptance"]["state"] == "failed_terminal"
-    assert len(calls) == 1
-
-
-def test_expired_lease_on_an_earlier_attempt_waits_for_redelivery(website_capture):
-    started = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
-    _claim(website_capture, final=False, lease_seconds=60, now=started)
-    assert terminal.record_abandoned_final_delivery(website_capture.root, now=started + timedelta(days=3)) is None
-    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "preparing"
-
-
-def test_slow_final_worker_that_finishes_supersedes_the_abandoned_record(website_capture):
-    started = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
-    ledger = _claim(website_capture, final=True, lease_seconds=60, now=started)
-    assert terminal.record_abandoned_final_delivery(website_capture.root, now=started + timedelta(hours=1))
-    _finish(website_capture, ledger, status="failed_retryable", last_error="late failure")
-    # The record described the processing attempt, not this finished one.
-    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_retryable"
+@pytest.mark.parametrize("value, seconds", [(None, terminal.DEFAULT_SILENCE_SECONDS), ("abc", terminal.DEFAULT_SILENCE_SECONDS),
+                                            ("60", 30 * 60), ("10800", 10800)])
+def test_silence_window_is_configurable_but_never_shorter_than_redelivery(monkeypatch, value, seconds):
+    if value is None:
+        monkeypatch.delenv(terminal.SILENCE_SECONDS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(terminal.SILENCE_SECONDS_ENV, value)
+    assert terminal.silence_seconds() == seconds
 
 
 # -------------------------------------------- failures before a context exists
@@ -369,9 +357,9 @@ def test_symlinked_context_is_refused_not_treated_as_absent(website_capture, tmp
 
 @pytest.mark.parametrize("version", [status_reader.STATUS_V1, status_reader.STATUS_V2])
 def test_old_and_new_webapp_acceptances_both_consume_delivery(website_capture, monkeypatch, version):
-    ledger = _claim(website_capture)
-    _finish(website_capture, ledger, status="failed_retryable", last_error=BUDGET)
-    terminal.record_delivery_exhaustion(website_capture.root, payload_sha256=website_capture.digest)
+    stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    _stop(website_capture, at=stopped, status="failed_retryable", last_error=BUDGET)
+    _end_silently(website_capture, stopped=stopped)
     status_reader.retain_preparation_wakeup(website_capture.root)
     monkeypatch.setattr(context_reader, "website_webapp_request", lambda **_: _acceptance(website_capture, version))
     assert status_reader.reconcile_preparation_wakeups(website_capture.storage_root)["delivered"] == 1
@@ -381,9 +369,9 @@ def test_old_and_new_webapp_acceptances_both_consume_delivery(website_capture, m
 
 @pytest.mark.parametrize("fault", ["v2_state_in_v1", "v1_digest_as_v2", "unknown_version"])
 def test_mismatched_acceptance_version_cannot_consume_delivery(website_capture, monkeypatch, fault):
-    ledger = _claim(website_capture)
-    _finish(website_capture, ledger, status="failed_retryable", last_error=BUDGET)
-    terminal.record_delivery_exhaustion(website_capture.root, payload_sha256=website_capture.digest)
+    stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    _stop(website_capture, at=stopped, status="failed_retryable", last_error=BUDGET)
+    _end_silently(website_capture, stopped=stopped)
     status_reader.retain_preparation_wakeup(website_capture.root)
     ack = _acceptance(website_capture, status_reader.STATUS_V2)
     if fault == "v2_state_in_v1":

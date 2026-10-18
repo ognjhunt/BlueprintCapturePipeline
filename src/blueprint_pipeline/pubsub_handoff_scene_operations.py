@@ -89,7 +89,7 @@ def __synthesize_pipeline_handoff_body(_listener, /, handoff, *, capture_root):
     return destination
 
 
-def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, final_delivery_attempt=False):
+def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None):
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
@@ -225,7 +225,6 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             retired_ended_producer_delivery_keys=(prior_retired['producer_delivery_keys']
                 if producer_delivery_key is not None and prior_retired is not None else ()),
             **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}),
-            **({"final_delivery_attempt": True} if final_delivery_attempt else {}),
             **({'expected_assessment_resume': expected_assessment_resume} if expected_assessment_resume is not None else {}))
     except _listener.HandoffCaptureRetired:
         return retired_terminal() or {'schema_version': 'v1', 'status': 'capture_retired_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'blockers': ['handoff_capture_retired_while_claiming']}
@@ -330,24 +329,6 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     return {'schema_version': 'v1', 'status': 'processed' if terminal_success else 'retryable_blocked', 'queue_disposition': 'terminal_success' if terminal_success else 'retryable', 'blockers': result_blockers, 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'run_e2e': result, 'control_plane_staging': control_plane_staging, 'reconstruction_enqueue': reconstruction_enqueue, 'output_commit': output_commit}
 
 
-def _end_exhausted_website_preparation(_listener, /, *, storage_root, payload, payload_digest):
-    """The last delivery stayed retryable: Pub/Sub dead-letters it and nothing retries it.
-
-    Recorded only on a ledger whose current source is this exact delivery, then
-    reported to the site through the usual wake-up. Never raises, so the Pub/Sub
-    deferral that follows is unchanged.
-    """
-    try:
-        from .website_preparation_status import retain_preparation_wakeup
-        from .website_preparation_terminal import record_delivery_exhaustion
-        root = _listener._handoff_capture_root(_listener.parse_handoff_payload(payload), storage_root=storage_root)
-        if record_delivery_exhaustion(root, payload_sha256=payload_digest) is not None:
-            retain_preparation_wakeup(root)
-    except Exception as exc:
-        _listener.logger.warning('pubsub_handoff.preparation_terminal_unrecorded',
-                                 extra={'error_type': type(exc).__name__})
-
-
 def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider, max_messages, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, ack_deadline_seconds, max_delivery_attempts):
     # This existing scheduled drain is also the durable delivery retry owner.
     # It reads committed ledgers; no provider processing is reopened by delivery.
@@ -394,17 +375,13 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
             continue
         digest = _listener.payload_sha256(message.data)
         heartbeat = _listener._AckDeadlineHeartbeat(subscriber=subscriber, subscription=subscription_resource, ack_id=received.ack_id, ack_deadline_seconds=ack_deadline_seconds)
-        received_attempt = getattr(received, 'delivery_attempt', None)
-        final_delivery = (isinstance(received_attempt, int) and not isinstance(received_attempt, bool)
-                          and received_attempt >= max_delivery_attempts)
         try:
             with heartbeat:
-                result = _listener.process_handoff_payload(message.data, storage_root=storage_root, provider=provider, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, payload_digest=digest, **({'final_delivery_attempt': True} if final_delivery else {}))
+                result = _listener.process_handoff_payload(message.data, storage_root=storage_root, provider=provider, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, payload_digest=digest)
         except Exception:
             delivery_attempt = getattr(received, 'delivery_attempt', None)
             if isinstance(delivery_attempt, int) and delivery_attempt >= max_delivery_attempts:
                 _listener._write_delivery_evidence(storage_root=storage_root, message=message, received=received, disposition='retry_exhausted_pending_pubsub_dlq', blockers=['handoff_processing_exception'])
-                _end_exhausted_website_preparation(_listener, storage_root=storage_root, payload=message.data, payload_digest=digest)
             _listener.logger.exception('pubsub_handoff.processing_failed', extra={'message_id': message.message_id, 'queue_disposition': 'retryable_deferred', 'retry_defer_seconds': _listener.RETRY_DEFER_SECONDS, 'delivery_attempt': getattr(received, 'delivery_attempt', None), 'max_delivery_attempts': max_delivery_attempts})
             heartbeat.defer_retry()
             record_deferral(storage_root=storage_root, subscription=subscription_resource, received=received, payload_digest=digest, lease_seconds=_listener.RETRY_DEFER_SECONDS)
@@ -413,7 +390,6 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
             delivery_attempt = getattr(received, 'delivery_attempt', None)
             if isinstance(delivery_attempt, int) and delivery_attempt >= max_delivery_attempts:
                 _listener._write_delivery_evidence(storage_root=storage_root, message=message, received=received, disposition='retry_exhausted_pending_pubsub_dlq', blockers=[str(item) for item in result.get('blockers') or []])
-                _end_exhausted_website_preparation(_listener, storage_root=storage_root, payload=message.data, payload_digest=digest)
             _listener.logger.warning('pubsub_handoff.retryable_result', extra={'message_id': message.message_id, 'status': result.get('status'), 'blockers': result.get('blockers') or [], 'delivery_attempt': getattr(received, 'delivery_attempt', None), 'max_delivery_attempts': max_delivery_attempts, 'dead_letter_policy_owns_exhausted_delivery': True, 'retry_defer_seconds': _listener.RETRY_DEFER_SECONDS})
             heartbeat.defer_retry()
             record_deferral(storage_root=storage_root, subscription=subscription_resource, received=received, payload_digest=digest, lease_seconds=_listener.RETRY_DEFER_SECONDS)
