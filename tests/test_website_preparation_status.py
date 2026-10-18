@@ -35,6 +35,8 @@ def test_signed_status_refuses_unconfigured_server_root(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH", str(tmp_path / "absent.json"))
     monkeypatch.delenv(service.INTAKE_CLIENT_ROOTS_ENV, raising=False)
+    # An empty listener tree too: no host directory can answer for this capture.
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT", str(tmp_path / "empty-handoffs"))
     body = json.dumps({"request_id": "synthetic-status", "scene_id": "site-synthetic-status",
                        "capture_id": "walkthrough-synthetic-status", "completion_marker_generation": "19",
                        "producer_delivery_key": "sha256:" + "a" * 64,
@@ -79,6 +81,7 @@ def prepared_source(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH", str(tmp_path / "absent.json"))
     monkeypatch.setenv(service.INTAKE_CLIENT_ROOTS_ENV, json.dumps({"blueprint-webapp": {owner["request_id"]: str(root)}}))
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT", str(tmp_path / "no-handoff-root"))
     return root, owner, context, selected, ledger, claim
 
 
@@ -286,17 +289,26 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
         Path(trace_path).chmod(0o600)
 
 
-@pytest.mark.parametrize("missing", ["ledger", "context", "birth_member"])
+@pytest.mark.parametrize("missing", ["ledger", "birth_member"])
 def test_missing_required_read_inputs_never_imply_success(prepared_source, missing):
     root = prepared_source[0]
     if missing == "ledger":
         (root / "pipeline_job_ledger.json").unlink()
-    elif missing == "context":
-        (root / "pipeline/website_task_context.json").unlink()
     else:
         from blueprint_pipeline.task_evaluation_scene_retirement_generations import capture_birth_source_projection
         Path(capture_birth_source_projection(root)["source_membership_raw_ref"]["path"]).unlink()
     assert _post(prepared_source).status_code == 503
+
+
+def test_missing_context_reports_current_context_but_never_completion(prepared_source):
+    # An attempt that failed before retaining a context still reaches the site,
+    # bound to its current context; only a hand-off requires the retained one.
+    root = prepared_source[0]
+    (root / "pipeline/website_task_context.json").unlink()
+    response = _post(prepared_source)
+    assert response.status_code == 200 and response.json()["state"] == "preparing"
+    _finish(prepared_source, "completed")
+    assert _post(prepared_source, nonce="status-completed").status_code == 503
 
 
 def test_signed_route_rejects_nonce_replay_and_legacy_bearer(prepared_source, monkeypatch):
