@@ -1,0 +1,71 @@
+{
+  "provenance": "parent task message; public sanitized URL/checkpoint input; runtime files not materialized here",
+  "urls": [
+    "https://platform.tracxn.com/a/d/company/5d1b74b77eaba4160a9ff1e2/chef%20robotics?utm_source=parallel&amp;utm_medium=ai#a:about",
+    "http://www.chefrobotics.ai/",
+    "https://www.chefrobotics.ai/solutions/chef-ai-enabled-system",
+    "https://www.chefrobotics.ai/solutions/chef-ai-enabled-system?83cbcfa0_page=2",
+    "https://www.chefrobotics.ai/?3f5a3c8b_page=2",
+    "https://www.chefrobotics.ai/?3f5a3c8b_page=1",
+    "https://foxglove.dev/customers/chef-robotics",
+    "http://chefrobotics.ai/company",
+    "https://www.prnewswire.com/news-releases/chef-robotics-announces-43m-series-a-round-led-by-avataar-ventures-to-scale-the-deployment-of-ai-enabled-robotics-302416039.html",
+    "https://www.chefrobotics.ai/artificial-intelligence"
+  ],
+  "offline_url_audit": [
+    {
+      "url": "https://platform.tracxn.com/a/d/company/5d1b74b77eaba4160a9ff1e2/chef%20robotics",
+      "rule": "bounded_tracking_anchor_removed",
+      "raw_url_sha256": "2bb42ce594a84683bca2ee90a06fc1f805e058f41029bd84b766c5904d5a9568",
+      "rank": 1
+    },
+    {
+      "url": "http://www.chefrobotics.ai/",
+      "rule": "existing_public_citation"
+    },
+    {
+      "url": "https://www.chefrobotics.ai/solutions/chef-ai-enabled-system",
+      "rule": "existing_public_citation"
+    },
+    {
+      "url": "https://www.chefrobotics.ai/solutions/chef-ai-enabled-system?83cbcfa0_page=2",
+      "rule": "numeric_pagination"
+    },
+    {
+      "url": "https://www.chefrobotics.ai/?3f5a3c8b_page=2",
+      "rule": "chef_numeric_pagination"
+    },
+    {
+      "url": "https://www.chefrobotics.ai/?3f5a3c8b_page=1",
+      "rule": "chef_numeric_pagination"
+    },
+    {
+      "url": "https://foxglove.dev/customers/chef-robotics",
+      "rule": "existing_public_citation"
+    },
+    {
+      "url": "http://chefrobotics.ai/company",
+      "rule": "existing_public_citation"
+    },
+    {
+      "url": "https://www.prnewswire.com/news-releases/chef-robotics-announces-43m-series-a-round-led-by-avataar-ventures-to-scale-the-deployment-of-ai-enabled-robotics-302416039.html",
+      "rule": "existing_public_citation"
+    },
+    {
+      "url": "https://www.chefrobotics.ai/artificial-intelligence",
+      "rule": "existing_public_citation"
+    }
+  ],
+  "scope_sha256": "09680b135d5bd7dded1ee8cbcdb120bf894f4277eb5ed3c8cc8223bcdb2f19c0",
+  "accepted_followup_attempt": "31b8682404eb1d9b171ad98f13e584ce7ebb66e8a01a523d5d44c668e80d9fa3",
+  "accepted_followup_envelope_sha256": "b2573b5a447069c9dff1bdde5b669c1aefb1f64a901ea96e5fe2b8fba7d89f12",
+  "journal_head": "163fcea967bde58db988c2a9cdbac84a5cd2695d0838d8028278f29d90fc3bf9",
+  "checkpoint": {
+    "events": 233,
+    "completed": 116,
+    "uncertain": 0,
+    "reserved_usd": "2.322630"
+  },
+  "authority": "URL syntax does not establish vendor authority; HTTP preserved; no URL requested",
+  "result": "all10 accepted in4modes; Tracxn display tracking/anchor removed;3numeric pagination URLs retained"
+}

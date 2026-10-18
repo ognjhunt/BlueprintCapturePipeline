@@ -1,0 +1,18 @@
+{
+  "provenance": "Parent task message; citation URLs only, not a materialized Library response or verified vendor authority",
+  "effective_scope_sha256": "09680b135d5bd7dded1ee8cbcdb120bf894f4277eb5ed3c8cc8223bcdb2f19c0",
+  "attempt_id": "875515c0d3d6797bc84d53a1fea1d630628ede05d29a5629bc0198c188d7515d",
+  "retained_envelope_sha256": "63d8b7bfc7220741c114bea090006ffdbd2c58fa68a43c9d0eccf9fa71d6a535",
+  "urls": [
+    "https://www.chefrobotics.ai/solutions/chef-ai-enabled-system",
+    "http://www.chefrobotics.ai/",
+    "https://www.chefroboticsai.com/",
+    "https://www.therobotreport.com/automating-food-production-one-serving-at-a-time",
+    "https://www.chefrobotics.ai/?3f5a3c8b_page=2",
+    "https://www.chefrobotics.ai/?3f5a3c8b_page=1",
+    "http://linkedin.com/company/chef-robotics",
+    "https://www.chefrobotics.ai/blog",
+    "http://prnewswire.com/news-releases/chef-robotics-announces-43m-series-a-round-led-by-avataar-ventures-to-scale-the-deployment-of-ai-enabled-robotics-302416039.html",
+    "https://cdn.prod.website-files.com/661e0fb119c647c1b081ba05/663e489777ba207e1a3270d9_Chef%20Robotics%20Case%20Study%20-%20Sunbasket.pdf"
+  ]
+}
