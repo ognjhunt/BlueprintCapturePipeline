@@ -221,6 +221,7 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
                          credential_lease: Mapping[str, Any], budget: Mapping[str, Any],
                          founder_admission: Mapping[str, Any], scene: Mapping[str, Any],
                          probe_receipt: Mapping[str, Any] | None, purpose: str = SCORED,
+                         site_task_qualification_receipt: Mapping[str, Any] | None = None,
                          now: datetime | None = None) -> dict[str, Any]:
     """Seal one team candidate's scored admission, or raise with every typed reason."""
 
@@ -258,6 +259,15 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
         blockers.append(str(exc))
     if blockers:
         raise TeamCandidateAdmissionError(blockers)
+    qualification = None
+    if site_task_qualification_receipt is not None:
+        from .site_task_simulation_qualification import validate_receipt
+        qualification = validate_receipt(site_task_qualification_receipt, now=moment)
+        bound = qualification["binding"]
+        if (bound["scene_revision_digest"] != revision or bound["task_spec_digest"] != canonical_digest(task_spec)
+                or bound["success_contract_digest"] != contract["contract_digest"]
+                or bound["policy_interface_id"] != candidate["policy_interface_id"]):
+            raise TeamCandidateAdmissionError(["team_candidate_qualification_binding_mismatch"])
     delivery = candidate["delivery"]
     admission = {
         "schema_version": TEAM_ADMISSION_SCHEMA_VERSION, "status": "admitted", "run_kind": TEAM_RUN_KIND,
@@ -277,7 +287,10 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
         "rights_digest": rights["rights_digest"], "founder_approval_digest": founder_admission["approval_digest"],
         "budget": {key: budget[key] for key in ("cap_usd", "hard_ttl_seconds", "max_attempts", "episodes")},
         "execution_deadline_at_iso": founder_admission["expires_at_iso"],
-        "claim_ceiling": CLAIM_CEILING, "evidence_scope": "development_only",
+        "claim_ceiling": "site_task_simulation" if qualification else CLAIM_CEILING,
+        "evidence_scope": "simulation" if qualification else "development_only",
+        **({"site_task_qualification_receipt": qualification,
+            "site_task_qualification": qualification["qualification"]} if qualification else {}),
         "adp_qualified_evidence_eligible": False, "physical_performance_claimed": False,
         "admission_digest": "",
     }
@@ -291,6 +304,21 @@ def validate_admission(admission: Mapping[str, Any]) -> dict[str, Any]:
             or value.get("run_kind") != TEAM_RUN_KIND or value.get("runtime") != RUNTIME
             or not _self_digest_ok(value, "admission_digest")):
         raise TeamCandidateAdmissionError(["team_candidate_admission_invalid"])
+    if value.get("evidence_scope") == "simulation":
+        # Freshness is rechecked with the operator authority at closeout. Retained
+        # admission validation verifies structure without invalidating old history.
+        from .site_task_simulation_qualification import validate_receipt
+        receipt = value.get("site_task_qualification_receipt") or {}
+        reviewed = _time(receipt.get("reviewed_at_iso"))
+        receipt = validate_receipt(receipt, now=reviewed)
+        if (value.get("claim_ceiling") != "site_task_simulation"
+                or value.get("site_task_qualification") != receipt["qualification"]
+                or value.get("scene_revision_digest") != receipt["binding"]["scene_revision_digest"]
+                or value.get("task_success_contract_digest") != receipt["binding"]["success_contract_digest"]):
+            raise TeamCandidateAdmissionError(["team_candidate_qualification_binding_mismatch"])
+    elif (value.get("claim_ceiling") != CLAIM_CEILING or value.get("evidence_scope") != "development_only"
+          or value.get("site_task_qualification") is not None or value.get("site_task_qualification_receipt") is not None):
+        raise TeamCandidateAdmissionError(["team_candidate_qualification_unexpected"])
     return value
 
 

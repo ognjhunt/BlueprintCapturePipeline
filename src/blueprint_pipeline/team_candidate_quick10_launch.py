@@ -411,6 +411,9 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     manifest = request_embodiment(request)
     if manifest is not None:
         _stage_robot_model(job_dir=job_dir, manifest=manifest, facts=facts, fetch=hooks.get("model_fetch"))
+    from .site_task_simulation_qualification import qualification_for_execution
+    qualification = qualification_for_execution(row=row, request=request, operator_profile=profile,
+        facts=facts, robot_model_path=job_dir / EMBODIMENT_MODEL_PATH)
     zero = dict(hooks["provider_zero"]())
     _write(job_dir / "initial_provider_zero.json", zero)
     if zero.get("provider_zero_verified") is not True:
@@ -425,6 +428,8 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     if stop_reason:
         raise TeamCandidateLaunchError(stop_reason)
     approved_deadline = min(funding_expiry, float(observed["execution_deadline_at_ms"]) / 1000)
+    if qualification is not None and datetime.fromisoformat(qualification["expires_at_iso"].replace("Z", "+00:00")).timestamp() < approved_deadline:
+        raise TeamCandidateLaunchError("site_task_qualification_expires_before_execution_deadline")
     if approved_deadline - time.time() < required_ttl + PRELAUNCH_RESERVE_SECONDS + ALLOCATOR_STARTUP_RESERVE_SECONDS:
         raise TeamCandidateLaunchError("team_evaluation_execution_window_below_planned_runtime")
     access = _credential_access(request=request, payload=payload, pipeline_run_id=pipeline_run_id,
@@ -442,7 +447,7 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     records = _candidate_records(row=row, request=request, profile=profile, facts=facts, funding=funding,
                                  access=access, metadata=metadata, pipeline_run_id=pipeline_run_id, purpose=purpose)
     admission = admit_team_candidate(**records, scene=facts["scene"], probe_receipt=facts.get("probe_receipt"),
-                                     purpose=purpose)
+                                     purpose=purpose, site_task_qualification_receipt=qualification)
     _write(job_dir / "team_candidate_admission.json", admission)
     _write(job_dir / REQUEST_FILENAME, dict(request))
     commit = hooks.get("implementation_commit") or _source_commit()

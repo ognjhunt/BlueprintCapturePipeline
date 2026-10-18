@@ -54,24 +54,36 @@ def validate_scoring_statement(value: Mapping[str, Any], *, episodes_run: int) -
 
     row = dict(value) if isinstance(value, Mapping) else {}
     count = row.get("scored_episode_count")
-    if (set(row) != FIELDS or row.get("schema_version") != SCHEMA_VERSION
+    if (set(row) not in (FIELDS, FIELDS | {"site_task_qualification"}) or row.get("schema_version") != SCHEMA_VERSION
             or not all(isinstance(row.get(key), str) and _LABEL.fullmatch(row[key])
                        for key in ("runtime", "success_source", "claim_ceiling"))
             or type(count) is not int or not 0 <= count <= episodes_run
             or not all(row[key] is None or (isinstance(row[key], str) and _DIGEST.fullmatch(row[key]))
                        for key in DIGEST_FIELDS)):
         raise AgentRunResultScoringError("agent_run_result_scoring_invalid")
+    if "site_task_qualification" in row:
+        from .site_task_simulation_qualification import validate_projection
+        projection = validate_projection(row["site_task_qualification"])
+        if (row["claim_ceiling"] != "site_task_simulation" or row["runtime"] != TEAM_SCORED
+                or row["success_source"] != SIMULATOR_SCORED
+                or projection["scene_revision_digest"] != row["scene_revision_digest"]):
+            raise AgentRunResultScoringError("agent_run_result_qualification_mismatch")
+    elif row["claim_ceiling"] == "site_task_simulation":
+        raise AgentRunResultScoringError("agent_run_result_qualification_missing")
     return row
 
 
 def scoring_statement(*, runtime: str, success_source: str, scored_episode_count: int,
-                      claim_ceiling: str, **digests: str | None) -> dict[str, Any]:
+                      claim_ceiling: str, site_task_qualification: Mapping[str, Any] | None = None,
+                      **digests: str | None) -> dict[str, Any]:
     unknown = set(digests) - set(DIGEST_FIELDS)
     if unknown:
         raise AgentRunResultScoringError("agent_run_result_scoring_field_unknown")
     value = {"schema_version": SCHEMA_VERSION, "runtime": runtime, "success_source": success_source,
              "scored_episode_count": scored_episode_count, "claim_ceiling": claim_ceiling,
              **{key: digests.get(key) for key in DIGEST_FIELDS}}
+    if site_task_qualification is not None:
+        value["site_task_qualification"] = dict(site_task_qualification)
     return validate_scoring_statement(value, episodes_run=scored_episode_count)
 
 
