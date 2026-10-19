@@ -209,6 +209,32 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
     return value
 
 
+# Typed WebApp refusals of a create=False read that still say where a
+# preparation's grant stands. The WebApp answers consent_expired only after it
+# has checked the capture binding, the assessment proposal, the expected context
+# digest and the retained grant's digest, policy, purpose and context.
+_SPONSORSHIP_REFUSAL = "website_control_scene-sponsorship_http_409:"
+_SPONSORSHIP_EXPIRED = _SPONSORSHIP_REFUSAL + "consent_expired"
+_SPONSORSHIP_NOT_ISSUED = frozenset({_SPONSORSHIP_REFUSAL + "website_assessment_preparation_pending",
+                                     _SPONSORSHIP_REFUSAL + "website_scene_sponsorship_missing"})
+
+
+def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: float) -> str:
+    """Status evidence only: "current", "expired" or "not_issued"; any other answer raises.
+
+    The read never creates or renews a grant, and its answer authorizes nothing.
+    """
+    try:
+        load_website_scene_sponsorship(task_context=task_context, now=now, create=False)
+    except ValueError as exc:
+        if str(exc) == _SPONSORSHIP_EXPIRED:
+            return "expired"
+        if str(exc) in _SPONSORSHIP_NOT_ISSUED:
+            return "not_issued"
+        raise
+    return "current"
+
+
 def enqueue_website_prepared_scene(*, task_context: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:
     value = website_webapp_request(capture_id=task_context["capture_id"], operation="prepared-scene",
         payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "request": request})

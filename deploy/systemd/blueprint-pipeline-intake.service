@@ -45,6 +45,8 @@ Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pip
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_TARGET_ROOT=/var/lib/blueprint/task-evaluation-inputs
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS=launch_preparation=/var/lib/blueprint/task-evaluation-inputs/prepared-references,episode_compilation=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes,launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,handoff_staging=/var/lib/blueprint/pubsub-handoffs,scene_configuration_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
 Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
+# The website preparation status route reads captures from the listener's tree.
+Environment=BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT=/var/lib/blueprint/pubsub-handoffs
 Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_REGISTRY_PATH=/var/lib/blueprint/task-evaluation-inputs/g1-team-campaign-registry.json
 Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/native-g1-team-campaigns
 Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
