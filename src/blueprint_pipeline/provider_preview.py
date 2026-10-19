@@ -549,9 +549,14 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             if selected_video_uri
             else None
         )
+        model = self._string(os.getenv("WORLDLABS_DEFAULT_MODEL")) or self.provider_model
+        if not model.lower().startswith("marble"):
+            # worlds:generate serves Marble models only. Atlas is a task API
+            # (website_atlas_pose); any other name must not reach this request.
+            raise ValueError(f"worldlabs_model_not_a_world_model:{model[:64]}")
         generation_request = {
             "display_name": display_name or f"Blueprint {self._string(descriptor.get('capture_id'))}",
-            "model": self._string(os.getenv("WORLDLABS_DEFAULT_MODEL")) or self.provider_model,
+            "model": model,
             "permission": "private",
             "tags": tags,
             "world_prompt": {

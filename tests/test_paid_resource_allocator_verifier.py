@@ -468,6 +468,26 @@ def test_remote_cpu_object_store_writers_have_only_approved_callers() -> None:
     assert observed - approved == {("src/blueprint_pipeline/new_writer.py", "ungated")}
 
 
+def test_only_the_canonical_allocator_reaches_the_atlas_pose_adapter() -> None:
+    production = {
+        path.relative_to(verifier.ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in verifier._production_python_paths()
+    }
+    capabilities = verifier.ATLAS_POSE_CAPABILITIES
+    approved = verifier.APPROVED_ATLAS_POSE_CALLERS
+    assert verifier._s3_transport_capability_callers(production, capabilities) == approved
+    # A second entry could hand the adapter a release gate that always passes.
+    hook = (
+        "from .website_atlas_pose import run_admitted_atlas_pose\n\n\n"
+        "def operator_hook(root, capture_id, context):\n"
+        "    return run_admitted_atlas_pose(output_root=root, capture_id=capture_id, task_context=context,\n"
+        "                                   release_blockers=lambda: ('', []))\n"
+    )
+    observed = verifier._s3_transport_capability_callers(
+        {**production, "src/blueprint_pipeline/atlas_operator_hook.py": hook}, capabilities)
+    assert observed - approved == {("src/blueprint_pipeline/atlas_operator_hook.py", "operator_hook")}
+
+
 def test_module_and_class_level_calls_to_object_store_writers_are_callers() -> None:
     writers = verifier.REMOTE_CPU_OBJECT_STORE_WRITERS
     module_level = (

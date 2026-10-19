@@ -3,13 +3,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Mapping
+
+
+def _refuse_atlas(model: Any) -> None:
+    # Atlas is a task API (posed RGB-D, generated views), not a world model.
+    # Its admitted pose operation lives in website_atlas_pose, never here.
+    if re.search(r"(?:^|[^a-z])atlas", str(model or "").strip().lower()):
+        raise ValueError("website_reconstruction_atlas_not_a_world_model")
 
 
 def reconstruction_profile(configured: Mapping[str, Any] | None = None) -> dict[str, Any]:
     # A future provider/model supplies its verified capability here. Atlas is
     # not assigned an invented hard limit or enabled before its API is available.
     selected_model = os.environ.get("WORLDLABS_DEFAULT_MODEL", "").strip()
+    _refuse_atlas(selected_model)
     if configured is None and selected_model not in ("", "marble-1.1-plus") and not os.environ.get("BLUEPRINT_WEBSITE_RECONSTRUCTION_PROFILE_JSON"):
         raise ValueError("website_reconstruction_profile_required_for_selected_model")
     profile = dict(configured) if configured is not None else json.loads(
@@ -17,6 +26,7 @@ def reconstruction_profile(configured: Mapping[str, Any] | None = None) -> dict[
         '{"provider":"world_labs","model":"marble-1.1-plus","max_input_images":8}')
     if not isinstance(profile, dict):
         raise ValueError("website_reconstruction_profile_invalid")
+    _refuse_atlas(profile.get("model"))
     if configured is None and selected_model and profile.get("model") != selected_model:
         raise ValueError("website_reconstruction_profile_model_mismatch")
     count = profile.get("max_input_images")
