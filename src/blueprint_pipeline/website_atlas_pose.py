@@ -86,6 +86,8 @@ RESEND_LIMIT = 3
 UNCERTAIN_RESEND_WINDOW_SECONDS = 3600
 CREDIT_RESEND_INTERVAL_SECONDS = 300
 ADMISSION_MARGIN_SECONDS = 120
+#: Operations are kept this long. Before then a 404 is not proof one is gone.
+OPERATION_RETENTION_SECONDS = 30 * 86400
 _UNCERTAIN_4XX = frozenset({408, 409, 429})
 _EXR_MAGIC = b"\x76\x2f\x31\x01"
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
@@ -173,6 +175,10 @@ def _json_object(status: int, payload: bytes) -> dict[str, Any]:
     return value
 
 
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
 def _without_urls(value: Any) -> Any:
     """Drop provider ``url`` fields: read URLs are short-lived credentials, asset IDs are the record."""
     if isinstance(value, Mapping):
@@ -189,14 +195,22 @@ class AtlasClient:
         self._base, self._key = base_url.rstrip("/"), api_key
         self._transport = transport or _safe_transport(self._base)
 
+    @property
+    def base_url(self) -> str:
+        return self._base
+
     def send(self, method: str, path: str, body: Mapping[str, Any] | None = None, *,
              headers: Mapping[str, str] | None = None) -> tuple[int, bytes]:
         """One API request, returning the raw status and body."""
+        data = None if body is None else _canonical_json(body).encode()
+        return self.send_raw(method, path, data, headers=headers)
+
+    def send_raw(self, method: str, path: str, data: bytes | None, *,
+                 headers: Mapping[str, str] | None = None) -> tuple[int, bytes]:
+        """Send exact bytes, so a resend under one Idempotency-Key is byte-identical."""
         sent = {"WLT-Api-Key": self._key, "Accept": "application/json", **(headers or {})}
-        data = None
-        if body is not None:
+        if data is not None:
             sent["Content-Type"] = "application/json"
-            data = json.dumps(body, separators=(",", ":")).encode()
         return self._transport(method, self._base + path, sent, data)
 
     def call(self, method: str, path: str, body: Mapping[str, Any] | None = None, *,
@@ -392,11 +406,13 @@ def refuse_closed_or_uncertain_attempt(state: Mapping[str, Any] | None, now: flo
     if not state:
         return
     status, resends = state.get("status"), state.get("resends", 0)
-    if status == "submitting" and (resends >= RESEND_LIMIT
-                                   or now - state.get("submitting_at_epoch", 0) > UNCERTAIN_RESEND_WINDOW_SECONDS):
-        # The POST may have bought an operation and its Idempotency-Key may
-        # have lapsed. Reconciling from the operation list is still to be coded.
-        raise ValueError("website_atlas_pose_submission_requires_reconciliation")
+    if status in {"submitting", "rejected"} and (state.get("possibly_bought") or status == "submitting"):
+        if (resends >= RESEND_LIMIT or not state.get("possibly_bought")
+                or now - state.get("uncertain_since_epoch", 0) > UNCERTAIN_RESEND_WINDOW_SECONDS):
+            # A send may have bought an operation and its Idempotency-Key may
+            # have lapsed. Reconciling from the operation list is still to be coded.
+            raise ValueError("website_atlas_pose_submission_requires_reconciliation")
+        return
     if status == "rejected":
         if not (state.get("provider_rejection") or {}).get("retryable") or resends >= RESEND_LIMIT:
             raise ValueError("website_atlas_pose_attempt_rejected")
@@ -471,23 +487,30 @@ def _locked(output_root: Path) -> Iterator[None]:
 
 
 def archive_closed_atlas_pose_attempt(output_root: Path) -> int:
-    """Set a closed attempt aside so a new, separately reserved attempt can start.
+    """Set an attempt aside so a new, separately reserved attempt can start.
 
-    Only a provider-confirmed ending qualifies: a failed or vanished operation,
-    or a refusal that cannot be resent. An uncertain submission never does,
-    because it may have bought an operation. Returns the new attempt's number.
+    Only an attempt that provably bought nothing more qualifies: a failed or
+    long-gone operation, a definitive refusal, uploads that never reached the
+    task POST, or a reservation with no submission record. Any send that may
+    have bought an operation keeps the attempt, since the next one would buy
+    another under a new key. Returns the new attempt's number.
     """
     with _locked(output_root):
-        state = atlas_pose_submission_state(output_root) or {}
-        rejection = state.get("provider_rejection") or {}
-        closed = state.get("status") == "failed" or (state.get("status") == "rejected" and (
-            not rejection.get("retryable") or state.get("resends", 0) >= RESEND_LIMIT))
+        root = output_root / "atlas_pose"
+        state = atlas_pose_submission_state(output_root)
+        status = (state or {}).get("status")
+        closed = (status == "failed"
+                  or (state is not None and not state.get("possibly_bought") and status in {"uploading", "rejected"})
+                  or (state is None and root.is_dir()))
         if not closed:
             raise ValueError("website_atlas_pose_attempt_not_closed")
         number = _attempt_number(output_root)
         target = output_root / "atlas_pose_attempts" / f"{number:03d}"
         target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(output_root / "atlas_pose", target)
+        os.replace(root, target)
+        result = output_root / "atlas_posed_rgbd_result.json"
+        if result.is_file():
+            os.replace(result, target / result.name)
     return number + 1
 
 
@@ -605,32 +628,42 @@ def submit_atlas_pose_operation(*, pose_inputs: Mapping[str, Any], output_root: 
                                              name=f"bp-{request_digest[7:19]}-{index:04d}", state=state, path=path))
                 _write_state(path, state)
             _await_ready(client, state, path, sleep)
-            state.update(status="submitting", resends=0, submitting_at_epoch=now(),
-                         request={"frames": [{"imageAsset": {"assetId": row["asset_id"]}} for row in uploads],
-                                  "targetResolution": list(binding["target_resolution"]), **request_options()})
+            request = {"frames": [{"imageAsset": {"assetId": row["asset_id"]}} for row in uploads],
+                       "targetResolution": list(binding["target_resolution"]), **request_options()}
+            # The exact bytes are kept, so every resend under the key is identical.
+            state.update(status="submitting", resends=0, sends=[], possibly_bought=False, request=request,
+                         request_body=_canonical_json(request), submitting_at_epoch=now())
         else:
-            # The documented recovery: the identical body under the same key.
+            # The documented recovery: the identical bytes under the same key.
             state.update(status="submitting", resends=state["resends"] + 1)
         # Uploads can be slow; the sponsorship must still cover the purchase.
         _require_admission(admission, request_digest=request_digest, binding=binding, now=now())
-        state["last_attempt_at_epoch"] = now()
+        sent_at, earlier_uncertain = now(), bool(state["possibly_bought"])
+        state["last_attempt_at_epoch"] = sent_at
+        state["sends"].append({"at_epoch": sent_at, "status": None})
+        # Until an answer proves otherwise, this send may buy an operation.
+        state["possibly_bought"] = True
+        state.setdefault("uncertain_since_epoch", sent_at)
         _write_state(path, state)
-        status, payload = client.send("POST", _POSE_TASK_PATH, state["request"],
-                                      headers={"Idempotency-Key": state["idempotency_key"]})
-        state["last_response"] = {"status": status,
-                                  "body": redacted_failure_text(payload.decode("utf-8", "replace"))[:65536]}
+        status, payload = client.send_raw("POST", _POSE_TASK_PATH, state["request_body"].encode(),
+                                          headers={"Idempotency-Key": state["idempotency_key"]})
+        state["sends"][-1].update(status=status,
+                                  body=redacted_failure_text(payload.decode("utf-8", "replace"))[:65536])
         if 200 <= status < 300:
             # The paid answer is kept before it is judged.
             _write_state(path, state)
             operation = _without_urls(_json_object(status, payload))
             if not isinstance(operation.get("id"), str) or not _SAFE_ID.fullmatch(operation["id"]):
                 raise ValueError("website_atlas_pose_operation_id_missing")
-            state.pop("last_response")
-            state.update(status="submitted", operation_id=operation["id"], operation=operation)
-        elif 400 <= status < 500 and status not in _UNCERTAIN_4XX:
-            # A definitive refusal bought nothing. A 402 is resent later, as
-            # the billing docs describe; any other refusal closes the attempt.
-            state.update(status="rejected", provider_rejection={"status": status, "retryable": status == 402})
+            state.update(status="submitted", operation_id=operation["id"], operation=operation,
+                         api_base=client.base_url)
+        elif 400 <= status < 500 and status not in _UNCERTAIN_4XX and not earlier_uncertain:
+            # A definitive refusal of the only send so far bought nothing. A
+            # 402 is resent later, as the billing docs describe; any other
+            # refusal closes the attempt.
+            state.update(status="rejected", provider_rejection={"status": status, "retryable": status == 402},
+                         possibly_bought=False)
+            state.pop("uncertain_since_epoch")
         _write_state(path, state)
         if state["status"] != "submitted":
             raise AtlasHttpError(status, payload.decode("utf-8", "replace"))
@@ -680,7 +713,8 @@ def _retain_outputs(client: AtlasClient, references: Sequence[Sequence[tuple[str
 
 
 def collect_atlas_pose_operation(*, output_root: Path, client: AtlasClient, sleep: Callable[[float], None],
-                                 max_polls: int, poll_interval_seconds: float) -> dict[str, Any]:
+                                 now: Callable[[], float], max_polls: int,
+                                 poll_interval_seconds: float) -> dict[str, Any]:
     """Poll the saved operation; on success retain outputs and write the result."""
     from .website_worldlabs import _atlas_posed_context
 
@@ -695,11 +729,17 @@ def collect_atlas_pose_operation(*, output_root: Path, client: AtlasClient, slee
                     or result.get("digest") != canonical_digest(result, digest_field="digest")):
                 raise ValueError("website_atlas_pose_result_changed")
             return result
+        if state.get("api_base") != client.base_url:
+            # Another host or project cannot see this operation; a 404 there
+            # would wrongly close an attempt that is still running and billed.
+            raise ValueError("website_atlas_pose_api_base_changed")
         operation_id = state["operation_id"]
         for attempt in range(max_polls):
             status, payload = client.send("GET", f"/operations/{operation_id}")
             if status in {404, 410}:
-                # Operations are kept for 30 days. A vanished one closes the attempt.
+                if now() - state["uncertain_since_epoch"] < OPERATION_RETENTION_SECONDS:
+                    raise ValueError("website_atlas_pose_operation_not_found")
+                # Past the documented retention, a missing operation is gone.
                 state.update(status="failed", terminal_error={"status": status})
                 _write_state(path, state)
                 raise ValueError("website_atlas_pose_operation_gone")
@@ -800,7 +840,7 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
             _write_state(retained_path, admission)
             submit_atlas_pose_operation(pose_inputs=pose_inputs, output_root=output_root, client=client,
                                         binding=binding, admission=admission, grant=grant, sleep=sleep, now=now)
-    result = collect_atlas_pose_operation(output_root=output_root, client=client, sleep=sleep,
+    result = collect_atlas_pose_operation(output_root=output_root, client=client, sleep=sleep, now=now,
                                           max_polls=max_polls, poll_interval_seconds=poll_interval_seconds)
     if result.get("status") == "processing":
         return result
@@ -813,6 +853,30 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
 def _read_json(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text()) if path.is_file() else {}
     return value if isinstance(value, dict) else {}
+
+
+def atlas_pose_producer_status(output_root: Path) -> dict[str, Any]:
+    """What the admitted producer has done for a result that is not complete.
+
+    Uploads are provider mutations. Once a task POST was sent, actual input
+    usage is unknown until the completed receipt says otherwise.
+    """
+    state = _read_json(output_root / "atlas_pose" / "submission.json")
+    if not state:
+        return {}
+    return {"atlas_pose_status": state.get("status"),
+            "provider_mutation_performed": bool(state.get("created_assets")),
+            "actual_provider_input_count": None if state.get("sends") else 0}
+
+
+def atlas_pose_result_completed(*, pose: Mapping[str, Any], output_root: Path) -> bool:
+    """Whether the producer finished this result; a finished one that no longer matches is refused."""
+    state = _read_json(output_root / "atlas_pose" / "submission.json")
+    if state.get("status") != "completed":
+        return False
+    if state.get("result_digest") != pose.get("digest"):
+        raise ValueError("website_atlas_pose_receipt_invalid")
+    return True
 
 
 def verify_atlas_pose_receipt(*, pose: Mapping[str, Any], frames: Sequence[Mapping[str, Any]],

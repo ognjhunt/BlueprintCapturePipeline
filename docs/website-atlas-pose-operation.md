@@ -146,7 +146,7 @@ capture. Everything lives beside `atlas_pose_inputs.json`:
 | File | Written |
 |---|---|
 | `atlas_pose/controller_admission.json` | After the WebApp grants the reservation |
-| `atlas_pose/submission.json` | Before the first upload, and at each later step: when each asset is created (`created_assets`, so no asset holding site pixels is ever untracked), after each upload, after each `READY` check, before the POST (`submitting`, with the exact body and key), with the raw answer to the POST, and after it (`submitted`, with the operation ID) |
+| `atlas_pose/submission.json` | Before the first upload, and at each later step: when each asset is created (`created_assets`, so no asset holding site pixels is ever untracked), after each upload, after each `READY` check, before each POST (`submitting`, with the exact request bytes, the key and an unanswered entry in `sends`), with each raw answer, and after success (`submitted`, with the operation ID and the API root it belongs to) |
 | `atlas_pose/outputs/<frame>/{image,depth,confidence,mask}.*` | Downloaded through fresh `:createReadUrl` links, size-checked against the asset's `sizeBytes` (a bounded HTTP read can end early without an error), fsynced |
 | `atlas_posed_rgbd_result.json` | `website_atlas_pose_result.v1`, read by `prepare_atlas_pose_inputs` |
 
@@ -171,6 +171,13 @@ receipt's request. The receipt must also still bind the same frames and output
 bytes. Otherwise it raises `website_atlas_pose_receipt_invalid` or
 `website_atlas_retained_output_changed`.
 
+Before completion, the reader returns the pending record with the producer's
+progress (`atlas_pose_status`). Once frames are uploaded it reports
+`provider_mutation_performed: true`. Once a task POST is sent it reports
+`actual_provider_input_count` as unknown (`null`), so "nothing sent" is never
+claimed after the fact. A result written just before an interrupted pass could
+record completion is treated the same way.
+
 Every result keeps `claim_ceiling: development_only`,
 `metric_measurement_proven: false`, `physical_evidence: false` and
 `scale_status: unscaled_provider_world_units`. The reader's blockers do not
@@ -184,12 +191,14 @@ Every recovery is code; nothing is resolved by editing state.
 
 | State or error | Meaning | What happens next |
 |---|---|---|
-| `submitting` | The POST had no definitive answer: a transport failure, 408, 409, 429, 5xx, a refused redirect, or an unusable 2xx | Within an hour of the first send, the next pass resends the identical body with the same `Idempotency-Key`, which is the documented recovery, up to three times. Past that window or limit, `website_atlas_pose_submission_requires_reconciliation`: the operation may have been bought, the key's lifetime is undocumented, and reconciling from the operation list is still to be coded. Such an attempt can never be archived. |
-| `rejected`, retryable | 402 (`CREDITS_UNAVAILABLE` or `SPEND_LIMIT_EXCEEDED`) | The same resend after at least five minutes, up to three times (`website_atlas_pose_resend_not_due` before that) |
-| `rejected`, not retryable | Any other 4xx | `website_atlas_pose_attempt_rejected` |
-| `failed` | The operation finished with an `error`, or answers 404 or 410 (`website_atlas_pose_operation_gone`) | `website_atlas_pose_attempt_failed`. No result is written. |
-| Closed attempt | `failed`, or `rejected` past its resends | `archive_closed_atlas_pose_attempt` moves it to `atlas_pose_attempts/NNN/`. The next attempt is a new binding with its own reservation. |
-| `uploading` | Interrupted between uploads or `READY` checks | The next pass resumes under the retained admission. The WebApp answers `already_reserved`, and only the exact retained admission turns that back into a grant. A re-reviewed price or other changed binding is refused before any second reservation. |
+| `submitting` (possibly bought) | A send had no definitive answer: a transport failure, 408, 409, 429, 5xx, a refused redirect, or an unusable 2xx. Also any refusal of a later resend, which cannot prove the earlier send bought nothing. | Within an hour of the first uncertain send, the next pass resends the identical bytes under the same `Idempotency-Key`, which is the documented recovery, up to three times. Past that window or limit, `website_atlas_pose_submission_requires_reconciliation`: the key's lifetime is undocumented, and reconciling from the operation list is still to be coded. Such an attempt can never be archived. |
+| `rejected`, retryable | A 402 (`CREDITS_UNAVAILABLE` or `SPEND_LIMIT_EXCEEDED`), when no earlier send was uncertain | The same bytes are resent after at least five minutes, up to three times (`website_atlas_pose_resend_not_due` before that). An uncertain answer to one of those resends starts its own one-hour window. |
+| `rejected`, not retryable | Any other 4xx, when no earlier send was uncertain | `website_atlas_pose_attempt_rejected` |
+| Operation not found | A 404 or 410 while polling, within 30 days of the first uncertain send. Eventual consistency, another project's key or another host can all answer that for an operation still running and billed. | `website_atlas_pose_operation_not_found`; nothing changes |
+| `failed` | The operation finished with an `error`, or it is still missing after the documented 30-day retention (`website_atlas_pose_operation_gone`) | `website_atlas_pose_attempt_failed`. No result is written. |
+| `website_atlas_pose_api_base_changed` | `WORLDLABS_ATLAS_API_BASE_URL` no longer matches the root the operation was created on | Refused before polling |
+| Archivable | An attempt that provably buys nothing more: `failed`, `rejected` (before any uncertain send), `uploading`, or a reservation with no submission record | `archive_closed_atlas_pose_attempt` moves it, and any stale result, to `atlas_pose_attempts/NNN/`. The next attempt is a new binding with its own reservation. |
+| `uploading` | Interrupted between uploads or `READY` checks | The next pass resumes under the retained admission. The WebApp answers `already_reserved`, and only the exact retained admission turns that back into a grant. A re-reviewed price or other changed binding is refused before any second reservation, and the old attempt can then be archived. |
 | `processing` | The operation is still running after `max_polls` | The next pass polls again without a new reservation or submission |
 | `website_atlas_pose_admission_expired` | The sponsorship would expire within two minutes | Checked before the uploads and again before the POST |
 | `website_atlas_pose_frames_invalid`, `_grid_not_requested`, `_operation_identity_mismatch`, `website_atlas_identifier_invalid`, `website_atlas_depth_not_exr`, `website_atlas_transfer_size_mismatch`, `website_atlas_output_size_unreported` | The returned bundle does not match the request | No result is written. References are checked before the first download. |

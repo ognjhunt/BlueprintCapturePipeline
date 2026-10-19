@@ -107,6 +107,7 @@ class FakeAtlas:
         self.ready_after_checks, self.grant_headers = ready_after_checks, grant_headers
         self.upload_scheme, self.operation_id = upload_scheme, operation_id
         self.calls, self.created, self.uploaded, self.submissions = [], [], {}, []
+        self.raw_submissions = []
         self.ready_checks, self.puts, self.polls = {}, 0, 0
 
     @staticmethod
@@ -172,9 +173,12 @@ class FakeAtlas:
             return self._json(200, {"id": asset_id, "state": "READY", "sizeBytes": size})
         if method == "POST" and path == "/tasks:images2PosedRGBD":
             self.submissions.append((body, headers.get("Idempotency-Key")))
+            self.raw_submissions.append(data)
             outcome = self.submit_outcomes.pop(0) if self.submit_outcomes else 201
             if outcome == "timeout":
                 raise atlas.AtlasTransportError("website_atlas_transport_failed:TimeoutError")
+            if outcome == "bad_id":
+                return self._json(201, {"id": "operations/op_atlas_1", "done": False})
             if outcome != 201:
                 return self._json(outcome, {"code": "REFUSED_FOR_TEST"})
             return self._json(201, {"id": self.operation_id, "done": False, "error": None, "response": None,
@@ -440,8 +444,9 @@ def test_an_uncertain_submission_is_resent_with_the_same_key_and_body(atlas_case
     assert state["status"] == "submitting" and "operation_id" not in state
     assert state["request"] == fake.submissions[0][0]
     assert atlas_case.run(fake, max_polls=3)["status"] == "completed"
-    # The documented recovery: identical body, same Idempotency-Key.
+    # The documented recovery: identical bytes, same Idempotency-Key.
     assert len(fake.submissions) == 2 and fake.submissions[0] == fake.submissions[1]
+    assert fake.raw_submissions[0] == fake.raw_submissions[1]
     assert _state(atlas_case)["resends"] == 1
 
 
@@ -465,7 +470,7 @@ def test_throttling_and_server_errors_are_not_refusals(atlas_case, status):
         atlas_case.run(fake)
     assert _state(atlas_case)["status"] == "submitting"
     assert atlas_case.run(fake, max_polls=3)["status"] == "completed"
-    assert len(fake.submissions) == 2 and fake.submissions[0] == fake.submissions[1]
+    assert len(fake.submissions) == 2 and fake.raw_submissions[0] == fake.raw_submissions[1]
 
 
 def test_a_credit_refusal_is_resent_after_the_documented_interval(atlas_case):
@@ -480,7 +485,7 @@ def test_a_credit_refusal_is_resent_after_the_documented_interval(atlas_case):
     assert len(fake.submissions) == 1
     later = _later(atlas.CREDIT_RESEND_INTERVAL_SECONDS + 1)
     assert atlas_case.run(fake, now=later, max_polls=3)["status"] == "completed"
-    assert len(fake.submissions) == 2 and fake.submissions[0] == fake.submissions[1]
+    assert len(fake.submissions) == 2 and fake.raw_submissions[0] == fake.raw_submissions[1]
 
 
 def test_a_definitive_refusal_closes_the_attempt_until_it_is_archived(atlas_case):
@@ -500,12 +505,55 @@ def test_a_definitive_refusal_closes_the_attempt_until_it_is_archived(atlas_case
 
 
 def test_a_paid_answer_is_kept_before_it_is_judged(atlas_case):
-    fake = FakeAtlas(atlas_case.events, operation_id="operations/op_atlas_1")
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=["bad_id"])
     with pytest.raises(ValueError, match="website_atlas_pose_operation_id_missing"):
         atlas_case.run(fake)
     state = _state(atlas_case)
-    assert state["status"] == "submitting"
-    assert state["last_response"]["status"] == 201 and "operations/op_atlas_1" in state["last_response"]["body"]
+    assert state["status"] == "submitting" and state["possibly_bought"] is True
+    assert state["sends"][-1]["status"] == 201 and "operations/op_atlas_1" in state["sends"][-1]["body"]
+    with pytest.raises(ValueError, match="website_atlas_pose_attempt_not_closed"):
+        atlas.archive_closed_atlas_pose_attempt(atlas_case.root)
+
+
+@pytest.mark.parametrize("first", ["timeout", "bad_id", 503])
+def test_a_refusal_after_a_send_that_may_have_bought_never_closes_the_attempt(atlas_case, first):
+    # A later 4xx cannot prove the earlier send bought nothing, so archiving
+    # it could pay for a second operation under a new key.
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=[first, 422])
+    with pytest.raises((atlas.AtlasTransportError, atlas.AtlasHttpError, ValueError)):
+        atlas_case.run(fake)
+    with pytest.raises(atlas.AtlasHttpError, match="website_atlas_api_422"):
+        atlas_case.run(fake)
+    state = _state(atlas_case)
+    assert state["status"] == "submitting" and state["possibly_bought"] is True
+    assert [send["status"] for send in state["sends"]] == [None if first == "timeout" else
+                                                           (201 if first == "bad_id" else first), 422]
+    with pytest.raises(ValueError, match="website_atlas_pose_attempt_not_closed"):
+        atlas.archive_closed_atlas_pose_attempt(atlas_case.root)
+
+
+def test_a_credit_refusal_after_an_uncertain_send_stays_uncertain(atlas_case):
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=["timeout", 402])
+    with pytest.raises(atlas.AtlasTransportError):
+        atlas_case.run(fake)
+    with pytest.raises(atlas.AtlasHttpError, match="website_atlas_api_402"):
+        atlas_case.run(fake)
+    state = _state(atlas_case)
+    assert state["status"] == "submitting" and state["possibly_bought"] is True
+    # The uncertain window, not the credit interval, governs the next resend.
+    assert atlas_case.run(fake, max_polls=3)["status"] == "completed"
+
+
+def test_an_uncertain_credit_resend_gets_its_own_window(atlas_case):
+    # A 402 bought nothing, so the window starts at the first uncertain send.
+    atlas_case.webapp.lifetime_seconds = 86400
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=[402, "timeout"])
+    with pytest.raises(atlas.AtlasHttpError, match="website_atlas_api_402"):
+        atlas_case.run(fake)
+    with pytest.raises(atlas.AtlasTransportError):
+        atlas_case.run(fake, now=_later(7200))
+    assert atlas_case.run(fake, now=_later(7260), max_polls=3)["status"] == "completed"
+    assert len(fake.submissions) == 3 and len(set(fake.raw_submissions)) == 1
 
 
 def test_failed_operation_is_recorded_and_yields_no_result(atlas_case):
@@ -521,11 +569,66 @@ def test_failed_operation_is_recorded_and_yields_no_result(atlas_case):
     assert atlas.archive_closed_atlas_pose_attempt(atlas_case.root) == 1
 
 
-def test_a_vanished_operation_closes_the_attempt(atlas_case):
+def test_a_missing_operation_is_gone_only_after_the_retention_period(atlas_case):
+    atlas_case.webapp.lifetime_seconds = 40 * 86400
     fake = FakeAtlas(atlas_case.events, mutations={"gone"})
-    with pytest.raises(ValueError, match="website_atlas_pose_operation_gone"):
+    # Eventual consistency, another project's key or another host can all
+    # answer 404 for an operation that is still running and billed.
+    with pytest.raises(ValueError, match="website_atlas_pose_operation_not_found"):
         atlas_case.run(fake)
+    assert _state(atlas_case)["status"] == "submitted"
+    with pytest.raises(ValueError, match="website_atlas_pose_attempt_not_closed"):
+        atlas.archive_closed_atlas_pose_attempt(atlas_case.root)
+    retained = _later(atlas.OPERATION_RETENTION_SECONDS + 60)
+    with pytest.raises(ValueError, match="website_atlas_pose_operation_gone"):
+        atlas_case.run(fake, now=retained)
     assert _state(atlas_case)["status"] == "failed"
+    assert atlas.archive_closed_atlas_pose_attempt(atlas_case.root) == 1
+
+
+def test_a_changed_api_root_never_polls_a_submitted_operation(atlas_case, monkeypatch):
+    fake = FakeAtlas(atlas_case.events, polls_until_done=2)
+    assert atlas_case.run(fake, max_polls=1)["status"] == "processing"
+    monkeypatch.setenv(atlas.ATLAS_API_BASE_URL_ENV, "https://api.worldlabs.ai/api/v2")
+    calls = len(fake.calls)
+    with pytest.raises(ValueError, match="website_atlas_pose_api_base_changed"):
+        atlas_case.run(fake, max_polls=3)
+    assert len(fake.calls) == calls
+
+
+def test_an_attempt_that_never_submitted_can_be_set_aside(atlas_case, monkeypatch):
+    # Uploads buy no operation. A stale price review must not strand the capture.
+    fake = FakeAtlas(atlas_case.events, put_failure_index=1)
+    with pytest.raises(atlas.AtlasHttpError):
+        atlas_case.run(fake)
+    monkeypatch.setenv(atlas.ATLAS_PRICE_REVIEW_ENV, json.dumps(_review(maximum_cost_usd=0.8)))
+    with pytest.raises(ValueError, match="website_atlas_pose_already_bound_to_other_inputs"):
+        atlas_case.run(fake)
+    assert atlas.archive_closed_atlas_pose_attempt(atlas_case.root) == 1
+    fake.put_failure_index = None
+    assert atlas_case.run(fake, max_polls=3)["status"] == "completed"
+    archived = json.loads((atlas_case.root / "atlas_pose_attempts" / "000" / "submission.json").read_text())
+    assert archived["status"] == "uploading" and archived["created_assets"] == ["asset_0000", "asset_0001"]
+
+
+def test_the_reader_reports_an_operation_in_progress(atlas_case):
+    fake = FakeAtlas(atlas_case.events, polls_until_done=2)
+    assert atlas_case.run(fake, max_polls=1)["status"] == "processing"
+    view = geometry.run_website_scene_geometry(**atlas_case.kwargs)
+    # Site pixels went to World Labs and an operation was bought: say so.
+    assert view["status"] == "pending" and view["atlas_pose_status"] == "submitted"
+    assert view["provider_mutation_performed"] is True and view["actual_provider_input_count"] is None
+    assert view["blockers"] == ["website_atlas_admitted_pose_operation_required"]
+
+
+def test_the_reader_treats_an_unfinished_result_as_pending(atlas_case):
+    assert atlas_case.run(FakeAtlas(atlas_case.events), max_polls=3)["status"] == "completed"
+    # A crash between writing the result and recording completion.
+    path = atlas_case.root / "atlas_pose" / "submission.json"
+    state = json.loads(path.read_text())
+    path.write_text(json.dumps({**state, "status": "submitted"}))
+    view = geometry.run_website_scene_geometry(**atlas_case.kwargs)
+    assert view["atlas_pose_status"] == "submitted" and view["actual_provider_input_count"] is None
 
 
 def test_changed_source_pixels_are_refused_before_any_reservation(atlas_case):
@@ -632,6 +735,9 @@ def test_reader_refuses_outputs_or_receipts_that_no_longer_bind(atlas_case, tamp
             receipt["request"]["frames"][0]["imageAsset"] = "asset_0000"
         result["digest"] = canonical_digest(result, digest_field="digest")
         path.write_text(json.dumps(result))
+        # Keep the producer's record in step, so only the asset checks can refuse.
+        state_path = atlas_case.root / "atlas_pose" / "submission.json"
+        state_path.write_text(json.dumps({**json.loads(state_path.read_text()), "result_digest": result["digest"]}))
     with pytest.raises(ValueError, match=code):
         geometry.run_website_scene_geometry(**atlas_case.kwargs)
 

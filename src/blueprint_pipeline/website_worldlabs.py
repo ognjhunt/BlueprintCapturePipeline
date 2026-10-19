@@ -66,6 +66,12 @@ def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
         operation = pose.get("operation")
         if not isinstance(operation, Mapping):
             raise ValueError("website_atlas_pose_operation_not_succeeded")
+        if pose.get("operation_receipt") is not None:
+            from .website_atlas_pose import atlas_pose_result_completed
+            if not atlas_pose_result_completed(pose=pose, output_root=output_root):
+                # The producer has not recorded completion: an interrupted
+                # pass, not a result. Report what it has done so far.
+                return _with_atlas_producer_status(result, output_root)
         posed_context = _atlas_posed_context(operation=operation, expected_frame_count=len(frames))
         # A returned bundle proves output count, not provider input usage.
         # Only the admitted producer's receipt records usage, and only while
@@ -98,7 +104,24 @@ def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
         else:
             write_json(context_path, context)
         return context
-    return result
+    return _with_atlas_producer_status(result, output_root)
+
+
+def _with_atlas_producer_status(result: Mapping[str, Any], output_root: Path) -> dict[str, Any]:
+    """The pending record, plus what an admitted producer has already done.
+
+    Once frames are uploaded or a task POST is sent, "no provider mutation"
+    and "zero inputs used" would be false. The recorded pending file is left
+    unchanged; only the returned view says so.
+    """
+    from .website_atlas_pose import atlas_pose_producer_status
+
+    status = atlas_pose_producer_status(output_root)
+    if not status:
+        return dict(result)
+    view = {**result, **status}
+    view["digest"] = canonical_digest(view, digest_field="digest")
+    return view
 
 
 def _atlas_posed_context(*, operation: Mapping[str, Any], expected_frame_count: int,

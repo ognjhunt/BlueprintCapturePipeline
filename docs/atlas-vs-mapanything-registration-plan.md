@@ -48,10 +48,12 @@ What this plan cannot change:
    and `atlas_pose_inputs.json`, whose `binding.geometry_input_digest` must
    equal **D**.
 2. **An independent measurement document**, `blueprint.site_task_measurement_samples.v1`,
-   with at least five `scale` and five `registration` checks. Each check is a
-   measured distance between two landmarks, by tape or laser, that are visible
-   in at least two retained frames. A measurement producer who is not the
-   analyst records it before either arm runs.
+   with at least five `scale` and five `registration` checks plus one
+   calibration reading. Each check is a measured distance between two
+   landmarks, by tape or laser, that are visible in at least two retained
+   frames. The site records them before either arm runs, as the measurement
+   producer `site_job:<requestId>` (founder decision, 2026-10-19), so the
+   producer is never the analyst.
 3. **Blind landmark annotations.** Each landmark gets a frame ID and a source
    pixel, annotated on the source frames before anyone sees either arm's
    output. Without them, the measured checks cannot be read from either arm.
@@ -109,7 +111,7 @@ below.
 | 1 | **Pixel binding (Atlas only).** Resample our input with the transform in step 3, then compare it with Atlas's returned reframed RGB, using normalized cross-correlation and PSNR per frame | A stable, verified transform is what `website_atlas_native_geometry_binding_required` is waiting for. Without one, masks cannot be lifted onto Atlas depth. |
 | 2 | **Relative pose agreement, A vs M.** Pairwise relative-rotation error in degrees, relative translation-direction error in degrees, and the ATE RMSE after a Sim(3) (Umeyama) alignment of camera centres, with the fitted scale | Shows whether the two estimates agree on the camera path. It is agreement, not accuracy. |
 | 3 | **Multi-view depth consistency**, each arm on its own outputs. Warp depth from frame *i* into frame *j*, then report the median relative error and the share of co-visible pixels within 5% | Mask lifting and scene registration need depth that agrees across views |
-| 4 | **Measured scale and shape.** Unproject each landmark pair with the arm's own depth and camera to get a distance `e_k`. Fit one scale `s*` to the measured `d_k` and report the residual RMS percentage. For M only, also report the raw error in its estimated meters | This is the only comparison against external truth. Atlas's world units have no metric meaning, so only the residual after fitting applies to it. |
+| 4 | **Measured scale and shape.** Unproject each landmark pair with the arm's own depth and camera to get a distance `e_k`. Set each arm's scale from the capture's calibration reading alone. That reading is marked as calibration in the WebApp export, so it is left out of every check. Then report the error on every other measured distance. For M only, also report the raw error in its estimated meters, before scaling | This is the only comparison against external truth. Atlas's world units have no metric meaning, so only the scaled error applies to it. Measuring against readings not used to set the scale keeps the check honest. |
 | 5 | **Coverage.** Valid-pixel fraction and the confidence distribution. Neither arm's confidence is a calibrated probability | Gaps in coverage mean nothing to lift masks onto |
 | 6 | **Cost and time.** Wall time and provider calls. M's cost comes from its GPU receipt; A's comes from the platform's Usage page, because Atlas operations carry no cost | Needed to compare running cost per capture |
 
@@ -121,8 +123,9 @@ defaults. The starting values below are for that review only:
 
 - **Pixel binding** (measurement 1) holds on every frame: NCC ≥ 0.98 after the
   derived transform.
-- **Shape** (measurement 4): A's residual after fitting is at most M's residual
-  plus 2 percentage points, and within the profile's registration tolerance.
+- **Shape** (measurement 4): A's error on the held-back distances is at most
+  M's error plus 2 percentage points, and within the profile's registration
+  tolerance.
 - **Depth consistency** (measurement 3): A's inlier share is at most 5 points
   below M's.
 - **Pose agreement** (measurement 2): median relative-rotation error is at
