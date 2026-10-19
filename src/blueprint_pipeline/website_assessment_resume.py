@@ -151,15 +151,6 @@ def admit_browser_preparation(listener, *, payload, handoff, capture_root, obser
     _proposal_admitted(authority, context)
 
 
-def recorded_wait(ledger):
-    """The resume record of the explicit assessment wait this ledger holds, or None."""
-    record = ledger.get("assessment_resume")
-    if (ledger.get("status") != "failed_retryable" or ledger.get("last_error") != PENDING_CODE
-            or type(record) is not dict or record.get("schema_version") != SCHEMA):
-        return None
-    return record
-
-
 def safe_to_arm(attempt_count, previous_history, recovered_expired_lease):
     """Provider-stage failures/unknown outcomes never become fresh retry capacity."""
     return (not recovered_expired_lease and len(previous_history) == attempt_count - 1

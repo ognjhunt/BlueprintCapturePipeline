@@ -16,7 +16,8 @@ Real birth, listener admission, lease, ledger, signed status route and sweep run
 here. Only the WebApp's HTTP answers (status and typed code as production returns
 them), the owner transport and the WebApp's callback are local fakes. No provider,
 network or production state is touched, and a status read never creates, renews or
-spends a grant.
+spends a grant. A preparation with no grant yet stays unread: the WebApp cannot
+verify it, and the paid assessment resume reads status before it asks for one.
 """
 import copy
 import json
@@ -66,8 +67,9 @@ class WebApp:
     """The WebApp's signed control routes, answering as production does.
 
     `sponsorship` is a typed 409 code, "grant" (a current grant), "expired_body"
-    (a grant past expiry by this clock), "unavailable" (503) or "timeout"; or a
-    callable choosing one of those from the request payload.
+    (a grant past expiry by this clock), "unavailable" (503), "expired_503" (the
+    expiry code under another status) or "timeout"; or a callable choosing one of
+    those from the request payload.
     """
 
     def __init__(self, task, post):
@@ -87,6 +89,8 @@ class WebApp:
                 raise TimeoutError("synthetic WebApp timeout")
             if answer == "unavailable":
                 self._refuse(url, 503, "website_scene_sponsorship_unavailable")
+            if answer == "expired_503":
+                self._refuse(url, 503, EXPIRED)
             if answer in {"grant", "expired_body"}:
                 grant = _grant(self.task, expires_in=300.0 if answer == "grant" else -1.0)
                 return SimpleNamespace(body=json.dumps(grant).encode())
@@ -276,7 +280,8 @@ def test_an_expired_grant_reports_the_ledger_never_a_state_of_its_own(prep_captu
 
 
 @pytest.mark.parametrize("answer", ["website_scene_sponsorship_changed", "website_task_context_changed",
-                                    "source_revoked", MISSING, PENDING, "unavailable", "timeout", "expired_body"])
+                                    "source_revoked", MISSING, PENDING, "unavailable", "expired_503", "timeout",
+                                    "expired_body"])
 def test_any_other_grant_answer_still_refuses_the_read(prep_capture, answer):
     ledger = _claim(prep_capture)
     _finish(prep_capture, ledger, status="terminal_authority_ended", last_error=ENDED)
@@ -304,45 +309,20 @@ def test_a_hand_off_is_never_reported_on_an_expired_grant_without_its_evidence(p
 
 # ----------------------------------------------------------- assessment wait
 
-def test_the_assessment_wait_is_reported_before_any_grant_exists(prep_capture):
+def test_a_preparation_with_no_grant_yet_is_still_not_read_and_nothing_resumes(prep_capture, monkeypatch):
+    """The WebApp cannot verify a preparation it has issued no grant for, and the paid
+    assessment resume reads status before it asks for one. Both stay as they were."""
     _wait_for_assessment(prep_capture)
+    monkeypatch.setattr(listener, "process_handoff_payload",
+                        lambda *args, **kwargs: pytest.fail("a status read resumed a paid preparation"))
     for answer in (PENDING, MISSING):
         prep_capture.webapp.sponsorship = answer
-        assert _read(prep_capture)["state"] == "failed_retryable"
-        assert _read(prep_capture, status_reader.STATUS_V2)["state"] == "failed_retryable"
-
-
-@pytest.mark.parametrize("mutation", ["record_context", "record_source", "record_missing", "other_error"])
-def test_no_grant_is_accepted_only_for_the_wait_this_source_recorded(prep_capture, mutation):
-    ledger = _wait_for_assessment(prep_capture)
-    if mutation == "record_context":
-        ledger["assessment_resume"]["task_context_digest"] = "sha256:" + "e" * 64
-    elif mutation == "record_source":
-        ledger["assessment_resume"]["source_payload_sha256"] = "e" * 64
-    elif mutation == "record_missing":
-        ledger.pop("assessment_resume")
-    else:
-        ledger["last_error"] = "synthetic retryable failure"
-    write_json(prep_capture.root / listener.JOB_LEDGER_FILENAME, ledger)
-    prep_capture.webapp.sponsorship = MISSING
-    with pytest.raises(status_reader.PreparationStatusUnavailable):
-        _read(prep_capture)
-
-
-def test_an_unconfirmed_wait_resumes_once_the_assessment_admits_preparation(prep_capture, monkeypatch):
-    """The resume reads status first; without this it could never resume an unconfirmed task."""
-    _wait_for_assessment(prep_capture)
-    resumed = []
-    monkeypatch.setattr(listener, "process_handoff_payload",
-                        lambda raw, **kwargs: resumed.append(raw) or {"status": "processed"})
-
-    def reconcile():
-        return resume.reconcile_waiting_assessments(listener, storage_root=prep_capture.storage_root,
-                                                    process_args={"provider": "openai"})
-
-    assert reconcile() == {"resumed": 0, "pending": 1} and resumed == []
-    # Admitted: the status read still finds no grant; only the resume's own
-    # existing admission (a create) issues it, as it always has.
-    prep_capture.webapp.sponsorship = lambda payload: MISSING if payload.get("create") is False else "grant"
-    assert reconcile() == {"resumed": 1, "pending": 0}
-    assert resumed == [prep_capture.data]
+        prep_capture.webapp.calls.clear()
+        with pytest.raises(status_reader.PreparationStatusUnavailable):
+            _read(prep_capture)
+        assert status_reader.reconcile_preparation_wakeups(prep_capture.storage_root)["attempted"] == 0
+        assert resume.reconcile_waiting_assessments(listener, storage_root=prep_capture.storage_root,
+                                                    process_args={"provider": "openai"}) == {"resumed": 0, "pending": 1}
+        grant_reads = [payload for operation, payload in prep_capture.webapp.calls if operation == "scene-sponsorship"]
+        assert grant_reads and all(payload.get("create") is False for payload in grant_reads)
+        assert "preparation-status" not in {operation for operation, _ in prep_capture.webapp.calls}
