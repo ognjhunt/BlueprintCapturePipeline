@@ -22,7 +22,8 @@ REVIEWED = {"status": "reviewed", "reviewed_by": "fixture-threshold-reviewer", "
 
 def _reviewed(family: str) -> dict:
     value = templates.template(family)
-    value["threshold_review"] = {**value["threshold_review"], **REVIEWED}
+    value["threshold_review"] = {**value["threshold_review"], **REVIEWED,
+                                 "reviewed_checks_digest": templates.reviewed_checks_digest(value)}
     return value
 
 
@@ -66,6 +67,7 @@ def test_shipped_thresholds_wait_for_a_named_reviewer(family: str) -> None:
     review = templates.template(family)["threshold_review"]
     assert review["status"] == "pending_review"
     assert review["reviewed_by"] is None and review["reviewed_at_iso"] is None
+    assert review["reviewed_checks_digest"] is None
     with pytest.raises(templates.FidelityTemplateError, match="thresholds_not_reviewed"):
         templates.profile_from_template(templates.template(family), task_id="task-fixture")
 
@@ -82,6 +84,30 @@ def test_a_reviewed_template_yields_a_qualifier_profile(family: str) -> None:
     for criterion in profile["checks"]:
         assert set(criterion) == {"id", "dimension", "unit", "minimum_sample_count",
                                   "maximum_absolute_error", "maximum_rms_error"}
+
+
+def test_a_review_covers_only_the_checks_it_saw() -> None:
+    # A threshold raised after review must not inherit the reviewer's name.
+    value = _reviewed("articulated_open_close")
+    value["checks"][-1]["maximum_absolute_error"] = value["checks"][-1]["maximum_rms_error"] = 50.0
+    with pytest.raises(templates.FidelityTemplateError, match="review_stale"):
+        templates.profile_from_template(value, task_id="task-fixture")
+    value = _reviewed("rigid_pick_place")
+    value["checks"][0]["sample_ids"] = list(reversed(value["checks"][0]["sample_ids"]))
+    with pytest.raises(templates.FidelityTemplateError, match="review_stale"):
+        templates.validate_template(value)
+
+
+def test_a_review_cannot_be_dated_in_the_future() -> None:
+    value = _reviewed("rigid_pick_place")
+    value["threshold_review"]["reviewed_at_iso"] = "2999-01-01T00:00:00Z"
+    with pytest.raises(templates.FidelityTemplateError, match="review_in_future"):
+        templates.profile_from_template(value, task_id="task-fixture")
+
+
+def test_the_checks_digest_command_prints_what_a_review_records(capsys) -> None:
+    assert templates.main(["checks-digest", "--family", "rigid_pick_place"]) == 0
+    assert capsys.readouterr().out.strip() == templates.reviewed_checks_digest(templates.template("rigid_pick_place"))
 
 
 def test_a_profile_is_bound_to_one_task() -> None:
@@ -117,6 +143,8 @@ def _set_check(key, item):
     (lambda value: value["readings"][0].update(articulation="hinged"), "reading_invalid"),
     (lambda value: value["threshold_review"].update(status="reviewed"), "review_invalid"),
     (lambda value: value["threshold_review"].update(reviewed_by="someone"), "review_invalid"),
+    (lambda value: value["threshold_review"].update(reviewed_checks_digest="sha256:" + "0" * 64), "review_invalid"),
+    (lambda value: value["threshold_review"].pop("reviewed_checks_digest"), "review_invalid"),
     (lambda value: value.update(default_thresholds=True), "template_invalid"),
 ])
 def test_validation_refuses_inexplicit_or_inconsistent_templates(mutate, code) -> None:
@@ -251,6 +279,17 @@ def test_a_webapp_export_qualifies_inside_the_reviewed_thresholds(tmp_path: Path
     assert [row["id"] for row in receipt["fidelity_review_receipt"]["checks"]] == fidelity
     assert receipt["physical_performance_claimed"] is False
     assert receipt["adp_qualified_evidence_eligible"] is False
+
+
+def test_a_sliding_front_qualifies_too(tmp_path: Path) -> None:
+    def as_drawer(source: dict) -> None:
+        for check in source["checks"]:
+            if check["id"] == "open_close.task_state.opening":
+                check["samples"] = [{"sample_id": "opening_travel", "value": 0.45}]
+    receipt = _qualify_with_export(tmp_path, "articulated_open_close", deltas=_half_rms("articulated_open_close"),
+                                   mutate_source=as_drawer)
+    opening = [row for row in receipt["fidelity_review_receipt"]["checks"] if row["id"] == "open_close.task_state.opening"]
+    assert opening[0]["sample_count"] == 1
 
 
 def test_a_simulator_outside_a_threshold_fails_that_check(tmp_path: Path) -> None:

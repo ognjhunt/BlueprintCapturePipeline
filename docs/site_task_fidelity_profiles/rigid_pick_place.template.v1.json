@@ -149,6 +149,7 @@
     "proposal": "AI-assisted engineering proposal of 2026-10-19. These are not reviewed values: the founder reviews them, and records the review here, before any profile is produced.",
     "reviewed_at_iso": null,
     "reviewed_by": null,
+    "reviewed_checks_digest": null,
     "status": "pending_review"
   }
 }

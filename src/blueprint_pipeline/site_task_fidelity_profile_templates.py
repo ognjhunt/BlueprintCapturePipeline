@@ -22,7 +22,7 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,10 @@ PROFILE_CHECK_FIELDS = ("id", "dimension", "unit", "minimum_sample_count", "maxi
 TEMPLATE_CHECK_FIELDS = frozenset(PROFILE_CHECK_FIELDS) | {"sample_ids", "site_reading", "simulator_reading",
                                                            "threshold_basis"}
 CATALOG_CHECK_FIELDS = ("id", "dimension", "unit", "minimum_sample_count", "sample_ids")
+# What a threshold reviewer approves: each check's profile fields and the readings it takes.
+REVIEWED_CHECK_FIELDS = (*PROFILE_CHECK_FIELDS, "sample_ids")
+REVIEW_FIELDS = frozenset({"status", "reviewed_by", "reviewed_at_iso", "reviewed_checks_digest", "proposal"})
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 # Must equal the qualifier's label pattern (pinned by a test).
 _LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
 _ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +56,7 @@ _PENDING_REVIEW = {
     "status": "pending_review",
     "reviewed_by": None,
     "reviewed_at_iso": None,
+    "reviewed_checks_digest": None,
     "proposal": ("AI-assisted engineering proposal of 2026-10-19. These are not reviewed values: the founder "
                  "reviews them, and records the review here, before any profile is produced."),
 }
@@ -226,19 +231,37 @@ def template(family: str) -> dict[str, Any]:
 
 
 def _validate_review(review: Any) -> None:
-    _require(isinstance(review, Mapping)
-             and set(review) == {"status", "reviewed_by", "reviewed_at_iso", "proposal"}
+    _require(isinstance(review, Mapping) and set(review) == REVIEW_FIELDS
              and isinstance(review.get("proposal"), str) and review["proposal"].strip(), "review_invalid")
     if review["status"] == "reviewed":
         _require(isinstance(review["reviewed_by"], str) and _LABEL.fullmatch(review["reviewed_by"])
-                 and _time(review["reviewed_at_iso"]), "review_invalid")
+                 and _time(review["reviewed_at_iso"])
+                 and isinstance(review["reviewed_checks_digest"], str)
+                 and _DIGEST.fullmatch(review["reviewed_checks_digest"]), "review_invalid")
     else:
         _require(review["status"] == "pending_review" and review["reviewed_by"] is None
-                 and review["reviewed_at_iso"] is None, "review_invalid")
+                 and review["reviewed_at_iso"] is None and review["reviewed_checks_digest"] is None,
+                 "review_invalid")
+
+
+def _checks_digest(row: Mapping[str, Any]) -> str:
+    return digest({"family": row["family"],
+                   "checks": [{key: check[key] for key in REVIEWED_CHECK_FIELDS} for check in row["checks"]]})
+
+
+def reviewed_checks_digest(value: Any) -> str:
+    """The digest a threshold review records: any later change to a check's thresholds, unit, minimum
+    sample count or readings makes the recorded review stale until someone reviews again."""
+    return _checks_digest(_validate(value, verify_review_digest=False))
 
 
 def validate_template(value: Any) -> dict[str, Any]:
-    """Return a copy of a well-formed template; every threshold must be explicit and positive."""
+    """Return a copy of a well-formed template; every threshold must be explicit and positive, and a
+    recorded review must cover exactly the checks it names."""
+    return _validate(value, verify_review_digest=True)
+
+
+def _validate(value: Any, *, verify_review_digest: bool) -> dict[str, Any]:
     _require(isinstance(value, Mapping)
              and set(value) == {"schema_version", "family", "readings", "threshold_review", "checks"}
              and value.get("schema_version") == TEMPLATE_SCHEMA and value.get("family") in FAMILIES,
@@ -278,6 +301,9 @@ def validate_template(value: Any) -> dict[str, Any]:
         used.update(samples)
     _require(set(readings) == used, "reading_unused")
     _require({check["dimension"] for check in row["checks"]} == DIMENSIONS, "coverage_incomplete")
+    review = row["threshold_review"]
+    if verify_review_digest and review["status"] == "reviewed":
+        _require(review["reviewed_checks_digest"] == _checks_digest(row), "review_stale")
     return row
 
 
@@ -298,11 +324,13 @@ def render_json(value: Mapping[str, Any]) -> str:
     return json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
 
 
-def profile_from_template(value: Any, *, task_id: str) -> dict[str, Any]:
-    """Emit a task-bound qualifier profile; refused until a named person reviewed the thresholds."""
+def profile_from_template(value: Any, *, task_id: str, now: datetime | None = None) -> dict[str, Any]:
+    """Emit a task-bound qualifier profile; refused until a named person reviewed these exact checks."""
     row = validate_template(value)
     review = row["threshold_review"]
     _require(review["status"] == "reviewed", "thresholds_not_reviewed")
+    moment = now or datetime.now(timezone.utc)
+    _require(datetime.fromisoformat(review["reviewed_at_iso"][:-1] + "+00:00") <= moment, "review_in_future")
     _require(isinstance(task_id, str) and _LABEL.fullmatch(task_id), "task_id_invalid")
     return {
         "schema_version": PROFILE_SCHEMA,
@@ -384,6 +412,9 @@ def main(argv: list[str] | None = None) -> int:
     profile.add_argument("--family", choices=FAMILIES, required=True)
     profile.add_argument("--task-id", required=True)
     profile.add_argument("--out", type=Path, required=True)
+    checks_digest = commands.add_parser("checks-digest",
+                                        help="Print the digest a threshold review records for a family's checks.")
+    checks_digest.add_argument("--family", choices=FAMILIES, required=True)
     coverage = commands.add_parser("coverage", help="Report whether a source document covers every check.")
     coverage.add_argument("--family", choices=FAMILIES, required=True)
     coverage.add_argument("--measurement", type=Path, required=True)
@@ -391,6 +422,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "render":
         for path in render_documents(args.root):
             print(path)
+        return 0
+    if args.command == "checks-digest":
+        print(reviewed_checks_digest(template(args.family)))
         return 0
     if args.command == "profile":
         text = render_json(profile_from_template(template(args.family), task_id=args.task_id))

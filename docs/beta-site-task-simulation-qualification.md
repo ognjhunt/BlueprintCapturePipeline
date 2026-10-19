@@ -146,8 +146,11 @@ after any template edit.
 
 The templates ship as `pending_review`, and a template is not a profile.
 Before any profile is produced, a person records a review in the template's
-`threshold_review` block: status `reviewed`, reviewer identity and UTC time.
-Then:
+`threshold_review` block: status `reviewed`, reviewer identity, UTC time, and
+the digest that `checks-digest --family <family>` prints. The digest ties the
+review to those exact checks, so any later change to a threshold, unit,
+minimum sample count or reading makes the review stale until someone reviews
+again. A review dated in the future is refused. Then:
 
 ```bash
 PYTHONPATH=src python -m blueprint_pipeline.site_task_fidelity_profile_templates profile \
