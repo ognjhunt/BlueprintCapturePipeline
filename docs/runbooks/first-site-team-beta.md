@@ -28,7 +28,10 @@ counts and max/RMS tolerances before review. For the first task, identify the
 measurement method for task-critical dimensions/landmarks, support/contact
 geometry, camera calibration, and relevant object mass/contact response. A
 numerically valid receipt does not make an unsuitable measurement method valid.
-The reviewer must be independent of both measurement producers.
+The [fidelity-profile templates](../beta-site-task-simulation-qualification.md#site-measurements-and-fidelity-profile-templates)
+name each check's site and simulator reading. Site readings cover dimensions,
+support heights, clearances and mass or pull force; they do not calibrate a
+camera. The reviewer must be independent of both measurement producers.
 
 The robot-free probe must pass for the exact scene revision before allocation.
 It checks scorer/state discrimination with a virtual carrier; it does not
