@@ -5,6 +5,8 @@ Synthetic samples in this file never constitute live qualification.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import math
 from pathlib import Path
 
@@ -191,3 +193,86 @@ def test_coverage_refuses_the_other_familys_document() -> None:
                                             _document("rigid_pick_place"))
     assert report["complete"] is False
     assert report["missing_dimensions"] == sorted(qualification.DIMENSIONS)
+
+
+# --- End to end: WebApp-shaped exports through the unchanged qualifier -------------------------------------
+# The two fixtures are byte copies of WebApp's pinned exports
+# (server/tests/fixtures/site-task-measurements/). Their bindings are synthetic,
+# so each test rebinds the document to the qualification fixture's request.
+
+EXPORTS = ROOT / "tests" / "fixtures" / "site_task_measurements"
+SIMULATOR = "blueprint-pipeline:simulator-measurements"
+
+
+def _half_rms(family: str) -> dict[str, float]:
+    return {check["id"]: check["maximum_rms_error"] / 2 for check in templates.template(family)["checks"]}
+
+
+def _qualify_with_export(root: Path, family: str, *, deltas: dict[str, float], profile_family: str | None = None,
+                         mutate_source=None):
+    from tests.test_site_task_simulation_qualification import NOW, _reauthorize_review, _rewrite, fixture
+
+    profile = fixture(root)
+    authority = profile["site_task_qualification"]
+    request = json.loads(Path(authority["request_path"]).read_text())
+    source = json.loads((EXPORTS / (family + ".webapp_export.synthetic.json")).read_text())
+    producer = "site_job:" + request["binding"]["scene_request_id"]
+    source.update(binding=request["binding"], producer_id=producer)
+    if mutate_source:
+        mutate_source(source)
+    simulated = copy.deepcopy(source)
+    simulated["producer_id"] = SIMULATOR
+    for check in simulated["checks"]:
+        for sample in check["samples"]:
+            sample["value"] = round(sample["value"] + deltas.get(check["id"], 0.0), 6)
+    folder = Path(authority["request_path"]).parent
+    for role, value in (("measurement", source), ("simulator_measurement", simulated)):
+        raw = json.dumps(value, indent=2).encode()
+        (folder / (role + ".json")).write_bytes(raw)
+        for item in request["source_artifacts"]:
+            if item["role"] == role:
+                item.update(sha256="sha256:" + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw))
+    _rewrite(profile, "request", lambda value: value.update(source_artifacts=request["source_artifacts"]))
+    fidelity = templates.profile_from_template(_reviewed(profile_family or family), task_id=request["binding"]["task_id"])
+    _rewrite(profile, "profile", lambda value: (value.clear(), value.update(fidelity)))
+    _reauthorize_review(profile)
+    authority["allowed_measurement_producers"] = [producer]
+    authority["allowed_simulator_producers"] = [SIMULATOR]
+    return qualification.qualify_from_profile(profile, now=NOW)
+
+
+@pytest.mark.parametrize("family", templates.FAMILIES)
+def test_a_webapp_export_qualifies_inside_the_reviewed_thresholds(tmp_path: Path, family: str) -> None:
+    receipt = _qualify_with_export(tmp_path, family, deltas=_half_rms(family))
+    checks = templates.template(family)["checks"]
+    registration = [check["id"] for check in checks if check["dimension"] in {"scale", "registration", "collision"}]
+    fidelity = [check["id"] for check in checks if check["id"] not in registration]
+    assert [row["id"] for row in receipt["registration_receipt"]["checks"]] == registration
+    assert [row["id"] for row in receipt["fidelity_review_receipt"]["checks"]] == fidelity
+    assert receipt["physical_performance_claimed"] is False
+    assert receipt["adp_qualified_evidence_eligible"] is False
+
+
+def test_a_simulator_outside_a_threshold_fails_that_check(tmp_path: Path) -> None:
+    deltas = _half_rms("rigid_pick_place")
+    deltas["pick_place.task_state.object_size"] = 0.015  # 1.5 cm against a 1 cm maximum
+    with pytest.raises(qualification.SiteTaskQualificationError, match="fidelity_failed:pick_place.task_state.object_size"):
+        _qualify_with_export(tmp_path, "rigid_pick_place", deltas=deltas)
+
+
+def test_a_missing_required_reading_fails_closed(tmp_path: Path) -> None:
+    def drop_mass(source: dict) -> None:
+        source["checks"] = [check for check in source["checks"] if check["id"] != "pick_place.task_dynamics.object_mass"]
+    with pytest.raises(qualification.SiteTaskQualificationError, match="samples_binding_mismatch|samples_insufficient"):
+        _qualify_with_export(tmp_path, "rigid_pick_place", deltas=_half_rms("rigid_pick_place"), mutate_source=drop_mass)
+
+
+def test_one_familys_readings_cannot_satisfy_the_others_profile(tmp_path: Path) -> None:
+    with pytest.raises(qualification.SiteTaskQualificationError, match="samples_binding_mismatch"):
+        _qualify_with_export(tmp_path, "rigid_pick_place", deltas={}, profile_family="articulated_open_close")
+
+
+@pytest.mark.parametrize("family", templates.FAMILIES)
+def test_the_webapp_exports_cover_their_templates(family: str) -> None:
+    document = json.loads((EXPORTS / (family + ".webapp_export.synthetic.json")).read_text())
+    assert templates.measurement_coverage(templates.template(family), document)["complete"] is True
