@@ -143,16 +143,19 @@ walkthroughs only, and the preparation watch alerts on supplemental uploads.
 Do not relabel a supplement as the original walkthrough or edit finalized
 source membership to force admission.
 
-The supervised recovery route is a new walkthrough through the supported site
-capture flow, with fresh capture identity/finalization/consent and ordinary
-owner observation. Correlate it to the original request in the site's record,
-then verify which capture the current WebApp request actually selects before
-preparation. If the deployed UI cannot select the replacement, retain the new
-upload and report the owner-directed relinking action still needed; do not
-patch production joins by hand. A new capture/scene revision needs a newly
-bound task packet, probe, measured qualification and execution admission. An old
-receipt or recommendation cannot qualify replacement bytes. This route must be
-observed on the actual site account before calling capture recovery complete.
+The supported supervised recovery route is a **new job/request through the
+existing site intake**, followed by its new walkthrough. Each job's capture
+token resolves its fixed `walkthrough-<requestId>` capture inside
+`site-<requestId>`; there is no same-job replacement selector or supported
+relinking operation. Preserve the original job and capture bytes. Support may
+reference both job IDs in owner notes for context, but must not rewrite source
+membership, copy old evidence joins or imply that the original job was resumed.
+
+The new job requires fresh consent/finalization, ordinary owner observation,
+and its own task packet, robot-free probe, measured qualification and execution
+admission. An old receipt or recommendation cannot qualify the new capture or
+scene revision. This route must be observed on the actual site account before
+calling capture recovery complete.
 
 ## Reconstruction providers
 
