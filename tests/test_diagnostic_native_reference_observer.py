@@ -173,7 +173,8 @@ def test_event_and_serialized_bounds_do_not_limit_original_execution(monkeypatch
 def test_exhausted_census_counts_survive_retained_cause_without_new_reads():
     error = processes.HistoricalProcessError('historical_generation_process_unknown')
     rows = tuple({'pid_open_disappeared': 0, 'descriptor_membership_changed': 1,
-                  'corroborated_process_exit': 0, 'pid_census_changed': 0} for _ in range(3))
+                  'corroborated_process_exit': 0, 'pid_census_changed': 0,
+                  'mount_view_changed': 0} for _ in range(3))
     error.census_attempt_reasons = rows
     selected = unknown()
     selected.__context__ = error
@@ -183,12 +184,34 @@ def test_exhausted_census_counts_survive_retained_cause_without_new_reads():
     assert value['exceptions'][1]['code'] == 'historical_generation_process_unknown'
 
 
+@pytest.mark.parametrize('reason', ['pid_open_disappeared', 'mount_view_changed'])
+def test_actual_exhausted_scanner_counts_survive_projection(census, monkeypatch, reason):
+    # Exercise the current producer shape, not a separately maintained copy of
+    # its dictionary. Native acceptance must retain every bounded retry reason.
+    if reason == 'pid_open_disappeared':
+        def missing(pid):
+            raise FileNotFoundError(errno.ENOENT, 'PRIVATE-PATH-SENTINEL')
+        census.failure = missing
+    else:
+        def changing(*args):
+            raise processes._MountViewChanged('historical_generation_process_view_unknown')
+        monkeypatch.setattr(processes, '_inspect_process', changing)
+    with pytest.raises(processes.HistoricalProcessError, match='^historical_generation_process_unknown$') as raised:
+        processes.refuse_historical_process_references(census.manifest, tick=lambda: None)
+    retained = raised.value.census_attempt_reasons
+    value = observer.failure_evidence(raised.value)
+    assert value['exceptions'][0]['census_attempt_reasons'] == list(retained)
+    assert all(row[reason] > 0 for row in retained)
+    assert 'PRIVATE-PATH-SENTINEL' not in json.dumps(value)
+
+
 @pytest.mark.parametrize('invalid', ['foreign_type', 'foreign_code', 'private_key', 'bool',
                                     'negative', 'oversize_count', 'oversize_rows', 'zero_reasons'])
 def test_exhausted_census_projection_refuses_untrusted_or_unbounded_metadata(invalid):
     error = processes.HistoricalProcessError('historical_generation_process_unknown')
     rows = tuple({'pid_open_disappeared': 0, 'descriptor_membership_changed': 1,
-                  'corroborated_process_exit': 0, 'pid_census_changed': 0} for _ in range(3))
+                  'corroborated_process_exit': 0, 'pid_census_changed': 0,
+                  'mount_view_changed': 0} for _ in range(3))
     if invalid == 'foreign_type':
         error = ValueError('historical_generation_process_unknown')
     if invalid == 'foreign_code':
