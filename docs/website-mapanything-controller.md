@@ -21,8 +21,15 @@ count, planned provider inputs, and actual provider inputs are separate fields.
 
 The explicit Atlas component route records `atlas_pose_inputs.json` as **pending**,
 with zero API mutation. It is preparation for a future available backend, not
-the current production handoff. The admitted producer must supply project asset references, source
-disclosure/spend authority, and the actual `images2PosedRGBD` operation. A
+the current production handoff. The admitted producer is
+`paid_resource_allocator.run_sponsored_website_atlas_pose`
+([website-atlas-pose-operation.md](website-atlas-pose-operation.md)). It needs
+Atlas access, a reviewed Atlas price, a provider-retention decision and the
+WebApp-signed spend grant. The grant is reserved under its own
+`world_labs_atlas` identity, which the WebApp refuses until a sponsorship
+records Atlas's terms. The producer uploads the pending frames as project assets
+and submits the actual `images2PosedRGBD` operation. Nothing reaches it by
+default. A
 retained `atlas_posed_rgbd_result.json` uses `website_atlas_pose_result.v1`, a
 canonical `digest`, the exact source/input `binding`, the documented pose task
 `endpoint`, and real completed `operation`. The adapter validates the returned
@@ -32,7 +39,9 @@ Explicit `target_cameras` and an optional `prompt` additionally prepare
 resizing pixels, relabeling axes, assuming measured scale, or making a request.
 Context views retain their returned grid; target cameras must use Atlas's
 1280 by 720 grid. Returned pose frame count does not establish provider input
-usage, which remains unknown until the admitted producer supplies its receipt.
+usage. Input usage is reported only from the producer's `operation_receipt`,
+and only while that receipt still binds these frames and its retained output
+bytes. A result without the receipt still reports unknown usage.
 It does not treat generated posed views as final scene assets. Admitted API
 dispatch, final splat/collider assets, and exact native mask/pixel/geometry
 binding remain required; these are typed pending states rather than a fallback

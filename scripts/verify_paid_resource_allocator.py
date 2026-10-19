@@ -143,6 +143,13 @@ APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS = {
     # Plan 14 §9 (PR 4): promotion and one readback of an episode compilation's output.
     ("src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py", "_promote"),
 }
+# The Atlas pose adapter reserves its own spend once the release gate it is
+# handed passes. Only the canonical allocator entry may hand it that gate.
+ATLAS_POSE_CAPABILITIES = frozenset({"run_admitted_atlas_pose", "submit_atlas_pose_operation"})
+APPROVED_ATLAS_POSE_CALLERS = {
+    ("src/blueprint_pipeline/paid_resource_allocator.py", "run_sponsored_website_atlas_pose"),
+    ("src/blueprint_pipeline/website_atlas_pose.py", "run_admitted_atlas_pose"),
+}
 SURFACE_CLASSIFICATIONS = {
     "canonical_allocator",
     "canonical_adapter",
@@ -574,6 +581,8 @@ def _verify_mutation_surface_contract() -> list[str]:
         source_by_path, REMOTE_CPU_OBJECT_STORE_WRITERS
     ) != APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS:
         blockers.append("remote_cpu_object_store_writer_caller_set_mismatch")
+    if _s3_transport_capability_callers(source_by_path, ATLAS_POSE_CAPABILITIES) != APPROVED_ATLAS_POSE_CALLERS:
+        blockers.append("atlas_pose_capability_caller_set_mismatch")
     transport_module = "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py"
     for relative, source in source_by_path.items():
         if relative != transport_module and (

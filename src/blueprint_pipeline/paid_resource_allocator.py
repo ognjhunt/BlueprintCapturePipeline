@@ -743,6 +743,22 @@ def run_sponsored_website_geometry(*, input_manifest: Path, output_root: Path,
         task_context=task_context, source_commit=commit, allocate=_run_reconstruction_gpu_canary)
 
 
+def run_sponsored_website_atlas_pose(*, output_root: Path, capture_id: str, task_context: Mapping[str, Any],
+                                     **options: Any) -> dict[str, Any]:
+    """Canonical allocator entry for one admitted Atlas images2PosedRGBD operation.
+
+    Only an explicit controller decision calls this; see website_atlas_pose.
+    """
+    from .website_atlas_pose import run_admitted_atlas_pose
+
+    def release_blockers() -> tuple[str, list[str]]:
+        commit, _, _ = _current_checkout_source_state()
+        return commit, _source_checkout_blockers(commit)[0]
+
+    return run_admitted_atlas_pose(output_root=output_root, capture_id=capture_id, task_context=task_context,
+                                   release_blockers=release_blockers, **options)
+
+
 def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
     """Canonical allocator entry retaining the provider operation across restarts."""
     from .provider_preview import WorldLabsPreviewProvider, _worldlabs_api_key

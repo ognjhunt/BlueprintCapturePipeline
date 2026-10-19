@@ -87,6 +87,19 @@
       ]
     },
     {
+      "path": "src/blueprint_pipeline/website_atlas_pose.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "require_allocation_binding=True",
+        "website_atlas_reviewed_price_required",
+        "website_atlas_provider_retention_decision_required",
+        "website_atlas_pose_submission_requires_reconciliation",
+        "PROVIDER = \"world_labs_atlas\"",
+        "Idempotency-Key"
+      ]
+    },
+    {
       "path": "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
       "classification": "hard_disabled_legacy_launcher",
       "required_markers": [

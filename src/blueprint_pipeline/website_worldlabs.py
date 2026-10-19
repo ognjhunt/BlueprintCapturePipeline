@@ -67,12 +67,18 @@ def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
         if not isinstance(operation, Mapping):
             raise ValueError("website_atlas_pose_operation_not_succeeded")
         posed_context = _atlas_posed_context(operation=operation, expected_frame_count=len(frames))
+        # A returned bundle proves output count, not provider input usage.
+        # Only the admitted producer's receipt records usage, and only while
+        # it still binds these frames and its retained output bytes.
+        actual_inputs = None
+        if pose.get("operation_receipt") is not None:
+            from .website_atlas_pose import verify_atlas_pose_receipt
+            actual_inputs = verify_atlas_pose_receipt(pose=pose, frames=frames, output_root=output_root)
         context = {**result, "pose_operation_id": operation["id"],
                    "pose_result_digest": pose["digest"], "posed_rgbd_available": True,
-                   # A returned bundle proves output count, not provider input
-                   # usage. Preserve unknown input usage until the producer
-                   # supplies its actual admitted operation receipt.
-                   "actual_provider_input_count": None,
+                   "actual_provider_input_count": actual_inputs,
+                   # A verified receipt is an admitted, bought operation.
+                   "provider_mutation_performed": actual_inputs is not None,
                    "returned_pose_frame_count": len(posed_context),
                    "native_geometry_available": False,
                    "blockers": ["website_atlas_final_scene_assets_required",
