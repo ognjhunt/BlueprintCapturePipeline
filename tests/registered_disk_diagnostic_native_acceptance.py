@@ -112,7 +112,7 @@ def _census_reason_evidence(error):
         return None
     rows = getattr(error, 'census_attempt_reasons', None)
     keys = {'pid_open_disappeared', 'descriptor_membership_changed',
-            'corroborated_process_exit', 'pid_census_changed'}
+            'corroborated_process_exit', 'pid_census_changed', 'mount_view_changed'}
     if type(rows) is not tuple or len(rows) != 3 or any(
         type(row) is not dict or set(row) != keys
         or any(type(value) is not int or not 0 <= value <= 4096 for value in row.values())

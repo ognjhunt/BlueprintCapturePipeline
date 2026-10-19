@@ -7,6 +7,11 @@
 
 > Current owner direction (2026-10-14, recorded in AGENTS.md and the shared doctrine): **two programs are active.** The free beta's evaluated, recommended pilot is the customer-facing program: invited robot teams' own policies are evaluated in simulations built from website site captures, and Blueprint recommends one team whose run passed. Arm Decision Proof v1 below is the evidence program and keeps sole authority over physical-validation claims. Multi-site beta operation, the team evaluation runtime, and the robot-team journey are active work, not frozen. The frozen north-star v3 contract keeps its historical `status: sole_active_program`; this decision supersedes that label without reopening the contract.
 
+For the first site and invited robot team, use the
+[supervised beta acceptance runbook](docs/runbooks/first-site-team-beta.md):
+current website task scope, exact private model delivery, measured simulation
+qualification, result evidence and capture/execution recovery.
+
 ## Evidence Program: Arm Decision Proof v1
 
 The evidence program's build objective is to produce one prospectively
@@ -175,8 +180,8 @@ python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <ar
 
 Before accepting work, answer:
 
-1. Which Arm Decision Proof backlog item and day-7/day-14/day-21/day-28/day-35/day-42
-   gate does it unblock?
+1. Which beta journey step and observed blocker, or Arm Decision Proof backlog
+   item and day gate, does it unblock?
 2. What observed artifact proves the blocker is removed?
 3. Why is existing infrastructure insufficient?
 4. What is the smallest reversible change?
