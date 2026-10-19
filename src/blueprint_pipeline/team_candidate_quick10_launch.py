@@ -410,7 +410,9 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
                               candidate_id=f"team-{team_id}.{checkpoint_id}")
     manifest = request_embodiment(request)
     if manifest is not None:
-        _stage_robot_model(job_dir=job_dir, manifest=manifest, facts=facts, fetch=hooks.get("model_fetch"))
+        _stage_robot_model(job_dir=job_dir, manifest=manifest, facts=facts, fetch=hooks.get("model_fetch"),
+                           profile=profile, team_id=team_id, checkpoint_id=checkpoint_id,
+                           storage_client=hooks.get("model_storage_client"))
     from .site_task_simulation_qualification import qualification_for_execution
     qualification = qualification_for_execution(row=row, request=request, operator_profile=profile,
         facts=facts, robot_model_path=job_dir / EMBODIMENT_MODEL_PATH)
@@ -522,12 +524,19 @@ def _fetch_model(url: str, target: Path) -> None:
 
 
 def _stage_robot_model(*, job_dir: Path, manifest: Mapping[str, Any], facts: Mapping[str, Any],
-                       fetch: Callable[[str, Path], None] | None) -> dict[str, Any]:
+                       fetch: Callable[[str, Path], None] | None, profile: Mapping[str, Any] | None = None,
+                       team_id: str = "", checkpoint_id: str = "", storage_client=None) -> dict[str, Any]:
     """Fetch the team's robot USD once, verify it is the declared file, and seal its binding to the scene."""
 
     target = job_dir / EMBODIMENT_MODEL_PATH
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
-    (fetch or _fetch_model)(str(manifest["model"]["url"]), target)
+    from .team_robot_model_delivery import stage_private_robot_model
+    delivery = stage_private_robot_model(profile=profile or {}, manifest=manifest, team_id=team_id,
+        checkpoint_id=checkpoint_id, target=target, storage_client=storage_client)
+    if delivery is None:
+        (fetch or _fetch_model)(str(manifest["model"]["url"]), target)
+    else:
+        _write(job_dir / "team_robot_model_delivery.json", delivery)
     record = verify_model_file(manifest, target)
     plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
     stance = None

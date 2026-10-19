@@ -1,8 +1,17 @@
 # AI Onboarding Map
 
-## One Program
+## Two Active Programs
 
-BlueprintCapturePipeline has one active program: **Arm Decision Proof v1**.
+BlueprintCapturePipeline supports the **free beta's evaluated, recommended
+pilot** and **Arm Decision Proof v1**, per the owner decision of 2026-10-14.
+Read the shared-doctrine preamble in `PLATFORM_CONTEXT.md` first. The historical
+north-star contract's `sole_active_program` label does not override that decision.
+
+For beta intake, preparation, robot-team evaluation, results or recommendation,
+start with [first site/team acceptance](../runbooks/first-site-team-beta.md),
+[site-task qualification](../beta-site-task-simulation-qualification.md) and
+[execution recovery](../team-evaluation-recovery-contract.md). A qualified beta
+simulation is distinct from ADP's physically validated prospective decision.
 
 Read completely, in order:
 
@@ -23,7 +32,7 @@ Evaluation Run is the product; the Site-Task Testbed is the substrate; the
 candidate MSER is the construction method; the Physical Outcome Join is the
 proof.
 
-## Active Architecture Route
+## ADP Architecture Route
 
 | Program stage | Existing implementation to inspect first | Required v1 output |
 | --- | --- | --- |
@@ -43,15 +52,12 @@ Inspect before adding. Prefer a thin adapter over a parallel SiteBench stack.
 
 ## Development Substrates
 
-Preserve the completed SIMPLER ADP-008 replay. ADP-009 now uses an exact
-Inpaint360GS author smoke; InFusion as primary adapter and AuraFusion360 as
-quality challenger on one rights-admitted InteriorGS scene plus its matching
-SAGE-3D collision companion with frozen render-derived cameras; one targeted
-ScanNet++ real measured transfer after access; one exact SimReady USD; and a
-manual-versus-NVIDIA Content Agents authoring comparison to
-qualify object removal, background completion, replacement, metric/collision
-registration, variation, abstention, and full simulator-side replay. Use
-existing local assets to isolate downstream paths:
+Preserve the completed SIMPLER ADP-008 replay and historical method evidence.
+Current appearance work uses the owner-selected artifixer3D+ with gpt-image-2;
+Inpaint360GS and AuraFusion360 are retired execution lanes. Follow
+[current lane reachability](../arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md)
+and current repo doctrine rather than launching methods named in historical
+ADP plans. Use existing local assets to isolate downstream paths:
 
 - `tests/fixtures/decision_evidence_rigid_object_v1/vertical_slice.json` —
   routing, partial decisions, abstention, and outcome versioning;
@@ -66,10 +72,10 @@ truth, site/robot registration, task dynamics, observation-domain match,
 sim-to-real decision fidelity, or customer value. Do not hand-author substitute
 evidence. A missing partner measurement remains a typed blocker.
 
-Complete ADP-009 before fresh-site acquisition. Then use the existing Raw V3.2
-path for one fresh clean-background/object-present workcell capture. Public
-outputs remain `development_only`; the fresh run still requires a prospective
-seal and physical holdout.
+ADP's prospective physical-validation route keeps its own evidence ladder.
+The active beta may onboard sites through the existing capture flow; its
+recommendations require exact site-task simulation qualification and a completed
+passing team run. Neither route may promote development fixtures to site proof.
 
 ## Truth Route
 
@@ -93,8 +99,8 @@ and reports. Each derived method keeps its own claim ceiling.
 
 Before editing, answer:
 
-1. Which ADP backlog item is this?
-2. Which day-7/day-14/day-21/day-28/day-35/day-42 gate does it unblock?
+1. Which beta journey step or ADP backlog item is this?
+2. Which observed beta blocker or ADP day gate does it unblock?
 3. What observed artifact proves completion?
 4. Why is the existing implementation insufficient?
 5. What is the smallest reversible change?
@@ -110,8 +116,8 @@ world-model/evaluator expansion, reconstruction/provider bakeoffs, universal
 runtime support, dynamic-scene research, post-training products, multi-site
 generalization, and unrelated buyer/growth polish are frozen.
 
-Touch a frozen component only after recording an observed Arm Decision Proof
-blocker and demonstrating that the component is the smallest path. Preserve
+Touch a frozen component only after recording an observed beta or ADP blocker,
+or an explicit bounded owner exception, and demonstrating that the component is the smallest path. Preserve
 compatibility readers and safety gates, but do not extend the old lane.
 
 ## Authority
