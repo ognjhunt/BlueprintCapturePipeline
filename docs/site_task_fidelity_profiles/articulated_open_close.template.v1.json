@@ -1,0 +1,143 @@
+{
+  "checks": [
+    {
+      "dimension": "scale",
+      "id": "open_close.scale.lengths",
+      "maximum_absolute_error": 0.025,
+      "maximum_rms_error": 0.02,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "front_width",
+        "reference_sheet_long_edge"
+      ],
+      "simulator_reading": "The front's width and the sheet's long edge in the prepared scene geometry.",
+      "site_reading": "Width of the door, drawer or lid front, edge to edge, and the long edge of a sheet of printer paper lying flat in view while filming.",
+      "threshold_basis": "A careful tape reading is good to about 5 mm over 0.3 to 2 m. 2.5 cm is 1.3 to 2.5 percent of a 1 to 2 m span, inside typical reach tolerance. Website scenes currently carry estimated metres, so this is the check an unmeasured scale fails.",
+      "unit": "m"
+    },
+    {
+      "dimension": "registration",
+      "id": "open_close.registration.handle_height",
+      "maximum_absolute_error": 0.02,
+      "maximum_rms_error": 0.02,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "handle_height"
+      ],
+      "simulator_reading": "Height of handle_grasp_point_closed_world_m above the registered floor plane.",
+      "site_reading": "Floor to the middle of the handle, with the front closed.",
+      "threshold_basis": "The handle height sets the grasp point. About 2 cm separates a centred grasp from an edge or missed grasp on common handles.",
+      "unit": "m"
+    },
+    {
+      "dimension": "collision",
+      "id": "open_close.collision.open_clearance",
+      "maximum_absolute_error": 0.05,
+      "maximum_rms_error": 0.05,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "front_clearance_open"
+      ],
+      "simulator_reading": "The same free distance in the collision geometry with the joint at its upper limit.",
+      "site_reading": "Open floor from the fully open front straight out to the nearest obstruction.",
+      "threshold_basis": "Long spans with soft end points. 5 cm is small against approach clearances of 0.3 m or more and still catches a missing or phantom obstruction.",
+      "unit": "m"
+    },
+    {
+      "dimension": "task_state",
+      "id": "open_close.task_state.opening",
+      "maximum_absolute_error": 0.03,
+      "maximum_rms_error": 0.025,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "opening_travel",
+        "opening_chord",
+        "handle_offset_from_hinge"
+      ],
+      "simulator_reading": "Prismatic travel at the joint's upper limit. For a hinge, the chord swept by the outer edge at the upper limit (2 r sin(theta / 2) from hinge_point_world_m and authored_limits_degrees) and the handle's horizontal distance from the hinge axis.",
+      "site_reading": "Drawer: how far the front moves when pulled out fully. Door or lid: with it fully open, straight across from its outer edge to the frame edge it closes against, and the distance from the hinge edge to the middle of the handle.",
+      "threshold_basis": "Opening extent fixes the joint limit the success test reads. 3 cm on a 0.4 to 1 m chord or travel is roughly 2 to 4 degrees, or 5 percent of range.",
+      "unit": "m"
+    },
+    {
+      "dimension": "observation",
+      "id": "open_close.observation.visible_lengths",
+      "maximum_absolute_error": 0.02,
+      "maximum_rms_error": 0.02,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "reference_sheet_long_edge",
+        "front_width"
+      ],
+      "simulator_reading": "The same lengths recovered from a rendered RGB-D view at a capture or robot camera pose, using the scene's camera intrinsics: the appearance the policy sees, not the collision geometry.",
+      "site_reading": "The sheet's long edge and the front's width, from the same readings.",
+      "threshold_basis": "About 7 percent of a sheet edge. Catches a render whose appearance is out of scale or misaligned with the collision geometry, which the scale check cannot see.",
+      "unit": "m"
+    },
+    {
+      "dimension": "task_dynamics",
+      "id": "open_close.task_dynamics.opening_force",
+      "maximum_absolute_error": 10.0,
+      "maximum_rms_error": 10.0,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "opening_force"
+      ],
+      "simulator_reading": "Force at the handle needed to start the joint moving in the prepared scene (joint friction, detent and spring), from a quasi-static pull probe.",
+      "site_reading": "Peak reading of a luggage or spring scale hooked on the handle and pulled slowly until the front starts to move.",
+      "threshold_basis": "Untrained luggage-scale peaks vary by roughly 3 to 5 N. 10 N separates a light cabinet front (5 to 15 N) from a stiff door (30 N or more), the difference that changes the outcome.",
+      "unit": "N"
+    }
+  ],
+  "family": "articulated_open_close",
+  "readings": [
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "handle_height"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "front_width"
+    },
+    {
+      "articulation": "sliding",
+      "quantity": "length",
+      "sample_id": "opening_travel"
+    },
+    {
+      "articulation": "hinged",
+      "quantity": "length",
+      "sample_id": "opening_chord"
+    },
+    {
+      "articulation": "hinged",
+      "quantity": "length",
+      "sample_id": "handle_offset_from_hinge"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "front_clearance_open"
+    },
+    {
+      "articulation": null,
+      "quantity": "force",
+      "sample_id": "opening_force"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "reference_sheet_long_edge"
+    }
+  ],
+  "schema_version": "blueprint.site_task_fidelity_profile_template.v1",
+  "threshold_review": {
+    "proposal": "AI-assisted engineering proposal of 2026-10-19. These are not reviewed values: the founder reviews them, and records the review here, before any profile is produced.",
+    "reviewed_at_iso": null,
+    "reviewed_by": null,
+    "reviewed_checks_digest": null,
+    "status": "pending_review"
+  }
+}

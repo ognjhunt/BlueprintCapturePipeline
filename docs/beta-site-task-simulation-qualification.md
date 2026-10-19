@@ -123,6 +123,65 @@ precede review; review must precede execution and remain valid through its
 deadline. A receipt reports the reviewed evidence; it does not establish that
 an arbitrary numeric measurement is a valid measurement method.
 
+## Site measurements and fidelity-profile templates
+
+For cohort 1 the site is the measurement producer (founder decision,
+2026-10-19). A site records optional tape-measure readings on its job page.
+WebApp keeps them with the job. For one request's exact binding, it exports
+them as the `blueprint.site_task_measurement_samples.v1` source document:
+`POST /api/admin/jobs/:requestId/site-measurements/source-document`, or the
+admin job console. The measurement producer is
+`site_job:<scene_request_id>`. A Pipeline service identity produces the
+simulator measurements, and the founder reviews. Add each site's identity to
+`allowed_measurement_producers` when the site is admitted.
+
+`src/blueprint_pipeline/site_task_fidelity_profile_templates.py` holds one
+template per scored family, `rigid_pick_place` and `articulated_open_close`.
+Each check names the site readings it takes and how the simulator reads the
+same quantity. Its thresholds are explicit, each with its basis. Reviewable
+copies are in `docs/site_task_fidelity_profiles/`. The threshold-free catalog,
+`docs/schemas/site_task_measurement_catalog.v1.json`, is the contract WebApp
+mirrors byte for byte. Re-render all three with the module's `render` command
+after any template edit.
+
+The templates ship as `pending_review`, and a template is not a profile.
+Before any profile is produced, a person records a review in the template's
+`threshold_review` block: status `reviewed`, reviewer identity, UTC time, and
+the digest that `checks-digest --family <family>` prints. The digest ties the
+review to those exact checks, so any later change to a threshold, unit,
+minimum sample count or reading makes the review stale until someone reviews
+again. A review dated in the future is refused. Then:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.site_task_fidelity_profile_templates profile \
+  --family rigid_pick_place --task-id <approved_task_id> \
+  --out /absolute/retained/qualification/profile.json
+```
+
+The command refuses while thresholds are unreviewed. Its output carries the
+family, task ID, template digest and threshold reviewer, and follows the
+existing path. The operator pins its digest, the reviewer accepts it with the
+request, and the qualifier consumes it unchanged.
+
+Before simulator work, check that the site's readings can fill every check:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.site_task_fidelity_profile_templates coverage \
+  --family rigid_pick_place --measurement /absolute/retained/qualification/measurement.json
+```
+
+It exits non-zero and names each missing reading, unexpected sample, unit
+mismatch, or mix of hinged and sliding readings. A missing reading still fails
+closed at qualification.
+
+A reading used to set a scene's metric scale cannot also check that scale.
+Name it as a calibration reading in WebApp's export, which then leaves it out
+of every check. Website scenes currently carry estimated metres, so no site
+reading calibrates a scene today.
+
+The simulator-side producer for these quantities does not exist yet. Each
+template check's `simulator_reading` states what that producer must read.
+
 ## Receipt, publication and execution
 
 The full output schema is `blueprint.site_task_simulation_qualification.v1`.

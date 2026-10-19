@@ -1,0 +1,98 @@
+{
+  "schema_version": "blueprint.site_task_measurement_samples.v1",
+  "binding": {
+    "scene_request_id": "req-measure-2",
+    "site_id": "site-req-measure-2",
+    "task_id": "task-fixture",
+    "capture_id": "walkthrough-req-measure-2",
+    "source_capture_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "testbed_digest_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "scene_revision_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "task_spec_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "success_contract_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "robot_model_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "policy_interface_id": "blueprint_policy_https.v1"
+  },
+  "producer_id": "site_job:req-measure-2",
+  "observed_at_iso": "2026-10-17T09:00:00Z",
+  "checks": [
+    {
+      "id": "open_close.scale.lengths",
+      "dimension": "scale",
+      "unit": "m",
+      "samples": [
+        {
+          "sample_id": "front_width",
+          "value": 0.6
+        },
+        {
+          "sample_id": "reference_sheet_long_edge",
+          "value": 0.297
+        }
+      ]
+    },
+    {
+      "id": "open_close.registration.handle_height",
+      "dimension": "registration",
+      "unit": "m",
+      "samples": [
+        {
+          "sample_id": "handle_height",
+          "value": 0.92
+        }
+      ]
+    },
+    {
+      "id": "open_close.collision.open_clearance",
+      "dimension": "collision",
+      "unit": "m",
+      "samples": [
+        {
+          "sample_id": "front_clearance_open",
+          "value": 1.5
+        }
+      ]
+    },
+    {
+      "id": "open_close.task_state.opening",
+      "dimension": "task_state",
+      "unit": "m",
+      "samples": [
+        {
+          "sample_id": "opening_chord",
+          "value": 0.8
+        },
+        {
+          "sample_id": "handle_offset_from_hinge",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "id": "open_close.observation.visible_lengths",
+      "dimension": "observation",
+      "unit": "m",
+      "samples": [
+        {
+          "sample_id": "reference_sheet_long_edge",
+          "value": 0.297
+        },
+        {
+          "sample_id": "front_width",
+          "value": 0.6
+        }
+      ]
+    },
+    {
+      "id": "open_close.task_dynamics.opening_force",
+      "dimension": "task_dynamics",
+      "unit": "N",
+      "samples": [
+        {
+          "sample_id": "opening_force",
+          "value": 24.516625
+        }
+      ]
+    }
+  ]
+}
