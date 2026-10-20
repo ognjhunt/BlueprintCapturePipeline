@@ -124,7 +124,11 @@ GPUs, and no automatic paid retry. The worker downloads the pinned public
 model onto admitted compute. Fleet limits are ceilings, not task authorization.
 
 The worker uses the shared `flora_dependency_bootstrap` helper to install only
-the three hash-pinned add-ons required by the pinned vLLM base image. It leaves
+the four hash-pinned add-ons required by the pinned vLLM base image:
+Transformers 5.8.1, qwen-vl-utils 0.0.14, Decord 0.6.0, and PyAV 16.1.0. The
+approved PyAV artifact is the CPython 3.12 Linux x86_64 wheel (41,174,337 bytes),
+verified against [PyPI's release metadata](https://pypi.org/pypi/av/16.1.0/json).
+The CPU diagnostic and worker both require this exact PyAV version. The helper leaves
 Torch and vLLM unchanged and retains an installation receipt even on failure.
 Use that same helper with `preflight_flora_cpu_imports` to rehearse imports and
 the exact videos' preprocessing on existing CPU compute before renting GPUs.

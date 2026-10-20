@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -14,6 +16,23 @@ import pytest
 from blueprint_pipeline import flora_rewarder_runtime as runtime
 from tests.test_episode_interpretation import _episode_root, _request
 from tests.test_flora_episode_interpretation import _profile
+
+
+@pytest.mark.parametrize("av_version", ["15.1.0", "16.1.0+local"])
+def test_diagnostic_rejects_unpinned_pyav_before_preprocessing(tmp_path, monkeypatch, av_version):
+    versions = {"vllm": "0.24.0", "transformers": "5.8.1", "qwen-vl-utils": "0.0.14",
+                "decord": "0.6.0", "av": av_version, "numpy": "2.2.6", "Pillow": "12.2.0",
+                "huggingface_hub": "1.21.0", "torch": "2.11.0+cu130"}
+    monkeypatch.setattr(importlib.metadata, "version", versions.__getitem__)
+    monkeypatch.setattr(importlib, "import_module", lambda _: None)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    report_path = tmp_path / "diagnostic.json"
+    monkeypatch.setattr(sys, "argv", ["diagnostic", str(tmp_path), str(tmp_path),
+                                     str(tmp_path / "must-not-read-jobs.json"), str(report_path), "2", "cpu"])
+    exec(runtime._DIAGNOSTIC, {})
+    report = json.loads(report_path.read_text())
+    assert report["blockers"] == ["dependency_version_mismatch:av"]
+    assert report["media"] == []
 
 
 @pytest.mark.parametrize("parent_exit", [0, 1])

@@ -133,7 +133,7 @@ import importlib, importlib.metadata, json, sys
 source, model, jobs_path, report_path, tensor_parallel, mode = sys.argv[1:]
 sys.path.insert(0, source)
 result = {"versions": {}, "devices": [], "media": [], "blockers": []}
-exact = {"vllm":"0.24.0", "transformers":"5.8.1", "qwen-vl-utils":"0.0.14", "decord":"0.6.0"}
+exact = {"vllm":"0.24.0", "transformers":"5.8.1", "qwen-vl-utils":"0.0.14", "decord":"0.6.0", "av":"16.1.0"}
 modules = {"vllm":"vllm", "transformers":"transformers", "qwen-vl-utils":"qwen_vl_utils",
            "decord":"decord", "av":"av", "numpy":"numpy", "Pillow":"PIL",
            "huggingface_hub":"huggingface_hub", "torch":"torch"}
@@ -148,7 +148,7 @@ for package, module in modules.items():
         result["blockers"].append("dependency_import_failed:" + package + ":" + type(exc).__name__)
 try:
     from packaging.specifiers import SpecifierSet
-    for package, spec in {"av":">=15", "numpy":"<3", "Pillow":">=11,<13", "huggingface_hub":">=1.0"}.items():
+    for package, spec in {"numpy":"<3", "Pillow":">=11,<13", "huggingface_hub":">=1.0"}.items():
         if result["versions"].get(package, "0") not in SpecifierSet(spec):
             result["blockers"].append("dependency_version_mismatch:" + package)
     if mode == "gpu":

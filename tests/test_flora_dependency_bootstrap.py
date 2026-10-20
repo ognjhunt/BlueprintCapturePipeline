@@ -87,6 +87,7 @@ def test_wheel_hashes_are_exact_approved_artifacts():
         "transformers": {"version": "5.8.1", "sha256": "5340fb95962162cdfdae5cc91d7f8fedd92ed75216c1154c5e1f590fcf56dd0e"},
         "qwen-vl-utils": {"version": "0.0.14", "sha256": "5e28657bfd031e56bd447c5901b58ddfc3835285ed100f4c56580e0ade054e96"},
         "decord": {"version": "0.6.0", "sha256": "51997f20be8958e23b7c4061ba45d0efcd86bffd5fe81c695d0befee0d442976"},
+        "av": {"version": "16.1.0", "sha256": "7ae547f6d5fa31763f73900d43901e8c5fa6367bb9a9840978d57b5a7ae14ed2"},
     }
 
 

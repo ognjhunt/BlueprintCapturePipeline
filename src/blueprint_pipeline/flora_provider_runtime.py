@@ -83,7 +83,7 @@ def main() -> int:
                 "decord":"decord", "av":"av", "numpy":"numpy", "Pillow":"PIL", "huggingface_hub":"huggingface_hub"}.items():
             versions[package] = importlib.metadata.version(package)
             importlib.import_module(module)
-        for package, expected in {"vllm":"0.24.0", "transformers":"5.8.1", "qwen-vl-utils":"0.0.14", "decord":"0.6.0"}.items():
+        for package, expected in {"vllm":"0.24.0", "transformers":"5.8.1", "qwen-vl-utils":"0.0.14", "decord":"0.6.0", "av":"16.1.0"}.items():
             if versions[package] != expected:
                 raise ValueError("flora_image_dependency_version_mismatch:" + package)
         _write(output / "runtime_dependency_versions.json", versions)
