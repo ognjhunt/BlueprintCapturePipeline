@@ -181,6 +181,51 @@ class EpisodeInterpreter(Protocol):
     def interpret(self, request: EpisodeInterpretationRequest) -> EpisodeInterpreterOutput: ...
 
 
+def validate_interpreter_prompt_identity(value: Mapping[str, Any]) -> dict[str, str]:
+    """Validate an adapter's exact prompt identity without assigning score authority."""
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"prompt_contract_version", "prompt_digest"}
+        or not isinstance(value.get("prompt_contract_version"), str)
+        or not value["prompt_contract_version"].strip()
+        or not _SHA256.fullmatch(str(value.get("prompt_digest") or ""))
+    ):
+        raise EpisodeInterpretationError("episode_interpreter_prompt_identity_invalid")
+    return dict(value)
+
+
+def interpreter_prompt_identity(interpreter: EpisodeInterpreter) -> dict[str, str]:
+    provider = getattr(interpreter, "prompt_identity", None)
+    return validate_interpreter_prompt_identity(
+        provider() if provider is not None else {
+            "prompt_contract_version": PROMPT_CONTRACT_VERSION,
+            "prompt_digest": PROMPT_DIGEST,
+        }
+    )
+
+
+def validate_interpreter_adapter_metadata(
+    value: Mapping[str, Any], *, input_bundle_digest: str,
+    interpreter_identity_digest: str,
+) -> dict[str, Any]:
+    """Bind research-only adapter output to its actual model input and interpreter."""
+    try:
+        metadata = json.loads(json.dumps(dict(value), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise EpisodeInterpretationError("episode_interpreter_adapter_metadata_invalid") from exc
+    if (
+        not str(metadata.get("schema_version") or "").strip()
+        or metadata.get("input_bundle_digest") != input_bundle_digest
+        or metadata.get("interpreter_identity_digest") != interpreter_identity_digest
+        or not _SHA256.fullmatch(str(metadata.get("model_input_digest") or ""))
+        or metadata.get("research_only") is not True
+        or metadata.get("learned_interpretation_only") is not True
+        or metadata.get("ranking_or_promotion_effect") != "none"
+    ):
+        raise EpisodeInterpretationError("episode_interpreter_adapter_metadata_invalid")
+    return metadata
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -731,6 +776,7 @@ def materialize_episode_interpretation_abstention(
     reason: str,
     output_path: str | Path,
     interpreter_identity: InterpreterIdentity | None = None,
+    prompt_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal a typed, idempotency-friendly abstention without provider inference."""
 
@@ -753,6 +799,10 @@ def materialize_episode_interpretation_abstention(
         raise EpisodeInterpretationError("candidate_policy_self_grading_forbidden")
     destination = Path(output_path).expanduser().resolve()
     output = _abstention_output(request, reason=reason)
+    prompt = validate_interpreter_prompt_identity(prompt_identity) if prompt_identity is not None else {
+        "prompt_contract_version": PROMPT_CONTRACT_VERSION,
+        "prompt_digest": PROMPT_DIGEST,
+    }
     receipt: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "status": "abstained",
@@ -763,8 +813,7 @@ def materialize_episode_interpretation_abstention(
         "input_receipt": dict(request.input_receipt),
         "interpreter": identity.__dict__,
         "interpreter_identity_digest": canonical_digest(identity.__dict__),
-        "prompt_contract_version": PROMPT_CONTRACT_VERSION,
-        "prompt_digest": PROMPT_DIGEST,
+        **prompt,
         "rights_attestation": None,
         "provider_called": False,
         "learned_interpretation": output.model_dump(mode="json"),
@@ -810,6 +859,7 @@ def interpret_episode(
     """Run one independent interpreter and seal a non-authoritative receipt."""
 
     identity = interpreter.identity
+    prompt = interpreter_prompt_identity(interpreter)
     if (
         identity.principal_kind != "independent_interpreter"
         or identity.interpreter_id == request.candidate_policy_id
@@ -823,6 +873,7 @@ def interpret_episode(
     rights: dict[str, Any] | None = None
     rights_record: dict[str, Any] | None = None
     provider_called = False
+    interpreter_invoked = False
     if not request.review_video_paths:
         output = _abstention_output(request, reason="required_review_video_missing")
         status = "abstained"
@@ -839,6 +890,7 @@ def interpret_episode(
             "rights_digest": rights["rights_digest"],
         }
         output = interpreter.interpret(request)
+        interpreter_invoked = True
         if not isinstance(output, EpisodeInterpreterOutput):
             output = EpisodeInterpreterOutput.model_validate(output)
         _validate_output_evidence(output, request)
@@ -855,8 +907,7 @@ def interpret_episode(
         "input_receipt": dict(request.input_receipt),
         "interpreter": identity.__dict__,
         "interpreter_identity_digest": canonical_digest(identity.__dict__),
-        "prompt_contract_version": PROMPT_CONTRACT_VERSION,
-        "prompt_digest": PROMPT_DIGEST,
+        **prompt,
         "rights_attestation": rights_record,
         "provider_called": provider_called,
         "learned_interpretation": output.model_dump(mode="json"),
@@ -891,6 +942,13 @@ def interpret_episode(
         receipt.update(schema_version="episode_interpretation_receipt.v2",
                        prompt_contract_version=metadata["prompt_contract_version"],
                        prompt_digest=metadata["prompt_digest"], interpreter_execution=metadata)
+    adapter_metadata_provider = getattr(interpreter, "adapter_metadata", None)
+    if adapter_metadata_provider is not None and interpreter_invoked:
+        receipt["adapter_metadata"] = validate_interpreter_adapter_metadata(
+            adapter_metadata_provider(),
+            input_bundle_digest=request.input_receipt["input_bundle_digest"],
+            interpreter_identity_digest=receipt["interpreter_identity_digest"],
+        )
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     destination.parent.mkdir(parents=True, exist_ok=True)
     write_json(destination, receipt)

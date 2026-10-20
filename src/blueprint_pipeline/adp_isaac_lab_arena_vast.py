@@ -459,6 +459,7 @@ def run_arena_native_control_vast(
     hard_ttl_seconds: int = 14_400,
     expected_output_filename: str = "adp_arena_native_canary.json",
     container_image: str = DEFAULT_IMAGE,
+    ngc_image_login_mode: str = "always",
     provider_bundle_kind: str = "adp_arena",
     result_schema_version: str = RESULT_SCHEMA_VERSION,
     object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
@@ -499,6 +500,7 @@ def run_arena_native_control_vast(
     provider_output_member_contract: Any | None = None,
     provider_output_reservation: Any | None = None,
     provider_output_delivery_resolution: Mapping[str, str] | None = None,
+    require_direct_port: bool | None = None,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog.
 
@@ -858,7 +860,7 @@ def run_arena_native_control_vast(
                 session_max_live_minutes=hard_ttl_seconds // 60,
                 public_image=container_image,
                 isaac_image=container_image,
-                ngc_image_login_mode="always",
+                ngc_image_login_mode=ngc_image_login_mode,
                 provider_bundle=str(bundle_path),
                 expected_provider_bundle_sha256=str(bundle["bundle_sha256"]),
                 provider_bundle_url=bundle_url,
@@ -870,6 +872,7 @@ def run_arena_native_control_vast(
                 enable_blueprint_bundle=True,
                 provider_bundle_kind=provider_bundle_kind,
                 vast_launch_mode="ssh_direct",
+                require_direct_port=require_direct_port,
                 allow_cold_isaac_image_pull=True,
                 min_cold_isaac_pull_live_minutes=30,
                 disk_gb=200,

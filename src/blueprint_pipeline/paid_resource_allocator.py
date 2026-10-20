@@ -191,6 +191,7 @@ from .native_task_arena_policy_diagnostic_bundle import (
     build_native_task_arena_policy_diagnostic_bundle,
 )
 from . import policy_canary_allocator_lane as policy_canary_lane
+from . import flora_allocator_lane
 from .native_task_arena_runtime_preflight_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
     build_native_task_arena_runtime_preflight_bundle,
@@ -1646,6 +1647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
             NATIVE_G1_TEAM_POLICY_PROBE_KIND,
             policy_canary_lane.PROBE_KIND,
+            flora_allocator_lane.PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1806,6 +1808,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--g1-campaign-rights-review", action="append", default=[])
     g1_team_lane.add_g1_team_policy_allocator_arguments(gpu)
     policy_canary_lane.add_policy_canary_allocator_arguments(gpu)
+    flora_allocator_lane.add_flora_allocator_arguments(gpu)
     gpu.add_argument(
         "--native-task-arena-retain-warm-session",
         action="store_true",
@@ -3407,6 +3410,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if success else 2
         if args.probe_kind == policy_canary_lane.PROBE_KIND:
             return policy_canary_lane.run_policy_canary_allocator_lane(args, _control_plane_checkout_blockers())
+        if args.probe_kind == flora_allocator_lane.PROBE_KIND:
+            return flora_allocator_lane.run_flora_allocator_lane(args, _source_checkout_blockers(
+                args.expected_source_commit or "",
+                allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
+            ))
         if args.probe_kind in {
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,

@@ -68,6 +68,7 @@ from .gpu_selection_policy import (
     _is_isaac_rt_candidate,
     gpu_allowed_by_policy,
     policy_manifest,
+    required_gpu_count,
     resolve_gpu_selection_policy,
 )
 from .logging_utils import log_event
@@ -1329,6 +1330,7 @@ def _search_payload(
     max_compute_cap: int = 0,
     required_provider_disk_gb: int = 0,
     require_virtual_machine: bool = False,
+    gpu_count: int = 1,
 ) -> dict[str, Any]:
     if type(require_virtual_machine) is not bool:
         raise ValueError("vast_virtual_machine_flag_invalid")
@@ -1338,7 +1340,7 @@ def _search_payload(
         "verified": {"eq": True},
         "rentable": {"eq": True},
         "rented": {"eq": False},
-        "num_gpus": {"eq": 1},
+        "num_gpus": {"eq": required_gpu_count({"required_gpu_count": gpu_count})},
     }
     if require_virtual_machine:
         payload["vms_enabled"] = {"eq": True}
@@ -7551,6 +7553,7 @@ def run_vast_provider_adapter(
 
     if mode == "dry-run":
         dry_offer_request = _search_payload(
+            gpu_count=required_gpu_count(gpu_selection_policy),
             limit=100,
             max_hourly_rate=max_hourly_rate,
             allowed_machine_ids=resolved_allowed_machine_ids,
@@ -8383,6 +8386,7 @@ def run_vast_provider_adapter(
         require_rt = _is_isaac_provider_bundle(provider_bundle_kind)
         while True:
             search_request = _search_payload(
+                gpu_count=required_gpu_count(gpu_selection_policy),
                 limit=100,
                 max_hourly_rate=max_hourly_rate,
                 allowed_machine_ids=resolved_allowed_machine_ids,

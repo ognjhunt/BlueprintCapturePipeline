@@ -32,6 +32,9 @@ write_owner_teardown_cancel_request = _write_owner_teardown_cancel_request
 SUPPORTED_PROVIDERS = ("runpod", "vast")
 VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
 CANARY_NAME_PREFIXES = (
+    # FLORA uses the shared single-allocation evaluator transport and the same
+    # exact instance name for the independent watchdog and the provider create.
+    "blueprint-flora-",
     "blueprint-groot-oscar-canary-",
     # SAM 3.1 source-track jobs are bounded Vast canaries with their own
     # exact-prefix instance handoff and teardown scope.

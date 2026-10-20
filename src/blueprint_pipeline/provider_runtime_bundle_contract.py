@@ -681,8 +681,12 @@ def provider_runtime_contract_blockers(
         )
         runner_valid = (
             "evaluator_runtime_result.json" in runner_text
-            and "Cosmos3-Nano" in runner_text
-            and "post_unseal_diagnostic_only" in runner_text
+            and (
+                ("Cosmos3-Nano" in runner_text and "post_unseal_diagnostic_only" in runner_text)
+                or ("nvidia/Flora-Rewarder" in runner_text
+                    and "development_only_episode_diagnostic" in runner_text
+                    and "candidate_policy_queried" in runner_text)
+            )
         )
         runner_blocker = "provider_runner_missing_evaluator_runtime_contract"
     else:

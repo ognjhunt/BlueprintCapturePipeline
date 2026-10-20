@@ -80,6 +80,14 @@ def _text(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def required_gpu_count(policy: str | Mapping[str, Any] | None) -> int:
+    """Return the exact device count; reject malformed explicit requests."""
+    value = policy.get("required_gpu_count", 1) if isinstance(policy, Mapping) else 1
+    if type(value) is not int or not 1 <= value <= 8:
+        raise ValueError("gpu_selection_required_gpu_count_invalid")
+    return value
+
+
 def resolve_gpu_selection_policy(
     policy: str | Mapping[str, Any] | None,
     *,
@@ -120,6 +128,7 @@ def resolve_gpu_selection_policy(
             "recommended_hard_cap_usd": policy.get("recommended_hard_cap_usd"),
             "recommended_min_gpu_ram_mb": policy.get("recommended_min_gpu_ram_mb") or 0,
             "minimum_cuda_max_good": minimum_cuda_max_good,
+            **({"required_gpu_count": required_gpu_count(policy)} if "required_gpu_count" in policy else {}),
         }
     name = _text(policy)
     if name:
@@ -140,8 +149,17 @@ def gpu_allowed_by_policy(
     """Whether one offer's GPU is eligible under a resolved policy."""
 
     if isinstance(gpu_name, Mapping):
+        if policy.get("required_gpu_count") is not None:
+            try:
+                count = required_gpu_count(policy)
+            except ValueError:
+                return False
+            if type(gpu_name.get("num_gpus")) is not int or gpu_name["num_gpus"] != count:
+                return False
         cuda_max_good = gpu_name.get("cuda_max_good")
         gpu_name = _text(gpu_name.get("gpu_name"))
+    elif policy.get("required_gpu_count") is not None:
+        return False
     upper = _text(gpu_name).upper()
     denied = tuple(policy.get("denied_gpu_keywords") or ())
     allowed = tuple(policy.get("allowed_gpu_keywords") or ())
@@ -173,6 +191,7 @@ def policy_manifest(policy: Mapping[str, Any]) -> dict[str, Any]:
         "allowed_gpu_keywords": list(policy.get("allowed_gpu_keywords") or ()),
         "reason": policy.get("reason"),
         "minimum_cuda_max_good": policy.get("minimum_cuda_max_good") or 0.0,
+        **({"required_gpu_count": policy["required_gpu_count"]} if "required_gpu_count" in policy else {}),
     }
 
 

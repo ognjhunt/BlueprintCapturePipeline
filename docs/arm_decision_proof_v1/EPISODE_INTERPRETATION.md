@@ -84,3 +84,8 @@ outcome, summary, events, possible missed events, contract considerations,
 confidence, deterministic agreement, and the authenticated receipt artifact.
 These fields are secret-path-free and explicitly carry no score, ranking, or
 promotion authority.
+
+The optional FLORA adapter implements terminal, dense, and rubric rewards over
+the same sealed videos. Its research-only retained-run comparison, exact model
+pin, runtime requirements, and bounded GPU path are documented in
+[`FLORA_EPISODE_INTERPRETATION.md`](FLORA_EPISODE_INTERPRETATION.md).
