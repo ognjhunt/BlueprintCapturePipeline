@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,6 +34,88 @@ def test_diagnostic_rejects_unpinned_pyav_before_preprocessing(tmp_path, monkeyp
     report = json.loads(report_path.read_text())
     assert report["blockers"] == ["dependency_version_mismatch:av"]
     assert report["media"] == []
+
+
+def test_diagnostic_checkpoints_and_logs_each_completed_episode(tmp_path, monkeypatch, capsys):
+    versions = {"vllm": "0.24.0", "transformers": "5.8.1", "qwen-vl-utils": "0.0.14",
+                "decord": "0.6.0", "av": "16.1.0", "numpy": "2.2.6", "Pillow": "12.2.0",
+                "huggingface_hub": "1.21.0", "torch": "2.11.0+cu130"}
+    monkeypatch.setattr(importlib.metadata, "version", versions.__getitem__)
+    monkeypatch.setattr(importlib, "import_module", lambda _: None)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    report_path = tmp_path / "diagnostic.json"
+    jobs_path = tmp_path / "jobs.json"
+    jobs_path.write_text(json.dumps([{"id": str(index), "videos": ["fake.mp4"], "task": "fixture",
+        "rubric": [], "robot": "fixture", "cameras": ["fixture"]} for index in range(2)]))
+    monkeypatch.setattr(sys, "argv", ["diagnostic", str(tmp_path), str(tmp_path),
+                                     str(jobs_path), str(report_path), "2", "cpu"])
+    def video_inputs(_):
+        partial = json.loads(report_path.read_text())
+        assert partial["completed"] is False
+        assert len(partial["media"]) == len(checkpoints)
+        checkpoints.append(partial)
+    checkpoints = []
+    core = SimpleNamespace(
+        Collage=lambda _: SimpleNamespace(num_frames=1, fps=1, duration_s=1,
+            frames=lambda _: None, release=lambda: None),
+        dense_windows=lambda *a: [], terminal_frame_indices=lambda *a: [0],
+        dense_regex=lambda: "fixture", terminal_messages=lambda *a: [],
+        rubric_prompt=lambda *a: "fixture", rubric_header=lambda *a: "fixture",
+        rubric_messages=lambda *a, **k: [])
+    monkeypatch.setitem(sys.modules, "batch_utils", SimpleNamespace(core=core,
+        engine=SimpleNamespace(load_processor=lambda _: None, render=lambda *a, **k: None),
+        rubric_reward=SimpleNamespace(video_inputs=video_inputs)))
+    monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(SamplingParams=lambda **k: None))
+    monkeypatch.setitem(sys.modules, "vllm.sampling_params", SimpleNamespace(StructuredOutputsParams=lambda **k: None))
+    exec(runtime._DIAGNOSTIC, {})
+    report = json.loads(report_path.read_text())
+    assert report["completed"] is True and report["blockers"] == []
+    assert len(checkpoints) == len(report["media"]) == 2
+    progress = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [row["event"] for row in progress] == ["flora_preflight_episode_complete"] * 2
+    assert [row["completed_episode_count"] for row in progress] == [1, 2]
+    assert all(row["requested_episode_count"] == 2 for row in progress)
+
+
+@pytest.mark.parametrize("cpu_only,profile_timeout,expected", [
+    (True, 3600, 1800), (False, 3600, 300), (True, 73, 73), (False, 73, 73)])
+def test_preflight_timeout_is_cpu_specific_and_respects_profile(tmp_path, monkeypatch, cpu_only, profile_timeout, expected):
+    data = _episode_root(tmp_path, no_drop=True, deterministic_success=False)
+    profile = _profile(_request(data), tmp_path)
+    profile["runtime_config"].update(python_executable=__file__, timeout_seconds=profile_timeout)
+    monkeypatch.setattr(runtime, "SOURCE_SHA256", {})
+    monkeypatch.setattr(runtime, "MODEL_FILES", {})
+    observed = []
+    def execute(argv, **kwargs):
+        observed.append(kwargs["timeout"])
+        Path(argv[-3]).write_text(json.dumps({"blockers": [], "media": [], "completed": True}))
+        return {"returncode": 0, "timed_out": False}
+    monkeypatch.setattr(runtime, "_execute", execute)
+    report = runtime._preflight_flora_runtime(profile, output_root=tmp_path / "preflight", cpu_import_only=cpu_only)
+    assert observed == [expected]
+    assert report["execute_ready"] is (not cpu_only)
+
+
+@pytest.mark.parametrize("timed_out", [True, False])
+def test_partial_cpu_diagnostic_is_retained_but_never_ready(tmp_path, monkeypatch, timed_out):
+    data = _episode_root(tmp_path, no_drop=True, deterministic_success=False)
+    profile = _profile(_request(data), tmp_path)
+    profile["runtime_config"]["python_executable"] = __file__
+    monkeypatch.setattr(runtime, "SOURCE_SHA256", {})
+    monkeypatch.setattr(runtime, "MODEL_FILES", {})
+    partial = {"blockers": [], "media": [{"id": str(index)} for index in range(7)],
+               "completed": False, "requested_episode_count": 20}
+    def execute(argv, **kwargs):
+        Path(argv[-3]).write_text(json.dumps(partial))
+        return {"returncode": -9 if timed_out else 0, "timed_out": timed_out}
+    monkeypatch.setattr(runtime, "_execute", execute)
+    report = runtime.preflight_flora_cpu_imports(profile, output_root=tmp_path / "preflight")
+    assert report["diagnostics"] == partial
+    assert report["execute_ready"] is False
+    assert report["cpu_imports_and_preprocessing_ready"] is False
+    assert "flora_runtime_diagnostic_incomplete" in report["blockers"]
+    if timed_out:
+        assert "flora_runtime_diagnostic_timed_out" in report["blockers"]
 
 
 @pytest.mark.parametrize("parent_exit", [0, 1])
@@ -153,7 +236,7 @@ def test_cpu_preflight_uses_same_diagnostic_without_claiming_gpu_or_weight_readi
     calls = []
     def execute(argv, **kwargs):
         calls.append(argv)
-        Path(argv[-3]).write_text(json.dumps({"blockers": [], "versions": {}, "media": []}))
+        Path(argv[-3]).write_text(json.dumps({"blockers": [], "versions": {}, "media": [], "completed": True}))
         return {"returncode": 0, "timed_out": False}
     monkeypatch.setattr(runtime, "_execute", execute)
     result = runtime.preflight_flora_cpu_imports(profile, output_root=tmp_path / "cpu-preflight")

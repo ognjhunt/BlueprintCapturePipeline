@@ -129,10 +129,15 @@ def _execute(argv: list[str], *, log_path: Path, timeout: float) -> dict[str, An
 
 
 _DIAGNOSTIC = r'''
-import importlib, importlib.metadata, json, sys
+import importlib, importlib.metadata, json, os, sys
 source, model, jobs_path, report_path, tensor_parallel, mode = sys.argv[1:]
 sys.path.insert(0, source)
-result = {"versions": {}, "devices": [], "media": [], "blockers": []}
+result = {"versions": {}, "devices": [], "media": [], "blockers": [], "completed": False}
+def checkpoint():
+    temporary = report_path + ".partial"
+    with open(temporary, "w") as stream:
+        json.dump(result, stream, allow_nan=False)
+    os.replace(temporary, report_path)
 exact = {"vllm":"0.24.0", "transformers":"5.8.1", "qwen-vl-utils":"0.0.14", "decord":"0.6.0", "av":"16.1.0"}
 modules = {"vllm":"vllm", "transformers":"transformers", "qwen-vl-utils":"qwen_vl_utils",
            "decord":"decord", "av":"av", "numpy":"numpy", "Pillow":"PIL",
@@ -172,7 +177,10 @@ if not result["blockers"]:
         processor = engine.load_processor(model)
         SamplingParams(temperature=0.0, max_tokens=640,
                        structured_outputs=StructuredOutputsParams(regex=core.dense_regex()))
-        for job in json.load(open(jobs_path)):
+        jobs = json.load(open(jobs_path))
+        result["requested_episode_count"] = len(jobs)
+        checkpoint()
+        for job in jobs:
             try:
                 collage = core.Collage(job["videos"])
                 windows = core.dense_windows(collage.num_frames, collage.fps)
@@ -186,15 +194,22 @@ if not result["blockers"]:
                 messages = core.rubric_messages(prompt, job["videos"], fps=2.0, max_frames=166)
                 engine.render(processor, messages, thinking=True, vision_ids=True)
                 rubric_reward.video_inputs(messages)
-                result["media"].append({"id":job["id"], "fps":collage.fps,
+                media = {"id":job["id"], "fps":collage.fps,
                     "num_frames":collage.num_frames, "duration_s":collage.duration_s,
-                    "terminal_sampled_frames":len(indices), "dense_windows":len(windows)})
+                    "terminal_sampled_frames":len(indices), "dense_windows":len(windows)}
                 collage.release()
+                result["media"].append(media)
+                checkpoint()
+                print(json.dumps({"event":"flora_preflight_episode_complete", "episode_id":job["id"],
+                    "completed_episode_count":len(result["media"]), "requested_episode_count":len(jobs),
+                    "preflight_kind":mode}, sort_keys=True), flush=True)
             except Exception as exc:
                 result["blockers"].append("media_preflight_failed:" + job["id"] + ":" + type(exc).__name__)
+                checkpoint()
     except Exception as exc:
         result["blockers"].append("runtime_preflight_failed:" + type(exc).__name__)
-json.dump(result, open(report_path, "w"), allow_nan=False)
+result["completed"] = True
+checkpoint()
 '''
 
 
@@ -250,15 +265,25 @@ def _preflight_flora_runtime(
             [config["python_executable"], "-I", "-B", "-c", _DIAGNOSTIC,
              str(verified), str(model), str(jobs_path), str(report_path),
              str(config["tensor_parallel_size"]), "cpu" if cpu_import_only else "gpu"],
-            log_path=root / "diagnostic.log", timeout=min(config["timeout_seconds"], 300),
+            log_path=root / "diagnostic.log",
+            timeout=min(config["timeout_seconds"], 1800 if cpu_import_only else 300),
         )
         report["diagnostic_execution"] = execution
-        if execution["returncode"] or not report_path.is_file():
+        if execution["returncode"] or execution.get("timed_out") or not report_path.is_file():
             blockers.append("flora_runtime_diagnostic_failed")
-        else:
-            diagnostics = json.loads(report_path.read_text())
-            report["diagnostics"] = diagnostics
-            blockers.extend(diagnostics["blockers"])
+        if execution.get("timed_out"):
+            blockers.append("flora_runtime_diagnostic_timed_out")
+        if report_path.is_file():
+            try:
+                diagnostics = json.loads(report_path.read_text())
+                if not isinstance(diagnostics, dict) or not isinstance(diagnostics.get("blockers"), list):
+                    raise ValueError("invalid diagnostic shape")
+                report["diagnostics"] = diagnostics
+                blockers.extend(diagnostics["blockers"])
+                if diagnostics.get("completed") is not True:
+                    blockers.append("flora_runtime_diagnostic_incomplete")
+            except (ValueError, OSError):
+                blockers.append("flora_runtime_diagnostic_report_invalid")
         report["verified_source_root"] = str(verified)
     report["execute_ready"] = not blockers and not cpu_import_only
     report["cpu_imports_and_preprocessing_ready"] = not blockers
