@@ -134,6 +134,10 @@ Use that same helper with `preflight_flora_cpu_imports` to rehearse imports and
 the exact videos' preprocessing on existing CPU compute before renting GPUs.
 This rehearsal always reports `execute_ready: false`; the GPU worker must
 still verify the weight shards, devices, and complete runtime preflight.
+CPU preprocessing honors the profile timeout up to 1,800 seconds; the GPU
+diagnostic keeps its 300-second cap. Each processed episode emits a JSON progress
+line and updates `diagnostic.json`. A partial checkpoint remains incomplete and
+cannot establish readiness, including when the process times out.
 
 ## Read the comparison
 
