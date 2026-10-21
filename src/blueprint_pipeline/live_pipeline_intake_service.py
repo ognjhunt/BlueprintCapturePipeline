@@ -1533,8 +1533,14 @@ DEPLOYMENT_DIAGNOSTIC_TIMEOUT_SECONDS = 2.0
 def create_app() -> FastAPI:
     app = FastAPI(title="Blueprint Live Pipeline Intake", version=INTAKE_SCHEMA_VERSION)
     from .agent_execution.http_routes import register_agent_execution_routes
+    from .job_evidence_routes import register_job_evidence_routes
 
     register_agent_execution_routes(app, require_admission=_require_admission)
+    register_job_evidence_routes(
+        app, require_admission=_require_admission,
+        state_root=lambda: _work_dir(_manifest_path()).resolve() / "job_evidence",
+        run_state_root=lambda: _task_evaluation_run_root(_manifest_path()),
+    )
 
     # Sync intake handlers share AnyIO's finite worker pool. A busy handler
     # must not queue release identity behind that work (including shutdown
