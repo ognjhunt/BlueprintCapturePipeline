@@ -38,7 +38,7 @@ def test_every_catalog_option_can_be_shortlisted_and_replayed_without_execution(
         assert all(route["blockers"] for route in plan["integrations"][0]["policy_routes"])
         assert plan["plan_digest"] == cross_runtime_canonical_digest(plan, digest_field="plan_digest")
         if body["arm_count"] == 2:
-            assert "independent_bimanual_tool_channels_required" in plan["integrations"][0]["blockers"]
+            assert plan["integrations"][0]["native_admission"]["manifest_schema"] == "blueprint.robot_embodiment.v2"
 
 
 def test_catalog_returns_fresh_data_and_canonical_shortlists_are_selection_order_independent():
@@ -244,7 +244,25 @@ def test_native_binding_rejects_changed_asset_and_wrong_body_and_unsupported_tas
 
 
 def test_dual_arm_never_silently_inherits_the_singular_gripper_runtime(tmp_path):
+    path, manifest, scene = _native_inputs(tmp_path)
+    manifest.update(embodiment_id="i2rt_yam_bimanual", form="bimanual_arm")
     request = _shortlist("i2rt_yam_bimanual", "dreamlabs_dream1")
     with pytest.raises(support.DeploymentSupportError, match="independent_bimanual_tool_channels_required"):
         support.prepare_native_binding(request, embodiment_id="i2rt_yam_bimanual",
-                                       manifest={}, model_path=tmp_path / "absent.usd", scene_plan={})
+                                       manifest=manifest, model_path=path, scene_plan=scene)
+
+
+def test_bimanual_native_binding_reaches_real_model_validation_with_two_explicit_tools(tmp_path):
+    from tests.test_team_embodiment import bimanual_inputs, station_plan
+
+    identity = "i2rt_yam_bimanual"
+    path, manifest = bimanual_inputs(tmp_path, embodiment_id=identity, arm_dof=6)
+    scene = station_plan()
+    scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+    result = support.prepare_native_binding(_shortlist(identity, "dreamlabs_dream1"), embodiment_id=identity,
+                                           manifest=manifest, model_path=path, scene_plan=scene)
+    assert result["robot_binding"]["manifest"]["schema_version"] == "blueprint.robot_embodiment.v2"
+    assert result["execution_authorized"] is False
+    assert result["catalog_asset_identity_verified"] is False
+    assert [g["name"] for g in result["policy_handoff"]["robot_embodiment"]["grippers"]] == ["left", "right"]
+    assert "rights_and_provider_terms" in result["remaining_admission"]

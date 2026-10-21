@@ -13,8 +13,8 @@ described by two things the simulator needs and nothing else:
   episode as the robot's failure);
 - **its joints**: each driven joint, in action order, by ``position`` (arms,
   legs, torsos, heads, fingers) or by ``velocity`` (wheels), with its limits
-  and optional gains; optionally a gripper whose joints close together on one
-  0-to-1 command.
+  and optional gains; v1 optionally declares one gripper, while v2 declares
+  ordered independent tools whose finger joints each share one 0-to-1 command.
 
 plus one flattened USD (Isaac Sim's native format; Isaac Lab's URDF and MJCF
 importers produce it) bound by SHA-256, the reset pose, the cameras the policy
@@ -51,6 +51,7 @@ from urllib.parse import urlsplit
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA = "blueprint.robot_embodiment.v1"
+SCHEMA_V2 = "blueprint.robot_embodiment.v2"
 BINDING_SCHEMA = "blueprint.team_embodiment_binding.v1"
 ROBOT_ID = "team_embodiment"
 POLICY_INTERFACE_ID = "blueprint_policy_https.v1"
@@ -95,12 +96,15 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
     m = dict(value) if isinstance(value, Mapping) else {}
     blockers: list[str] = []
+    v2 = m.get("schema_version") == SCHEMA_V2
     allowed = {"schema_version", "embodiment_id", "form", "model", "base", "joints", "gripper", "tool_link",
                "reset_joint_positions", "actuator", "cameras", "control_hz", "action_chunk_rows", "reach_m",
                "embodiment_digest"}
+    if v2:
+        allowed = (allowed - {"gripper"}) | {"grippers"}
     if set(m) - allowed:
         blockers.append("team_embodiment_field_unknown:" + ",".join(sorted(set(m) - allowed)))
-    if m.get("schema_version") != SCHEMA:
+    if m.get("schema_version") not in (SCHEMA, SCHEMA_V2):
         blockers.append("team_embodiment_schema_invalid")
     if not _ID.fullmatch(str(m.get("embodiment_id") or "")):
         blockers.append("team_embodiment_id_invalid")
@@ -151,9 +155,25 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
             position_limits[str(joint["name"])] = (float(joint["lower"]), float(joint["upper"]))
     if not 1 <= len(declared) <= MAX_JOINTS:
         blockers.append("team_embodiment_joints_count_invalid")
-    gripper = m.get("gripper")
     gripper_names: list[str] = []
-    if gripper is not None:
+    if v2:
+        channels = m.get("grippers")
+        if not isinstance(channels, list) or len(channels) > 2:
+            blockers.append("team_embodiment_grippers_invalid")
+            channels = []
+        channel_names = [g.get("name") if isinstance(g, Mapping) else None for g in channels]
+        if (any(not _NAME.fullmatch(str(name or "")) for name in channel_names)
+                or len(set(map(str, channel_names))) != len(channel_names)):
+            blockers.append("team_embodiment_gripper_names_invalid")
+        tool_links = [g.get("tool_link") if isinstance(g, Mapping) else None for g in channels]
+        if (len(set(map(str, tool_links))) != len(tool_links)
+                or (channels and m.get("tool_link") not in tool_links)):
+            blockers.append("team_embodiment_gripper_tool_links_invalid")
+        if m.get("form") == "bimanual_arm" and len(channels) != 2:
+            blockers.append("team_embodiment_bimanual_tool_channels_required")
+    else:
+        channels = [] if m.get("gripper") is None else [m["gripper"]]
+    for gripper in channels:
         gripper = gripper if isinstance(gripper, Mapping) else {}
         joints = gripper.get("joints") if isinstance(gripper.get("joints"), list) else []
         for joint in joints:
@@ -165,7 +185,10 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
                 continue
             gripper_names.append(str(joint["name"]))
         contacts = gripper.get("contact_links")
-        if (set(gripper) != {"joints", "max_width_m", "contact_links"} or not 1 <= len(joints) <= 8
+        expected = {"joints", "max_width_m", "contact_links"} | ({"name", "tool_link"} if v2 else set())
+        if v2 and not _NAME.fullmatch(str(gripper.get("tool_link") or "")):
+            blockers.append("team_embodiment_gripper_tool_link_invalid")
+        if (set(gripper) != expected or not 1 <= len(joints) <= 8
                 or not _finite(gripper.get("max_width_m")) or not 0 < float(gripper["max_width_m"]) <= 1.0
                 or not isinstance(contacts, list) or not 1 <= len(contacts) <= 8
                 or len(set(map(str, contacts))) != len(contacts)
@@ -220,10 +243,19 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     return manifest
 
 
-def action_dimension(manifest: Mapping[str, Any]) -> int:
-    """One target per declared joint (a position, or a wheel's velocity), then the gripper's closure (0 to 1)."""
+def gripper_channels(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Ordered internal tool channels; never insert v2 fields into a legacy manifest."""
 
-    return len(manifest["joints"]) + (1 if manifest.get("gripper") else 0)
+    if manifest.get("schema_version") == SCHEMA_V2:
+        return [deepcopy(dict(channel)) for channel in manifest["grippers"]]
+    gripper = manifest.get("gripper")
+    return [] if not gripper else [{"name": "gripper", "tool_link": manifest["tool_link"], **deepcopy(dict(gripper))}]
+
+
+def action_dimension(manifest: Mapping[str, Any]) -> int:
+    """Declared joint targets, followed by one closure per ordered tool (0 to 1)."""
+
+    return len(manifest["joints"]) + len(gripper_channels(manifest))
 
 
 def camera_names(manifest: Mapping[str, Any]) -> list[str]:
@@ -289,9 +321,10 @@ def _body_path(structure: Mapping[str, Any], link: str) -> str | None:
 def model_structure_blockers(manifest: Mapping[str, Any], structure: Mapping[str, Any]) -> list[str]:
     """Every declared joint and link exists, once, in the model; a fixed base is anchored, a free one is not."""
 
-    gripper = manifest.get("gripper") or {}
-    joints = [j["name"] for j in manifest["joints"]] + [j["name"] for j in gripper.get("joints") or []]
-    links = [manifest["tool_link"], *(gripper.get("contact_links") or []),
+    channels = gripper_channels(manifest)
+    joints = [j["name"] for j in manifest["joints"]] + [j["name"] for g in channels for j in g["joints"]]
+    links = [manifest["tool_link"], *(g["tool_link"] for g in channels),
+             *(link for g in channels for link in g["contact_links"]),
              *(c["mount_link"] for c in manifest["cameras"] if c["mount_link"] is not None),
              *manifest["base"].get("ground_contact_links", [])]
     blockers = [f"team_embodiment_model_joint_missing:{name}" for name in joints
@@ -461,8 +494,9 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
     station = (value.get("robot") or {}).get("base_pose_world")
     if not isinstance(station, Mapping):
         raise TeamEmbodimentError(["team_embodiment_station_unavailable"])
+    channels = gripper_channels(manifest)
     gripper = manifest.get("gripper") or {}
-    contact_links = list(gripper.get("contact_links") or [manifest["tool_link"]])
+    contact_links = list(dict.fromkeys(link for g in channels for link in g["contact_links"])) or [manifest["tool_link"]]
     task_bodies = sorted({_body_path(structure, link) for link in contact_links} - {None})
     if len(task_bodies) != len(contact_links):
         raise TeamEmbodimentError(["team_embodiment_contact_links_not_in_model"])
@@ -501,6 +535,21 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
         "grasp_frame": {"kind": "body_midpoint", "body_names": (contact_links * 2)[:2]},
         "control_hz": int(manifest["control_hz"]), "action_chunk_rows": int(manifest["action_chunk_rows"]),
     }
+    if manifest["schema_version"] == SCHEMA_V2:
+        # Keep each channel's measured geometry and command order. The legacy
+        # flattened joints are solely the simulator's position-action order.
+        value["robot"].update(
+            enabled_self_collisions=True,
+            gripper_joints=[dict(joint) for channel in channels for joint in channel["joints"]],
+            gripper_channels=[{**deepcopy(channel),
+                               "task_contact_body_paths": [_body_path(structure, link)
+                                                           for link in channel["contact_links"]]}
+                              for channel in channels],
+        )
+        # The primary legacy readback remains primary: never average tools.
+        primary = next((g for g in channels if g["tool_link"] == manifest["tool_link"]), None)
+        primary_links = primary["contact_links"] if primary else [manifest["tool_link"]]
+        value["robot"]["grasp_frame"]["body_names"] = (primary_links * 2)[:2]
     if isinstance(value.get("reset"), dict):
         value["reset"]["robot_joint_positions_rad"] = dict(reset)
     # The team's cameras replace Blueprint's policy cameras; the review (overview) camera stays.
@@ -523,6 +572,21 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
         ground = {_body_path(structure, link) for link in base.get("ground_contact_links", [])}
         _rebind_contact_sensors(value["articulation"], task_bodies=task_bodies,
                                 protected=sorted(set(binding["body_paths"]) - ground))
+        if manifest["schema_version"] == SCHEMA_V2:
+            sensors = value["articulation"]["contact_sensors"]
+            # Separate real filtered sensors, sharing the existing logical
+            # aggregate. Each tool retains exactly which instances measured it.
+            expanded = []
+            for sensor in sensors:
+                if sensor["logical_sensor_id"] != "task_robot_contact":
+                    expanded.append(sensor)
+                    continue
+                for channel in value["robot"]["gripper_channels"]:
+                    sensor_id = sensor["sensor_instance_id"] + "__tool_" + channel["name"]
+                    expanded.append({**sensor, "sensor_instance_id": sensor_id,
+                                     "filter_prim_paths_expr": channel["task_contact_body_paths"]})
+                    channel.setdefault("task_contact_sensor_instances", []).append(sensor_id)
+            value["articulation"]["contact_sensors"] = expanded
     profile = {"schema_version": "team_embodiment_profile.v1", "robot_preset_id": ROBOT_ID,
                "embodiment_id": manifest["embodiment_id"], "embodiment_digest": manifest["embodiment_digest"],
                "policy_interface_id": POLICY_INTERFACE_ID,
@@ -532,6 +596,10 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
                                            else "free_on_scene_floor_from_clear_stance_falling_fails_episode"),
                                   "task_sampling_hz": task_hz, "control_hz": hz},
                "binding_digest": binding["binding_digest"], "profile_digest": ""}
+    if manifest["schema_version"] == SCHEMA_V2:
+        profile["claim_boundary"]["self_collision_mode"] = {
+            "enabled": True, "force_readback": "task_and_scene_only_no_arm_arm_force_channel",
+            "qualified": False}
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
     value["policy_canary_embodiment_profile"] = profile
     value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
@@ -552,6 +620,8 @@ __all__ = [
     "POLICY_INTERFACE_ID",
     "ROBOT_ID",
     "SCHEMA",
+    "SCHEMA_V2",
+    "gripper_channels",
     "TeamEmbodimentError",
     "action_dimension",
     "apply_team_embodiment",

@@ -202,13 +202,12 @@ def prepare_shortlist(value: Any) -> dict[str, Any]:
             route["blockers"] = list(route["required_artifacts"])
             selected_routes.append(route)
         blockers = list(body["required_artifacts"])
-        if body["arm_count"] > 1:
-            blockers.append("independent_bimanual_tool_channels_required")
         integrations.append({
             "embodiment_id": body["embodiment_id"], "display_name": body["display_name"],
             "arm_count": body["arm_count"], "asset_sources": deepcopy(body["asset_sources"]),
             "policy_routes": selected_routes, "status": "requires_setup", "blockers": sorted(set(blockers)),
-            "native_admission": {"manifest_schema": "blueprint.robot_embodiment.v1",
+            "native_admission": {"manifest_schema": ("blueprint.robot_embodiment.v2" if body["arm_count"] > 1
+                                                     else "blueprint.robot_embodiment.v1"),
                                  "module": "blueprint_pipeline.team_candidate_quick10_admission",
                                  "exact_model_and_scene_checks_required": True},
         })
@@ -224,11 +223,10 @@ def prepare_native_binding(
     shortlist: Any, *, embodiment_id: str, manifest: Mapping[str, Any], model_path: str | Path,
     scene_plan: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Check a shortlisted single arm through the existing native model admission.
+    """Check a shortlisted exact model through the existing native admission.
 
-    Two-arm robots need independent tool channels; the current native manifest
-    has one normalized gripper and cannot silently stand in for that contract.
-    This validates only robot binding. Policy, rights, spend, media and runtime
+    Bimanual models require v2 independent tool channels; the native runtime
+    executes and reads each tool separately. This validates only robot binding. Policy, rights, spend, media and runtime
     admission remain required at the existing Quick-10 entry point.
     """
 
@@ -243,7 +241,6 @@ def prepare_native_binding(
     _require(embodiment_id in {row["embodiment_id"] for row in request["selections"]},
              "support_native_embodiment_not_shortlisted")
     body = next(row for row in support_catalog()["embodiments"] if row["embodiment_id"] == embodiment_id)
-    _require(body["arm_count"] == 1, "independent_bimanual_tool_channels_required")
     _require(isinstance(scene_plan, Mapping)
              and isinstance(scene_plan.get("task_spec"), Mapping)
              and scene_plan["task_spec"].get("task_kind") == "rigid_pick_place",
@@ -253,8 +250,13 @@ def prepare_native_binding(
                  "support_native_scene_plan_digest_mismatch")
     validated = validate_embodiment_manifest(manifest)
     _require(validated["embodiment_id"] == embodiment_id, "support_native_embodiment_identity_mismatch")
-    _require(validated["form"] == "fixed_base_arm" and validated["base"]["mode"] == "fixed",
+    expected_form = "bimanual_arm" if body["arm_count"] > 1 else "fixed_base_arm"
+    _require(validated["form"] == expected_form and validated["base"]["mode"] == "fixed",
              "support_native_form_mismatch")
+    if body["arm_count"] > 1:
+        _require(validated["schema_version"] == "blueprint.robot_embodiment.v2"
+                 and len(validated["grippers"]) == body["arm_count"],
+                 "independent_bimanual_tool_channels_required")
     if body["arm_dof"] is not None:
         _require(len(validated["joints"]) == sum(body["arm_dof"]), "support_native_arm_joint_count_mismatch")
     model_record = verify_model_file(validated, model_path)

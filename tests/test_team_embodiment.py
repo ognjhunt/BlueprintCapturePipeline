@@ -712,3 +712,218 @@ def test_a_free_base_starts_at_the_closest_clear_floor_spot_facing_the_task(tmp_
                                        facts={"packet_dir": str(tmp_path)},
                                        fetch=lambda url, target: target.write_bytes(model.read_bytes()))
     assert sealed["stance"] == stance and sealed["manifest"]["base"]["mode"] == "free"
+
+
+def bimanual_inputs(tmp_path, *, embodiment_id="acme-bimanual", arm_dof=3):
+    """Development-only named two-arm USD and explicit independent tool channels."""
+    from pxr import Usd, UsdPhysics
+
+    model = tmp_path / "two_arms.usda"
+    stage = Usd.Stage.CreateNew(str(model))
+    stage.SetDefaultPrim(stage.DefinePrim("/robot", "Xform"))
+    UsdPhysics.RigidBodyAPI.Apply(stage.DefinePrim("/robot/base", "Xform"))
+    arm_names = [f"{side}_joint_{i}" for side in ("left", "right") for i in range(arm_dof)]
+    for name in arm_names:
+        UsdPhysics.RevoluteJoint.Define(stage, "/robot/" + name)
+    for side in ("left", "right"):
+        for link in (f"{side}_tool", f"{side}_finger_a", f"{side}_finger_b"):
+            UsdPhysics.RigidBodyAPI.Apply(stage.DefinePrim("/robot/" + link, "Xform"))
+        UsdPhysics.PrismaticJoint.Define(stage, f"/robot/{side}_finger_joint")
+    UsdPhysics.FixedJoint.Define(stage, "/robot/anchor").CreateBody1Rel().SetTargets(["/robot/base"])
+    stage.GetRootLayer().Save()
+    declared = manifest(model, schema_version="blueprint.robot_embodiment.v2", embodiment_id=embodiment_id,
+                        form="bimanual_arm", tool_link="left_tool",
+                        joints=[{"name": name, "control": "position", "lower": -3.0, "upper": 3.0,
+                                 "max_velocity": 2.0} for name in arm_names],
+                        reset_joint_positions={**dict.fromkeys(arm_names, 0.0),
+                                               "left_finger_joint": 0.04, "right_finger_joint": 0.03})
+    declared.pop("gripper")
+    declared["grippers"] = [
+        {"name": side, "tool_link": f"{side}_tool",
+         "joints": [{"name": f"{side}_finger_joint", "open": opening, "closed": 0.0}],
+         "max_width_m": opening * 2, "contact_links": [f"{side}_finger_a", f"{side}_finger_b"]}
+        for side, opening in (("left", 0.04), ("right", 0.03))]
+    declared["cameras"][0]["mount_link"] = "left_tool"
+    declared["cameras"].insert(1, {**copy.deepcopy(declared["cameras"][0]), "name": "right_wrist_rgb",
+                                  "mount_link": "right_tool"})
+    return model, declared
+
+
+def test_v2_binds_both_tools_and_all_cameras_without_changing_v1(tmp_path):
+    from blueprint_pipeline.team_embodiment import action_dimension
+    from blueprint_pipeline.team_embodiment_runtime import action_joint_groups
+
+    model, value = bimanual_inputs(tmp_path)
+    declared = validate_embodiment_manifest(value)
+    assert "gripper" not in declared and action_dimension(declared) == 8
+    sealed = team_embodiment_binding(declared, model_record=verify_model_file(declared, model),
+                                     structure=read_model_structure(model), scene_plan=station_plan())
+    plan = apply_team_embodiment(station_plan(), sealed)
+    channels = plan["robot"]["gripper_channels"]
+    assert [row["name"] for row in channels] == ["left", "right"]
+    assert action_joint_groups(plan["robot"])[0] == [j["name"] for j in value["joints"]] + [
+        "left_finger_joint", "right_finger_joint"]
+    assert plan["robot"]["grasp_frame"]["body_names"] == ["left_finger_a", "left_finger_b"]
+    assert [camera["parent_prim_path"] for camera in plan["cameras"][:2]] == [
+        "{ENV_REGEX_NS}/Robot/left_tool", "{ENV_REGEX_NS}/Robot/right_tool"]
+    sensors = {row["sensor_instance_id"]: row for row in plan["articulation"]["contact_sensors"]}
+    for channel in channels:
+        sensor = sensors[channel["task_contact_sensor_instances"][0]]
+        assert sensor["filter_prim_paths_expr"] == channel["task_contact_body_paths"]
+        assert all(channel["name"] in path for path in sensor["filter_prim_paths_expr"])
+    assert validate_embodiment_manifest(declared) == declared
+
+
+@pytest.mark.parametrize("fault", ["same_name", "same_tool", "primary_tool", "shared_joint", "missing_reset", "one_tool"])
+def test_v2_refuses_ambiguous_tool_channels(tmp_path, fault):
+    _model, value = bimanual_inputs(tmp_path)
+    if fault == "same_name":
+        value["grippers"][1]["name"] = "left"
+    elif fault == "same_tool":
+        value["grippers"][1]["tool_link"] = "left_tool"
+    elif fault == "primary_tool":
+        value["tool_link"] = "absent_tool"
+    elif fault == "shared_joint":
+        value["grippers"][1]["joints"][0]["name"] = "left_finger_joint"
+    elif fault == "missing_reset":
+        value["reset_joint_positions"].pop("right_finger_joint")
+    else:
+        value["grippers"].pop()
+    with pytest.raises(TeamEmbodimentError):
+        validate_embodiment_manifest(value)
+
+
+def test_v2_runtime_executes_both_arms_and_grippers_independently(tmp_path, monkeypatch):
+    from blueprint_pipeline.team_policy_https_client import encode_team_observation
+
+    model, value = bimanual_inputs(tmp_path)
+    declared = validate_embodiment_manifest(value)
+    sealed = team_embodiment_binding(declared, model_record=verify_model_file(declared, model),
+                                     structure=read_model_structure(model), scene_plan=station_plan())
+    plan = {**apply_team_embodiment(station_plan(), sealed), "scenario": {"seed": 7}}
+    plan["cadence"].update(maximum_action_steps=4, settle_window_samples=2)
+    names = [j["name"] for j in value["joints"]] + ["left_finger_joint", "right_finger_joint"]
+
+    class TwoArmEnv(_Env):
+        def __init__(self):
+            super().__init__()
+            self.robot.joint_names = list(reversed(names))  # Never assume simulator joint order.
+            self.unwrapped.scene["team_camera_2"] = _Camera()
+
+        def reset(self, seed):
+            self.robot.q = np.array([value["reset_joint_positions"][name] for name in self.robot.joint_names])
+
+        def step(self, action):
+            self.steps.append(action[0])
+            self.robot.q = np.array([action[0][names.index(name)] for name in self.robot.joint_names])
+
+    env = TwoArmEnv()
+    built = type("Built", (), {"env": env, "camera_scene_names": {
+        "team_camera_0": "team_camera_0", "team_camera_1": "team_camera_1",
+        "team_camera_2": "team_camera_2", "overview": "external_camera_2"}})()
+    monkeypatch.setattr(native_task_episode_environment, "NativeRigidScoringEnvironment", _Scoring)
+    monkeypatch.setattr(episode_visual_evidence, "finalize_multicamera_visual_evidence",
+                        lambda **kwargs: ({"status": "complete"}, []))
+    sampled = []
+    monkeypatch.setattr(adp_task_scoring, "score_task_episode_from_spec",
+                        lambda **kwargs: sampled.extend(kwargs["samples"]) or {"task_succeeded": False})
+    # Different arm targets; first close left only, then close right only.
+    policy = _Policy([[[0.1, 0.2, 0.3, -0.1, -0.2, -0.3, 1.0, 0.0]] * 2,
+                      [[0.2, 0.3, 0.4, -0.2, -0.3, -0.4, 0.0, 1.0]] * 2])
+    result = run_team_episode(built=built, task_readback=None, policy=policy, plan=plan, prompt="Move the object",
+                              max_policy_queries=2, open_loop_horizon=2, media_root=tmp_path / "episodes",
+                              episode_id="two-arms", progress={}, to_action=lambda targets: [targets])
+    assert env.steps[0] == pytest.approx([0.1, 0.2, 0.3, -0.1, -0.2, -0.3, 0.0, 0.03])
+    assert env.steps[2] == pytest.approx([0.2, 0.3, 0.4, -0.2, -0.3, -0.4, 0.04, 0.0])
+    assert policy.observations[1]["state"]["gripper_position"] == [1.0, 0.0]
+    assert policy.observations[1]["state"]["gripper_names"] == ["left", "right"]
+    wire = encode_team_observation(policy.observations[1], camera_names=[c["name"] for c in value["cameras"]])
+    assert wire["state"]["gripper_names"] == ["left", "right"]
+    assert [tool["gripper_width_m"] for tool in sampled[1]["tool_states"]] == [0.0, 0.06]
+    assert [tool["gripper_width_m"] for tool in sampled[-1]["tool_states"]] == [0.08, 0.0]
+    assert all(row["gripper_width_m"] is None for row in sampled)
+    assert "tool_states" not in wire["state"] and "task_object_pose_world" not in wire["state"]
+    assert result["motion_evidence"]["actions_reached_robot"] is True
+
+
+def test_v1_manifest_and_resolved_plan_keep_pre_v2_digest_identities(tmp_path, monkeypatch):
+    # Recorded from e02bc17 before the v2 extension, with a fixed model identity
+    # and byte size so generated USD header details do not affect the contract.
+    # libm tan(pi/6) differs by one ULP between macOS and Linux. Freeze that
+    # fixture input too; production camera values and receipt hashes are never
+    # rounded or changed. Separate camera tests exercise the actual math.
+    monkeypatch.setattr("blueprint_pipeline.team_embodiment.math.tan", {
+        math.pi / 4: 0.9999999999999999,
+        math.pi / 6: 0.5773502691896256,
+    }.__getitem__)
+    model = write_robot_usd(tmp_path / "legacy.usda")
+    value = manifest(model)
+    value["model"]["sha256"] = "sha256:" + "0" * 64
+    declared = validate_embodiment_manifest(value)
+    assert declared["embodiment_digest"] == "sha256:19a70b1ec5353eaf4df917985f4da0d0f7fb970baab9b54e80a8a7dfd0cf6e74"
+    sealed = team_embodiment_binding(declared, model_record={"sha256": value["model"]["sha256"], "size_bytes": 100},
+                                     structure=read_model_structure(model), scene_plan=station_plan())
+    plan = apply_team_embodiment(station_plan(), sealed)
+    assert canonical_digest(plan) == "sha256:e598f183812e169b7b8d2e36bd56a61d0c6717e77284f7a572c38bc0934c601d"
+    assert "gripper_channels" not in plan["robot"]
+
+
+@pytest.mark.parametrize("v2", [False, True])
+def test_native_builder_enables_self_collision_for_v2_without_changing_v1(tmp_path, monkeypatch, v2):
+    import sys
+    from types import ModuleType, SimpleNamespace
+    from blueprint_pipeline.team_embodiment_runtime import build_team_embodiment
+
+    if v2:
+        model, value = bimanual_inputs(tmp_path)
+        declared = validate_embodiment_manifest(value)
+        sealed = team_embodiment_binding(declared, model_record=verify_model_file(declared, model),
+                                         structure=read_model_structure(model), scene_plan=station_plan())
+    else:
+        _declared, sealed = binding(tmp_path)
+    plan = apply_team_embodiment(station_plan(), sealed)
+    captured = []
+
+    class CapturedConfiguration(Exception):
+        pass
+
+    class Config:
+        def __init__(self, *args, **kwargs):
+            self.__dict__.update(kwargs)
+
+    def root_config(**kwargs):
+        captured.append(kwargs)
+        raise CapturedConfiguration
+
+    modules = {
+        "isaaclab.sim": {"UsdFileCfg": Config, "RigidBodyPropertiesCfg": Config,
+                         "ArticulationRootPropertiesCfg": root_config},
+        "isaaclab.actuators": {"ImplicitActuatorCfg": Config},
+        "isaaclab.assets.articulation.articulation_cfg": {"ArticulationCfg": Config},
+        "isaaclab.envs": {"mdp": SimpleNamespace()},
+        "isaaclab.managers": dict.fromkeys(
+            ("EventTermCfg", "ObservationGroupCfg", "ObservationTermCfg", "SceneEntityCfg"), Config),
+        "isaaclab.sensors.camera.tiled_camera_cfg": {"TiledCameraCfg": Config},
+        "isaaclab.utils": {"configclass": lambda cls: cls},
+        "isaaclab_arena.embodiments.embodiment_base": {"EmbodimentBase": Config},
+    }
+    for name, values in modules.items():
+        parent = None
+        for index, piece in enumerate(name.split(".")):
+            full = ".".join(name.split(".")[:index + 1])
+            if full not in sys.modules:
+                module = ModuleType(full)
+                module.__path__ = []
+                monkeypatch.setitem(sys.modules, full, module)
+            module = sys.modules[full]
+            if parent is not None:
+                monkeypatch.setattr(parent, piece, module, raising=False)
+            parent = module
+        for key, value in values.items():
+            monkeypatch.setattr(parent, key, value, raising=False)
+    with pytest.raises(CapturedConfiguration):
+        build_team_embodiment(plan["robot"], enable_cameras=True, pose_class=Config)
+    assert captured[0]["enabled_self_collisions"] is v2
+    if v2:
+        assert plan["policy_canary_embodiment_profile"]["claim_boundary"]["self_collision_mode"] == {
+            "enabled": True, "force_readback": "task_and_scene_only_no_arm_arm_force_channel", "qualified": False}

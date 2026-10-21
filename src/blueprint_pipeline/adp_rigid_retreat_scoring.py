@@ -133,6 +133,16 @@ def planned_retreat_position(*, task_spec: Mapping[str, Any], subject_position: 
 def score_retreat(*, criterion: Mapping[str, Any], task_spec: Mapping[str, Any],
                   samples: Sequence[Mapping[str, Any]], window_samples: int,
                   release_width_m: float) -> dict[str, Any]:
+    if any("tool_states" in row for row in samples[-window_samples:]):
+        # The legacy task contract names one calibrated grasp frame. Raw
+        # per-tool body origins are retained, but cannot establish the same
+        # clearance for a different multi-tool configuration.
+        return {"satisfied": False, "readback_complete": False,
+                "minimum_observed_clearance_m": None,
+                "required_clearance_m": criterion["minimum_clearance_m"],
+                "readback_gap_steps": [row["step_index"] for row in samples[-window_samples:]],
+                "measurement_source": "per_tool_calibrated_grasp_frames_unavailable",
+                "limitation": "multi_tool_retreat_requires_explicit_calibrated_per_tool_grasp_frames"}
     bounds = task_spec["subject_collision_bounds_scoring_frame_m"]
     clearances: list[float] = []
     gaps: list[int] = []

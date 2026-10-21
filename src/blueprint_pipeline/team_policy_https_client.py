@@ -104,7 +104,8 @@ def encode_team_observation(observation: Mapping[str, Any], *, camera_names: lis
     images = observation.get("images") if isinstance(observation.get("images"), Mapping) else {}
     state = observation.get("state") if isinstance(observation.get("state"), Mapping) else {}
     if (set(observation) != {"images", "state", "prompt"} or sorted(images) != sorted(camera_names)
-            or set(state) != {"joint_position", "joint_velocity", "gripper_position", "base"}):
+            or set(state) - {"joint_position", "joint_velocity", "gripper_position", "base", "gripper_names"}
+            or not {"joint_position", "joint_velocity", "gripper_position", "base"} <= set(state)):
         raise ValueError("team_policy_https_observation_keys_invalid")
     wire: dict[str, Any] = {"images": {}, "state": {}}
     for name in camera_names:
@@ -120,6 +121,14 @@ def encode_team_observation(observation: Mapping[str, Any], *, camera_names: lis
         if (key != "gripper_position" and not values) or not all(math.isfinite(value) for value in values):
             raise ValueError("team_policy_https_observation_state_invalid")
         wire["state"][key] = values
+    if "gripper_names" in state:
+        names = state["gripper_names"]
+        if (not isinstance(names, list) or len(names) > 2
+                or len(names) != len(wire["state"]["gripper_position"])
+                or not all(isinstance(name, str) and 0 < len(name) <= 64 for name in names)
+                or len(set(names)) != len(names)):
+            raise ValueError("team_policy_https_observation_gripper_names_invalid")
+        wire["state"]["gripper_names"] = list(names)
     base = state["base"] if isinstance(state["base"], Mapping) else {}
     if (len(wire["state"]["joint_velocity"]) != len(wire["state"]["joint_position"])
             or set(base) != set(BASE_STATE_SHAPES)):

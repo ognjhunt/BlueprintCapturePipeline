@@ -294,8 +294,9 @@ HOSTED_REGISTRY: tuple[HostedPolicyCandidate, ...] = (
         reason=(
             "Unavailable. Dream-1 is a hosted two-arm policy. Account access, inference and "
             "image-use terms, a controlled-observation API adapter, and a matching two-arm, "
-            "three-camera runtime have not been verified. The current single-arm DROID "
-            "configuration cannot run it."
+            "three-camera runtime have not been verified. The configurable v2 robot runtime "
+            "does not establish Dream-1 interface compatibility; the frozen single-arm DROID "
+            "configuration cannot substitute for the provider's configuration."
         ),
     ),
 )

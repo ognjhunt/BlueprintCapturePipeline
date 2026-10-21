@@ -1160,3 +1160,27 @@ def test_task_robot_twenty_newton_cap_is_independent_of_permitted_initial_suppor
     assert report['criteria_satisfied']['maximum_task_contact_force'] is passed
     assert report['event_ledger']['peak_task_contact_force_n']==force
     assert report['event_ledger']['task_contact_force_sources']==['task_robot_contact_peak_force_n']
+
+
+@pytest.mark.parametrize("right_width,expected", [(0.08, True), (0.0, False), (None, False)])
+def test_multi_tool_release_uses_each_measured_tool_not_primary_width(right_width, expected):
+    rows = [_rigid_v2_sample(step, position) for step, position in enumerate([
+        [1.0, 2.0, 0.8], [1.0, 2.0, 0.83], [1.15, 2.0, 0.83],
+        [1.15, 2.0, 0.8], [1.15, 2.0, 0.8], [1.15, 2.0, 0.8]])]
+    for row in rows:
+        row["gripper_width_m"] = 0.08  # This legacy primary cannot hide the right gripper.
+        row["tool_states"] = [{"name": "left", "gripper_width_m": 0.08},
+                              {"name": "right", "gripper_width_m": right_width}]
+    score = score_task_episode_from_spec(task_spec=_rigid_v2_spec(), samples=rows)
+    assert score["task_succeeded"] is expected
+
+
+def test_multi_tool_retreat_cannot_reuse_the_legacy_primary_grasp_frame():
+    from blueprint_pipeline.adp_rigid_retreat_scoring import score_retreat
+
+    report = score_retreat(criterion={"minimum_clearance_m": 0.1}, task_spec={},
+                           samples=[{"step_index": 4, "grasp_frame_position_world_m": [99, 99, 99],
+                                     "tool_states": [{"name": "left"}, {"name": "right"}]}],
+                           window_samples=1, release_width_m=0.07)
+    assert report["satisfied"] is False and report["readback_complete"] is False
+    assert report["limitation"] == "multi_tool_retreat_requires_explicit_calibrated_per_tool_grasp_frames"

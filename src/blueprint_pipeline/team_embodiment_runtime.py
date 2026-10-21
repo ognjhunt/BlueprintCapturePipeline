@@ -136,7 +136,8 @@ def build_team_embodiment(robot: Mapping[str, Any], *, enable_cameras: bool, pos
             # A fixed base is held by its anchor; a free base stands, walks or drives under gravity.
             rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=not free, max_depenetration_velocity=5.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False, solver_position_iteration_count=64,
+                enabled_self_collisions=robot.get("enabled_self_collisions") is True,
+                solver_position_iteration_count=64,
                 solver_velocity_iteration_count=0)),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=tuple(pose["position_world_m"]), rot=tuple(pose["orientation_xyzw"]),
@@ -282,11 +283,12 @@ def team_observation_gate(*, built: Any, plan: Mapping[str, Any], output_root: P
 class _GripperWidth:
     """The robot-side half of a rigid scoring sample: the gripper's opening, from its declared joints."""
 
-    def __init__(self, width: Callable[[], float | None]):
-        self._width = width
+    def __init__(self, width: Callable[[], float | None], tools: Callable[[], list[dict[str, Any]]] | None = None):
+        self._width, self._tools = width, tools
 
     def read_object_sample(self) -> dict[str, Any]:
-        return {"gripper_width_m": self._width()}
+        return {"gripper_width_m": self._width(),
+                **({"tool_states": self._tools()} if self._tools is not None else {})}
 
     def reset(self) -> None:
         return None
@@ -322,6 +324,10 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         raise RuntimeError("team_embodiment_joint_missing_at_runtime:" + ",".join(missing))
     declared_index = [names.index(name) for name in declared]
     gripper_index = [names.index(joint["name"]) for joint in gripper]
+    multi_tool = "gripper_channels" in row
+    channels = list(row["gripper_channels"]) if multi_tool else ([{
+        "name": "gripper", "joints": gripper, "max_width_m": row["gripper_max_width_m"]}] if gripper else [])
+    channel_indices = [[names.index(j["name"]) for j in channel["joints"]] for channel in channels]
     # Where each declared joint's value sits in a policy row, split by how the simulator drives it.
     position_columns = [j for j, name in enumerate(declared) if controls[name] == "position"]
     velocity_columns = [j for j, name in enumerate(declared) if controls[name] == "velocity"]
@@ -329,7 +335,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
               else [-float(row["joint_velocity_limits"][name]), float(row["joint_velocity_limits"][name])]
               for name in declared]
     fall_height = float(row["fall_height_world_m"]) if row["base_mode"] == "free_on_floor" else None
-    width_dimension = len(declared) + (1 if gripper else 0)
+    width_dimension = len(declared) + len(channels)
     stride = int(cadence["task_sample_stride"])
     action_steps = int(cadence["maximum_action_steps"])
     settle_steps = int(cadence["settle_window_samples"])
@@ -354,19 +360,32 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
                 "linear_velocity_world_mps": [float(v) for v in velocity[:3]],
                 "angular_velocity_world_radps": [float(v) for v in velocity[3:6]]}
 
-    def closure(q: Any) -> float | None:
-        if not gripper:
-            return None
-        fractions = [(float(q[i]) - float(j["open"])) / (float(j["closed"]) - float(j["open"]))
-                     for i, j in zip(gripper_index, gripper, strict=True)]
-        return float(min(1.0, max(0.0, sum(fractions) / len(fractions))))
+    def closures(q: Any) -> list[float]:
+        values = []
+        for channel, indices in zip(channels, channel_indices, strict=True):
+            fractions = [(float(q[i]) - float(j["open"])) / (float(j["closed"]) - float(j["open"]))
+                         for i, j in zip(indices, channel["joints"], strict=True)]
+            values.append(float(min(1.0, max(0.0, sum(fractions) / len(fractions)))))
+        return values
+
+    def tool_states() -> list[dict[str, Any]]:
+        q = joint_positions()
+        return [{"name": channel["name"], "tool_link": channel["tool_link"],
+                 "gripper_position": fraction,
+                 "gripper_width_m": float(channel["max_width_m"]) * (1.0 - fraction),
+                 "joint_positions": {j["name"]: float(q[i])
+                                     for j, i in zip(channel["joints"], indices, strict=True)},
+                 "width_source": "declared_joint_open_closed_and_maximum_width"}
+                for channel, indices, fraction in zip(channels, channel_indices, closures(q), strict=True)]
 
     def width() -> float | None:
-        fraction = closure(joint_positions())
-        return None if fraction is None else float(row["gripper_max_width_m"]) * (1.0 - fraction)
+        # There is no single gripper width for v2. The scorer consumes every
+        # measured tool state; never copy the primary width to other tools.
+        values = closures(joint_positions())
+        return None if multi_tool or not values else float(row["gripper_max_width_m"]) * (1.0 - values[0])
 
-    scoring = NativeRigidScoringEnvironment(environment=_GripperWidth(width), task_readback=task_readback,
-                                            task_spec=task_spec)
+    scoring = NativeRigidScoringEnvironment(environment=_GripperWidth(width, tool_states if multi_tool else None),
+                                            task_readback=task_readback, task_spec=task_spec)
     seed = int(plan["scenario"]["seed"])
     env.reset(seed=seed)
     scoring.begin_episode()
@@ -442,7 +461,8 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         observation = {"images": images, "prompt": prompt,
                        "state": {"joint_position": [float(q[i]) for i in declared_index],
                                  "joint_velocity": [float(qd[i]) for i in declared_index],
-                                 "gripper_position": [] if not gripper else [closure(q)],
+                                 "gripper_position": closures(q),
+                                 **({"gripper_names": [channel["name"] for channel in channels]} if multi_tool else {}),
                                  "base": base_state()}}
         observations.append(capture("policy-input"))
         progress["first_observation_retained"] = True
@@ -483,9 +503,11 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         violations = [f"candidate_action_joint_position_bounds_invalid:{declared[j]}:row{r}"
                       for r in range(executed.shape[0]) for j in range(len(declared))
                       if not bounds[j][0] - LIMIT_TOLERANCE <= executed[r, j] <= bounds[j][1] + LIMIT_TOLERANCE]
-        if gripper:
-            violations += [f"candidate_action_joint_position_bounds_invalid:gripper_closure:row{r}"
-                           for r in range(executed.shape[0]) if not 0.0 <= executed[r, -1] <= 1.0]
+        if channels:
+            violations += [f"candidate_action_joint_position_bounds_invalid:gripper_closure"
+                           f"{':' + channel['name'] if multi_tool else ''}:row{r}"
+                           for r in range(executed.shape[0]) for index, channel in enumerate(channels)
+                           if not 0.0 <= executed[r, len(declared) + index] <= 1.0]
         queries.append({"query_index": query_index, "latency_seconds": latency, "returned_rows": int(actions.shape[0]),
                         "executed_rows": int(executed.shape[0]), "any_joint_limit_clamped": False,
                         "bounds_refused": bool(violations)})
@@ -496,8 +518,10 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
             if step >= action_steps or fell:
                 break
             targets = [float(action[j]) for j in position_columns]
-            for joint in gripper:
-                targets.append(float(joint["open"]) + float(action[-1]) * (float(joint["closed"]) - float(joint["open"])))
+            for index, channel in enumerate(channels):
+                for joint in channel["joints"]:
+                    targets.append(float(joint["open"]) + float(action[len(declared) + index])
+                                   * (float(joint["closed"]) - float(joint["open"])))
             targets += [float(action[j]) for j in velocity_columns]
             commanded.append({"step_index": step, "targets": targets})
             advance(targets)
@@ -522,7 +546,10 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     return {
         "status": "completed", "score": score, "visual_evidence": visual, "media_artifacts": artifacts,
         "motion_evidence": {"actions_reached_robot": bool(commanded), "arm_moved": moved, "robot_fell": fell,
-                            "control_hz": float(cadence["control_frequency_hz"]), "task_sample_stride": stride},
+                            "control_hz": float(cadence["control_frequency_hz"]), "task_sample_stride": stride,
+                            **({"self_collisions_enabled": row.get("enabled_self_collisions") is True,
+                                "self_collision_force_readback": "unavailable_task_and_scene_contacts_only"}
+                               if multi_tool else {})},
         "commanded_actions": commanded, "state_trace": state_trace, "contact_force_evidence": contacts,
         "task_object_trajectory": trajectory, "queries": queries, "policy_queries": len(queries),
         "policy_query_latency": {"seconds": [row_q["latency_seconds"] for row_q in queries]},

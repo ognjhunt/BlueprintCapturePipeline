@@ -61,6 +61,35 @@ def register_scene_intake_routes(app: FastAPI, require_admission: Callable,
             raise HTTPException(status_code=422, detail="Robot support shortlist invalid or changed") from exc
         return JSONResponse(content=value, headers={"Cache-Control": "private, no-store"})
 
+    @app.get("/api/live-pipeline/deployment-embodiment-asset-recipes",
+             dependencies=[Depends(require_admission)])
+    async def inspect_deployment_embodiment_assets(request: Request) -> JSONResponse:
+        require_support_issuer(request)
+        from .deployment_embodiment_assets import asset_recipes
+
+        return JSONResponse(content=asset_recipes(), headers={"Cache-Control": "private, no-store"})
+
+    @app.post("/api/live-pipeline/deployment-embodiment-native-preflight",
+              dependencies=[Depends(require_admission)])
+    async def inspect_deployment_embodiment_configuration(request: Request) -> JSONResponse:
+        require_support_issuer(request)
+        from .deployment_embodiment_configuration import inspect_configuration
+
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 128 * 1024:
+                raise HTTPException(status_code=413, detail="Robot configuration too large")
+        try:
+            payload = json.loads(raw)
+            result = await run_in_threadpool(inspect_configuration, payload)
+        except (ValueError, KeyError, TypeError) as exc:
+            # Typed configuration/model errors contain no credentials or runtime paths.
+            raise HTTPException(status_code=422, detail=str(exc)[:1000]) from exc
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=503, detail="Robot model inspection unavailable") from exc
+        return JSONResponse(content=result, headers={"Cache-Control": "private, no-store"})
+
     @app.post("/api/live-pipeline/native-g1-team-campaign-setups",
               dependencies=[Depends(require_admission)])
     async def inspect_native_g1_team_campaign_setups(request: Request) -> JSONResponse:
