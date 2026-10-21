@@ -1,8 +1,8 @@
 {
   "schema_version": "blueprint_python_interpreter_matrix.v1",
   "canonical_launch_evidence_python": "3.12",
-  "package_requires_python": ">=3.10,<3.13",
-  "package_supported_python": ["3.10", "3.11", "3.12"],
+  "package_requires_python": ">=3.11,<3.13",
+  "package_supported_python": ["3.11", "3.12"],
   "non_canonical_launch_evidence_python": [
     {
       "python_version": "3.13",
@@ -33,7 +33,7 @@
   "compatibility_ci": {
     "path": ".github/workflows/python-compatibility.yml",
     "job": "compatibility",
-    "python_versions": ["3.10", "3.11", "3.12"],
+    "python_versions": ["3.11", "3.12"],
     "suite": [
       "scripts/validate_python_interpreter_matrix.py",
       "tests/test_eval_ready_task_grounding.py",
@@ -42,5 +42,5 @@
     ],
     "evidence_role": "install and bounded contract compatibility; not canonical launch evidence"
   },
-  "launch_claim_policy": "Canonical Pipeline launch evidence must be produced on Python 3.12. Python 3.10, 3.11, and 3.12 are exercised by the declared compatibility workflow, but compatibility runs on 3.10 and 3.11 are not canonical launch evidence. Python 3.13 output is non-canonical until this matrix, pyproject, uv.lock, and CI are deliberately updated together."
+  "launch_claim_policy": "Canonical Pipeline launch evidence must be produced on Python 3.12. Python 3.11 and 3.12 are exercised by the declared compatibility workflow, but compatibility runs on 3.11 are not canonical launch evidence. The patched Pillow 13 runtime requires Python 3.11 or later. Python 3.13 output is non-canonical until this matrix, pyproject, uv.lock, and CI are deliberately updated together."
 }

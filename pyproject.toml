@@ -3,7 +3,7 @@ name = "blueprint-capture-pipeline"
 version = "2.0.0"
 description = "Robot-eval package, World Labs preview, and simulation preflight pipeline for Blueprint captures"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Blueprint Team"}]
@@ -17,7 +17,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
@@ -50,7 +49,7 @@ dependencies = [
     # external-scene admission path, so this cannot be left to a transitive
     # runtime extra.
     "scipy>=1.10.0",
-    "Pillow>=10.0.0",
+    "Pillow>=13.0.0",
     # Official CPU-only decoder for hosted SAM 3.1 masks.
     "meta-sam-parser==0.0.5",
     "fastapi>=0.115.0",
@@ -163,15 +162,10 @@ retrieval = [
     "transformers>=4.40.0",
     "accelerate>=0.30.0",
 ]
-groot-libero = [
-    "torch>=2.2.0",
-    "torchvision>=0.17.0",
-    "lerobot[groot]",
-]
-# CPU CI validates the LeRobot/GR00T integration contracts but cannot build the
-# CUDA-only flash-attn sdist pulled by ``lerobot[groot]``.  Keep that real GPU
-# extra above; use the base LeRobot distribution plus its pure-Python model
-# surface for hermetic CPU collection/execution.
+# The historical GPU-only lerobot[groot] extra requires vulnerable Pillow<13.
+# Keep it outside this product closure until upstream supports a patched release;
+# its definition and limitation are retained in docs/architecture/legacy-groot-libero-dependencies.md.
+# CPU CI uses base LeRobot and its pure-Python model surface, with no GPU extra.
 groot-libero-cpu = [
     "torchmetrics==1.9.0",
     "torch>=2.2.0",

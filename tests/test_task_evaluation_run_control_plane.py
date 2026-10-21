@@ -409,6 +409,77 @@ def test_run_control_plane_requires_authorization_and_returns_bound_decision(tmp
     assert authorization_replay == authorization
 
 
+@pytest.mark.parametrize("stage,artifact_name", [
+    ("prepare", "evidence_plan.json"),
+    ("authorize", "execution_authorization.json"),
+    ("aggregate", "decision_envelope.json"),
+])
+@pytest.mark.parametrize("publication_completed", [False, True])
+def test_interrupted_scientific_artifact_commit_resumes_same_run(tmp_path, monkeypatch, stage, artifact_name, publication_completed):
+    from blueprint_pipeline import task_evaluation_run_control_plane as control
+    from blueprint_pipeline.core import immutable_file
+    from blueprint_pipeline.task_evaluation_run_state import TaskEvaluationRunStateStore
+
+    monkeypatch.setattr(control, "sync_task_evaluation_run_to_webapp", lambda **kwargs: {"status": "skipped"})
+    testbed = _testbed()
+    profile = _profile()
+
+    def prepare():
+        return prepare_task_evaluation_run(
+            state_root=tmp_path, run_id="run-restart", capture_session_id="capture-session-1",
+            intake_id="capture-1", request_value=_request(testbed), testbed_value=testbed,
+            method_values=[profile], qualification_values=[_qualification(profile)],
+            idempotency_key="prepare-retained",
+        )
+
+    preparation = prepare() if stage != "prepare" else None
+
+    def authorize():
+        return authorize_task_evaluation_run(
+            state_root=tmp_path, run_id="run-restart",
+            plan_digest=preparation["evidence_plan"]["plan_digest"],
+            authorized_adapter_references=[ANALYTIC_REACHABILITY_ADAPTER],
+            actor={"role": "human", "identity": "operator-1"},
+            idempotency_key="authorize-retained",
+        )
+
+    def aggregate():
+        return execute_and_aggregate_task_evaluation_run(state_root=tmp_path, run_id="run-restart")
+
+    if stage == "aggregate":
+        authorize()
+    action = {"prepare": prepare, "authorize": authorize, "aggregate": aggregate}[stage]
+    original = immutable_file.os.link
+
+    def interrupted(source, destination, **kwargs):
+        if destination.name == artifact_name:
+            if publication_completed:
+                original(source, destination, **kwargs)
+            raise OSError("worker interrupted during artifact commit")
+        return original(source, destination, **kwargs)
+
+    with monkeypatch.context() as interruption:
+        interruption.setattr(immutable_file.os, "link", interrupted)
+        with pytest.raises(OSError, match="worker interrupted"):
+            action()
+
+    artifact = tmp_path / "runs" / "run-restart" / "artifacts" / artifact_name
+    if publication_completed:
+        retained = artifact.read_bytes()
+        assert isinstance(json.loads(retained), dict)
+    else:
+        assert not artifact.exists()
+    result = action()
+    if publication_completed:
+        assert artifact.read_bytes() == retained
+    assert len(list((tmp_path / "runs").iterdir())) == 1
+    state = TaskEvaluationRunStateStore(tmp_path).inspect("run-restart")
+    assert state["state"] == ("decided" if stage == "aggregate" else "authorization_required")
+    if stage == "aggregate":
+        assert result["decision_envelope"]["claim_ceiling"]["physical_success"] is False
+        assert aggregate()["decision_envelope"] == result["decision_envelope"]
+
+
 def test_run_executes_explicitly_authorized_sim_only_collision_method(tmp_path) -> None:
     testbed, request, profile, qualification = _collision_run_inputs()
     prepared = prepare_task_evaluation_run(
