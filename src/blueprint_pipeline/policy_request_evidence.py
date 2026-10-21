@@ -113,7 +113,24 @@ def validate_request_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def decode_scientific_wire(raw: bytes) -> Any:
-    """Decode the numeric-only MessagePack forms used by both pinned clients."""
+    """Decode retained MessagePack or an exact, strict JSON object request.
+
+    Dream uses JSON with encoded image bytes. Its sent bytes must be checked
+    independently, just like the pinned clients' MessagePack requests.
+    """
+    if raw.lstrip().startswith(b"{"):
+        def pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("policy_request_wire_duplicate_json_key")
+                result[key] = value
+            return result
+
+        def constant(_value):
+            raise ValueError("policy_request_wire_nonfinite_json")
+
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant)
     import msgpack
     import numpy as np
 

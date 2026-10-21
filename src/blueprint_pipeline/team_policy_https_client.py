@@ -88,6 +88,54 @@ class TeamPolicySpec:
 
 BASE_STATE_SHAPES = {"position_world_m": 3, "orientation_xyzw": 4, "linear_velocity_world_mps": 3,
                      "angular_velocity_world_radps": 3}
+ARM_STATE_FIELDS = frozenset({"joint_names", "arm_names", "arm_joint_names", "arm_gripper_names", "arm_eef_pose"})
+
+
+def _encode_named_arm_state(state: Mapping[str, Any], wire: dict[str, Any]) -> None:
+    """Carry declared proprioception, never task/evaluator state, on the same endpoint contract."""
+    if not (set(state) & ARM_STATE_FIELDS):
+        return
+    error = "team_policy_https_arm_state_invalid"
+    if not ARM_STATE_FIELDS <= set(state):
+        raise ValueError(error)
+    joints, arms = state["joint_names"], state["arm_names"]
+    def valid_names(values):
+        return (isinstance(values, list) and bool(values)
+                and all(isinstance(v, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", v)
+                        for v in values) and len(set(values)) == len(values))
+    if (not valid_names(joints) or len(joints) != len(wire["joint_position"])
+            or not valid_names(arms) or len(arms) > 2):
+        raise ValueError(error)
+    groups, tools, poses = state["arm_joint_names"], state["arm_gripper_names"], state["arm_eef_pose"]
+    if any(not isinstance(value, Mapping) or set(value) != set(arms) for value in (groups, tools, poses)):
+        raise ValueError(error)
+    all_joints: list[str] = []
+    all_tools: list[str] = []
+    clean_poses: dict[str, Any] = {}
+    for arm in arms:
+        names, tool, pose = groups[arm], tools[arm], poses[arm]
+        if (not valid_names(names) or not set(names) <= set(joints)
+                or not isinstance(tool, str) or tool not in state.get("gripper_names", [])
+                or not isinstance(pose, Mapping) or set(pose) != {"position_m", "orientation_xyzw"}):
+            raise ValueError(error)
+        clean = {}
+        for key, count in (("position_m", 3), ("orientation_xyzw", 4)):
+            values = pose[key]
+            if (not isinstance(values, (list, tuple)) or len(values) != count
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                           for v in values)):
+                raise ValueError(error)
+            clean[key] = [float(v) for v in values]
+        if abs(sum(v * v for v in clean["orientation_xyzw"]) - 1.0) > 1e-3:
+            raise ValueError(error)
+        all_joints.extend(names)
+        all_tools.append(tool)
+        clean_poses[arm] = clean
+    if len(set(all_joints)) != len(all_joints) or len(set(all_tools)) != len(all_tools):
+        raise ValueError(error)
+    wire.update(joint_names=list(joints), arm_names=list(arms),
+                arm_joint_names={arm: list(groups[arm]) for arm in arms},
+                arm_gripper_names={arm: tools[arm] for arm in arms}, arm_eef_pose=clean_poses)
 
 
 def encode_team_observation(observation: Mapping[str, Any], *, camera_names: list[str]) -> dict[str, Any]:
@@ -104,7 +152,7 @@ def encode_team_observation(observation: Mapping[str, Any], *, camera_names: lis
     images = observation.get("images") if isinstance(observation.get("images"), Mapping) else {}
     state = observation.get("state") if isinstance(observation.get("state"), Mapping) else {}
     if (set(observation) != {"images", "state", "prompt"} or sorted(images) != sorted(camera_names)
-            or set(state) - {"joint_position", "joint_velocity", "gripper_position", "base", "gripper_names"}
+            or set(state) - {"joint_position", "joint_velocity", "gripper_position", "base", "gripper_names", *ARM_STATE_FIELDS}
             or not {"joint_position", "joint_velocity", "gripper_position", "base"} <= set(state)):
         raise ValueError("team_policy_https_observation_keys_invalid")
     wire: dict[str, Any] = {"images": {}, "state": {}}
@@ -129,6 +177,7 @@ def encode_team_observation(observation: Mapping[str, Any], *, camera_names: lis
                 or len(set(names)) != len(names)):
             raise ValueError("team_policy_https_observation_gripper_names_invalid")
         wire["state"]["gripper_names"] = list(names)
+    _encode_named_arm_state(state, wire["state"])
     base = state["base"] if isinstance(state["base"], Mapping) else {}
     if (len(wire["state"]["joint_velocity"]) != len(wire["state"]["joint_position"])
             or set(base) != set(BASE_STATE_SHAPES)):

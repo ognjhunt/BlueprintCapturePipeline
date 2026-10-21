@@ -139,19 +139,249 @@ def test_changed_source_and_missing_explicit_base_mode_cannot_be_imported(tmp_pa
     assert not (tmp_path / "prepared").exists()
 
 
-def test_importer_records_source_texture_dependency_and_rejects_unbound_paths(tmp_path, monkeypatch):
-    source = _source(tmp_path, monkeypatch)
-    _sdk(monkeypatch, asset=str(source / "source/LICENSE"))
+def test_importer_internalizes_source_texture_and_rejects_unbound_paths(tmp_path, monkeypatch):
+    source = _source(tmp_path, monkeypatch, extra={"textures/tool.png": b"fixture texture bytes"})
+    _sdk(monkeypatch, asset=str(source / "source/textures/tool.png"))
     result = importer.import_source_asset(source, tmp_path / "prepared", fix_base=True)
-    dependencies = [row for row in result["dependencies"] if row["location"] == "source_bundle"]
-    assert [row["path"] for row in dependencies] == ["LICENSE"]
-    assert result["source_bundle_required_for_dependency_resolution"] is True
+    assert {row["location"] for row in result["dependencies"]} == {"prepared"}
+    assert {row["path"] for row in result["dependencies"]} == {"robot.usda", "retained_source/textures/tool.png"}
+    assert result["source_bundle_required_for_dependency_resolution"] is False
+    assert result["prepared_directory_self_contained"] is True
+    assert result["single_file_self_contained"] is False
+    assert str(source) not in (tmp_path / "prepared/robot.usda").read_text()
     # The deliberately fake texture stands in only for an asset-path binding;
     # no renderer or simulator interprets it.
     _sdk(monkeypatch, asset="https://unapproved.example/robot.usd")
     with pytest.raises(assets.AssetPreparationError, match="unbound_dependency"):
         importer.import_source_asset(source, tmp_path / "unbound", fix_base=True)
     assert not (tmp_path / "unbound").exists()
+
+
+def test_published_textured_model_loads_after_source_and_preparation_move(tmp_path, monkeypatch):
+    """Exercise a real USD asset value after both original roots disappear."""
+    from pxr import Sdf, Usd
+
+    source = _source(tmp_path, monkeypatch, extra={"textures/tool.png": b"fixture texture bytes"})
+    _sdk(monkeypatch, asset=str(source / "source/textures/tool.png"))
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True)
+    source.chmod(0o755)  # The test owns these immutable publication directories.
+    source.rename(tmp_path / "source-moved")
+    moved = tmp_path / "moved" / "robot-preparation"
+    moved.parent.mkdir()
+    prepared.chmod(0o755)
+    prepared.rename(moved)
+    stage = Usd.Stage.Open(str(moved / "robot.usda"))
+    value = stage.GetPrimAtPath("/robot/tool").GetAttribute("texture").Get()
+    assert value.path == "retained_source/textures/tool.png"
+    resolved = Path(Sdf.ComputeAssetPathRelativeToLayer(stage.GetRootLayer(), value.path))
+    assert resolved.read_bytes() == b"fixture texture bytes"
+    observed = importer._dependencies(moved / "robot.usda", staged=moved)
+    assert importer._closure(observed) == result["dependency_closure"]
+    assert importer.verify_prepared_asset_directory(moved) == result
+    assert result["dependency_closure"]["closure_digest"] == cross_runtime_canonical_digest(
+        result["dependency_closure"], digest_field="closure_digest")
+
+
+def test_runtime_content_sidecars_are_inventoried_and_changed_texture_is_refused(tmp_path, monkeypatch):
+    source = _source(tmp_path, monkeypatch, extra={
+        "mesh/tool.obj": b"mtllib tool.mtl\nv 0 0 0\n",
+        "mesh/tool.mtl": b"map_Kd ../textures/tool.png\n",
+        "textures/tool.png": b"fixture texture bytes"})
+    _sdk(monkeypatch, asset=str(source / "source/mesh/tool.obj"))
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True)
+    assert {row["path"] for row in result["dependency_closure"]["files"]} == {
+        "robot.usda", "retained_source/mesh/tool.obj", "retained_source/mesh/tool.mtl",
+        "retained_source/textures/tool.png"}
+    (prepared / "retained_source/textures/tool.png").write_bytes(b"changed")
+    with pytest.raises(assets.AssetPreparationError, match="output_changed"):
+        importer.import_source_asset(source, prepared, fix_base=True)
+
+
+def test_converter_sublayers_are_flattened_and_internal_texture_path_survives_publish(tmp_path, monkeypatch):
+    from pxr import Sdf, Usd, UsdPhysics
+
+    source = _source(tmp_path, monkeypatch)
+
+    def convert(format_name, entry, output, **kwargs):
+        output.mkdir()
+        content = output / "content"
+        content.mkdir()
+        (content / "texture.png").write_bytes(b"fixture converter texture")
+        child = Usd.Stage.CreateNew(str(content / "child.usda"))
+        child.SetDefaultPrim(child.DefinePrim("/robot", "Xform"))
+        UsdPhysics.RigidBodyAPI.Apply(child.DefinePrim("/robot/base", "Xform"))
+        UsdPhysics.RevoluteJoint.Define(child, "/robot/joint")
+        child.GetPrimAtPath("/robot/base").CreateAttribute("texture", Sdf.ValueTypeNames.Asset).Set(
+            Sdf.AssetPath("texture.png"))
+        child.GetRootLayer().Save()
+        stage = Usd.Stage.CreateNew(str(output / "robot.usda"))
+        stage.GetRootLayer().subLayerPaths = ["content/child.usda"]
+        stage.SetDefaultPrim(stage.GetPrimAtPath("/robot"))
+        stage.GetRootLayer().Save()
+        return output / "robot.usda", {}, {"class": "fixture only"}
+
+    monkeypatch.setattr(importer, "_converter", convert)
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True)
+    assert not Sdf.Layer.FindOrOpen(str(prepared / "robot.usda")).subLayerPaths
+    assert result["structure"]["joint_names"] == ["joint"]
+    assert {row["path"] for row in result["dependency_closure"]["files"]} == {
+        "robot.usda", "converted/content/texture.png"}
+    assert ".blueprint-asset-import-" not in (prepared / "robot.usda").read_text()
+
+
+def test_redigested_receipt_cannot_claim_external_or_different_content_closure(tmp_path, monkeypatch):
+    source = _source(tmp_path, monkeypatch)
+    _sdk(monkeypatch)
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True)
+    result["dependency_closure"]["files"] = []
+    result["dependency_closure"]["closure_digest"] = cross_runtime_canonical_digest(
+        result["dependency_closure"], digest_field="closure_digest")
+    result["import_digest"] = cross_runtime_canonical_digest(result, digest_field="import_digest")
+    (prepared / importer.RECEIPT).write_text(json.dumps(result))
+    with pytest.raises(assets.AssetPreparationError, match="dependency_changed"):
+        importer.import_source_asset(source, prepared, fix_base=True)
+
+
+@pytest.mark.parametrize("defect", ["escape", "absolute", "duplicate", "oversized", "total_bytes", "model_binding", "symlink"])
+def test_public_prepared_verifier_refuses_unsafe_or_unbounded_inventory(tmp_path, monkeypatch, defect):
+    source = _source(tmp_path, monkeypatch)
+    _sdk(monkeypatch)
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True)
+    row = result["files"][0]
+    if defect == "escape":
+        row["path"] = "../outside.usda"
+    elif defect == "absolute":
+        row["path"] = str(tmp_path / "outside.usda")
+    elif defect == "duplicate":
+        result["files"].append(dict(row))
+    elif defect == "oversized":
+        row["size_bytes"] = importer.MAX_PREPARED_FILE_BYTES + 1
+    elif defect == "total_bytes":
+        monkeypatch.setattr(importer, "MAX_PREPARED_BYTES", 1)
+    elif defect == "model_binding":
+        result["model"]["sha256"] = "sha256:" + "0" * 64
+    else:
+        prepared.chmod(0o755)
+        (prepared / "extra-link").symlink_to(tmp_path / "outside")
+    result["import_digest"] = cross_runtime_canonical_digest(result, digest_field="import_digest")
+    (prepared / importer.RECEIPT).write_text(json.dumps(result))
+    with pytest.raises(assets.AssetPreparationError, match="asset_import_"):
+        importer.verify_prepared_asset_directory(prepared)
+
+
+def test_public_verifier_reads_current_usd_reference_bytes_without_network_or_layer_cache(tmp_path, monkeypatch):
+    from pxr import Sdf, Usd
+
+    source = _source(tmp_path, monkeypatch)
+    _sdk(monkeypatch)
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True)
+    prepared.chmod(0o755)
+    stage = Usd.Stage.Open(str(prepared / "robot.usda"))
+    stage.GetPrimAtPath("/robot/tool").CreateAttribute("texture", Sdf.ValueTypeNames.Asset).Set(
+        Sdf.AssetPath("https://must-not-resolve.example/texture.png"))
+    stage.GetRootLayer().Save()
+    model_bytes = (prepared / "robot.usda").read_bytes()
+    updated = {"path": "robot.usda", "size_bytes": len(model_bytes),
+               "sha256": "sha256:" + hashlib.sha256(model_bytes).hexdigest()}
+    result["files"] = [updated if row["path"] == "robot.usda" else row for row in result["files"]]
+    result["model"] = dict(updated)
+    result["import_digest"] = cross_runtime_canonical_digest(result, digest_field="import_digest")
+    (prepared / importer.RECEIPT).write_text(json.dumps(result))
+    with pytest.raises(assets.AssetPreparationError, match="unbound_dependency"):
+        importer.verify_prepared_asset_directory(prepared)
+
+
+def test_explicit_station_is_retained_reproducible_and_uses_the_same_official_converter(tmp_path, monkeypatch):
+    import importlib.util
+    import xml.etree.ElementTree as ET
+    from blueprint_pipeline import deployment_embodiment_station as station
+
+    source = _source(tmp_path, monkeypatch, content=b'''<robot name="fixture"><link name="base"/><link name="tool"/>
+      <joint name="joint" type="revolute"><parent link="base"/><child link="tool"/><axis xyz="0 0 1"/>
+      <limit lower="-2" upper="2" effort="1" velocity="1"/></joint></robot>''')
+    monkeypatch.setattr(station, "recipe_for", importer.recipe_for)
+    calls = _sdk(monkeypatch)
+    params = {"schema_version": station.PARAMETERS_SCHEMA, "embodiment_id": "fixture_dual_option",
+              "composition_mode": "two_instances", "station_root_link": "station", "arms": [
+                  {"name": name, "prefix": prefix, "source_base_link": "base", "source_mount_joint": None,
+                   "station_from_base": {"translation_m": xyz, "quaternion_wxyz": [1, 0, 0, 0]}}
+                  for name, prefix, xyz in (("left", "L_", [0, .3, 0]), ("right", "R_", [0, -.3, 0]))]}
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True, station_parameters=params)
+    assert calls[0]["asset_path"].endswith("/station/robot.urdf")
+    assert result["composed_arm_count"] == 2 and result["source_arm_count"] == 1
+    assert result["station_composition"]["composition"]["parameters"] == params
+    model = ET.parse(prepared / "station/robot.urdf")
+    assert {node.get("name") for node in model.findall("joint")} == {
+        "L_joint", "R_joint", "left_station_mount", "right_station_mount"}
+    spec = importlib.util.spec_from_file_location("retained_station_generator", prepared / "station/station.py")
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+    assert generator.gen_urdf() == (prepared / "station/robot.urdf").read_text()
+    assert importer.import_source_asset(source, prepared, fix_base=True, station_parameters=params) == result
+    changed = json.loads(json.dumps(params))
+    changed["arms"][1]["station_from_base"]["translation_m"][0] = .1
+    with pytest.raises(assets.AssetPreparationError, match="station_parameters_changed"):
+        importer.import_source_asset(source, prepared, fix_base=True, station_parameters=changed)
+
+
+def _prepared_operator_case(tmp_path, monkeypatch):
+    source = _source(tmp_path, monkeypatch, extra={"textures/tool.png": b"real retained fixture content"})
+    _sdk(monkeypatch, asset=str(source / "source/textures/tool.png"))
+    prepared = tmp_path / "prepared"
+    receipt = importer.import_source_asset(source, prepared, fix_base=True)
+    url = "https://assets.blueprint.example/operator/team-a/robot.usd"
+    manifest = {"model": {"url": url, "sha256": receipt["model"]["sha256"]}}
+    profile = {"prepared_robot_models": [{
+        "team_id": "team-a", "checkpoint_id": "checkpoint-a", "model_url": url,
+        "sha256": receipt["model"]["sha256"], "directory": str(prepared),
+        "closure_digest": receipt["dependency_closure"]["closure_digest"]}]}
+    return prepared, receipt, profile, manifest
+
+
+def test_real_import_receipt_survives_operator_owner_mapping_and_sealed_bundle_copy(tmp_path, monkeypatch):
+    from pxr import Sdf, Usd
+    from blueprint_pipeline.team_robot_model_delivery import copy_prepared_closure, stage_prepared_robot_model
+
+    prepared, receipt, profile, manifest = _prepared_operator_case(tmp_path, monkeypatch)
+    staged, bundle = tmp_path / "operator-staged", tmp_path / "worker-bundle"
+    delivery = stage_prepared_robot_model(profile=profile, manifest=manifest, team_id="team-a",
+                                         checkpoint_id="checkpoint-a", target_directory=staged)
+    assert delivery["source_import_digest"] == receipt["import_digest"]
+    assert delivery["source_import_provenance"] == receipt
+    assert delivery["sha256"] == receipt["model"]["sha256"]
+    assert delivery["dependency_closure"] == receipt["dependency_closure"]
+    assert delivery["team_id"] == "team-a" and delivery["checkpoint_id"] == "checkpoint-a"
+    copy_prepared_closure(source=staged, destination=bundle, closure=delivery["dependency_closure"])
+    # The actual copied USD reads the retained texture through its relative path.
+    stage = Usd.Stage.Open(str(bundle / "robot.usda"))
+    value = stage.GetPrimAtPath("/robot/tool").GetAttribute("texture").Get()
+    path = Path(Sdf.ComputeAssetPathRelativeToLayer(stage.GetRootLayer(), value.path))
+    assert path.is_relative_to(bundle) and path.read_bytes() == b"real retained fixture content"
+    assert {r["path"] for r in receipt["dependency_closure"]["files"]} == {
+        "robot.usda", "retained_source/textures/tool.png"}
+    assert importer.verify_prepared_asset_directory(prepared) == receipt
+
+
+@pytest.mark.parametrize("mutation", ["texture", "owner", "checkpoint"])
+def test_operator_mapping_refuses_changed_sidecar_or_wrong_candidate_before_staging(tmp_path, monkeypatch, mutation):
+    from blueprint_pipeline.team_robot_model_delivery import RobotModelDeliveryError, stage_prepared_robot_model
+
+    prepared, _, profile, manifest = _prepared_operator_case(tmp_path, monkeypatch)
+    if mutation == "texture":
+        (prepared / "retained_source/textures/tool.png").write_bytes(b"changed")
+    with pytest.raises(RobotModelDeliveryError, match="prepared_asset_invalid|owner_binding_missing"):
+        stage_prepared_robot_model(profile=profile, manifest=manifest,
+            team_id="other-team" if mutation == "owner" else "team-a",
+            checkpoint_id="other-checkpoint" if mutation == "checkpoint" else "checkpoint-a",
+            target_directory=tmp_path / "must-not-stage")
+    assert not (tmp_path / "must-not-stage").exists()
 
 
 @pytest.mark.parametrize("initialize,failure", [(False, False), (True, False), (True, True)])

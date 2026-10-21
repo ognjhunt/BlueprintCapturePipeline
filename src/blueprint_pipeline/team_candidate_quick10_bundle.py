@@ -307,7 +307,16 @@ def build_team_candidate_session_bundle(
                 raise TeamCandidateBundleError("team_embodiment_model_binding_mismatch")
             target = runtime / "native_task_packet" / binding["model"]["bundle_path"]
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(team_robot_model_path, target)
+            closure = binding["model"].get("dependency_closure")
+            if closure is not None:
+                from .team_robot_model_delivery import copy_prepared_closure
+
+                if Path(team_robot_model_path).name != closure["model_path"]:
+                    raise TeamCandidateBundleError("team_embodiment_model_binding_mismatch")
+                copy_prepared_closure(source=Path(team_robot_model_path).parent,
+                                      destination=target.parent, closure=closure)
+            else:
+                shutil.copyfile(team_robot_model_path, target)
         entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
         entrypoint.write_text(_entrypoint(credential_env), encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
@@ -316,6 +325,7 @@ def build_team_candidate_session_bundle(
         manifest.update({
             "schema_version": PROVIDER_BUNDLE_SCHEMA_VERSION, "execution_mode": EXECUTION_MODES[TEAM_RUN_KIND],
             "run_kind": TEAM_RUN_KIND, "claim_ceiling": CLAIM_CEILING, "candidate_ids": [candidate],
+            "team_policy_interface_id": spec["policy_interface_id"],
             "episodes_per_policy": authority["episodes_per_policy"],
             "learned_policy_rollout_count": authority["learned_policy_rollout_count"],
             "maximum_provider_allocations": 1, "retry_cap": 0, "authority_digest": authority["authority_digest"],

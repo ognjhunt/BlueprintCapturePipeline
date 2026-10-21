@@ -15,12 +15,13 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
+import os
 import re
 import shutil
 import struct
 import tempfile
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -36,6 +37,10 @@ from .immutable_directory_publication import (
 
 RECEIPT = "asset-import.json"
 SCHEMA = "embodiment_asset_import.v1"
+MAX_PREPARED_FILES = 10_000
+MAX_PREPARED_BYTES = 2 * 1024**3
+MAX_PREPARED_FILE_BYTES = 512 * 1024**2
+MAX_IMPORT_RECEIPT_BYTES = 8 * 1024**2
 _FIND = re.compile(r"\$\(find\s+([A-Za-z0-9_]+)\)")
 _XACRO_LOCK = threading.RLock()
 
@@ -79,17 +84,24 @@ def _input_path(value: str, *, anchor: Path, allowed: set[Path], packages: dict[
     return resolved
 
 
-def _precheck_input_closure(entry: Path, *, allowed: set[Path], packages: dict[str, Path]) -> None:
+def _precheck_input_closure(entry: Path, *, allowed: set[Path], packages: dict[str, Path],
+                            relative_references: bool = False) -> set[Path]:
     """Bind XML includes, geometry and textures before a third-party importer reads them."""
     pending, seen = [entry], set()
     mesh_dirs: dict[str, Path] = {}
+
+    def reference(value: str, *, anchor: Path, directory: bool = False) -> Path:
+        if relative_references and Path(value).is_absolute():
+            raise AssetPreparationError("asset_import_dependency_not_relocatable")
+        return _input_path(value, anchor=anchor, allowed=allowed, packages=packages, directory=directory)
+
     while pending:
         path = _input_path(str(pending.pop()), anchor=entry.parent, allowed=allowed, packages=packages)
         if path in seen:
             continue
         seen.add(path)
         suffix = path.suffix.lower()
-        if suffix in {".stl", ".ply", ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".tif", ".tiff", ".exr", ".hdr", ".webp", ".ktx", ".ktx2", ".bin"}:
+        if suffix in {".stl", ".ply", ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".tif", ".tiff", ".exr", ".hdr", ".webp", ".ktx", ".ktx2", ".dds", ".gif", ".bin"}:
             continue  # These formats have no separate referenced file closure.
         if suffix in {".gltf", ".glb"}:
             try:
@@ -116,8 +128,7 @@ def _precheck_input_closure(entry: Path, *, allowed: set[Path], packages: dict[s
                             if not isinstance(item, str):
                                 raise AssetPreparationError("asset_import_input_gltf_invalid")
                             if not item.startswith("data:"):
-                                pending.append(_input_path(unquote(item), anchor=path.parent,
-                                                           allowed=allowed, packages=packages))
+                                pending.append(reference(unquote(item), anchor=path.parent))
                         else:
                             values.append(item)
                 elif isinstance(value, list):
@@ -133,8 +144,7 @@ def _precheck_input_closure(entry: Path, *, allowed: set[Path], packages: dict[s
                 if kind == "mtllib" or kind.lower().startswith("map_") or kind in {"bump", "disp", "decal", "refl"}:
                     if not value or value.startswith("-"):
                         raise AssetPreparationError("asset_import_input_texture_options_unsupported")
-                    pending.append(_input_path(value.strip().strip('"'), anchor=path.parent,
-                                               allowed=allowed, packages=packages))
+                    pending.append(reference(value.strip().strip('"'), anchor=path.parent))
             continue
         if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
             raise AssetPreparationError("asset_import_input_xml_entity_refused")
@@ -148,8 +158,7 @@ def _precheck_input_closure(entry: Path, *, allowed: set[Path], packages: dict[s
             if tag == "compiler":
                 for key in ("assetdir", "meshdir", "texturedir"):
                     if key in node.attrib:
-                        directory = _input_path(node.attrib[key], anchor=entry.parent, allowed=allowed,
-                                                packages=packages, directory=True)
+                        directory = reference(node.attrib[key], anchor=entry.parent, directory=True)
                         if key in mesh_dirs and mesh_dirs[key] != directory:
                             raise AssetPreparationError("asset_import_input_compiler_roots_conflict")
                         mesh_dirs[key] = directory
@@ -163,12 +172,12 @@ def _precheck_input_closure(entry: Path, *, allowed: set[Path], packages: dict[s
                     anchor = mesh_dirs.get("meshdir", mesh_dirs.get("assetdir", anchor))
                 elif tag == "texture":
                     anchor = mesh_dirs.get("texturedir", mesh_dirs.get("assetdir", anchor))
-                pending.append(_input_path(node.attrib[key], anchor=anchor, allowed=allowed, packages=packages))
+                pending.append(reference(node.attrib[key], anchor=anchor))
             if tag == "image":  # COLLADA images can reference a separate texture.
                 for child in node:
                     if child.tag.rsplit("}", 1)[-1] == "init_from":
-                        pending.append(_input_path("".join(child.itertext()).strip(), anchor=path.parent,
-                                                   allowed=allowed, packages=packages))
+                        pending.append(reference("".join(child.itertext()).strip(), anchor=path.parent))
+    return seen
 
 
 def _expand_xacro(entry: Path, *, source: Path, work: Path, arguments: dict[str, str],
@@ -291,11 +300,15 @@ def _converter(format_name: str, entry: Path, output: Path, *, fix_base: bool,
     return Path(converted.usd_path), options, identity
 
 
-def _dependencies(entry: Path, *, staged: Path, source: Path, source_receipt: dict[str, Any]) -> list[dict[str, Any]]:
+def _dependencies(entry: Path, *, staged: Path, source: Path | None = None,
+                  source_receipt: dict[str, Any] | None = None,
+                  relative_references: bool = False) -> list[dict[str, Any]]:
     """Inspect local layers before stage composition; never resolve an unbound URL/file."""
     from pxr import Sdf
 
-    allowed_source = {(source / row["path"]).resolve() for row in source_receipt["files"]}
+    allowed_source = ({(source / row["path"]).resolve() for row in source_receipt["files"]}
+                      if source is not None and source_receipt is not None else set())
+    allowed = allowed_source | {path.resolve() for path in staged.rglob("*") if path.is_file()}
     found: dict[str, dict[str, Any]] = {}
     visited = set()
 
@@ -312,11 +325,21 @@ def _dependencies(entry: Path, *, staged: Path, source: Path, source_receipt: di
         found[str(resolved)] = {"location": "prepared" if internal else "source_bundle", "path": relative,
                                 "sha256": _sha(resolved), "size_bytes": resolved.stat().st_size}
         if resolved.suffix.lower() not in {".usd", ".usda", ".usdc"}:
+            # Runtime content can itself name buffers, materials or images.
+            # Preserve that closure too, rather than treating a DAE/OBJ as an
+            # opaque leaf just because USD references it as an asset value.
+            for dependency in _precheck_input_closure(resolved, allowed=allowed, packages={},
+                                                       relative_references=relative_references):
+                if dependency != resolved:
+                    inspect(dependency)
             return
-        layer = Sdf.Layer.FindOrOpen(str(resolved))
+        # Read saved bytes afresh; an earlier Sdf cache entry must not hide a
+        # changed reference after digest verification.
+        layer = Sdf.Layer.OpenAsAnonymous(str(resolved))
         if layer is None:
             raise AssetPreparationError("asset_import_dependency_layer_unreadable")
-        references = set(layer.GetExternalReferences()) | set(layer.subLayerPaths)
+        references = (set(layer.GetExternalReferences()) | set(layer.subLayerPaths)
+                      | set(layer.GetExternalAssetDependencies()))
 
         def attributes(spec_path):
             spec = layer.GetObjectAtPath(spec_path)
@@ -333,42 +356,157 @@ def _dependencies(entry: Path, *, staged: Path, source: Path, source_receipt: di
             if "://" in value or "[" in value or "\x00" in value:
                 raise AssetPreparationError("asset_import_unbound_dependency")
             dependency = Path(value)
+            if relative_references and dependency.is_absolute():
+                raise AssetPreparationError("asset_import_dependency_not_relocatable")
             inspect(dependency if dependency.is_absolute() else resolved.parent / dependency)
 
     inspect(entry)
     return sorted(found.values(), key=lambda row: (row["location"], row["path"]))
 
 
-def _existing(destination: Path, source: dict[str, Any], fix_base: bool, *, source_root: Path) -> dict[str, Any]:
-    if destination.is_symlink() or (destination / RECEIPT).is_symlink():
+def _retain_flattened_content(layer, *, imported: Path, staged: Path, source: Path,
+                              source_receipt: dict[str, Any]) -> None:
+    """Make the flattened model relocatable without changing robot geometry.
+
+    Flatten composes layers, but asset-valued textures can still point into the
+    original source or a disposable converter directory. Keep their publisher
+    path hierarchy (including sidecars and notices) and author relative paths
+    rooted in the published preparation directory. No network resolver is used.
+    """
+    from pxr import UsdUtils
+
+    source_files = {(source / row["path"]).resolve() for row in source_receipt["files"]}
+    retained = staged / "retained_source"
+
+    def relative_asset(value):
+        if not value:
+            return value
+        if "://" in value or "[" in value or "\x00" in value:
+            raise AssetPreparationError("asset_import_unbound_dependency")
+        candidate = Path(value)
+        candidate = candidate if candidate.is_absolute() else imported.parent / candidate
+        resolved = candidate.resolve()
+        if candidate.is_symlink() or not candidate.is_file():
+            raise AssetPreparationError("asset_import_unbound_dependency")
+        if resolved.is_relative_to(staged.resolve()):
+            target = resolved
+        elif resolved in source_files:
+            if not retained.exists():
+                # The complete bounded, hash-verified inventory retains local
+                # sidecar paths and source notices together. The source bundle
+                # still supplies provenance, but is no longer needed to load.
+                shutil.copytree(source, retained)
+                for row in source_receipt["files"]:
+                    copied = retained / row["path"]
+                    if copied.stat().st_size != row["size_bytes"] or _sha(copied) != row["sha256"]:
+                        raise AssetPreparationError("asset_import_retained_source_changed")
+            target = retained / resolved.relative_to(source.resolve())
+        else:
+            raise AssetPreparationError("asset_import_unbound_dependency")
+        return Path(os.path.relpath(target, staged)).as_posix()
+
+    UsdUtils.ModifyAssetPaths(layer, relative_asset)
+
+
+def _closure(dependencies: list[dict[str, Any]]) -> dict[str, Any]:
+    if any(row["location"] != "prepared" for row in dependencies):
+        raise AssetPreparationError("asset_import_prepared_dependency_external")
+    value = {"schema_version": "embodiment_asset_dependency_closure.v1", "model_path": "robot.usda",
+             "files": [{key: row[key] for key in ("path", "sha256", "size_bytes")} for row in dependencies]}
+    value["closure_digest"] = cross_runtime_canonical_digest(value, digest_field="closure_digest")
+    return value
+
+
+def verify_prepared_asset_directory(directory: str | Path) -> dict[str, Any]:
+    """Verify a retained preparation and closed runtime content without resolving URLs.
+
+    The directory must be selected by the operator's existing private staging
+    path. This verifies actual files/paths/digests and preserves source-only
+    claims; the receipt by itself grants no source rights or execution authority.
+    """
+    destination = Path(directory)
+    if any(path.is_symlink() for path in (destination, *destination.parents)):
         raise AssetPreparationError("asset_import_destination_symlink_refused")
+    receipt_path = destination / RECEIPT
     try:
-        receipt = json.loads((destination / RECEIPT).read_text(encoding="utf-8"))
+        if receipt_path.is_symlink() or receipt_path.stat().st_size > MAX_IMPORT_RECEIPT_BYTES:
+            raise AssetPreparationError("asset_import_receipt_invalid")
+        with receipt_path.open("rb") as stream:
+            raw = stream.read(MAX_IMPORT_RECEIPT_BYTES + 1)
+        if len(raw) > MAX_IMPORT_RECEIPT_BYTES:
+            raise AssetPreparationError("asset_import_receipt_invalid")
+        receipt = json.loads(raw)
     except (OSError, ValueError) as exc:
         raise AssetPreparationError("asset_import_destination_incomplete") from exc
-    if (receipt.get("schema_version") != SCHEMA or receipt.get("source_bundle_digest") != source["bundle_digest"]
-            or receipt.get("fix_base") is not fix_base
+    if (not isinstance(receipt, dict) or receipt.get("schema_version") != SCHEMA
+            or receipt.get("claim_ceiling") != "source_asset_not_qualified"
+            or receipt.get("execution_authorized") is not False or type(receipt.get("fix_base")) is not bool
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(receipt.get("source_bundle_digest")))
             or receipt.get("import_digest") != cross_runtime_canonical_digest(receipt, digest_field="import_digest")):
         raise AssetPreparationError("asset_import_receipt_changed")
+    inventory = receipt.get("files")
+    if not isinstance(inventory, list) or not 0 < len(inventory) <= MAX_PREPARED_FILES:
+        raise AssetPreparationError("asset_import_file_inventory_invalid")
     recorded = set()
-    for row in receipt["files"]:
+    total_bytes = 0
+    for row in inventory:
+        if (not isinstance(row, dict) or set(row) != {"path", "size_bytes", "sha256"}
+                or not isinstance(row["path"], str) or not row["path"] or "\\" in row["path"]
+                or "\x00" in row["path"] or PurePosixPath(row["path"]).is_absolute()
+                or ".." in PurePosixPath(row["path"]).parts
+                or str(PurePosixPath(row["path"])) != row["path"]
+                or row["path"] in recorded or row["path"] == RECEIPT
+                or type(row["size_bytes"]) is not int or not 0 <= row["size_bytes"] <= MAX_PREPARED_FILE_BYTES
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(row["sha256"]))):
+            raise AssetPreparationError("asset_import_file_inventory_invalid")
+        total_bytes += row["size_bytes"]
+        if total_bytes > MAX_PREPARED_BYTES:
+            raise AssetPreparationError("asset_import_file_inventory_bound_exceeded")
         path = destination / row["path"]
-        if (not path.resolve().is_relative_to(destination.resolve()) or path.is_symlink() or not path.is_file()
+        if (not path.resolve().is_relative_to(destination.resolve())
+                or any(parent.is_symlink() for parent in (path, *path.parents)) or not path.is_file()
                 or path.stat().st_size != row["size_bytes"] or _sha(path) != row["sha256"]):
             raise AssetPreparationError("asset_import_output_changed")
         recorded.add(row["path"])
-    actual = {str(path.relative_to(destination)) for path in destination.rglob("*") if path.is_file()}
+    actual = set()
+    for path in destination.rglob("*"):
+        if path.is_symlink():
+            raise AssetPreparationError("asset_import_destination_symlink_refused")
+        if path.is_file():
+            actual.add(path.relative_to(destination).as_posix())
+        if len(actual) > MAX_PREPARED_FILES + 1:
+            raise AssetPreparationError("asset_import_file_inventory_bound_exceeded")
     if actual != recorded | {RECEIPT}:
         raise AssetPreparationError("asset_import_output_changed")
-    dependencies = _dependencies(destination / receipt["model"]["path"], staged=destination,
-                                 source=source_root, source_receipt=source)
-    if dependencies != receipt["dependencies"]:
+    model = receipt.get("model")
+    expected_model = next((row for row in inventory if row["path"] == "robot.usda"), None)
+    if model != expected_model or expected_model is None:
+        raise AssetPreparationError("asset_import_model_binding_changed")
+    dependencies = _dependencies(destination / model["path"], staged=destination,
+                                 relative_references=True)
+    if (dependencies != receipt.get("dependencies") or receipt.get("dependency_closure") != _closure(dependencies)
+            or receipt.get("prepared_directory_self_contained") is not True
+            or receipt.get("single_file_self_contained") is not (len(dependencies) == 1)
+            or receipt.get("source_bundle_required_for_dependency_resolution") is not False):
         raise AssetPreparationError("asset_import_dependency_changed")
     return receipt
 
 
+def _existing(destination: Path, source: dict[str, Any], fix_base: bool,
+              station_parameters: dict[str, Any] | None = None) -> dict[str, Any]:
+    receipt = verify_prepared_asset_directory(destination)
+    if receipt["source_bundle_digest"] != source["bundle_digest"] or receipt["fix_base"] is not fix_base:
+        raise AssetPreparationError("asset_import_receipt_changed")
+    station = receipt.get("station_composition")
+    observed_parameters = station.get("composition", {}).get("parameters") if isinstance(station, dict) else None
+    if observed_parameters != station_parameters:
+        raise AssetPreparationError("asset_import_station_parameters_changed")
+    return receipt
+
+
 def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, *, fix_base: bool,
-                        embodiment_id: str | None = None) -> dict[str, Any]:
+                        embodiment_id: str | None = None,
+                        station_parameters: dict[str, Any] | None = None) -> dict[str, Any]:
     """Import one exact source, preserving its tools/arm count and unresolved facts.
 
     The caller explicitly chooses fixed/free base. Named source arm count never
@@ -386,7 +524,7 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
     if any(path.is_symlink() for path in [destination, *destination.parents]):
         raise AssetPreparationError("asset_import_destination_symlink_refused")
     if destination.exists():
-        return _existing(destination, source_receipt, fix_base, source_root=bundle / "source")
+        return _existing(destination, source_receipt, fix_base, station_parameters)
     if not destination.parent.is_dir() or destination.parent.is_symlink():
         raise AssetPreparationError("asset_import_destination_parent_invalid")
     source = bundle / "source"
@@ -397,7 +535,16 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
         staged = Path(temporary)
         work = staged / "expanded_source"
         format_name = description["format"]
-        if format_name == "xacro":
+        station_composition = None
+        if station_parameters is not None:
+            from .deployment_embodiment_station import prepare_station_source
+
+            station_root = staged / "station"
+            station_composition = prepare_station_source(bundle, station_root, station_parameters)
+            entry = station_root / station_composition["model_path"]
+            source_files = {(station_root / row["path"]).resolve() for row in station_composition["files"]}
+            packages, format_name = {}, "urdf"
+        elif format_name == "xacro":
             entry = _expand_xacro(entry, source=source, work=work,
                                   arguments=description["import_arguments"], roots=packages, source_files=source_files)
             packages = {name: work / path.relative_to(source.resolve()) for name, path in packages.items()}
@@ -408,25 +555,18 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
                                                  fix_base=fix_base, packages=packages)
         if not imported.resolve().is_relative_to(staged.resolve()) or not imported.is_file():
             raise AssetPreparationError("asset_import_converter_output_missing")
-        from pxr import Usd, UsdUtils
+        from pxr import Usd
 
         _dependencies(imported, staged=staged, source=source, source_receipt=source_receipt)
         stage = Usd.Stage.Open(str(imported))
         if stage is None:
             raise AssetPreparationError("asset_import_usd_unreadable")
-        layer = stage.Flatten()
-        # Keep assets internal to the prepared folder relative when publishing
-        # the directory. Source-bundle references remain bound to retained files.
-        def relative_asset(path):
-            candidate = Path(path)
-            if candidate.is_absolute() and candidate.is_relative_to(staged):
-                return str(candidate.relative_to(staged))
-            return path
-
-        UsdUtils.ModifyAssetPaths(layer, relative_asset)
+        layer = stage.Flatten(addSourceFileComment=False)
+        _retain_flattened_content(layer, imported=imported, staged=staged,
+                                  source=source, source_receipt=source_receipt)
         output = staged / "robot.usda"
         layer.Export(str(output))
-        dependencies = _dependencies(output, staged=staged, source=source, source_receipt=source_receipt)
+        dependencies = _dependencies(output, staged=staged, relative_references=True)
         structure = read_model_structure(output)
         if not structure["joint_names"] or not structure["body_paths"]:
             raise AssetPreparationError("asset_import_robot_structure_missing")
@@ -439,11 +579,15 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
         receipt = {"schema_version": SCHEMA, "claim_ceiling": "source_asset_not_qualified",
                    "embodiment_id": source_receipt["embodiment_id"], "source_bundle_digest": source_receipt["bundle_digest"],
                    "source_arm_count": source_receipt["source_arm_count"], "fix_base": fix_base,
+                   "composed_arm_count": 2 if station_composition is not None else source_receipt["source_arm_count"],
+                   "station_composition": station_composition,
                    "importer": runtime, "settings": settings, "files": files,
                    "model": {"path": "robot.usda", "sha256": _sha(output), "size_bytes": output.stat().st_size},
                    "structure": structure, "dependencies": dependencies,
-                   "source_bundle_required_for_dependency_resolution": any(
-                       row["location"] == "source_bundle" for row in dependencies),
+                   "dependency_closure": _closure(dependencies),
+                   "prepared_directory_self_contained": True,
+                   "single_file_self_contained": len(dependencies) == 1,
+                   "source_bundle_required_for_dependency_resolution": False,
                    "composition_required": list(source_receipt["composition_required"]),
                    "missing": list(source_receipt["missing"]),
                    "limitations": ["source_only_not_complete_mounted_robot", "collision_meshes_use_recorded_importer_approximation",
@@ -459,6 +603,9 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
                                                output_exists_code="asset_import_destination_appeared")
         except ImmutableDirectoryPublicationError as exc:
             raise AssetPreparationError(str(exc)) from exc
+    # Check the actual published location. A disposable absolute path must not
+    # survive simply because it was readable before the directory rename.
+    _existing(destination, source_receipt, fix_base, station_parameters)
     return receipt
 
 
@@ -467,6 +614,8 @@ def main(argv=None) -> int:
     parser.add_argument("--source-bundle", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--embodiment")
+    parser.add_argument("--station-parameters", type=Path,
+                        help="Explicit two-arm station parameters; no mount defaults or generated robot geometry")
     parser.add_argument("--initialize-isaac", action="store_true",
                         help="Boot local headless Isaac on an already admitted/installed worker; no allocation or qualification")
     base = parser.add_mutually_exclusive_group(required=True)
@@ -476,6 +625,7 @@ def main(argv=None) -> int:
     app = None
     try:
         verify_source_bundle(args.source_bundle, embodiment_id=args.embodiment)
+        station_parameters = json.loads(args.station_parameters.read_text()) if args.station_parameters else None
         if args.initialize_isaac:
             try:
                 from isaaclab.app import AppLauncher
@@ -483,7 +633,7 @@ def main(argv=None) -> int:
                 raise AssetPreparationError("asset_import_initialized_isaac_runtime_unavailable") from exc
             app = AppLauncher(headless=True).app
         receipt = import_source_asset(args.source_bundle, args.output, fix_base=args.fixed_base,
-                                      embodiment_id=args.embodiment)
+                                      embodiment_id=args.embodiment, station_parameters=station_parameters)
     except (ValueError, OSError, KeyError) as exc:
         parser.exit(2, f"Robot source import refused: {exc}\n")
     finally:
@@ -497,4 +647,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["import_source_asset", "main"]
+__all__ = ["import_source_asset", "verify_prepared_asset_directory", "main"]

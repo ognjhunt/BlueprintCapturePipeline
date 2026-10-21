@@ -22,7 +22,7 @@ def _blob_sha(content):
 def source_case(tmp_path, monkeypatch):
     recipe = assets.recipe_for("kuka_lbr_iiwa_14")
     catalog = assets.asset_recipes()
-    catalog["recipes"] = [recipe, assets.recipe_for("yaskawa_gp20"),
+    catalog["recipes"] = [recipe, assets.recipe_for("standard_bots_ro1"),
                           assets.recipe_for("droid_franka_robotiq_2f85")]
     catalog.pop("recipes_digest")
     data_path = tmp_path / "recipes.json"
@@ -223,7 +223,7 @@ def test_empty_destination_created_during_fetch_is_never_replaced(source_case, m
     assert list(case.destination.iterdir()) == []
 
 
-@pytest.mark.parametrize("identity", ["yaskawa_gp20", "droid_franka_robotiq_2f85", "unknown_robot"])
+@pytest.mark.parametrize("identity", ["standard_bots_ro1", "droid_franka_robotiq_2f85", "unknown_robot"])
 def test_unavailable_or_existing_runtime_does_not_fetch_or_fabricate_source(source_case, identity):
     case = source_case
     with pytest.raises(assets.AssetPreparationError, match="asset_(source|recipe)_"):

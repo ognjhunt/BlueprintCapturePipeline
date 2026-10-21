@@ -43,6 +43,13 @@ def _bearer_token(credential_env: str) -> str | None:
 def canary_policy_client(spec: Mapping[str, Any], *,
                          groot_worker_identity_receipt: Mapping[str, Any] | None = None) -> Any:
     interface = resolve_policy_interface(spec)
+    if interface == "dreamlabs_dream1.v1":
+        from .dreamlabs_policy_client import DreamLabsPolicyClient, DreamLabsPolicySpec
+
+        return DreamLabsPolicyClient(
+            spec=DreamLabsPolicySpec(**spec["policy_spec"]),
+            bearer_token=_bearer_token(str(spec["policy_endpoint"]["credential_env"])),
+        )
     if interface == "blueprint_policy_https.v1":
         from .team_policy_https_client import TeamPolicyHttpsClient, TeamPolicySpec
 

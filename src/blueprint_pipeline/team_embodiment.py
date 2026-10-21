@@ -40,15 +40,16 @@ scene plan (``apply_team_embodiment``) before Isaac builds the scene, and
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 SCHEMA = "blueprint.robot_embodiment.v1"
 SCHEMA_V2 = "blueprint.robot_embodiment.v2"
@@ -101,7 +102,7 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
                "reset_joint_positions", "actuator", "cameras", "control_hz", "action_chunk_rows", "reach_m",
                "embodiment_digest"}
     if v2:
-        allowed = (allowed - {"gripper"}) | {"grippers"}
+        allowed = (allowed - {"gripper"}) | {"grippers", "arms"}
     if set(m) - allowed:
         blockers.append("team_embodiment_field_unknown:" + ",".join(sorted(set(m) - allowed)))
     if m.get("schema_version") not in (SCHEMA, SCHEMA_V2):
@@ -198,6 +199,40 @@ def validate_embodiment_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("team_embodiment_joint_names_not_unique")
     if not _NAME.fullmatch(str(m.get("tool_link") or "")):
         blockers.append("team_embodiment_tool_link_invalid")
+    if "arms" in m and v2:
+        arms = m["arms"]
+        if not isinstance(arms, list) or not 1 <= len(arms) <= 2 or base.get("mode") != "fixed":
+            blockers.append("team_embodiment_arm_groups_invalid")
+            arms = []
+        used_names, used_joints, used_grippers = [], [], []
+        channel_map = {g.get("name"): g for g in channels if isinstance(g, Mapping) and isinstance(g.get("name"), str)}
+        controls = {j.get("name"): j.get("control") for j in declared if isinstance(j, Mapping)}
+        for arm in arms:
+            if not isinstance(arm, Mapping):
+                blockers.append("team_embodiment_arm_group_invalid")
+                continue
+            joint_names = arm.get("joint_names")
+            offset = arm.get("tool_from_tcp")
+            channel = channel_map.get(arm.get("gripper_name")) if isinstance(arm.get("gripper_name"), str) else None
+            if (set(arm) != {"name", "joint_names", "base_link", "tool_link", "gripper_name", "tool_from_tcp"}
+                    or any(not _NAME.fullmatch(str(arm.get(key) or ""))
+                           for key in ("name", "base_link", "tool_link", "gripper_name"))
+                    or arm.get("base_link") == arm.get("tool_link")
+                    or not isinstance(joint_names, list) or not 1 <= len(joint_names) <= MAX_JOINTS
+                    or any(not isinstance(name, str) or controls.get(name) != "position" for name in joint_names)
+                    or not channel or arm.get("tool_link") != channel.get("tool_link")
+                    or not isinstance(offset, Mapping) or set(offset) != {"position_m", "orientation_xyzw"}
+                    or not _vector(offset.get("position_m"), 3) or not _vector(offset.get("orientation_xyzw"), 4)
+                    or not math.isclose(sum(float(q)**2 for q in offset["orientation_xyzw"]), 1.0, abs_tol=1e-4)):
+                blockers.append("team_embodiment_arm_group_invalid")
+                continue
+            used_names.append(arm["name"])
+            used_joints.extend(joint_names)
+            used_grippers.append(arm["gripper_name"])
+        if (len(set(used_names)) != len(used_names) or len(set(used_joints)) != len(used_joints)
+                or len(set(used_grippers)) != len(used_grippers)
+                or set(used_joints) != set(names) or set(used_grippers) != set(channel_map)):
+            blockers.append("team_embodiment_arm_groups_ambiguous_or_incomplete")
     # Every position-driven joint (and gripper joint) has a reset position; a wheel starts at rest.
     reset = m.get("reset_joint_positions") if isinstance(m.get("reset_joint_positions"), Mapping) else {}
     if (set(reset) != set(position_limits) | set(gripper_names) or not all(_finite(v) for v in reset.values())
@@ -281,6 +316,76 @@ def verify_model_file(manifest: Mapping[str, Any], path: str | Path) -> dict[str
     return {"sha256": manifest["model"]["sha256"], "size_bytes": source.stat().st_size}
 
 
+def validate_model_dependency_closure(value: Mapping[str, Any], *, model_record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a portable, fully inventoried prepared directory; never resolve caller paths."""
+    if (not isinstance(value, Mapping)
+            or set(value) != {"schema_version", "model_path", "files", "closure_digest"}
+            or value.get("schema_version") != "embodiment_asset_dependency_closure.v1"
+            or value.get("closure_digest") != cross_runtime_canonical_digest(dict(value), digest_field="closure_digest")):
+        raise TeamEmbodimentError(["team_embodiment_dependency_closure_invalid"])
+    files = value.get("files")
+    if not isinstance(files, list) or not 1 <= len(files) <= 10_000:
+        raise TeamEmbodimentError(["team_embodiment_dependency_closure_invalid"])
+    paths, total = [], 0
+    for row in files:
+        if not isinstance(row, Mapping) or set(row) != {"path", "sha256", "size_bytes"}:
+            raise TeamEmbodimentError(["team_embodiment_dependency_closure_invalid"])
+        path, size = row.get("path"), row.get("size_bytes")
+        pure = PurePosixPath(path) if isinstance(path, str) else PurePosixPath()
+        if (not isinstance(path, str) or not path or not pure.parts or path != pure.as_posix() or pure.is_absolute()
+                or any(part in {"..", "."} for part in pure.parts) or "\\" in path or "\x00" in path
+                or not _DIGEST.fullmatch(str(row.get("sha256") or ""))
+                or type(size) is not int or not 0 <= size <= 512 * 1024 * 1024):
+            raise TeamEmbodimentError(["team_embodiment_dependency_closure_invalid"])
+        paths.append(path)
+        total += size
+    if paths != sorted(set(paths)) or total > 2 * 1024**3:
+        raise TeamEmbodimentError(["team_embodiment_dependency_closure_invalid"])
+    root = next((row for row in files if row["path"] == value["model_path"]), None)
+    if root is None or any(root[key] != model_record.get(key) for key in ("sha256", "size_bytes")):
+        raise TeamEmbodimentError(["team_embodiment_dependency_closure_model_mismatch"])
+    return deepcopy(dict(value))
+
+
+def validate_source_import_provenance(value: Any, *, model_record: Mapping[str, Any],
+                                      dependency_closure: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Keep the complete verified importer receipt bound to its exact model.
+
+    Staging verifies the prepared directory itself. This transport validator
+    neither rereads a source path nor promotes imported assets to qualification.
+    Its schema value matches deployment_embodiment_asset_import.SCHEMA without
+    importing the control-plane importer into the provider runtime closure.
+    """
+    error = "team_embodiment_source_import_provenance_invalid"
+    try:
+        if not isinstance(value, Mapping):
+            raise ValueError(error)
+        raw = json.dumps(dict(value), allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
+        if len(raw) > 8 * 1024 * 1024:
+            raise ValueError(error)
+        receipt = json.loads(raw)
+        model = receipt.get("model")
+        if (receipt.get("schema_version") != "embodiment_asset_import.v1"
+                or receipt.get("claim_ceiling") != "source_asset_not_qualified"
+                or receipt.get("execution_authorized") is not False
+                or receipt.get("prepared_directory_self_contained") is not True
+                or receipt.get("source_bundle_required_for_dependency_resolution") is not False
+                or type(receipt.get("fix_base")) is not bool
+                or not _DIGEST.fullmatch(str(receipt.get("source_bundle_digest") or ""))
+                or receipt.get("import_digest") != cross_runtime_canonical_digest(receipt, digest_field="import_digest")
+                or dependency_closure is None or receipt.get("dependency_closure") != dependency_closure
+                or not isinstance(model, Mapping) or set(model) != {"path", "sha256", "size_bytes"}
+                or model["path"] != dependency_closure["model_path"]
+                or type(model["size_bytes"]) is not int
+                or any(model[key] != model_record.get(key) for key in ("sha256", "size_bytes"))
+                or not isinstance(receipt.get("files"), list) or model not in receipt["files"]):
+            raise ValueError(error)
+        validate_model_dependency_closure(receipt["dependency_closure"], model_record=model_record)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise TeamEmbodimentError([error]) from exc
+    return receipt
+
+
 def read_model_structure(path: str | Path) -> dict[str, Any]:
     """The robot USD's rigid-body paths (as spawned under the robot prim) and joint names (OpenUSD)."""
 
@@ -325,6 +430,7 @@ def model_structure_blockers(manifest: Mapping[str, Any], structure: Mapping[str
     joints = [j["name"] for j in manifest["joints"]] + [j["name"] for g in channels for j in g["joints"]]
     links = [manifest["tool_link"], *(g["tool_link"] for g in channels),
              *(link for g in channels for link in g["contact_links"]),
+             *(link for arm in manifest.get("arms", []) for link in (arm["base_link"], arm["tool_link"])),
              *(c["mount_link"] for c in manifest["cameras"] if c["mount_link"] is not None),
              *manifest["base"].get("ground_contact_links", [])]
     blockers = [f"team_embodiment_model_joint_missing:{name}" for name in joints
@@ -381,9 +487,16 @@ def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mappin
         blockers.append("team_embodiment_free_base_stance_unavailable")
     if blockers:
         raise TeamEmbodimentError(blockers)
+    closure = (validate_model_dependency_closure(model_record["dependency_closure"], model_record=model_record)
+               if "dependency_closure" in model_record else None)
+    provenance = (validate_source_import_provenance(model_record["source_import_provenance"], model_record=model_record,
+                                                  dependency_closure=closure)
+                  if "source_import_provenance" in model_record else None)
     binding = {"schema_version": BINDING_SCHEMA, "manifest": deepcopy(dict(manifest)),
                "model": {"sha256": model_record["sha256"], "size_bytes": int(model_record["size_bytes"]),
-                         "bundle_path": BUNDLE_MODEL_PATH},
+                         "bundle_path": "team_embodiment/" + closure["model_path"] if closure else BUNDLE_MODEL_PATH,
+                         **({"dependency_closure": closure} if closure else {}),
+                         **({"source_import_provenance": provenance} if provenance else {})},
                "body_paths": list(structure["body_paths"]),
                **({"stance": deepcopy(dict(stance))} if free else {}), "binding_digest": ""}
     binding["binding_digest"] = canonical_digest(binding, digest_field="binding_digest")
@@ -489,6 +602,14 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
             or binding.get("binding_digest") != canonical_digest(dict(binding), digest_field="binding_digest")):
         raise TeamEmbodimentError(["team_embodiment_binding_invalid"])
     manifest = validate_embodiment_manifest(binding["manifest"])
+    closure = None
+    if "dependency_closure" in binding["model"]:
+        closure = validate_model_dependency_closure(binding["model"]["dependency_closure"], model_record=binding["model"])
+        if binding["model"]["bundle_path"] != "team_embodiment/" + closure["model_path"]:
+            raise TeamEmbodimentError(["team_embodiment_dependency_closure_model_mismatch"])
+    provenance = (validate_source_import_provenance(binding["model"]["source_import_provenance"],
+                                                  model_record=binding["model"], dependency_closure=closure)
+                  if "source_import_provenance" in binding["model"] else None)
     structure = {"body_paths": list(binding["body_paths"])}
     value = deepcopy(dict(plan))
     station = (value.get("robot") or {}).get("base_pose_world")
@@ -514,7 +635,7 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
     value["robot"] = {
         "robot_id": ROBOT_ID, "embodiment_id": manifest["embodiment_id"],
         "embodiment_digest": manifest["embodiment_digest"], "form": manifest["form"], **base_row,
-        "usd_path": BUNDLE_MODEL_PATH, "usd_sha256": binding["model"]["sha256"],
+        "usd_path": binding["model"]["bundle_path"], "usd_sha256": binding["model"]["sha256"],
         "usd_size_bytes": int(binding["model"]["size_bytes"]), "usd_dependency_bindings": [],
         "usd_runtime_asset_dependencies": [],
         "joint_names": [joint["name"] for joint in joints],
@@ -535,6 +656,14 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
         "grasp_frame": {"kind": "body_midpoint", "body_names": (contact_links * 2)[:2]},
         "control_hz": int(manifest["control_hz"]), "action_chunk_rows": int(manifest["action_chunk_rows"]),
     }
+    if closure is not None:
+        value["robot"]["usd_dependency_closure"] = deepcopy(closure)
+        value["robot"]["usd_dependency_bindings"] = [
+            {"relative_path": "team_embodiment/" + record["path"],
+             "sha256": record["sha256"], "size_bytes": record["size_bytes"]}
+            for record in closure["files"] if record["path"] != closure["model_path"]]
+    if provenance is not None:
+        value["robot"]["source_import_provenance"] = deepcopy(provenance)
     if manifest["schema_version"] == SCHEMA_V2:
         # Keep each channel's measured geometry and command order. The legacy
         # flattened joints are solely the simulator's position-action order.
@@ -550,6 +679,8 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
         primary = next((g for g in channels if g["tool_link"] == manifest["tool_link"]), None)
         primary_links = primary["contact_links"] if primary else [manifest["tool_link"]]
         value["robot"]["grasp_frame"]["body_names"] = (primary_links * 2)[:2]
+        if "arms" in manifest:
+            value["robot"]["arms"] = deepcopy(manifest["arms"])
     if isinstance(value.get("reset"), dict):
         value["reset"]["robot_joint_positions_rad"] = dict(reset)
     # The team's cameras replace Blueprint's policy cameras; the review (overview) camera stays.
@@ -633,5 +764,7 @@ __all__ = [
     "station_reach_blockers",
     "team_embodiment_binding",
     "validate_embodiment_manifest",
+    "validate_model_dependency_closure",
+    "validate_source_import_provenance",
     "verify_model_file",
 ]

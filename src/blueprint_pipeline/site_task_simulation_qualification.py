@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest as digest
+from .policy_interface_binding import TEAM_HTTPS_INTERFACES
 
 SCHEMA = "blueprint.site_task_simulation_qualification.v1"
 DIMENSIONS = {"scale", "registration", "collision", "task_state", "observation", "task_dynamics"}
@@ -99,7 +100,7 @@ def validate_receipt(value: Any, *, now: datetime | None = None) -> dict[str, An
              and row.get("receipt_digest") == digest(row, digest_field="receipt_digest"), "receipt_invalid")
     binding = _object(row["binding"])
     _require(set(binding) == BINDING_FIELDS and all(isinstance(v, str) and v for v in binding.values())
-             and binding["policy_interface_id"] in {"openpi_droid_https.v1", "blueprint_policy_https.v1"}
+             and binding["policy_interface_id"] in TEAM_HTTPS_INTERFACES
              and all(_DIGEST.fullmatch(binding[key]) for key in BINDING_FIELDS if "digest" in key), "binding_invalid")
     _require(all(_DIGEST.fullmatch(str(row[key])) for key in
                  ("request_digest", "profile_digest", "review_digest", "authority_digest")), "digest_invalid")

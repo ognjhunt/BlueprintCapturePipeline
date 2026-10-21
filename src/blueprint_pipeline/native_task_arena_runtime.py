@@ -408,6 +408,22 @@ def _resolve_portable_robot(
     if not isinstance(bindings, list):
         raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_missing"])
     runtime_assets = robot.get("usd_runtime_asset_dependencies")
+    team_closure = robot.get("usd_dependency_closure")
+    if team_closure is not None:
+        from .team_embodiment import TeamEmbodimentError, validate_model_dependency_closure
+
+        try:
+            if robot.get("robot_id") != "team_embodiment":
+                raise ValueError("wrong_robot")
+            closure = validate_model_dependency_closure(team_closure, model_record={
+                "sha256": robot.get("usd_sha256"), "size_bytes": robot.get("usd_size_bytes")})
+        except (TeamEmbodimentError, ValueError, TypeError) as exc:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_team_dependency_closure_invalid"]) from exc
+        expected_bindings = [{"relative_path": "team_embodiment/" + record["path"],
+                              "sha256": record["sha256"], "size_bytes": record["size_bytes"]}
+                             for record in closure["files"] if record["path"] != closure["model_path"]]
+        if (path != "team_embodiment/" + closure["model_path"] or bindings != expected_bindings or runtime_assets != []):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_team_dependency_closure_binding_mismatch"])
     if (
         not isinstance(runtime_assets, list)
         or any(not isinstance(asset, str) for asset in runtime_assets)
@@ -425,7 +441,7 @@ def _resolve_portable_robot(
             not relative_path
             or dep_path.is_absolute()
             or ".." in dep_path.parts
-            or dep_path.parts[0] != "assets"
+            or dep_path.parts[0] != ("team_embodiment" if team_closure is not None else "assets")
             or relative_path in seen
             or relative_path == path
         ):
@@ -444,6 +460,19 @@ def _resolve_portable_robot(
             or _sha256(dep_resolved) != binding.get("sha256")
         ):
             raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_identity_mismatch"])
+    if team_closure is not None:
+        # The source was admitted before staging; independently recheck its
+        # actual reachable file set after transport, not just listed hashes.
+        from .native_g1_usd_dependency_closure import robot_usd_dependency_sources
+
+        try:
+            inspected = robot_usd_dependency_sources(resolved)
+        except ValueError as exc:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_team_dependency_closure_unresolved"]) from exc
+        actual = [relative.as_posix() for _, relative in inspected.sources]
+        expected = [record["path"] for record in team_closure["files"] if record["path"] != team_closure["model_path"]]
+        if actual != expected or inspected.runtime_assets:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_team_dependency_closure_inventory_mismatch"])
     robot["usd_path"] = str(resolved)
     return robot
 

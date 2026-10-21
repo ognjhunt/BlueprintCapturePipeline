@@ -422,6 +422,49 @@ def _ffprobe_command(*, executable: str, video_path: Path) -> list[str]:
     ]
 
 
+def _review_video_inputs(frame_paths: Sequence[Path]) -> tuple[int, int, list[bytes], dict[str, Any] | None]:
+    """Normalize only derived video pixels; lossless evidence is never rewritten.
+
+    A policy may resize its input while terminal/review renders retain native
+    resolution. One video requires a single size, chosen from its first frame.
+    The source hashes and exact per-frame resize are bound in the video receipt.
+    """
+    import cv2
+
+    if not frame_paths:
+        raise ValueError("episode_video_requires_at_least_one_frame")
+    raw_frames: list[bytes] = []
+    transforms = []
+    width = height = 0
+    resized = False
+    for index, path in enumerate(frame_paths):
+        frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError(f"episode_video_frame_unreadable:{path.name}")
+        source_height, source_width = frame.shape[:2]
+        if index == 0:
+            height, width = source_height, source_width
+        changed = (source_height, source_width) != (height, width)
+        if changed:
+            frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+            resized = True
+        scale_x, scale_y = width / source_width, height / source_height
+        raw_frames.append(frame.tobytes())
+        transforms.append({"frame_index": index, "source_png_sha256": _file_sha256(path),
+                           "source_resolution": [source_width, source_height], "target_resolution": [width, height],
+                           "operation": "resize" if changed else "identity",
+                           "resampling": "opencv_inter_linear" if changed else "none",
+                           "pixel_coordinate_transform": [[scale_x, 0., (scale_x - 1.) / 2.],
+                                                          [0., scale_y, (scale_y - 1.) / 2.], [0., 0., 1.]],
+                           "derived_bgr_sha256": "sha256:" + hashlib.sha256(raw_frames[-1]).hexdigest()})
+    receipt = None
+    if resized:
+        receipt = {"schema_version": "review_video_frame_normalization.v1", "target_resolution": [width, height],
+                   "lossless_source_frames_unchanged": True, "frames": transforms, "normalization_digest": ""}
+        receipt["normalization_digest"] = canonical_digest(receipt, digest_field="normalization_digest")
+    return width, height, raw_frames, receipt
+
+
 def _encode_episode_video_unpublished(
     frame_paths: Sequence[Path],
     *,
@@ -430,12 +473,7 @@ def _encode_episode_video_unpublished(
 ) -> dict[str, Any]:
     import cv2
 
-    if not frame_paths:
-        raise ValueError("episode_video_requires_at_least_one_frame")
-    first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_COLOR)
-    if first is None:
-        raise ValueError("episode_video_first_frame_unreadable")
-    height, width = first.shape[:2]
+    width, height, raw_frames, normalization = _review_video_inputs(frame_paths)
     video_path.parent.mkdir(parents=True, exist_ok=True)
     if video_path.exists() or video_path.is_symlink():
         raise FileExistsError("episode_video_overwrite_forbidden")
@@ -443,14 +481,6 @@ def _encode_episode_video_unpublished(
     ffprobe = shutil.which("ffprobe")
     if not ffmpeg or not ffprobe:
         raise RuntimeError("episode_video_ffmpeg_toolchain_unavailable")
-    raw_frames: list[bytes] = []
-    for path in frame_paths:
-        frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        if frame is None:
-            raise ValueError(f"episode_video_frame_unreadable:{path.name}")
-        if frame.shape[:2] != (height, width):
-            raise ValueError(f"episode_video_frame_shape_mismatch:{path.name}")
-        raw_frames.append(frame.tobytes())
     encode = subprocess.run(  # noqa: S603 - absolute discovered binary, fixed argv
         _ffmpeg_encode_command(
             executable=ffmpeg,
@@ -523,6 +553,7 @@ def _encode_episode_video_unpublished(
         "decoded_frame_count": decoded_count,
         "decode_round_trip_passed": True,
         "ffprobe_passed": True,
+        **({"frame_normalization": normalization} if normalization is not None else {}),
     }
 
 
@@ -575,12 +606,7 @@ def _verify_existing_episode_video(
 
     if video_path.is_symlink() or not video_path.is_file() or video_path.stat().st_size <= 0:
         raise FileExistsError("episode_video_overwrite_forbidden")
-    if not frame_paths:
-        raise ValueError("episode_video_requires_at_least_one_frame")
-    first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_COLOR)
-    if first is None:
-        raise ValueError("episode_video_first_frame_unreadable")
-    height, width = first.shape[:2]
+    width, height, _, normalization = _review_video_inputs(frame_paths)
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
         raise RuntimeError("episode_video_ffmpeg_toolchain_unavailable")
@@ -635,6 +661,7 @@ def _verify_existing_episode_video(
         "decode_round_trip_passed": True,
         "ffprobe_passed": True,
         "resumed_existing_immutable_video": True,
+        **({"frame_normalization": normalization} if normalization is not None else {}),
     }
 
 
