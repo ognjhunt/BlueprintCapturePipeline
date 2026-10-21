@@ -190,6 +190,12 @@ def route_job_capabilities(
         "missing_inputs": missing_inputs, "capability_gap": gap,
         "claim_boundary": "Routing lists what Blueprint can run; it is not a performance, delivery or physical-capability result.",
     }
+    # Shortlist options retain their exact identity and setup requirements even
+    # when no runnable configuration exists. They never enter configurations.
+    from .deployment_embodiment_support import support_catalog
+
+    support = support_catalog()
+    value["support_options"] = support
     value["routing_digest"] = cross_runtime_canonical_digest(value, digest_field="routing_digest")
     return value
 

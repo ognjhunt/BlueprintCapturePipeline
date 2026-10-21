@@ -15,7 +15,10 @@ integration canary receipt; editing ``status`` alone must not make it run.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 from typing import Literal
 
 from .droid_policy_canary_embodiment import (
@@ -41,6 +44,23 @@ _INTEGRATION_WORK = (
     "verified_robot_asset", "controller_adapter", "camera_rig", "reset_pose",
     "integration_canary_receipt",
 )
+_DEPLOYMENT_CATALOG_PATH = (
+    Path(__file__).parent / "_catalog_data" / "deployment_embodiment_support.v1.json"
+)
+
+
+def deployment_embodiment_support_catalog() -> dict[str, Any]:
+    """Read the planning catalog without adding runtime or admission claims.
+
+    Return a fresh object so a response consumer cannot mutate the canonical
+    metadata or change subsequent routing calls. Catalog validation and its
+    response digest belong to the deployment-support boundary.
+    """
+
+    value = json.loads(_DEPLOYMENT_CATALOG_PATH.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("deployment_embodiment_support_catalog_not_object")
+    return value
 
 
 @dataclass(frozen=True)
@@ -80,6 +100,32 @@ def _arm(embodiment_id: str, robot: str, arm_count: int = 1, **interface) -> Emb
     )
 
 
+def _catalog_arm(row: dict[str, Any]) -> EmbodimentProfile:
+    """List an evidenced asset option while leaving every runtime gap explicit."""
+
+    # Only the publisher's actual paired Dream demonstrations declare its
+    # interface here. Neither a robot asset nor a customer-supplied route is an
+    # inferred policy match. These remain non-runnable even when schemas match.
+    dream_demonstrated = row["arm_count"] == 2 and any(
+        route["route_id"] == "dreamlabs_dream1"
+        and route["evidence"] == "publisher_demonstrated"
+        for route in row["policy_routes"]
+    )
+    actions = (BIMANUAL_EEF_POSE_ACTION,) if dream_demonstrated else ()
+    if row["embodiment_id"] == "i2rt_yam_bimanual":
+        actions = (DREAM1_NATIVE_JOINT_ACTION, BIMANUAL_EEF_POSE_ACTION)
+    missing = [*_INTEGRATION_WORK, *row["required_artifacts"]]
+    if dream_demonstrated:
+        missing.append("eef_pose_ik_adapter")
+    return _arm(
+        row["embodiment_id"], row["display_name"], arm_count=row["arm_count"],
+        tool=row["tool_requirement"],
+        observation_schema_ids=(HEAD_AND_WRIST_CAMERAS_OBSERVATION,) if dream_demonstrated else (),
+        action_schema_ids=actions,
+        missing=tuple(dict.fromkeys(missing)),
+    )
+
+
 EMBODIMENT_REGISTRY: tuple[EmbodimentProfile, ...] = (
     EmbodimentProfile(
         embodiment_id=DROID_EMBODIMENT_ID,
@@ -110,20 +156,11 @@ EMBODIMENT_REGISTRY: tuple[EmbodimentProfile, ...] = (
         missing=("accessible_runtime", "simulator_embodiment", "policy_checkpoint_or_api", "delivery_channel"),
         reason="No Atlas runtime, simulator embodiment, policy checkpoint or delivery channel is accessible to Blueprint.",
     ),
-    # Dream-1's own body: the declared interface is the one its provider publishes.
-    _arm("i2rt_yam_bimanual", "I2RT YAM (two arms)", arm_count=2, tool="parallel gripper",
-         observation_schema_ids=(HEAD_AND_WRIST_CAMERAS_OBSERVATION,),
-         action_schema_ids=(DREAM1_NATIVE_JOINT_ACTION, BIMANUAL_EEF_POSE_ACTION)),
-    # Two Frankas can take end-effector-pose policies once an IK adapter exists.
-    _arm("franka_research_3_bimanual", "Franka Research 3 (two arms)", arm_count=2,
-         tool="Franka Hand", observation_schema_ids=(HEAD_AND_WRIST_CAMERAS_OBSERVATION,),
-         action_schema_ids=(BIMANUAL_EEF_POSE_ACTION,),
-         missing=(*_INTEGRATION_WORK, "eef_pose_ik_adapter")),
-    _arm("universal_robots_ur5e", "Universal Robots UR5e"),
+    *(_catalog_arm(row) for row in deployment_embodiment_support_catalog()["embodiments"]),
+    # Compatibility rows remain distinct from the exact variants above.
     _arm("universal_robots_ur10e", "Universal Robots UR10e"),
     _arm("fanuc_crx_10ia", "FANUC CRX-10iA"),
     _arm("abb_gofa_crb15000", "ABB GoFa CRB 15000"),
-    _arm("kuka_lbr_iiwa_14", "KUKA LBR iiwa 14"),
     _arm("kinova_gen3", "Kinova Gen3"),
     _arm("ufactory_xarm7", "UFACTORY xArm 7"),
 )
@@ -152,5 +189,6 @@ def embodiment_registry_violations() -> list[str]:
 
 
 __all__ = [
-    "EMBODIMENT_REGISTRY", "EmbodimentProfile", "embodiment", "embodiment_registry_violations",
+    "EMBODIMENT_REGISTRY", "EmbodimentProfile", "deployment_embodiment_support_catalog",
+    "embodiment", "embodiment_registry_violations",
 ]
