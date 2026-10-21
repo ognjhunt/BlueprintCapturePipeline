@@ -348,7 +348,11 @@ class JobEvidenceStore:
                 return current
             if current["state"] == "cancelled":
                 raise JobEvidenceError("job_evidence_cancelled")
-            preparation = _read(self._root(request_id) / "preparation.json")
+            preparation_path = self._root(request_id) / "preparation.json"
+            if not preparation_path.is_file():
+                # Unbound questions and capability gaps never planned a run.
+                raise JobEvidenceError("job_evidence_not_executable")
+            preparation = _read(preparation_path)
             candidates = preparation["authorization_candidates"]
             references = [row["adapter_reference"] for row in candidates]
             try:

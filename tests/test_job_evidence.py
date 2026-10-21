@@ -103,6 +103,9 @@ def test_unsupported_task_family_keeps_request_and_names_gap_without_a_run(tmp_p
     assert not (tmp_path / "runs").exists()
     # A retried delivery returns the same record and never plans a run.
     assert store.submit(job) == blocked
+    with pytest.raises(JobEvidenceError, match="job_evidence_not_executable"):
+        store.execute(job["request_id"], job["request_digest"], {"role": "human", "identity": "operator-1"})
+    assert store.inspect(job["request_id"]) == blocked
 
 
 def test_real_native_plan_executes_local_evidence_once_and_preserves_verdict(tmp_path, monkeypatch):
