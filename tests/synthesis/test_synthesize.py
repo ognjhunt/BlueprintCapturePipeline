@@ -18,6 +18,24 @@ from blueprint_pipeline.synthesis.synthesize import synthesize_view, synthesize_
 
 
 class TestSynthesizeView:
+    @pytest.mark.parametrize("depth_scale", [0.001, 0.0005])
+    def test_depth_resize_preserves_uint16_samples_as_scaled_metres(self, tmp_path, depth_scale):
+        raw = np.array([[0, 1, 63, 255], [256, 500, 1000, 65535]], dtype=np.uint16)
+        path = tmp_path / "depth.png"
+        Image.fromarray(raw).save(path)
+        with Image.open(path) as encoded:
+            decoded = np.array(encoded)
+        assert decoded.dtype == np.uint16
+        np.testing.assert_array_equal(decoded, raw)
+
+        depth = synth._load_ref_depth(
+            {"depth_uri": str(path), "intrinsics": {"width": 8, "height": 4}},
+            storage_root=tmp_path, bucket="bucket", depth_scale=depth_scale,
+        )
+        expected = np.repeat(np.repeat(raw.astype(np.float32) * depth_scale, 2, axis=0), 2, axis=1)
+        assert depth.dtype == np.float32
+        np.testing.assert_array_equal(depth, expected)
+
     def test_splat_only_completes(self, fake_storage_root, simple_intrinsics, tmp_path):
         """synthesize_view() in splat_only mode should return status=completed."""
         output = tmp_path / "out.jpg"

@@ -325,6 +325,11 @@ STEPS: dict[str, Step] = {
             "evidence_root": Param("--evidence-root", required=True),
             "output_dir": Param("--output-dir", required=True),
             "link_sources_within": Param("--link-sources-within"),
+            "exact_workcell_cell": Param(
+                "--exact-workcell-cell",
+                "JSON file with the frozen request, matrix, cell ID and source-plan digest.",
+                json_file=True,
+            ),
         },
     ),
     "policy-execution-spec": Step(

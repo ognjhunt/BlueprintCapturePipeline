@@ -551,6 +551,7 @@ def materialize_native_task_arena_packet(
     evidence_root: str | Path,
     output_dir: str | Path,
     link_sources_within: str | Path | None = None,
+    exact_workcell_cell: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Verify source bytes and build one immutable local construction packet.
 
@@ -558,6 +559,10 @@ def materialize_native_task_arena_packet(
     lives under that directory instead of copying them.  The episode compiler
     passes its per-run output root so a multi-gigabyte packet costs no second
     copy of bytes it already extracted and will delete together.
+
+    ``exact_workcell_cell`` optionally derives one frozen supported cell before
+    sealing. Its original source plan, request/runtime predecessors and full
+    variation inputs remain packet artifacts; no native result is inferred.
     """
 
     frozen = _clone_request(request)
@@ -730,6 +735,29 @@ def materialize_native_task_arena_packet(
             plan["policy_canary_camera_start_configuration"] = binding
             plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
             write_json(plan_path, plan)
+        cell_artifacts: list[tuple[str, Path]] = []
+        cell_preparation = None
+        if exact_workcell_cell is not None:
+            from .core.immutable_file import write_file_exclusive
+            from .decision_evidence_contracts import canonical_json
+            from .exact_workcell_native_packet import (
+                PREPARATION_FILENAME, SOURCE_PLAN_FILENAME, prepare_native_packet_cell,
+            )
+
+            source_plan = plan
+            plan, cell_preparation = prepare_native_packet_cell(
+                source_scene_plan=source_plan, cell_preparation=exact_workcell_cell,
+                source_packet_request_digest=frozen["request_digest"],
+                source_runtime_contract_digest=contract["contract_digest"],
+            )
+            for role, filename, document in (
+                ("exact_workcell_source_arena_scene_plan", SOURCE_PLAN_FILENAME, source_plan),
+                ("exact_workcell_cell_preparation", PREPARATION_FILENAME, cell_preparation),
+            ):
+                destination = output / filename
+                write_file_exclusive(destination, (canonical_json(document) + "\n").encode())
+                cell_artifacts.append((role, destination))
+            write_json(plan_path, plan)
         write_json(output / "native_task_arena_packet_request.v1.json", frozen)
         artifacts = [
             {
@@ -742,6 +770,7 @@ def materialize_native_task_arena_packet(
                 ("packet_request", output / "native_task_arena_packet_request.v1.json"),
                 ("runtime_contract", contract_path),
                 ("arena_scene_plan", plan_path),
+                *cell_artifacts,
             )
         ]
         receipt: dict[str, Any] = {
@@ -756,7 +785,9 @@ def materialize_native_task_arena_packet(
             "shared_construction_digest": (
                 (contract.get("construction_bindings") or {}).get("construction_digest")
             ),
-            "scenario_instance_digest": scenario["instance_digest"],
+            "scenario_instance_digest": plan["scenario"]["instance_digest"],
+            **({"exact_workcell_cell_preparation_digest": cell_preparation["preparation_digest"]}
+               if cell_preparation is not None else {}),
             "source_bindings": source_bindings,
             **(
                 {"robot_asset_binding": robot_asset_binding}

@@ -108,6 +108,75 @@ tolerance before policy execution. A matrix or schedule is preparation evidence,
 not proof that Isaac ran, a policy acted, the task succeeded, or the ranking is
 valid.
 
+## Execution availability
+
+The matrix adapter registered in `evaluation_run_contract.py` is a compilation
+adapter. It does not register an execution implementation or allocate a runtime.
+`exact_workcell_variation_runtime` publishes the frozen schedule and independently
+joins retained episode artifacts; neither operation executes robot policies.
+
+The native paired-policy canary currently executes ten cells at the
+`diagnostic_policy_execution` ceiling. It is not the 100-cell experiment above.
+Its scene resolver declares its actual parameter application/readback profile in
+`policy_canary_scene_resolution.NATIVE_SCENARIO_PARAMETERS` and refuses unknown
+parameters during static preflight, before provider allocation or policy queries.
+A task-family template or a generated exact-workcell dimension cannot widen that
+profile by passing a new parameter name.
+
+`exact_workcell_native_runtime.py` now provides the native target adapter for
+supported scalar terms. `prepare_native_runtime_cell` verifies the frozen
+matrix/cell and immutable source plan, checks scene/task/object/embodiment
+identities, and calls the existing scene-plan setters. It requires absolute
+native nominal values and declared units; it does not interpret a dimension
+name ending in `delta` as an offset. Use `native_runtime_embodiment_digest` to
+bind the source robot, cameras and cadence in the request. Unavailable targets,
+categorical targets and articulated link friction without an exact selector
+remain blocked.
+
+For a new native site, `build_native_site_task_variation_request` reuses the
+existing site-task bound generator and explicitly converts its bounded offsets
+to absolute values using that immutable source plan's object pose and camera
+calibration. It preflights the canonical anchor through the same native setters.
+The old delta-shaped request is not passed directly to absolute native targets;
+nonzero site coordinates require no site-specific source edits. A missing
+friction measurement remains omitted, and changed source calibration requires
+new matching source/configuration identities.
+
+After building and resetting that prepared plan, `read_native_runtime_cell`
+uses the existing native readback adapter and returns the digest-bound
+`exact_workcell_reset_application.v1` consumed by the collector. The caller must
+bind its prepared plan digest before construction. This receipt proves only
+parameter application/readback. Full scientific reset, episodes, controls,
+scoring, observation media and provider teardown retain their existing owners.
+
+The full native execution port below supplies the supported fixed-arm adapter.
+Every additional runtime must likewise consume exact cell, reset and episode
+bindings, apply and independently read every admitted target, run both controls
+and frozen policies on the same cells, and retain the media/lifecycle/scorer
+artifacts consumed by `collect_evaluation_evidence`.
+An unavailable target must identify the missing native application/readback
+capability. Increasing the canary cell count or relabeling its result is not this
+integration. Existing execution authority, paid-resource admission, controls holds
+and physical-proof requirements remain unchanged.
+
+The existing `materialize_native_task_arena_packet` accepts an optional
+`exact_workcell_cell` containing the frozen `request`, `matrix`, `cell_id` and
+`source_plan_digest`. It recompiles the canonical source request, applies the
+same native cell adapter before sealing, and retains the original source plan
+and complete cell preparation inputs as immutable packet artifacts. The packet
+request/runtime contract remain source predecessors; its new plan and scenario
+digests identify the exact prepared cell. `replay_native_packet_cell` reconstructs
+that plan from the retained inputs. Existing construction bundle/worker code can
+then consume the sealed cell packet and produce a real per-cell construction
+result under its existing authority. Preparation grants no execution authority
+and creates no construction receipt; unavailable native profiles fail explicitly.
+
+The existing `scripts/materialize_paired_target_native_inputs.py arena-packet`
+command exposes the same input as `--exact-workcell-cell CELL_PREPARATION.json`,
+alongside its existing `--request`, `--evidence-root` and `--output-dir` flags.
+Omitting the optional flag preserves canonical source-packet preparation. Both
+routes only materialize retained packet bytes and grant no runtime authority.
+
 ## Immutable Artifacts
 
 The create-only publisher writes and fully reads back:
@@ -138,3 +207,79 @@ teardown, and provider-zero where paid infrastructure is used.
 Generating or publishing the matrix proves only deterministic preparation. It
 does not prove simulator execution, task success, policy ranking, physical
 transfer, deployment readiness, safety, or multi-site generalization.
+
+## Full native execution port
+
+`exact_workcell_evaluation_session.execute_evaluation_schedule` executes the
+frozen schedule, and `exact_workcell_native_session.NativeCellProcessRunner`
+binds it to the existing native `CellRuntime`, task-neutral control loop and
+DROID policy episode loop. The existing EvaluationRun execution registry names
+this adapter `exact_workcell_native_droid`. It accepts the fixed-arm rigid-task
+profile; it does not widen the Quick-10 canary, add a provider allocation route,
+or declare another embodiment/task executable.
+
+To use this port, an already-admitted provider host must call the existing
+`execute_evaluation_run` API with
+its compiled immutable `evaluation_run.v1`, `allow_execution=True`, and ephemeral
+context containing `native_exact_workcell_config` plus
+`assert_native_execution_allowed`. That callback is the host's existing live
+permission/hold/deadline/spend recheck, not a new boolean approval. A generic
+execution gate or JSON CLI request without that runtime authority stays blocked.
+The spec's runtime `execution_adapter_id` is `exact_workcell_native_droid`; its
+task-scenario pack is the existing `evaluation_run_task_scenario_pack` projection
+of the published matrix. Config binds the compiled spec digest, exact source
+scene/plan/capture and job identity, frozen candidate execution specs, full
+policy-readiness/scenario-suite authorities, observation-integrity authority,
+retained provider policy identity root, native packet root, and independently
+qualified per-cell construction results. Its evidence root is the run output's
+`native_exact_workcell` directory. These are retained input references and
+existing authority, never placeholders synthesized by the execution driver.
+
+Each cell runs in a fresh Isaac interpreter. Both controls precede both policies;
+all four share the resolved cell, seed, native parameter readback and independently
+measured reset. Per-cell policy admissions preserve the frozen model/interface
+identities while binding actual construction and controls. Native camera, device,
+gripper, observed checkpoint identity, exact policy inputs, media, independent
+scoring and complete-duration rules remain those of the existing runners.
+
+Before an episode effect, the parent fsyncs its source-bound intent. Retained
+receipt bytes and sidecars are hashed before acknowledgement. A lost receipt
+acknowledgement adopts the retained sidecar; an ambiguous effect without one
+returns `reconciliation_required` and never purchases another episode. A changed
+capture/configuration cannot reuse the directory. The existing collector validates
+the union against every scheduled row and refuses missing media, controls, source
+bindings and reset parity. A count of 400 alone remains insufficient evidence.
+The enclosing managed allocator still owns watchdog, billing, teardown and
+provider-zero receipts; this driver grants no new spending authority.
+
+For the existing native provider bundle, pass
+`exact_workcell_native_bundle.full_matrix_native_runtime_sources()` as the
+`runtime_module_sources`/`runtime_extra_files` arguments to
+`build_native_task_arena_bundle`. This resolves the complete local import
+closure, including full rights/controls/media validators and the shared
+immutable writer, and packages their exact bytes through the existing bundle
+contract. The full session snapshots and hashes all supplied runtime inputs;
+changing a policy endpoint, authority, construction result or packet reference
+cannot resume the same retained session. This source staging function allocates
+and dispatches nothing.
+
+The control-plane default execution registry includes this native adapter.
+Inside the native-only provider bundle, construct the existing
+`EvaluationRunExecutionRegistry([ExactWorkcellNativeEvaluationRunExecutor()])`
+and pass it as `execution_registry` to `execute_evaluation_run`; other runtime
+families have their own bundles and dependencies.
+
+Offline tests exercise software orchestration/recovery, native adapter inputs and
+the actual deterministic control loop. Synthetic episode receipts deliberately
+remain blocked by the real collector. They do not establish a live GPU run,
+real policy outcomes, physical transfer or a deployment recommendation. A live
+full comparison still requires the exact qualified capture-derived inputs,
+reviewed policy authorities and an existing bounded allocation whose holds permit
+it; no new job is automatically dispatched by registering this adapter.
+
+The current configured-scene managed activation remains the diagnostic canary
+path. It does not assemble this full-run context, and its single canonical
+construction receipt and bounded canary authority cannot substitute for exact
+per-cell construction or authorize 400 episodes. A separately admitted full
+runtime host is still required for that managed launch connection. Neither
+source preparation nor the registered execution port creates this authority.

@@ -5,12 +5,19 @@
 > Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
 
 
-> Current owner direction (2026-10-21, recorded in AGENTS.md and canonical shared doctrine): the free beta is a **job-first automation service** alongside Arm Decision Proof v1. The site records or uploads video of one recurring job; the existing video analysis drafts the brief and assessment cannot advance without retained video (owner correction, 2026-10-21). Blueprint agrees the brief, prepares the capture-backed simulation, runs supported configurations it can access, reports explicit capability gaps, and helps compare real delivery proposals. Customer selection, both-party pilot agreement and reported outcomes are separate records. ADP retains its frozen two-candidate scientific protocol and authoritative physical-proof boundary; the historical `sole_active_program` label does not override the owner direction.
+> Current owner correction (2026-10-21, recorded in AGENTS.md and canonical shared doctrine): the free beta is a **video-to-deployment service** alongside Arm Decision Proof v1. Assessment requires actual retained job video; a written description is not required. Existing analysis drafts the brief for correction. Reuse capture -> reconstruction -> site package -> measurable testbed, shortlist complete executable configurations, run matched independently scored evaluations within existing authority, and compare real delivery proposals. Drafts may await footage; unavailable capabilities and missing inputs remain explicit. Reuse valid artifacts instead of repeating unchanged work. Customer selection, both-party pilot agreement and reported outcomes remain separate records. ADP retains its frozen two-candidate scientific protocol and authoritative physical-proof boundary; the historical `sole_active_program` label does not override owner direction.
 
 For capture-derived evaluations, the
 [supervised beta runbook](docs/runbooks/first-site-team-beta.md) covers exact
 runtime delivery, simulation qualification, results and recovery. It is a
-conditional evidence route rather than a required stage for every job.
+supported execution route, not permission to relabel a template or queued request
+as completed policy execution.
+
+The existing [job capability preflight](src/blueprint_pipeline/job_capability_routing.py)
+routes declared task families through explicit native adapters, embodiment and
+policy interfaces, required inputs and unavailable reasons. Its compatible
+shortlist is separate from source-bound runtime admission, scored execution and
+a partner's delivery commitment.
 
 ## Evidence Program: Arm Decision Proof v1
 
@@ -43,7 +50,8 @@ are not independent roadmap authority.
 
 ## Product Boundary
 
-A job assessment can use existing evidence without creating a capture,
+A job draft may await footage; assessment requires retained video and its real
+storage receipt. Reuse applicable source-bound evidence without fabricating a
 testbed or run. WebApp owns briefs, proposals, customer choice, pilot agreement
 records and permitted customer-reported outcomes. Pipeline owns scientific
 evidence planning and execution, normalized results, uncertainty and abstention.

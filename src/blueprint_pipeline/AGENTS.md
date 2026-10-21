@@ -6,10 +6,14 @@ programs are active, the free beta's job-first automation service and Arm
 Decision Proof v1; other lanes remain compatibility unless a recorded blocker in
 one of them requires their smallest reusable component.
 
-Beta work serves an agreed job brief, drafted from retained job video, and
-supportable delivery options. Assessment waits for retained video; reuse
-existing evidence and run the supported configurations or the smallest
-qualified test that resolves material uncertainty. Existing licensed Blueprint-managed
+Beta assessment requires retained video; existing analysis drafts the agreed
+job brief without requiring a customer-written description. Reuse the
+capture-to-package/testbed path, valid source-bound artifacts and the smallest
+qualified execution that resolves material uncertainty. Route missing adapters
+and inputs honestly; read-only evidence adapters are not policy evaluation.
+Reuse `job_capability_routing.py` for explicit task, embodiment and policy
+compatibility; its shortlist still needs exact source-bound runtime admission.
+Existing licensed Blueprint-managed
 execution and approved team-supplied endpoints remain valid. Preserve
 independent scoring and controlled observations. Commercial proposal selection,
 both-party agreement and reported outcomes cannot create scientific authority.

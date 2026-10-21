@@ -100,9 +100,13 @@ delivered. The useful beta outcome is a real job with an agreed scope, a
 supportable customer choice, a separately agreed pilot, and recorded outcomes.
 
 Accept jobs across sites and task families into truthful capability routing.
-The first runnable route is the exact admitted fixed-arm/DROID-compatible
-rigid-object profile, not every arm or task. An articulated open/close fidelity
-template does not establish an executable adapter, reset or scorer. Atlas and
+The first matched proof keeps its exact admitted fixed-arm/DROID-compatible
+rigid-object envelope. The existing `job_capability_routing.py` preflight names
+rigid pick/place and articulated open/close native adapters, independent success
+predicates, required inputs and interface-compatible candidate configurations.
+Its `supported` result is a compatibility shortlist, not exact site/task runtime
+admission, successful execution or a delivery commitment. A fidelity template
+alone does not establish an executable adapter, reset or scorer. Atlas and
 other unavailable embodiments or policies remain unavailable without blocking
 supported configurations. New task families need real assets, adapters,
 resets, scoring and evidence; registry labels and fixture names cannot supply

@@ -88,8 +88,10 @@ def default_evaluation_run_execution_registry() -> EvaluationRunExecutionRegistr
         f"{package}.g1_kitchen_evaluation_run_adapter"
     )
 
+    native_module = importlib.import_module(f"{package}.exact_workcell_native_session")
     return EvaluationRunExecutionRegistry(
         [
+            native_module.ExactWorkcellNativeEvaluationRunExecutor(),
             robot_module.RobotEvalEvaluationRunExecutor(),
             kitchen_module.G1KitchenEvaluationRunExecutor(),
         ]
