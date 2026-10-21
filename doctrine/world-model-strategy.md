@@ -5,12 +5,15 @@
 All backend and infrastructure choices serve the two active programs: the
 **free beta's job-first automation service** and **Arm Decision Proof v1**.
 The owner direction of 2026-10-21 makes dependable work at an acceptable total
-cost the buying decision. Identify a few complete, supportable solutions and
-real delivery partners; ordinary automation is eligible. Reuse permitted
-applicable evidence, run targeted tests only to resolve material uncertainty,
-and use physical trials when physical truth is needed. Every assessment starts
-from retained job video and its capture-backed simulation. Keep the separate prospective fixed-arm proof and
-its exactly two frozen candidates unchanged.
+cost the buying decision. The later same-day correction requires retained job
+video before assessment and automatic description drafting from the existing
+video analysis. Reuse capture, reconstruction, site-package and task-testbed
+paths; do not replace them with text-only advice or supplier matching. Identify
+a few complete, executable and supportable configurations and real delivery
+partners. Run matched independently scored policies within existing authority,
+reuse valid source-bound artifacts, and use physical trials when physical truth
+is needed. Missing inputs or capabilities stay explicit. Keep the separate
+prospective fixed-arm proof and its exactly two frozen candidates unchanged.
 
 World models, classical simulators, reconstruction systems, 3DGS renderers,
 SimReady tools, analytic geometry, learned evaluators, and physical evidence are
@@ -29,6 +32,17 @@ Declarations do not prove tested compatibility or a partner's willingness to
 deliver. Do not turn advertised API access, open weights, an application or a
 registry label into runnable admission. Preserve controlled observations,
 independent scoring, immutable inputs, episode media, and runtime receipts.
+
+Task requirements and scoring, site geometry/objects, embodiment/tool/sensors,
+policy interfaces and delivery availability are separate integration seams.
+Route by declared capabilities and validated compatibility; do not silently
+coerce multi-step, articulated or unsupported work into rigid pick-and-place.
+The first exact fixed-arm/DROID-compatible route does not admit every robot,
+and a fidelity template is not a runtime adapter. Atlas and unavailable hosted
+APIs remain unavailable. Reuse existing intent/outbox/lease and reconciliation
+mechanisms for durable at-least-once delivery and restart recovery; an ambiguous
+timeout cannot justify another paid run. Scientific source revisions and
+commercial quote revisions have different applicability rules.
 
 Commercial screening and proposal revision remain above bounded scientific
 evaluation. A regional delivery gap can remove an offer without inventing a

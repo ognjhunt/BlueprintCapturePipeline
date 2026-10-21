@@ -1323,6 +1323,65 @@ def test_door_and_iteration_wrappers_use_trusted_sources() -> None:
         assert "--source-repo $CP " in text, wrapper
 
 
+@pytest.mark.parametrize("failure", [None, "install", "readback", "timeout", "interrupt"])
+def test_shared_runtime_sync_uses_hashed_release_delta_as_service_user(tmp_path, monkeypatch, failure):
+    manifest = tmp_path / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("certifi==2026.10.19 \\\n    --hash=sha256:" + "b" * 64 + "\npillow==13.0.0 \\\n    --hash=sha256:" + "a" * 64 + "\n")
+    calls, killed, reaped = [], [], []
+
+    def start(argv, **kwargs):
+        calls.append(argv)
+        assert argv[:4] == ["/usr/sbin/runuser", "-u", "blueprint", "--"]
+        assert argv[4:6] == [str(Path(sys.executable).absolute()), "-I"]
+        assert kwargs["cwd"] == "/"
+        assert set(kwargs["env"]) == {"PATH", "HOME", "LC_ALL", "PIP_CONFIG_FILE"}
+        assert kwargs["start_new_session"] is True
+
+        def communicate(*, input, timeout):
+            if "pip" in argv:
+                assert "--require-hashes" in argv and "--no-deps" in argv
+                assert "--only-binary=:all:" in argv
+                assert argv[-1] == str(manifest)
+                assert input is None and timeout == 180
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                if failure == "interrupt":
+                    raise KeyboardInterrupt()
+                return "", "private child details"
+            assert json.loads(input) == ["certifi", "pillow"]
+            return json.dumps({"certifi": "2026.10.19", "pillow": "12.3.0" if failure == "readback" else "13.0.0"}), ""
+
+        return SimpleNamespace(pid=1000 + len(calls), returncode=1 if failure == "install" else 0,
+            communicate=communicate, wait=lambda **_kwargs: reaped.append(len(calls)),
+            stdout=io.StringIO(), stderr=io.StringIO())
+
+    monkeypatch.setattr(deploy.subprocess, "Popen", start)
+    monkeypatch.setattr(deploy.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    if failure:
+        expected = KeyboardInterrupt if failure == "interrupt" else deploy.ControlPlaneDeployError
+        with pytest.raises(expected):
+            deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
+    else:
+        receipt = deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
+        assert receipt["versions"] == {"certifi": "2026.10.19", "pillow": "13.0.0"}
+        assert receipt["account"] == "blueprint"
+    assert len(calls) == (1 if failure in {"install", "timeout", "interrupt"} else 2)
+    assert killed == [(1001 + index, signal.SIGKILL) for index in range(len(calls))]
+    assert len(reaped) == len(calls)
+
+
+@pytest.mark.parametrize("extra", ["usd-core==26.5", "https://example.invalid/unrelated.whl"])
+def test_shared_runtime_sync_refuses_unrelated_bootstrap_pin_before_install(tmp_path, monkeypatch, extra):
+    manifest = tmp_path / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    manifest.parent.mkdir(parents=True)
+    source = REPO_ROOT / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    manifest.write_text(source.read_text() + extra + " \\\n    --hash=sha256:" + "c" * 64 + "\n")
+    monkeypatch.setattr(deploy.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("unrelated install started"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_shared_runtime_dependency_sync_failed$"):
+        deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
+
+
 def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, object]:
     """Replace every host-touching deploy step with a no-op; return deploy arguments."""
 
@@ -1362,6 +1421,7 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_prepare_scene_retirement_runtime": lambda **_kwargs: {
             "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False,
         },
+        "_synchronize_shared_control_plane_dependencies": lambda **_kwargs: {"status": "test_host_step_stub"},
         "_install_configured_controls_runtime_prerequisites": lambda: {},
         "_install_configured_controls_autostart_registry": lambda **_kwargs: {},
         "_install_intake_runtime_identity_drop_in": lambda *_args, **_kwargs: {},
@@ -1386,6 +1446,30 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "scene_preparation_bootstrap_file": tmp_path / "absent-bootstrap.json",
         "controls_autoprovision_bootstrap_file": tmp_path / "absent-controls-bootstrap.json",
     }
+
+
+@pytest.mark.parametrize("fail_sync", [False, True])
+def test_shared_dependency_sync_precedes_source_switch_and_restart(tmp_path, monkeypatch, fail_sync):
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    steps = []
+
+    def sync(**_kwargs):
+        steps.append("sync")
+        if fail_sync:
+            raise deploy.ControlPlaneDeployError("deploy_shared_runtime_dependency_sync_failed")
+        return {"status": "synchronized"}
+
+    monkeypatch.setattr(deploy, "_synchronize_shared_control_plane_dependencies", sync)
+    monkeypatch.setattr(deploy, "_move_source_checkout", lambda *_args: steps.append("source"))
+    monkeypatch.setattr(deploy, "_restart_units", lambda _units: steps.append("restart") or [])
+    if fail_sync:
+        with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_shared_runtime_dependency_sync_failed"):
+            deploy.deploy_control_plane_commit(**arguments)
+        assert steps == ["sync"]
+    else:
+        receipt = deploy.deploy_control_plane_commit(**arguments)
+        assert steps == ["sync", "source", "restart"]
+        assert receipt["shared_runtime_dependencies"]["status"] == "synchronized"
 
 
 @pytest.mark.parametrize("failure", [None, "disk_admission", "paid_gate", "intake_identity"])
@@ -2604,6 +2688,8 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     monkeypatch.setattr(deploy, "_install_scene_retirement_stores",
         lambda: (assert_lock_held("scene_retirement_disabled_stores") or {
             "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False}))
+    monkeypatch.setattr(deploy, "_synchronize_shared_control_plane_dependencies",
+        lambda **_kwargs: (assert_lock_held("shared_runtime_dependencies") or {"status": "test_host_step_stub"}))
     monkeypatch.setattr(
         deploy,
         "_restart_units",
@@ -2678,6 +2764,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert observed == [
         "path_quiesce",
         "scene_retirement_runtime_prepare",
+        "shared_runtime_dependencies",
         "scene_retirement_disabled_stores",
         "restart",
         "runtime_probe",
@@ -3291,6 +3378,8 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
     })
     monkeypatch.setattr(deploy, "_install_scene_retirement_stores", lambda: {
         "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False})
+    monkeypatch.setattr(deploy, "_synchronize_shared_control_plane_dependencies",
+        lambda **_kwargs: {"status": "test_host_step_stub"})
     watcher = "blueprint-scene-object-discovery.path"
     restored: list[dict[str, object]] = []
     monkeypatch.setattr(
