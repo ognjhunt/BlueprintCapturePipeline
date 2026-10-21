@@ -94,6 +94,10 @@ def run_native_evaluation_cell(
     )
     if plan["task_kind"] != "rigid_pick_place" or plan["robot"]["robot_id"] != "franka_panda":
         raise ExactWorkcellVariationError(["full_matrix_native_profile_unavailable"])
+    if plan["task_spec"].get("astra_asset_adoption") is not None:
+        # This specialized profile has an additional existing monitor and
+        # feasibility admission. Never skip it through the rigid-task port.
+        raise ExactWorkcellVariationError(["full_matrix_native_asset_profile_unavailable"])
     construction = config["construction_result"]
     control_plan = materialize_native_task_control_plan(
         scene_plan=plan, construction_result=construction

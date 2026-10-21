@@ -12,9 +12,12 @@ import json
 from types import SimpleNamespace
 from unittest.mock import create_autospec
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.exact_workcell_native_session import run_native_evaluation_cell
 from blueprint_pipeline.policy_scientific_reset import REQUIRED_CHANNELS
+from blueprint_pipeline.exact_workcell_variation_matrix import ExactWorkcellVariationError
 from tests.test_exact_workcell_evaluation_session import _inputs
 
 
@@ -230,3 +233,28 @@ def test_native_receipt_location_passes_actual_media_index_root_contract(tmp_pat
     index = _episode_row(media_root, canonical)
     assert index["episode_id"] == episode_id
     assert index["receipt"]["relative_path"].startswith("receipts/")
+
+
+def test_specialized_asset_adoption_cannot_skip_existing_feasibility_gate(tmp_path, monkeypatch):
+    import blueprint_pipeline.exact_workcell_native_session as native
+
+    args = _inputs(tmp_path)
+    monkeypatch.setattr(
+        native,
+        "prepare_native_runtime_cell",
+        lambda **_: {
+            "task_kind": "rigid_pick_place",
+            "robot": {"robot_id": "franka_panda"},
+            "task_spec": {"astra_asset_adoption": {"requires_existing_feasibility_gate": True}},
+        },
+    )
+    config = {**args, "source_scene_plan": {}}
+    with pytest.raises(ExactWorkcellVariationError, match="native_asset_profile_unavailable"):
+        native.run_native_evaluation_cell(
+            config=config,
+            cell=args["matrix"]["cells"][0],
+            rows=[],
+            begin=lambda _: pytest.fail("no episode effect allowed"),
+            commit=lambda *_: pytest.fail("no receipt allowed"),
+            runtime=object(),
+        )
