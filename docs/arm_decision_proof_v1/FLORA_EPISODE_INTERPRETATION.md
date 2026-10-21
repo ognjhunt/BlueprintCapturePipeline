@@ -133,6 +133,8 @@ timeouts. The lock's age limit and all
 other gates stay unchanged; the initial check refreshes live capacity and
 authority evidence on each retry. This wait cannot allocate a resource or
 authorize another paid attempt.
+Resource labels use `blueprint-task-evaluation-flora-` so the deployed spend
+guard can verify the independent watchdog's ownership record.
 
 The worker uses the shared `flora_dependency_bootstrap` helper to install only
 the four hash-pinned add-ons required by the pinned vLLM base image:

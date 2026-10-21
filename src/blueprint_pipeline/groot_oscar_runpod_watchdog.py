@@ -35,6 +35,7 @@ CANARY_NAME_PREFIXES = (
     # FLORA uses the shared single-allocation evaluator transport and the same
     # exact instance name for the independent watchdog and the provider create.
     "blueprint-flora-",
+    "blueprint-task-evaluation-flora-",
     "blueprint-groot-oscar-canary-",
     # SAM 3.1 source-track jobs are bounded Vast canaries with their own
     # exact-prefix instance handoff and teardown scope.

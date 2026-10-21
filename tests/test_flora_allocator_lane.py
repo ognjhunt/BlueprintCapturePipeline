@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import io
 import json
+import shlex
 from pathlib import Path
 import tarfile
 from types import SimpleNamespace
@@ -93,6 +94,40 @@ def test_single_use_consumption_is_global_across_job_paths(tmp_path, monkeypatch
     assert lane._consume_once(authority)["status"] == "consumed"
     with pytest.raises(ValueError, match="already_consumed"):
         lane._consume_once(authority)
+
+
+def test_flora_resource_identity_preserves_authority_suffix_and_watchdog_admission():
+    authority = {"authorization_id": "flora-retained-fixture"}
+    suffix = bundler.digest(authority["authorization_id"])[7:39]
+    exact_name = lane._resource_name(authority)
+    assert lane.PREFIX == "blueprint-task-evaluation-flora-"
+    assert exact_name == lane.PREFIX + suffix and len(suffix) == 32
+    assert lane.validate_independent_vast_watchdog_names(
+        pod_name_prefix=lane.PREFIX, resource_name_exact=exact_name) == (lane.PREFIX, exact_name)
+
+
+@pytest.mark.parametrize("legacy_prefix", [False, True])
+def test_flora_watchdog_record_is_recognized_by_existing_spend_guard(tmp_path, legacy_prefix):
+    from scripts import gpu_spend_guard as guard
+
+    root = tmp_path / "job/independent_vast_watchdog"
+    root.mkdir(parents=True)
+    exact_name = lane._resource_name({"authorization_id": "flora-retained-fixture"})
+    if legacy_prefix:
+        exact_name = "blueprint-flora-" + exact_name[-32:]
+    deadline = 4600.0
+    record = {"schema_version": "groot_oscar_runpod_canary_watchdog.v1", "status": "armed",
+        "provider": "vast", "independent_process": True, "pre_deadline_provider_mutation_allowed": False,
+        "provider_mutation_trigger": "hard_deadline_only", "watchdog_out_dir": str(root.resolve()),
+        "deadline_epoch": deadline, "pod_name_prefix": exact_name, "name_prefix": exact_name}
+    (root / "groot_oscar_runpod_canary_watchdog.json").write_text(json.dumps(record))
+    (root / "started_vast_instance_id.txt").write_text("50204295\n")
+    command = shlex.join(["python", "-m", "blueprint_pipeline.groot_oscar_runpod_watchdog", "--provider", "vast",
+        "--out-dir", str(root), "--pod-name-prefix", exact_name, "--deadline-epoch", str(deadline)])
+    assert guard.find_protected_pod_ids([tmp_path], process_cmdlines=[command], now=1000.0) == (
+        set() if legacy_prefix else {"50204295"})
+    assert guard.find_protected_pod_ids([tmp_path], process_cmdlines=[], now=1000.0) == set()
+    assert guard.find_protected_pod_ids([tmp_path], process_cmdlines=[command], now=deadline + 1) == set()
 
 
 @pytest.mark.parametrize("field,value", [
@@ -387,11 +422,11 @@ def test_candidate_watchdog_arms_in_real_subprocess_without_service_deploy(tmp_p
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     # The process is stopped immediately after its armed receipt. Provider reads
     # and mutations are deferred until cancellation or the two-minute deadline.
-    exact_name = "blueprint-flora-" + "a" * 32
+    exact_name = lane.PREFIX + "a" * 32
     handoff, handle = control.arm_independent_vast_watchdog(
         job_dir=tmp_path, max_live_minutes=2,
         generated_at=datetime.now(timezone.utc).isoformat(),
-        pod_name_prefix="blueprint-flora-", resource_name_exact=exact_name,
+        pod_name_prefix=lane.PREFIX, resource_name_exact=exact_name,
     )
     try:
         assert handle is not None, handoff

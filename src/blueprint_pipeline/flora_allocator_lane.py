@@ -37,7 +37,7 @@ PROBE_KIND = "flora-episode-benchmark"
 GPU_POLICY = {"policy_id": "flora_dual_hopper", "allowed_gpu_keywords": ["H100", "H200"],
               "denied_gpu_keywords": [], "required_gpu_count": 2, "minimum_cuda_max_good": 13.0}
 MINIMUM_DRIVER_VERSION = "580.95.05"
-PREFIX = "blueprint-flora-"
+PREFIX = "blueprint-task-evaluation-flora-"
 PROVIDER_OUTPUT_ARCHIVE_MAX_BYTES = 1_000_000_000
 # The shared transport permits one initial PUT and two transient retries.
 PROVIDER_OUTPUT_UPLOAD_ATTEMPTS = 3
