@@ -3,11 +3,12 @@
 Owner scope: October 21, 2026. This supports beta job-to-evidence preparation,
 ADP-011 / partner day 7 (freeze the actual partner stack), and ADP-050 / partner
 day 28 (integrate the selected policy/runtime). The completion artifact for this
-change is a Website shortlist that Pipeline can validate and resolve into exact
+change is an internal operator shortlist that Pipeline can validate and resolve into exact
 integration requirements. A completed simulator episode is a separate artifact.
 
-The existing embodiment registry, job capability routing, saved robot setups,
-and policy configuration UI are extended. The existing DROID executable pair
+The existing embodiment registry, job capability routing, and internal job
+console are extended. Customer setup stays focused on the customer's actual
+robot and policy. The existing DROID executable pair
 and all paid execution gates are unchanged. No new dashboard or execution
 service is introduced.
 
@@ -54,12 +55,15 @@ work. Documentation-only sources and unknown revisions remain explicit.
 
 ## Website to Pipeline
 
-Use the robot and policy shortlist in the existing setup screen, or select a
-planning embodiment in the saved robot setup's Physical robot field. The
-Website validates compatible routes and saves a `support_option` description.
-Saving one removes any executable binding for another robot. These descriptions
-cannot start an evaluation. The authenticated workspace catalog endpoint is
-`GET /api/workspace/deployment-embodiments`.
+Staff use **Robot integration planning** in the existing `/admin/jobs` console.
+The visual catalog, compatible policy routes, asset sources and setup handoff
+are internal tools. Customer setup pages do not expose this catalog. The
+`GET /api/workspace/deployment-embodiments` endpoint requires admin/ops authority.
+
+Only staff can create or change a saved `support_option` planning description.
+Existing pending descriptions are preserved during ordinary customer edits,
+including after a catalog refresh. They cannot inherit an executable binding
+or start an evaluation.
 
 The shortlist download uses `deployment_embodiment_shortlist.v1`. It binds the
 full catalog digest, optional source launch ID, exact embodiment IDs, ordered
