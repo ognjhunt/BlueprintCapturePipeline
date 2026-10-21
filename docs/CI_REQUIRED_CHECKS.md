@@ -27,7 +27,7 @@ Canonical Pipeline launch evidence uses Python `3.12`. The source of truth is
 `docs/CI_PYTHON_INTERPRETER_MATRIX.md`, and enforced by
 `scripts/validate_python_interpreter_matrix.py`. The required compatibility
 workflow installs the frozen lock and runs the declared bounded suite on Python
-`3.10`, `3.11`, and `3.12`. Compatibility output from `3.10` and `3.11` is not
+`3.11` and `3.12`. Compatibility output from `3.11` is not
 canonical launch/deploy proof. Python `3.13` output is non-canonical and must be
 rerun under Python `3.12` before it can support launch claims.
 

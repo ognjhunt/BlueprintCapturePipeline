@@ -23,11 +23,12 @@ as launch or deploy proof:
 ## Compatibility Interpreters
 
 `BlueprintCapturePipeline` supports package installation and local development
-on Python `3.10`, `3.11`, and `3.12`; `pyproject.toml` and `uv.lock` must keep
-`requires-python = ">=3.10,<3.13"`.
+on Python `3.11` and `3.12`; `pyproject.toml` and `uv.lock` must keep
+`requires-python = ">=3.11,<3.13"`. Pillow 13's security fixes require this
+minimum interpreter; the production interpreter remains Python `3.12`.
 
 The `Python Compatibility` workflow installs the frozen lock independently on
-all three advertised interpreters and runs the bounded grounding, public-claim,
+both advertised interpreters and runs the bounded grounding, public-claim,
 and SC3 protocol contract suite declared in the machine-readable matrix. Those
 jobs prove package/contract compatibility only; the canonical launch lanes in
 the table above must still pass on Python `3.12` for the exact release commit.

@@ -12,7 +12,7 @@ def test_observed_compile_differences_are_pinned_to_verified_worker_wheels():
     root = Path(__file__).resolve().parents[1]
     requirements = (root / "deploy/systemd/production-control-plane-requirements.txt").read_text()
     packages = {p["name"]: p for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
-    for name in ("annotated-types", "mcp", "packaging", "typing-inspection", "usd-core"):
+    for name in ("annotated-types", "certifi", "mcp", "packaging", "pillow", "typing-inspection", "usd-core"):
         package = packages[name]
         pin = re.search(r"^" + re.escape(name) + r"==([^\s]+)\s+\\\n\s+--hash=(sha256:[a-f0-9]{64})",
                         requirements, re.MULTILINE)

@@ -4522,6 +4522,49 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str, 
             os.close(fd)
 
 
+def _synchronize_shared_control_plane_dependencies(*, release_path: str | Path) -> dict[str, Any]:
+    """Apply the existing hashed production delta to intake's caller interpreter.
+
+    The protected SDK is prepared separately. Intake without a retirement policy
+    still executes this shared interpreter, so changing uv.lock alone leaves its
+    image decoder and trust store unchanged. Never install as root or resolve a
+    second dependency graph here.
+    """
+    requirements = Path(release_path) / "deploy/systemd/production-control-plane-requirements.txt"
+    error = "deploy_shared_runtime_dependency_sync_failed"
+    try:
+        raw = requirements.read_bytes()
+        pins = dict(re.findall(r"^([A-Za-z0-9_.-]+)==([^\s]+)\s+\\$", raw.decode("utf-8"), re.MULTILINE))
+        if not pins or len(raw) > 65536:
+            raise ValueError("invalid production dependency manifest")
+        python = str(Path(sys.executable).absolute())
+        prefix = ["/usr/sbin/runuser", "-u", DEFAULT_SERVICE_ACCOUNT, "--", python, "-I"]
+        environment = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
+                       "PIP_CONFIG_FILE": "/dev/null"}
+        subprocess.run(
+            [*prefix, "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+             "--no-deps", "--only-binary=:all:", "--require-hashes", "--requirement", str(requirements)],
+            stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=180,
+            cwd="/", env=environment,
+        )
+        observed = subprocess.run(
+            [*prefix, "-c", "import importlib.metadata as m,json,sys; "
+             "print(json.dumps({name:m.version(name) for name in json.load(sys.stdin)}))"],
+            input=json.dumps(sorted(pins)), capture_output=True, text=True, check=True,
+            timeout=20, cwd="/", env=environment,
+        )
+        versions = json.loads(observed.stdout)
+        if versions != pins:
+            raise ValueError("installed production dependencies differ")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        # Captured installer output may contain local configuration. The operator
+        # receipt retains the bounded failure code without echoing child output.
+        raise ControlPlaneDeployError(error) from exc
+    return {"status": "synchronized", "account": DEFAULT_SERVICE_ACCOUNT,
+            "python": python, "requirements": str(requirements),
+            "requirements_sha256": hashlib.sha256(raw).hexdigest(), "versions": versions}
+
+
 def deploy_control_plane_commit(
     *,
     source_repo: str | Path,
@@ -4765,6 +4808,9 @@ def deploy_control_plane_commit(
         scene_retirement_runtime = _prepare_scene_retirement_runtime(
             source_repo=source, source_commit=source_commit
         )
+        shared_runtime_dependencies = _synchronize_shared_control_plane_dependencies(
+            release_path=staged_release["release_path"]
+        )
         scene_retirement_stores = _install_scene_retirement_stores()
         _mark_stage("release_staged")
         # Record what this deploy really stages (the release checkout it created
@@ -5007,6 +5053,7 @@ def deploy_control_plane_commit(
         "disk_reservation_estimate": disk_reservation_estimate,
         "disk_reservation_runtime": disk_reservation_runtime,
         "scene_retirement_runtime": scene_retirement_runtime,
+        "shared_runtime_dependencies": shared_runtime_dependencies,
         "scene_retirement_stores": scene_retirement_stores,
         "surfaces": [
             {"name": name, "path": str(path), "head": observed[name]}
