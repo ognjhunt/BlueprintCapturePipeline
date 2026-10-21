@@ -261,13 +261,22 @@ HOSTED_REGISTRY: tuple[HostedPolicyCandidate, ...] = (
         display_name="Dream-1",
         provider="Dream Labs",
         model_id="dreamlabs/dream-1",
-        version_identity="Provider model ID dreamlabs/dream-1; no immutable version or digest is published.",
+        version_identity=(
+            "Launch model ID dreamlabs/dream-1; the account's deployment identity has not been "
+            "verified and is not assumed equivalent to the SDK's dreamlabs/dream-1-beta example. "
+            "No immutable version or checkpoint digest has been observed."
+        ),
         version_frozen=False,
         source_url="https://dreamlabs.ai/research/dream-1/",
         access="api_key",
-        credential_env="DREAM_LABS_API_KEY",
-        terms_status="not_published",
-        data_use_note="Retention and training use of submitted images and demonstrations are not stated.",
+        credential_env="DREAM_API_KEY",
+        terms_status="under_review",
+        data_use_note=(
+            "Account inference, retention and training terms have not been reviewed. "
+            "The Apache-2.0 client license does not grant hosted-service rights. "
+            "Client 1.0.3 records observations to an additional live service by default; "
+            "an approved adapter must disable that recording and send only approved observations."
+        ),
         published_price_note="US$3/hour (Dream-1) or US$2/hour (Dream-1-flash), per the October 2026 launch post; research beta.",
         status="integration_pending",
         adapter_id=None,
@@ -275,17 +284,18 @@ HOSTED_REGISTRY: tuple[HostedPolicyCandidate, ...] = (
         action_schema_ids=(DREAM1_NATIVE_JOINT_ACTION, BIMANUAL_EEF_POSE_ACTION),
         native_embodiment_ids=("i2rt_yam_bimanual",),
         blockers=(
-            "provider_api_key_not_configured",
-            "provider_terms_and_data_use_not_published",
-            "provider_request_response_schema_unverified",
+            "provider_account_access_unverified",
+            "provider_inference_terms_and_data_use_not_reviewed",
+            "provider_runtime_contract_not_validated",
             "hosted_api_runtime_adapter_missing",
             "no_runnable_embodiment_with_matching_camera_rig",
             "integration_canary_receipt_missing",
         ),
         reason=(
-            "Coming soon. Dream-1 is a hosted two-arm policy. It needs an API key, published "
-            "terms for sending site images, and a matching two-arm, three-camera robot setup "
-            "before it can run."
+            "Unavailable. Dream-1 is a hosted two-arm policy. Account access, inference and "
+            "image-use terms, a controlled-observation API adapter, and a matching two-arm, "
+            "three-camera runtime have not been verified. The current single-arm DROID "
+            "configuration cannot run it."
         ),
     ),
 )

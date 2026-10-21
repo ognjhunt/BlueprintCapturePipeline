@@ -65,6 +65,8 @@ def test_a_runnable_policy_needs_verified_bytes_and_a_commercial_license(monkeyp
 def test_hosted_policies_are_listed_but_never_selectable_without_runtime_terms_and_key(monkeypatch) -> None:
     dream = registry.hosted_candidate("dreamlabs_dream1")
     assert dream is not None and dream.runnable is False
+    assert dream.credential_env == "DREAM_API_KEY"
+    assert dream.terms_status != "reviewed"
     assert dream.blockers and dream.reason and dream.version_frozen is False
     assert registry.hosted_registry_violations() == []
     assert "dreamlabs_dream1" not in registry.runnable_candidate_ids()

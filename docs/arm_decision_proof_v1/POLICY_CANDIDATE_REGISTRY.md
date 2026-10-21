@@ -45,7 +45,34 @@ the job's existing external-processing permission.
 
 | Candidate | Provider | Status | Why |
 | --- | --- | --- | --- |
-| `dreamlabs_dream1` | Dream Labs | integration_pending | No API key yet (`DREAM_LABS_API_KEY`); terms and data use not published; request/response schema unverified; no hosted runtime adapter; no runnable two-arm, three-camera robot setup; no integration canary |
+| `dreamlabs_dream1` | Dream Labs | integration_pending | Account access (`DREAM_API_KEY`) and inference/data-use terms unverified; no controlled-observation hosted adapter or runtime contract validation; no runnable two-arm, three-camera setup; no integration canary |
+
+The [official launch](https://dreamlabs.ai/research/dream-1/) describes a public
+research-beta API for bimanual parallel-gripper robots. The existing single-arm
+DROID setup is not interchangeable with that interface. Blueprint has not
+executed Dream-1 or verified an account entitlement, accepted hosted terms, or
+qualified a matching configuration. The registry does not inspect credential
+values or contact the provider.
+
+The [official client 1.0.3](https://pypi.org/project/dreamlabs-client/1.0.3/)
+was inspected without installation or execution on 2026-10-21. Its wheel
+SHA256 is `2a2afaaead696a5f76de5fb3a671dbf7ac85fa69c3311deae40f698f621af5c2`.
+It uses bearer authentication and `POST https://api.dreamlabs.ai/v1/get_action`
+with checkpoint, session/reset and observation fields; returned actions are
+not task results. HTTP success alone is insufficient: the response status
+must also succeed. The launch's `dreamlabs/dream-1` and the SDK examples'
+`dreamlabs/dream-1-beta` are not assumed equivalent. A future integration must
+resolve the account's actual model via `GET https://platform.dreamlabs.ai/v1/models`
+and retain the strongest returned deployment/version identity. No immutable
+checkpoint digest has been observed.
+
+The client records observations to a separate live service by default, even
+before inference. In this pinned version, `"_record": False` in the `policy()`
+config disables it. An adapter must force recording off and retain the existing approved-observation
+boundary, endpoint restrictions, limits and execution receipts. The SDK's
+Apache-2.0 license does not establish permission for hosted inference, site
+image retention, or training. No SDK dependency, inference call, training use,
+robot runtime, or runnable admission is added by this catalog entry.
 
 Robot setups a policy can run on are listed in
 `task_evaluation_embodiment_registry.py`. Only the DROID Franka + Robotiq 2F-85
