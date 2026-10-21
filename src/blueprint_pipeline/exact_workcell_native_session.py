@@ -402,17 +402,20 @@ def run_native_evaluation_cell(
             commit(row, record)
     finally:
         # Seal close intent before SimulationApp.close, which may terminate
-        # the child interpreter rather than return to Python.
-        _atomic(
-            cell_root / "native_close_intent.json",
-            {"close_required": True, "provider_teardown_owned_by_allocator": True},
-        )
+        # the child interpreter rather than return to Python. A failed journal
+        # write must not prevent either runtime resource from being closed.
         try:
-            if built is not None:
-                built.env.close()
+            _atomic(
+                cell_root / "native_close_intent.json",
+                {"close_required": True, "provider_teardown_owned_by_allocator": True},
+            )
         finally:
-            if app is not None:
-                app.close()
+            try:
+                if built is not None:
+                    built.env.close()
+            finally:
+                if app is not None:
+                    app.close()
 
 
 def retain_native_policy_failure(

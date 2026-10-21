@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import create_autospec
 
@@ -21,8 +22,9 @@ from blueprint_pipeline.exact_workcell_variation_matrix import ExactWorkcellVari
 from tests.test_exact_workcell_evaluation_session import _inputs
 
 
+@pytest.mark.parametrize("close_intent_fails", [False, True], ids=["normal_close", "journal_full"])
 def test_native_cell_dispatches_both_controls_and_measured_droid_pair_with_exact_bindings(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, close_intent_fails
 ):
     import blueprint_pipeline.adp009d_control_episode as controls
     import blueprint_pipeline.adp009d_policy_episode as policy_loop
@@ -183,15 +185,25 @@ def test_native_cell_dispatches_both_controls_and_measured_droid_pair_with_exact
         policy_client=client,
         run_policy_episode=policy_call,
     )
+    if close_intent_fails:
+        atomic = native._atomic
+
+        def fail_close_intent(path, value):
+            if path.name == "native_close_intent.json":
+                raise OSError(28, "No space left for close intent")
+            return atomic(path, value)
+
+        monkeypatch.setattr(native, "_atomic", fail_close_intent)
     begun, retained = [], []
-    run_native_evaluation_cell(
-        config=config,
-        cell=cell,
-        rows=rows,
-        runtime=runtime,
-        begin=lambda row: begun.append(row["episode_id"]),
-        commit=lambda row, record: retained.append(record),
-    )
+    with pytest.raises(OSError, match="No space left") if close_intent_fails else nullcontext():
+        run_native_evaluation_cell(
+            config=config,
+            cell=cell,
+            rows=rows,
+            runtime=runtime,
+            begin=lambda row: begun.append(row["episode_id"]),
+            commit=lambda row, record: retained.append(record),
+        )
     assert begun == [row["episode_id"] for row in rows]
     assert len(retained) == 4 and control_call.call_count == policy_call.call_count == 2
     assert events.index("camera_gate") < events.index("renderer_guard") < events.index("pi05_droid")
