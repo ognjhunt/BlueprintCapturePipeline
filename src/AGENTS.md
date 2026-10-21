@@ -3,8 +3,8 @@
 Read the root `AGENTS.md`, `PLATFORM_CONTEXT.md`, and
 `WORLD_MODEL_STRATEGY_CONTEXT.md` first.
 
-Two programs are active: the free beta's evaluated, recommended pilot and Arm
-Decision Proof v1 (owner decision 2026-10-14). A source change must name the beta
+Two programs are active: the free beta's job-first automation service and Arm
+Decision Proof v1 (owner update 2026-10-21). A source change must name the beta
 journey step, or the ADP backlog item and day gate, it unblocks. Existing modules outside that path are
 compatibility code, not invitations to extend their former lanes.
 

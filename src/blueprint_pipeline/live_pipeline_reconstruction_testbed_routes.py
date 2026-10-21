@@ -264,10 +264,12 @@ def register_reconstruction_testbed_routes(
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
         if not isinstance(payload, Mapping):
             raise HTTPException(status_code=400, detail="expected JSON object")
-        if payload.get("schema_version") != "site_task_testbed_compilation_submission.v2":
+        if payload.get("schema_version") not in {
+            "site_task_testbed_compilation_submission.v2", "site_task_testbed_compilation_submission.v3",
+        }:
             raise HTTPException(
                 status_code=422,
-                detail=("schema_version:must_be:site_task_testbed_compilation_submission.v2"),
+                detail=("schema_version:must_be:site_task_testbed_compilation_submission.v2_or_v3"),
             )
         client_owned_reconstruction_fields = sorted(
             {
@@ -328,6 +330,12 @@ def register_reconstruction_testbed_routes(
                 raise SiteTaskTestbedCompilerError(["authoritative_task_decision:intake_mismatch"])
             if payload.get("approved_task_digest") != approved.get("approved_task_digest"):
                 raise SiteTaskTestbedCompilerError(["approved_task_digest:authoritative_mismatch"])
+            job_context = _mapping(payload.get("job_context"))
+            if job_context and (
+                job_context.get("source_capture_digest") != _mapping(approved.get("source_capture")).get("capture_digest")
+                or job_context.get("command_request_id") != authoritative.get("command_request_id")
+            ):
+                raise SiteTaskTestbedCompilerError(["job_context:authoritative_approval_binding_mismatch"])
             store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
             if not store_root_text:
                 raise ReconstructionControlPlaneError(
@@ -470,6 +478,8 @@ def register_reconstruction_testbed_routes(
             approved_task_digest=approved["approved_task_digest"],
             testbed=testbed,
             decision_evidence_request=decision_evidence_request,
+            job_id=job_context.get("job_id"),
+            brief_digest=job_context.get("brief_digest"),
         )
         if (
             _truthy(os.getenv(TESTBED_WEBAPP_SYNC_REQUIRED_ENV))
@@ -484,6 +494,7 @@ def register_reconstruction_testbed_routes(
             )
         return {
             "schema_version": "site_task_testbed_compilation_response.v1",
+            **({"job_context": job_context} if job_context else {}),
             "status": "testbed_ready",
             "capture_session_id": session_id,
             "intake_id": intake_id,

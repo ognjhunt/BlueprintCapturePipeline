@@ -2,16 +2,20 @@
 
 ## Two Active Programs
 
-BlueprintCapturePipeline supports the **free beta's evaluated, recommended
-pilot** and **Arm Decision Proof v1**, per the owner decision of 2026-10-14.
-Read the shared-doctrine preamble in `PLATFORM_CONTEXT.md` first. The historical
-north-star contract's `sole_active_program` label does not override that decision.
+BlueprintCapturePipeline supports the free beta's **job-first automation
+service** and **Arm Decision Proof v1**, per owner direction on 2026-10-21.
+Read `doctrine/` and the shared blocks first. A description-only job can be
+assessed with zero evaluation runs; use existing operator and owner workspaces.
+Only unresolved technical questions need the Decision/Evidence Router and
+qualified evidence. A scientific verdict is not a commercial recommendation.
 
-For beta intake, preparation, robot-team evaluation, results or recommendation,
-start with [first site/team acceptance](../runbooks/first-site-team-beta.md),
+For capture-derived bounded evaluation, use
+[first site/team acceptance](../runbooks/first-site-team-beta.md),
 [site-task qualification](../beta-site-task-simulation-qualification.md) and
-[execution recovery](../team-evaluation-recovery-contract.md). A qualified beta
-simulation is distinct from ADP's physically validated prospective decision.
+[execution recovery](../team-evaluation-recovery-contract.md). Those are
+conditional technical routes, not mandatory stages for every job. The
+historical north-star `sole_active_program` label does not override the owner
+update, and the job journey does not widen ADP's proof protocol.
 
 Read completely, in order:
 
@@ -27,9 +31,9 @@ Read completely, in order:
 10. [`../DOCTRINE_PRECEDENCE.md`](../DOCTRINE_PRECEDENCE.md)
 
 The north star is one prospective two-candidate fixed-arm decision on a new
-partner workcell, adjudicated by matched held-out physical trials. The Task
-Evaluation Run is the product; the Site-Task Testbed is the substrate; the
-candidate MSER is the construction method; the Physical Outcome Join is the
+partner workcell, adjudicated by matched held-out physical trials. A Task
+Evaluation Run is bounded technical evidence when needed; the Site-Task Testbed
+is the substrate; the candidate MSER is the construction method; the Physical Outcome Join is the
 proof.
 
 ## ADP Architecture Route
@@ -73,9 +77,10 @@ sim-to-real decision fidelity, or customer value. Do not hand-author substitute
 evidence. A missing partner measurement remains a typed blocker.
 
 ADP's prospective physical-validation route keeps its own evidence ladder.
-The active beta may onboard sites through the existing capture flow; its
-recommendations require exact site-task simulation qualification and a completed
-passing team run. Neither route may promote development fixtures to site proof.
+The active beta may onboard sites without capture or new execution. A
+simulation-based technical claim still requires exact site-task qualification
+and independently scored execution through a supported access route. Neither
+route may promote development fixtures to site proof.
 
 ## Truth Route
 

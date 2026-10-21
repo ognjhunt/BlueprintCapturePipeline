@@ -4,11 +4,13 @@
 
 Blueprint has two current horizons, one for each active program.
 
-The **free beta** horizon is **one site that started through the public form
-booking a pilot recommended on evidence**: an invited team's own policy, scored
-by the simulator on a scene built from that site's capture, passing the job's
-frozen pass mark. That recommendation is a bounded estimate, and the pilot
-measures what the simulation cannot.
+The **free beta** horizon is **one real recurring job with a supportable
+customer choice, a separately agreed pilot and recorded outcomes**. A site can
+start with a description alone. Blueprint agrees the brief, reuses applicable
+evidence, resolves decision-relevant uncertainty only where needed, and helps
+the customer compare real delivery proposals. Zero evaluation runs can be the
+right evidence plan. The customer and deployment partner own their physical
+agreement; choosing a website proposal does not create it.
 
 The **Arm Decision Proof** horizon is **one prospectively physically validated
 site-specific arm decision**. The company must show that a robot team can give Blueprint one real fixed-arm
@@ -22,13 +24,17 @@ Until these are observed, broader visions are not roadmaps.
 ### Arm Decision Proof Sequence
 
 Blueprint has qualified the decision/outcome harness retrospectively on SIMPLER.
-It next qualifies the scene-construction service on exact public data: metric
+The historical public-scene construction plan used metric
 InteriorGS/matching-SAGE-3D appearance/collision pairing, one source-object
 removal, unchanged Inpaint360GS reproduction, InFusion primary completion and
 AuraFusion360 challenge using explicitly render-derived method inputs, one exact
 SimReady USD replacement, a manual-versus-NVIDIA Content Agents authoring check,
 one targeted ScanNet++ measured transfer, deterministic variation, abstention,
-and full simulator-side replay.
+and full simulator-side replay. The owner-selected appearance path is now
+artifixer3D+ with `gpt-image-2`; Inpaint360GS and AuraFusion360 remain retired
+execution lanes, and fresh Raw V3.2 capture replaces ScanNet++ as the required
+real metric transfer. Follow the current ADP lane-reachability record, preserve
+its historical `7/10` suite, and do not rewrite frozen proof definitions.
 
 Only after that public matrix and partner protocol pass does Arm Decision Proof
 take its one fresh capture of one previously unseen workcell, including
@@ -74,21 +80,29 @@ twin.
 
 ### Conditional Future
 
-Only after the first proof and partner-value verdict may Blueprint choose a new
-goal. Candidate decisions include repeating the same method on a second
-fixed-arm site-task, offering bounded capture/testbed preparation, investigating
+Only after the first proof and partner-value verdict may Blueprint choose the
+next proof goal. Candidate decisions include repeating the same method on a
+second fixed-arm site-task, offering bounded capture/testbed preparation, investigating
 one measured fidelity blocker, or stopping.
 
 Humanoids, broader manipulation, cross-site generalization claims,
 learned/world-model evaluation, post-training, provider marketplaces, standards,
-and deployment are uncommitted options. None is automatically next, and none
-authorizes present work. The free beta's site and robot-team journeys are not in
-this list: they are active work.
+and new deployment envelopes are uncommitted options. None is automatically
+next, and none authorizes present work. The free beta's job and delivery-partner
+journeys are active work within the current supported niche and region.
+
+Blueprint's longer-term direction is a default destination for automation
+jobs: concentrated demand, supportable solutions, available delivery partners
+and permitted delivery history. Begin with the current supported niche and
+region. This does not authorize a public auction, social network, universal
+search marketplace, cross-embodiment leaderboard, recommendation model or
+training corpus.
 
 ### Invariants
 
 1. Raw capture and authoritative physical outcomes outrank derived artifacts.
-2. The product is a Task Evaluation Run, not a replica or backend.
+2. The service delivers a reasoned automation choice; Task Evaluation Runs are
+   bounded evidence when needed, not mandatory for every job.
 3. Backends remain swappable behind stable contracts.
 4. Decisions are bounded estimates or abstentions, never guarantees.
 5. Rights, privacy, provenance, holdout integrity, and physical safety remain

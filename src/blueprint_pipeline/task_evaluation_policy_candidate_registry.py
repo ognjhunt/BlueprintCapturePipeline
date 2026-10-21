@@ -1,7 +1,8 @@
 """Which policies a task evaluation run may compare, and why the rest may not.
 
-Every run still compares exactly two frozen candidates, sealed before any
-outcome exists. What this registry adds is the menu they are chosen from:
+This bounded fixed-arm lane compares exactly two frozen candidates, sealed
+before any outcome exists. Commercial job assessments need not use this lane
+or create an evaluation run. This registry is the menu the pair is chosen from:
 each policy we know about, pinned to an exact checkpoint, with its license
 standing and its integration status stated rather than implied. A policy is
 selectable only when all three hold:

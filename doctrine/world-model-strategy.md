@@ -3,23 +3,46 @@
 ### Strategy
 
 All backend and infrastructure choices serve the two active programs: the
-**free beta's evaluated, recommended pilot** and **Arm Decision Proof v1**. The
-strategy is not to build a world model, simulator, reconstruction company,
-provider marketplace, or general benchmark. It is to evaluate invited robot
-teams on real site jobs with bounded simulation estimates, and to make one
-prospective, site-specific fixed-arm decision and physically adjudicate it.
+**free beta's job-first automation service** and **Arm Decision Proof v1**.
+The owner direction of 2026-10-21 makes dependable work at an acceptable total
+cost the buying decision. Identify a few complete, supportable solutions and
+real delivery partners; ordinary automation is eligible. Reuse permitted
+applicable evidence, run targeted tests only to resolve material uncertainty,
+and use physical trials when physical truth is needed. A job assessment may
+have zero evaluation runs. Keep the separate prospective fixed-arm proof and
+its exactly two frozen candidates unchanged.
 
 World models, classical simulators, reconstruction systems, 3DGS renderers,
 SimReady tools, analytic geometry, learned evaluators, and physical evidence are
 replaceable evidence methods behind the existing Task Evaluation Run contracts.
 No method gains authority from novelty, realism, provider identity, or a paper's
-reported result.
+reported result. The Decision/Evidence Router chooses qualified methods for the
+question and admitted envelope. Customers need not choose a simulator or
+provider. Measurement-catalog templates propose request-specific thresholds;
+they do not approve them or establish universal task support.
 
-### Public Evidence Ladder First, Fresh Partner Site Last
+Use the existing supported licensed independent-execution adapters first.
+Approved team-hosted endpoints and integrations remain valid access routes;
+team operation is not mandatory. Bind actual robot/tool/sensor/control,
+observation/action/preprocessing, policy and runtime identities where needed.
+Declarations do not prove tested compatibility or a partner's willingness to
+deliver. Do not turn advertised API access, open weights, an application or a
+registry label into runnable admission. Preserve controlled observations,
+independent scoring, immutable inputs, episode media, and runtime receipts.
+
+Commercial screening and proposal revision remain above bounded scientific
+evaluation. A regional delivery gap can remove an offer without inventing a
+scientific failure. Keep exact technical applicability separate from changing
+quote prices or buying budgets. Reuse cannot turn correlated prior evidence
+into independent repeated proof; reported pilot outcomes cannot recalibrate a
+method without an authoritative Physical Outcome Join.
+
+### Arm Decision Proof: Public Evidence Ladder First, Fresh Partner Site Last
 
 ADP-008 already qualified the decision/outcome harness retrospectively on
-SIMPLER. Preserve that replay. ADP-009 now qualifies the missing scene-editing
-and physicalization seams with orthogonal public evidence:
+SIMPLER. Preserve that replay and the historical `7/10` suite. The earlier
+ADP-009 scene-editing and physicalization plan recorded the following
+orthogonal public evidence:
 
 1. an exact released Inpaint360GS revision and unchanged author-data
    reproducibility smoke, plus exact InFusion and AuraFusion360 author smokes;
@@ -36,6 +59,12 @@ and physicalization seams with orthogonal public evidence:
    transfer after access and rights admission;
 5. one exact SimReady USD task object, one physics-authored Isaac control, and a
    manual-USD versus NVIDIA USD Content Agents v0.5.2 authoring comparison.
+
+For current execution, the owner-selected appearance path is artifixer3D+ with
+`gpt-image-2`; Inpaint360GS and AuraFusion360 are retired lanes. Fresh Raw V3.2
+capture replaces ScanNet++ as the required real metric transfer. Follow the
+current ADP lane-reachability record. These updates do not change the frozen
+two-candidate proof or make development data qualified physical evidence.
 
 No one dataset supplies the product proof. Every public result is
 `development_only`, noncommercial terms remain noncommercial, and paper-only
@@ -78,9 +107,8 @@ If the released inpainting path retrains an editable splat from render-derived
 views, record that new artifact identity. Do not call it an in-place edit of the
 publisher PLY unless exact initialization from that PLY is separately proven.
 
-Until the one-command ADP-009 public-scene rehearsal is complete, nearly all
-engineering effort goes to exact admissions, metric frame/geometry, object
-partition/removal, background completion, SimReady physicalization, hybrid
+ADP public-scene rehearsal work stays focused on exact admissions, metric
+frame/geometry, object partition/removal, background completion, SimReady physicalization, hybrid
 Isaac checks, deterministic variation, abstention, media, and replay. New capture
 feature work is frozen unless a measured blocker proves it is the smallest
 missing measurement.
@@ -176,6 +204,7 @@ to a failed business or scientific premise.
 
 World-model, humanoid, dynamic-scene, deformable, universal-runtime,
 post-training, cross-site generalization, and provider-marketplace work remains
-frozen until a successful Arm Decision Proof and a new explicit strategy
-decision. Operating several free beta sites at once is beta work, not
-cross-site generalization.
+frozen unless an observed active-program blocker and explicit scope decision
+require the smallest dependency. Building another embodiment or task family
+still needs the recorded owner focus decision based on demand evidence.
+Operating several free beta jobs is not a cross-site generalization claim.

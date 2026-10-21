@@ -9,20 +9,22 @@ to *read* conflicts; it is not a license to ignore doctrine.
 
 ## Active Programs
 
-The owner decision of 2026-10-14, recorded in the shared doctrine
-(`doctrine/platform-context.md`), makes two programs active: the free beta's
-evaluated, recommended pilot (`free-beta-evaluated-pilot`) and Arm Decision
-Proof v1. Beta work is admitted by naming the beta journey step it unblocks;
-the shared doctrine lists the beta's active build-out. Arm Decision Proof keeps
-sole authority over physical-validation claims.
+The owner decision of 2026-10-21 updates the free beta to a job-first
+automation service alongside Arm Decision Proof v1. It supersedes mandatory
+simulation, invited-team evaluation and one-click booking. A commercial job can
+use existing evidence with zero evaluation runs. Pipeline owns scientific
+results and authoritative Physical Outcome Joins; WebApp owns briefs, proposals,
+selection, agreement records and separately permitted reported outcomes.
+`doctrine/` is the canonical source synchronized across all three repos. The
+historical identifier `free-beta-evaluated-pilot` remains readable.
 
 For Arm Decision Proof,
 [`arm_decision_proof_v1/north_star_contract.json`](arm_decision_proof_v1/north_star_contract.json)
 is the frozen scope and acceptance contract and
 [`arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
 is its active backlog. Its `status` value `sole_active_program` predates the
-2026-10-14 decision and is a historical label. They govern what Arm Decision
-Proof work may be started; they do not override raw artifact truth,
+2026-10-14 and 2026-10-21 decisions and is a historical label. They govern what
+Arm Decision Proof work may be started; they do not override raw artifact truth,
 code/schema reality, rights, safety, spend, or physical-evidence gates.
 
 The owner decision of 2026-10-05
@@ -67,7 +69,9 @@ lane is live loses to code that gates the lane off.
 
 Highest authority first:
 
-1. The Arm Decision Proof north-star contract and implementation backlog.
+1. Current explicit owner direction and the shared active-program doctrine.
+   For Arm Decision Proof work, its frozen north-star contract and backlog
+   still govern the scientific proof; the commercial journey does not widen it.
 2. The Practical Rule For Agents and product doctrine in
    [`../PLATFORM_CONTEXT.md`](../PLATFORM_CONTEXT.md).
 3. The strategy and build priorities in
@@ -94,12 +98,12 @@ raise it — do not quietly re-derive strategy from the commit log.
 ## Shared doctrine blocks
 
 `PLATFORM_CONTEXT.md`, `WORLD_MODEL_STRATEGY_CONTEXT.md`, and the shared block
-of `VISION.md` are byte-identical across `BlueprintCapture`,
-`BlueprintCapturePipeline`, and `Blueprint-WebApp`. Edit the shared block in
-one repo, then mirror to the other repos promptly; until mirrored, note the
-pending mirror in the editing repo (see the `VISION.md` footer for the current
-mirror state). A shared block that disagrees between repos is resolved by the
-most recently edited copy, then mirrored.
+of `VISION.md` are generated from `doctrine/` and byte-identical across
+`BlueprintCapture`, `BlueprintCapturePipeline`, and `Blueprint-WebApp`. Edit only
+the canonical fragments, then run `scripts/sync_shared_doctrine.py --write`
+with all three checkouts present and commit generated blocks and locks together
+in each repo. Never hand-edit a generated block or update a local lock to hide
+drift. See [`../doctrine/README.md`](../doctrine/README.md).
 
 ## Cross-repo paths
 

@@ -8,21 +8,22 @@ drifts from this guide, this guide wins; if docs disagree with each other, use
 
 ## Mission
 
-`BlueprintCapturePipeline` serves two active programs (owner decision
-2026-10-14; shared doctrine in `doctrine/platform-context.md`):
+`BlueprintCapturePipeline` serves the free beta's job-first automation service
+and **Arm Decision Proof v1**. Owner direction on 2026-10-21 supersedes the
+mandatory simulation, invited-team evaluation and one-click booking journey.
+The beta accepts a plain job description with optional video and budget,
+agrees the brief, assesses supportable solutions, and helps compare real
+written delivery proposals. Assessment can use zero evaluation runs. The
+customer chooses a proposal; the customer and deployment partner agree physical
+work directly. Reported pilot outcomes retain their separate provenance.
 
-- the free beta's evaluated, recommended pilot (`free-beta-evaluated-pilot`),
-  the customer-facing program: scenes prepared from website site captures for
-  many sites, invited teams' own policies scored on them by the simulator, and
-  one recommendation when a run passes; and
-- **Arm Decision Proof v1** (`arm-decision-proof-v1`), the evidence program and
-  first evaluation-proof track, which keeps sole authority over
-  physical-validation claims.
-
-Shared seams (capture, scene preparation, policy execution, scoring, result
-publication) are built once and serve both. When the two compete for the same
-engineering time, work an invited site or robot team is blocked on comes first,
-and the founder resolves anything else.
+Pipeline owns evidence planning, method qualification, independent execution,
+normalized scientific results, uncertainty, abstention, claim ceilings and
+Physical Outcome Joins. WebApp owns commercial state and customer interaction.
+Use existing operating surfaces and the smallest reversible changes; do not add
+review stages, dashboards, certifications or approval loops. Rights, access,
+scientific truth, physical operations and authorized-spending controls remain.
+Shared doctrine is canonical in `doctrine/` and synchronized across three repos.
 
 For Arm Decision Proof v1: qualify the reusable service first on exact, rights-cleared public datasets—including
 one metric 3DGS/collision object removal, released-code inpainting, and exact
@@ -39,7 +40,8 @@ under Product Rules. Until the owner records a focus decision from that demand
 evidence, the fixed-arm, rigid-object envelope above is the current default
 build target, not a ban on other forms.
 
-The one customer-facing product remains a **Task Evaluation Run**. The maintained
+A **Task Evaluation Run** is a bounded technical assessment when new evidence
+is needed, not a mandatory step for every commercial job. The maintained
 Site-Task Testbed is its reusable substrate; the candidate Minimum Sufficient
 Evaluation Replica is a construction method; the Physical Outcome Join is the
 proof. SiteBench may name the bounded case study, not a second product.
@@ -71,30 +73,29 @@ dependent step as blocked instead of guessing.
 
 ## Product Rules
 
-- **Two programs are active (owner decision 2026-10-14; shared doctrine in
-  `doctrine/platform-context.md`):** the free beta's evaluated, recommended
-  pilot (`free-beta-evaluated-pilot`) and `arm-decision-proof-v1`. The beta is
-  the customer-facing program; Arm Decision Proof is the evidence program and
-  keeps sole authority over physical-validation claims. Historical docs,
-  schemas, providers, evaluators, and runtime lanes are compatibility or paused
-  material unless a recorded blocker in one of these programs requires the
-  smallest possible dependency.
+- **Two programs are active:** the free beta's job-first automation service
+  (owner direction 2026-10-21) and `arm-decision-proof-v1`. The beta may progress
+  with existing evidence or zero evaluation runs; Arm Decision Proof retains
+  its frozen two-candidate protocol and physical-validation authority.
+  Historical schemas, records and adapters remain compatibility unless a
+  current blocker needs their smallest reusable component.
 - Before accepting work, name what it unblocks: a free beta journey step (for
-  example "beta: invited-team evaluation runtime" or "beta: concurrent scene
+  example "beta: job-to-evidence request" or "beta: concurrent scene
   preparation"), or the ADP backlog item and day-7/day-14/day-21/day-28,
   day-35, or day-42 gate. Also name the observed completion artifact, why
   existing infrastructure is insufficient, and the smallest reversible change.
   Missing any answer means the work is out of focus.
 - Keep geometry, capture observations, simulators, learned evaluators, providers,
   and physical evidence replaceable behind stable capture and evaluation contracts.
-- Optimize for the one prospective two-candidate fixed-arm Task Evaluation Run
-  and for invited teams' beta evaluation runs on scenes built from website
-  site captures. A beta recommendation needs a team's own policy, scored by
-  the simulator (never self-reported) for at least the minimum evidence
-  episodes against the job's frozen pass mark.
-  Legacy five-policy, Policy Improvement Run, Post-Training Data Package,
-  humanoid, world-model, and provider contracts remain compatibility/internal
-  machinery, not active products or default outputs.
+- Resolve the uncertainty that matters for the job using the Decision/Evidence
+  Router and current qualified methods. Description-only intake requires no
+  fabricated capture, testbed or run. Existing licensed Blueprint-managed
+  execution and approved team-supplied routes are both eligible. Keep
+  commercial deliverability and proposal prices separate from scientific
+  verdicts. Preserve ADP's exactly two frozen candidates, matched conditions,
+  independent scoring, media, holdouts and authoritative physical joins.
+  Legacy five-policy, policy-improvement, post-training, humanoid, world-model
+  and provider contracts remain compatibility/internal machinery.
 - Preserve rights, privacy, provenance, and capture truth through the pipeline.
 - Treat readiness and review *outputs* (qualification summaries, trust scores, readiness matrices) as optional support layers. Do not confuse that posture with the module historically named for it: `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) is the core capture→package orchestration spine, not a secondary readiness module.
 - Do not make downstream generated artifacts appear more authoritative than raw capture evidence.
@@ -103,9 +104,9 @@ dependent step as blocked instead of guessing.
   now. Keep them `development_only`; they cannot qualify partner capture, owner
   task truth, registration, task physics, observation-domain match, sim-to-real
   fidelity, or partner value. Never copy fixture data into qualified evidence.
-  Beta site captures are the beta's real inputs: results on scenes built from
-  them may back a beta recommendation as a bounded simulation estimate, but
-  never enter Arm Decision Proof qualified evidence.
+  Real beta capture-derived results can support a recommendation within their
+  qualified scope; they never enter Arm Decision Proof qualified evidence.
+  A job without a capture can still progress commercially.
 - ADP-008 is observed complete. The 2026-08-06 ADP-009 transition accepts the
   bounded InteriorGS/SAGE/SimReady construction rehearsal while preserving the
   historical suite at `7/10`, and fresh Raw V3.2 capture replaces ScanNet++ as
