@@ -212,9 +212,19 @@ and missed three reference successes. Dense mode found a failure span in
 nineteen episodes, including six eventual reference successes. Process mistakes
 can coexist with final success, so dense labels are not terminal outcomes.
 Several dense rationales describe unsuccessful picking or grasping despite the
-frozen instruction to push the mug onto the target. These findings do not
-establish an advantage over the existing deterministic scorer or the optional
-Argus/OpenAI interpreter; the latter was not a paired comparator in this test.
+frozen instruction to push the mug onto the target.
+
+Of the fifteen rubric records, fourteen passed strict normalization. The GROOT
+bounded-physics episode had only eight of nine samples parsed and was invalid
+with `flora_rubric_samples_missing_or_invalid`. For the fifteen episodes with
+raw records in all three modes, the unchanged combined rule produced zero pass
+predictions, four correct incomplete predictions, one incorrect incomplete
+prediction, and ten abstentions, including the invalid rubric record. The five
+episodes without rubric records remain unobserved in the combined comparison.
+
+These partial findings do not establish an advantage over the existing
+deterministic scorer or the optional Argus/OpenAI interpreter; the latter was
+not a paired comparator in this test.
 
 ## Read the comparison
 
