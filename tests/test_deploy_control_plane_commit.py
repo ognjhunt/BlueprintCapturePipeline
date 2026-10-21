@@ -1325,9 +1325,9 @@ def test_door_and_iteration_wrappers_use_trusted_sources() -> None:
 
 @pytest.mark.parametrize("failure", [None, "install", "readback", "timeout", "interrupt"])
 def test_shared_runtime_sync_uses_hashed_release_delta_as_service_user(tmp_path, monkeypatch, failure):
-    manifest = tmp_path / "deploy/systemd/production-control-plane-requirements.txt"
+    manifest = tmp_path / "deploy/systemd/shared-control-plane-security-requirements.txt"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text("pillow==13.0.0 \\\n    --hash=sha256:" + "a" * 64 + "\n")
+    manifest.write_text("certifi==2026.10.19 \\\n    --hash=sha256:" + "b" * 64 + "\npillow==13.0.0 \\\n    --hash=sha256:" + "a" * 64 + "\n")
     calls, killed, reaped = [], [], []
 
     def start(argv, **kwargs):
@@ -1349,8 +1349,8 @@ def test_shared_runtime_sync_uses_hashed_release_delta_as_service_user(tmp_path,
                 if failure == "interrupt":
                     raise KeyboardInterrupt()
                 return "", "private child details"
-            assert json.loads(input) == ["pillow"]
-            return json.dumps({"pillow": "12.3.0" if failure == "readback" else "13.0.0"}), ""
+            assert json.loads(input) == ["certifi", "pillow"]
+            return json.dumps({"certifi": "2026.10.19", "pillow": "12.3.0" if failure == "readback" else "13.0.0"}), ""
 
         return SimpleNamespace(pid=1000 + len(calls), returncode=1 if failure == "install" else 0,
             communicate=communicate, wait=lambda **_kwargs: reaped.append(len(calls)),
@@ -1364,11 +1364,22 @@ def test_shared_runtime_sync_uses_hashed_release_delta_as_service_user(tmp_path,
             deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
     else:
         receipt = deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
-        assert receipt["versions"] == {"pillow": "13.0.0"}
+        assert receipt["versions"] == {"certifi": "2026.10.19", "pillow": "13.0.0"}
         assert receipt["account"] == "blueprint"
     assert len(calls) == (1 if failure in {"install", "timeout", "interrupt"} else 2)
     assert killed == [(1001 + index, signal.SIGKILL) for index in range(len(calls))]
     assert len(reaped) == len(calls)
+
+
+@pytest.mark.parametrize("extra", ["usd-core==26.5", "https://example.invalid/unrelated.whl"])
+def test_shared_runtime_sync_refuses_unrelated_bootstrap_pin_before_install(tmp_path, monkeypatch, extra):
+    manifest = tmp_path / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    manifest.parent.mkdir(parents=True)
+    source = REPO_ROOT / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    manifest.write_text(source.read_text() + extra + " \\\n    --hash=sha256:" + "c" * 64 + "\n")
+    monkeypatch.setattr(deploy.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("unrelated install started"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_shared_runtime_dependency_sync_failed$"):
+        deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
 
 
 def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, object]:

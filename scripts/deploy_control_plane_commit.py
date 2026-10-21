@@ -4523,20 +4523,25 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str, 
 
 
 def _synchronize_shared_control_plane_dependencies(*, release_path: str | Path) -> dict[str, Any]:
-    """Apply the existing hashed production delta to intake's caller interpreter.
+    """Apply only the two security updates to intake's caller interpreter.
 
     The protected SDK is prepared separately. Intake without a retirement policy
     still executes this shared interpreter, so changing uv.lock alone leaves its
     image decoder and trust store unchanged. Never install as root or resolve a
     second dependency graph here.
     """
-    requirements = Path(release_path) / "deploy/systemd/production-control-plane-requirements.txt"
+    requirements = Path(release_path) / "deploy/systemd/shared-control-plane-security-requirements.txt"
     error = "deploy_shared_runtime_dependency_sync_failed"
     try:
         raw = requirements.read_bytes()
-        pins = dict(re.findall(r"^([A-Za-z0-9_.-]+)==([^\s]+)\s+\\$", raw.decode("utf-8"), re.MULTILINE))
-        if not pins or len(raw) > 65536:
-            raise ValueError("invalid production dependency manifest")
+        content = "\n".join(line.strip() for line in raw.decode("utf-8").splitlines()
+                            if line.strip() and not line.lstrip().startswith("#"))
+        pattern = r"([A-Za-z0-9_.-]+)==([^\s]+) \\\n--hash=sha256:[a-f0-9]{64}"
+        entries = re.findall(pattern, content)
+        pins = dict(entries)
+        if (set(pins) != {"certifi", "pillow"} or len(entries) != 2 or len(raw) > 65536
+                or re.sub(pattern, "", content).strip()):
+            raise ValueError("invalid shared runtime security manifest")
         python = str(Path(sys.executable).absolute())
         prefix = ["/usr/sbin/runuser", "-u", DEFAULT_SERVICE_ACCOUNT, "--", python, "-I"]
         environment = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
