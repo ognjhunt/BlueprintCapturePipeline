@@ -6387,6 +6387,7 @@ def _request_logs_and_fetch(
     container_missing_count = 0
     previous_semantic_text: str | None = None
     previous_structured_progress: str | None = None
+    previous_flora_cursor: tuple[int, int] | None = None
     # Two consecutive readings, so a single API glitch cannot kill a healthy
     # run; still detects a dead container in about a minute rather than thirty.
     instance_exited_count = 0
@@ -6507,6 +6508,18 @@ def _request_logs_and_fetch(
         structured_progress_observed = bool(structured_progress) and (
             structured_progress != previous_structured_progress
         )
+        # FLORA publishes count-only artifact evidence. A moving tail, duplicate
+        # marker, or SSH diagnostic cannot stand in for its next actual record.
+        from .flora_runtime_progress import progress_cursor as flora_progress_cursor
+        flora_cursor = flora_progress_cursor(semantic_text)
+        flora_tracking_active = flora_cursor is not None or previous_flora_cursor is not None
+        flora_progress_observed = flora_cursor is not None and (
+            previous_flora_cursor is None or flora_cursor > previous_flora_cursor
+        )
+        if flora_tracking_active:
+            structured_progress_observed = flora_progress_observed
+        if flora_progress_observed:
+            previous_flora_cursor = flora_cursor
         # A container that never materializes often flickers between empty logs and a Docker
         # "No such container" / daemon error. That text changing between polls must NOT count
         # as progress, or it keeps the no-progress watchdog alive for the entire live window on
@@ -6524,8 +6537,10 @@ def _request_logs_and_fetch(
             or structured_progress
             or previous_structured_progress
             or previous_remote_milestones
+            or flora_tracking_active
         )
         progress_observed = (
+            flora_progress_observed if flora_tracking_active else
             runtime_phase_progress or structured_progress_observed or remote_progress_observed
             if structured_phase_tracking_active
             else (
@@ -6571,6 +6586,8 @@ def _request_logs_and_fetch(
                 "runtime_phase_marker_count": runtime_phase_count,
                 "runtime_phase_progress_observed": runtime_phase_progress,
                 "structured_progress_observed": structured_progress_observed,
+                "flora_progress_observed": flora_progress_observed,
+                "flora_progress_cursor": list(previous_flora_cursor) if previous_flora_cursor is not None else None,
                 "remote_progress_observed": remote_progress_observed,
                 "remote_progress_status": last_remote_probe_status,
                 "remote_milestone_count": len(previous_remote_milestones),

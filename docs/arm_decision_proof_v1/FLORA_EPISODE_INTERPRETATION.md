@@ -136,6 +136,15 @@ authorize another paid attempt.
 Resource labels use `blueprint-task-evaluation-flora-` so the deployed spend
 guard can verify the independent watchdog's ownership record.
 
+After model download, the worker emits count-only `BLUEPRINT_FLORA_PROGRESS`
+records from the exact cohort's preflight and newline-terminated native outputs.
+The transport advances its liveness clock only when that stage/count increases;
+duplicate markers, reordered or truncated log tails, and SSH chatter cannot
+substitute for progress. These records always say `benchmark_complete=false`.
+Only the authenticated final receipts and report determine execution completion.
+Observation errors preserve the benchmark's result and remain subject to the
+unchanged no-progress, batch-timeout, and independent resource deadlines.
+
 The bundle also ships the existing pinned `rfc8785` 0.1.4 contract dependency
 and its license through `stage_policy_contract_dependencies`. Its four files
 are digest-bound with the sealed source; this adds no provider package download.
@@ -178,6 +187,34 @@ consumed, and the zero-retry limit was preserved. Staged-object cleanup now
 uses the same strict definite-refusal and verified-absence predicate as the
 watchdog. Ambiguous create outcomes still retain remote results and recovery
 access. The adapter's transfer estimate is a reservation, not a posted charge.
+
+## Observed retained-run test, 2026-10-21
+
+The third attempt executed source `c340519c96d8102a97e1db118ce2b1dcffff363c`
+on two H200 GPUs. It passed the exact twenty-episode input and GPU media
+preflights and generated twenty terminal, twenty dense, and fifteen rubric
+records. The outer adapter then reported `no_log_progress_timeout` after
+1,830 seconds without new stdout, even though the rubric JSONL was advancing.
+It destroyed the instance at 05:33:12 UTC. This happened before the worker's
+shared batch timeout and independent resource deadline.
+
+The completed native records were recovered from digest-verified observation
+snapshots. No final output archive, authenticated episode receipts, or complete
+benchmark report was collected. Native diagnostics must remain labeled partial;
+do not manufacture the absent completion artifacts or label five unobserved
+rubric episodes as model failures. The artifact-count monitoring change above
+encodes this observed failure and passed focused transport, worker lifecycle,
+and sealed-import checks; it was not deployed into the frozen live attempt.
+
+Against the separately sealed corrected references (seven simulator successes
+and thirteen failures), terminal mode rated nine reference failures as complete
+and missed three reference successes. Dense mode found a failure span in
+nineteen episodes, including six eventual reference successes. Process mistakes
+can coexist with final success, so dense labels are not terminal outcomes.
+Several dense rationales describe unsuccessful picking or grasping despite the
+frozen instruction to push the mug onto the target. These findings do not
+establish an advantage over the existing deterministic scorer or the optional
+Argus/OpenAI interpreter; the latter was not a paired comparator in this test.
 
 ## Read the comparison
 

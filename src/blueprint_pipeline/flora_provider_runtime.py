@@ -98,6 +98,43 @@ def _offline_benchmark_input_preflight(
     return preflight
 
 
+def _run_benchmark_with_progress(command: list[str], *, benchmark: Path, output: Path,
+                                 environment: dict[str, str], progress: Any) -> int:
+    """Keep the existing child/log while observing actual artifact advancement."""
+    with (output / "benchmark.log").open("w") as log:
+        with subprocess.Popen(command, cwd=benchmark, env=environment,
+                              stdout=log, stderr=subprocess.STDOUT) as process:
+            monitoring_failed = False
+
+            def observe() -> None:
+                nonlocal monitoring_failed
+                try:
+                    progress.poll()
+                except Exception as exc:
+                    # Observation cannot change the benchmark's result. A lost
+                    # progress channel remains subject to the unchanged guards.
+                    if not monitoring_failed:
+                        log.write("FLORA_PROGRESS_OBSERVATION_UNAVAILABLE:" + type(exc).__name__ + "\n")
+                        log.flush()
+                        monitoring_failed = True
+
+            try:
+                while True:
+                    observe()
+                    try:
+                        returncode = process.wait(timeout=5)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                observe()
+            except BaseException:
+                # Preserve subprocess.run's cancellation/exception cleanup.
+                process.kill()
+                process.wait()
+                raise
+    return returncode
+
+
 def main() -> int:
     root = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_BUNDLE_DIR"]).resolve()
     output = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_OUTPUT_DIR"]).resolve()
@@ -116,6 +153,7 @@ def main() -> int:
         if inputs.get("model_id") != "nvidia/Flora-Rewarder" or inputs.get("model_revision") != "7de68d22c4a9decec5ddb7f86ddcaee8f82d3367":
             raise ValueError("flora_runtime_model_identity_invalid")
         sys.path.insert(0, str(root / "provider_runtime/source/src"))
+        from blueprint_pipeline.flora_runtime_progress import FloraArtifactProgress, progress_marker
         benchmark = root / "benchmark"
         result["benchmark_input_preflight"] = _offline_benchmark_input_preflight(
             root, output, inputs, runtime.get("input_preflight") or {})
@@ -157,17 +195,29 @@ def main() -> int:
         _write(output / "model_snapshot_receipt.json", {"model_id": inputs["model_id"],
             "revision": inputs["model_revision"], "snapshot_directory_name": Path(model).name,
             "source_commit": runtime["source_commit"]})
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        dataset = json.loads((benchmark / inputs["manifest_relative_path"]).read_text())
+        input_digests = [row["input_bundle_digest"] for row in dataset["episodes"]]
+        episode_ids = {"episode-" + value.split(":")[1][:32] for value in input_digests}
+        if len(episode_ids) != result["benchmark_input_preflight"]["eligible_episode_count"]:
+            raise ValueError("flora_progress_cohort_binding_invalid")
+        cohort = canonical_digest({"inputs": input_digests}).split(":")[1][:24]
+        progress = FloraArtifactProgress(batch_root=output / "benchmark/raw" / ("batch-" + cohort),
+            episode_ids=episode_ids, instruction=profile["task"]["instruction"])
         environment = {**os.environ, "PYTHONPATH": str(root / "provider_runtime/source/src")}
         command = [sys.executable, "-m", "blueprint_pipeline.flora_episode_benchmark", "run",
             "--manifest", str(benchmark / inputs["manifest_relative_path"]),
             "--profile", str(benchmark / inputs["profile_relative_path"]),
             "--rights-root", str(benchmark / inputs["rights_relative_path"]),
             "--output-dir", str(output / "benchmark")]
-        with (output / "benchmark.log").open("w") as log:
-            process = subprocess.run(command, cwd=benchmark, env=environment, stdout=log, stderr=subprocess.STDOUT)
-        result["benchmark_exit_code"] = process.returncode
+        # Start typed tracking after model download, preserving the existing
+        # download monitor while making the silent benchmark artifact-driven.
+        print(progress_marker("startup", 1, 1), flush=True)
+        returncode = _run_benchmark_with_progress(command, benchmark=benchmark, output=output,
+                                                environment=environment, progress=progress)
+        result["benchmark_exit_code"] = returncode
         report = output / "benchmark/benchmark_report.json"
-        if process.returncode != 0 or not report.is_file():
+        if returncode != 0 or not report.is_file():
             raise ValueError("flora_benchmark_failed_or_report_missing")
         result.update(_benchmark_execution_summary(json.loads(report.read_text())))
         result.update({"status": "completed", "benchmark_report_path": "benchmark/benchmark_report.json",
