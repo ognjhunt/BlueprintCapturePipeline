@@ -6,9 +6,10 @@ programs are active, the free beta's job-first automation service and Arm
 Decision Proof v1; other lanes remain compatibility unless a recorded blocker in
 one of them requires their smallest reusable component.
 
-Beta work serves an agreed job brief and supportable delivery options. A job
-may need zero evaluation runs; use existing evidence or the smallest qualified
-test that resolves material uncertainty. Existing licensed Blueprint-managed
+Beta work serves an agreed job brief, drafted from retained job video, and
+supportable delivery options. Assessment waits for retained video; reuse
+existing evidence and run the supported configurations or the smallest
+qualified test that resolves material uncertainty. Existing licensed Blueprint-managed
 execution and approved team-supplied endpoints remain valid. Preserve
 independent scoring and controlled observations. Commercial proposal selection,
 both-party agreement and reported outcomes cannot create scientific authority.

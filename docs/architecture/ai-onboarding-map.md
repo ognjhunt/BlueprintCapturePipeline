@@ -4,8 +4,8 @@
 
 BlueprintCapturePipeline supports the free beta's **job-first automation
 service** and **Arm Decision Proof v1**, per owner direction on 2026-10-21.
-Read `doctrine/` and the shared blocks first. A description-only job can be
-assessed with zero evaluation runs; use existing operator and owner workspaces.
+Read `doctrine/` and the shared blocks first. Assessment requires retained job
+video; use existing operator and owner workspaces.
 Only unresolved technical questions need the Decision/Evidence Router and
 qualified evidence. A scientific verdict is not a commercial recommendation.
 
