@@ -159,6 +159,18 @@ capability. Increasing the canary cell count or relabeling its result is not thi
 integration. Existing execution authority, paid-resource admission, controls holds
 and physical-proof requirements remain unchanged.
 
+The existing `materialize_native_task_arena_packet` accepts an optional
+`exact_workcell_cell` containing the frozen `request`, `matrix`, `cell_id` and
+`source_plan_digest`. It recompiles the canonical source request, applies the
+same native cell adapter before sealing, and retains the original source plan
+and complete cell preparation inputs as immutable packet artifacts. The packet
+request/runtime contract remain source predecessors; its new plan and scenario
+digests identify the exact prepared cell. `replay_native_packet_cell` reconstructs
+that plan from the retained inputs. Existing construction bundle/worker code can
+then consume the sealed cell packet and produce a real per-cell construction
+result under its existing authority. Preparation grants no execution authority
+and creates no construction receipt; unavailable native profiles fail explicitly.
+
 ## Immutable Artifacts
 
 The create-only publisher writes and fully reads back:
