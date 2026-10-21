@@ -20,6 +20,15 @@ and request, Pipeline plans through its existing method catalog. The operator
 can run the available read-only local methods. Other methods retain their
 existing runtime, access and spending authority.
 
+When site observations are needed, the job links to the existing capture screen
+with its job Scene ID prefilled. Actual upload sessions retain their real IDs.
+The existing task-approval action records the current confirmed brief, admitted
+task items, rights, source capture and approved task; compilation carries that
+binding through `site_task_testbed_compilation_submission.v3` into the signed
+testbed publication. No extra approval stage is added. Older unbound sources
+stay unavailable for current job claims until the existing task action supplies
+an authoritative binding.
+
 The same panel opens **Managed policy evaluation** for the job's actual
 published scene setup. This uses the existing configured-scene preparation and
 allocator; it does not require a technology team to run a policy. The supported
@@ -71,7 +80,7 @@ Pipeline routes, using the existing admitted service HMAC:
 - `POST /api/live-pipeline/job-evidence-requests/{request_id}/cancel`
 
 Execution accepts the exact request digest and authenticated operator identity.
-It permits only the existing zero-cost local adapter registry. Paid policy
+It permits only the existing read-only local adapter registry. Paid policy
 execution remains on the existing configured-scene path. Cancellation also
 revokes the underlying local run so the legacy execution URL cannot bypass it.
 Stable request IDs/idempotency keys and immutable publications make retry safe.
@@ -102,4 +111,17 @@ WebApp main was `76f263507ca8ea60c8fc8d40a56eefbc88643e65`, and live `/version.j
 reported `9884867b0b01f5e3a9f2156a26756657e49a2672` built October 20. Pipeline main was
 `599264bda025ffb274996037d2ac997ec53f8a1b`; the running intake freshly reported
 `b86b78ab83f217fe4fca2bf135e290b7b8aebe56` with `commit_proven=true`.
-This implementation does not change runtime flags or deploy either service.
+During implementation #1077 was closed unmerged and superseded by #1078 at
+`983ac5b98cca07024999758d34650c85740df1a9`. Those follow-up fixes were merged
+into this task's isolated website branch. #1078 then merged as
+`bed14fcf7986ea596dd244de0c624edcae061c36`; live `/version.json` independently
+reported its build source `983ac5b98cca07024999758d34650c85740df1a9`, built
+October 21 at 14:44 UTC. This implementation does not change runtime flags or
+deploy either service.
+
+Release order: merge/release the job-first WebApp change, then its evidence
+consumer and configured Firestore index, then the Pipeline producer. Capture's
+matching doctrine change has no runtime dependency. PRs are Pipeline #2737,
+WebApp #1079 (following #1078), and Capture #90. Normal website production
+builds still require the existing Firebase public configuration; the local
+unconfigured build is explicitly compile-only.
