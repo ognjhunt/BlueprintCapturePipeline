@@ -27,6 +27,7 @@ from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION, build_paid_lane_admission, require_paid_resource_admission,
 )
 from .spend_authority_consumption_root import consumption_root, prepare_consumption_root
+from .vast_provider_transfer_upload import EXPECTED_PROVIDER_UPLOAD_BYTES_ENV
 from .vast_independent_watchdog_control import (
     _caller_exit_survival_contract, _caller_exit_survival_proven,
     validate_independent_vast_watchdog_names,
@@ -37,6 +38,9 @@ GPU_POLICY = {"policy_id": "flora_dual_hopper", "allowed_gpu_keywords": ["H100",
               "denied_gpu_keywords": [], "required_gpu_count": 2, "minimum_cuda_max_good": 13.0}
 MINIMUM_DRIVER_VERSION = "580.95.05"
 PREFIX = "blueprint-flora-"
+PROVIDER_OUTPUT_ARCHIVE_MAX_BYTES = 1_000_000_000
+# The shared transport permits one initial PUT and two transient retries.
+PROVIDER_OUTPUT_UPLOAD_ATTEMPTS = 3
 
 
 def _resource_name(authority: Mapping[str, Any]) -> str:
@@ -76,8 +80,11 @@ def validate_flora_attempt_authority(value: Mapping[str, Any], bundle: Mapping[s
         raise ValueError("flora_attempt_authority_ttl_invalid")
     if authority["max_hourly_rate_usd"] * ttl / 3600 > authority["hard_cap_usd"]:
         raise ValueError("flora_attempt_authority_compute_cap_insufficient")
+    archive_limit = authority.get("provider_output_archive_max_bytes")
+    if type(archive_limit) is not int or archive_limit != PROVIDER_OUTPUT_ARCHIVE_MAX_BYTES:
+        raise ValueError("flora_attempt_authority_output_archive_limit_invalid")
     for key, minimum in (("expected_provider_download_bytes", 60_000_000_000 + int(bundle.get("bundle_size_bytes", 0))),
-                          ("expected_provider_upload_bytes", 1_000_000_000)):
+                          ("expected_provider_upload_bytes", archive_limit * PROVIDER_OUTPUT_UPLOAD_ATTEMPTS)):
         if type(authority.get(key)) is not int or authority[key] < minimum:
             raise ValueError("flora_attempt_authority_transfer_budget_invalid")
     try:
@@ -197,6 +204,9 @@ def run_flora_allocator_lane(args: Any, source_context: tuple[list[str], str]) -
                 require_direct_port=True,
                 expected_provider_download_bytes=authority["expected_provider_download_bytes"],
                 expected_provider_upload_bytes=authority["expected_provider_upload_bytes"],
+                provider_runtime_environment={
+                    EXPECTED_PROVIDER_UPLOAD_BYTES_ENV: str(authority["provider_output_archive_max_bytes"]),
+                },
                 allowed_geolocation_country_codes=authority["allowed_geolocation_country_codes"])
         except (ValueError, OSError) as exc:
             result = {"status": "blocked", "blockers": [str(exc)], "provider_mutations_performed": None,

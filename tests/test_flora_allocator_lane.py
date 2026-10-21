@@ -52,7 +52,8 @@ def _authority(bundle):
         "bundle_sha256":bundle["bundle_sha256"], "source_commit":bundle["source_commit"],
         "container_image":bundle["container_image"], "hard_cap_usd":20.0, "max_hourly_rate_usd":9.0,
         "hard_ttl_seconds":7200, "expected_provider_download_bytes":75_000_000_000,
-        "expected_provider_upload_bytes":1_000_000_000,
+        "provider_output_archive_max_bytes":1_000_000_000,
+        "expected_provider_upload_bytes":3_000_000_000,
         "expires_at":(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}
     value["authority_digest"] = bundler.digest(value)
     return value
@@ -91,6 +92,21 @@ def test_single_use_consumption_is_global_across_job_paths(tmp_path, monkeypatch
     assert lane._consume_once(authority)["status"] == "consumed"
     with pytest.raises(ValueError, match="already_consumed"):
         lane._consume_once(authority)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("provider_output_archive_max_bytes", None), ("provider_output_archive_max_bytes", True),
+    ("provider_output_archive_max_bytes", 0), ("provider_output_archive_max_bytes", 1_000_000_001),
+    ("provider_output_archive_max_bytes", 1_000_000_000.0),
+    ("expected_provider_upload_bytes", 2_999_999_999), ("expected_provider_upload_bytes", True),
+])
+def test_output_archive_bound_and_all_three_puts_require_explicit_reserve(tmp_path, monkeypatch, field, value):
+    bundle = _bundle(tmp_path, monkeypatch)
+    authority = _authority(bundle)
+    authority[field] = value
+    authority["authority_digest"] = bundler.digest({k:v for k,v in authority.items() if k != "authority_digest"})
+    with pytest.raises(ValueError, match="output_archive_limit_invalid|transfer_budget_invalid"):
+        lane.validate_flora_attempt_authority(authority, bundle)
 
 
 def test_exact_device_count_reaches_search_and_rejects_provider_mismatch():
@@ -153,6 +169,10 @@ def test_dry_and_execute_share_preflight_and_transport_bounds(tmp_path, monkeypa
     assert transport[0]["gpu_selection_policy"]["required_gpu_count"] == 2
     assert transport[0]["candidate_policy_query_expected"] is False
     assert transport[0]["ngc_image_login_mode"] == "never"
+    assert transport[0]["expected_provider_upload_bytes"] == 3_000_000_000
+    assert transport[0]["provider_runtime_environment"] == {
+        "BLUEPRINT_VAST_EXPECTED_PROVIDER_UPLOAD_BYTES": "1000000000",
+    }
 
 
 def test_worker_checks_members_before_model_download(tmp_path):

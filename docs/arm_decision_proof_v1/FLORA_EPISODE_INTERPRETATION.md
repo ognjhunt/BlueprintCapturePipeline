@@ -122,6 +122,11 @@ aggregate budget and expiry, live capacity/spend checks, independent watchdog,
 and teardown. The bounded lane allows one allocation, exactly two admitted
 GPUs, and no automatic paid retry. The worker downloads the pinned public
 model onto admitted compute. Fleet limits are ceilings, not task authorization.
+The attempt authority must set `provider_output_archive_max_bytes` to
+1,000,000,000 and reserve at least 3,000,000,000 provider upload bytes for the
+shared transport's maximum of three PUT attempts. The worker enforces the
+archive limit before upload. Download admission must include the pinned image,
+model, dependency wheels, input bundle, and a bounded transfer retry reserve.
 
 The worker uses the shared `flora_dependency_bootstrap` helper to install only
 the four hash-pinned add-ons required by the pinned vLLM base image:
