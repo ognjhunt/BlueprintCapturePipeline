@@ -1,7 +1,8 @@
 """Which policies a task evaluation run may compare, and why the rest may not.
 
-Every run still compares exactly two frozen candidates, sealed before any
-outcome exists. What this registry adds is the menu they are chosen from:
+This bounded fixed-arm lane compares exactly two frozen candidates, sealed
+before any outcome exists. Commercial job assessments need not use this lane
+or create an evaluation run. This registry is the menu the pair is chosen from:
 each policy we know about, pinned to an exact checkpoint, with its license
 standing and its integration status stated rather than implied. A policy is
 selectable only when all three hold:
@@ -226,6 +227,49 @@ def unavailable_candidates() -> tuple[PolicyCandidate, ...]:
     return tuple(item for item in REGISTRY if not item.runnable)
 
 
+def managed_execution_capability() -> dict[str, object]:
+    """Secret-free access facts for an operator choosing a bounded run.
+
+    These are admission facts, not a live worker health probe.  The published
+    scene-specific setup remains the authority for the robot, task, cameras,
+    controller, resources, and execution permission.  In particular this does
+    not turn a customer's buying budget into permission to rent a worker.
+    """
+    from .decision_evidence_contracts import cross_runtime_canonical_digest
+
+    value: dict[str, object] = {
+        "schema_version": "task_evaluation_managed_execution_capability.v1",
+        "access_mode": "blueprint_managed_self_hosted",
+        "technology_team_operation_required": False,
+        "availability": "requires_published_scene_setup",
+        "supported_embodiment_id": "franka_panda_robotiq_2f85_v1",
+        "observation_schema_id": TWO_CAMERA_OBSERVATION,
+        "action_schema_id": ABSOLUTE_JOINT_POSITION_ACTION,
+        "candidates": [
+            {
+                "candidate_id": item.candidate_id,
+                "display_name": item.display_name,
+                "admission_status": item.status,
+                "checkpoint_revision": item.checkpoint_revision,
+                "checkpoint_digest": item.checkpoint_digest,
+                "checkpoint_digest_kind": item.checkpoint_digest_kind,
+                "adapter_id": item.adapter_id,
+                "license_id": item.license_id,
+                "commercial_use": item.commercial_use,
+                "blockers": list(item.blockers),
+                "reason": item.reason,
+            }
+            for item in REGISTRY
+        ],
+        "next_action": "Open the job's published scene setup; preserve its frozen candidates and authority.",
+        "runtime_execution_observed": False,
+        "physical_performance_proven": False,
+        "paid_execution_authorized": False,
+    }
+    value["capability_digest"] = cross_runtime_canonical_digest(value)
+    return value
+
+
 def validate_selected_pair(candidate_ids: Sequence[str]) -> tuple[str, str]:
     """Two distinct runnable candidates, in registry order.
 
@@ -288,6 +332,7 @@ __all__ = [
     "THREE_CAMERA_OBSERVATION",
     "TWO_CAMERA_OBSERVATION",
     "candidate",
+    "managed_execution_capability",
     "registry_violations",
     "runnable_candidate_ids",
     "unavailable_candidates",
