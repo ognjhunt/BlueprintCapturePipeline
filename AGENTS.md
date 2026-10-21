@@ -10,12 +10,15 @@ drifts from this guide, this guide wins; if docs disagree with each other, use
 
 `BlueprintCapturePipeline` serves the free beta's job-first automation service
 and **Arm Decision Proof v1**. Owner direction on 2026-10-21 supersedes the
-mandatory simulation, invited-team evaluation and one-click booking journey.
-The beta accepts a plain job description with optional video and budget,
-agrees the brief, assesses supportable solutions, and helps compare real
-written delivery proposals. Assessment can use zero evaluation runs. The
-customer chooses a proposal; the customer and deployment partner agree physical
-work directly. Reported pilot outcomes retain their separate provenance.
+invited-team evaluation and one-click booking journey. The later same-day owner
+correction requires actual retained job video before assessment, with no written
+description required. Existing video analysis drafts the brief for customer
+correction. Reuse capture -> reconstruction -> site package -> measurable
+testbed, shortlist complete executable configurations, run matched independent
+evaluations within existing authority, and compare real delivery proposals.
+Drafts may wait for footage; missing capabilities and inputs remain explicit.
+The customer chooses a proposal; the customer and deployment partner agree
+physical work directly. Reported outcomes retain their separate provenance.
 
 Pipeline owns evidence planning, method qualification, independent execution,
 normalized scientific results, uncertainty, abstention, claim ceilings and
@@ -75,7 +78,7 @@ dependent step as blocked instead of guessing.
 
 - **Two programs are active:** the free beta's job-first automation service
   (owner direction 2026-10-21) and `arm-decision-proof-v1`. The beta may progress
-  with existing evidence or zero evaluation runs; Arm Decision Proof retains
+  from retained video using valid source-bound artifacts; Arm Decision Proof retains
   its frozen two-candidate protocol and physical-validation authority.
   Historical schemas, records and adapters remain compatibility unless a
   current blocker needs their smallest reusable component.
@@ -88,8 +91,9 @@ dependent step as blocked instead of guessing.
 - Keep geometry, capture observations, simulators, learned evaluators, providers,
   and physical evidence replaceable behind stable capture and evaluation contracts.
 - Resolve the uncertainty that matters for the job using the Decision/Evidence
-  Router and current qualified methods. Description-only intake requires no
-  fabricated capture, testbed or run. Existing licensed Blueprint-managed
+  Router and current qualified methods. An inquiry awaiting video requires no
+  fabricated capture, testbed or run and cannot advance through assessment.
+  Existing licensed Blueprint-managed
   execution and approved team-supplied routes are both eligible. Keep
   commercial deliverability and proposal prices separate from scientific
   verdicts. Preserve ADP's exactly two frozen candidates, matched conditions,
@@ -106,7 +110,7 @@ dependent step as blocked instead of guessing.
   fidelity, or partner value. Never copy fixture data into qualified evidence.
   Real beta capture-derived results can support a recommendation within their
   qualified scope; they never enter Arm Decision Proof qualified evidence.
-  A job without a capture can still progress commercially.
+  A draft may wait for video; assessment requires a real retained-video receipt.
 - ADP-008 is observed complete. The 2026-08-06 ADP-009 transition accepts the
   bounded InteriorGS/SAGE/SimReady construction rehearsal while preserving the
   historical suite at `7/10`, and fresh Raw V3.2 capture replaces ScanNet++ as

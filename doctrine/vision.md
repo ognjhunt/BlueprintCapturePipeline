@@ -5,12 +5,22 @@
 Blueprint has two current horizons, one for each active program.
 
 The **free beta** horizon is **one real recurring job with a supportable
-customer choice, a separately agreed pilot and recorded outcomes**. A site can
-start with a description alone. Blueprint agrees the brief, reuses applicable
-evidence, resolves decision-relevant uncertainty only where needed, and helps
-the customer compare real delivery proposals. Zero evaluation runs can be the
-right evidence plan. The customer and deployment partner own their physical
-agreement; choosing a website proposal does not create it.
+customer choice, a separately agreed pilot and recorded outcomes**. A site
+records or uploads actual job video without writing a description. Retained
+video and its storage receipt are required before assessment; drafts can wait
+for footage. Existing analysis drafts the job for customer correction. Blueprint
+reuses its capture-to-package/testbed foundation, shortlists complete executable
+configurations, runs matched independently scored evaluations within existing
+authority, and helps compare real delivery proposals. Valid applicable artifacts
+are reused; unavailable capabilities and missing measurements remain explicit.
+The customer and deployment partner own their physical agreement; choosing a
+website proposal does not create it.
+
+The service accepts different sites and tasks through the same durable stores,
+queues and capability contracts. Supported profiles accept new site data without
+code edits; a new task family may need real runtime, reset, scorer and asset
+engineering. Broad intake and recoverable routing do not establish universal
+robot competence or cross-site physical validation.
 
 The **Arm Decision Proof** horizon is **one prospectively physically validated
 site-specific arm decision**. The company must show that a robot team can give Blueprint one real fixed-arm
@@ -101,8 +111,9 @@ training corpus.
 ### Invariants
 
 1. Raw capture and authoritative physical outcomes outrank derived artifacts.
-2. The service delivers a reasoned automation choice; Task Evaluation Runs are
-   bounded evidence when needed, not mandatory for every job.
+2. The service starts assessment from retained video and delivers a reasoned
+   automation choice. Task Evaluation Runs are bounded evidence, and neither
+   fixture tests nor queued requests prove actual policy execution.
 3. Backends remain swappable behind stable contracts.
 4. Decisions are bounded estimates or abstentions, never guarantees.
 5. Rights, privacy, provenance, holdout integrity, and physical safety remain

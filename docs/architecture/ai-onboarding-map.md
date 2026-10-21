@@ -4,16 +4,19 @@
 
 BlueprintCapturePipeline supports the free beta's **job-first automation
 service** and **Arm Decision Proof v1**, per owner direction on 2026-10-21.
-Read `doctrine/` and the shared blocks first. A description-only job can be
-assessed with zero evaluation runs; use existing operator and owner workspaces.
-Only unresolved technical questions need the Decision/Evidence Router and
-qualified evidence. A scientific verdict is not a commercial recommendation.
+Read `doctrine/` and the shared blocks first. The later 2026-10-21 owner
+correction requires actual retained video before assessment, without a written
+description. Existing video analysis drafts the brief. Reuse capture-to-package
+and testbed compilation, capability-based configuration shortlisting, authorized
+matched policy execution and signed results in the existing workspaces.
+Drafts may wait for video; unavailable capabilities and missing inputs stay
+explicit. A scientific verdict is not a commercial recommendation.
 
 For capture-derived bounded evaluation, use
 [first site/team acceptance](../runbooks/first-site-team-beta.md),
 [site-task qualification](../beta-site-task-simulation-qualification.md) and
 [execution recovery](../team-evaluation-recovery-contract.md). Those are
-conditional technical routes, not mandatory stages for every job. The
+supported technical routes, not proof of execution for every submitted task. The
 historical north-star `sole_active_program` label does not override the owner
 update, and the job journey does not widen ADP's proof protocol.
 
@@ -77,8 +80,8 @@ sim-to-real decision fidelity, or customer value. Do not hand-author substitute
 evidence. A missing partner measurement remains a typed blocker.
 
 ADP's prospective physical-validation route keeps its own evidence ladder.
-The active beta may onboard sites without capture or new execution. A
-simulation-based technical claim still requires exact site-task qualification
+The active beta may retain drafts awaiting footage, but assessment requires a
+real retained-video receipt. A simulation-based technical claim requires exact site-task qualification
 and independently scored execution through a supported access route. Neither
 route may promote development fixtures to site proof.
 

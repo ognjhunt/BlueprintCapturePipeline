@@ -33,22 +33,37 @@ evidence.
 
 ### Free Beta: Job-First Automation
 
-“Find the right way to automate your work.” A site submits one recurring job
-as a plain description, with optional video and budget. Blueprint agrees the
-brief, identifies a few supportable complete solutions, and obtains comparable
-written delivery proposals where suitable suppliers exist. The customer
-chooses an exact proposal revision; the customer and deployment partner then
-agree their physical pilot directly. Selection is not a contract, reservation,
-or authority to start physical work.
+"Find the right way to automate your work." A site records or uploads its job
+video; a written description is not required. The later owner correction on
+2026-10-21 requires actual retained video before assessment. A draft or inquiry
+may wait for video, but a description, checkbox or allocated upload ID cannot
+substitute for a successful storage receipt. Existing video analysis drafts the
+description and structured job facts from the same output; the customer corrects
+the reading and supplies material facts the footage cannot establish.
+Preserve customer-authored or confirmed text and source-bound revisions. Keep
+observed, measured, customer-declared and inferred values distinct; estimated
+dimensions do not become authoritative hardware exclusions. Retain metric units,
+coordinate frames and calibration across geometry, objects and runtime inputs.
+Visual appearance alone does not establish contact, dynamics or sensor fidelity.
 
-This owner decision supersedes the earlier mandatory simulation, invited-team
-evaluation, and one-step booking funnel. A job may progress with zero
-evaluation runs. Reuse applicable, permitted evidence and request only a
-measurement or test that changes a real option or decision. Analytical fit,
-prior deployment evidence, recorded observations, simulation and physical
-trials answer different questions. Missing evidence, an unavailable supplier,
-or an unsuitable job returns an explanation and the smallest useful next
-action; none becomes an invented scientific failure or pass.
+The six service stages reuse the existing capture-to-simulation foundation:
+retain the original video, permissions and job identity; understand and confirm
+the job; prepare the capture-backed site package and measurable task testbed;
+shortlist complete executable configurations; run matched evaluations with
+independent scoring; and prepare an evidence-bounded recommendation and real
+delivery proposals. Reuse valid source-bound artifacts and applicable permitted
+evidence instead of repeating unchanged work. Missing measurements, unavailable
+execution or unsuitable options return their precise next action or abstention;
+they cannot be presented as completed simulation, execution or delivery proof.
+The evidence bridge's read-only adapters are not policy evaluation.
+
+This replaces the superseded optional-video interpretation, not the original
+walkthrough or approved example animations. Keep the experience bare bones:
+video, review the reading, understandable progress/results and comparable
+delivery options. Use the existing private workspace and admin tools. After
+recommendation, the customer chooses an exact real proposal revision; the
+customer and deployment partner agree their bounded physical pilot directly.
+Selection is not contract award or authority to start physical work.
 
 - The beta is free. There are no assessment or success fees, paid provider
   evaluations, balances, top-ups, checkout, escrow, percentage cut, or future
@@ -92,10 +107,44 @@ the earlier journey; it is not proof that a selected proposal was agreed or
 delivered. The useful beta outcome is a real job with an agreed scope, a
 supportable customer choice, a separately agreed pilot, and recorded outcomes.
 
-The default build target remains the envelope the Pipeline can score today: a
-fixed arm on rigid-object pick-and-place or articulated open/close tasks.
-Building support for another robot form or task family needs a recorded owner
-focus decision based on demand evidence.
+Accept jobs across sites and task families into truthful capability routing.
+The first runnable route is the exact admitted fixed-arm/DROID-compatible
+rigid-object profile, not every arm or task. An articulated open/close fidelity
+template does not establish an executable adapter, reset or scorer. Atlas and
+other unavailable embodiments or policies remain unavailable without blocking
+supported configurations. New task families need real assets, adapters,
+resets, scoring and evidence; registry labels and fixture names cannot supply
+them. Keep task requirements, site data, embodiment/tool/sensors, policy
+interfaces and delivery availability separate behind existing contracts.
+
+### Durable Job Workflow
+
+Site, job, task, capture and tenant identities are data, never demo constants.
+Derive stage completion from retained receipts and artifacts. Reuse existing
+stores, queues, intent/outbox records, idempotency keys, claims and leases; do
+not create a parallel workflow platform or state database. At-least-once events,
+worker restarts and signed publication retries must not duplicate expensive
+work, proposals or sends. Persist intent before effects, reconcile ambiguous
+provider timeouts before another purchase, and resume from the last valid
+artifact with bounded retry/backoff and the existing retry/error surface.
+
+Bind video, technical brief, testbed, configuration and result revisions.
+Changed technical sources cannot inherit a stale recommendation; retain late
+old results as history. Quote or budget edits do not rerun unchanged science.
+Cancellation, withdrawal and permission revocation stop applicable future work
+while preserving existing minimum audit obligations. Owner links and staff
+authority remain distinct, and tenant evidence remains isolated. Retain bounded
+summaries/references in the existing database and large immutable artifacts in
+authorized company object storage, not chat sessions or provider file IDs.
+
+Executable technology access, deployment capability and a partner's scoped
+proposal are separate facts. Record exact robot/tool/sensor/controller,
+observation/action units and normalization, policy/runtime versions and access
+terms. Research rankings do not prove compatibility, stock or delivery support.
+Only actual partner availability, cost and support commitments make a proposal
+theirs. Unknown cost, assistance and cycle time stay unmeasured or unknown;
+simulation time is not physical end-to-end cycle time. Existing rights, spend,
+founder holds, watchdog, teardown and no-send controls remain intact.
 
 ### Arm Decision Proof v1
 
@@ -137,8 +186,9 @@ rights, and physical access remain a small parallel human lane.
 
 The customer-facing service helps a business find a suitable, deliverable way
 to automate its job. The **Task Evaluation Run** is its bounded technical
-assessment when new execution is useful, not a mandatory purchase or intake
-step. A description-only assessment needs no invented capture, testbed or run.
+assessment, not a mandatory purchase or a substitute for retained video.
+An inquiry awaiting footage needs no invented capture, testbed or run and
+cannot advance through assessment before its real video is retained.
 
 - A maintained **Site-Task Testbed** is the versioned reusable substrate.
 - A **candidate Minimum Sufficient Evaluation Replica** is the construction
@@ -238,10 +288,10 @@ dynamics, observation-domain match, factual recovery of an unobserved surface,
 sim-to-real decision fidelity, or partner value. No fixture/generated field may
 be copied into qualified evidence to make a gate pass.
 
-Beta site captures, when needed, are real inputs. A description-only job can
-proceed commercially without them. Qualified simulation results can contribute
-to a recommendation within their stated task/configuration/site limits; a
-recommendation does not require simulation for every job. Those results stay
+Beta site captures are required real inputs to assessment. Qualified simulation
+results can contribute to a recommendation within their stated
+task/configuration/site limits. Reusing applicable evidence does not establish
+a newly completed reconstruction or evaluation. Those results stay
 separate from Arm Decision Proof evidence. They cannot qualify a partner capture, promote a
 physical-validation claim, or be copied into Arm Decision Proof qualified
 evidence.
