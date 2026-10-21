@@ -923,47 +923,213 @@
     "job_id": "job-1",
     "request_id": "job-question-gap",
     "brief_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "question": "Can the exact robot analytically reach the tote region?",
+    "question": "Which claims are supported for: Move the rigid item from the table into the tote.",
     "testbed": {
       "approved_task_definition": {
-        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "status": "owner_approved"
+        "approval_decision_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "approved_task_id": "approved-task-1",
+        "digest": "sha256:b3cdd9bcfb1cc63e249d4feecf6367cac5dccde17ca6971e84dcc3bba509affb"
       },
       "artifact_references": {
         "eval_cards": [
           {
-            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "uri": "fixture://eval"
+            "digest": "sha256:76f87f51d81c2b46ddd4d75c9e5c8cef8fde4690af34b0c9b25d7aa0be26b5a6",
+            "uri": "testbed://python-producer-fixture/1/eval_card_1.json"
           }
         ],
         "evaluator": {
-          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "uri": "fixture://evaluator"
         },
         "reset": {
-          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "uri": "fixture://reset"
         },
         "scenario_cards": [
           {
-            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "uri": "fixture://scenario"
+            "digest": "sha256:4d8360b8870a79b43246b09278cde2153ca47399a36dcfebd0fb28d3ddb129f2",
+            "uri": "testbed://python-producer-fixture/1/scenario_card_1.json"
           }
         ],
         "site_card": {
-          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "uri": "fixture://site"
+          "digest": "sha256:48f504e4ba97ddb213718d4edbfafa478392dd243343906173c8eba110cd9f25",
+          "uri": "testbed://python-producer-fixture/1/site_card_1.json"
         },
         "task_cards": [
           {
-            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "uri": "fixture://task"
+            "digest": "sha256:249fea0273434d7f5309f09e899e245de2b2589b466ce1cb12a4e7a303177cd2",
+            "uri": "testbed://python-producer-fixture/1/task_card_1.json"
+          }
+        ]
+      },
+      "compiled_cards": {
+        "eval_cards": [
+          {
+            "card_digest": "sha256:76f87f51d81c2b46ddd4d75c9e5c8cef8fde4690af34b0c9b25d7aa0be26b5a6",
+            "claim_boundary": "evaluation_definition_not_evidence_result",
+            "comparative_policy_ranking_verdict": "thesis_not_supported",
+            "decision_evidence_request_compiled": false,
+            "eval_card_id": "eval-card:python-producer-fixture:1:base",
+            "measurable_success_conditions": [
+              {
+                "metric": "object_center_distance",
+                "operator": "<=",
+                "threshold": 0.05,
+                "units": "m"
+              }
+            ],
+            "prohibited_claims": [
+              "physical_task_success",
+              "deployment_readiness",
+              "safety_certification",
+              "general_policy_ranking_validity"
+            ],
+            "requested_claim_types": [
+              "reachability"
+            ],
+            "scenario_card_id": "scenario-card:python-producer-fixture:1:base",
+            "schema_version": "site_task_testbed_eval_card.v1",
+            "task_card_id": "task-card:approved-task-1"
+          }
+        ],
+        "scenario_cards": [
+          {
+            "card_digest": "sha256:4d8360b8870a79b43246b09278cde2153ca47399a36dcfebd0fb28d3ddb129f2",
+            "claim_boundary": "scenario_scope_not_simulator_or_physical_outcome",
+            "reset_contract": {
+              "instructions": "Return the item to the table marker."
+            },
+            "robot_binding_digest": "sha256:d0622ddcd4b5ca969a71f1d0c39be2138b67f8660186d37a0be82e96d906f736",
+            "scenario_card_id": "scenario-card:python-producer-fixture:1:base",
+            "schema_version": "site_task_testbed_scenario_card.v1",
+            "selected_robot_placement_id": "base-1",
+            "supported_condition_ranges": {
+              "lighting_lux": [
+                300.0,
+                600.0
+              ],
+              "source_note": {
+                "z": "development_only 🦾",
+                "é": "observed µ"
+              }
+            },
+            "task_card_id": "task-card:approved-task-1"
+          }
+        ],
+        "site_card": {
+          "card_digest": "sha256:48f504e4ba97ddb213718d4edbfafa478392dd243343906173c8eba110cd9f25",
+          "claim_boundary": "capture_backed_site_scope_not_physical_or_safety_proof",
+          "claim_ceiling": {
+            "calibrated_camera_poses": true,
+            "capture_admitted": true,
+            "collision_geometry": false,
+            "metric_geometry": true,
+            "physical_task_success": false
+          },
+          "schema_version": "site_task_testbed_site_card.v1",
+          "site_card_id": "site-card:python-producer-fixture:1",
+          "site_id": "site-1",
+          "source_capture": {
+            "capture_authority_profile": "iphone_arkit_lidar",
+            "capture_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "envelope_digest": "sha256:71e3552c91bfb64686ff14e175e889222ca324ed885c5765efea5f27c5e1d379",
+            "intake_id": "intake-1",
+            "qa_report_digest": "sha256:b507dbf640cd2bbb8a8bb9f995653c95709c41402c6df09e2c0a918966b043e4"
+          },
+          "supported_condition_ranges": {
+            "lighting_lux": [
+              300.0,
+              600.0
+            ],
+            "source_note": {
+              "z": "development_only 🦾",
+              "é": "observed µ"
+            }
+          }
+        },
+        "task_cards": [
+          {
+            "approved_task_digest": "sha256:b3cdd9bcfb1cc63e249d4feecf6367cac5dccde17ca6971e84dcc3bba509affb",
+            "approved_task_id": "approved-task-1",
+            "card_digest": "sha256:249fea0273434d7f5309f09e899e245de2b2589b466ce1cb12a4e7a303177cd2",
+            "claim_boundary": "approved_intent_and_evaluation_scope_not_task_success",
+            "description": "Move the rigid item from the table into the tote.",
+            "measurable_success_conditions": [
+              {
+                "metric": "object_center_distance",
+                "operator": "<=",
+                "threshold": 0.05,
+                "units": "m"
+              }
+            ],
+            "prohibited_evaluator_identities": [],
+            "required_robot_capabilities": [
+              "rigid-object grasp"
+            ],
+            "reset_contract": {
+              "instructions": "Return the item to the table marker."
+            },
+            "schema_version": "site_task_testbed_task_card.v1",
+            "target_regions": [
+              {
+                "captured_coverage": 0.9,
+                "label": "tote",
+                "position_site_m": [
+                  0.6,
+                  0.1,
+                  0.7
+                ],
+                "region_id": "tote-1",
+                "supporting_frames": [
+                  "frame-1",
+                  "frame-2"
+                ]
+              }
+            ],
+            "task_card_id": "task-card:approved-task-1",
+            "task_family": "laundry_folding",
+            "task_objects": [
+              {
+                "label": "rigid item",
+                "object_id": "item-1"
+              }
+            ]
           }
         ]
       },
       "evidence_inventory": [
         {
-          "evidence_id": "metric_geometry"
+          "digest": "sha256:b507dbf640cd2bbb8a8bb9f995653c95709c41402c6df09e2c0a918966b043e4",
+          "evidence_id": "capture_qa",
+          "status": "accepted"
+        },
+        {
+          "authority": "iphone_arkit_lidar",
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "evidence_id": "raw_capture",
+          "raw_capture_authority": true
+        },
+        {
+          "claim_ceiling": {
+            "collision_geometry": false,
+            "metric_geometry": true,
+            "physical_task_success": false
+          },
+          "digest": "sha256:640f6fa6d6295acf307984604a958c0b10d9c80bae185354bf8a01673359e3e5",
+          "evidence_id": "reconstruction:metric-scaffold-1",
+          "outputs": [
+            "metric_reference_layer"
+          ]
+        },
+        {
+          "digest": "sha256:924e958767526d735d1423df63e0ec2b8535a5c3e89d845201e6015b3408eafe",
+          "evidence_id": "robot_placement",
+          "status": "candidate_selected"
+        },
+        {
+          "digest": "sha256:77e632b9837fdc73d62f60b58745ec5535596481e9a35f7389e8e502ce46334f",
+          "evidence_id": "simready_decision",
+          "status": "complete"
         }
       ],
       "governance": {
@@ -972,62 +1138,151 @@
         ],
         "consent": "accepted",
         "privacy": "cleared",
-        "revocation": "version_invalidates_on_revocation",
+        "provider_constraints": {
+          "external_processing_allowed": false
+        },
+        "retention": {
+          "max_days": 30
+        },
+        "revocation": {
+          "historical_tombstone_retained": true,
+          "supported": true
+        },
         "rights": "accepted"
       },
       "invalidation_triggers": [
-        "layout_change"
+        "capture_revoked",
+        "controller_changed",
+        "layout_changed",
+        "reconstruction_corrected",
+        "robot_binding_changed",
+        "supported_condition_range_exceeded",
+        "task_object_changed"
       ],
       "known_unsupported_conditions": [
-        "physical_task_success"
+        "comparative_policy_ranking:thesis_not_supported",
+        "deployment_readiness",
+        "general_policy_ranking_validity",
+        "physical_task_success",
+        "safety_certification"
       ],
       "lifecycle_state": "active",
       "physical_outcome_history_refs": [],
+      "pipeline_owned_support_artifacts": {},
       "predecessor_testbed_digest": null,
+      "proof_boundary": {
+        "appearance_is_collision_truth": false,
+        "comparative_policy_ranking_verdict": "thesis_not_supported",
+        "deployment_or_safety_approved": false,
+        "generated_completion_is_observed_truth": false,
+        "simulation_is_physical_success": false
+      },
+      "reconstruction_provenance": [
+        {
+          "cost_usd": 0.0,
+          "method_id": "local-depth-scaffold",
+          "provider_identity": "local",
+          "result_digest": "sha256:640f6fa6d6295acf307984604a958c0b10d9c80bae185354bf8a01673359e3e5",
+          "result_id": "metric-scaffold-1"
+        }
+      ],
+      "reset_contract": {
+        "instructions": "Return the item to the table marker."
+      },
       "robot_sensor_controller_bindings": {
         "controller_action_representation": {
-          "type": "joint_position"
+          "controller_id": "joint-position-v1"
         },
         "embodiment": {
+          "base_footprint": {
+            "radius_m": 0.4,
+            "shape": "circle"
+          },
+          "end_effector_id": "parallel-gripper-v1",
           "reach_envelope": {
             "maximum_m": 1.0,
             "minimum_m": 0.1
           },
-          "robot_id": "fixture-arm"
+          "robot_id": "fixture-arm",
+          "version": "1"
         },
+        "robot_binding_digest": "sha256:d0622ddcd4b5ca969a71f1d0c39be2138b67f8660186d37a0be82e96d906f736",
         "selected_robot_placement": {
+          "access_path_clear": true,
+          "approach_direction_score": 0.8,
           "base_position_site_m": [
             0.0,
             0.0,
             0.0
           ],
+          "cable_controller_score": 0.8,
           "calibration_uncertainty_m": 0.01,
           "candidate_id": "base-1",
           "captured_coverage": 0.95,
-          "method_qualification_status": "analytic_only"
+          "collision_free": true,
+          "evidence_digests": [
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ],
+          "floor_support_valid": true,
+          "footprint_clear": true,
+          "human_clearance_valid": true,
+          "manipulability_score": 0.8,
+          "method_qualification_status": "qualified",
+          "reachability_score": 0.9,
+          "reset_feasible": true,
+          "score": 0.832333333,
+          "sensor_visibility_score": 0.8,
+          "site_from_robot_base": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "stability_score": 0.9
         },
+        "selected_robot_placement_id": "base-1",
         "sensors": {
           "camera": "rgb-v1"
         }
       },
       "schema_version": "maintained_site_task_testbed.v1",
+      "semantic_object_inventory": [],
       "source_capture_bundles": [
         {
-          "bundle_id": "capture-1",
+          "bundle_id": "intake-1",
           "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "version": "3"
+          "envelope_digest": "sha256:71e3552c91bfb64686ff14e175e889222ca324ed885c5765efea5f27c5e1d379",
+          "qa_report_digest": "sha256:b507dbf640cd2bbb8a8bb9f995653c95709c41402c6df09e2c0a918966b043e4",
+          "version": "iphone_arkit_lidar"
         }
       ],
       "supersedes": [],
       "supported_condition_ranges": {
         "lighting_lux": [
-          300,
-          600
-        ]
+          300.0,
+          600.0
+        ],
+        "source_note": {
+          "z": "development_only 🦾",
+          "é": "observed µ"
+        }
       },
       "target_regions": [
         {
           "captured_coverage": 0.9,
+          "label": "tote",
           "position_site_m": [
             0.6,
             0.1,
@@ -1035,28 +1290,83 @@
           ],
           "region_id": "tote-1",
           "supporting_frames": [
-            "frame-1"
+            "frame-1",
+            "frame-2"
           ]
         }
       ],
       "task_distribution": {
+        "measurable_success_conditions": [
+          {
+            "metric": "object_center_distance",
+            "operator": "<=",
+            "threshold": 0.05,
+            "units": "m"
+          }
+        ],
         "task_family": "laundry_folding",
         "tasks": [
-          "move-item"
+          "approved-task-1"
         ]
       },
-      "testbed_digest": "sha256:3538c1c61ed6908e0a9fdd164b5bbfa061c259f0faa95425e653e379f24ae1ed",
-      "testbed_id": "local-run-testbed",
+      "task_objects": [
+        {
+          "label": "rigid item",
+          "object_id": "item-1"
+        }
+      ],
+      "testbed_digest": "sha256:b2a791ca9a5c178991d3e06d79615dba00b6c0f682d095937a8453e296cd0b63",
+      "testbed_id": "python-producer-fixture",
       "validation_envelope": {
-        "robot_placement_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        "capture_accepted": true,
+        "capture_authority_profile": "iphone_arkit_lidar",
+        "capture_claim_ceiling": {
+          "calibrated_camera_poses": true,
+          "capture_admitted": true,
+          "collision_geometry": false,
+          "metric_geometry": true,
+          "physical_task_success": false
+        },
+        "generated_regions_are_masked": true,
+        "missing_representations": [],
+        "physical_task_success_established": false,
+        "reconstruction_layers": {
+          "appearance_layer": [],
+          "metric_reference_layer": [
+            {
+              "asset_references": {
+                "metric_scaffold": {
+                  "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "uri": "fixture://scaffold"
+                }
+              },
+              "claim_ceiling": {
+                "collision_geometry": false,
+                "metric_geometry": true,
+                "physical_task_success": false
+              },
+              "generated_regions": [],
+              "output": "metric_reference_layer",
+              "result_digest": "sha256:640f6fa6d6295acf307984604a958c0b10d9c80bae185354bf8a01673359e3e5",
+              "result_id": "metric-scaffold-1"
+            }
+          ],
+          "physics_layer": [],
+          "semantic_layer": []
+        },
+        "reconstruction_plan_digest": "sha256:92a0877ca42ca64f3120745040b9a00efe282c7d3e8756061bb9d73a936792f5",
+        "robot_placement_digest": "sha256:924e958767526d735d1423df63e0ec2b8535a5c3e89d845201e6015b3408eafe",
+        "semantic_evidence": {
+          "status": "not_supplied"
+        },
+        "simready_decision_digest": "sha256:77e632b9837fdc73d62f60b58745ec5535596481e9a35f7389e8e502ce46334f"
       },
       "version": "1"
     },
     "decision_evidence_request": {
       "available_physical_evidence": [],
       "budget": {
-        "max_cost_usd": 0.0,
-        "max_latency_seconds": 10.0
+        "max_cost_usd": 0.0
       },
       "candidates": [
         {
@@ -1066,13 +1376,13 @@
       "claims": [
         {
           "acceptable_false_safe_risk": 0.05,
-          "claim_id": "reach-tote",
+          "claim_id": "reach",
           "claim_type": "reachability",
           "controller_action_representation": {
             "type": "joint_position"
           },
           "desired_confidence_or_coverage": {
-            "minimum_coverage": 0.8,
+            "minimum_coverage": 0.9,
             "minimum_independent_methods": 1
           },
           "embodiment": {
@@ -1080,8 +1390,9 @@
           },
           "false_safe_consequence": "moderate",
           "measurable_threshold": {
-            "operator": "inside",
-            "units": "m"
+            "operator": ">=",
+            "units": "fraction",
+            "value": 0.9
           },
           "permitted_abstention_behavior": {
             "allowed": true
@@ -1095,50 +1406,60 @@
               600
             ]
           },
-          "subject": "tote-1",
-          "task_family": "rigid_object_pick_place"
+          "subject": "fixture-arm:item-1:tote-1",
+          "task_family": "laundry_folding"
         }
       ],
       "deadline": "2026-07-30T00:00:00Z",
-      "decision_id": "decision-local-1",
-      "decision_question": "Can the exact robot analytically reach the tote region?",
-      "idempotency_key": "request-local-1",
+      "decision_id": "decision-sync-1",
+      "decision_question": "Which claims are supported for: Move the rigid item from the table into the tote.",
+      "idempotency_key": "request-sync-1",
       "permitted_evidence_methods": [
         "analytic_geometry_kinematics"
       ],
       "provenance": {
-        "caller_identity": "customer-approved-task"
+        "approval_decision_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "approved_task_digest": "sha256:b3cdd9bcfb1cc63e249d4feecf6367cac5dccde17ca6971e84dcc3bba509affb",
+        "approved_task_id": "approved-task-1",
+        "caller_identity": "pipeline:testbed-compiler",
+        "source_capture_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
-      "request_digest": "sha256:b468072f7ebd1963b595f4505f8cbf464446f97f3b5dcc18560607ff60d013ce",
-      "request_id": "request-local-1",
+      "request_digest": "sha256:45a727d264185e542aa00f9863e1a1c1c3cb21dfd45ba08b89348f92dca55778",
+      "request_id": "request-sync-1",
       "requested_result_audience": "design_partner",
       "restrictions": {
-        "external_processing_allowed": false
+        "external_processing_allowed": false,
+        "prohibited_evaluator_identities": []
       },
       "schema_version": "decision_evidence_request.v1",
-      "testbed_digest": "sha256:3538c1c61ed6908e0a9fdd164b5bbfa061c259f0faa95425e653e379f24ae1ed",
-      "testbed_id": "local-run-testbed",
+      "testbed_digest": "sha256:b2a791ca9a5c178991d3e06d79615dba00b6c0f682d095937a8453e296cd0b63",
+      "testbed_id": "python-producer-fixture",
       "testbed_version": "1"
     },
-    "approved_task_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "capture_session_id": "walkthrough-job-1",
-    "intake_id": "capture-1",
-    "testbed_canonical_json": "{\"approved_task_definition\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":\"owner_approved\"},\"artifact_references\":{\"eval_cards\":[{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"uri\":\"fixture://eval\"}],\"evaluator\":{\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"uri\":\"fixture://evaluator\"},\"reset\":{\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"uri\":\"fixture://reset\"},\"scenario_cards\":[{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"uri\":\"fixture://scenario\"}],\"site_card\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"uri\":\"fixture://site\"},\"task_cards\":[{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"uri\":\"fixture://task\"}]},\"evidence_inventory\":[{\"evidence_id\":\"metric_geometry\"}],\"governance\":{\"allowed_uses\":[\"evaluation\"],\"consent\":\"accepted\",\"privacy\":\"cleared\",\"revocation\":\"version_invalidates_on_revocation\",\"rights\":\"accepted\"},\"invalidation_triggers\":[\"layout_change\"],\"known_unsupported_conditions\":[\"physical_task_success\"],\"lifecycle_state\":\"active\",\"physical_outcome_history_refs\":[],\"predecessor_testbed_digest\":null,\"robot_sensor_controller_bindings\":{\"controller_action_representation\":{\"type\":\"joint_position\"},\"embodiment\":{\"reach_envelope\":{\"maximum_m\":1.0,\"minimum_m\":0.1},\"robot_id\":\"fixture-arm\"},\"selected_robot_placement\":{\"base_position_site_m\":[0.0,0.0,0.0],\"calibration_uncertainty_m\":0.01,\"candidate_id\":\"base-1\",\"captured_coverage\":0.95,\"method_qualification_status\":\"analytic_only\"},\"sensors\":{\"camera\":\"rgb-v1\"}},\"schema_version\":\"maintained_site_task_testbed.v1\",\"source_capture_bundles\":[{\"bundle_id\":\"capture-1\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"3\"}],\"supersedes\":[],\"supported_condition_ranges\":{\"lighting_lux\":[300,600]},\"target_regions\":[{\"captured_coverage\":0.9,\"position_site_m\":[0.6,0.1,0.7],\"region_id\":\"tote-1\",\"supporting_frames\":[\"frame-1\"]}],\"task_distribution\":{\"task_family\":\"laundry_folding\",\"tasks\":[\"move-item\"]},\"testbed_id\":\"local-run-testbed\",\"validation_envelope\":{\"robot_placement_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"version\":\"1\"}",
-    "decision_request_canonical_json": "{\"available_physical_evidence\":[],\"budget\":{\"max_cost_usd\":0.0,\"max_latency_seconds\":10.0},\"candidates\":[{\"robot_id\":\"fixture-arm\"}],\"claims\":[{\"acceptable_false_safe_risk\":0.05,\"claim_id\":\"reach-tote\",\"claim_type\":\"reachability\",\"controller_action_representation\":{\"type\":\"joint_position\"},\"desired_confidence_or_coverage\":{\"minimum_coverage\":0.8,\"minimum_independent_methods\":1},\"embodiment\":{\"robot_id\":\"fixture-arm\"},\"false_safe_consequence\":\"moderate\",\"measurable_threshold\":{\"operator\":\"inside\",\"units\":\"m\"},\"permitted_abstention_behavior\":{\"allowed\":true},\"sensors\":{\"camera\":\"rgb-v1\"},\"site_domain_conditions\":{\"lighting_lux\":[300,600]},\"subject\":\"tote-1\",\"task_family\":\"rigid_object_pick_place\"}],\"deadline\":\"2026-07-30T00:00:00Z\",\"decision_id\":\"decision-local-1\",\"decision_question\":\"Can the exact robot analytically reach the tote region?\",\"idempotency_key\":\"request-local-1\",\"permitted_evidence_methods\":[\"analytic_geometry_kinematics\"],\"provenance\":{\"caller_identity\":\"customer-approved-task\"},\"request_id\":\"request-local-1\",\"requested_result_audience\":\"design_partner\",\"restrictions\":{\"external_processing_allowed\":false},\"schema_version\":\"decision_evidence_request.v1\",\"testbed_digest\":\"sha256:3538c1c61ed6908e0a9fdd164b5bbfa061c259f0faa95425e653e379f24ae1ed\",\"testbed_id\":\"local-run-testbed\",\"testbed_version\":\"1\"}",
-    "compiled_card_canonical_json": null,
+    "approved_task_digest": "sha256:b3cdd9bcfb1cc63e249d4feecf6367cac5dccde17ca6971e84dcc3bba509affb",
+    "capture_session_id": "capture-python-fixture",
+    "intake_id": "intake-1",
+    "testbed_canonical_json": "{\"approved_task_definition\":{\"approval_decision_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"approved_task_id\":\"approved-task-1\",\"digest\":\"sha256:b3cdd9bcfb1cc63e249d4feecf6367cac5dccde17ca6971e84dcc3bba509affb\"},\"artifact_references\":{\"eval_cards\":[{\"digest\":\"sha256:76f87f51d81c2b46ddd4d75c9e5c8cef8fde4690af34b0c9b25d7aa0be26b5a6\",\"uri\":\"testbed://python-producer-fixture/1/eval_card_1.json\"}],\"evaluator\":{\"digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"uri\":\"fixture://evaluator\"},\"reset\":{\"digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"uri\":\"fixture://reset\"},\"scenario_cards\":[{\"digest\":\"sha256:4d8360b8870a79b43246b09278cde2153ca47399a36dcfebd0fb28d3ddb129f2\",\"uri\":\"testbed://python-producer-fixture/1/scenario_card_1.json\"}],\"site_card\":{\"digest\":\"sha256:48f504e4ba97ddb213718d4edbfafa478392dd243343906173c8eba110cd9f25\",\"uri\":\"testbed://python-producer-fixture/1/site_card_1.json\"},\"task_cards\":[{\"digest\":\"sha256:249fea0273434d7f5309f09e899e245de2b2589b466ce1cb12a4e7a303177cd2\",\"uri\":\"testbed://python-producer-fixture/1/task_card_1.json\"}]},\"compiled_cards\":{\"eval_cards\":[{\"card_digest\":\"sha256:76f87f51d81c2b46ddd4d75c9e5c8cef8fde4690af34b0c9b25d7aa0be26b5a6\",\"claim_boundary\":\"evaluation_definition_not_evidence_result\",\"comparative_policy_ranking_verdict\":\"thesis_not_supported\",\"decision_evidence_request_compiled\":false,\"eval_card_id\":\"eval-card:python-producer-fixture:1:base\",\"measurable_success_conditions\":[{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":0.05,\"units\":\"m\"}],\"prohibited_claims\":[\"physical_task_success\",\"deployment_readiness\",\"safety_certification\",\"general_policy_ranking_validity\"],\"requested_claim_types\":[\"reachability\"],\"scenario_card_id\":\"scenario-card:python-producer-fixture:1:base\",\"schema_version\":\"site_task_testbed_eval_card.v1\",\"task_card_id\":\"task-card:approved-task-1\"}],\"scenario_cards\":[{\"card_digest\":\"sha256:4d8360b8870a79b43246b09278cde2153ca47399a36dcfebd0fb28d3ddb129f2\",\"claim_boundary\":\"scenario_scope_not_simulator_or_physical_outcome\",\"reset_contract\":{\"instructions\":\"Return the item to the table marker.\"},\"robot_binding_digest\":\"sha256:d0622ddcd4b5ca969a71f1d0c39be2138b67f8660186d37a0be82e96d906f736\",\"scenario_card_id\":\"scenario-card:python-producer-fixture:1:base\",\"schema_version\":\"site_task_testbed_scenario_card.v1\",\"selected_robot_placement_id\":\"base-1\",\"supported_condition_ranges\":{\"lighting_lux\":[300.0,600.0],\"source_note\":{\"z\":\"development_only 🦾\",\"é\":\"observed µ\"}},\"task_card_id\":\"task-card:approved-task-1\"}],\"site_card\":{\"card_digest\":\"sha256:48f504e4ba97ddb213718d4edbfafa478392dd243343906173c8eba110cd9f25\",\"claim_boundary\":\"capture_backed_site_scope_not_physical_or_safety_proof\",\"claim_ceiling\":{\"calibrated_camera_poses\":true,\"capture_admitted\":true,\"collision_geometry\":false,\"metric_geometry\":true,\"physical_task_success\":false},\"schema_version\":\"site_task_testbed_site_card.v1\",\"site_card_id\":\"site-card:python-producer-fixture:1\",\"site_id\":\"site-1\",\"source_capture\":{\"capture_authority_profile\":\"iphone_arkit_lidar\",\"capture_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"envelope_digest\":\"sha256:71e3552c91bfb64686ff14e175e889222ca324ed885c5765efea5f27c5e1d379\",\"intake_id\":\"intake-1\",\"qa_report_digest\":\"sha256:b507dbf640cd2bbb8a8bb9f995653c95709c41402c6df09e2c0a918966b043e4\"},\"supported_condition_ranges\":{\"lighting_lux\":[300.0,600.0],\"source_note\":{\"z\":\"development_only 🦾\",\"é\":\"observed µ\"}}},\"task_cards\":[{\"approved_task_digest\":\"sha256:b3cdd9bcfb1cc63e249d4feecf6367cac5dccde17ca6971e84dcc3bba509affb\",\"approved_task_id\":\"approved-task-1\",\"card_digest\":\"sha256:249fea0273434d7f5309f09e899e245de2b2589b466ce1cb12a4e7a303177cd2\",\"claim_boundary\":\"approved_intent_and_evaluation_scope_not_task_success\",\"description\":\"Move the rigid item from the table into the tote.\",\"measurable_success_conditions\":[{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":0.05,\"units\":\"m\"}],\"prohibited_evaluator_identities\":[],\"required_robot_capabilities\":[\"rigid-object grasp\"],\"reset_contract\":{\"instructions\":\"Return the item to the table marker.\"},\"schema_version\":\"site_task_testbed_task_card.v1\",\"target_regions\":[{\"captured_coverage\":0.9,\"label\":\"tote\",\"position_site_m\":[0.6,0.1,0.7],\"region_id\":\"tote-1\",\"supporting_frames\":[\"frame-1\",\"frame-2\"]}],\"task_card_id\":\"task-card:approved-task-1\",\"task_family\":\"laundry_folding\",\"task_objects\":[{\"label\":\"rigid item\",\"object_id\":\"item-1\"}]}]},\"evidence_inventory\":[{\"digest\":\"sha256:b507dbf640cd2bbb8a8bb9f995653c95709c41402c6df09e2c0a918966b043e4\",\"evidence_id\":\"capture_qa\",\"status\":\"accepted\"},{\"authority\":\"iphone_arkit_lidar\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"evidence_id\":\"raw_capture\",\"raw_capture_authority\":true},{\"claim_ceiling\":{\"collision_geometry\":false,\"metric_geometry\":true,\"physical_task_success\":false},\"digest\":\"sha256:640f6fa6d6295acf307984604a958c0b10d9c80bae185354bf8a01673359e3e5\",\"evidence_id\":\"reconstruction:metric-scaffold-1\",\"outputs\":[\"metric_reference_layer\"]},{\"digest\":\"sha256:924e958767526d735d1423df63e0ec2b8535a5c3e89d845201e6015b3408eafe\",\"evidence_id\":\"robot_placement\",\"status\":\"candidate_selected\"},{\"digest\":\"sha256:77e632b9837fdc73d62f60b58745ec5535596481e9a35f7389e8e502ce46334f\",\"evidence_id\":\"simready_decision\",\"status\":\"complete\"}],\"governance\":{\"allowed_uses\":[\"evaluation\"],\"consent\":\"accepted\",\"privacy\":\"cleared\",\"provider_constraints\":{\"external_processing_allowed\":false},\"retention\":{\"max_days\":30},\"revocation\":{\"historical_tombstone_retained\":true,\"supported\":true},\"rights\":\"accepted\"},\"invalidation_triggers\":[\"capture_revoked\",\"controller_changed\",\"layout_changed\",\"reconstruction_corrected\",\"robot_binding_changed\",\"supported_condition_range_exceeded\",\"task_object_changed\"],\"known_unsupported_conditions\":[\"comparative_policy_ranking:thesis_not_supported\",\"deployment_readiness\",\"general_policy_ranking_validity\",\"physical_task_success\",\"safety_certification\"],\"lifecycle_state\":\"active\",\"physical_outcome_history_refs\":[],\"pipeline_owned_support_artifacts\":{},\"predecessor_testbed_digest\":null,\"proof_boundary\":{\"appearance_is_collision_truth\":false,\"comparative_policy_ranking_verdict\":\"thesis_not_supported\",\"deployment_or_safety_approved\":false,\"generated_completion_is_observed_truth\":false,\"simulation_is_physical_success\":false},\"reconstruction_provenance\":[{\"cost_usd\":0.0,\"method_id\":\"local-depth-scaffold\",\"provider_identity\":\"local\",\"result_digest\":\"sha256:640f6fa6d6295acf307984604a958c0b10d9c80bae185354bf8a01673359e3e5\",\"result_id\":\"metric-scaffold-1\"}],\"reset_contract\":{\"instructions\":\"Return the item to the table marker.\"},\"robot_sensor_controller_bindings\":{\"controller_action_representation\":{\"controller_id\":\"joint-position-v1\"},\"embodiment\":{\"base_footprint\":{\"radius_m\":0.4,\"shape\":\"circle\"},\"end_effector_id\":\"parallel-gripper-v1\",\"reach_envelope\":{\"maximum_m\":1.0,\"minimum_m\":0.1},\"robot_id\":\"fixture-arm\",\"version\":\"1\"},\"robot_binding_digest\":\"sha256:d0622ddcd4b5ca969a71f1d0c39be2138b67f8660186d37a0be82e96d906f736\",\"selected_robot_placement\":{\"access_path_clear\":true,\"approach_direction_score\":0.8,\"base_position_site_m\":[0.0,0.0,0.0],\"cable_controller_score\":0.8,\"calibration_uncertainty_m\":0.01,\"candidate_id\":\"base-1\",\"captured_coverage\":0.95,\"collision_free\":true,\"evidence_digests\":[\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"],\"floor_support_valid\":true,\"footprint_clear\":true,\"human_clearance_valid\":true,\"manipulability_score\":0.8,\"method_qualification_status\":\"qualified\",\"reachability_score\":0.9,\"reset_feasible\":true,\"score\":0.832333333,\"sensor_visibility_score\":0.8,\"site_from_robot_base\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],\"stability_score\":0.9},\"selected_robot_placement_id\":\"base-1\",\"sensors\":{\"camera\":\"rgb-v1\"}},\"schema_version\":\"maintained_site_task_testbed.v1\",\"semantic_object_inventory\":[],\"source_capture_bundles\":[{\"bundle_id\":\"intake-1\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"envelope_digest\":\"sha256:71e3552c91bfb64686ff14e175e889222ca324ed885c5765efea5f27c5e1d379\",\"qa_report_digest\":\"sha256:b507dbf640cd2bbb8a8bb9f995653c95709c41402c6df09e2c0a918966b043e4\",\"version\":\"iphone_arkit_lidar\"}],\"supersedes\":[],\"supported_condition_ranges\":{\"lighting_lux\":[300.0,600.0],\"source_note\":{\"z\":\"development_only 🦾\",\"é\":\"observed µ\"}},\"target_regions\":[{\"captured_coverage\":0.9,\"label\":\"tote\",\"position_site_m\":[0.6,0.1,0.7],\"region_id\":\"tote-1\",\"supporting_frames\":[\"frame-1\",\"frame-2\"]}],\"task_distribution\":{\"measurable_success_conditions\":[{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":0.05,\"units\":\"m\"}],\"task_family\":\"laundry_folding\",\"tasks\":[\"approved-task-1\"]},\"task_objects\":[{\"label\":\"rigid item\",\"object_id\":\"item-1\"}],\"testbed_id\":\"python-producer-fixture\",\"validation_envelope\":{\"capture_accepted\":true,\"capture_authority_profile\":\"iphone_arkit_lidar\",\"capture_claim_ceiling\":{\"calibrated_camera_poses\":true,\"capture_admitted\":true,\"collision_geometry\":false,\"metric_geometry\":true,\"physical_task_success\":false},\"generated_regions_are_masked\":true,\"missing_representations\":[],\"physical_task_success_established\":false,\"reconstruction_layers\":{\"appearance_layer\":[],\"metric_reference_layer\":[{\"asset_references\":{\"metric_scaffold\":{\"digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"uri\":\"fixture://scaffold\"}},\"claim_ceiling\":{\"collision_geometry\":false,\"metric_geometry\":true,\"physical_task_success\":false},\"generated_regions\":[],\"output\":\"metric_reference_layer\",\"result_digest\":\"sha256:640f6fa6d6295acf307984604a958c0b10d9c80bae185354bf8a01673359e3e5\",\"result_id\":\"metric-scaffold-1\"}],\"physics_layer\":[],\"semantic_layer\":[]},\"reconstruction_plan_digest\":\"sha256:92a0877ca42ca64f3120745040b9a00efe282c7d3e8756061bb9d73a936792f5\",\"robot_placement_digest\":\"sha256:924e958767526d735d1423df63e0ec2b8535a5c3e89d845201e6015b3408eafe\",\"semantic_evidence\":{\"status\":\"not_supplied\"},\"simready_decision_digest\":\"sha256:77e632b9837fdc73d62f60b58745ec5535596481e9a35f7389e8e502ce46334f\"},\"version\":\"1\"}",
+    "decision_request_canonical_json": "{\"available_physical_evidence\":[],\"budget\":{\"max_cost_usd\":0.0},\"candidates\":[{\"robot_id\":\"fixture-arm\"}],\"claims\":[{\"acceptable_false_safe_risk\":0.05,\"claim_id\":\"reach\",\"claim_type\":\"reachability\",\"controller_action_representation\":{\"type\":\"joint_position\"},\"desired_confidence_or_coverage\":{\"minimum_coverage\":0.9,\"minimum_independent_methods\":1},\"embodiment\":{\"robot_id\":\"fixture-arm\"},\"false_safe_consequence\":\"moderate\",\"measurable_threshold\":{\"operator\":\">=\",\"units\":\"fraction\",\"value\":0.9},\"permitted_abstention_behavior\":{\"allowed\":true},\"sensors\":{\"camera\":\"rgb-v1\"},\"site_domain_conditions\":{\"lighting_lux\":[300,600]},\"subject\":\"fixture-arm:item-1:tote-1\",\"task_family\":\"laundry_folding\"}],\"deadline\":\"2026-07-30T00:00:00Z\",\"decision_id\":\"decision-sync-1\",\"decision_question\":\"Which claims are supported for: Move the rigid item from the table into the tote.\",\"idempotency_key\":\"request-sync-1\",\"permitted_evidence_methods\":[\"analytic_geometry_kinematics\"],\"provenance\":{\"approval_decision_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"approved_task_digest\":\"sha256:b3cdd9bcfb1cc63e249d4feecf6367cac5dccde17ca6971e84dcc3bba509affb\",\"approved_task_id\":\"approved-task-1\",\"caller_identity\":\"pipeline:testbed-compiler\",\"source_capture_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"request_id\":\"request-sync-1\",\"requested_result_audience\":\"design_partner\",\"restrictions\":{\"external_processing_allowed\":false,\"prohibited_evaluator_identities\":[]},\"schema_version\":\"decision_evidence_request.v1\",\"testbed_digest\":\"sha256:b2a791ca9a5c178991d3e06d79615dba00b6c0f682d095937a8453e296cd0b63\",\"testbed_id\":\"python-producer-fixture\",\"testbed_version\":\"1\"}",
+    "compiled_card_canonical_json": {
+      "sha256:48f504e4ba97ddb213718d4edbfafa478392dd243343906173c8eba110cd9f25": "{\"claim_boundary\":\"capture_backed_site_scope_not_physical_or_safety_proof\",\"claim_ceiling\":{\"calibrated_camera_poses\":true,\"capture_admitted\":true,\"collision_geometry\":false,\"metric_geometry\":true,\"physical_task_success\":false},\"schema_version\":\"site_task_testbed_site_card.v1\",\"site_card_id\":\"site-card:python-producer-fixture:1\",\"site_id\":\"site-1\",\"source_capture\":{\"capture_authority_profile\":\"iphone_arkit_lidar\",\"capture_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"envelope_digest\":\"sha256:71e3552c91bfb64686ff14e175e889222ca324ed885c5765efea5f27c5e1d379\",\"intake_id\":\"intake-1\",\"qa_report_digest\":\"sha256:b507dbf640cd2bbb8a8bb9f995653c95709c41402c6df09e2c0a918966b043e4\"},\"supported_condition_ranges\":{\"lighting_lux\":[300.0,600.0],\"source_note\":{\"z\":\"development_only 🦾\",\"é\":\"observed µ\"}}}",
+      "sha256:249fea0273434d7f5309f09e899e245de2b2589b466ce1cb12a4e7a303177cd2": "{\"approved_task_digest\":\"sha256:b3cdd9bcfb1cc63e249d4feecf6367cac5dccde17ca6971e84dcc3bba509affb\",\"approved_task_id\":\"approved-task-1\",\"claim_boundary\":\"approved_intent_and_evaluation_scope_not_task_success\",\"description\":\"Move the rigid item from the table into the tote.\",\"measurable_success_conditions\":[{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":0.05,\"units\":\"m\"}],\"prohibited_evaluator_identities\":[],\"required_robot_capabilities\":[\"rigid-object grasp\"],\"reset_contract\":{\"instructions\":\"Return the item to the table marker.\"},\"schema_version\":\"site_task_testbed_task_card.v1\",\"target_regions\":[{\"captured_coverage\":0.9,\"label\":\"tote\",\"position_site_m\":[0.6,0.1,0.7],\"region_id\":\"tote-1\",\"supporting_frames\":[\"frame-1\",\"frame-2\"]}],\"task_card_id\":\"task-card:approved-task-1\",\"task_family\":\"laundry_folding\",\"task_objects\":[{\"label\":\"rigid item\",\"object_id\":\"item-1\"}]}",
+      "sha256:4d8360b8870a79b43246b09278cde2153ca47399a36dcfebd0fb28d3ddb129f2": "{\"claim_boundary\":\"scenario_scope_not_simulator_or_physical_outcome\",\"reset_contract\":{\"instructions\":\"Return the item to the table marker.\"},\"robot_binding_digest\":\"sha256:d0622ddcd4b5ca969a71f1d0c39be2138b67f8660186d37a0be82e96d906f736\",\"scenario_card_id\":\"scenario-card:python-producer-fixture:1:base\",\"schema_version\":\"site_task_testbed_scenario_card.v1\",\"selected_robot_placement_id\":\"base-1\",\"supported_condition_ranges\":{\"lighting_lux\":[300.0,600.0],\"source_note\":{\"z\":\"development_only 🦾\",\"é\":\"observed µ\"}},\"task_card_id\":\"task-card:approved-task-1\"}",
+      "sha256:76f87f51d81c2b46ddd4d75c9e5c8cef8fde4690af34b0c9b25d7aa0be26b5a6": "{\"claim_boundary\":\"evaluation_definition_not_evidence_result\",\"comparative_policy_ranking_verdict\":\"thesis_not_supported\",\"decision_evidence_request_compiled\":false,\"eval_card_id\":\"eval-card:python-producer-fixture:1:base\",\"measurable_success_conditions\":[{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":0.05,\"units\":\"m\"}],\"prohibited_claims\":[\"physical_task_success\",\"deployment_readiness\",\"safety_certification\",\"general_policy_ranking_validity\"],\"requested_claim_types\":[\"reachability\"],\"scenario_card_id\":\"scenario-card:python-producer-fixture:1:base\",\"schema_version\":\"site_task_testbed_eval_card.v1\",\"task_card_id\":\"task-card:approved-task-1\"}"
+    },
     "requested_by": {
       "uid": "operator-1"
     },
     "idempotency_key": "question-gap",
-    "request_digest": "sha256:a45aa841abdc43442b4a9115746cb4e53b4b08bf1dcfe7b7d29857fc44f4b01e"
+    "request_digest": "sha256:a3778d3fac56101b4dc7f89b7c4ddcd163ea615d10c6317c5f55c88d2dfef762"
   },
   "capability_gap_publication": {
     "schema_version": "job_evidence_publication.v1",
     "request_id": "job-question-gap",
     "job_id": "job-1",
     "brief_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "request_digest": "sha256:a45aa841abdc43442b4a9115746cb4e53b4b08bf1dcfe7b7d29857fc44f4b01e",
-    "question": "Can the exact robot analytically reach the tote region?",
+    "request_digest": "sha256:a3778d3fac56101b4dc7f89b7c4ddcd163ea615d10c6317c5f55c88d2dfef762",
+    "question": "Which claims are supported for: Move the rigid item from the table into the tote.",
     "state": "blocked",
     "summary": "This task is recorded, but Blueprint cannot yet simulate and score this kind of work.",
     "next_action": "Keep the video and brief. Blueprint can add the missing task adapter and scorer, or assess delivery options without a simulated comparison.",
@@ -1146,9 +1467,9 @@
       "Capability gap for task family 'laundry_folding': No supported task profile compiles and independently scores this task family yet. Missing: native_task_runtime_adapter, independent_task_scorer, reset_contract."
     ],
     "run_id": null,
-    "approved_task_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "decision_request_digest": "sha256:b468072f7ebd1963b595f4505f8cbf464446f97f3b5dcc18560607ff60d013ce",
-    "testbed_digest": "sha256:3538c1c61ed6908e0a9fdd164b5bbfa061c259f0faa95425e653e379f24ae1ed",
+    "approved_task_digest": "sha256:b3cdd9bcfb1cc63e249d4feecf6367cac5dccde17ca6971e84dcc3bba509affb",
+    "decision_request_digest": "sha256:45a727d264185e542aa00f9863e1a1c1c3cb21dfd45ba08b89348f92dca55778",
+    "testbed_digest": "sha256:b2a791ca9a5c178991d3e06d79615dba00b6c0f682d095937a8453e296cd0b63",
     "plan_digest": null,
     "evidence_plan": null,
     "decision_envelope": null,
@@ -1156,6 +1477,6 @@
     "decision_envelope_canonical_json": null,
     "authorization_candidates": [],
     "sequence": 1,
-    "publication_digest": "sha256:8b11c10ecf88109b54c97c8eed6d8056d8fb87a4b352f76373d10d11910ab7f1"
+    "publication_digest": "sha256:2d12472f11d465612a2ec294a786a3b8dea49534e20b902d001e0bd78b192f20"
   }
 }
