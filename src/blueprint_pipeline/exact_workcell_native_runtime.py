@@ -15,8 +15,10 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .exact_workcell_variation_matrix import (
+    DEFAULT_CELL_COUNT,
     ExactWorkcellVariationError,
     compile_variation_matrix,
+    validate_variation_request,
 )
 from .exact_workcell_variation_runtime import compile_isaac_lab_event_plan
 from .native_task_runtime_contract import _scenario_parameter_rows
@@ -25,6 +27,69 @@ from .native_task_runtime_contract import _scenario_parameter_rows
 def native_runtime_embodiment_digest(scene_plan: Mapping[str, Any]) -> str:
     """Identity of the native robot, sensor placement and controller cadence."""
     return canonical_digest({name: scene_plan[name] for name in ("robot", "cameras", "cadence")})
+
+
+def build_native_site_task_variation_request(
+    *, source_scene_plan: Mapping[str, Any], source_plan_digest: str,
+    matrix_id: str, implementation_commit: str, seed_root: int,
+    scene_binding: Mapping[str, Any], task_binding: Mapping[str, Any],
+    embodiment_binding: Mapping[str, Any], nominal_dynamic_friction: float | None = None,
+    cell_count: int = DEFAULT_CELL_COUNT,
+) -> tuple[dict[str, Any], list[str]]:
+    """Derive native cells from the actual source pose, not an origin fixture.
+
+    The existing site-task generator declares bounded *deltas*. Native scene
+    setters consume absolute target values. This adapter performs that explicit
+    conversion using the immutable source plan's metric poses/calibration. It
+    preserves measured authority digests, bounds and tolerances, and never
+    invents a friction nominal. The source plan's canonical anchor is preflighted
+    through the same native setters before this request is returned.
+    """
+    from .native_task_arena_scene_plan import _yaw_degrees_xyzw
+    from .site_task_variation_request import build_site_task_variation_request
+
+    if (source_scene_plan.get("schema_version") != "native_task_arena_scene_plan.v1"
+            or source_scene_plan.get("plan_digest") != source_plan_digest
+            or source_plan_digest != canonical_digest(source_scene_plan, digest_field="plan_digest")):
+        raise ExactWorkcellVariationError(["native_exact_workcell_source_plan_digest_mismatch"])
+    subjects = [row for row in source_scene_plan.get("objects", []) if row.get("task_subject") is True]
+    cameras = [row for row in source_scene_plan.get("cameras", []) if row.get("role") == "external"]
+    if len(subjects) != 1 or len(cameras) != 1:
+        raise ExactWorkcellVariationError(["native_exact_workcell_source_target_ambiguous"])
+    try:
+        pose = subjects[0]["pose_world"]
+        nominal_by_target = {
+            "EventManager.reset.object_start_position_m.y": float(pose["position_world_m"][1]),
+            "EventManager.reset.object_orientation.yaw": _yaw_degrees_xyzw(pose["orientation_xyzw"]),
+            "EventManager.reset.external_camera.pose.position.x": float(cameras[0]["frame_from_camera_matrix"][3]),
+        }
+        if not all(math.isfinite(value) for value in nominal_by_target.values()):
+            raise ValueError("nonfinite")
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise ExactWorkcellVariationError(["native_exact_workcell_source_nominal_unavailable"]) from exc
+    request, omitted = build_site_task_variation_request(
+        matrix_id=matrix_id, implementation_commit=implementation_commit, seed_root=seed_root,
+        task_spec=source_scene_plan["task_spec"], scene_binding=scene_binding,
+        task_binding=task_binding, embodiment_binding=embodiment_binding,
+        nominal_dynamic_friction=nominal_dynamic_friction, cell_count=cell_count,
+    )
+    for dimension in request["variation_dimensions"]:
+        target = dimension["application_target"]
+        if target not in nominal_by_target:
+            continue
+        if dimension["nominal"] != 0.0:
+            raise ExactWorkcellVariationError(["native_exact_workcell_generator_delta_semantics_changed"])
+        actual_nominal = nominal_by_target[target]
+        for field in ("nominal", "minimum", "maximum"):
+            dimension[field] = round(actual_nominal + dimension[field], dimension["decimals"])
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request = validate_variation_request(request)
+    matrix = compile_variation_matrix(request)
+    prepare_native_runtime_cell(
+        matrix=matrix, request=request, cell_id=matrix["canonical_anchor_cell_id"],
+        source_scene_plan=source_scene_plan, source_plan_digest=source_plan_digest,
+    )
+    return request, omitted
 
 
 def _cell(matrix: Mapping[str, Any], request: Mapping[str, Any], cell_id: str) -> dict[str, Any]:

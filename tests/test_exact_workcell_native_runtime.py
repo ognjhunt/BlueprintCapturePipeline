@@ -13,6 +13,7 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.exact_workcell_native_runtime import (
+    build_native_site_task_variation_request,
     native_cell_parameter_bindings,
     native_runtime_embodiment_digest,
     prepare_native_runtime_cell,
@@ -39,6 +40,8 @@ def _fixture(*, site="site-a", y=0.4):
             1., 0., 0., 1.2, 0., 1., 0., 0., 0., 0., 1., 1., 0., 0., 0., 1.,
         ]} for role in ("external", "wrist")],
         "task_spec": {"start_pose_world": [*pose["position_world_m"], *pose["orientation_xyzw"]],
+                      "destination_position_bounds_world_m": {"minimum": [.5, y - .01, .8], "maximum": [.6, y + .01, .8]},
+                      "destination_orientation_tolerance_rad": .2,
                       "task_success_contract": {"contract_digest": "sha256:" + "6" * 64}},
         "scenario": {"context_kind": "construction_canary", "parameter_applications": []},
     }
@@ -174,3 +177,42 @@ def test_native_adapter_does_not_guess_units_or_articulated_link(target, unit, c
     matrix = compile_variation_matrix(request)
     with pytest.raises(ExactWorkcellVariationError, match=code):
         native_cell_parameter_bindings(matrix=matrix, request=request, cell_id=matrix["cells"][0]["cell_id"])
+
+
+@pytest.mark.parametrize("site,y", [("site-a", .4), ("site-b", 1.7)])
+def test_source_aware_generator_binds_absolute_native_values_for_another_site(site, y):
+    original, _, source = _fixture(site=site, y=y)
+    request, omitted = build_native_site_task_variation_request(
+        source_scene_plan=source, source_plan_digest=source["plan_digest"], matrix_id=site + ".generated",
+        implementation_commit="a" * 40, seed_root=17, scene_binding=original["scene_binding"],
+        task_binding=original["task_binding"], embodiment_binding=original["embodiment_binding"],
+    )
+    dimensions = {row["application_target"]: row for row in request["variation_dimensions"]}
+    start = dimensions["EventManager.reset.object_start_position_m.y"]
+    camera = dimensions["EventManager.reset.external_camera.pose.position.x"]
+    assert start["nominal"] == y
+    assert start["minimum"] == pytest.approx(y - .03)
+    assert start["maximum"] == pytest.approx(y + .03)
+    assert camera["nominal"] == 1.2
+    assert camera["minimum"] == 1.18
+    assert camera["maximum"] == 1.22
+    assert "dynamic_friction:no_measured_nominal" in omitted
+    matrix = compile_variation_matrix(request)
+    for cell in (matrix["cells"][0], matrix["cells"][1], matrix["cells"][-1]):
+        plan = prepare_native_runtime_cell(matrix=matrix, request=request, cell_id=cell["cell_id"],
+                                           source_scene_plan=source, source_plan_digest=source["plan_digest"])
+        assert plan["objects"][0]["pose_world"]["position_world_m"][1] == pytest.approx(cell["resolved_values"]["object_start_y_delta"])
+        assert plan["scenario"]["seed"] == cell["seed"]
+
+
+def test_source_aware_generator_does_not_guess_a_missing_pose_or_use_stale_calibration():
+    original, _, source = _fixture()
+    arguments = dict(matrix_id="site-a.generated", implementation_commit="a" * 40, seed_root=17,
+                     scene_binding=original["scene_binding"], task_binding=original["task_binding"],
+                     embodiment_binding=original["embodiment_binding"])
+    source["cameras"][0]["frame_from_camera_matrix"][3] += .1
+    with pytest.raises(ExactWorkcellVariationError, match="source_plan_digest_mismatch"):
+        build_native_site_task_variation_request(source_scene_plan=source, source_plan_digest=source["plan_digest"], **arguments)
+    source["plan_digest"] = canonical_digest(source, digest_field="plan_digest")
+    with pytest.raises(ExactWorkcellVariationError, match="embodiment_mismatch"):
+        build_native_site_task_variation_request(source_scene_plan=source, source_plan_digest=source["plan_digest"], **arguments)

@@ -133,6 +133,15 @@ bind the source robot, cameras and cadence in the request. Unavailable targets,
 categorical targets and articulated link friction without an exact selector
 remain blocked.
 
+For a new native site, `build_native_site_task_variation_request` reuses the
+existing site-task bound generator and explicitly converts its bounded offsets
+to absolute values using that immutable source plan's object pose and camera
+calibration. It preflights the canonical anchor through the same native setters.
+The old delta-shaped request is not passed directly to absolute native targets;
+nonzero site coordinates require no site-specific source edits. A missing
+friction measurement remains omitted, and changed source calibration requires
+new matching source/configuration identities.
+
 After building and resetting that prepared plan, `read_native_runtime_cell`
 uses the existing native readback adapter and returns the digest-bound
 `exact_workcell_reset_application.v1` consumed by the collector. The caller must
