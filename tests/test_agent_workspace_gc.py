@@ -41,7 +41,11 @@ def _age(path: Path, days: float = 30.0) -> None:
     stamp = time.time() - days * 86400.0
     for dirpath, dirnames, filenames in os.walk(path, topdown=False, followlinks=False):
         for name in filenames + dirnames:
-            os.utime(Path(dirpath) / name, (stamp, stamp), follow_symlinks=False)
+            try:
+                os.utime(Path(dirpath) / name, (stamp, stamp), follow_symlinks=False)
+            except FileNotFoundError:
+                # Temporary Git files can vanish after os.walk snapshots a directory.
+                continue
     os.utime(path, (stamp, stamp), follow_symlinks=False)
 
 
