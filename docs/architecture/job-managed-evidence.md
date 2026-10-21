@@ -92,9 +92,12 @@ must be recorded from actual partners before projection as their proposals.
 family against explicit task, embodiment and policy profiles built from the
 existing registries. A supported profile returns complete configurations
 (robot, tool, observation/action schema, controller, runtime, adapter and
-pinned policy identity). A family without a native adapter and independent
-scorer is published as `blocked` with its exact capability gap and no run is
-planned; the job keeps its video and brief. Unavailable robots (G1 pending a
+pinned policy identity). Missing native coverage remains an explicit capability
+limitation while the existing evidence router may still plan a bounded question
+using an independently qualified analytical or other permitted method. Without
+a qualified method, it plans abstention rather than inventing a result. This
+does not admit native policy execution for that task; the job keeps its video
+and brief. Unavailable robots (G1 pending a
 verified episode and reviewed terms; Atlas, not accessible) and non-runnable
 policies stay listed with their reasons. A new site on a supported profile
 needs only data; a new task family or embodiment needs its adapter,

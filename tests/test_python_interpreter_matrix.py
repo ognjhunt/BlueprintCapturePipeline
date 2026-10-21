@@ -32,7 +32,7 @@ def test_python_interpreter_matrix_marks_python_313_noncanonical() -> None:
     )
 
     assert matrix["canonical_launch_evidence_python"] == "3.12"
-    assert matrix["package_requires_python"] == ">=3.10,<3.13"
+    assert matrix["package_requires_python"] == ">=3.11,<3.13"
     assert "3.13" not in matrix["package_supported_python"]
     assert matrix["non_canonical_launch_evidence_python"][0]["python_version"] == "3.13"
 
@@ -43,7 +43,7 @@ def test_every_advertised_python_has_a_compatibility_lane() -> None:
         (root / "docs" / "CI_PYTHON_INTERPRETER_MATRIX.json").read_text(encoding="utf-8")
     )
 
-    assert matrix["package_supported_python"] == ["3.10", "3.11", "3.12"]
+    assert matrix["package_supported_python"] == ["3.11", "3.12"]
     assert matrix["compatibility_ci"]["python_versions"] == matrix["package_supported_python"]
     assert matrix["compatibility_ci"]["evidence_role"].endswith(
         "not canonical launch evidence"

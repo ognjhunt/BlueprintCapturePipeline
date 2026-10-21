@@ -1,0 +1,6 @@
+# Security-only updates for the existing shared intake interpreter.
+# The complete resolved dependency graph remains canonical in uv.lock.
+certifi==2026.10.19 \
+    --hash=sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b
+pillow==13.0.0 \
+    --hash=sha256:42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca

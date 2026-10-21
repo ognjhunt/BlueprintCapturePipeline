@@ -254,6 +254,12 @@ class JobEvidenceStore:
     ) -> dict[str, Any]:
         root = self._root(request["request_id"])
         plan = dict(preparation["evidence_plan"]) if preparation else None
+        # Native execution coverage is a limitation, not authority over other
+        # evidence methods. Their reviewed scope remains the router's input.
+        if request.get("testbed"):
+            routing = route_job_capabilities(testbed_task_family(request["testbed"]))
+            if routing["status"] == "capability_gap":
+                limitations = list(dict.fromkeys([*limitations, *routing_limitations(routing)]))
         publication = {
             "schema_version": PUBLICATION_SCHEMA,
             "request_id": request["request_id"], "job_id": request["job_id"],
@@ -310,16 +316,6 @@ class JobEvidenceStore:
                     summary="The question is recorded; no evaluation has been created.",
                     next_action="Agree the decision-relevant task, candidate and acceptance criteria. Reuse permitted evidence where sufficient; collect only the missing observations needed for the question.",
                     limitations=[*limitations, "No scoped scientific request or qualified testbed is attached."],
-                )
-            # Route by declared task family before planning: work without a
-            # native adapter and scorer keeps its record and names the gap.
-            routing = route_job_capabilities(testbed_task_family(request["testbed"]))
-            if routing["status"] == "capability_gap":
-                return self._publish(
-                    request, state="blocked",
-                    summary="This task is recorded, but Blueprint cannot yet simulate and score this kind of work.",
-                    next_action="Keep the video and brief. Blueprint can add the missing task adapter and scorer, or assess delivery options without a simulated comparison.",
-                    limitations=[*limitations, *routing_limitations(routing)],
                 )
             try:
                 catalog = load_task_evaluation_method_catalog()
@@ -399,7 +395,7 @@ class JobEvidenceStore:
                 raise JobEvidenceError("job_evidence_cancelled")
             preparation_path = self._root(request_id) / "preparation.json"
             if not preparation_path.is_file():
-                # Unbound questions and capability gaps never planned a run.
+                # Unbound questions and unavailable planning never planned a run.
                 raise JobEvidenceError("job_evidence_not_executable")
             preparation = _read(preparation_path)
             candidates = preparation["authorization_candidates"]

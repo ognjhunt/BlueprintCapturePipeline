@@ -134,17 +134,21 @@ The owner requested code and release preparation with verified changes held
 ready for release. During verification, GitHub externally merged WebApp #1079
 as `ec9157917514ad883211a83a722254b56a08c1f1`, Capture #91 as
 `7b7fc6e06682d5f1ef5b21ced9bec057b0a4189a`, and Pipeline #2738 as
-`2c0ac160735d1d012ab4a66ad53478a19ec6bcb9`. This companion Pipeline change
-preserves that main's capability routing and prepares matching generated-doctrine
-and exact producer-fixture follow-ups. Pipeline #2737 and Capture #90 are
-historical.
+`2c0ac160735d1d012ab4a66ad53478a19ec6bcb9`. Pipeline main subsequently advanced
+through #2739 to `1c36a6bcace391da52766f50bb88877f82c95eb2`. This companion
+change preserves its recovery, dependency-security and qualified-method routing
+changes, along with matching generated-doctrine and producer-fixture follow-ups.
+Pipeline #2737 and Capture #90 are historical. The retained blocked capability
+gap wire example is historical; fresh requests use the evidence router and may
+answer a qualified bounded question or abstain without native task execution.
 
-The 17:57 UTC readback still reports WebApp and worker source
-`36659ae77575bab86a0ee6bf492f43eb8db835a7`; the last observed Pipeline runtime
-is `b86b78ab83f217fe4fca2bf135e290b7b8aebe56`. A repository merge does not
-establish deployment. This task performed no pull-request merge, production
-deployment, video-processing activation, execution-hold release or fresh policy
-run.
+The 18:31 UTC readback reports an external WebApp and worker deployment of
+`dcfb21e3550821561e0f6958c6c02ee51cc9f638` (the later cancellation-handshake
+merge #1084). Video analysis is still disabled and worker Gemini readiness is
+false. The last observed Pipeline runtime is
+`b86b78ab83f217fe4fca2bf135e290b7b8aebe56`. Repository and deployment receipts
+remain separate. This task performed no pull-request merge, production deployment,
+video-processing activation, execution-hold release or fresh policy run.
 
 For a later authorized release, deploy the compatible WebApp consumer and
 verify its exact `taskEvaluationPolicyRuns` job/time index is READY before

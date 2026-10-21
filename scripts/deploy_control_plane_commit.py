@@ -4522,6 +4522,74 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str, 
             os.close(fd)
 
 
+def _synchronize_shared_control_plane_dependencies(*, release_path: str | Path) -> dict[str, Any]:
+    """Apply only the two security updates to intake's caller interpreter.
+
+    The protected SDK is prepared separately. Intake without a retirement policy
+    still executes this shared interpreter, so changing uv.lock alone leaves its
+    image decoder and trust store unchanged. Never install as root or resolve a
+    second dependency graph here.
+    """
+    requirements = Path(release_path) / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    error = "deploy_shared_runtime_dependency_sync_failed"
+    try:
+        raw = requirements.read_bytes()
+        content = "\n".join(line.strip() for line in raw.decode("utf-8").splitlines()
+                            if line.strip() and not line.lstrip().startswith("#"))
+        pattern = r"([A-Za-z0-9_.-]+)==([^\s]+) \\\n--hash=sha256:[a-f0-9]{64}"
+        entries = re.findall(pattern, content)
+        pins = dict(entries)
+        if (set(pins) != {"certifi", "pillow"} or len(entries) != 2 or len(raw) > 65536
+                or re.sub(pattern, "", content).strip()):
+            raise ValueError("invalid shared runtime security manifest")
+        python = str(Path(sys.executable).absolute())
+        prefix = ["/usr/sbin/runuser", "-u", DEFAULT_SERVICE_ACCOUNT, "--", python, "-I"]
+        environment = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
+                       "PIP_CONFIG_FILE": "/dev/null"}
+
+        def run(command: list[str], *, timeout: int, input_text: str | None = None) -> str:
+            process = subprocess.Popen(command, stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd="/", env=environment,
+                start_new_session=True)
+            try:
+                output, _errors = process.communicate(input=input_text, timeout=timeout)
+                if process.returncode != 0:
+                    raise subprocess.CalledProcessError(process.returncode, command)
+                return output
+            finally:
+                # Direct-argv runuser keeps pip in this owned process group.
+                # Reap before releasing deploy locks, including on interruption
+                # or when runuser exits while a descendant still writes.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+                process.stdout.close()
+                process.stderr.close()
+
+        run(
+            [*prefix, "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+             "--no-deps", "--only-binary=:all:", "--require-hashes", "--requirement", str(requirements)],
+            timeout=180,
+        )
+        observed = run(
+            [*prefix, "-c", "import importlib.metadata as m,json,sys; "
+             "print(json.dumps({name:m.version(name) for name in json.load(sys.stdin)}))"],
+            input_text=json.dumps(sorted(pins)), timeout=20,
+        )
+        versions = json.loads(observed)
+        if versions != pins:
+            raise ValueError("installed production dependencies differ")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        # Captured installer output may contain local configuration. The operator
+        # receipt retains the bounded failure code without echoing child output.
+        raise ControlPlaneDeployError(error) from exc
+    return {"status": "synchronized", "account": DEFAULT_SERVICE_ACCOUNT,
+            "python": python, "requirements": str(requirements),
+            "requirements_sha256": hashlib.sha256(raw).hexdigest(), "versions": versions}
+
+
 def deploy_control_plane_commit(
     *,
     source_repo: str | Path,
@@ -4765,6 +4833,9 @@ def deploy_control_plane_commit(
         scene_retirement_runtime = _prepare_scene_retirement_runtime(
             source_repo=source, source_commit=source_commit
         )
+        shared_runtime_dependencies = _synchronize_shared_control_plane_dependencies(
+            release_path=staged_release["release_path"]
+        )
         scene_retirement_stores = _install_scene_retirement_stores()
         _mark_stage("release_staged")
         # Record what this deploy really stages (the release checkout it created
@@ -5007,6 +5078,7 @@ def deploy_control_plane_commit(
         "disk_reservation_estimate": disk_reservation_estimate,
         "disk_reservation_runtime": disk_reservation_runtime,
         "scene_retirement_runtime": scene_retirement_runtime,
+        "shared_runtime_dependencies": shared_runtime_dependencies,
         "scene_retirement_stores": scene_retirement_stores,
         "surfaces": [
             {"name": name, "path": str(path), "head": observed[name]}
