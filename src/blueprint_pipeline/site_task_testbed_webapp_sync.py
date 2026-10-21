@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any, Mapping
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .core.security_controls import strict_identifier
 from .decision_evidence_contracts import (
     DecisionEvidenceRequest,
     DecisionEvidenceContractError,
     MaintainedSiteTaskTestbed,
+    canonical_digest,
+    canonical_json,
 )
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
@@ -36,6 +40,9 @@ def build_site_task_testbed_webapp_publication(
     approved_task_digest: str,
     testbed: Mapping[str, Any],
     decision_evidence_request: Mapping[str, Any] | None = None,
+    job_id: str | None = None,
+    brief_digest: str | None = None,
+    website_task_context_digest: str | None = None,
 ) -> dict[str, Any]:
     try:
         verified = MaintainedSiteTaskTestbed.from_mapping(testbed).to_mapping()
@@ -58,8 +65,23 @@ def build_site_task_testbed_webapp_publication(
     if _text(approved_task_digest) != expected_task_digest:
         raise ValueError("testbed_approved_task_binding_mismatch")
     digest = verified["testbed_digest"]
+    # Native evidence digests predate the cross-runtime commercial projection.
+    # Preserve their original Python bytes rather than rehashing parsed JSON in JS.
+    card_bodies: dict[str, str] = {}
+    compiled_cards = _mapping(verified.get("compiled_cards"))
+    for key in ("site_card", "task_cards", "scenario_cards", "eval_cards"):
+        value = compiled_cards.get(key)
+        cards = value if isinstance(value, list) else [value]
+        for card in cards:
+            if not isinstance(card, Mapping) or card.get("card_digest") != canonical_digest(
+                card, digest_field="card_digest"
+            ):
+                raise ValueError("testbed_compiled_card_digest_mismatch")
+            card_bodies[card["card_digest"]] = canonical_json({
+                name: item for name, item in card.items() if name != "card_digest"
+            })
     publication = {
-        "schema_version": "site_task_testbed_publication.v1",
+        "schema_version": "site_task_testbed_publication.v2",
         "capture_session_id": session_id,
         "intake_id": expected_intake_id,
         "approved_task_digest": expected_task_digest,
@@ -74,9 +96,24 @@ def build_site_task_testbed_webapp_publication(
             "digest": digest,
         },
         "testbed": verified,
+        "testbed_canonical_json": canonical_json({
+            key: value for key, value in verified.items() if key != "testbed_digest"
+        }),
+        "compiled_card_canonical_json": card_bodies,
+        "decision_request_canonical_json": None,
         "status": "testbed_ready",
         "proof_boundary": verified["proof_boundary"],
     }
+    if job_id is not None:
+        publication["job_id"] = strict_identifier(job_id, field="job_id", max_length=192)
+    for field, value in (
+        ("brief_digest", brief_digest),
+        ("website_task_context_digest", website_task_context_digest),
+    ):
+        if value is not None:
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", value):
+                raise ValueError(f"{field}:invalid_digest")
+            publication[field] = value
     if decision_evidence_request is not None:
         request = DecisionEvidenceRequest.from_mapping(
             decision_evidence_request
@@ -88,6 +125,9 @@ def build_site_task_testbed_webapp_publication(
         ):
             raise ValueError("decision_evidence_request_testbed_binding_mismatch")
         publication["decision_evidence_request"] = request
+        publication["decision_request_canonical_json"] = canonical_json({
+            key: value for key, value in request.items() if key != "request_digest"
+        })
     return publication
 
 
@@ -98,6 +138,9 @@ def sync_site_task_testbed_to_webapp(
     approved_task_digest: str,
     testbed: Mapping[str, Any],
     decision_evidence_request: Mapping[str, Any] | None = None,
+    job_id: str | None = None,
+    brief_digest: str | None = None,
+    website_task_context_digest: str | None = None,
     endpoint_url: str | None = None,
     token: str | None = None,
     max_attempts: int = 3,
@@ -110,6 +153,9 @@ def sync_site_task_testbed_to_webapp(
         approved_task_digest=approved_task_digest,
         testbed=testbed,
         decision_evidence_request=decision_evidence_request,
+        job_id=job_id,
+        brief_digest=brief_digest,
+        website_task_context_digest=website_task_context_digest,
     )
     resolved_url = _text(endpoint_url) or _text(os.getenv(TESTBED_WEBAPP_URL_ENV))
     resolved_token = _text(token) or _text(os.getenv("PIPELINE_SYNC_TOKEN"))

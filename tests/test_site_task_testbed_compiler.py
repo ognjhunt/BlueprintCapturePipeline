@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from blueprint_pipeline.capture_intake import validate_capture_intake_envelope
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline import live_pipeline_reconstruction_testbed_routes as routes
 from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
@@ -1281,6 +1281,20 @@ def test_testbed_webapp_publication_is_exactly_bound_and_receipt_verified(
         testbed=testbed,
         decision_evidence_request=decision_request,
     )
+    assert publication["schema_version"] == "site_task_testbed_publication.v2"
+    assert publication["testbed_canonical_json"] == canonical_json({
+        key: value for key, value in testbed.items() if key != "testbed_digest"
+    })
+    assert publication["decision_request_canonical_json"] == canonical_json({
+        key: value for key, value in decision_request.items() if key != "request_digest"
+    })
+    assert "job_id" not in publication
+    assert "brief_digest" not in publication
+    cards = testbed["compiled_cards"]
+    for card in [cards["site_card"], *cards["task_cards"], *cards["scenario_cards"], *cards["eval_cards"]]:
+        assert publication["compiled_card_canonical_json"][card["card_digest"]] == canonical_json({
+            key: value for key, value in card.items() if key != "card_digest"
+        })
     assert publication["testbed_digest"] == testbed["testbed_digest"]
     assert publication["proof_boundary"]["comparative_policy_ranking_verdict"] == (
         "thesis_not_supported"
