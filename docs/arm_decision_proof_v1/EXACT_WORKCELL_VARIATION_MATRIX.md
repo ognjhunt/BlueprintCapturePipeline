@@ -171,6 +171,12 @@ then consume the sealed cell packet and produce a real per-cell construction
 result under its existing authority. Preparation grants no execution authority
 and creates no construction receipt; unavailable native profiles fail explicitly.
 
+The existing `scripts/materialize_paired_target_native_inputs.py arena-packet`
+command exposes the same input as `--exact-workcell-cell CELL_PREPARATION.json`,
+alongside its existing `--request`, `--evidence-root` and `--output-dir` flags.
+Omitting the optional flag preserves canonical source-packet preparation. Both
+routes only materialize retained packet bytes and grant no runtime authority.
+
 ## Immutable Artifacts
 
 The create-only publisher writes and fully reads back:

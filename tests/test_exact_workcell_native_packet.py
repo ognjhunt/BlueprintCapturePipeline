@@ -5,6 +5,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -161,9 +165,9 @@ def _cell_input(source):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("site,y", [("site-a", 1.3), ("site-b", 2.4)])
+@pytest.mark.parametrize("site,y,use_cli", [("site-a", 1.3, False), ("site-b", 2.4, True)])
 def test_actual_cell_packet_replays_and_existing_worker_manifest_binds_prepared_plan(
-    tmp_path, site, y
+    tmp_path, site, y, use_cli
 ):
     request, evidence, original, source = _source(tmp_path, site=site, y=y)
     original_bytes = {
@@ -173,12 +177,50 @@ def test_actual_cell_packet_replays_and_existing_worker_manifest_binds_prepared_
     }
     cell_input = _cell_input(source)
     output = tmp_path / "cell"
-    receipt = materialize_native_task_arena_packet(
-        request=request,
-        evidence_root=evidence,
-        output_dir=output,
-        exact_workcell_cell=cell_input,
-    )
+    if use_cli:
+        repo = Path(__file__).resolve().parents[1]
+        request_path = tmp_path / "packet-request.json"
+        request_path.write_text(json.dumps(request))
+        cell_path = tmp_path / "cell-preparation.json"
+        cell_path.write_text(json.dumps(cell_input))
+
+        def run_cli(destination, *optional):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo / "scripts/materialize_paired_target_native_inputs.py"),
+                    "arena-packet",
+                    "--request", str(request_path),
+                    "--evidence-root", str(evidence),
+                    "--output-dir", str(destination),
+                    *optional,
+                ],
+                cwd=repo,
+                env={**os.environ, "PYTHONPATH": str(repo / "src")},
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            summary = json.loads(result.stdout)
+            assert summary["status"] == "materialized"
+            assert summary["provider_mutation_performed"] is False
+            retained = _read(destination / "native_task_arena_packet_receipt.v1.json")
+            assert summary["receipt_digest"] == retained["receipt_digest"]
+            return retained
+
+        legacy = tmp_path / "legacy-cli-packet"
+        legacy_receipt = run_cli(legacy)
+        assert _read(legacy / "native_task_arena_scene_plan.v1.json") == source
+        assert "exact_workcell_cell_preparation_digest" not in legacy_receipt
+        receipt = run_cli(output, "--exact-workcell-cell", str(cell_path))
+    else:
+        receipt = materialize_native_task_arena_packet(
+            request=request,
+            evidence_root=evidence,
+            output_dir=output,
+            exact_workcell_cell=cell_input,
+        )
     preparation = _read(output / PREPARATION_FILENAME)
     retained_source = _read(output / SOURCE_PLAN_FILENAME)
     plan = _read(output / "native_task_arena_scene_plan.v1.json")
