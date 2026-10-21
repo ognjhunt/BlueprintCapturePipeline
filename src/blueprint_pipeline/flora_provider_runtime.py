@@ -50,6 +50,54 @@ def _benchmark_execution_summary(report: dict[str, Any]) -> dict[str, Any]:
             "live_episode_count": report["live_episode_count"], "benchmark_metrics": report.get("metrics")}
 
 
+_INPUT_PREFLIGHT = r'''
+import pathlib, sys
+source = pathlib.Path(sys.argv.pop(1)).resolve()
+sys.path.insert(0, str(source))
+def offline(event, args):
+    if event.startswith("socket."):
+        raise RuntimeError("flora_input_preflight_network_forbidden")
+sys.addaudithook(offline)
+from blueprint_pipeline.flora_episode_benchmark import main
+code = main()
+import rfc8785
+if not pathlib.Path(rfc8785.__file__).resolve().is_relative_to(source):
+    raise RuntimeError("flora_contract_dependency_not_bundled")
+raise SystemExit(code)
+'''
+
+
+def _offline_benchmark_input_preflight(
+    root: Path, output: Path, inputs: dict[str, Any], expected: dict[str, Any],
+) -> dict[str, Any]:
+    """Run the actual worker CLI's complete input path before downloads."""
+    benchmark = root / "benchmark"
+    preflight_root = output / "benchmark_input_preflight"
+    environment = {**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+                   "HF_HUB_DISABLE_TELEMETRY": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    command = [sys.executable, "-I", "-B", "-c", _INPUT_PREFLIGHT, str(root / "provider_runtime/source/src"),
+        "preflight", "--manifest", str(benchmark / inputs["manifest_relative_path"]),
+        "--profile", str(benchmark / inputs["profile_relative_path"]),
+        "--rights-root", str(benchmark / inputs["rights_relative_path"]), "--output-dir", str(preflight_root)]
+    with (output / "benchmark_input_preflight.log").open("x") as log:
+        process = subprocess.run(command, cwd=benchmark, env=environment, stdout=log,
+                                 stderr=subprocess.STDOUT, timeout=600, check=False)
+    records = list((preflight_root / "input_preflights").glob("*.json"))
+    if process.returncode != 0 or len(records) != 1:
+        raise ValueError("flora_benchmark_input_preflight_failed")
+    preflight = json.loads(records[0].read_text())
+    if (preflight != expected or preflight.get("status") != "inputs_verified"
+            or type(preflight.get("eligible_episode_count")) is not int
+            or preflight["eligible_episode_count"] <= 0
+            or preflight["eligible_episode_count"] != preflight.get("selected_episode_count")
+            or preflight.get("blockers") != [] or preflight.get("inference_performed") is not False
+            or preflight.get("runtime_execution_verified") is not False):
+        raise ValueError("flora_benchmark_input_preflight_binding_invalid")
+    return preflight
+
+
 def main() -> int:
     root = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_BUNDLE_DIR"]).resolve()
     output = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_OUTPUT_DIR"]).resolve()
@@ -69,6 +117,8 @@ def main() -> int:
             raise ValueError("flora_runtime_model_identity_invalid")
         sys.path.insert(0, str(root / "provider_runtime/source/src"))
         benchmark = root / "benchmark"
+        result["benchmark_input_preflight"] = _offline_benchmark_input_preflight(
+            root, output, inputs, runtime.get("input_preflight") or {})
         from blueprint_pipeline.flora_dependency_bootstrap import (
             FloraDependencyBootstrapError, ensure_flora_runtime_dependencies,
         )

@@ -136,6 +136,15 @@ authorize another paid attempt.
 Resource labels use `blueprint-task-evaluation-flora-` so the deployed spend
 guard can verify the independent watchdog's ownership record.
 
+The bundle also ships the existing pinned `rfc8785` 0.1.4 contract dependency
+and its license through `stage_policy_contract_dependencies`. Its four files
+are digest-bound with the sealed source; this adds no provider package download.
+Before dependency installation or model download, the worker runs the actual
+`flora_episode_benchmark preflight` CLI in its interpreter against that sealed
+source. Socket access is disabled. The full corrected-reference, media, episode,
+and rights validation must reproduce the bundle's exact preflight record,
+including all selected episodes, before execution may continue.
+
 The worker uses the shared `flora_dependency_bootstrap` helper to install only
 the four hash-pinned add-ons required by the pinned vLLM base image:
 Transformers 5.8.1, qwen-vl-utils 0.0.14, Decord 0.6.0, and PyAV 16.1.0. The
@@ -151,6 +160,15 @@ CPU preprocessing honors the profile timeout up to 1,800 seconds; the GPU
 diagnostic keeps its 300-second cap. Each processed episode emits a JSON progress
 line and updates `diagnostic.json`. A partial checkpoint remains incomplete and
 cannot establish readiness, including when the process times out.
+
+The 2026-10-21 paid attempt exposed a process defect before inference: the
+corrected-reference loader lazily imported `rfc8785`, which was absent from the
+worker image and FLORA bundle. The previous CPU probe exercised imports and
+video preprocessing without executing that loader. The original traceback is
+retained in `attempts/attempt_001/immutable_execution/benchmark.log` for the
+`retained20-ce8bfa13fa58` job. The bundled dependency and complete offline input
+preflight repair this missing coverage; neither the repair nor a CPU replay is
+evidence of a successful FLORA inference run.
 
 ## Read the comparison
 

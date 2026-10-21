@@ -69,6 +69,13 @@ def test_bundle_has_immutable_source_and_rejects_tampering(tmp_path, monkeypatch
     with zipfile.ZipFile(path) as archive:
         assert "benchmark/rights/episode.json" in archive.namelist()
         assert archive.read("provider_runtime/evaluator_provider_runtime_runner.py") == Path(worker.__file__).read_bytes()
+        dependency = checked["contract_python_dependencies"][0]
+        assert dependency["distribution"] == "rfc8785" and dependency["version"] == "0.1.4"
+        assert len(dependency["files"]) == 4
+        for row in dependency["files"]:
+            data = archive.read("provider_runtime/" + row["relative_path"])
+            assert len(data) == row["size_bytes"]
+            assert bundler.hashlib.sha256(data).hexdigest() == row["sha256"][7:]
     path.write_bytes(path.read_bytes() + b"tamper")
     with pytest.raises(ValueError, match="receipt_binding_invalid"):
         bundler.validate_flora_provider_bundle(bundle, bundle_path=path)
@@ -343,6 +350,7 @@ def test_worker_stops_before_model_import_or_download_when_bootstrap_fails(tmp_p
     monkeypatch.setenv("BLUEPRINT_EVALUATOR_PROVIDER_OUTPUT_DIR", str(output))
     monkeypatch.setattr(worker.sys, "path", list(worker.sys.path))
     monkeypatch.setattr(worker, "_verify", lambda *a: None)
+    monkeypatch.setattr(worker, "_offline_benchmark_input_preflight", lambda *a: {})
     receipt = {"status":"blocked", "blockers":["fixture_bootstrap_refused"]}
     def refuse(**kwargs):
         assert kwargs["output_root"] == output / "dependency_bootstrap"
@@ -354,6 +362,61 @@ def test_worker_stops_before_model_import_or_download_when_bootstrap_fails(tmp_p
     assert result["dependency_bootstrap"] == receipt
     assert result["blockers"] == ["fixture_bootstrap_refused"]
     assert result["candidate_policy_queried"] is False
+
+
+def test_worker_rejects_input_preflight_before_dependency_install_or_model_download(tmp_path, monkeypatch):
+    from blueprint_pipeline import flora_dependency_bootstrap as bootstrap
+    root, output = tmp_path / "bundle", tmp_path / "output"
+    runtime = root / "provider_runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "evaluator_provider_runtime_manifest.json").write_text(json.dumps({"source_commit": "a" * 40}))
+    (runtime / "evaluator_input_manifest.json").write_text(json.dumps({
+        "model_id": bundler.MODEL_ID, "model_revision": bundler.MODEL_REVISION}))
+    monkeypatch.setenv("BLUEPRINT_EVALUATOR_PROVIDER_BUNDLE_DIR", str(root))
+    monkeypatch.setenv("BLUEPRINT_EVALUATOR_PROVIDER_OUTPUT_DIR", str(output))
+    monkeypatch.setattr(worker.sys, "path", list(worker.sys.path))
+    monkeypatch.setattr(worker, "_verify", lambda *a: None)
+    def refuse(*args):
+        raise ValueError("flora_benchmark_input_preflight_failed")
+    monkeypatch.setattr(worker, "_offline_benchmark_input_preflight", refuse)
+    monkeypatch.setattr(bootstrap, "ensure_flora_runtime_dependencies", lambda **_: pytest.fail("install before valid inputs"))
+    monkeypatch.setattr(worker.importlib, "import_module", lambda *_: pytest.fail("model import before valid inputs"))
+    assert worker.main() == 2
+    result = json.loads((output / "evaluator_runtime_result.json").read_text())
+    assert result["blockers"] == ["flora_benchmark_input_preflight_failed"]
+    assert not (output / "model_snapshot_receipt.json").exists()
+
+
+@pytest.mark.parametrize("fault", [None, "process_failed", "count_changed", "missing_record"])
+def test_worker_runs_exact_offline_input_preflight_and_checks_sealed_result(tmp_path, monkeypatch, fault):
+    root, output = tmp_path / "bundle", tmp_path / "output"
+    (root / "benchmark").mkdir(parents=True)
+    output.mkdir()
+    inputs = {"manifest_relative_path": "manifest.json", "profile_relative_path": "profile.json",
+              "rights_relative_path": "rights"}
+    expected = {"status": "inputs_verified", "selected_episode_count": 20, "eligible_episode_count": 20,
+                "blockers": [], "inference_performed": False, "runtime_execution_verified": False}
+    monkeypatch.setenv("PYTHONPATH", "/untrusted/host-packages")
+    def run(command, **kwargs):
+        assert command[1:4] == ["-I", "-B", "-c"]
+        assert command[4] == worker._INPUT_PREFLIGHT and command[6] == "preflight"
+        assert "run" not in command
+        assert kwargs["env"]["HF_HUB_OFFLINE"] == "1" and kwargs["env"]["TRANSFORMERS_OFFLINE"] == "1"
+        assert "PYTHONPATH" not in kwargs["env"] and "PYTHONHOME" not in kwargs["env"]
+        if fault != "missing_record":
+            path = output / "benchmark_input_preflight/input_preflights/fixture.json"
+            path.parent.mkdir(parents=True)
+            record = dict(expected)
+            if fault == "count_changed":
+                record["eligible_episode_count"] = 19
+            path.write_text(json.dumps(record))
+        return SimpleNamespace(returncode=2 if fault == "process_failed" else 0)
+    monkeypatch.setattr(worker.subprocess, "run", run)
+    if fault is None:
+        assert worker._offline_benchmark_input_preflight(root, output, inputs, expected) == expected
+    else:
+        with pytest.raises(ValueError, match="flora_benchmark_input_preflight_"):
+            worker._offline_benchmark_input_preflight(root, output, inputs, expected)
 
 
 def test_bundle_admission_reopens_rights_before_returning_ready(tmp_path, monkeypatch):

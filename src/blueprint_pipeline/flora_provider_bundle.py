@@ -119,6 +119,17 @@ def build_flora_provider_bundle(
                 stream = archive.extractfile(member)
                 assert stream is not None
                 members["provider_runtime/source/" + member.name] = stream.read()
+    # Reuse the existing pinned contract dependency seam. The lazy corrected-
+    # reference canonicalizer must not depend on provider site-packages.
+    from .native_task_arena_policy_canary_bundle import stage_policy_contract_dependencies
+    with tempfile.TemporaryDirectory(prefix="flora-contract-dependencies-") as temporary:
+        dependency_root = Path(temporary)
+        dependency = stage_policy_contract_dependencies(dependency_root)
+        for row in dependency["files"]:
+            members["provider_runtime/source/src/" + row["relative_path"]] = (
+                dependency_root / row["relative_path"]).read_bytes()
+        dependency = {**dependency, "files": [
+            {**row, "relative_path": "source/src/" + row["relative_path"]} for row in dependency["files"]]}
     runner_name = "provider_runtime/source/src/blueprint_pipeline/flora_provider_runtime.py"
     if runner_name not in members:
         raise ValueError("flora_provider_runner_not_in_source_commit")
@@ -145,6 +156,7 @@ def build_flora_provider_bundle(
         "files": files, "input_digest": digest(inputs), "local_bundle_ready_for_remote_staging": True,
         "blockers": [], "candidate_policy_queried": False,
         "input_preflight": preflight,
+        "contract_python_dependencies": [dependency],
     }
     members["provider_runtime/evaluator_provider_runtime_manifest.json"] = json.dumps(manifest, sort_keys=True).encode()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -186,9 +198,21 @@ def validate_flora_provider_bundle(receipt: Mapping[str, Any], *, bundle_path: s
         files = manifest.get("files") or {}
         if files != result.get("files") or set(names) != set(files) | {"provider_runtime/evaluator_provider_runtime_manifest.json"}:
             raise ValueError("flora_bundle_manifest_binding_invalid")
-        for key in ("source_commit", "container_image", "model_id", "model_revision", "input_digest"):
+        for key in ("source_commit", "container_image", "model_id", "model_revision", "input_digest", "contract_python_dependencies"):
             if manifest.get(key) != result.get(key):
                 raise ValueError("flora_bundle_manifest_binding_invalid")
+        dependencies = manifest.get("contract_python_dependencies") or []
+        canonicalizer = next((row for row in dependencies if row.get("distribution") == "rfc8785"), {})
+        required = {"source/src/rfc8785/__init__.py", "source/src/rfc8785/_impl.py",
+                    "source/src/rfc8785/py.typed", "source/src/rfc8785-0.1.4.dist-info/LICENSE"}
+        if (canonicalizer.get("version") != "0.1.4"
+                or {row.get("relative_path") for row in canonicalizer.get("files", [])} != required):
+            raise ValueError("flora_bundle_contract_dependency_missing")
+        for row in canonicalizer["files"]:
+            content = archive.read("provider_runtime/" + row["relative_path"])
+            if (len(content) != row["size_bytes"]
+                    or "sha256:" + hashlib.sha256(content).hexdigest() != row["sha256"]):
+                raise ValueError("flora_bundle_contract_dependency_digest_mismatch")
         for name, expected in files.items():
             h = hashlib.sha256()
             with archive.open(name) as stream:
