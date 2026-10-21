@@ -3,7 +3,7 @@
 Tests should pin package/runtime truth boundaries without calling live providers,
 GPU services, Stripe, WebApp mutation, or deployment commands.
 
-Two programs are active: the free beta's evaluated, recommended pilot and Arm
+Two programs are active: the free beta's job-first automation service and Arm
 Decision Proof v1. New tests must protect a beta or ADP contract, or preserve
 compatibility needed by one. Existing captures, fixtures,
 and scenes must retain `development_only` claim ceilings and may never be used to
