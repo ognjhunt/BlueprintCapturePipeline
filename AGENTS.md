@@ -90,6 +90,9 @@ dependent step as blocked instead of guessing.
   Missing any answer means the work is out of focus.
 - Keep geometry, capture observations, simulators, learned evaluators, providers,
   and physical evidence replaceable behind stable capture and evaluation contracts.
+- Reuse `job_capability_routing.py` for explicit task profiles, required inputs,
+  embodiment/policy interfaces and unavailable reasons. A supported shortlist
+  is not exact scene/runtime admission, completed execution or delivery proof.
 - Resolve the uncertainty that matters for the job using the Decision/Evidence
   Router and current qualified methods. An inquiry awaiting video requires no
   fabricated capture, testbed or run and cannot advance through assessment.

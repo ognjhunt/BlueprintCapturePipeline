@@ -11,6 +11,8 @@ job brief without requiring a customer-written description. Reuse the
 capture-to-package/testbed path, valid source-bound artifacts and the smallest
 qualified execution that resolves material uncertainty. Route missing adapters
 and inputs honestly; read-only evidence adapters are not policy evaluation.
+Reuse `job_capability_routing.py` for explicit task, embodiment and policy
+compatibility; its shortlist still needs exact source-bound runtime admission.
 Existing licensed Blueprint-managed
 execution and approved team-supplied endpoints remain valid. Preserve
 independent scoring and controlled observations. Commercial proposal selection,

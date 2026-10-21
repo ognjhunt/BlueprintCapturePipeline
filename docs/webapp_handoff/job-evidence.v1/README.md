@@ -7,6 +7,7 @@ An options assessment may use zero new evaluation runs when current evidence
 is sufficient. Reconstruction, simulation and policy access resolve the actual
 job's remaining questions through the existing pipeline. The commercial
 workflow owns proposals, selection, agreement and customer-reported outcomes.
+Unsupported work keeps its video and brief and reports the exact capability gap.
 
 ## Operating flow
 
@@ -130,12 +131,20 @@ deploy either service.
 ### Current release preparation — October 21, 2026
 
 The owner requested code and release preparation with verified changes held
-ready for release. WebApp #1079 and Capture #91 accompany this Pipeline change;
-the earlier Pipeline #2737 and Capture #90 are historical. The observed WebApp
-and worker source is `36659ae77575bab86a0ee6bf492f43eb8db835a7`; the Pipeline
-runtime remains `b86b78ab83f217fe4fca2bf135e290b7b8aebe56`. This work has not
-merged or deployed either service, enabled video processing, released execution
-holds, or performed a fresh policy run.
+ready for release. During verification, GitHub externally merged WebApp #1079
+as `ec9157917514ad883211a83a722254b56a08c1f1`, Capture #91 as
+`7b7fc6e06682d5f1ef5b21ced9bec057b0a4189a`, and Pipeline #2738 as
+`2c0ac160735d1d012ab4a66ad53478a19ec6bcb9`. This companion Pipeline change
+preserves that main's capability routing and prepares matching generated-doctrine
+and exact producer-fixture follow-ups. Pipeline #2737 and Capture #90 are
+historical.
+
+The 17:57 UTC readback still reports WebApp and worker source
+`36659ae77575bab86a0ee6bf492f43eb8db835a7`; the last observed Pipeline runtime
+is `b86b78ab83f217fe4fca2bf135e290b7b8aebe56`. A repository merge does not
+establish deployment. This task performed no pull-request merge, production
+deployment, video-processing activation, execution-hold release or fresh policy
+run.
 
 For a later authorized release, deploy the compatible WebApp consumer and
 verify its exact `taskEvaluationPolicyRuns` job/time index is READY before

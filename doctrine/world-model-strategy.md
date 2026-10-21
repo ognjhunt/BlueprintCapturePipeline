@@ -37,6 +37,10 @@ Task requirements and scoring, site geometry/objects, embodiment/tool/sensors,
 policy interfaces and delivery availability are separate integration seams.
 Route by declared capabilities and validated compatibility; do not silently
 coerce multi-step, articulated or unsupported work into rigid pick-and-place.
+Use `job_capability_routing.py` for the current explicit task/embodiment/policy
+preflight and its `supported`, `needs_input` or `capability_gap` result. Its
+configuration shortlist does not replace source-bound runtime admission or
+independent execution evidence.
 The first exact fixed-arm/DROID-compatible route does not admit every robot,
 and a fidelity template is not a runtime adapter. Atlas and unavailable hosted
 APIs remain unavailable. Reuse existing intent/outbox/lease and reconciliation

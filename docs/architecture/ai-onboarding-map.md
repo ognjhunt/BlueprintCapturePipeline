@@ -45,6 +45,7 @@ proof.
 | --- | --- | --- |
 | Raw capture truth | `materialization.py`, capture Raw Contract consumers, reconstruction control plane | immutable capture descriptor, timestamps/poses/intrinsics/depth/provenance |
 | Partner task truth | `site_task_testbed_compiler.py`, decision/evidence contracts | owner-approved task distribution, reset, outcome, invalid region |
+| Job capability preflight | `job_capability_routing.py` | interface-compatible configurations, required inputs or a precise capability gap; not runtime or delivery admission |
 | Testbed compilation | `site_task_testbed_compiler.py`, `canonical_site_package.py` | versioned testbed bound to exact evidence |
 | Claim routing | `decision_evidence_contracts.py`, `decision_evidence_router.py`, `decision_evidence_execution.py` | qualified evidence plan or smallest blocker |
 | Leaf run boundary | `evaluation_run_contract.py`, `evaluation_run_execution.py` | scene/robot/task/policy/runtime/proof bindings |

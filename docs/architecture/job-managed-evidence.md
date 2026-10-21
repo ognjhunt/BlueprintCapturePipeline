@@ -8,6 +8,8 @@ receipt and current permission. Reusing evidence never substitutes for the
 current source/task binding. Quick-10 is explicitly diagnostic; full matched
 execution additionally requires its frozen matrix, exact per-cell construction
 and controls, native runtime admission and existing bounded execution authority.
+A job whose task has no supported scene or configuration keeps its video and
+reports that capability gap.
 
 The managed action reuses `configured-scene-offerings/:launchId/evaluation-setup`
 and `evaluation-runs`, the published setup, preparation worker, and canonical
@@ -84,3 +86,16 @@ This access request does not assume that you install or support the deployment.â
 No draft has been sent. Existing licensed interfaces require no repeated
 per-job invitation. Real quotes, dates, availability and support commitments
 must be recorded from actual partners before projection as their proposals.
+## Capability routing
+
+`src/blueprint_pipeline/job_capability_routing.py` routes a job's declared task
+family against explicit task, embodiment and policy profiles built from the
+existing registries. A supported profile returns complete configurations
+(robot, tool, observation/action schema, controller, runtime, adapter and
+pinned policy identity). A family without a native adapter and independent
+scorer is published as `blocked` with its exact capability gap and no run is
+planned; the job keeps its video and brief. Unavailable robots (G1 pending a
+verified episode and reviewed terms; Atlas, not accessible) and non-runnable
+policies stay listed with their reasons. A new site on a supported profile
+needs only data; a new task family or embodiment needs its adapter,
+reset/scoring and evidence work plus one profile entry.

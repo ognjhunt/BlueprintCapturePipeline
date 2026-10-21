@@ -13,6 +13,12 @@ runtime delivery, simulation qualification, results and recovery. It is a
 supported execution route, not permission to relabel a template or queued request
 as completed policy execution.
 
+The existing [job capability preflight](src/blueprint_pipeline/job_capability_routing.py)
+routes declared task families through explicit native adapters, embodiment and
+policy interfaces, required inputs and unavailable reasons. Its compatible
+shortlist is separate from source-bound runtime admission, scored execution and
+a partner's delivery commitment.
+
 ## Evidence Program: Arm Decision Proof v1
 
 The evidence program's build objective is to produce one prospectively
