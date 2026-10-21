@@ -120,7 +120,9 @@ def _sha(value: bytes) -> str:
 
 
 def _git_blob_sha(value: bytes) -> str:
-    return hashlib.sha1(b"blob " + str(len(value)).encode() + b"\0" + value).hexdigest()
+    # Git's existing object identity is SHA-1; the retained content additionally
+    # carries SHA-256. This is compatibility, not a new security primitive.
+    return hashlib.sha1(b"blob " + str(len(value)).encode() + b"\0" + value, usedforsecurity=False).hexdigest()
 
 
 def _refuse_symlink_ancestors(path: Path) -> None:

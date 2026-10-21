@@ -1,22 +1,30 @@
 """Convert a retained publisher source with the installed official Isaac importer.
 
 This prepares source geometry, not a complete mounted robot or an admitted run.
-Call inside the existing initialized Isaac worker; this module never starts an
-application, installs a runtime, allocates resources or downloads model bytes.
+The library expects the existing initialized Isaac worker; the CLI boots local
+Isaac only with --initialize-isaac. Neither path installs a runtime, allocates
+resources or downloads model bytes.
 """
 
 from __future__ import annotations
 
 import argparse
+import builtins
+import fnmatch
 import hashlib
 import importlib
 import importlib.metadata
 import json
 import re
 import shutil
+import struct
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
+
+from defusedxml import ElementTree as ET
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .deployment_embodiment_assets import AssetPreparationError, recipe_for, verify_source_bundle
@@ -29,6 +37,7 @@ from .immutable_directory_publication import (
 RECEIPT = "asset-import.json"
 SCHEMA = "embodiment_asset_import.v1"
 _FIND = re.compile(r"\$\(find\s+([A-Za-z0-9_]+)\)")
+_XACRO_LOCK = threading.RLock()
 
 
 def _sha(path: Path) -> str:
@@ -47,8 +56,123 @@ def _package_roots(source: Path, mappings: dict[str, str]) -> dict[str, Path]:
     return roots
 
 
+def _input_path(value: str, *, anchor: Path, allowed: set[Path], packages: dict[str, Path],
+                directory: bool = False) -> Path:
+    """Resolve one actual importer read against the retained file inventory."""
+    if not isinstance(value, str) or not value or any(char in value for char in ("\x00", "\\", "$")):
+        raise AssetPreparationError("asset_import_input_reference_unresolved")
+    if value.startswith("package://"):
+        uri = urlsplit(value)
+        if uri.netloc not in packages or uri.query or uri.fragment:
+            raise AssetPreparationError("asset_import_input_package_unbound")
+        path = packages[uri.netloc] / unquote(uri.path).lstrip("/")
+    else:
+        if ":" in value or value.startswith("//"):
+            raise AssetPreparationError("asset_import_input_external_reference_refused")
+        path = Path(value)
+        if not path.is_absolute():
+            path = anchor / path
+    resolved = path.resolve()
+    if (path.is_symlink() or (not directory and resolved not in allowed)
+            or (directory and not any(item.is_relative_to(resolved) for item in allowed))):
+        raise AssetPreparationError("asset_import_input_reference_unbound")
+    return resolved
+
+
+def _precheck_input_closure(entry: Path, *, allowed: set[Path], packages: dict[str, Path]) -> None:
+    """Bind XML includes, geometry and textures before a third-party importer reads them."""
+    pending, seen = [entry], set()
+    mesh_dirs: dict[str, Path] = {}
+    while pending:
+        path = _input_path(str(pending.pop()), anchor=entry.parent, allowed=allowed, packages=packages)
+        if path in seen:
+            continue
+        seen.add(path)
+        suffix = path.suffix.lower()
+        if suffix in {".stl", ".ply", ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".tif", ".tiff", ".exr", ".hdr", ".webp", ".ktx", ".ktx2", ".bin"}:
+            continue  # These formats have no separate referenced file closure.
+        if suffix in {".gltf", ".glb"}:
+            try:
+                if suffix == ".glb":
+                    with path.open("rb") as stream:
+                        header = stream.read(20)
+                        if len(header) != 20:
+                            raise ValueError("GLB header missing")
+                        magic, version, length, json_length, kind = struct.unpack("<4sIII4s", header)
+                        if (magic != b"glTF" or version != 2 or length != path.stat().st_size
+                                or kind != b"JSON" or json_length > length - 20):
+                            raise ValueError("GLB JSON chunk invalid")
+                        model = json.loads(stream.read(json_length))
+                else:
+                    model = json.loads(path.read_text(encoding="utf-8"))
+            except (ValueError, OSError) as exc:
+                raise AssetPreparationError("asset_import_input_gltf_invalid") from exc
+            values = [model]
+            while values:
+                value = values.pop()
+                if isinstance(value, dict):
+                    for key, item in value.items():
+                        if key == "uri":
+                            if not isinstance(item, str):
+                                raise AssetPreparationError("asset_import_input_gltf_invalid")
+                            if not item.startswith("data:"):
+                                pending.append(_input_path(unquote(item), anchor=path.parent,
+                                                           allowed=allowed, packages=packages))
+                        else:
+                            values.append(item)
+                elif isinstance(value, list):
+                    values.extend(value)
+            continue
+        if suffix not in {".xml", ".urdf", ".dae", ".obj", ".mtl"}:
+            raise AssetPreparationError("asset_import_input_format_dependency_unsupported")
+        text = path.read_text(encoding="utf-8")
+        if suffix in {".obj", ".mtl"}:
+            for line in text.splitlines():
+                parts = line.strip().split(maxsplit=1)
+                kind, value = parts[0] if parts else "", parts[1] if len(parts) > 1 else ""
+                if kind == "mtllib" or kind.lower().startswith("map_") or kind in {"bump", "disp", "decal", "refl"}:
+                    if not value or value.startswith("-"):
+                        raise AssetPreparationError("asset_import_input_texture_options_unsupported")
+                    pending.append(_input_path(value.strip().strip('"'), anchor=path.parent,
+                                               allowed=allowed, packages=packages))
+            continue
+        if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+            raise AssetPreparationError("asset_import_input_xml_entity_refused")
+        try:
+            document = ET.fromstring(text)
+        except ET.ParseError as exc:
+            raise AssetPreparationError("asset_import_input_xml_invalid") from exc
+        # MuJoCo mesh/texture roots are explicit; never search alternative paths.
+        for node in document.iter():
+            tag = node.tag.rsplit("}", 1)[-1]
+            if tag == "compiler":
+                for key in ("assetdir", "meshdir", "texturedir"):
+                    if key in node.attrib:
+                        directory = _input_path(node.attrib[key], anchor=entry.parent, allowed=allowed,
+                                                packages=packages, directory=True)
+                        if key in mesh_dirs and mesh_dirs[key] != directory:
+                            raise AssetPreparationError("asset_import_input_compiler_roots_conflict")
+                        mesh_dirs[key] = directory
+        for node in document.iter():
+            tag = node.tag.rsplit("}", 1)[-1]
+            for key in ("file", "filename"):
+                if key not in node.attrib:
+                    continue
+                anchor = path.parent
+                if tag in {"mesh", "hfield", "skin"}:
+                    anchor = mesh_dirs.get("meshdir", mesh_dirs.get("assetdir", anchor))
+                elif tag == "texture":
+                    anchor = mesh_dirs.get("texturedir", mesh_dirs.get("assetdir", anchor))
+                pending.append(_input_path(node.attrib[key], anchor=anchor, allowed=allowed, packages=packages))
+            if tag == "image":  # COLLADA images can reference a separate texture.
+                for child in node:
+                    if child.tag.rsplit("}", 1)[-1] == "init_from":
+                        pending.append(_input_path("".join(child.itertext()).strip(), anchor=path.parent,
+                                                   allowed=allowed, packages=packages))
+
+
 def _expand_xacro(entry: Path, *, source: Path, work: Path, arguments: dict[str, str],
-                  roots: dict[str, Path]) -> Path:
+                  roots: dict[str, Path], source_files: set[Path]) -> Path:
     try:
         xacro = importlib.import_module("xacro")
     except ImportError as exc:
@@ -61,8 +185,8 @@ def _expand_xacro(entry: Path, *, source: Path, work: Path, arguments: dict[str,
         if not path.is_file() or path.suffix not in {".xacro", ".urdf", ".xml"}:
             continue
         text = path.read_text(encoding="utf-8")
-        if "$(env " in text or "$(optenv " in text:
-            raise AssetPreparationError("asset_import_xacro_environment_substitution_refused")
+        if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+            raise AssetPreparationError("asset_import_input_xml_entity_refused")
 
         def resolve(match):
             if match[1] not in aliases:
@@ -71,10 +195,58 @@ def _expand_xacro(entry: Path, *, source: Path, work: Path, arguments: dict[str,
 
         path.write_text(_FIND.sub(resolve, text), encoding="utf-8")
     expanded = work / entry.relative_to(source)
-    try:
-        document = xacro.process_file(str(expanded), mappings=dict(arguments))
-    except Exception as exc:
-        raise AssetPreparationError("asset_import_xacro_expansion_failed:" + type(exc).__name__) from exc
+    allowed = {(work / path.relative_to(source.resolve())).resolve() for path in source_files}
+    # Xacro resolves argument-dependent include/YAML paths itself. Check the
+    # resolved path at its read boundary rather than guessing macro variables.
+    # The module-global hook is scoped and serialized, never builtins.open.
+    with _XACRO_LOCK:
+        missing = object()
+        old_open = xacro.__dict__.get("open", missing)
+        old_extension = getattr(xacro, "eval_extension", None)
+        old_include = getattr(xacro, "get_include_files", None)
+        if (not callable(old_extension) or not callable(old_include)
+                or any(getattr(getattr(xacro, name, None), "__globals__", None) is not xacro.__dict__
+                       for name in ("parse", "load_yaml"))):
+            raise AssetPreparationError("asset_import_xacro_read_boundary_unsupported")
+
+        def guarded_open(filename, mode="r", *args, **kwargs):
+            if mode not in {"r", "rt", "rb"}:
+                raise AssetPreparationError("asset_import_xacro_write_refused")
+            path = _input_path(filename, anchor=work, allowed=allowed, packages=aliases)
+            return builtins.open(path, mode, *args, **kwargs)
+
+        def guarded_extension(value):
+            match = _FIND.fullmatch(value)
+            if match:
+                if match[1] not in aliases:
+                    raise AssetPreparationError("asset_import_xacro_package_alias_missing")
+                return str(aliases[match[1]])
+            if not (value.startswith("$(arg ") or value == "$(dirname)"):
+                raise AssetPreparationError("asset_import_xacro_environment_or_eval_substitution_refused")
+            return old_extension(value)
+
+        def guarded_include(value, symbols):
+            resolved = xacro.abs_filename_spec(xacro.eval_text(value, symbols))
+            if any(char in resolved for char in "*?["):
+                matches = [path for path in sorted(allowed) if fnmatch.fnmatch(str(path), resolved)]
+                if not matches:
+                    raise AssetPreparationError("asset_import_input_reference_unbound")
+                return iter(map(str, matches))
+            return iter([str(_input_path(resolved, anchor=work, allowed=allowed, packages=aliases))])
+
+        xacro.open, xacro.eval_extension, xacro.get_include_files = guarded_open, guarded_extension, guarded_include
+        try:
+            document = xacro.process_file(str(expanded), mappings=dict(arguments))
+        except AssetPreparationError:
+            raise
+        except Exception as exc:
+            raise AssetPreparationError("asset_import_xacro_expansion_failed:" + type(exc).__name__) from exc
+        finally:
+            if old_open is missing:
+                del xacro.open
+            else:
+                xacro.open = old_open
+            xacro.eval_extension, xacro.get_include_files = old_extension, old_include
     output = expanded.with_suffix(".urdf")
     output.write_text(document.toxml(), encoding="utf-8")
     return output
@@ -220,15 +392,18 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
     source = bundle / "source"
     entry = source / description["entry_path"]
     packages = _package_roots(source, description["package_roots"])
+    source_files = {(source / row["path"]).resolve() for row in source_receipt["files"]}
     with tempfile.TemporaryDirectory(prefix=".blueprint-asset-import-", dir=destination.parent) as temporary:
         staged = Path(temporary)
         work = staged / "expanded_source"
         format_name = description["format"]
         if format_name == "xacro":
             entry = _expand_xacro(entry, source=source, work=work,
-                                  arguments=description["import_arguments"], roots=packages)
+                                  arguments=description["import_arguments"], roots=packages, source_files=source_files)
             packages = {name: work / path.relative_to(source.resolve()) for name, path in packages.items()}
             format_name = "urdf"
+            source_files = {(work / path.relative_to(source.resolve())).resolve() for path in source_files} | {entry.resolve()}
+        _precheck_input_closure(entry, allowed=source_files, packages=packages)
         imported, options, runtime = _converter(format_name, entry, staged / "converted",
                                                  fix_base=fix_base, packages=packages)
         if not imported.resolve().is_relative_to(staged.resolve()) or not imported.is_file():
@@ -300,6 +475,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     app = None
     try:
+        verify_source_bundle(args.source_bundle, embodiment_id=args.embodiment)
         if args.initialize_isaac:
             try:
                 from isaaclab.app import AppLauncher

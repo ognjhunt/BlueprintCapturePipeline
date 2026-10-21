@@ -846,9 +846,16 @@ def test_v2_runtime_executes_both_arms_and_grippers_independently(tmp_path, monk
     assert result["motion_evidence"]["actions_reached_robot"] is True
 
 
-def test_v1_manifest_and_resolved_plan_keep_pre_v2_digest_identities(tmp_path):
+def test_v1_manifest_and_resolved_plan_keep_pre_v2_digest_identities(tmp_path, monkeypatch):
     # Recorded from e02bc17 before the v2 extension, with a fixed model identity
     # and byte size so generated USD header details do not affect the contract.
+    # libm tan(pi/6) differs by one ULP between macOS and Linux. Freeze that
+    # fixture input too; production camera values and receipt hashes are never
+    # rounded or changed. Separate camera tests exercise the actual math.
+    monkeypatch.setattr("blueprint_pipeline.team_embodiment.math.tan", {
+        math.pi / 4: 0.9999999999999999,
+        math.pi / 6: 0.5773502691896256,
+    }.__getitem__)
     model = write_robot_usd(tmp_path / "legacy.usda")
     value = manifest(model)
     value["model"]["sha256"] = "sha256:" + "0" * 64
