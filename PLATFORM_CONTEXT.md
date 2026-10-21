@@ -33,18 +33,26 @@ evidence.
 
 ### Free Beta: Job-First Automation
 
-“Find the right way to automate your work.” A site submits one recurring job
-as a plain description, with optional video and budget. Blueprint agrees the
-brief, identifies a few supportable complete solutions, and obtains comparable
-written delivery proposals where suitable suppliers exist. The customer
+“Find the right way to automate your work.” A site records or uploads video
+of one recurring job; no written description is required. The existing video
+analysis drafts the description and brief, and the customer corrects it and
+adds only material facts the footage cannot establish. A draft may be saved
+before upload, but assessment cannot advance without retained video (owner
+correction, 2026-10-21). An optional planning budget may accompany it.
+Blueprint agrees the brief, prepares the existing capture-backed site
+simulation, runs supported configurations it can access, and obtains
+comparable written delivery proposals where suitable suppliers exist. The customer
 chooses an exact proposal revision; the customer and deployment partner then
 agree their physical pilot directly. Selection is not a contract, reservation,
 or authority to start physical work.
 
-This owner decision supersedes the earlier mandatory simulation, invited-team
-evaluation, and one-step booking funnel. A job may progress with zero
-evaluation runs. Reuse applicable, permitted evidence and request only a
-measurement or test that changes a real option or decision. Analytical fit,
+This owner decision supersedes the earlier invited-team evaluation and
+one-step booking funnel; it keeps the capture-to-simulation foundation.
+Blueprint runs accessible policies itself instead of inviting every team to
+operate each test. Reuse applicable, permitted evidence and request only a
+measurement or test that changes a real option or decision. When no
+supported configuration can run, the job keeps its video and receives an
+explicit capability gap rather than an invented run. Analytical fit,
 prior deployment evidence, recorded observations, simulation and physical
 trials answer different questions. Missing evidence, an unavailable supplier,
 or an unsuitable job returns an explanation and the smallest useful next
@@ -136,9 +144,10 @@ rights, and physical access remain a small parallel human lane.
 ### Product And Artifact Boundary
 
 The customer-facing service helps a business find a suitable, deliverable way
-to automate its job. The **Task Evaluation Run** is its bounded technical
-assessment when new execution is useful, not a mandatory purchase or intake
-step. A description-only assessment needs no invented capture, testbed or run.
+to automate its job from retained video of that job. The **Task Evaluation
+Run** is its bounded technical assessment of supported configurations, not a
+purchase or a customer intake step. A description alone never advances
+assessment, and no capture, testbed or run is ever invented.
 
 - A maintained **Site-Task Testbed** is the versioned reusable substrate.
 - A **candidate Minimum Sufficient Evaluation Replica** is the construction
@@ -238,10 +247,10 @@ dynamics, observation-domain match, factual recovery of an unobserved surface,
 sim-to-real decision fidelity, or partner value. No fixture/generated field may
 be copied into qualified evidence to make a gate pass.
 
-Beta site captures, when needed, are real inputs. A description-only job can
-proceed commercially without them. Qualified simulation results can contribute
-to a recommendation within their stated task/configuration/site limits; a
-recommendation does not require simulation for every job. Those results stay
+Beta site captures are required real inputs: a job without retained video
+waits for it. Qualified simulation results contribute to a recommendation
+within their stated task/configuration/site limits; an unsupported task or
+configuration is reported as a capability gap, never as a simulated result. Those results stay
 separate from Arm Decision Proof evidence. They cannot qualify a partner capture, promote a
 physical-validation claim, or be copied into Arm Decision Proof qualified
 evidence.

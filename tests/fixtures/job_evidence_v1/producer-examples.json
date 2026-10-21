@@ -917,5 +917,245 @@
     "authorization_candidates": [],
     "sequence": 2,
     "publication_digest": "sha256:ef09d46d511fcb157163ab988884fac3b651bf38ae24a437f68eee66a0d91a64"
+  },
+  "capability_gap_request": {
+    "schema_version": "job_evidence_request.v1",
+    "job_id": "job-1",
+    "request_id": "job-question-gap",
+    "brief_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "question": "Can the exact robot analytically reach the tote region?",
+    "testbed": {
+      "approved_task_definition": {
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "owner_approved"
+      },
+      "artifact_references": {
+        "eval_cards": [
+          {
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "uri": "fixture://eval"
+          }
+        ],
+        "evaluator": {
+          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "uri": "fixture://evaluator"
+        },
+        "reset": {
+          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "uri": "fixture://reset"
+        },
+        "scenario_cards": [
+          {
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "uri": "fixture://scenario"
+          }
+        ],
+        "site_card": {
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "uri": "fixture://site"
+        },
+        "task_cards": [
+          {
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "uri": "fixture://task"
+          }
+        ]
+      },
+      "evidence_inventory": [
+        {
+          "evidence_id": "metric_geometry"
+        }
+      ],
+      "governance": {
+        "allowed_uses": [
+          "evaluation"
+        ],
+        "consent": "accepted",
+        "privacy": "cleared",
+        "revocation": "version_invalidates_on_revocation",
+        "rights": "accepted"
+      },
+      "invalidation_triggers": [
+        "layout_change"
+      ],
+      "known_unsupported_conditions": [
+        "physical_task_success"
+      ],
+      "lifecycle_state": "active",
+      "physical_outcome_history_refs": [],
+      "predecessor_testbed_digest": null,
+      "robot_sensor_controller_bindings": {
+        "controller_action_representation": {
+          "type": "joint_position"
+        },
+        "embodiment": {
+          "reach_envelope": {
+            "maximum_m": 1.0,
+            "minimum_m": 0.1
+          },
+          "robot_id": "fixture-arm"
+        },
+        "selected_robot_placement": {
+          "base_position_site_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "calibration_uncertainty_m": 0.01,
+          "candidate_id": "base-1",
+          "captured_coverage": 0.95,
+          "method_qualification_status": "analytic_only"
+        },
+        "sensors": {
+          "camera": "rgb-v1"
+        }
+      },
+      "schema_version": "maintained_site_task_testbed.v1",
+      "source_capture_bundles": [
+        {
+          "bundle_id": "capture-1",
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "version": "3"
+        }
+      ],
+      "supersedes": [],
+      "supported_condition_ranges": {
+        "lighting_lux": [
+          300,
+          600
+        ]
+      },
+      "target_regions": [
+        {
+          "captured_coverage": 0.9,
+          "position_site_m": [
+            0.6,
+            0.1,
+            0.7
+          ],
+          "region_id": "tote-1",
+          "supporting_frames": [
+            "frame-1"
+          ]
+        }
+      ],
+      "task_distribution": {
+        "task_family": "laundry_folding",
+        "tasks": [
+          "move-item"
+        ]
+      },
+      "testbed_digest": "sha256:3538c1c61ed6908e0a9fdd164b5bbfa061c259f0faa95425e653e379f24ae1ed",
+      "testbed_id": "local-run-testbed",
+      "validation_envelope": {
+        "robot_placement_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "version": "1"
+    },
+    "decision_evidence_request": {
+      "available_physical_evidence": [],
+      "budget": {
+        "max_cost_usd": 0.0,
+        "max_latency_seconds": 10.0
+      },
+      "candidates": [
+        {
+          "robot_id": "fixture-arm"
+        }
+      ],
+      "claims": [
+        {
+          "acceptable_false_safe_risk": 0.05,
+          "claim_id": "reach-tote",
+          "claim_type": "reachability",
+          "controller_action_representation": {
+            "type": "joint_position"
+          },
+          "desired_confidence_or_coverage": {
+            "minimum_coverage": 0.8,
+            "minimum_independent_methods": 1
+          },
+          "embodiment": {
+            "robot_id": "fixture-arm"
+          },
+          "false_safe_consequence": "moderate",
+          "measurable_threshold": {
+            "operator": "inside",
+            "units": "m"
+          },
+          "permitted_abstention_behavior": {
+            "allowed": true
+          },
+          "sensors": {
+            "camera": "rgb-v1"
+          },
+          "site_domain_conditions": {
+            "lighting_lux": [
+              300,
+              600
+            ]
+          },
+          "subject": "tote-1",
+          "task_family": "rigid_object_pick_place"
+        }
+      ],
+      "deadline": "2026-07-30T00:00:00Z",
+      "decision_id": "decision-local-1",
+      "decision_question": "Can the exact robot analytically reach the tote region?",
+      "idempotency_key": "request-local-1",
+      "permitted_evidence_methods": [
+        "analytic_geometry_kinematics"
+      ],
+      "provenance": {
+        "caller_identity": "customer-approved-task"
+      },
+      "request_digest": "sha256:b468072f7ebd1963b595f4505f8cbf464446f97f3b5dcc18560607ff60d013ce",
+      "request_id": "request-local-1",
+      "requested_result_audience": "design_partner",
+      "restrictions": {
+        "external_processing_allowed": false
+      },
+      "schema_version": "decision_evidence_request.v1",
+      "testbed_digest": "sha256:3538c1c61ed6908e0a9fdd164b5bbfa061c259f0faa95425e653e379f24ae1ed",
+      "testbed_id": "local-run-testbed",
+      "testbed_version": "1"
+    },
+    "approved_task_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "capture_session_id": "walkthrough-job-1",
+    "intake_id": "capture-1",
+    "testbed_canonical_json": "{\"approved_task_definition\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":\"owner_approved\"},\"artifact_references\":{\"eval_cards\":[{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"uri\":\"fixture://eval\"}],\"evaluator\":{\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"uri\":\"fixture://evaluator\"},\"reset\":{\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"uri\":\"fixture://reset\"},\"scenario_cards\":[{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"uri\":\"fixture://scenario\"}],\"site_card\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"uri\":\"fixture://site\"},\"task_cards\":[{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"uri\":\"fixture://task\"}]},\"evidence_inventory\":[{\"evidence_id\":\"metric_geometry\"}],\"governance\":{\"allowed_uses\":[\"evaluation\"],\"consent\":\"accepted\",\"privacy\":\"cleared\",\"revocation\":\"version_invalidates_on_revocation\",\"rights\":\"accepted\"},\"invalidation_triggers\":[\"layout_change\"],\"known_unsupported_conditions\":[\"physical_task_success\"],\"lifecycle_state\":\"active\",\"physical_outcome_history_refs\":[],\"predecessor_testbed_digest\":null,\"robot_sensor_controller_bindings\":{\"controller_action_representation\":{\"type\":\"joint_position\"},\"embodiment\":{\"reach_envelope\":{\"maximum_m\":1.0,\"minimum_m\":0.1},\"robot_id\":\"fixture-arm\"},\"selected_robot_placement\":{\"base_position_site_m\":[0.0,0.0,0.0],\"calibration_uncertainty_m\":0.01,\"candidate_id\":\"base-1\",\"captured_coverage\":0.95,\"method_qualification_status\":\"analytic_only\"},\"sensors\":{\"camera\":\"rgb-v1\"}},\"schema_version\":\"maintained_site_task_testbed.v1\",\"source_capture_bundles\":[{\"bundle_id\":\"capture-1\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"3\"}],\"supersedes\":[],\"supported_condition_ranges\":{\"lighting_lux\":[300,600]},\"target_regions\":[{\"captured_coverage\":0.9,\"position_site_m\":[0.6,0.1,0.7],\"region_id\":\"tote-1\",\"supporting_frames\":[\"frame-1\"]}],\"task_distribution\":{\"task_family\":\"laundry_folding\",\"tasks\":[\"move-item\"]},\"testbed_id\":\"local-run-testbed\",\"validation_envelope\":{\"robot_placement_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"version\":\"1\"}",
+    "decision_request_canonical_json": "{\"available_physical_evidence\":[],\"budget\":{\"max_cost_usd\":0.0,\"max_latency_seconds\":10.0},\"candidates\":[{\"robot_id\":\"fixture-arm\"}],\"claims\":[{\"acceptable_false_safe_risk\":0.05,\"claim_id\":\"reach-tote\",\"claim_type\":\"reachability\",\"controller_action_representation\":{\"type\":\"joint_position\"},\"desired_confidence_or_coverage\":{\"minimum_coverage\":0.8,\"minimum_independent_methods\":1},\"embodiment\":{\"robot_id\":\"fixture-arm\"},\"false_safe_consequence\":\"moderate\",\"measurable_threshold\":{\"operator\":\"inside\",\"units\":\"m\"},\"permitted_abstention_behavior\":{\"allowed\":true},\"sensors\":{\"camera\":\"rgb-v1\"},\"site_domain_conditions\":{\"lighting_lux\":[300,600]},\"subject\":\"tote-1\",\"task_family\":\"rigid_object_pick_place\"}],\"deadline\":\"2026-07-30T00:00:00Z\",\"decision_id\":\"decision-local-1\",\"decision_question\":\"Can the exact robot analytically reach the tote region?\",\"idempotency_key\":\"request-local-1\",\"permitted_evidence_methods\":[\"analytic_geometry_kinematics\"],\"provenance\":{\"caller_identity\":\"customer-approved-task\"},\"request_id\":\"request-local-1\",\"requested_result_audience\":\"design_partner\",\"restrictions\":{\"external_processing_allowed\":false},\"schema_version\":\"decision_evidence_request.v1\",\"testbed_digest\":\"sha256:3538c1c61ed6908e0a9fdd164b5bbfa061c259f0faa95425e653e379f24ae1ed\",\"testbed_id\":\"local-run-testbed\",\"testbed_version\":\"1\"}",
+    "compiled_card_canonical_json": null,
+    "requested_by": {
+      "uid": "operator-1"
+    },
+    "idempotency_key": "question-gap",
+    "request_digest": "sha256:a45aa841abdc43442b4a9115746cb4e53b4b08bf1dcfe7b7d29857fc44f4b01e"
+  },
+  "capability_gap_publication": {
+    "schema_version": "job_evidence_publication.v1",
+    "request_id": "job-question-gap",
+    "job_id": "job-1",
+    "brief_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "request_digest": "sha256:a45aa841abdc43442b4a9115746cb4e53b4b08bf1dcfe7b7d29857fc44f4b01e",
+    "question": "Can the exact robot analytically reach the tote region?",
+    "state": "blocked",
+    "summary": "This task is recorded, but Blueprint cannot yet simulate and score this kind of work.",
+    "next_action": "Keep the video and brief. Blueprint can add the missing task adapter and scorer, or assess delivery options without a simulated comparison.",
+    "limitations": [
+      "Capability gap for task family 'laundry_folding': No supported task profile compiles and independently scores this task family yet. Missing: native_task_runtime_adapter, independent_task_scorer, reset_contract."
+    ],
+    "run_id": null,
+    "approved_task_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "decision_request_digest": "sha256:b468072f7ebd1963b595f4505f8cbf464446f97f3b5dcc18560607ff60d013ce",
+    "testbed_digest": "sha256:3538c1c61ed6908e0a9fdd164b5bbfa061c259f0faa95425e653e379f24ae1ed",
+    "plan_digest": null,
+    "evidence_plan": null,
+    "decision_envelope": null,
+    "evidence_plan_canonical_json": null,
+    "decision_envelope_canonical_json": null,
+    "authorization_candidates": [],
+    "sequence": 1,
+    "publication_digest": "sha256:8b11c10ecf88109b54c97c8eed6d8056d8fb87a4b352f76373d10d11910ab7f1"
   }
 }

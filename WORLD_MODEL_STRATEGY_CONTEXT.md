@@ -16,8 +16,8 @@ The owner direction of 2026-10-21 makes dependable work at an acceptable total
 cost the buying decision. Identify a few complete, supportable solutions and
 real delivery partners; ordinary automation is eligible. Reuse permitted
 applicable evidence, run targeted tests only to resolve material uncertainty,
-and use physical trials when physical truth is needed. A job assessment may
-have zero evaluation runs. Keep the separate prospective fixed-arm proof and
+and use physical trials when physical truth is needed. Every assessment starts
+from retained job video and its capture-backed simulation. Keep the separate prospective fixed-arm proof and
 its exactly two frozen candidates unchanged.
 
 World models, classical simulators, reconstruction systems, 3DGS renderers,

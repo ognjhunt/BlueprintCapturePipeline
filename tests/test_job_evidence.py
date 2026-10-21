@@ -29,7 +29,7 @@ from tests.test_task_evaluation_run_control_plane import (
 )
 
 
-def _job(*, scientific=False):
+def _job(*, scientific=False, task_family=None):
     value = {
         "schema_version": "job_evidence_request.v1", "job_id": "job-1",
         "request_id": "job-question-1", "brief_digest": SHA_A,
@@ -44,6 +44,8 @@ def _job(*, scientific=False):
         testbed = _testbed()
         testbed.pop("testbed_digest")
         testbed["approved_task_definition"] = {"digest": SHA_A, "status": "owner_approved"}
+        if task_family:
+            testbed["task_distribution"] = {**testbed["task_distribution"], "task_family": task_family}
         testbed = MaintainedSiteTaskTestbed.from_mapping(testbed).to_mapping()
         native = _request(testbed)
         value.update({
@@ -87,6 +89,23 @@ def test_description_only_question_has_no_fake_capture_or_run(tmp_path):
     conflict["request_id"] = "second-request"
     with pytest.raises(JobEvidenceError, match="immutable_conflict"):
         store.submit(_seal(conflict))
+
+
+def test_unsupported_task_family_keeps_request_and_names_gap_without_a_run(tmp_path, monkeypatch):
+    _catalog(tmp_path, monkeypatch)
+    store = JobEvidenceStore(tmp_path / "jobs", tmp_path / "runs")
+    job = _job(scientific=True, task_family="laundry_folding")
+    blocked = store.submit(job)
+    assert blocked["state"] == "blocked"
+    assert blocked["run_id"] is None and blocked["evidence_plan"] is None
+    assert blocked["testbed_digest"] == job["testbed"]["testbed_digest"]
+    assert any("Capability gap for task family 'laundry_folding'" in row for row in blocked["limitations"])
+    assert not (tmp_path / "runs").exists()
+    # A retried delivery returns the same record and never plans a run.
+    assert store.submit(job) == blocked
+    with pytest.raises(JobEvidenceError, match="job_evidence_not_executable"):
+        store.execute(job["request_id"], job["request_digest"], {"role": "human", "identity": "operator-1"})
+    assert store.inspect(job["request_id"]) == blocked
 
 
 def test_real_native_plan_executes_local_evidence_once_and_preserves_verdict(tmp_path, monkeypatch):
@@ -259,6 +278,7 @@ def test_python_producer_wire_examples_still_match_actual_execution(tmp_path, mo
     assert examples["development_only"] is True
     store = JobEvidenceStore(tmp_path / "jobs", tmp_path / "runs")
     assert store.submit(examples["description_request"]) == examples["description_publication"]
+    assert store.submit(examples["capability_gap_request"]) == examples["capability_gap_publication"]
     native = examples["native_request"]
     assert store.submit(native) == examples["native_planned"]
     assert store.execute(native["request_id"], native["request_digest"], {

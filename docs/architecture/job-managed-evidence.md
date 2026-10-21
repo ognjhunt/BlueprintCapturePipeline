@@ -3,8 +3,8 @@
 In the existing WebApp job workflow, a Blueprint operator can choose the job's
 published fixed-arm setup and prepare a run without inviting a technology team
 to operate it. Only an exact current permitted job/task scene is offered.
-Description-only jobs and jobs with sufficient existing evidence proceed through
-the commercial review without a scene or evaluation run.
+A job without retained video waits for it; a job whose task has no supported
+scene or configuration keeps its video and reports that capability gap.
 
 The managed action reuses `configured-scene-offerings/:launchId/evaluation-setup`
 and `evaluation-runs`, the published setup, preparation worker, and canonical
@@ -41,3 +41,17 @@ before the Pipeline producer. No deployment or provider execution is implied by
 these source changes. Reproducible software-only transport fixtures live in
 `tests/fixtures/managed_job_publication_v1/`; their generator runs local analytic
 evidence and emits an incomplete-policy abstention, never a simulator or robot.
+
+## Capability routing
+
+`src/blueprint_pipeline/job_capability_routing.py` routes a job's declared task
+family against explicit task, embodiment and policy profiles built from the
+existing registries. A supported profile returns complete configurations
+(robot, tool, observation/action schema, controller, runtime, adapter and
+pinned policy identity). A family without a native adapter and independent
+scorer is published as `blocked` with its exact capability gap and no run is
+planned; the job keeps its video and brief. Unavailable robots (G1 pending a
+verified episode and reviewed terms; Atlas, not accessible) and non-runnable
+policies stay listed with their reasons. A new site on a supported profile
+needs only data; a new task family or embodiment needs its adapter,
+reset/scoring and evidence work plus one profile entry.
