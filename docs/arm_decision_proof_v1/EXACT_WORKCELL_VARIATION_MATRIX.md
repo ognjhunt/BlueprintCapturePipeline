@@ -123,7 +123,24 @@ parameters during static preflight, before provider allocation or policy queries
 A task-family template or a generated exact-workcell dimension cannot widen that
 profile by passing a new parameter name.
 
-Connecting the full schedule requires a runtime adapter that consumes its exact
+`exact_workcell_native_runtime.py` now provides the native target adapter for
+supported scalar terms. `prepare_native_runtime_cell` verifies the frozen
+matrix/cell and immutable source plan, checks scene/task/object/embodiment
+identities, and calls the existing scene-plan setters. It requires absolute
+native nominal values and declared units; it does not interpret a dimension
+name ending in `delta` as an offset. Use `native_runtime_embodiment_digest` to
+bind the source robot, cameras and cadence in the request. Unavailable targets,
+categorical targets and articulated link friction without an exact selector
+remain blocked.
+
+After building and resetting that prepared plan, `read_native_runtime_cell`
+uses the existing native readback adapter and returns the digest-bound
+`exact_workcell_reset_application.v1` consumed by the collector. The caller must
+bind its prepared plan digest before construction. This receipt proves only
+parameter application/readback. Full scientific reset, episodes, controls,
+scoring, observation media and provider teardown retain their existing owners.
+
+Connecting the full schedule still requires an execution adapter that consumes its exact
 cell, reset and episode bindings; applies and independently reads every admitted
 target; runs both controls and frozen policies on those same cells; and retains
 the media/lifecycle/scorer artifacts consumed by `collect_evaluation_evidence`.
