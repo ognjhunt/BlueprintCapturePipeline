@@ -43,7 +43,7 @@ def synthetic_depth_png_bytes(synthetic_depth_raw: np.ndarray) -> bytes:
     """In-memory 16-bit grayscale PNG bytes of the synthetic depth map."""
     pytest.importorskip("PIL")
     from PIL import Image as PILImage
-    img = PILImage.fromarray(synthetic_depth_raw, mode="I;16")
+    img = PILImage.fromarray(synthetic_depth_raw)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
