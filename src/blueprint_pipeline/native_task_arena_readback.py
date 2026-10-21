@@ -1284,6 +1284,33 @@ class NativeRigidTaskArenaReadback:
             **joint_state,
             "measurement_authority": "native_rigid_root_pose_and_filtered_contact_sensors",
         }
+        if "gripper_channels" in self._built.plan["robot"]:
+            tool_readback = []
+            for channel in self._built.plan["robot"]["gripper_channels"]:
+                sensor_names = channel.get("task_contact_sensor_instances") or []
+                if not sensor_names:
+                    raise NativeTaskArenaReadbackError(["native_task_arena_tool_contact_readback_missing"])
+                forces = []
+                for name in sensor_names:
+                    try:
+                        sensor = scene[name]
+                    except (KeyError, TypeError) as exc:
+                        raise NativeTaskArenaReadbackError(["native_task_arena_tool_contact_readback_missing"]) from exc
+                    forces.extend(_force_vectors(getattr(getattr(sensor, "data", None), "force_matrix_w", None),
+                                                 sensor_id=name))
+                positions = {link: _body_position(robot, body_name=link,
+                                                error="native_task_arena_tool_body_missing")[0]
+                             for link in channel["contact_links"]}
+                tool_readback.append({
+                    "name": channel["name"], "tool_link": channel["tool_link"],
+                    "tool_link_position_world_m": _body_position(
+                        robot, body_name=channel["tool_link"], error="native_task_arena_tool_body_missing")[0],
+                    "contact_link_positions_world_m": positions,
+                    "task_contact_peak_force_n": max(math.sqrt(sum(v*v for v in vector)) for vector in forces),
+                    "task_contact_sensor_instances": list(sensor_names),
+                    "position_source": "native_declared_body_origins_not_calibrated_grasp_frames",
+                })
+            sample["tool_readback"] = tool_readback
         if destination_pose is not None:
             sample["destination_pose_world"] = destination_pose
         sample["grasp_frame_position_source"] = grasp_position_source

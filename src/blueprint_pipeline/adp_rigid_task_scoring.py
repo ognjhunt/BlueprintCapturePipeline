@@ -388,6 +388,11 @@ def score_rigid_task_episode(
                 "pose": pose,
                 "destination_pose": destination_pose,
                 "gripper_width_m": _finite(sample.get("gripper_width_m")),
+                **({"tool_widths_m": [_finite(tool.get("gripper_width_m"))
+                                        if isinstance(tool, Mapping) else None
+                                        for tool in sample["tool_states"]]}
+                   if isinstance(sample.get("tool_states"), list) else
+                   ({"tool_widths_m": [None]} if "tool_states" in sample else {})),
                 "task_contact_active": sample.get("task_contact_active"),
                 "support_contact_active": sample.get("support_contact_active"),
                 "robot_collision_failure": sample.get("robot_collision_failure"),
@@ -570,14 +575,16 @@ def score_rigid_task_episode(
     gripper_criteria = criteria["gripper_state"]
     gripper_threshold = gripper_criteria["threshold_m"]
     released = settle_available and all(
-        row["gripper_width_m"] is not None
-        and row["gripper_width_m"] >= gripper_threshold
+        (all(width is not None and width >= gripper_threshold for width in row["tool_widths_m"])
+         and bool(row["tool_widths_m"]) if "tool_widths_m" in row else (
+             row["gripper_width_m"] is not None and row["gripper_width_m"] >= gripper_threshold))
         and row["task_contact_active"] is False
         for row in settle
     ) if gripper_criteria["mode"] == "released" else False
     gripper_closed = settle_available and all(
-        row["gripper_width_m"] is not None
-        and row["gripper_width_m"] <= gripper_threshold
+        (all(width is not None and width <= gripper_threshold for width in row["tool_widths_m"])
+         and bool(row["tool_widths_m"]) if "tool_widths_m" in row else (
+             row["gripper_width_m"] is not None and row["gripper_width_m"] <= gripper_threshold))
         for row in settle
     ) if gripper_criteria["mode"] == "closed_at_most" else False
     task_contact_complete = settle_available and all(

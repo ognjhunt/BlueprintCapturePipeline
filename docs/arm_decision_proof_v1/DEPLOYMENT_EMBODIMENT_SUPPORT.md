@@ -4,7 +4,9 @@ Owner scope: October 21, 2026. This supports beta job-to-evidence preparation,
 ADP-011 / partner day 7 (freeze the actual partner stack), and ADP-050 / partner
 day 28 (integrate the selected policy/runtime). The completion artifact for this
 change is an internal operator shortlist that Pipeline can validate and resolve into exact
-integration requirements. A completed simulator episode is a separate artifact.
+integration requirements. The subsequent owner request, "Set this up for all
+embodiments", extends that seam to exact configured robots and the existing
+independent episode runtime. A completed simulator episode is a separate artifact.
 
 The existing embodiment registry, job capability routing, and internal job
 console are extended. Customer setup stays focused on the customer's actual
@@ -60,10 +62,12 @@ The visual catalog, compatible policy routes, asset sources and setup handoff
 are internal tools. Customer setup pages do not expose this catalog. The
 `GET /api/workspace/deployment-embodiments` endpoint requires admin/ops authority.
 
-Only staff can create or change a saved `support_option` planning description.
+Only staff can create or change a saved `support_option` description.
 Existing pending descriptions are preserved during ordinary customer edits,
-including after a catalog refresh. They cannot inherit an executable binding
-or start an evaluation.
+including after a catalog refresh. A catalog selection alone cannot inherit an
+executable binding. A complete matching manifest can use the existing setup,
+checkpoint and evaluation request, retaining the same scene access, rights and
+runtime admission. This general robot route does not extend the frozen ADP pair.
 
 The shortlist download uses `deployment_embodiment_shortlist.v1`. It binds the
 full catalog digest, optional source launch ID, exact embodiment IDs, ordered
@@ -87,14 +91,64 @@ Existing signed Pipeline HTTP admission exposes the same read-only operations:
 
 - `GET /api/live-pipeline/deployment-embodiment-support`
 - `POST /api/live-pipeline/deployment-embodiment-shortlist-preflight`
+- `GET /api/live-pipeline/deployment-embodiment-asset-recipes`
+- `POST /api/live-pipeline/deployment-embodiment-native-preflight`
 
-Both require the existing authenticated Website issuer. The POST accepts the
-downloaded shortlist directly and performs no provider or queue mutation.
+These require the existing authenticated Website issuer. Shortlist preparation
+accepts the downloaded shortlist. Native configuration inspection accepts only
+`embodiment_id` and `robot_embodiment`, reads the actual bounded HTTPS model,
+verifies its digest and USD joints/links/anchor, and returns
+`configured_not_executed` or `requires_setup`. It accepts no caller-authored
+scene and claims no task qualification. No provider or queue mutation occurs.
+
+In the existing admin job console, save the complete robot configuration,
+inspect it, register its exact policy endpoint/checkpoint and store its token
+through the separate protected credential action. Choose that saved setup and
+checkpoint when creating the normal evaluation request for an authorized job.
+The normal free-evaluation admission binds the real scene, checkpoint, license,
+qualification receipt and existing authority. Replacing a selected checkpoint
+at admission is rejected. No configuration action starts a paid worker.
+
+## Source preparation
+
+Pinned sources and actual limitations are available through the same setup flow
+and [source notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md). Retain a source closure
+without cloning whole repositories:
+
+```bash
+python -m blueprint_pipeline.deployment_embodiment_assets --list
+python -m blueprint_pipeline.deployment_embodiment_assets \
+  --embodiment i2rt_yam_bimanual --destination /path/to/new-yam-source-bundle
+```
+
+This retains the exact licensed source bytes, notices, Git blob identities and
+SHA-256 inventory. Retries verify and reuse the same bundle. Missing models,
+LFS payloads, tools, inertias or exact mounts remain explicit. The installed
+Isaac importer can prepare source assets on its existing approved runtime;
+unavailable importers do not trigger an installation or paid allocation.
+Single-arm sources are not automatically duplicated into an invented station.
+A full mounted model, declared reset/controller/tool/cameras and exact manifest
+are still needed for native execution. Imported source is not qualified evidence.
+
+On the existing installed and admitted Isaac worker, source conversion is an
+explicit command; it allocates no worker and never accepts a runtime license:
+
+```bash
+python -m blueprint_pipeline.deployment_embodiment_asset_import \
+  --source-bundle /path/to/new-yam-source-bundle \
+  --output /path/to/new-yam-import --fixed-base --initialize-isaac
+```
+
+The receipt retains importer identity/settings, output hashes and dependencies.
+An unavailable importer or Xacro dependency returns a named reason. Omit
+`--initialize-isaac` only when calling within an already initialized runtime.
+The source bundle must be retained when referenced dependencies remain in it.
 
 ## Exact robot structural preflight
 
-A selected single fixed arm can proceed through the existing team-embodiment
-USD checks using its real manifest, staged model and scene plan:
+A selected fixed single-arm or bimanual configuration can proceed through the
+existing team-embodiment USD checks using its real manifest, staged model and
+scene plan:
 
 ```bash
 python -m blueprint_pipeline.deployment_embodiment_support \
@@ -114,14 +168,34 @@ admission/readiness receipt. OEM identity remains self-declared until source
 provenance and licensing are checked: matching a SHA-256 and joint count does
 not establish that a USD is the manufacturer's robot.
 
-The native team path currently admits rigid pick/place tasks. Two-arm options
-retain `independent_bimanual_tool_channels_required`: the current team manifest
-has one normalized gripper channel, so two grippers must not silently share it.
-The pinned Axol URDF also models fixed grippers, requiring an actuated gripper
+The native team path admits rigid pick/place tasks. Single-arm v1 manifests,
+digests and action tensors remain readable. Bimanual configurations use
+`blueprint.robot_embodiment.v2`: ordered `grippers` replace the single `gripper`.
+Each channel declares its unique name and tool link, finger joints with open
+and closed positions, maximum opening, and contact links. The primary
+`tool_link` names one declared tool. All arm/finger joints have distinct names
+and position-driven joints have explicit reset positions. Each policy row
+contains the declared arm joints followed by one closure per tool in channel
+order. The observation includes closures and matching `gripper_names`; hidden
+object state and scoring truth remain local.
+
+The native runtime drives each arm and gripper independently, resets every
+joint, renders each declared mounted/world camera, and retains separate tool
+widths, joint positions, body origins and filtered task contact forces. Terminal
+release or closed-state criteria apply to every tool; aggregate contact clear
+requires both tools to let go. It never averages wrist positions or copies one
+gripper width across tools. A required retreat remains undetermined when the
+request lacks calibrated per-tool grasp geometry: raw body origins cannot
+inherit the frozen Franka's physical-pad calibration. A structural preflight
+is not an executed episode, admitted provider, or physical performance claim.
+
+The pinned Axol URDF models fixed grippers, requiring an actuated gripper
 asset. Dream additionally requires a controlled-observation API bridge,
 confirmed tool calibration, reviewed account/data terms and model identity.
 The Dream SDK's license does not establish hosted-service rights or recording
-behavior. These gaps stay visible when an option is shortlisted.
+behavior. Its 20 Hz interface also cannot inherit the frozen task's 15 Hz
+sampling cadence without a validated adapter. These gaps stay visible when an
+option is shortlisted; Dream account access has not been established here.
 
 Actual execution still enters the existing team candidate admission path with
 the exact policy interface, source/rights records, controlled observations,
