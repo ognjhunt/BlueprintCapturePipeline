@@ -65,7 +65,7 @@ def test_default_route_shows_which_robot_would_unlock_each_unavailable_policy():
     value = route_job_capabilities("rigid_pick_place", provided_inputs=("metric_object_geometry", "target_region"))
     rows = {(row["kind"], row["id"]): row for row in value["unavailable"]}
     dream = rows[("policy", "dreamlabs_dream1")]
-    assert "provider_api_key_not_configured" in dream["blockers"]
+    assert "provider_account_access_unverified" in dream["blockers"]
     assert "verified_robot_asset" in rows[("embodiment", "i2rt_yam_bimanual")]["missing"]
     assert ("embodiment", "universal_robots_ur5e") in rows
     # Three-camera DROID checkpoints match no listed robot rig yet.
