@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -2973,6 +2974,7 @@ def run_task_neutral_control(
     gripper_closed_command: float | None = None,
     output_dir: str | Path,
     qualification_allowed: bool = True,
+    episode_id: str | None = None,
 ) -> dict[str, Any]:
     """Run exactly one preregistered task-neutral control episode.
 
@@ -2982,6 +2984,8 @@ def run_task_neutral_control(
     paired helper while refusing any unrecognized control selector.
     """
 
+    if episode_id is not None and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,299}", episode_id) is None:
+        raise ControlEpisodeError(["task_control_episode_identity_invalid"])
     if control_id not in REQUIRED_CONTROLS:
         raise ControlEpisodeError(
             [f"task_control_selection_invalid:{control_id or 'missing'}"]
@@ -3002,7 +3006,7 @@ def run_task_neutral_control(
             else float(gripper_closed_command)
         ),
         output=output,
-        episode_id=f"{plan['cell_id']}-{control_id}",
+        episode_id=episode_id or f"{plan['cell_id']}-{control_id}",
         qualification_allowed=bool(qualification_allowed),
         receipt_annotations=diagnostic_receipt_annotations(
             plan, qualification_allowed=qualification_allowed

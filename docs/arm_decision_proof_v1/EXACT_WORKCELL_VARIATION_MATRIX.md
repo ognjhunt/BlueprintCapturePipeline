@@ -188,3 +188,71 @@ teardown, and provider-zero where paid infrastructure is used.
 Generating or publishing the matrix proves only deterministic preparation. It
 does not prove simulator execution, task success, policy ranking, physical
 transfer, deployment readiness, safety, or multi-site generalization.
+
+## Full native execution port
+
+`exact_workcell_evaluation_session.execute_evaluation_schedule` executes the
+frozen schedule, and `exact_workcell_native_session.NativeCellProcessRunner`
+binds it to the existing native `CellRuntime`, task-neutral control loop and
+DROID policy episode loop. The existing EvaluationRun execution registry names
+this adapter `exact_workcell_native_droid`. It accepts the fixed-arm rigid-task
+profile; it does not widen the Quick-10 canary, add a provider allocation route,
+or declare another embodiment/task executable.
+
+The admitted provider host calls the existing `execute_evaluation_run` API with
+its compiled immutable `evaluation_run.v1`, `allow_execution=True`, and ephemeral
+context containing `native_exact_workcell_config` plus
+`assert_native_execution_allowed`. That callback is the host's existing live
+permission/hold/deadline/spend recheck, not a new boolean approval. A generic
+execution gate or JSON CLI request without that runtime authority stays blocked.
+The spec's runtime `execution_adapter_id` is `exact_workcell_native_droid`; its
+task-scenario pack is the existing `evaluation_run_task_scenario_pack` projection
+of the published matrix. Config binds the compiled spec digest, exact source
+scene/plan/capture and job identity, frozen candidate execution specs, full
+policy-readiness/scenario-suite authorities, observation-integrity authority,
+retained provider policy identity root, native packet root, and independently
+qualified per-cell construction results. Its evidence root is the run output's
+`native_exact_workcell` directory. These are retained input references and
+existing authority, never placeholders synthesized by the execution driver.
+
+Each cell runs in a fresh Isaac interpreter. Both controls precede both policies;
+all four share the resolved cell, seed, native parameter readback and independently
+measured reset. Per-cell policy admissions preserve the frozen model/interface
+identities while binding actual construction and controls. Native camera, device,
+gripper, observed checkpoint identity, exact policy inputs, media, independent
+scoring and complete-duration rules remain those of the existing runners.
+
+Before an episode effect, the parent fsyncs its source-bound intent. Retained
+receipt bytes and sidecars are hashed before acknowledgement. A lost receipt
+acknowledgement adopts the retained sidecar; an ambiguous effect without one
+returns `reconciliation_required` and never purchases another episode. A changed
+capture/configuration cannot reuse the directory. The existing collector validates
+the union against every scheduled row and refuses missing media, controls, source
+bindings and reset parity. A count of 400 alone remains insufficient evidence.
+The enclosing managed allocator still owns watchdog, billing, teardown and
+provider-zero receipts; this driver grants no new spending authority.
+
+For the existing native provider bundle, pass
+`exact_workcell_native_bundle.full_matrix_native_runtime_sources()` as the
+`runtime_module_sources`/`runtime_extra_files` arguments to
+`build_native_task_arena_bundle`. This resolves the complete local import
+closure, including full rights/controls/media validators and the shared
+immutable writer, and packages their exact bytes through the existing bundle
+contract. The full session snapshots and hashes all supplied runtime inputs;
+changing a policy endpoint, authority, construction result or packet reference
+cannot resume the same retained session. This source staging function allocates
+and dispatches nothing.
+
+The control-plane default execution registry includes this native adapter.
+Inside the native-only provider bundle, construct the existing
+`EvaluationRunExecutionRegistry([ExactWorkcellNativeEvaluationRunExecutor()])`
+and pass it as `execution_registry` to `execute_evaluation_run`; other runtime
+families have their own bundles and dependencies.
+
+Offline tests exercise software orchestration/recovery, native adapter inputs and
+the actual deterministic control loop. Synthetic episode receipts deliberately
+remain blocked by the real collector. They do not establish a live GPU run,
+real policy outcomes, physical transfer or a deployment recommendation. A live
+full comparison still requires the exact qualified capture-derived inputs,
+reviewed policy authorities and an existing bounded allocation whose holds permit
+it; no new job is automatically dispatched by registering this adapter.

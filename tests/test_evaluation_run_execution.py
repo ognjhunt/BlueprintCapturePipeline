@@ -226,6 +226,7 @@ def test_missing_declared_evidence_blocks_claim_upgrade_without_rewriting_runtim
 
 def test_default_execution_registry_exposes_generic_and_kitchen_implementations() -> None:
     assert default_evaluation_run_execution_registry().manifest() == [
+        "exact_workcell_native_droid",
         "isaac_g1_kitchen_parity_compatibility",
         "robot_eval_job_orchestrator",
     ]
