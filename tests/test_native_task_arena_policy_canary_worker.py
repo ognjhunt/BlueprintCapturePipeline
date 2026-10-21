@@ -404,3 +404,42 @@ def test_preload_gate_requires_authority_bound_to_this_backend() -> None:
     invalid = preload_observation_integrity_gate({"schema_version": "x"}, appearance_render_backend=backend)
     assert invalid["policy_observation_integrity_passed"] is False
     assert invalid["blockers"]
+
+
+@pytest.mark.parametrize("parameters,code", [
+    ({"hinge_reset_angle_rad": 0.1}, "unsupported:hinge_reset_angle_rad"),
+    ({"robot_base_x_m": 1.2, "object_start_y_delta_m": 0.01}, "unsupported:robot_base_x_m"),
+    ({"object_start_y_delta_m": float("nan")}, "nonfinite_or_nonnumeric:object_start_y_delta_m"),
+    ({"dynamic_friction": -0.1}, "negative:dynamic_friction"),
+    ({"task_light_intensity_scale": True}, "nonfinite_or_nonnumeric:task_light_intensity_scale"),
+    ([], "parameters_invalid"),
+])
+def test_native_scenario_refuses_unapplied_or_invalid_variations_before_scene_access(parameters, code):
+    from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan
+
+    # Deliberately no scene assets: refusal must precede scene mutation or any
+    # backend/policy access, even when a supported variation accompanies it.
+    with pytest.raises(RuntimeError, match="policy_canary_scenario_.*" + code):
+        resolved_scene_plan({}, {"resolved_scenario": {"parameters": parameters}})
+
+
+def test_static_preflight_refuses_unapplied_variation_in_every_bound_cell(tmp_path):
+    import json
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import preflight_policy_canary_runtime_directory
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _stage_runtime_root
+
+    runtime, _ = _stage_runtime_root(tmp_path)
+    (runtime / "native_task_packet/native_task_arena_packet_request.v1.json").write_text("{}")
+    path = runtime / "runtime_inputs/policy_canary_runtime_inputs.json"
+    inputs = json.loads(path.read_text())
+    for cell in inputs["cells"]:
+        cell["resolved_scenario"]["parameters"]["hinge_reset_angle_rad"] = 0.1
+        cell["resolved_scenario_digest"] = canonical_digest(cell["resolved_scenario"])
+    inputs["runtime_inputs_digest"] = canonical_digest(inputs, digest_field="runtime_inputs_digest")
+    path.write_text(json.dumps(inputs))
+    report = preflight_policy_canary_runtime_directory(runtime)
+    unsupported = [item for item in report["blockers"] if "scenario_parameter_unsupported:hinge_reset_angle_rad" in item]
+    assert len(unsupported) == 10
+    assert report["status"] == "blocked"
+    assert report["provider_mutation_performed"] is False
+    assert report["candidate_policy_queried"] is False

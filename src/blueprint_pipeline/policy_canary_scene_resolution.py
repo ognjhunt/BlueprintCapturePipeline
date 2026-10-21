@@ -11,11 +11,43 @@ stays inside its line budget.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+
+# This is the native canary adapter's actual application/readback profile,
+# not the full task catalog or the exact-workcell matrix's declared dimensions.
+# New dimensions need both a native setter and independent readback before
+# being admitted here. Otherwise a source-bound cell would silently run at its
+# nominal state while retaining the requested, unapplied variation label.
+NATIVE_SCENARIO_PARAMETERS = frozenset({
+    "object_start_x_delta_m", "object_start_y_delta_m",
+    "object_yaw_delta_degrees", "external_camera_x_delta_m",
+    "task_light_intensity_scale", "dynamic_friction", "material_cousin",
+})
+
+
+def _validated_scenario_parameters(scenario: Mapping[str, Any]) -> dict[str, Any]:
+    raw = scenario.get("parameters", {})
+    if not isinstance(raw, Mapping):
+        raise RuntimeError("policy_canary_scenario_parameters_invalid")
+    if any(not isinstance(name, str) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,127}", name) is None for name in raw):
+        raise RuntimeError("policy_canary_scenario_parameter_name_invalid")
+    unsupported = sorted(set(raw) - NATIVE_SCENARIO_PARAMETERS)
+    if unsupported:
+        raise RuntimeError("policy_canary_scenario_parameter_unsupported:" + ",".join(unsupported))
+    for name, value in raw.items():
+        if name == "material_cousin":
+            continue  # Kept as an explicit diagnostic coverage gap below.
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise RuntimeError("policy_canary_scenario_parameter_nonfinite_or_nonnumeric:" + name)
+        if name in {"task_light_intensity_scale", "dynamic_friction"} and value < 0:
+            raise RuntimeError("policy_canary_scenario_parameter_negative:" + name)
+    return dict(raw)
 
 
 def _yaw_quaternion_xyzw(degrees: float) -> list[float]:
@@ -40,6 +72,10 @@ def resolved_scene_plan(
     *,
     task_success_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    raw_scenario = cell.get("resolved_scenario")
+    if not isinstance(raw_scenario, Mapping):
+        raise RuntimeError("policy_canary_resolved_scenario_invalid")
+    parameters = _validated_scenario_parameters(raw_scenario)
     plan = deepcopy(dict(base))
     aim = cell.get("operator_wrist_camera_aim")
     if aim is not None:
@@ -80,7 +116,6 @@ def resolved_scene_plan(
     scenario["seed"] = cell["seed"]
     if cell.get("resolved_scenario_digest") is not None:
         scenario["resolved_scenario_digest"] = cell["resolved_scenario_digest"]
-    parameters = dict(scenario.get("parameters") or {})
     applications: list[dict[str, Any]] = []
     coverage_gaps: list[dict[str, Any]] = []
     subject = next(row for row in plan["objects"] if row.get("task_subject") is True)
@@ -214,4 +249,4 @@ def resolved_scene_plan(
     return apply_droid_policy_canary_profile(plan)
 
 
-__all__ = ["resolved_scene_plan"]
+__all__ = ["NATIVE_SCENARIO_PARAMETERS", "resolved_scene_plan"]

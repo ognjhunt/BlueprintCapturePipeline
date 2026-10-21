@@ -108,6 +108,30 @@ tolerance before policy execution. A matrix or schedule is preparation evidence,
 not proof that Isaac ran, a policy acted, the task succeeded, or the ranking is
 valid.
 
+## Execution availability
+
+The matrix adapter registered in `evaluation_run_contract.py` is a compilation
+adapter. It does not register an execution implementation or allocate a runtime.
+`exact_workcell_variation_runtime` publishes the frozen schedule and independently
+joins retained episode artifacts; neither operation executes robot policies.
+
+The native paired-policy canary currently executes ten cells at the
+`diagnostic_policy_execution` ceiling. It is not the 100-cell experiment above.
+Its scene resolver declares its actual parameter application/readback profile in
+`policy_canary_scene_resolution.NATIVE_SCENARIO_PARAMETERS` and refuses unknown
+parameters during static preflight, before provider allocation or policy queries.
+A task-family template or a generated exact-workcell dimension cannot widen that
+profile by passing a new parameter name.
+
+Connecting the full schedule requires a runtime adapter that consumes its exact
+cell, reset and episode bindings; applies and independently reads every admitted
+target; runs both controls and frozen policies on those same cells; and retains
+the media/lifecycle/scorer artifacts consumed by `collect_evaluation_evidence`.
+An unavailable target must identify the missing native application/readback
+capability. Increasing the canary cell count or relabeling its result is not this
+integration. Existing execution authority, paid-resource admission, controls holds
+and physical-proof requirements remain unchanged.
+
 ## Immutable Artifacts
 
 The create-only publisher writes and fully reads back:
