@@ -127,3 +127,34 @@ def test_run_state_rejects_secrets_and_preserves_frozen_verdict(tmp_path) -> Non
     assert "authorization_required" in RUN_STATES
     assert "partially_decided" in RUN_STATES
     assert "abstained" in RUN_STATES
+
+
+@pytest.mark.parametrize("publication_completed", [False, True])
+def test_interrupted_event_commit_recovers_without_partial_or_duplicate_state(tmp_path, monkeypatch, publication_completed):
+    from blueprint_pipeline.core import immutable_file
+
+    original = immutable_file.os.link
+    arguments = {
+        "run_id": "run-restart", "from_state": None, "to_state": "testbed_ready",
+        "idempotency_key": "retained-transition", "actor": {"role": "pipeline"},
+        "binding": _binding(),
+    }
+
+    def interrupted(source, destination, **kwargs):
+        if destination.parent.name == "events":
+            if publication_completed:
+                original(source, destination, **kwargs)
+            raise OSError("worker interrupted during event commit")
+        return original(source, destination, **kwargs)
+
+    with monkeypatch.context() as interruption:
+        interruption.setattr(immutable_file.os, "link", interrupted)
+        with pytest.raises(OSError, match="worker interrupted"):
+            TaskEvaluationRunStateStore(tmp_path).transition(**arguments)
+
+    restarted = TaskEvaluationRunStateStore(tmp_path)
+    event = restarted.transition(**arguments)
+    assert event["already_exists"] is publication_completed
+    assert restarted.inspect("run-restart")["state"] == "testbed_ready"
+    assert len(list((tmp_path / "runs" / "run-restart" / "events").iterdir())) == 1
+    assert restarted.transition(**arguments)["event_digest"] == event["event_digest"]

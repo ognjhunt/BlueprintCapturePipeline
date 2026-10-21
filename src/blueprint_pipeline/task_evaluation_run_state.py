@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
+from .core.immutable_file import write_file_exclusive
 from .decision_evidence_contracts import canonical_digest, canonical_json
 
 
@@ -208,20 +209,22 @@ class TaskEvaluationRunStateStore:
             }
             event["event_digest"] = canonical_digest(event, digest_field="event_digest")
             path = root / "events" / f"{sequence:08d}-{event['event_digest'][7:]}.json"
-            with path.open("x", encoding="utf-8") as stream:
-                stream.write(canonical_json(event) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
+            write_file_exclusive(path, (canonical_json(event) + "\n").encode("utf-8"))
             self._write_projection(run, event)
             return {**event, "already_exists": False}
 
     def inspect(self, run_id: str) -> dict[str, Any]:
         run = _identifier(run_id, field="run_id")
-        events = self._events(run)
-        if not events:
+        root = self._run_root(run)
+        if not root.is_dir():
             raise TaskEvaluationRunStateError("run_state:not_found")
-        self._write_projection(run, events[-1])
-        return json.loads((self._run_root(run) / "state.json").read_text(encoding="utf-8"))
+        with (root / ".lock").open("a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            events = self._events(run)
+            if not events:
+                raise TaskEvaluationRunStateError("run_state:not_found")
+            self._write_projection(run, events[-1])
+            return json.loads((root / "state.json").read_text(encoding="utf-8"))
 
 
 __all__ = [

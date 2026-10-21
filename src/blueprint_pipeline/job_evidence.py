@@ -12,13 +12,12 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
-import os
 import re
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from .core.immutable_file import write_file_exclusive
 from .core.security_controls import strict_identifier
 from .decision_evidence_contracts import (
     DecisionEnvelope,
@@ -178,29 +177,11 @@ def _read(path: Path) -> dict[str, Any]:
 
 def _immutable(path: Path, value: Mapping[str, Any]) -> None:
     body = (canonical_json(value) + "\n").encode()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Publish complete bytes exclusively, as in capture_lifecycle._write_once.
-    # A killed worker must not leave a truncated immutable request or receipt
-    # which no retry is then permitted to repair.
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(body)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            if path.read_bytes() != body:
-                raise JobEvidenceError("job_evidence_immutable_conflict")
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
+        write_file_exclusive(path, body)
+    except FileExistsError:
+        if path.read_bytes() != body:
+            raise JobEvidenceError("job_evidence_immutable_conflict")
 
 
 class JobEvidenceStore:

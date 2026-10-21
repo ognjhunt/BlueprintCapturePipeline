@@ -224,9 +224,9 @@ def test_retained_cancellation_survives_worker_restart(tmp_path, monkeypatch, cr
 
 def test_publication_write_failure_resumes_without_partial_receipt_or_duplicate_run(tmp_path, monkeypatch):
     _catalog(tmp_path, monkeypatch)
-    from blueprint_pipeline import job_evidence
+    from blueprint_pipeline.core import immutable_file
     job = _job(scientific=True)
-    original = job_evidence.os.link
+    original = immutable_file.os.link
 
     def interrupted(source, destination, **kwargs):
         if destination.parent.name == "publications":
@@ -234,7 +234,7 @@ def test_publication_write_failure_resumes_without_partial_receipt_or_duplicate_
         return original(source, destination, **kwargs)
 
     with monkeypatch.context() as interruption:
-        interruption.setattr(job_evidence.os, "link", interrupted)
+        interruption.setattr(immutable_file.os, "link", interrupted)
         with pytest.raises(OSError, match="worker interrupted"):
             JobEvidenceStore(tmp_path / "jobs", tmp_path / "runs").submit(job)
     publications = tmp_path / "jobs" / "requests" / job["request_id"] / "publications"
