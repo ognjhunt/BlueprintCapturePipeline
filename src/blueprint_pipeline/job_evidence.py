@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from .core.security_controls import strict_identifier
+from .job_capability_routing import route_job_capabilities, routing_limitations, testbed_task_family
 from .decision_evidence_contracts import (
     DecisionEnvelope,
     DecisionEvidenceRequest,
@@ -267,6 +268,16 @@ class JobEvidenceStore:
                     next_action="Agree the decision-relevant task, candidate and acceptance criteria. Reuse permitted evidence where sufficient; collect only the missing observations needed for the question.",
                     limitations=[*limitations, "No scoped scientific request or qualified testbed is attached."],
                 )
+            # Route by declared task family before planning: work without a
+            # native adapter and scorer keeps its record and names the gap.
+            routing = route_job_capabilities(testbed_task_family(request["testbed"]))
+            if routing["status"] == "capability_gap":
+                return self._publish(
+                    request, state="blocked",
+                    summary="This task is recorded, but Blueprint cannot yet simulate and score this kind of work.",
+                    next_action="Keep the video and brief. Blueprint can add the missing task adapter and scorer, or assess delivery options without a simulated comparison.",
+                    limitations=[*limitations, *routing_limitations(routing)],
+                )
             try:
                 catalog = load_task_evaluation_method_catalog()
             except TaskEvaluationMethodCatalogError as exc:
@@ -337,7 +348,11 @@ class JobEvidenceStore:
                 return current
             if current["state"] == "cancelled":
                 raise JobEvidenceError("job_evidence_cancelled")
-            preparation = _read(self._root(request_id) / "preparation.json")
+            preparation_path = self._root(request_id) / "preparation.json"
+            if not preparation_path.is_file():
+                # Unbound questions and capability gaps never planned a run.
+                raise JobEvidenceError("job_evidence_not_executable")
+            preparation = _read(preparation_path)
             candidates = preparation["authorization_candidates"]
             references = [row["adapter_reference"] for row in candidates]
             try:

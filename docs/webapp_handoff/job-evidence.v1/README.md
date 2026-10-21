@@ -1,9 +1,10 @@
 # Jobs and scientific evidence
 
-Owner direction: October 21, 2026. The beta starts with a recurring job and an
-agreed brief. An options assessment may use zero evaluation runs. Capture,
-simulation and policy access are conditional means of resolving a useful
-question. The existing commercial workflow owns proposals, selection, agreement
+Owner direction: October 21, 2026. The beta starts with retained video of a
+recurring job and the brief its analysis drafts; assessment cannot advance
+without that video. Capture-backed simulation and supported policy execution
+answer the job's technical questions; unsupported work is an explicit
+capability gap. The existing commercial workflow owns proposals, selection, agreement
 and customer-reported outcomes.
 
 ## Operating flow

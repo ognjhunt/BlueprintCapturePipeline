@@ -16,11 +16,12 @@ remain in git history and do not authorize work.
 Blueprint has two current horizons, one for each active program.
 
 The **free beta** horizon is **one real recurring job with a supportable
-customer choice, a separately agreed pilot and recorded outcomes**. A site can
-start with a description alone. Blueprint agrees the brief, reuses applicable
-evidence, resolves decision-relevant uncertainty only where needed, and helps
-the customer compare real delivery proposals. Zero evaluation runs can be the
-right evidence plan. The customer and deployment partner own their physical
+customer choice, a separately agreed pilot and recorded outcomes**. A site
+starts with video of the job; the existing analysis drafts the brief.
+Blueprint agrees the brief, prepares the capture-backed simulation, runs the
+supported configurations it can access, and helps the customer compare real
+delivery proposals. Unsupported work keeps its video and an explicit
+capability gap. The customer and deployment partner own their physical
 agreement; choosing a website proposal does not create it.
 
 The **Arm Decision Proof** horizon is **one prospectively physically validated

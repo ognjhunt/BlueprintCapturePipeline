@@ -11,8 +11,8 @@ to *read* conflicts; it is not a license to ignore doctrine.
 
 The owner decision of 2026-10-21 updates the free beta to a job-first
 automation service alongside Arm Decision Proof v1. It supersedes mandatory
-simulation, invited-team evaluation and one-click booking. A commercial job can
-use existing evidence with zero evaluation runs. Pipeline owns scientific
+simulation, invited-team evaluation and one-click booking. Assessment requires
+retained job video (owner correction, 2026-10-21). Pipeline owns scientific
 results and authoritative Physical Outcome Joins; WebApp owns briefs, proposals,
 selection, agreement records and separately permitted reported outcomes.
 `doctrine/` is the canonical source synchronized across all three repos. The
