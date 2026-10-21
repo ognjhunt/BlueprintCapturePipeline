@@ -200,7 +200,8 @@ this adapter `exact_workcell_native_droid`. It accepts the fixed-arm rigid-task
 profile; it does not widen the Quick-10 canary, add a provider allocation route,
 or declare another embodiment/task executable.
 
-The admitted provider host calls the existing `execute_evaluation_run` API with
+To use this port, an already-admitted provider host must call the existing
+`execute_evaluation_run` API with
 its compiled immutable `evaluation_run.v1`, `allow_execution=True`, and ephemeral
 context containing `native_exact_workcell_config` plus
 `assert_native_execution_allowed`. That callback is the host's existing live
@@ -257,3 +258,10 @@ real policy outcomes, physical transfer or a deployment recommendation. A live
 full comparison still requires the exact qualified capture-derived inputs,
 reviewed policy authorities and an existing bounded allocation whose holds permit
 it; no new job is automatically dispatched by registering this adapter.
+
+The current configured-scene managed activation remains the diagnostic canary
+path. It does not assemble this full-run context, and its single canonical
+construction receipt and bounded canary authority cannot substitute for exact
+per-cell construction or authorize 400 episodes. A separately admitted full
+runtime host is still required for that managed launch connection. Neither
+source preparation nor the registered execution port creates this authority.
