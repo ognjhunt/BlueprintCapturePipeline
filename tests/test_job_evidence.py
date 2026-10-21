@@ -275,6 +275,7 @@ def test_python_producer_wire_examples_still_match_actual_execution(tmp_path, mo
     assert examples["development_only"] is True
     store = JobEvidenceStore(tmp_path / "jobs", tmp_path / "runs")
     assert store.submit(examples["description_request"]) == examples["description_publication"]
+    assert store.submit(examples["capability_gap_request"]) == examples["capability_gap_publication"]
     native = examples["native_request"]
     assert store.submit(native) == examples["native_planned"]
     assert store.execute(native["request_id"], native["request_digest"], {
