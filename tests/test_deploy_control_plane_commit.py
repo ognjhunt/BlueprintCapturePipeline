@@ -1323,38 +1323,52 @@ def test_door_and_iteration_wrappers_use_trusted_sources() -> None:
         assert "--source-repo $CP " in text, wrapper
 
 
-@pytest.mark.parametrize("failure", [None, "install", "readback"])
+@pytest.mark.parametrize("failure", [None, "install", "readback", "timeout", "interrupt"])
 def test_shared_runtime_sync_uses_hashed_release_delta_as_service_user(tmp_path, monkeypatch, failure):
     manifest = tmp_path / "deploy/systemd/production-control-plane-requirements.txt"
     manifest.parent.mkdir(parents=True)
     manifest.write_text("pillow==13.0.0 \\\n    --hash=sha256:" + "a" * 64 + "\n")
-    calls = []
+    calls, killed, reaped = [], [], []
 
-    def run(argv, **kwargs):
+    def start(argv, **kwargs):
         calls.append(argv)
         assert argv[:4] == ["/usr/sbin/runuser", "-u", "blueprint", "--"]
         assert argv[4:6] == [str(Path(sys.executable).absolute()), "-I"]
         assert kwargs["cwd"] == "/"
         assert set(kwargs["env"]) == {"PATH", "HOME", "LC_ALL", "PIP_CONFIG_FILE"}
-        if "pip" in argv:
-            assert "--require-hashes" in argv and "--no-deps" in argv
-            assert "--only-binary=:all:" in argv
-            assert argv[-1] == str(manifest)
-            if failure == "install":
-                raise subprocess.CalledProcessError(1, argv, stderr="private child details")
-            return SimpleNamespace(stdout="")
-        assert json.loads(kwargs["input"]) == ["pillow"]
-        return SimpleNamespace(stdout=json.dumps({"pillow": "12.3.0" if failure == "readback" else "13.0.0"}))
+        assert kwargs["start_new_session"] is True
 
-    monkeypatch.setattr(deploy.subprocess, "run", run)
+        def communicate(*, input, timeout):
+            if "pip" in argv:
+                assert "--require-hashes" in argv and "--no-deps" in argv
+                assert "--only-binary=:all:" in argv
+                assert argv[-1] == str(manifest)
+                assert input is None and timeout == 180
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                if failure == "interrupt":
+                    raise KeyboardInterrupt()
+                return "", "private child details"
+            assert json.loads(input) == ["pillow"]
+            return json.dumps({"pillow": "12.3.0" if failure == "readback" else "13.0.0"}), ""
+
+        return SimpleNamespace(pid=1000 + len(calls), returncode=1 if failure == "install" else 0,
+            communicate=communicate, wait=lambda **_kwargs: reaped.append(len(calls)),
+            stdout=io.StringIO(), stderr=io.StringIO())
+
+    monkeypatch.setattr(deploy.subprocess, "Popen", start)
+    monkeypatch.setattr(deploy.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
     if failure:
-        with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_shared_runtime_dependency_sync_failed$"):
+        expected = KeyboardInterrupt if failure == "interrupt" else deploy.ControlPlaneDeployError
+        with pytest.raises(expected):
             deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
     else:
         receipt = deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
         assert receipt["versions"] == {"pillow": "13.0.0"}
         assert receipt["account"] == "blueprint"
-    assert len(calls) == (1 if failure == "install" else 2)
+    assert len(calls) == (1 if failure in {"install", "timeout", "interrupt"} else 2)
+    assert killed == [(1001 + index, signal.SIGKILL) for index in range(len(calls))]
+    assert len(reaped) == len(calls)
 
 
 def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, object]:

@@ -4541,19 +4541,39 @@ def _synchronize_shared_control_plane_dependencies(*, release_path: str | Path) 
         prefix = ["/usr/sbin/runuser", "-u", DEFAULT_SERVICE_ACCOUNT, "--", python, "-I"]
         environment = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
                        "PIP_CONFIG_FILE": "/dev/null"}
-        subprocess.run(
+
+        def run(command: list[str], *, timeout: int, input_text: str | None = None) -> str:
+            process = subprocess.Popen(command, stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd="/", env=environment,
+                start_new_session=True)
+            try:
+                output, _errors = process.communicate(input=input_text, timeout=timeout)
+                if process.returncode != 0:
+                    raise subprocess.CalledProcessError(process.returncode, command)
+                return output
+            finally:
+                # Direct-argv runuser keeps pip in this owned process group.
+                # Reap before releasing deploy locks, including on interruption
+                # or when runuser exits while a descendant still writes.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+                process.stdout.close()
+                process.stderr.close()
+
+        run(
             [*prefix, "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
              "--no-deps", "--only-binary=:all:", "--require-hashes", "--requirement", str(requirements)],
-            stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=180,
-            cwd="/", env=environment,
+            timeout=180,
         )
-        observed = subprocess.run(
+        observed = run(
             [*prefix, "-c", "import importlib.metadata as m,json,sys; "
              "print(json.dumps({name:m.version(name) for name in json.load(sys.stdin)}))"],
-            input=json.dumps(sorted(pins)), capture_output=True, text=True, check=True,
-            timeout=20, cwd="/", env=environment,
+            input_text=json.dumps(sorted(pins)), timeout=20,
         )
-        versions = json.loads(observed.stdout)
+        versions = json.loads(observed)
         if versions != pins:
             raise ValueError("installed production dependencies differ")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
