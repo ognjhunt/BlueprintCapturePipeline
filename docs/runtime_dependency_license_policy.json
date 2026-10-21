@@ -1586,19 +1586,19 @@
     },
     "certifi==2026.10.19": {
       "license_expression": "MPL-2.0",
-      "approved": false,
+      "approved": true,
       "owner": "@ognjhunt",
       "reviewed_on": "2026-10-21",
       "expires_on": "2027-10-21",
-      "source": "Owner exact-version approval pending. https://pypi.org/pypi/certifi/2026.10.19/json; exact deployment wheel SHA256 42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b; complete embedded LICENSE SHA256 e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7 is byte-identical to previously approved certifi==2026.6.17; verified 2026-10-21."
+      "source": "Human exact-version approval 2026-10-21; docs/runtime_dependency_license_approval_20261021.md. https://pypi.org/pypi/certifi/2026.10.19/json; exact deployment wheel SHA256 42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b; complete embedded LICENSE SHA256 e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7 is byte-identical to previously approved certifi==2026.6.17; verified 2026-10-21."
     },
     "pillow==13.0.0": {
       "license_expression": "MIT-CMU",
-      "approved": false,
+      "approved": true,
       "owner": "@ognjhunt",
       "reviewed_on": "2026-10-21",
       "expires_on": "2027-10-21",
-      "source": "Owner exact-version approval pending. https://pypi.org/pypi/pillow/13.0.0/json; exact deployment wheel SHA256 42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca; complete embedded LICENSE SHA256 dda12a98c1979cf3d94df1cff45d27a4cb3f04a60c76f76902ac54cac03ec0ce is byte-identical to previously approved pillow==12.3.0; verified 2026-10-21."
+      "source": "Human exact-version approval 2026-10-21; docs/runtime_dependency_license_approval_20261021.md. https://pypi.org/pypi/pillow/13.0.0/json; exact deployment wheel SHA256 42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca; complete embedded LICENSE SHA256 dda12a98c1979cf3d94df1cff45d27a4cb3f04a60c76f76902ac54cac03ec0ce is byte-identical to previously approved pillow==12.3.0; verified 2026-10-21."
     }
   }
 }
