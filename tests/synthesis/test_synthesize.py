@@ -134,6 +134,7 @@ class TestSynthesizeView:
 
         # 256×192 depth PNG (ARKit resolution)
         depth_arr = np.full((DEPTH_H, DEPTH_W), 2000, dtype=np.uint16)
+        depth_arr[0, 0] = 0
         depth_img = PILImage.fromarray(depth_arr)
         buf = io.BytesIO()
         depth_img.save(buf, format="PNG")
@@ -168,6 +169,13 @@ class TestSynthesizeView:
         (index_dir / "site_reference_index.jsonl").write_text(
             json.dumps(rec) + "\n", encoding="utf-8"
         )
+
+        resized_depth = synth._load_ref_depth(
+            rec, storage_root=root, bucket="bucket", depth_scale=0.001
+        )
+        assert resized_depth.shape == (IMAGE_H, IMAGE_W)
+        assert resized_depth[0, 0] == 0.0
+        np.testing.assert_array_equal(resized_depth[resized_depth > 0], 2.0)
 
         output = tmp_path / "out.jpg"
         result = synthesize_view(

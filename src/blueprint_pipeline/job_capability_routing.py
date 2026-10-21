@@ -18,17 +18,17 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
-from .droid_policy_canary_embodiment import (
-    DROID_ARENA_SOURCE_PATH,
-    DROID_ARENA_SOURCE_REVISION,
-    DROID_EMBODIMENT_ID,
+from .task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY, EmbodimentProfile
+from .task_evaluation_policy_candidate_registry import (
+    HOSTED_REGISTRY,
+    REGISTRY,
+    HostedPolicyCandidate,
+    PolicyCandidate,
 )
-from .task_evaluation_g1_catalog import G1_EMBODIMENT_ID
-from .task_evaluation_policy_candidate_registry import REGISTRY, PolicyCandidate
-from .task_evaluation_rigid_relocation_native_adapter import NATIVE_PHYSICS_FREQUENCY_HZ
 
 ROUTING_SCHEMA = "job_capability_routing.v1"
 RoutingStatus = Literal["supported", "capability_gap", "needs_input"]
+EMBODIMENT_PROFILES = EMBODIMENT_REGISTRY
 
 
 @dataclass(frozen=True)
@@ -40,21 +40,6 @@ class TaskProfile:
     success_predicate: str
     aliases: tuple[str, ...]
     required_inputs: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class EmbodimentProfile:
-    embodiment_id: str
-    robot: str
-    tool: str
-    observation_schema_ids: tuple[str, ...]
-    action_schema_ids: tuple[str, ...]
-    controller: str
-    simulator_runtime_id: str | None
-    sensor_reference: str
-    task_profile_ids: tuple[str, ...]
-    available: bool
-    reason: str | None = None
 
 
 # First supported profiles. Each names the native adapter that compiles it and
@@ -81,61 +66,41 @@ TASK_PROFILES: tuple[TaskProfile, ...] = (
     ),
 )
 
-EMBODIMENT_PROFILES: tuple[EmbodimentProfile, ...] = (
-    EmbodimentProfile(
-        embodiment_id=DROID_EMBODIMENT_ID,
-        robot="Franka Emika Panda",
-        tool="Robotiq 2F-85",
-        observation_schema_ids=("droid_two_camera_robot_state_v1",),
-        action_schema_ids=("droid_absolute_joint_position_v1",),
-        controller=f"absolute joint position at 15 Hz over {NATIVE_PHYSICS_FREQUENCY_HZ} Hz physics",
-        simulator_runtime_id="isaac_native_arena_v1",
-        sensor_reference=f"{DROID_ARENA_SOURCE_PATH}@{DROID_ARENA_SOURCE_REVISION}",
-        task_profile_ids=("rigid_pick_place", "articulated_open_close"),
-        available=True,
-    ),
-    EmbodimentProfile(
-        embodiment_id=G1_EMBODIMENT_ID,
-        robot="Unitree G1",
-        tool="Dex3 hand",
-        observation_schema_ids=("humanoidarena_head_rgb_state64_v1",),
-        action_schema_ids=("humanoidarena_semantic_v3",),
-        controller="SONIC whole-body controller",
-        simulator_runtime_id="isaac_native_arena_g1_v1",
-        sensor_reference="configs/g1_humanoidarena_checkpoint_inventory.v1.json",
-        task_profile_ids=("rigid_pick_place",),
-        available=False,
-        reason="No production policy-canary profile has executed a verified G1 episode on a site scene, and its checkpoint terms are pending review.",
-    ),
-    EmbodimentProfile(
-        embodiment_id="boston_dynamics_atlas",
-        robot="Boston Dynamics Atlas",
-        tool="Atlas hands",
-        observation_schema_ids=(),
-        action_schema_ids=(),
-        controller="not accessible",
-        simulator_runtime_id=None,
-        sensor_reference="none",
-        task_profile_ids=(),
-        available=False,
-        reason="No Atlas runtime, simulator embodiment, policy checkpoint or delivery channel is accessible to Blueprint.",
-    ),
-)
-
 
 def task_profile_for(task_family: str | None) -> TaskProfile | None:
     value = (task_family or "").strip().lower()
     return next((row for row in TASK_PROFILES if value in row.aliases), None)
 
 
-def _policy_row(policy: PolicyCandidate) -> dict[str, Any]:
+def _policy_row(policy: PolicyCandidate | HostedPolicyCandidate) -> dict[str, Any]:
+    if isinstance(policy, HostedPolicyCandidate):
+        return {
+            "candidate_id": policy.candidate_id, "display_name": policy.display_name,
+            "kind": "hosted_api", "provider": policy.provider, "model_id": policy.model_id,
+            "version_identity": policy.version_identity, "version_frozen": policy.version_frozen,
+            "adapter_id": policy.adapter_id, "terms_status": policy.terms_status,
+            "sends_site_images_to_provider": policy.sends_site_images_to_provider,
+        }
     return {
         "candidate_id": policy.candidate_id, "display_name": policy.display_name,
+        "kind": "checkpoint",
         "checkpoint_uri": policy.checkpoint_uri, "checkpoint_revision": policy.checkpoint_revision,
         "checkpoint_digest": policy.checkpoint_digest, "adapter_id": policy.adapter_id,
         "license_id": policy.license_id, "commercial_use": policy.commercial_use,
         "minimum_gpu_memory_gb": policy.minimum_gpu_memory_gb,
     }
+
+
+def _actions(policy: PolicyCandidate | HostedPolicyCandidate) -> tuple[str, ...]:
+    return policy.action_schema_ids if isinstance(policy, HostedPolicyCandidate) else (policy.action_schema_id,)
+
+
+def _matches(policy: PolicyCandidate | HostedPolicyCandidate, body: EmbodimentProfile) -> str | None:
+    """The shared action schema when the policy's interface fits this body's declared one."""
+
+    if policy.observation_schema_id not in body.observation_schema_ids:
+        return None
+    return next((item for item in _actions(policy) if item in body.action_schema_ids), None)
 
 
 def route_job_capabilities(
@@ -147,11 +112,12 @@ def route_job_capabilities(
     """Return supported complete configurations, or the exact reason none can run."""
 
     requested = tuple(dict.fromkeys(embodiment_ids))
-    known = {row.embodiment_id for row in EMBODIMENT_PROFILES}
+    known = {row.embodiment_id for row in EMBODIMENT_REGISTRY}
     unavailable: list[dict[str, Any]] = [
         {"kind": "embodiment", "id": item, "reason": "No embodiment profile is registered for this robot."}
         for item in requested if item not in known
     ]
+    unmatched: list[dict[str, Any]] = []
     profile = task_profile_for(task_family)
     configurations: list[dict[str, Any]] = []
     missing_inputs: list[str] = []
@@ -166,25 +132,32 @@ def route_job_capabilities(
         }
     else:
         missing_inputs.extend(item for item in profile.required_inputs if item not in provided_inputs)
-        for body in EMBODIMENT_PROFILES:
-            if requested and body.embodiment_id not in requested:
-                continue
+        bodies = [row for row in EMBODIMENT_REGISTRY if not requested or row.embodiment_id in requested]
+        policies: list[PolicyCandidate | HostedPolicyCandidate] = [*REGISTRY, *HOSTED_REGISTRY]
+        listed: set[str] = set()
+        matched_policies: set[str] = set()
+        for body in bodies:
             if profile.profile_id not in body.task_profile_ids:
                 if requested:
                     unavailable.append({"kind": "embodiment", "id": body.embodiment_id,
                                         "reason": body.reason or f"No {profile.profile_id} adapter is admitted for this robot."})
                 continue
             if not body.available:
-                unavailable.append({"kind": "embodiment", "id": body.embodiment_id, "reason": body.reason})
-                continue
-            for policy in REGISTRY:
-                if (policy.observation_schema_id not in body.observation_schema_ids
-                        or policy.action_schema_id not in body.action_schema_ids):
+                unavailable.append({"kind": "embodiment", "id": body.embodiment_id, "reason": body.reason,
+                                    "missing": list(body.missing)})
+            for policy in policies:
+                action = _matches(policy, body)
+                if action is None:
                     continue
+                matched_policies.add(policy.candidate_id)
                 if not policy.runnable:
-                    unavailable.append({"kind": "policy", "id": policy.candidate_id,
-                                        "reason": policy.reason or policy.status,
-                                        "blockers": list(policy.blockers)})
+                    if policy.candidate_id not in listed:
+                        listed.add(policy.candidate_id)
+                        unavailable.append({"kind": "policy", "id": policy.candidate_id,
+                                            "reason": policy.reason or policy.status,
+                                            "blockers": list(policy.blockers)})
+                    continue
+                if not body.available:
                     continue
                 configurations.append({
                     "task_profile_id": profile.profile_id,
@@ -193,11 +166,16 @@ def route_job_capabilities(
                     "success_predicate": profile.success_predicate,
                     "embodiment_id": body.embodiment_id, "robot": body.robot, "tool": body.tool,
                     "observation_schema_id": policy.observation_schema_id,
-                    "action_schema_id": policy.action_schema_id,
+                    "action_schema_id": action,
                     "controller": body.controller, "simulator_runtime_id": body.simulator_runtime_id,
                     "sensor_reference": body.sensor_reference,
                     "policy": _policy_row(policy),
                 })
+        unmatched = [
+            {"kind": "policy", "id": policy.candidate_id,
+             "reason": "No listed robot setup declares this policy's camera and action interface."}
+            for policy in policies if policy.candidate_id not in matched_policies
+        ]
         if not configurations and gap is None:
             gap = {"task_family": task_family, "missing": ["runnable_configuration"],
                    "reason": "No available robot and runnable policy pair supports this task profile."}
@@ -208,6 +186,7 @@ def route_job_capabilities(
         "schema_version": ROUTING_SCHEMA, "task_family": task_family,
         "task_profile_id": profile.profile_id if profile else None, "status": status,
         "configurations": configurations, "unavailable": unavailable,
+        "unmatched_policies": unmatched,
         "missing_inputs": missing_inputs, "capability_gap": gap,
         "claim_boundary": "Routing lists what Blueprint can run; it is not a performance, delivery or physical-capability result.",
     }

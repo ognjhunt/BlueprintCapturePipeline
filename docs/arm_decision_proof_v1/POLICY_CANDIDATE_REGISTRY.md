@@ -31,6 +31,32 @@ Pending checkpoints are pinned from the Hugging Face tree listing
 (`hub_tree_listing`), not downloaded bytes. That is enough to name the exact
 revision; it is not enough to run it.
 
+## Hosted API policies
+
+`HOSTED_REGISTRY` lists policies that run behind a provider's API. Nothing is
+downloaded, so an entry records the provider's model ID, whether the provider
+promises that ID never changes (`version_frozen`), the credential variable it
+needs, and the provider's terms and data-use status. Hosted entries are never
+part of the two-candidate pair or the scene setup's checkpoint list. A hosted
+entry may become `runnable` only with a hosted runtime adapter, reviewed
+terms, a configured credential and no open blockers
+(`hosted_registry_violations`). Sending site images to a provider also needs
+the job's existing external-processing permission.
+
+| Candidate | Provider | Status | Why |
+| --- | --- | --- | --- |
+| `dreamlabs_dream1` | Dream Labs | integration_pending | No API key yet (`DREAM_LABS_API_KEY`); terms and data use not published; request/response schema unverified; no hosted runtime adapter; no runnable two-arm, three-camera robot setup; no integration canary |
+
+Robot setups a policy can run on are listed in
+`task_evaluation_embodiment_registry.py`. Only the DROID Franka + Robotiq 2F-85
+setup is `runnable`. G1 and Atlas are unavailable. The I2RT YAM and two-arm
+Franka Research 3 declare Dream-1's interface but are not integrated. UR5e,
+UR10e, FANUC CRX-10iA, ABB GoFa, KUKA LBR iiwa 14, Kinova Gen3 and xArm 7 are
+listed as not integrated, each with its missing asset, controller, camera-rig,
+reset and canary work. `job_capability_routing` matches policies to setups by
+their declared camera and action interfaces. It reports which setup would
+unlock which unavailable policy.
+
 ## Gates
 
 `registry_violations()` fails if any entry overstates what can run: a runnable

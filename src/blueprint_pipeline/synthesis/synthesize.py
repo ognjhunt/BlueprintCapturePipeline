@@ -498,8 +498,8 @@ def _load_ref_depth(
     tgt_h = int(intr.get("height") or depth.shape[0])
     if depth.shape != (tgt_h, tgt_w):
         from PIL import Image as PILImage
-        # Resize the existing float32 metre samples directly. Re-encoding them
-        # as uint16 before resize truncates valid depths through float rounding.
+        # Resize the loaded metric values directly; a uint16 round trip can
+        # truncate a valid observation by one millimetre through float rounding.
         depth_img = PILImage.fromarray(depth)
         depth_img = depth_img.resize((tgt_w, tgt_h), resample=PILImage.NEAREST)
         depth = np.array(depth_img, dtype=np.float32)

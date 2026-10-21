@@ -19,13 +19,14 @@ IMAGE_H, IMAGE_W = 1440, 1920
 
 
 class TestLoadDepthPng:
-    def test_uint16_loads_as_metres(self, synthetic_depth_png_bytes, tmp_path):
+    def test_uint16_loads_as_metres(self, synthetic_depth_png_bytes, synthetic_depth_raw, tmp_path):
         """uint16 PNG values are millimetres; loading with scale=0.001 → metres."""
         p = tmp_path / "depth.png"
         p.write_bytes(synthetic_depth_png_bytes)
         depth = load_depth_png(p, depth_scale=0.001)
         assert depth.dtype == np.float32
         assert depth.shape == (DEPTH_H, DEPTH_W)
+        np.testing.assert_array_equal(depth, synthetic_depth_raw.astype(np.float32) * 0.001)
         # Values should be in roughly [0.5, 5.0] metres (500–5000 mm fixture)
         valid = depth[depth > 0]
         assert valid.min() >= 0.49
