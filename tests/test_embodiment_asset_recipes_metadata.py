@@ -59,7 +59,13 @@ def test_public_sources_use_immutable_commits_not_invented_compiled_model_digest
 def test_close_names_never_select_an_unverified_variant_or_collapse_existing_droid():
     rows = _recipes()
     assert rows["droid_franka_robotiq_2f85"]["status"] == "existing_runtime"
-    assert rows["yaskawa_gp20"]["source"] is None
+    gp20 = rows["yaskawa_gp20"]["source"]
+    assert gp20["entry_path"] == "motoman_gp25_support/urdf/gp25_20.xacro"
+    assert gp20["revision"] == "846fbbc57c60223f12bf4795ea6404982d57709e"
+    assert gp20["license_path"] == "motoman_gp25_support/package.xml"
+    assert gp20["package_roots"]["motoman_resources"] == "motoman_resources"
+    assert "motoman_gp25_support/meshes/gp25_20" in gp20["include_paths"]
+    assert "motoman_gp25_support/meshes/gp25" in gp20["include_paths"]
     assert "GP20HL is a different variant" in rows["yaskawa_gp20"]["reason"]
     for identity in ("standard_bots_ro1", "standard_bots_core", "abb_gofa_crb15000", "boston_dynamics_atlas"):
         assert rows[identity]["source"] is None
@@ -72,6 +78,8 @@ def test_close_names_never_select_an_unverified_variant_or_collapse_existing_dro
 def test_source_specific_physics_tools_and_camera_gaps_remain_visible():
     rows = _recipes()
     assert "inertial_parameters_not_present_in_gp12_macro" in rows["yaskawa_gp12"]["missing"]
+    assert "inertial_parameters_not_present_in_gp25_20_macro" in rows["yaskawa_gp20"]["missing"]
+    assert "confirm_exact_gp25_20_variant_YR_1_06VX25_20_A0" in rows["yaskawa_gp20"]["composition_required"]
     assert "left_and_right_gripper_urdf_joints_are_fixed" in rows["almond_axol"]["missing"]
     yam = rows["i2rt_yam_bimanual"]
     assert yam["source"]["source_arm_count"] == 2

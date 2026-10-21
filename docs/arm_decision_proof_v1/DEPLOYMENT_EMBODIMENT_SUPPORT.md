@@ -8,6 +8,10 @@ integration requirements. The subsequent owner request, "Set this up for all
 embodiments", extends that seam to exact configured robots and the existing
 independent episode runtime. A completed simulator episode is a separate artifact.
 
+The subsequent runnable implementation, exact Dream protocol, native arm servo,
+portable dependency staging and remaining provider/asset inputs are described in
+[configured runtime execution](DEPLOYMENT_RUNTIME_EXECUTION.md).
+
 The existing embodiment registry, job capability routing, and internal job
 console are extended. Customer setup stays focused on the customer's actual
 robot and policy. The existing DROID executable pair
@@ -126,7 +130,8 @@ SHA-256 inventory. Retries verify and reuse the same bundle. Missing models,
 LFS payloads, tools, inertias or exact mounts remain explicit. The installed
 Isaac importer can prepare source assets on its existing approved runtime;
 unavailable importers do not trigger an installation or paid allocation.
-Single-arm sources are not automatically duplicated into an invented station.
+Single-arm sources can be composed using explicit station parameters; there are
+no default physical mount transforms or generated substitute tools.
 A full mounted model, declared reset/controller/tool/cameras and exact manifest
 are still needed for native execution. Imported source is not qualified evidence.
 
@@ -139,10 +144,16 @@ python -m blueprint_pipeline.deployment_embodiment_asset_import \
   --output /path/to/new-yam-import --fixed-base --initialize-isaac
 ```
 
-The receipt retains importer identity/settings, output hashes and dependencies.
+The receipt retains importer identity/settings, output hashes and a relocatable
+dependency closure. Additional content stays inside the prepared directory;
+the original source bundle remains provenance and is not a runtime path dependency.
 An unavailable importer or Xacro dependency returns a named reason. Omit
 `--initialize-isaac` only when calling within an already initialized runtime.
-The source bundle must be retained when referenced dependencies remain in it.
+The public one-file inspection route still requires a single self-contained
+USD; closed multi-file preparations use operator-owned closure staging.
+For an explicit two-arm station, the source composer and importer's optional
+`--station-parameters` preserve source geometry while requiring both recorded
+simulation mounts; see the [composition contract](EMBODIMENT_ASSET_RECIPE_SOURCES.md#explicit-bimanual-source-composition).
 
 ## Exact robot structural preflight
 

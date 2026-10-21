@@ -52,13 +52,16 @@ from .native_task_arena_policy_canary_session import (
     TEAM_ADMISSION_SCHEMA_VERSION,
     TEAM_RUN_KIND,
 )
-from .policy_interface_binding import TEAM_HTTPS_INTERFACES
+from .policy_interface_binding import TEAM_HTTPS_INTERFACES, TEAM_ROBOT_INTERFACES
+from .dreamlabs_policy_client import (
+    INTERFACE_ID as DREAM_INTERFACE, DreamLabsPolicySpec, provider_metadata_digest, validate_provider_model_record,
+    validate_robot_contract,
+)
 from .robot_free_probe_gate import (
     RobotFreeProbeGateError,
     require_robot_free_probe,
     task_success_contract_binding,
 )
-from .team_embodiment import POLICY_INTERFACE_ID as TEAM_ROBOT_INTERFACE
 from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
 from .team_embodiment import CONTROL_HZ, TeamEmbodimentError, camera_names, validate_embodiment_manifest
 from .team_evaluation_plan import (
@@ -71,6 +74,7 @@ from .team_evaluation_plan import (
 CANDIDATE_SCHEMA = "blueprint.team_policy_candidate.v1"
 RIGHTS_SCHEMA = "blueprint.team_policy_candidate_rights.v1"
 LEASE_SCHEMA = "blueprint.team_policy_credential_lease_availability.v1"
+PROVIDER_DISCLOSURE_SCHEMA = "blueprint.dreamlabs_provider_disclosure.v1"
 FOUNDER_SCHEMA = "blueprint.team_candidate_founder_admission.v1"
 EXECUTION_SPEC_SCHEMA = "native_task_arena_policy_canary_execution_spec.v1"
 RUNTIME = "team_evaluation"
@@ -109,9 +113,26 @@ def _self_digest_ok(value: Mapping[str, Any], field: str) -> bool:
 def team_robot_manifest(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
     """The validated manifest of a candidate on its own robot, None on the DROID interface; raise when invalid."""
 
-    if candidate.get("policy_interface_id") != TEAM_ROBOT_INTERFACE:
+    if candidate.get("policy_interface_id") not in TEAM_ROBOT_INTERFACES:
         return None
     return validate_embodiment_manifest(_m(candidate.get("embodiment")))
+
+
+def _dream_config(candidate: Mapping[str, Any], manifest: Mapping[str, Any] | None) -> dict[str, Any]:
+    delivery = _m(candidate.get("delivery"))
+    config = validate_robot_contract(manifest or {}, delivery.get("policy_config"))
+    record = delivery.get("provider_model_metadata")
+    if (not isinstance(record, Mapping) or record.get("id") != config["model_id"]
+            or provider_metadata_digest(record) != delivery.get("model_identity_digest")):
+        raise ValueError("dreamlabs_provider_metadata_binding_invalid")
+    validate_provider_model_record(record, model_id=config["model_id"])
+    DreamLabsPolicySpec(policy_id=delivery.get("team_policy_id"), endpoint_url=delivery.get("endpoint_url"),
+                        metadata_url=delivery.get("metadata_url"), allowed_origin="https://api.dreamlabs.ai",
+                        model_identity_digest=delivery.get("model_identity_digest"),
+                        embodiment_id=manifest["embodiment_id"], action_chunk_rows=delivery.get("action_chunk_rows"),
+                        open_loop_horizon=delivery.get("open_loop_horizon"), camera_names=camera_names(manifest),
+                        **config).validate()
+    return config
 
 
 def _candidate_blockers(candidate: Mapping[str, Any]) -> list[str]:
@@ -131,7 +152,7 @@ def _candidate_blockers(candidate: Mapping[str, Any]) -> list[str]:
         blockers.append("team_candidate_cannot_impersonate_frozen_candidate")
     if manifest is not None:
         rows_allowed = (int(manifest["action_chunk_rows"]),)
-    expected_preset = (TEAM_ROBOT_ID if candidate.get("policy_interface_id") == TEAM_ROBOT_INTERFACE
+    expected_preset = (TEAM_ROBOT_ID if candidate.get("policy_interface_id") in TEAM_ROBOT_INTERFACES
                        else DROID_POLICY_CANARY_PRESET_ID)
     if candidate.get("embodiment_preset_id") != expected_preset:
         blockers.append("team_candidate_interface_mismatch:embodiment")
@@ -142,8 +163,13 @@ def _candidate_blockers(candidate: Mapping[str, Any]) -> list[str]:
     else:
         urls = [str(delivery.get(key) or "") for key in ("endpoint_url", "metadata_url")]
         origins = {f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" for url in urls}
-        if (any(urlsplit(url).scheme != "https" or not urlsplit(url).hostname or urlsplit(url).username
-                or urlsplit(url).password or urlsplit(url).fragment for url in urls) or len(origins) != 1):
+        if candidate.get("policy_interface_id") == DREAM_INTERFACE:
+            try:
+                _dream_config(candidate, manifest)
+            except (TypeError, ValueError, KeyError):
+                blockers.append("team_candidate_dream_contract_invalid")
+        elif (any(urlsplit(url).scheme != "https" or not urlsplit(url).hostname or urlsplit(url).username
+                  or urlsplit(url).password or urlsplit(url).fragment for url in urls) or len(origins) != 1):
             blockers.append("team_candidate_endpoint_invalid")
         if (delivery.get("action_chunk_rows") not in rows_allowed or type(delivery.get("open_loop_horizon")) is not int
                 or not 1 <= delivery["open_loop_horizon"] <= int(delivery.get("action_chunk_rows") or 0)
@@ -166,14 +192,68 @@ def _rights_blockers(rights: Mapping[str, Any], candidate: Mapping[str, Any]) ->
     return []
 
 
+def validate_provider_disclosure(rights: Mapping[str, Any], *, team_id: str, checkpoint_id: str,
+                                 candidate_id: str, model_id: str, scene_revision_digest: str,
+                                 now: datetime | None = None) -> dict[str, Any]:
+    """An operator's explicit hosted-disclosure authority, not inferred from a licence.
+
+    The receipt accepts the referenced provider retention/training terms. It
+    does not assert that the inference server disables either practice.
+    """
+    raw = rights.get("provider_disclosure")
+    if not isinstance(raw, Mapping):
+        raise TeamCandidateAdmissionError(["team_candidate_provider_disclosure_required"])
+    receipt = dict(raw)
+    fields = {"schema_version", "team_id", "checkpoint_id", "candidate_id", "model_id", "scene_revision_digest",
+              "inference_origin", "metadata_origin", "approved_by", "approval_reference", "accepted_at_iso",
+              "disclosure", "provider_terms", "sdk_extra_recording", "hosted_billing", "disclosure_digest"}
+    accepted = _time(receipt.get("accepted_at_iso"))
+    terms = _m(receipt.get("provider_terms"))
+
+    def reference(value: Any) -> bool:
+        return isinstance(value, str) and bool(value.strip()) and len(value) <= 2048 and not any(ord(c) < 32 for c in value)
+
+    billing = _m(receipt.get("hosted_billing"))
+    if (set(billing) != {"payer", "authorized_by", "approval_reference", "policy_inference_usage_authorized",
+                         "blueprint_billing_permitted"}
+            or billing.get("payer") != "team_account" or not reference(billing.get("authorized_by"))
+            or not reference(billing.get("approval_reference")) or billing.get("policy_inference_usage_authorized") is not True
+            or billing.get("blueprint_billing_permitted") is not False):
+        raise TeamCandidateAdmissionError(["team_candidate_hosted_policy_billing_authority_required"])
+    if (set(receipt) != fields or receipt.get("schema_version") != PROVIDER_DISCLOSURE_SCHEMA
+            or not _self_digest_ok(receipt, "disclosure_digest")
+            or any(receipt.get(key) != expected for key, expected in {
+                "team_id": team_id, "checkpoint_id": checkpoint_id, "candidate_id": candidate_id,
+                "model_id": model_id, "scene_revision_digest": scene_revision_digest,
+                "inference_origin": "https://api.dreamlabs.ai", "metadata_origin": "https://platform.dreamlabs.ai"}.items())
+            or not _DIGEST.fullmatch(str(scene_revision_digest)) or not reference(receipt.get("approved_by"))
+            or not reference(receipt.get("approval_reference")) or accepted is None
+            or accepted > (now or datetime.now(timezone.utc))
+            or receipt.get("disclosure") != {"rgb": True, "robot_state": True, "task_instruction": True}
+            or set(terms) != {"retention_terms_reference", "training_terms_reference", "accepted"}
+            or terms.get("accepted") is not True
+            or not all(reference(terms.get(key)) for key in ("retention_terms_reference", "training_terms_reference"))
+            or receipt.get("sdk_extra_recording") is not False):
+        raise TeamCandidateAdmissionError(["team_candidate_provider_disclosure_terms_invalid"])
+    # Avoid Python's True==1 equality admitting numeric disclosure claims.
+    if any(value is not True for value in receipt["disclosure"].values()):
+        raise TeamCandidateAdmissionError(["team_candidate_provider_disclosure_terms_invalid"])
+    return receipt
+
+
 def validate_candidate_rights(rights: Mapping[str, Any], *, team_id: str,
-                              checkpoint_id: str, candidate_id: str) -> None:
+                              checkpoint_id: str, candidate_id: str, policy_interface_id: str | None = None,
+                              model_id: str | None = None, scene_revision_digest: str | None = None,
+                              now: datetime | None = None) -> None:
     """Validate static run rights before consuming a team's bearer lease."""
 
     blockers = _rights_blockers(_m(rights), {"team_id": team_id, "checkpoint_id": checkpoint_id,
                                             "candidate_id": candidate_id})
     if blockers:
         raise TeamCandidateAdmissionError(blockers)
+    if policy_interface_id == DREAM_INTERFACE:
+        validate_provider_disclosure(rights, team_id=team_id, checkpoint_id=checkpoint_id, candidate_id=candidate_id,
+                                      model_id=model_id, scene_revision_digest=scene_revision_digest, now=now)
 
 
 def _lease_blockers(lease: Mapping[str, Any], candidate: Mapping[str, Any], now: datetime) -> list[str]:
@@ -233,6 +313,15 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
     blockers += [*_candidate_blockers(candidate), *_rights_blockers(_m(rights), candidate),
                  *_lease_blockers(_m(credential_lease), candidate, moment), *_budget_blockers(_m(budget), purpose),
                  *_founder_blockers(_m(founder_admission), candidate, revision, moment)]
+    disclosure = None
+    if candidate.get("policy_interface_id") == DREAM_INTERFACE:
+        try:
+            disclosure = validate_provider_disclosure(_m(rights), team_id=candidate.get("team_id"),
+                checkpoint_id=candidate.get("checkpoint_id"), candidate_id=candidate.get("candidate_id"),
+                model_id=_m(_m(candidate.get("delivery")).get("policy_config")).get("model_id"),
+                scene_revision_digest=revision, now=moment)
+        except TeamCandidateAdmissionError as exc:
+            blockers.extend(exc.blockers)
     contract: dict[str, Any] = {}
     try:
         raw_contract = _m(scene.get("task_success_contract"))
@@ -294,6 +383,10 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
         "adp_qualified_evidence_eligible": False, "physical_performance_claimed": False,
         "admission_digest": "",
     }
+    if candidate["policy_interface_id"] == DREAM_INTERFACE:
+        admission["delivery"].update(policy_config=_dream_config(candidate, admission["embodiment"]),
+                                     provider_model_metadata=dict(delivery["provider_model_metadata"]))
+        admission["provider_disclosure"] = disclosure
     admission["admission_digest"] = canonical_digest(admission, digest_field="admission_digest")
     return admission
 
@@ -304,6 +397,14 @@ def validate_admission(admission: Mapping[str, Any]) -> dict[str, Any]:
             or value.get("run_kind") != TEAM_RUN_KIND or value.get("runtime") != RUNTIME
             or not _self_digest_ok(value, "admission_digest")):
         raise TeamCandidateAdmissionError(["team_candidate_admission_invalid"])
+    if value.get("policy_interface_id") == DREAM_INTERFACE:
+        try:
+            _dream_config(value, team_robot_manifest(value))
+        except (TypeError, ValueError, KeyError):
+            raise TeamCandidateAdmissionError(["team_candidate_dream_contract_invalid"]) from None
+        validate_provider_disclosure(value, team_id=value.get("team_id"), checkpoint_id=value.get("checkpoint_id"),
+            candidate_id=value.get("candidate_id"), model_id=value["delivery"]["policy_config"]["model_id"],
+            scene_revision_digest=value.get("scene_revision_digest"))
     if value.get("evidence_scope") == "simulation":
         # Freshness is rechecked with the operator authority at closeout. Retained
         # admission validation verifies structure without invalidating old history.
@@ -362,6 +463,8 @@ def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mappi
                    "policy_interface_id": value["policy_interface_id"]}
     if manifest is not None:
         policy_spec.update(embodiment_id=manifest["embodiment_id"], camera_names=camera_names(manifest))
+    if value["policy_interface_id"] == DREAM_INTERFACE:
+        policy_spec.update(_dream_config(value, manifest))
     spec = {
         "schema_version": EXECUTION_SPEC_SCHEMA, "candidate_id": value["candidate_id"],
         "policy_interface_id": value["policy_interface_id"],
@@ -371,6 +474,9 @@ def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mappi
         "candidate_rights_binding": {"status": "admitted", "rights_digest": value["rights_digest"]},
         "team_candidate_admission_digest": value["admission_digest"],
         "checkpoint_digest": delivery["model_identity_digest"],
+        **({"checkpoint_identity_basis": "provider_metadata", "weights_identity_verified": False}
+           if value["policy_interface_id"] == DREAM_INTERFACE else {}),
+        **({"provider_disclosure": dict(value["provider_disclosure"])} if value["policy_interface_id"] == DREAM_INTERFACE else {}),
         "runtime_identity_digest": canonical_digest(policy_spec),
         "worker_identity_requirement": "none", "require_observed_eef_support": False,
         "task_success_contract": dict(task_success_contract),
@@ -394,4 +500,5 @@ __all__ = [
     "team_robot_manifest",
     "validate_admission",
     "validate_candidate_rights",
+    "validate_provider_disclosure",
 ]

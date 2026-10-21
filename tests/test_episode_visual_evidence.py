@@ -9,6 +9,7 @@ from blueprint_pipeline.adp_prospective_design import validate_episode_evidence_
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.episode_visual_evidence import (
     _encode_episode_video,
+    _encode_or_resume_episode_video,
     _ffmpeg_encode_command,
     _ffprobe_command,
     finalize_failed_policy_visual_evidence,
@@ -19,6 +20,30 @@ from blueprint_pipeline.episode_visual_evidence import (
     persist_observation_frame,
     validate_multicamera_frame_manifest,
 )
+
+
+def test_review_video_normalizes_only_derived_pixels_and_binds_source_transforms(tmp_path):
+    import hashlib
+    from PIL import Image
+
+    small, large = tmp_path / "decoded-policy.png", tmp_path / "native-terminal.png"
+    Image.fromarray(np.full((16, 32, 3), 70, dtype=np.uint8)).save(small)
+    Image.fromarray(np.full((24, 32, 3), 140, dtype=np.uint8)).save(large)
+    before = {path: path.read_bytes() for path in (small, large)}
+    video = tmp_path / "review.mp4"
+    first = _encode_or_resume_episode_video([small, large], video_path=video, frames_per_second=4.)
+    resumed = _encode_or_resume_episode_video([small, large], video_path=video, frames_per_second=4.)
+    assert first["frame_count"] == first["decoded_frame_count"] == 2
+    normalization = first["frame_normalization"]
+    assert resumed["frame_normalization"] == normalization
+    assert normalization["lossless_source_frames_unchanged"] is True
+    assert normalization["target_resolution"] == [32, 16]
+    assert [row["operation"] for row in normalization["frames"]] == ["identity", "resize"]
+    assert normalization["frames"][1]["source_resolution"] == [32, 24]
+    assert normalization["frames"][1]["resampling"] == "opencv_inter_linear"
+    assert normalization["frames"][1]["source_png_sha256"] == "sha256:" + hashlib.sha256(before[large]).hexdigest()
+    assert normalization["normalization_digest"] == canonical_digest(normalization, digest_field="normalization_digest")
+    assert {path: path.read_bytes() for path in (small, large)} == before
 
 
 def test_review_video_uses_explicit_libx264_avc1_commands(tmp_path) -> None:

@@ -54,6 +54,7 @@ CANARY_SHIPPED_PACKAGE_FILES = ("core/__init__.py", "core/security_controls.py")
 # The team path the shared worker imports: the team's HTTPS clients and its own robot.
 TEAM_RUNTIME_MODULE_NAMES = (
     "team_candidate_policy_client.py", "droid_https_policy_client.py", "team_policy_https_client.py",
+    "dreamlabs_policy_client.py", "team_arm_kinematics.py",
     "team_policy_episode_outcome.py", "team_evaluation_worker_retention.py",
     "native_task_arena_execution_contract.py",
     "team_embodiment.py", "team_embodiment_runtime.py", "native_task_robot_contact_topology.py",

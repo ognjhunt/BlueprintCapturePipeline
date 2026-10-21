@@ -261,13 +261,43 @@
     {
       "embodiment_id": "yaskawa_gp20",
       "arm_count": 1,
-      "status": "source_unavailable",
-      "source": null,
-      "composition_required": [],
-      "missing": [
-        "exact_gp20_asset_and_reuse_license"
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/ros-industrial/motoman",
+        "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+        "entry_path": "motoman_gp25_support/urdf/gp25_20.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "motoman_gp25_support/package.xml",
+        "license_url": "https://github.com/ros-industrial/motoman/blob/846fbbc57c60223f12bf4795ea6404982d57709e/motoman_gp25_support/package.xml",
+        "license_note": "The ROS-Industrial package declares BSD-3-Clause for its configuration data and 3D models. Retain the package declaration, exact meshes and source notices. This is the GP25-20 variant YR-1-06VX25-20-A0*, documented as European GP20; it is not GP20HL or the default GP25. The macro has no inertial elements; no measured dynamics or use-rights admission is inferred.",
+        "include_paths": [
+          "motoman_gp25_support/urdf/gp25_20.xacro",
+          "motoman_gp25_support/urdf/gp25_20_macro.xacro",
+          "motoman_gp25_support/meshes/gp25",
+          "motoman_gp25_support/meshes/gp25_20",
+          "motoman_gp25_support/package.xml",
+          "motoman_resources"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "motoman_gp25_support": "motoman_gp25_support",
+          "motoman_resources": "motoman_resources"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_exact_gp25_20_variant_YR_1_06VX25_20_A0",
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
       ],
-      "reason": "Only GP20HL was found in the inspected ROS-Industrial source. GP20HL is a different variant; GP20 source remains unavailable until exact model and reuse terms are supplied."
+      "missing": [
+        "inertial_parameters_not_present_in_gp25_20_macro",
+        "tool_asset_and_license",
+        "exact_mesh_notice_closure",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public GP25-20 source (European GP20, YR-1-06VX25-20-A0*) was added by ROS-Industrial PR643. GP20HL is a different variant and default GP25 geometry is not a substitute. Retain this model identity and qualify the missing inertias, application tool and controller independently."
     },
     {
       "embodiment_id": "i2rt_yam_bimanual",
