@@ -1,17 +1,20 @@
 # Jobs and scientific evidence
 
-Owner direction: October 21, 2026. The beta starts with a recurring job and an
-agreed brief. An options assessment may use zero evaluation runs. Capture,
-simulation and policy access are conditional means of resolving a useful
-question. The existing commercial workflow owns proposals, selection, agreement
-and customer-reported outcomes.
+Owner direction, corrected October 21, 2026: assessment requires an actual
+retained job-video receipt and current permission. The existing video analysis
+drafts the brief for customer correction; no written description is required.
+An options assessment may use zero new evaluation runs when current evidence
+is sufficient. Reconstruction, simulation and policy access resolve the actual
+job's remaining questions through the existing pipeline. The commercial
+workflow owns proposals, selection, agreement and customer-reported outcomes.
 
 ## Operating flow
 
-Use the existing website **Job workflow** panel. Record the options assessment
-directly when available evidence is sufficient. Its three dispositions remain
-options identified, more information, and no suitable option. Neither a video
-nor a buying budget is needed to start.
+Use the existing website **Job workflow** panel. A draft may wait for footage,
+and starting requires neither a written description nor a buying budget.
+Record an options assessment only after the retained video and current
+permissions are verified. Its three dispositions remain options identified,
+more information, and no suitable option.
 
 When new evidence is needed, record the exact question in that panel. A question
 without a current source-bound scientific request is saved with an information
@@ -106,7 +109,12 @@ the local method fixtures separately exercise supported and negative decisions.
 These are software results, not customer evidence, provider execution,
 sim-to-real qualification or physical proof.
 
-At inspection, WebApp PR #1077 was open at `9244e10d530963df3893a6e8c1192c597c8a419c`,
+### Historical implementation inspection
+
+The following snapshot predates the corrected video-first takeover and is
+retained as release history, not the current production or PR inventory.
+
+At that inspection, WebApp PR #1077 was open at `9244e10d530963df3893a6e8c1192c597c8a419c`,
 WebApp main was `76f263507ca8ea60c8fc8d40a56eefbc88643e65`, and live `/version.json`
 reported `9884867b0b01f5e3a9f2156a26756657e49a2672` built October 20. Pipeline main was
 `599264bda025ffb274996037d2ac997ec53f8a1b`; the running intake freshly reported
@@ -119,9 +127,21 @@ reported its build source `983ac5b98cca07024999758d34650c85740df1a9`, built
 October 21 at 14:44 UTC. This implementation does not change runtime flags or
 deploy either service.
 
-Release order: merge/release the job-first WebApp change, then its evidence
-consumer and configured Firestore index, then the Pipeline producer. Capture's
-matching doctrine change has no runtime dependency. PRs are Pipeline #2737,
-WebApp #1079 (following #1078), and Capture #90. Normal website production
-builds still require the existing Firebase public configuration; the local
-unconfigured build is explicitly compile-only.
+### Current release preparation — October 21, 2026
+
+The owner requested code and release preparation with verified changes held
+ready for release. WebApp #1079 and Capture #91 accompany this Pipeline change;
+the earlier Pipeline #2737 and Capture #90 are historical. The observed WebApp
+and worker source is `36659ae77575bab86a0ee6bf492f43eb8db835a7`; the Pipeline
+runtime remains `b86b78ab83f217fe4fca2bf135e290b7b8aebe56`. This work has not
+merged or deployed either service, enabled video processing, released execution
+holds, or performed a fresh policy run.
+
+For a later authorized release, deploy the compatible WebApp consumer and
+verify its exact `taskEvaluationPolicyRuns` job/time index is READY before
+activating new Pipeline publications. Verify approved Gemini bindings and
+video-worker readiness separately. Capture's matching doctrine change has no
+runtime dependency. Normal website production builds still require the
+existing Firebase public configuration; an unconfigured local build remains
+compile-only. Missing runtime capabilities and current execution authority
+remain explicit blockers rather than new proof.
