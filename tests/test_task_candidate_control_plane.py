@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hmac
+import hashlib
 import json
 from io import BytesIO
 from datetime import datetime, timezone
@@ -229,6 +230,13 @@ def test_pipeline_records_approval_once_without_compiling_a_request(tmp_path: Pa
         "comparative_policy_ranking_verdict": "thesis_not_supported",
     }
     assert replay["already_exists"] is True
+    for field, digest_field, body_field in (
+        ("pipeline_task_decision", "decision_digest", "pipeline_task_decision_canonical_json"),
+        ("approved_task_definition", "approved_task_digest", "approved_task_definition_canonical_json"),
+    ):
+        assert replay[body_field] == result[body_field]
+        assert "sha256:" + hashlib.sha256(result[body_field].encode()).hexdigest() == result[field][digest_field]
+        assert json.loads(result[body_field]) == {key: value for key, value in result[field].items() if key != digest_field}
     changed = copy.deepcopy(submission)
     changed["command"]["rationale"] = "Different payload with the same command id."
     with pytest.raises(

@@ -30,6 +30,12 @@ existing RFC 8785 transport. The published legacy eight-family Quick protocol
 retains its separately named object-cousin variation; it is not translated into
 the exact-workcell primary matrix or the ADP 100-cell proof protocol.
 
+The existing signed task-discovery publication and task-decision response also
+carry original canonical bodies for discovery, individual candidates, decision,
+and approved task. The website retains those bytes alongside the existing
+artifacts through approval and compilation; candidate and approved-task IDs,
+scientific digests, permissions, and approval truth remain unchanged.
+
 Release the WebApp consumer and its `taskEvaluationPolicyRuns` job/time index
 before the Pipeline producer. No deployment or provider execution is implied by
 these source changes. Reproducible software-only transport fixtures live in
