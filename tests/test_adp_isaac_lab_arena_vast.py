@@ -1069,6 +1069,49 @@ def test_native_pre_spend_stale_wait_is_bounded(monkeypatch: pytest.MonkeyPatch)
     assert len(attempts) == 17 and sleeps == [15] * 16
 
 
+@pytest.mark.parametrize("opt_in", [False, True])
+def test_evaluator_spend_lock_wait_requires_explicit_opt_in(tmp_path, monkeypatch, opt_in):
+    calls, sleeps = [], []
+    def preflight(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise arena.PreSpendPreflightBlocked({"blockers": ["spend_admission:spend_admission_lock_stale"]})
+        return {"status": "PASS", "blockers": []}
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    monkeypatch.setattr(arena.time, "sleep", sleeps.append)
+    kwargs = {"provider_bundle_kind": "evaluator", "preflight_args": {"record_dir": tmp_path},
+              "wait_for_fresh_spend_lock": opt_in}
+    if opt_in:
+        assert arena._require_native_pre_spend_preflight(**kwargs)["status"] == "PASS"
+        assert len(calls) == 2 and sleeps == [15]
+        assert len(list((tmp_path / "spend_lock_wait").glob("*/*.json"))) == 2
+    else:
+        with pytest.raises(arena.PreSpendPreflightBlocked):
+            arena._require_native_pre_spend_preflight(**kwargs)
+        assert len(calls) == 1 and sleeps == []
+
+
+@pytest.mark.parametrize("opt_in", [False, True])
+def test_transport_forwards_stale_lock_wait_before_staging(tmp_path, monkeypatch, opt_in):
+    bundle_path = tmp_path / "fixture.zip"
+    bundle_path.write_bytes(b"hermetic preflight-only bundle")
+    bundle = {"status": "ready", "bundle_path": str(bundle_path), "bundle_sha256": arena._file_sha256(bundle_path)}
+    seen = []
+    def refuse(**kwargs):
+        seen.append(kwargs)
+        raise arena.PreSpendPreflightBlocked({"blockers": ["fixture_spend_blocked"]})
+    monkeypatch.setattr(arena, "_require_native_pre_spend_preflight", refuse)
+    monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", lambda **_: pytest.fail("staging while blocked"))
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", lambda **_: pytest.fail("provider mutation while blocked"))
+    monkeypatch.setattr(arena, "_vast_credential_file_present", lambda: True)
+    result = arena.run_arena_native_control_vast(approval_path=tmp_path / "unused.json", job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(), execute=True, prepared_bundle=bundle,
+        provider_bundle_kind="evaluator", wait_for_fresh_spend_lock=opt_in)
+    assert seen[0]["wait_for_fresh_spend_lock"] is opt_in
+    assert seen[0]["provider_bundle_kind"] == "evaluator"
+    assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
+
+
 def test_download_extraction_does_not_use_the_paired_stream_size_limits(tmp_path, monkeypatch):
     from blueprint_pipeline import arena_provider_output_streaming as streamed
     from blueprint_pipeline import policy_canary_output_members as members

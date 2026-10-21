@@ -127,6 +127,12 @@ The attempt authority must set `provider_output_archive_max_bytes` to
 shared transport's maximum of three PUT attempts. The worker enforces the
 archive limit before upload. Download admission must include the pinned image,
 model, dependency wheels, input bundle, and a bounded transfer retry reserve.
+Both admission checks use a 240-second retry window for a fresh billing snapshot
+when the sole blocker is an expired spend lock. Probes retain their own network
+timeouts. The lock's age limit and all
+other gates stay unchanged; the initial check refreshes live capacity and
+authority evidence on each retry. This wait cannot allocate a resource or
+authorize another paid attempt.
 
 The worker uses the shared `flora_dependency_bootstrap` helper to install only
 the four hash-pinned add-ons required by the pinned vLLM base image:

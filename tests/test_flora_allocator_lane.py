@@ -14,6 +14,7 @@ import pytest
 from blueprint_pipeline import flora_allocator_lane as lane
 from blueprint_pipeline import flora_provider_bundle as bundler
 from blueprint_pipeline import flora_provider_runtime as worker
+from blueprint_pipeline import adp_isaac_lab_arena_vast as arena
 from blueprint_pipeline.gpu_selection_policy import (
     gpu_allowed_by_policy, policy_manifest, required_gpu_count, resolve_gpu_selection_policy,
 )
@@ -164,6 +165,7 @@ def test_dry_and_execute_share_preflight_and_transport_bounds(tmp_path, monkeypa
     assert lane.run_flora_allocator_lane(args, ([], "a" * 40)) == 0
     assert calls == ["preflight", "preflight", "consume"]
     assert transport[0]["require_independent_watchdog"] is True
+    assert transport[0]["wait_for_fresh_spend_lock"] is True
     assert transport[0]["require_direct_port"] is True
     assert transport[0]["stale_offer_create_retry_limit"] == 0
     assert transport[0]["gpu_selection_policy"]["required_gpu_count"] == 2
@@ -173,6 +175,119 @@ def test_dry_and_execute_share_preflight_and_transport_bounds(tmp_path, monkeypa
     assert transport[0]["provider_runtime_environment"] == {
         "BLUEPRINT_VAST_EXPECTED_PROVIDER_UPLOAD_BYTES": "1000000000",
     }
+
+
+def _preflight_fixture(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path, monkeypatch)
+    authority = _authority(bundle)
+    observed = {"inventory": 0, "capacity": 0, "clock": 0.0, "sleeps": [], "preflights": 0}
+    def inventory(**kwargs):
+        observed["inventory"] += 1
+        return {"status": "observed", "api_confirmed": True, "live_resource_count": 0}
+    def capacity(request):
+        observed["capacity"] += 1
+        return {"status": "available", "observation": observed["capacity"]}
+    def sleep(seconds):
+        observed["sleeps"].append(seconds)
+        observed["clock"] += seconds
+    monkeypatch.setattr(lane, "get_render_provider", lambda _: SimpleNamespace(
+        billable_inventory=inventory, capacity_preflight=capacity))
+    monkeypatch.setattr(lane, "_caller_exit_survival_contract", lambda: {})
+    monkeypatch.setattr(lane, "_caller_exit_survival_proven", lambda _: True)
+    monkeypatch.setattr(lane, "_vast_credential_file_present", lambda: True)
+    monkeypatch.setattr(lane, "consumption_root", lambda: tmp_path / "consumption")
+    monkeypatch.setattr(arena.time, "monotonic", lambda: observed["clock"])
+    monkeypatch.setattr(arena.time, "sleep", sleep)
+    monkeypatch.setattr(lane, "_consume_once", lambda *_: pytest.fail("authority consumed by preflight"))
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", lambda **_: pytest.fail("provider launch during preflight"))
+    return bundle, authority, observed
+
+
+def test_stale_lock_wait_refreshes_inventory_capacity_and_retains_each_attempt(tmp_path, monkeypatch):
+    bundle, authority, observed = _preflight_fixture(tmp_path, monkeypatch)
+    def preflight(**kwargs):
+        observed["preflights"] += 1
+        result = {"status": "PASS", "blockers": [], "capacity_evidence": kwargs["capacity_evidence"]}
+        if observed["preflights"] == 1:
+            result.update(status="FAIL", blockers=["spend_admission:spend_admission_lock_stale"])
+            raise arena.PreSpendPreflightBlocked(result)
+        return result
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    assert lane._environment_preflight(authority, bundle, tmp_path / "job") == []
+    assert observed == {"inventory": 2, "capacity": 2, "clock": 15.0, "sleeps": [15], "preflights": 2}
+    receipts = sorted((tmp_path / "job/preflight/spend_lock_wait").glob("*/*.json"))
+    assert [json.loads(path.read_text())["status"] for path in receipts] == ["FAIL", "PASS"]
+    assert len(list((tmp_path / "job/preflight/environment_observations").glob("*.json"))) == 2
+    assert json.loads((tmp_path / "job/preflight/provider_capacity.json").read_text())["observation"] == 2
+
+
+def test_persistent_stale_lock_stops_at_monotonic_deadline_without_consuming(tmp_path, monkeypatch):
+    bundle, authority, observed = _preflight_fixture(tmp_path, monkeypatch)
+    def preflight(**kwargs):
+        observed["preflights"] += 1
+        # Request latency also consumes the wait budget.
+        observed["clock"] += 50
+        raise arena.PreSpendPreflightBlocked({"blockers": ["spend_admission:spend_admission_lock_stale"]})
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    assert lane._environment_preflight(authority, bundle, tmp_path / "job") == ["spend_admission:spend_admission_lock_stale"]
+    assert observed["preflights"] == 4
+    assert observed["clock"] == 245
+    assert observed["sleeps"] == [15, 15, 15]
+
+
+def test_slow_environment_refresh_cannot_start_spend_check_after_deadline(tmp_path, monkeypatch):
+    bundle, authority, observed = _preflight_fixture(tmp_path, monkeypatch)
+    arguments = lane._environment_preflight_arguments
+    def slow_refresh(*args):
+        result = arguments(*args)
+        if observed["preflights"]:
+            observed["clock"] += 240
+        return result
+    monkeypatch.setattr(lane, "_environment_preflight_arguments", slow_refresh)
+    def preflight(**kwargs):
+        observed["preflights"] += 1
+        if observed["preflights"] > 1:
+            pytest.fail("canonical spend check started after refresh exhausted deadline")
+        raise arena.PreSpendPreflightBlocked({"blockers": ["spend_admission:spend_admission_lock_stale"]})
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    assert lane._environment_preflight(authority, bundle, tmp_path / "job") == ["spend_admission:spend_admission_lock_stale"]
+    assert observed["preflights"] == 1 and observed["sleeps"] == [15]
+
+
+@pytest.mark.parametrize("blockers", [
+    ["spend_admission:vast_billing_missing"],
+    ["spend_admission:spend_admission_lock_stale", "spend_admission:vast_billing_missing"],
+])
+def test_stale_lock_wait_never_retries_other_spend_blockers(tmp_path, monkeypatch, blockers):
+    bundle, authority, observed = _preflight_fixture(tmp_path, monkeypatch)
+    def preflight(**kwargs):
+        observed["preflights"] += 1
+        raise arena.PreSpendPreflightBlocked({"blockers": blockers})
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    assert lane._environment_preflight(authority, bundle, tmp_path / "job") == sorted(blockers)
+    assert observed["sleeps"] == [] and observed["preflights"] == 1
+
+
+@pytest.mark.parametrize("changed_fact", ["authority", "capacity"])
+def test_stale_lock_retry_stops_when_refreshed_environment_changes(tmp_path, monkeypatch, changed_fact):
+    bundle, authority, observed = _preflight_fixture(tmp_path, monkeypatch)
+    validate = lane.validate_flora_attempt_authority
+    def validate_again(*args):
+        if changed_fact == "authority" and observed["preflights"]:
+            raise ValueError("flora_attempt_authority_expired_or_invalid")
+        return validate(*args)
+    monkeypatch.setattr(lane, "validate_flora_attempt_authority", validate_again)
+    def preflight(**kwargs):
+        observed["preflights"] += 1
+        if changed_fact == "capacity":
+            monkeypatch.setattr(lane, "get_render_provider", lambda _: SimpleNamespace(
+                billable_inventory=lambda **_: {"status": "observed", "api_confirmed": True, "live_resource_count": 0},
+                capacity_preflight=lambda _: {"status": "blocked", "blockers": ["new_capacity_blocker"]}))
+        raise arena.PreSpendPreflightBlocked({"blockers": ["spend_admission:spend_admission_lock_stale"]})
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    expected = "flora_attempt_authority_expired_or_invalid" if changed_fact == "authority" else "new_capacity_blocker"
+    assert lane._environment_preflight(authority, bundle, tmp_path / "job") == [expected]
+    assert observed["sleeps"] == [15] and observed["preflights"] == 1
 
 
 def test_worker_checks_members_before_model_download(tmp_path):
@@ -242,7 +357,7 @@ def test_capacity_preflight_matches_actual_ssh_transport_requirements(tmp_path, 
     monkeypatch.setattr(lane, "_caller_exit_survival_contract", lambda: {})
     monkeypatch.setattr(lane, "_remaining_session_live_minutes", lambda **kw: 120)
     monkeypatch.setattr(lane, "_vast_credential_file_present", lambda: True)
-    monkeypatch.setattr(lane, "require_pre_spend_preflight", lambda **kw: None)
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", lambda **kw: {"status": "PASS", "blockers": []})
     monkeypatch.setattr(lane, "consumption_root", lambda: tmp_path / "consumption")
     assert lane._environment_preflight(authority, bundle, tmp_path / "job") == []
     assert requests[0]["require_direct_port"] is True

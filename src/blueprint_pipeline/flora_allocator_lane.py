@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from .adp_isaac_lab_arena_vast import (
     _bounded_spend_gate_open, _remaining_session_live_minutes,
+    _require_native_pre_spend_preflight,
     _vast_credential_file_present, run_arena_native_control_vast,
 )
 from .common import utc_now_iso, write_json
@@ -21,7 +22,6 @@ from .flora_provider_bundle import (
 from .gpu_render_providers import get_render_provider
 from .paid_lane_guard import (
     SPEND_ADMISSION_LOCK_PATH_ENV, PreSpendPreflightBlocked, image_contract_from_ref,
-    require_pre_spend_preflight,
 )
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION, build_paid_lane_admission, require_paid_resource_admission,
@@ -112,8 +112,14 @@ def _consume_once(authority: Mapping[str, Any]) -> dict[str, Any]:
     return {**record, "status": "consumed"}
 
 
-def _environment_preflight(authority: Mapping[str, Any], bundle: Mapping[str, Any], job: Path) -> list[str]:
+def _environment_preflight_arguments(authority: Mapping[str, Any], bundle: Mapping[str, Any], job: Path) -> dict[str, Any]:
     blockers: list[str] = []
+    # A bounded lock wait must not carry expired authority or old capacity facts
+    # into the next admission check.
+    try:
+        validate_flora_attempt_authority(authority, bundle)
+    except ValueError as exc:
+        raise PreSpendPreflightBlocked({"status": "FAIL", "blockers": [str(exc)]}) from exc
     label = _resource_name(authority)
     validate_independent_vast_watchdog_names(pod_name_prefix=PREFIX, resource_name_exact=label)
     if not _caller_exit_survival_proven(_caller_exit_survival_contract()):
@@ -142,18 +148,33 @@ def _environment_preflight(authority: Mapping[str, Any], bundle: Mapping[str, An
     write_json(job / "preflight/provider_capacity.json", capacity)
     if capacity.get("status") != "available":
         blockers.extend(capacity.get("blockers") or ["flora_provider_capacity_unavailable"])
+    observation = {"observed_at": utc_now_iso(), "authority_digest": authority["authority_digest"],
+                   "remaining_live_minutes": minutes, "provider_inventory": inventory,
+                   "provider_capacity": capacity, "blockers": sorted(set(blockers))}
+    observation_digest = digest(observation)
+    write_json(job / "preflight/environment_observations" / (observation_digest[7:] + ".json"), observation)
+    if blockers:
+        raise PreSpendPreflightBlocked({"status": "FAIL", "blockers": sorted(set(blockers)),
+                                       "environment_observation_digest": observation_digest})
+    return dict(lane=PROBE_KIND, provider="vast", credential_present=_vast_credential_file_present(),
+        capacity_evidence={"available": capacity.get("status") == "available", "detail": "live exact-two-device offer selection",
+                           "environment_observation_digest": observation_digest},
+        image_contract=image_contract_from_ref(str(bundle["container_image"])),
+        runtime_contract={"startup_marker": "vast_instance_started_or_blocked", "progress_marker": "vast_provider_bundle_progress",
+            "startup_timeout_seconds": minutes * 60, "no_progress_timeout_seconds": 1800},
+        spend_gate_open=_bounded_spend_gate_open(max_hourly_rate_usd=authority["max_hourly_rate_usd"],
+            hard_cap_usd=authority["hard_cap_usd"], remaining_live_minutes=minutes), record_dir=job / "preflight",
+        spend_admission_lock=None if str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip() else {})
+
+
+def _environment_preflight(authority: Mapping[str, Any], bundle: Mapping[str, Any], job: Path) -> list[str]:
     try:
-        require_pre_spend_preflight(lane=PROBE_KIND, provider="vast", credential_present=_vast_credential_file_present(),
-            capacity_evidence={"available": capacity.get("status") == "available", "detail": "live exact-two-device offer selection"},
-            image_contract=image_contract_from_ref(str(bundle["container_image"])),
-            runtime_contract={"startup_marker": "vast_instance_started_or_blocked", "progress_marker": "vast_provider_bundle_progress",
-                "startup_timeout_seconds": minutes * 60, "no_progress_timeout_seconds": 1800},
-            spend_gate_open=_bounded_spend_gate_open(max_hourly_rate_usd=authority["max_hourly_rate_usd"],
-                hard_cap_usd=authority["hard_cap_usd"], remaining_live_minutes=minutes), record_dir=job / "preflight",
-            spend_admission_lock=None if str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip() else {})
+        _require_native_pre_spend_preflight(provider_bundle_kind="evaluator",
+            preflight_args={"record_dir": job / "preflight"}, wait_for_fresh_spend_lock=True,
+            refresh_preflight_args=lambda: _environment_preflight_arguments(authority, bundle, job))
     except PreSpendPreflightBlocked as exc:
-        blockers.extend(exc.preflight.get("blockers") or [])
-    return sorted(set(blockers))
+        return sorted(set(exc.preflight.get("blockers") or []))
+    return []
 
 
 def run_flora_allocator_lane(args: Any, source_context: tuple[list[str], str]) -> int:
@@ -201,6 +222,7 @@ def run_flora_allocator_lane(args: Any, source_context: tuple[list[str], str]) -
                 stale_offer_create_retry_limit=0, candidate_policy_query_expected=False,
                 preferred_gpu_keywords=("H200", "H100"), gpu_selection_policy=GPU_POLICY,
                 require_independent_watchdog=True, authorization_consumption=consumption,
+                wait_for_fresh_spend_lock=True,
                 require_direct_port=True,
                 expected_provider_download_bytes=authority["expected_provider_download_bytes"],
                 expected_provider_upload_bytes=authority["expected_provider_upload_bytes"],
