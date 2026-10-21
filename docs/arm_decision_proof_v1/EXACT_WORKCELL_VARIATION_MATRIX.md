@@ -149,10 +149,11 @@ bind its prepared plan digest before construction. This receipt proves only
 parameter application/readback. Full scientific reset, episodes, controls,
 scoring, observation media and provider teardown retain their existing owners.
 
-Connecting the full schedule still requires an execution adapter that consumes its exact
-cell, reset and episode bindings; applies and independently reads every admitted
-target; runs both controls and frozen policies on those same cells; and retains
-the media/lifecycle/scorer artifacts consumed by `collect_evaluation_evidence`.
+The full native execution port below supplies the supported fixed-arm adapter.
+Every additional runtime must likewise consume exact cell, reset and episode
+bindings, apply and independently read every admitted target, run both controls
+and frozen policies on the same cells, and retain the media/lifecycle/scorer
+artifacts consumed by `collect_evaluation_evidence`.
 An unavailable target must identify the missing native application/readback
 capability. Increasing the canary cell count or relabeling its result is not this
 integration. Existing execution authority, paid-resource admission, controls holds
