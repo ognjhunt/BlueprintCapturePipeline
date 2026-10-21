@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from .core.immutable_file import write_file_exclusive
 from .core.security_controls import strict_identifier
 from .job_capability_routing import route_job_capabilities, routing_limitations, testbed_task_family
 from .decision_evidence_contracts import (
@@ -177,10 +178,8 @@ def _read(path: Path) -> dict[str, Any]:
 
 def _immutable(path: Path, value: Mapping[str, Any]) -> None:
     body = (canonical_json(value) + "\n").encode()
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with path.open("xb") as stream:
-            stream.write(body)
+        write_file_exclusive(path, body)
     except FileExistsError:
         if path.read_bytes() != body:
             raise JobEvidenceError("job_evidence_immutable_conflict")
@@ -206,6 +205,47 @@ class JobEvidenceStore:
         if not paths:
             raise JobEvidenceError("job_evidence_not_found")
         return _read(paths[-1])
+
+    def _reconcile_cancellation(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Finish a saved cancellation before permitting any future work.
+
+        The intent is authoritative even if the process died before the run's
+        revocation marker or the customer publication was retained.
+        """
+        root = self._root(request["request_id"])
+        cancellation_path = root / "cancellation.json"
+        preparation_path = root / "preparation.json"
+        preparation = _read(preparation_path) if preparation_path.exists() else None
+        run_cancellation_path = (
+            self.run_state_root / "runs" / preparation["run_id"] / "artifacts" / "job_evidence_cancellation.json"
+            if preparation else None
+        )
+        if not cancellation_path.is_file():
+            if run_cancellation_path is None or not run_cancellation_path.is_file():
+                return None
+            retained = _read(run_cancellation_path)
+            if retained.get("job_request_id") != request["request_id"]:
+                raise JobEvidenceError("job_evidence_request_binding_mismatch")
+            cancellation = {key: retained.get(key) for key in ("request_digest", "cancelled_by")}
+            if cancellation["request_digest"] != request["request_digest"]:
+                raise JobEvidenceError("job_evidence_request_binding_mismatch")
+            _id(cancellation["cancelled_by"], "cancelled_by")
+            _immutable(cancellation_path, cancellation)
+        cancellation = _read(cancellation_path)
+        if cancellation.get("request_digest") != request["request_digest"]:
+            raise JobEvidenceError("job_evidence_request_binding_mismatch")
+        _id(cancellation.get("cancelled_by"), "cancelled_by")
+        if run_cancellation_path is not None:
+            _immutable(
+                run_cancellation_path,
+                {"job_request_id": request["request_id"], **cancellation},
+            )
+        return self._publish(
+            request, state="cancelled", summary="This evidence request was cancelled.",
+            next_action="Use a new request if the decision is still needed.",
+            limitations=["No new execution is permitted by this request. Any separately launched paid run keeps its own cancellation and teardown process."],
+            preparation=preparation,
+        )
 
     def _publish(
         self, request: Mapping[str, Any], *, state: str, summary: str,
@@ -256,7 +296,10 @@ class JobEvidenceStore:
                 "request_id": request["request_id"], "request_digest": request["request_digest"]
             })
             _immutable(root / "request.json", request)
-            if (root / "publications").is_dir():
+            cancelled = self._reconcile_cancellation(request)
+            if cancelled is not None:
+                return cancelled
+            if any((root / "publications").glob("*.json")):
                 current = self._current(request["request_id"])
                 if current["state"] != "unavailable":
                     return current
@@ -304,7 +347,8 @@ class JobEvidenceStore:
 
     def inspect(self, request_id: str) -> dict[str, Any]:
         with self._lock():
-            return self._current(request_id)
+            request = _read(self._root(request_id) / "request.json")
+            return self._reconcile_cancellation(request) or self._current(request_id)
 
     def cancel(self, request_id: str, request_digest: str, cancelled_by: str) -> dict[str, Any]:
         _id(cancelled_by, "cancelled_by")
@@ -312,25 +356,28 @@ class JobEvidenceStore:
             request = _read(self._root(request_id) / "request.json")
             if request["request_digest"] != request_digest:
                 raise JobEvidenceError("job_evidence_request_binding_mismatch")
+            cancelled = self._reconcile_cancellation(request)
+            if cancelled is not None:
+                return cancelled
             current = self._current(request_id)
             if current["state"] in {"decision", "partial_decision", "abstention", "cancelled"}:
                 return current
-            _immutable(self._root(request_id) / "cancellation.json", {
+            cancellation = {
                 "request_digest": request_digest, "cancelled_by": cancelled_by,
-            })
+            }
             preparation_path = self._root(request_id) / "preparation.json"
-            preparation = _read(preparation_path) if preparation_path.exists() else None
-            if preparation:
+            if preparation_path.is_file():
+                preparation = _read(preparation_path)
+                # Revoke the legacy direct execution route first. Recovery can
+                # reconstruct the job intent from this same immutable receipt.
                 _immutable(
                     self.run_state_root / "runs" / preparation["run_id"] / "artifacts" / "job_evidence_cancellation.json",
-                    {"job_request_id": request_id, "request_digest": request_digest, "cancelled_by": cancelled_by},
+                    {"job_request_id": request_id, **cancellation},
                 )
-            return self._publish(
-                request, state="cancelled", summary="This evidence request was cancelled.",
-                next_action="Use a new request if the decision is still needed.",
-                limitations=["No new execution is permitted by this request. Any separately launched paid run keeps its own cancellation and teardown process."],
-                preparation=preparation,
-            )
+            _immutable(self._root(request_id) / "cancellation.json", cancellation)
+            cancelled = self._reconcile_cancellation(request)
+            assert cancelled is not None
+            return cancelled
 
     def execute(self, request_id: str, request_digest: str, authorized_by: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(authorized_by, Mapping):
@@ -343,6 +390,8 @@ class JobEvidenceStore:
             request = _read(self._root(request_id) / "request.json")
             if request["request_digest"] != request_digest:
                 raise JobEvidenceError("job_evidence_request_binding_mismatch")
+            if self._reconcile_cancellation(request) is not None:
+                raise JobEvidenceError("job_evidence_cancelled")
             current = self._current(request_id)
             if current["state"] in {"decision", "partial_decision", "abstention"}:
                 return current
