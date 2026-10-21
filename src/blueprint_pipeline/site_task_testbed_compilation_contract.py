@@ -252,11 +252,44 @@ class SiteTaskTestbedCompilationSubmissionV2(_ClosedModel):
         return self
 
 
+class JobEvidenceSourceBinding(_ClosedModel):
+    schema_version: Literal["job_evidence_source_binding.v1"]
+    job_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")]
+    brief_digest: Digest
+    task_inventory_digest: Digest
+    capture_session_id: Identifier
+    intake_id: Identifier
+    source_capture_digest: Digest
+    command_request_id: Identifier
+    approved_task_digest: Digest
+
+
+class SiteTaskTestbedCompilationSubmissionV3(SiteTaskTestbedCompilationSubmissionV2):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "$id": "https://tryblueprint.io/contracts/site-task-testbed-compilation-submission.v3.schema.json"
+        },
+    )
+    schema_version: Literal["site_task_testbed_compilation_submission.v3"]  # type: ignore[assignment]
+    job_context: JobEvidenceSourceBinding
+
+    @model_validator(mode="after")
+    def validate_job_source_binding(self) -> "SiteTaskTestbedCompilationSubmissionV3":
+        for field in ("capture_session_id", "intake_id", "approved_task_digest"):
+            if getattr(self.job_context, field) != getattr(self, field):
+                raise ValueError(f"job_context.{field}:binding_mismatch")
+        return self
+
+
 def validate_testbed_compilation_submission(value: Any) -> dict[str, Any]:
-    """Validate and normalize one closed v2 compilation submission."""
+    """Validate a closed legacy or job-bound compilation submission."""
 
     try:
-        parsed = SiteTaskTestbedCompilationSubmissionV2.model_validate(value)
+        model = SiteTaskTestbedCompilationSubmissionV3 if isinstance(value, dict) and value.get(
+            "schema_version"
+        ) == "site_task_testbed_compilation_submission.v3" else SiteTaskTestbedCompilationSubmissionV2
+        parsed = model.model_validate(value)
     except ValidationError as exc:
         errors = []
         for row in exc.errors(include_url=False, include_context=False, include_input=False):
@@ -272,10 +305,13 @@ def validate_testbed_compilation_submission(value: Any) -> dict[str, Any]:
     return normalized
 
 
-def testbed_compilation_submission_schema() -> dict[str, Any]:
+def testbed_compilation_submission_schema(version: int = 2) -> dict[str, Any]:
     """Return the canonical JSON Schema mirrored by customer-facing clients."""
 
-    schema = SiteTaskTestbedCompilationSubmissionV2.model_json_schema(
+    if version not in {2, 3}:
+        raise ValueError("unsupported testbed compilation submission schema version")
+    model = SiteTaskTestbedCompilationSubmissionV3 if version == 3 else SiteTaskTestbedCompilationSubmissionV2
+    schema = model.model_json_schema(
         mode="validation",
         union_format="any_of",
     )

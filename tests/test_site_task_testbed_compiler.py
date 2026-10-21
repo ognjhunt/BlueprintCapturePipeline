@@ -157,6 +157,24 @@ def test_testbed_compilation_submission_schema_is_closed_and_runtime_exact() -> 
         validate_testbed_compilation_submission(provider_selected)
 
 
+def test_job_bound_compilation_schema_preserves_v2_and_rejects_wrong_source() -> None:
+    schema = testbed_compilation_submission_schema(3)
+    assert json.loads((Path(__file__).parents[1] / "docs/schemas/site_task_testbed_compilation_submission.v3.schema.json").read_text()) == schema
+    payload = _service_compilation_payload(SHA_A, SHA_C)
+    payload["schema_version"] = "site_task_testbed_compilation_submission.v3"
+    payload["job_context"] = {
+        "schema_version": "job_evidence_source_binding.v1", "job_id": "job-source-1",
+        "brief_digest": SHA_B, "task_inventory_digest": SHA_C,
+        "capture_session_id": payload["capture_session_id"], "intake_id": payload["intake_id"],
+        "source_capture_digest": SHA_A, "command_request_id": "task-command-1", "approved_task_digest": SHA_A,
+    }
+    jsonschema.Draft202012Validator(schema).validate(payload)
+    assert validate_testbed_compilation_submission(payload)["job_context"] == payload["job_context"]
+    payload["job_context"]["capture_session_id"] = "wrong-session"
+    with pytest.raises(ValueError, match="job_context.capture_session_id:binding_mismatch"):
+        validate_testbed_compilation_submission(payload)
+
+
 def _beta_fixture(case_id: str) -> dict:
     matrix = json.loads(
         (
@@ -1085,8 +1103,9 @@ def test_semantic_evidence_bundle_is_execution_bound_immutable_and_replay_safe(
         )
 
 
+@pytest.mark.parametrize("job_bound", [False, True])
 def test_signed_service_compiles_only_the_authoritative_approved_task(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, job_bound
 ) -> None:
     manifest = tmp_path / "control" / "manifest.json"
     manifest.parent.mkdir(parents=True)
@@ -1101,6 +1120,20 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
     result_dir = session_dir / "decisions" / "task-command-1"
     result_dir.mkdir(parents=True)
     approved = _approved_task()
+    decision = {
+        "schema_version": "task_candidate_decision.v1",
+        "decision_id": approved["approval_decision_id"],
+        "discovery_id": approved["discovery_id"],
+        "discovery_digest": approved["discovery_digest"],
+        "task_candidate_id": approved["task_candidate_id"],
+        "candidate_digest": approved["candidate_digest"],
+        "action": "approve", "actor": approved["approval_actor"],
+        "idempotency_key": "task-command-1", "rationale": "Fixture task approval",
+        "edited_task": None,
+    }
+    decision["decision_digest"] = canonical_digest(decision, digest_field="decision_digest")
+    approved["approval_decision_digest"] = decision["decision_digest"]
+    approved["approved_task_digest"] = canonical_digest(approved, digest_field="approved_task_digest")
     (session_dir / "state.json").write_text(
         json.dumps(
             {
@@ -1120,6 +1153,8 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
                 "capture_session_id": "capture-session-1",
                 "intake_id": "intake-1",
                 "approved_task_definition": approved,
+                "pipeline_task_decision": decision,
+                "command_request_id": "task-command-1",
             }
         ),
         encoding="utf-8",
@@ -1170,6 +1205,19 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
     payload = _service_compilation_payload(
         approved["approved_task_digest"], execution_digest
     )
+    sync_calls = []
+    monkeypatch.setattr(routes, "sync_site_task_testbed_to_webapp", lambda **kwargs: (
+        sync_calls.append(kwargs) or {"status": "skipped"}
+    ))
+    if job_bound:
+        payload["schema_version"] = "site_task_testbed_compilation_submission.v3"
+        payload["job_context"] = {
+            "schema_version": "job_evidence_source_binding.v1", "job_id": "job-source-1",
+            "brief_digest": SHA_B, "task_inventory_digest": SHA_C,
+            "capture_session_id": "capture-session-1", "intake_id": "intake-1",
+            "source_capture_digest": approved["source_capture"]["capture_digest"],
+            "command_request_id": "task-command-1", "approved_task_digest": approved["approved_task_digest"],
+        }
     body = json.dumps(payload, separators=(",", ":"))
     timestamp = datetime.now(timezone.utc).isoformat()
     nonce = "testbed-compile-nonce-1"
@@ -1199,6 +1247,10 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
     assert "artifact_path" not in json.dumps(result)
     assert result["proof_boundary"]["deployment_or_safety_approved"] is False
     assert result["webapp_sync"]["status"] == "skipped"
+    assert sync_calls[-1]["job_id"] == ("job-source-1" if job_bound else None)
+    assert sync_calls[-1]["brief_digest"] == (SHA_B if job_bound else None)
+    if job_bound:
+        assert result["job_context"] == payload["job_context"]
     assert result["testbed"]["semantic_object_inventory"][0]["track_id"] == (
         "track-item-1"
     )
@@ -1224,6 +1276,19 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
         result["decision_evidence_request"]["request_digest"]
     )
     assert "artifact_path" not in json.dumps(result["decision_evidence_request_artifact"])
+    if job_bound:
+        wrong_source = copy.deepcopy(payload)
+        wrong_source["job_context"]["command_request_id"] = "another-command"
+        wrong_body = json.dumps(wrong_source, separators=(",", ":"))
+        wrong_nonce = "wrong-job-approval-nonce"
+        wrong_signature = hmac.new(token.encode(), f"{timestamp}.blueprint-webapp.{wrong_nonce}.{wrong_body}".encode(), "sha256").hexdigest()
+        refused = TestClient(service.create_app()).post("/api/live-pipeline/testbeds/compile", content=wrong_body,
+            headers={"content-type": "application/json", "x-blueprint-pipeline-timestamp": timestamp,
+                     "x-blueprint-pipeline-client-id": "blueprint-webapp", "x-blueprint-pipeline-nonce": wrong_nonce,
+                     "x-blueprint-pipeline-signature": f"sha256={wrong_signature}"})
+        assert refused.status_code == 422
+        assert "job_context:authoritative_approval_binding_mismatch" in refused.json()["detail"]
+        assert len(sync_calls) == 1
 
     caller_scientific_payload = {**payload, "simready_decision": _simready()}
     caller_scientific_body = json.dumps(caller_scientific_payload, separators=(",", ":"))
