@@ -559,6 +559,12 @@ def test_terminal_run_sync_requires_exact_signed_receipt(tmp_path, monkeypatch) 
         evidence_plan=prepared["evidence_plan"],
         decision_envelope=terminal["decision_envelope"],
     )
+    import hashlib
+    for field, digest_field in (("evidence_plan", "plan_digest"), ("decision_envelope", "decision_envelope_digest")):
+        producer_bytes = publication["producer_canonical_json"][field]
+        assert digest_field not in json.loads(producer_bytes)
+        assert "sha256:" + hashlib.sha256(producer_bytes.encode()).hexdigest() == publication[field][digest_field]
+        assert json.loads(producer_bytes) == {key: value for key, value in publication[field].items() if key != digest_field}
     captured: dict[str, object] = {}
 
     class Response:

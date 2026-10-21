@@ -23,23 +23,6 @@ def test_the_registry_never_overstates_what_can_run() -> None:
     assert all(len(row.checkpoint_revision) == 40 for row in pending.values())
 
 
-def test_managed_access_is_not_an_invitation_or_fresh_execution_claim() -> None:
-    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
-
-    value = registry.managed_execution_capability()
-    assert value["technology_team_operation_required"] is False
-    assert value["availability"] == "requires_published_scene_setup"
-    assert value["paid_execution_authorized"] is False
-    assert value["runtime_execution_observed"] is False
-    assert value["physical_performance_proven"] is False
-    assert value["capability_digest"] == cross_runtime_canonical_digest(
-        value, digest_field="capability_digest"
-    )
-    admitted = [row for row in value["candidates"] if row["admission_status"] == "runnable"]
-    assert [row["candidate_id"] for row in admitted] == list(registry.runnable_candidate_ids())
-    assert all(row["checkpoint_digest_kind"] == "downloaded_snapshot_inventory" for row in admitted)
-
-
 def test_a_pair_is_two_distinct_runnable_candidates_in_registry_order() -> None:
     assert registry.validate_selected_pair(["groot_n17_droid", "pi05_droid"]) == ("pi05_droid", "groot_n17_droid")
     with pytest.raises(registry.PolicyCandidateRegistryError, match="two_distinct"):

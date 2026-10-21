@@ -1,0 +1,906 @@
+{
+  "managed_setup": {
+    "candidate_ids": [
+      "pi05_droid",
+      "groot_n17_droid"
+    ],
+    "embodiment_id": "franka_panda_robotiq_2f85_v1",
+    "matrix_profile_id": "franka_rigid_relocation_nested_v1",
+    "offering_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "preparation_template": {
+      "construction": {
+        "mode": "reuse_configured_scene"
+      },
+      "controller": {
+        "configuration": {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000050",
+          "size_bytes": 1080,
+          "uri": "s3://blueprint-production-inputs/policy-run-80.json"
+        },
+        "identity": {
+          "id": "paired-policy-matrix",
+          "version": "v1"
+        },
+        "kind": "policy_container",
+        "model_or_asset_rights": {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000051",
+          "size_bytes": 1081,
+          "uri": "s3://blueprint-production-inputs/policy-run-81.json"
+        }
+      },
+      "execution_adapter": {
+        "kind": "native_task_arena",
+        "runtime_source_bundle": {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000018",
+          "size_bytes": 1023,
+          "uri": "s3://blueprint-production-inputs/object-23.json"
+        },
+        "version": "v1"
+      },
+      "publication": {
+        "service_account_readback_required": true
+      },
+      "robot": {
+        "base_registration": {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000021",
+          "size_bytes": 1032,
+          "uri": "s3://blueprint-production-inputs/object-32.json"
+        },
+        "configuration": {
+          "digest": "sha256:000000000000000000000000000000000000000000000000000000000000000c",
+          "size_bytes": 1011,
+          "uri": "s3://blueprint-production-inputs/object-11.json"
+        },
+        "controller_configuration": {
+          "digest": "sha256:000000000000000000000000000000000000000000000000000000000000000f",
+          "size_bytes": 1014,
+          "uri": "s3://blueprint-production-inputs/object-14.json"
+        },
+        "identity": {
+          "id": "franka-panda",
+          "version": "isaac-2026-1"
+        },
+        "joint_bounds": {
+          "digest": "sha256:000000000000000000000000000000000000000000000000000000000000000e",
+          "size_bytes": 1013,
+          "uri": "s3://blueprint-production-inputs/object-13.json"
+        },
+        "kinematics": {
+          "digest": "sha256:000000000000000000000000000000000000000000000000000000000000000d",
+          "size_bytes": 1012,
+          "uri": "s3://blueprint-production-inputs/object-12.json"
+        }
+      },
+      "runtime": {
+        "entrypoint": [
+          "/opt/blueprint/run-task-evaluation"
+        ],
+        "health_protocol": {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000015",
+          "size_bytes": 1020,
+          "uri": "s3://blueprint-production-inputs/object-20.json"
+        },
+        "identity": {
+          "id": "native-arena",
+          "version": "v1"
+        },
+        "mounts": [
+          {
+            "container_path": "/inputs",
+            "mode": "read_only",
+            "source": {
+              "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000016",
+              "size_bytes": 1021,
+              "uri": "s3://blueprint-production-inputs/object-21.json"
+            }
+          },
+          {
+            "container_path": "/outputs",
+            "mode": "output"
+          }
+        ],
+        "network": {
+          "allowlist": [],
+          "default": "deny"
+        },
+        "oci_image": "registry.example/arena@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "output_limit_bytes": 20000000000,
+        "requirements": {
+          "cpu_cores": 8,
+          "disk_gib": 64,
+          "gpu_count": 1,
+          "memory_gib": 32
+        },
+        "secret_refs": []
+      },
+      "scene": {
+        "configured_revision": {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000020",
+          "size_bytes": 1031,
+          "uri": "s3://blueprint-production-inputs/object-31.json"
+        },
+        "identity": {
+          "id": "interiorgs-841007",
+          "version": "v1"
+        },
+        "mode": "reuse_configured_revision"
+      },
+      "schema_version": "task_evaluation_policy_run_preparation_template.v1",
+      "sensors": {
+        "configuration": {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000014",
+          "size_bytes": 1019,
+          "uri": "s3://blueprint-production-inputs/object-19.json"
+        }
+      },
+      "spend": {
+        "hard_cap_usd": 0.75,
+        "hard_ttl_seconds": 3300,
+        "maximum_hourly_rate_usd": 0.8,
+        "provider_allowlist": [
+          "vast"
+        ],
+        "retry_cap": 0,
+        "selected_provider": "vast"
+      },
+      "task": {
+        "binding_mode": "reuse_configured_template",
+        "configured_scene_revision_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000020",
+        "identity": {
+          "id": "planar-mug-push",
+          "version": "v1"
+        },
+        "kind": "rigid_relocation",
+        "strategy": "planar_push",
+        "subject": {
+          "identity": {
+            "id": "scene-mug",
+            "version": "v1"
+          },
+          "mode": "configured_scene_object",
+          "physics_authority": "configured_scene_revision"
+        }
+      },
+      "template_digest": "sha256:b1362c8f83de884bef26cf62e5fdfe5d774d86931b1f7b5351ec891af8db9f3d"
+    },
+    "preregistration": {
+      "digest": "sha256:000000000000000000000000000000000000000000000000000000000000005a",
+      "size_bytes": 1090,
+      "uri": "s3://blueprint-production-inputs/policy-run-90.json"
+    },
+    "presets": [
+      {
+        "availability": "enabled",
+        "cells": [
+          {
+            "cell_id": "quick-cell-0-canonical_anchor",
+            "cell_spec_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000064",
+            "family": "canonical_anchor",
+            "partition": "qualification",
+            "scored": true
+          },
+          {
+            "cell_id": "quick-cell-1-canonical_anchor",
+            "cell_spec_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
+            "family": "canonical_anchor",
+            "partition": "qualification",
+            "scored": true
+          },
+          {
+            "cell_id": "quick-cell-2-placement_approach",
+            "cell_spec_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+            "family": "placement_approach",
+            "partition": "qualification",
+            "scored": true
+          },
+          {
+            "cell_id": "quick-cell-3-placement_approach",
+            "cell_spec_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000067",
+            "family": "placement_approach",
+            "partition": "qualification",
+            "scored": true
+          },
+          {
+            "cell_id": "quick-cell-4-illumination",
+            "cell_spec_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000068",
+            "family": "illumination",
+            "partition": "qualification",
+            "scored": true
+          },
+          {
+            "cell_id": "quick-cell-5-camera_sensor",
+            "cell_spec_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000069",
+            "family": "camera_sensor",
+            "partition": "qualification",
+            "scored": true
+          },
+          {
+            "cell_id": "quick-cell-6-bounded_physics",
+            "cell_spec_digest": "sha256:000000000000000000000000000000000000000000000000000000000000006a",
+            "family": "bounded_physics",
+            "partition": "qualification",
+            "scored": true
+          },
+          {
+            "cell_id": "quick-cell-7-admitted_object_material_cousin",
+            "cell_spec_digest": "sha256:000000000000000000000000000000000000000000000000000000000000006b",
+            "family": "admitted_object_material_cousin",
+            "partition": "qualification",
+            "scored": true
+          },
+          {
+            "cell_id": "quick-cell-8-pairwise_stress",
+            "cell_spec_digest": "sha256:000000000000000000000000000000000000000000000000000000000000006c",
+            "family": "pairwise_stress",
+            "partition": "qualification",
+            "scored": true
+          },
+          {
+            "cell_id": "quick-cell-9-held_out_composition",
+            "cell_spec_digest": "sha256:000000000000000000000000000000000000000000000000000000000000006d",
+            "family": "held_out_composition",
+            "partition": "held_out",
+            "scored": true
+          }
+        ],
+        "default": true,
+        "estimate": {
+          "status": "unavailable"
+        },
+        "family_counts": {
+          "admitted_object_material_cousin": 1,
+          "bounded_physics": 1,
+          "camera_sensor": 1,
+          "canonical_anchor": 2,
+          "held_out_composition": 1,
+          "illumination": 1,
+          "pairwise_stress": 1,
+          "placement_approach": 2
+        },
+        "label": "Quick",
+        "nesting_proof_digest": "sha256:84d285a7b62f587fc7d2cb2cb5cdcce1137b8cbc59c834badae4d559bf2f28f1",
+        "parent_prefix_count": 0,
+        "parent_preset_id": null,
+        "preset_id": "quick_10",
+        "scenario_count_per_policy": 10,
+        "scenario_set_digest": "sha256:f70bf4276df74a19e3c476320d0142f892b8690b1ca27a80503a7c1237f193a3"
+      },
+      {
+        "availability": "coming_later",
+        "default": false,
+        "estimate": {
+          "status": "unavailable"
+        },
+        "family_counts": {
+          "admitted_object_material_cousin": 10,
+          "bounded_physics": 14,
+          "camera_sensor": 14,
+          "canonical_anchor": 2,
+          "held_out_composition": 13,
+          "illumination": 14,
+          "pairwise_stress": 13,
+          "placement_approach": 20
+        },
+        "label": "Standard",
+        "nesting_proof_digest": "sha256:24c758f4207891700d4b928b165e174b282bc2423d4cdd962794a76840a89637",
+        "parent_prefix_count": 10,
+        "parent_preset_id": "quick_10",
+        "preset_id": "standard_100",
+        "scenario_count_per_policy": 100,
+        "scenario_set_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "availability": "coming_later",
+        "default": false,
+        "estimate": {
+          "status": "unavailable"
+        },
+        "family_counts": {
+          "admitted_object_material_cousin": 50,
+          "bounded_physics": 70,
+          "camera_sensor": 70,
+          "canonical_anchor": 2,
+          "held_out_composition": 69,
+          "illumination": 70,
+          "pairwise_stress": 69,
+          "placement_approach": 100
+        },
+        "label": "Deep",
+        "nesting_proof_digest": "sha256:eeed1cb7b8f546e11e8a4752d6349c43fe498a40b375c28be15b2202845a9af2",
+        "parent_prefix_count": 100,
+        "parent_preset_id": "standard_100",
+        "preset_id": "deep_500",
+        "scenario_count_per_policy": 500,
+        "scenario_set_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    ],
+    "scenario_compiler": {
+      "agent_may_select_cells": false,
+      "compiler_id": "franka_rigid_relocation_nested_prefix",
+      "compiler_version": "v1",
+      "outcome_independent": true,
+      "selection_rule": "published_ordered_prefix"
+    },
+    "schema_version": "task_evaluation_policy_run_setup.v1",
+    "setup_digest": "sha256:083ae381f2eedba4059939e767a7ef43a657fcda2dfa9d0cb1f53aef05d403bf",
+    "source_launch_id": "scene-839873-source-launch"
+  },
+  "provenance": {
+    "generator": "tests/fixtures/managed_job_publication_v1/generate.py",
+    "physical_evidence": false,
+    "provider_execution": false,
+    "scope": "development_only"
+  },
+  "v1": {
+    "capture_session_id": "software-fixture-capture",
+    "decision_envelope": {
+      "abstention_rate": 0.0,
+      "claim_ceiling": {
+        "deployment_readiness": false,
+        "generated_artifact_upgrades_raw_or_physical_claim": false,
+        "physical_success": false,
+        "safety_certification": false,
+        "task_evaluation_run_decision": true
+      },
+      "cross_method_disagreements": [],
+      "decision_envelope_digest": "sha256:40b1a5670f22bbfb7bd145d37ed1d4531f6acb3c10f6c8313a998d62db279d0e",
+      "decision_id": "decision-local-1",
+      "decision_question": "Can the exact robot analytically reach the tote region?",
+      "decision_rationale": "claim_level_qualified_evidence_with_fail_closed_abstention",
+      "deployment_approval": false,
+      "evidence_accepted": [
+        "sha256:0bceb89d8efe1843d60cd39de07b79356eb924a74197dafe9364741d01ce9780"
+      ],
+      "evidence_coverage": 0.95,
+      "evidence_rejected": [],
+      "false_reject_estimate": 0.02,
+      "input_run_result_testbed_digests": [
+        "sha256:070afaf533350e6eccd9129266ec5ebd31a1fa5e85cd7e7a96b824217491a7e9",
+        "sha256:0bceb89d8efe1843d60cd39de07b79356eb924a74197dafe9364741d01ce9780",
+        "sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c",
+        "sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877"
+      ],
+      "next_cheapest_experiment": "none_required",
+      "overall_outcome": "decision",
+      "per_claim_verdicts": [
+        {
+          "accepted_result_digests": [
+            "sha256:0bceb89d8efe1843d60cd39de07b79356eb924a74197dafe9364741d01ce9780"
+          ],
+          "claim_ceiling": {
+            "deployment_readiness": false,
+            "physical_success": false,
+            "safety_certification": false
+          },
+          "claim_id": "reach-tote",
+          "claim_type": "reachability",
+          "rationale": "qualified_evidence_satisfies_claim",
+          "verdict": "supported"
+        }
+      ],
+      "physical_evidence_still_required": [],
+      "plan_digest": "sha256:070afaf533350e6eccd9129266ec5ebd31a1fa5e85cd7e7a96b824217491a7e9",
+      "raw_policy_values_persisted": false,
+      "raw_secret_values_persisted": false,
+      "request_digest": "sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877",
+      "request_id": "request-local-1",
+      "safety_certification": false,
+      "schema_version": "decision_envelope.v1",
+      "severity_weighted_false_safe_risk": 0.01,
+      "shared_dependency_warnings": [],
+      "testbed_digest": "sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c",
+      "uncertainty": {
+        "maximum": 0.01,
+        "ranking_science_boundary": "thesis_not_supported"
+      },
+      "unsupported_conditions": [
+        "physical_task_success"
+      ],
+      "validation_envelope": {
+        "robot_placement_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    },
+    "evidence_plan": {
+      "budget_status": {
+        "max_cost_usd": 0.0,
+        "projected_cost_usd": 0.0,
+        "projected_latency_seconds": 0.01,
+        "within_budget": true
+      },
+      "claim_plans": [
+        {
+          "candidate_methods_considered": [
+            {
+              "authority_tier": 1,
+              "compiles_evaluation_run_spec": false,
+              "correlation_group": "metric-scaffold",
+              "expected_cost_usd": 0.0,
+              "expected_latency_seconds": 0.01,
+              "method_family": "analytic_geometry_kinematics",
+              "method_id": "local-analytic-reachability",
+              "method_profile_digest": "sha256:64ccaa047cb1b6e9942f93b2c422e7da3640a74c189754cdb93eef5a4391d74d",
+              "method_version": "1",
+              "qualification_digest": "sha256:3ddaf47f2250be54ac98184ff7fd227475bced939d59a40316bbe187583bd507",
+              "qualification_result": "qualified",
+              "rejection_reasons": [],
+              "selection_objective": 0.1,
+              "shared_dependencies": [
+                "capture-1"
+              ]
+            }
+          ],
+          "claim_id": "reach-tote",
+          "claim_type": "reachability",
+          "escalation_methods": [],
+          "expected_cost_usd": 0.0,
+          "expected_latency_seconds": 0.01,
+          "measurement_routing_decision": null,
+          "next_cheapest_experiment": "none_required",
+          "required_authority_tier": 1,
+          "selected_methods": [
+            {
+              "claim_id": "reach-tote",
+              "escalate_on": [
+                "invalid",
+                "uncertain",
+                "contradictory",
+                "coverage_below_required",
+                "domain_mismatch"
+              ],
+              "execution_rank": 0,
+              "method_id": "local-analytic-reachability",
+              "method_profile_digest": "sha256:64ccaa047cb1b6e9942f93b2c422e7da3640a74c189754cdb93eef5a4391d74d",
+              "qualification_digest": "sha256:3ddaf47f2250be54ac98184ff7fd227475bced939d59a40316bbe187583bd507",
+              "step_id": "reach-tote-local-analytic-reachability",
+              "stop_when_sufficient": true
+            }
+          ],
+          "selection_rationale": "cheapest_qualified_sufficient_evidence",
+          "status": "planned"
+        }
+      ],
+      "compiled_evaluation_run_specs": [],
+      "decision_id": "decision-local-1",
+      "escalation_conditions": [
+        "invalid_result",
+        "excessive_uncertainty",
+        "cross_method_disagreement",
+        "coverage_below_required",
+        "domain_mismatch"
+      ],
+      "execution_order": [
+        "reach-tote-local-analytic-reachability"
+      ],
+      "non_evaluation_run_steps": [
+        {
+          "adapter_reference": "local://analytic-reachability-v1",
+          "claim_id": "reach-tote",
+          "escalate_on": [
+            "invalid",
+            "uncertain",
+            "contradictory",
+            "coverage_below_required",
+            "domain_mismatch"
+          ],
+          "execution_rank": 0,
+          "method_family": "analytic_geometry_kinematics",
+          "method_id": "local-analytic-reachability",
+          "method_profile_digest": "sha256:64ccaa047cb1b6e9942f93b2c422e7da3640a74c189754cdb93eef5a4391d74d",
+          "qualification_digest": "sha256:3ddaf47f2250be54ac98184ff7fd227475bced939d59a40316bbe187583bd507",
+          "step_id": "reach-tote-local-analytic-reachability",
+          "stop_when_sufficient": true
+        }
+      ],
+      "physical_evidence_requests": [],
+      "plan_digest": "sha256:070afaf533350e6eccd9129266ec5ebd31a1fa5e85cd7e7a96b824217491a7e9",
+      "plan_id": "request-local-1-plan",
+      "prohibited_claims": [
+        "deployment_readiness",
+        "physical_task_success",
+        "policy_ranking_thesis_upgrade",
+        "safety_certification"
+      ],
+      "request_digest": "sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877",
+      "request_id": "request-local-1",
+      "router_policy": {
+        "agreement_is_independence": false,
+        "cross_domain_transfer_enabled": false,
+        "deterministic": true,
+        "policy_ranking_thesis_verdict": "thesis_not_supported",
+        "provider_identity_is_qualification": false,
+        "uncalibrated_methods_are_debug_only": true,
+        "visual_realism_is_qualification": false
+      },
+      "schema_version": "evidence_plan.v1",
+      "shared_dependency_warnings": [],
+      "stop_conditions": [
+        "claim_evidence_requirement_satisfied",
+        "marginal_experiment_not_justified",
+        "budget_exhausted"
+      ],
+      "testbed_digest": "sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c",
+      "testbed_id": "local-run-testbed",
+      "testbed_version": "1"
+    },
+    "intake_id": "capture-1",
+    "plan_digest": "sha256:070afaf533350e6eccd9129266ec5ebd31a1fa5e85cd7e7a96b824217491a7e9",
+    "producer_canonical_json": {
+      "decision_envelope": "{\"abstention_rate\":0.0,\"claim_ceiling\":{\"deployment_readiness\":false,\"generated_artifact_upgrades_raw_or_physical_claim\":false,\"physical_success\":false,\"safety_certification\":false,\"task_evaluation_run_decision\":true},\"cross_method_disagreements\":[],\"decision_id\":\"decision-local-1\",\"decision_question\":\"Can the exact robot analytically reach the tote region?\",\"decision_rationale\":\"claim_level_qualified_evidence_with_fail_closed_abstention\",\"deployment_approval\":false,\"evidence_accepted\":[\"sha256:0bceb89d8efe1843d60cd39de07b79356eb924a74197dafe9364741d01ce9780\"],\"evidence_coverage\":0.95,\"evidence_rejected\":[],\"false_reject_estimate\":0.02,\"input_run_result_testbed_digests\":[\"sha256:070afaf533350e6eccd9129266ec5ebd31a1fa5e85cd7e7a96b824217491a7e9\",\"sha256:0bceb89d8efe1843d60cd39de07b79356eb924a74197dafe9364741d01ce9780\",\"sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c\",\"sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877\"],\"next_cheapest_experiment\":\"none_required\",\"overall_outcome\":\"decision\",\"per_claim_verdicts\":[{\"accepted_result_digests\":[\"sha256:0bceb89d8efe1843d60cd39de07b79356eb924a74197dafe9364741d01ce9780\"],\"claim_ceiling\":{\"deployment_readiness\":false,\"physical_success\":false,\"safety_certification\":false},\"claim_id\":\"reach-tote\",\"claim_type\":\"reachability\",\"rationale\":\"qualified_evidence_satisfies_claim\",\"verdict\":\"supported\"}],\"physical_evidence_still_required\":[],\"plan_digest\":\"sha256:070afaf533350e6eccd9129266ec5ebd31a1fa5e85cd7e7a96b824217491a7e9\",\"raw_policy_values_persisted\":false,\"raw_secret_values_persisted\":false,\"request_digest\":\"sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877\",\"request_id\":\"request-local-1\",\"safety_certification\":false,\"schema_version\":\"decision_envelope.v1\",\"severity_weighted_false_safe_risk\":0.01,\"shared_dependency_warnings\":[],\"testbed_digest\":\"sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c\",\"uncertainty\":{\"maximum\":0.01,\"ranking_science_boundary\":\"thesis_not_supported\"},\"unsupported_conditions\":[\"physical_task_success\"],\"validation_envelope\":{\"robot_placement_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}}",
+      "evidence_plan": "{\"budget_status\":{\"max_cost_usd\":0.0,\"projected_cost_usd\":0.0,\"projected_latency_seconds\":0.01,\"within_budget\":true},\"claim_plans\":[{\"candidate_methods_considered\":[{\"authority_tier\":1,\"compiles_evaluation_run_spec\":false,\"correlation_group\":\"metric-scaffold\",\"expected_cost_usd\":0.0,\"expected_latency_seconds\":0.01,\"method_family\":\"analytic_geometry_kinematics\",\"method_id\":\"local-analytic-reachability\",\"method_profile_digest\":\"sha256:64ccaa047cb1b6e9942f93b2c422e7da3640a74c189754cdb93eef5a4391d74d\",\"method_version\":\"1\",\"qualification_digest\":\"sha256:3ddaf47f2250be54ac98184ff7fd227475bced939d59a40316bbe187583bd507\",\"qualification_result\":\"qualified\",\"rejection_reasons\":[],\"selection_objective\":0.1,\"shared_dependencies\":[\"capture-1\"]}],\"claim_id\":\"reach-tote\",\"claim_type\":\"reachability\",\"escalation_methods\":[],\"expected_cost_usd\":0.0,\"expected_latency_seconds\":0.01,\"measurement_routing_decision\":null,\"next_cheapest_experiment\":\"none_required\",\"required_authority_tier\":1,\"selected_methods\":[{\"claim_id\":\"reach-tote\",\"escalate_on\":[\"invalid\",\"uncertain\",\"contradictory\",\"coverage_below_required\",\"domain_mismatch\"],\"execution_rank\":0,\"method_id\":\"local-analytic-reachability\",\"method_profile_digest\":\"sha256:64ccaa047cb1b6e9942f93b2c422e7da3640a74c189754cdb93eef5a4391d74d\",\"qualification_digest\":\"sha256:3ddaf47f2250be54ac98184ff7fd227475bced939d59a40316bbe187583bd507\",\"step_id\":\"reach-tote-local-analytic-reachability\",\"stop_when_sufficient\":true}],\"selection_rationale\":\"cheapest_qualified_sufficient_evidence\",\"status\":\"planned\"}],\"compiled_evaluation_run_specs\":[],\"decision_id\":\"decision-local-1\",\"escalation_conditions\":[\"invalid_result\",\"excessive_uncertainty\",\"cross_method_disagreement\",\"coverage_below_required\",\"domain_mismatch\"],\"execution_order\":[\"reach-tote-local-analytic-reachability\"],\"non_evaluation_run_steps\":[{\"adapter_reference\":\"local://analytic-reachability-v1\",\"claim_id\":\"reach-tote\",\"escalate_on\":[\"invalid\",\"uncertain\",\"contradictory\",\"coverage_below_required\",\"domain_mismatch\"],\"execution_rank\":0,\"method_family\":\"analytic_geometry_kinematics\",\"method_id\":\"local-analytic-reachability\",\"method_profile_digest\":\"sha256:64ccaa047cb1b6e9942f93b2c422e7da3640a74c189754cdb93eef5a4391d74d\",\"qualification_digest\":\"sha256:3ddaf47f2250be54ac98184ff7fd227475bced939d59a40316bbe187583bd507\",\"step_id\":\"reach-tote-local-analytic-reachability\",\"stop_when_sufficient\":true}],\"physical_evidence_requests\":[],\"plan_id\":\"request-local-1-plan\",\"prohibited_claims\":[\"deployment_readiness\",\"physical_task_success\",\"policy_ranking_thesis_upgrade\",\"safety_certification\"],\"request_digest\":\"sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877\",\"request_id\":\"request-local-1\",\"router_policy\":{\"agreement_is_independence\":false,\"cross_domain_transfer_enabled\":false,\"deterministic\":true,\"policy_ranking_thesis_verdict\":\"thesis_not_supported\",\"provider_identity_is_qualification\":false,\"uncalibrated_methods_are_debug_only\":true,\"visual_realism_is_qualification\":false},\"schema_version\":\"evidence_plan.v1\",\"shared_dependency_warnings\":[],\"stop_conditions\":[\"claim_evidence_requirement_satisfied\",\"marginal_experiment_not_justified\",\"budget_exhausted\"],\"testbed_digest\":\"sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c\",\"testbed_id\":\"local-run-testbed\",\"testbed_version\":\"1\"}"
+    },
+    "proof_boundary": {
+      "comparative_policy_ranking_verdict": "thesis_not_supported",
+      "deployment_or_safety_approved": false,
+      "simulation_is_physical_success": false
+    },
+    "request_digest": "sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877",
+    "run_id": "software-fixture-run",
+    "schema_version": "task_evaluation_run_publication.v1",
+    "state": "decided",
+    "testbed_digest": "sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c"
+  },
+  "v3": {
+    "capture_session_id": "software-fixture-capture",
+    "decision_envelope": {
+      "abstention_rate": 1.0,
+      "claim_ceiling": {
+        "deployment_readiness": false,
+        "generated_artifact_upgrades_raw_or_physical_claim": false,
+        "physical_success": false,
+        "safety_certification": false,
+        "task_evaluation_run_decision": false
+      },
+      "cross_method_disagreements": [],
+      "decision_envelope_digest": "sha256:a7eff4c07e7a3d42f0f93b794a189ce951a105995405bff0d2848a761e9d1d7f",
+      "decision_id": "decision-local-1",
+      "decision_question": "Can the exact robot analytically reach the tote region?",
+      "decision_rationale": "claim_level_qualified_evidence_with_fail_closed_abstention",
+      "deployment_approval": false,
+      "evidence_accepted": [],
+      "evidence_coverage": 0.0,
+      "evidence_rejected": [],
+      "false_reject_estimate": null,
+      "input_run_result_testbed_digests": [
+        "sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c",
+        "sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877",
+        "sha256:e52cb0020bb072f67c5691b58b975a9ab5c35074d84c81ad3f4364e0c311b806"
+      ],
+      "next_cheapest_experiment": "none_required",
+      "overall_outcome": "abstention",
+      "per_claim_verdicts": [
+        {
+          "accepted_result_digests": [],
+          "claim_ceiling": {
+            "deployment_readiness": false,
+            "physical_success": false,
+            "safety_certification": false
+          },
+          "claim_id": "reach-tote",
+          "claim_type": "reachability",
+          "rationale": "qualified_evidence_missing_or_insufficient",
+          "verdict": "abstention"
+        }
+      ],
+      "physical_evidence_still_required": [],
+      "plan_digest": "sha256:e52cb0020bb072f67c5691b58b975a9ab5c35074d84c81ad3f4364e0c311b806",
+      "raw_policy_values_persisted": false,
+      "raw_secret_values_persisted": false,
+      "request_digest": "sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877",
+      "request_id": "request-local-1",
+      "safety_certification": false,
+      "schema_version": "decision_envelope.v1",
+      "severity_weighted_false_safe_risk": 1.0,
+      "shared_dependency_warnings": [],
+      "testbed_digest": "sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c",
+      "uncertainty": {
+        "maximum": 1.0,
+        "ranking_science_boundary": "thesis_not_supported"
+      },
+      "unsupported_conditions": [
+        "physical_task_success"
+      ],
+      "validation_envelope": {
+        "robot_placement_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    },
+    "evidence_plan": {
+      "budget_status": {
+        "max_cost_usd": 0.0,
+        "projected_cost_usd": 0.0,
+        "projected_latency_seconds": 0.0,
+        "within_budget": true
+      },
+      "claim_plans": [
+        {
+          "candidate_methods_considered": [],
+          "claim_id": "reach-tote",
+          "claim_type": "reachability",
+          "escalation_methods": [],
+          "expected_cost_usd": 0,
+          "expected_latency_seconds": 0,
+          "measurement_routing_decision": null,
+          "next_cheapest_experiment": "none_required",
+          "required_authority_tier": 1,
+          "selected_methods": [],
+          "selection_rationale": "no_qualified_sufficient_plan",
+          "status": "abstention_planned"
+        }
+      ],
+      "compiled_evaluation_run_specs": [],
+      "decision_id": "decision-local-1",
+      "escalation_conditions": [
+        "invalid_result",
+        "excessive_uncertainty",
+        "cross_method_disagreement",
+        "coverage_below_required",
+        "domain_mismatch"
+      ],
+      "execution_order": [],
+      "non_evaluation_run_steps": [],
+      "physical_evidence_requests": [],
+      "plan_digest": "sha256:e52cb0020bb072f67c5691b58b975a9ab5c35074d84c81ad3f4364e0c311b806",
+      "plan_id": "request-local-1-plan",
+      "prohibited_claims": [
+        "deployment_readiness",
+        "physical_task_success",
+        "policy_ranking_thesis_upgrade",
+        "safety_certification"
+      ],
+      "request_digest": "sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877",
+      "request_id": "request-local-1",
+      "router_policy": {
+        "agreement_is_independence": false,
+        "cross_domain_transfer_enabled": false,
+        "deterministic": true,
+        "policy_ranking_thesis_verdict": "thesis_not_supported",
+        "provider_identity_is_qualification": false,
+        "uncalibrated_methods_are_debug_only": true,
+        "visual_realism_is_qualification": false
+      },
+      "schema_version": "evidence_plan.v1",
+      "shared_dependency_warnings": [],
+      "stop_conditions": [
+        "claim_evidence_requirement_satisfied",
+        "marginal_experiment_not_justified",
+        "budget_exhausted"
+      ],
+      "testbed_digest": "sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c",
+      "testbed_id": "local-run-testbed",
+      "testbed_version": "1"
+    },
+    "intake_id": "capture-1",
+    "plan_digest": "sha256:e52cb0020bb072f67c5691b58b975a9ab5c35074d84c81ad3f4364e0c311b806",
+    "policy_run_result": {
+      "blockers": [
+        "incomplete_episode_matrix"
+      ],
+      "candidate_ids": [
+        "pi05_droid",
+        "groot_n17_droid"
+      ],
+      "candidate_results": [
+        {
+          "candidate_id": "pi05_droid",
+          "contacts": {
+            "contact_count": 20,
+            "violation_count": 0
+          },
+          "episodes_completed": 0,
+          "evidence": {
+            "lossless_frame_manifest_count": 0,
+            "review_video_count": 0,
+            "typed_media_gap_count": 0
+          },
+          "failures": [],
+          "family_metrics": {
+            "admitted_object_material_cousin": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "bounded_physics": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "camera_sensor": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "canonical_anchor": {
+              "attempted": 2,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "held_out_composition": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "illumination": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "pairwise_stress": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "placement_approach": {
+              "attempted": 2,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            }
+          }
+        },
+        {
+          "candidate_id": "groot_n17_droid",
+          "contacts": {
+            "contact_count": 20,
+            "violation_count": 0
+          },
+          "episodes_completed": 0,
+          "evidence": {
+            "lossless_frame_manifest_count": 0,
+            "review_video_count": 0,
+            "typed_media_gap_count": 0
+          },
+          "failures": [],
+          "family_metrics": {
+            "admitted_object_material_cousin": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "bounded_physics": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "camera_sensor": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "canonical_anchor": {
+              "attempted": 2,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "held_out_composition": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "illumination": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "pairwise_stress": {
+              "attempted": 1,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            },
+            "placement_approach": {
+              "attempted": 2,
+              "degradation_from_canonical": 0.0,
+              "succeeded": 0,
+              "success_rate": 0.0
+            }
+          }
+        }
+      ],
+      "configuration_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "embodiment_id": "franka_panda_robotiq_2f85_v1",
+      "matrix": {
+        "candidate_episode_count": 20,
+        "completed_episode_count": 0,
+        "control_episode_count": 20,
+        "controls_complete": false,
+        "expected_episode_count": 40,
+        "identical_candidate_cells_and_seeds": true,
+        "scored_cell_count": 10
+      },
+      "offering_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "paired_comparison": {
+        "decision": "abstain",
+        "deterministic_non_policy_scoring": true,
+        "matched_episode_pairs": 0
+      },
+      "plan_digest": "sha256:e52cb0020bb072f67c5691b58b975a9ab5c35074d84c81ad3f4364e0c311b806",
+      "projection_digest": "sha256:8d7fd1ec4549eac74494fb2618ebef8fadc6fa593a4b8e6fcf39590058fbce06",
+      "proof_boundary": {
+        "cross_team_leaderboard_authorized": false,
+        "policy_can_grade_itself": false,
+        "review_video_is_authoritative_evidence": false,
+        "simulation_is_physical_success": false
+      },
+      "result_delivery_digest": "sha256:c939ba7f32b363c911f9fe3db62384f38cef1afc8ccd3d14d0cbd6246e80d1c4",
+      "run_id": "policy-run-1",
+      "schema_version": "task_evaluation_policy_run_result_projection.v1",
+      "source_launch_id": "scene-839873-source-launch",
+      "state": "abstained"
+    },
+    "producer_canonical_json": {
+      "decision_envelope": "{\"abstention_rate\":1.0,\"claim_ceiling\":{\"deployment_readiness\":false,\"generated_artifact_upgrades_raw_or_physical_claim\":false,\"physical_success\":false,\"safety_certification\":false,\"task_evaluation_run_decision\":false},\"cross_method_disagreements\":[],\"decision_id\":\"decision-local-1\",\"decision_question\":\"Can the exact robot analytically reach the tote region?\",\"decision_rationale\":\"claim_level_qualified_evidence_with_fail_closed_abstention\",\"deployment_approval\":false,\"evidence_accepted\":[],\"evidence_coverage\":0.0,\"evidence_rejected\":[],\"false_reject_estimate\":null,\"input_run_result_testbed_digests\":[\"sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c\",\"sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877\",\"sha256:e52cb0020bb072f67c5691b58b975a9ab5c35074d84c81ad3f4364e0c311b806\"],\"next_cheapest_experiment\":\"none_required\",\"overall_outcome\":\"abstention\",\"per_claim_verdicts\":[{\"accepted_result_digests\":[],\"claim_ceiling\":{\"deployment_readiness\":false,\"physical_success\":false,\"safety_certification\":false},\"claim_id\":\"reach-tote\",\"claim_type\":\"reachability\",\"rationale\":\"qualified_evidence_missing_or_insufficient\",\"verdict\":\"abstention\"}],\"physical_evidence_still_required\":[],\"plan_digest\":\"sha256:e52cb0020bb072f67c5691b58b975a9ab5c35074d84c81ad3f4364e0c311b806\",\"raw_policy_values_persisted\":false,\"raw_secret_values_persisted\":false,\"request_digest\":\"sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877\",\"request_id\":\"request-local-1\",\"safety_certification\":false,\"schema_version\":\"decision_envelope.v1\",\"severity_weighted_false_safe_risk\":1.0,\"shared_dependency_warnings\":[],\"testbed_digest\":\"sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c\",\"uncertainty\":{\"maximum\":1.0,\"ranking_science_boundary\":\"thesis_not_supported\"},\"unsupported_conditions\":[\"physical_task_success\"],\"validation_envelope\":{\"robot_placement_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}}",
+      "evidence_plan": "{\"budget_status\":{\"max_cost_usd\":0.0,\"projected_cost_usd\":0.0,\"projected_latency_seconds\":0.0,\"within_budget\":true},\"claim_plans\":[{\"candidate_methods_considered\":[],\"claim_id\":\"reach-tote\",\"claim_type\":\"reachability\",\"escalation_methods\":[],\"expected_cost_usd\":0,\"expected_latency_seconds\":0,\"measurement_routing_decision\":null,\"next_cheapest_experiment\":\"none_required\",\"required_authority_tier\":1,\"selected_methods\":[],\"selection_rationale\":\"no_qualified_sufficient_plan\",\"status\":\"abstention_planned\"}],\"compiled_evaluation_run_specs\":[],\"decision_id\":\"decision-local-1\",\"escalation_conditions\":[\"invalid_result\",\"excessive_uncertainty\",\"cross_method_disagreement\",\"coverage_below_required\",\"domain_mismatch\"],\"execution_order\":[],\"non_evaluation_run_steps\":[],\"physical_evidence_requests\":[],\"plan_id\":\"request-local-1-plan\",\"prohibited_claims\":[\"deployment_readiness\",\"physical_task_success\",\"policy_ranking_thesis_upgrade\",\"safety_certification\"],\"request_digest\":\"sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877\",\"request_id\":\"request-local-1\",\"router_policy\":{\"agreement_is_independence\":false,\"cross_domain_transfer_enabled\":false,\"deterministic\":true,\"policy_ranking_thesis_verdict\":\"thesis_not_supported\",\"provider_identity_is_qualification\":false,\"uncalibrated_methods_are_debug_only\":true,\"visual_realism_is_qualification\":false},\"schema_version\":\"evidence_plan.v1\",\"shared_dependency_warnings\":[],\"stop_conditions\":[\"claim_evidence_requirement_satisfied\",\"marginal_experiment_not_justified\",\"budget_exhausted\"],\"testbed_digest\":\"sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c\",\"testbed_id\":\"local-run-testbed\",\"testbed_version\":\"1\"}",
+      "policy_run_result": "{\"blockers\":[\"incomplete_episode_matrix\"],\"candidate_ids\":[\"pi05_droid\",\"groot_n17_droid\"],\"candidate_results\":[{\"candidate_id\":\"pi05_droid\",\"contacts\":{\"contact_count\":20,\"violation_count\":0},\"episodes_completed\":0,\"evidence\":{\"lossless_frame_manifest_count\":0,\"review_video_count\":0,\"typed_media_gap_count\":0},\"failures\":[],\"family_metrics\":{\"admitted_object_material_cousin\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"bounded_physics\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"camera_sensor\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"canonical_anchor\":{\"attempted\":2,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"held_out_composition\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"illumination\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"pairwise_stress\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"placement_approach\":{\"attempted\":2,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0}}},{\"candidate_id\":\"groot_n17_droid\",\"contacts\":{\"contact_count\":20,\"violation_count\":0},\"episodes_completed\":0,\"evidence\":{\"lossless_frame_manifest_count\":0,\"review_video_count\":0,\"typed_media_gap_count\":0},\"failures\":[],\"family_metrics\":{\"admitted_object_material_cousin\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"bounded_physics\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"camera_sensor\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"canonical_anchor\":{\"attempted\":2,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"held_out_composition\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"illumination\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"pairwise_stress\":{\"attempted\":1,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0},\"placement_approach\":{\"attempted\":2,\"degradation_from_canonical\":0,\"succeeded\":0,\"success_rate\":0}}}],\"configuration_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"embodiment_id\":\"franka_panda_robotiq_2f85_v1\",\"matrix\":{\"candidate_episode_count\":20,\"completed_episode_count\":0,\"control_episode_count\":20,\"controls_complete\":false,\"expected_episode_count\":40,\"identical_candidate_cells_and_seeds\":true,\"scored_cell_count\":10},\"offering_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"paired_comparison\":{\"decision\":\"abstain\",\"deterministic_non_policy_scoring\":true,\"matched_episode_pairs\":0},\"plan_digest\":\"sha256:e52cb0020bb072f67c5691b58b975a9ab5c35074d84c81ad3f4364e0c311b806\",\"proof_boundary\":{\"cross_team_leaderboard_authorized\":false,\"policy_can_grade_itself\":false,\"review_video_is_authoritative_evidence\":false,\"simulation_is_physical_success\":false},\"result_delivery_digest\":\"sha256:c939ba7f32b363c911f9fe3db62384f38cef1afc8ccd3d14d0cbd6246e80d1c4\",\"run_id\":\"policy-run-1\",\"schema_version\":\"task_evaluation_policy_run_result_projection.v1\",\"source_launch_id\":\"scene-839873-source-launch\",\"state\":\"abstained\"}",
+      "result_delivery": "{\"artifacts\":[],\"blockers\":[\"episode_evidence_index_missing\"],\"claim_class\":\"development_only\",\"decision_envelope_digest\":\"sha256:a7eff4c07e7a3d42f0f93b794a189ce951a105995405bff0d2848a761e9d1d7f\",\"episodes\":[],\"proof_boundary\":{\"cross_team_leaderboard_authorized\":false,\"review_video_is_authoritative_evidence\":false,\"simulation_is_physical_success\":false},\"run_id\":\"policy-run-1\",\"schema_version\":\"task_evaluation_result_delivery.v1\",\"stages\":[{\"stage\":\"validate\",\"status\":\"blocked\"},{\"stage\":\"seal\",\"status\":\"waiting\"},{\"stage\":\"project\",\"status\":\"waiting\"},{\"stage\":\"package\",\"status\":\"waiting\"},{\"stage\":\"publish\",\"status\":\"waiting\"}],\"state\":\"abstained\",\"status\":\"blocked\",\"summary\":{\"control_episode_count\":0,\"episode_count\":0,\"learned_candidate_episode_count\":0,\"successful_episode_count\":0}}"
+    },
+    "proof_boundary": {
+      "comparative_policy_ranking_verdict": "thesis_not_supported",
+      "deployment_or_safety_approved": false,
+      "simulation_is_physical_success": false
+    },
+    "request_digest": "sha256:916f0fc0211570b3ae89f1ec8d399b828def473d87b11f475e213c4c58577877",
+    "result_delivery": {
+      "artifacts": [],
+      "blockers": [
+        "episode_evidence_index_missing"
+      ],
+      "claim_class": "development_only",
+      "decision_envelope_digest": "sha256:a7eff4c07e7a3d42f0f93b794a189ce951a105995405bff0d2848a761e9d1d7f",
+      "delivery_digest": "sha256:c939ba7f32b363c911f9fe3db62384f38cef1afc8ccd3d14d0cbd6246e80d1c4",
+      "episodes": [],
+      "proof_boundary": {
+        "cross_team_leaderboard_authorized": false,
+        "review_video_is_authoritative_evidence": false,
+        "simulation_is_physical_success": false
+      },
+      "run_id": "policy-run-1",
+      "schema_version": "task_evaluation_result_delivery.v1",
+      "stages": [
+        {
+          "stage": "validate",
+          "status": "blocked"
+        },
+        {
+          "stage": "seal",
+          "status": "waiting"
+        },
+        {
+          "stage": "project",
+          "status": "waiting"
+        },
+        {
+          "stage": "package",
+          "status": "waiting"
+        },
+        {
+          "stage": "publish",
+          "status": "waiting"
+        }
+      ],
+      "state": "abstained",
+      "status": "blocked",
+      "summary": {
+        "control_episode_count": 0,
+        "episode_count": 0,
+        "learned_candidate_episode_count": 0,
+        "successful_episode_count": 0
+      }
+    },
+    "run_id": "policy-run-1",
+    "schema_version": "task_evaluation_run_publication.v3",
+    "state": "abstained",
+    "testbed_digest": "sha256:3b9bb2229a8ab349463d19fb90faf9ccdbb864084e4cf56bf1aeed153aeafc1c"
+  }
+}
