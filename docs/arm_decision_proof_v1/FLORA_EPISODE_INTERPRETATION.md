@@ -170,6 +170,15 @@ retained in `attempts/attempt_001/immutable_execution/benchmark.log` for the
 preflight repair this missing coverage; neither the repair nor a CPU replay is
 evidence of a successful FLORA inference run.
 
+The additional authorized attempt at `a92944f73137` was refused by Vast with
+HTTP 400 `no_such_ask` before allocation: the selected offer had become
+unavailable. Authenticated inventory confirmed no instance for its exact label;
+no model download or inference occurred. Its single-use authority remains
+consumed, and the zero-retry limit was preserved. Staged-object cleanup now
+uses the same strict definite-refusal and verified-absence predicate as the
+watchdog. Ambiguous create outcomes still retain remote results and recovery
+access. The adapter's transfer estimate is a reservation, not a posted charge.
+
 ## Read the comparison
 
 JSON and Markdown reports retain episode/candidate comparisons, coverage,

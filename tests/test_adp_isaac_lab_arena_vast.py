@@ -534,6 +534,9 @@ def test_policy_transport_seals_typed_media_gap_before_first_observation(
     assert result["candidate_policy_queried"] is False
     assert result["first_observation_reached"] is False
     assert result["scientific_attempt_started"] is False
+    assert result["provider_closeout"]["all_staged_objects_absent"] is (
+        not provider_create_attempted or definite_refusal
+    )
     from blueprint_pipeline.task_evaluation_scene_execution_authority import proves_no_provider_allocation
     assert proves_no_provider_allocation(result) is (not provider_create_attempted)
     assert result["visual_evidence"] == {
@@ -1216,3 +1219,83 @@ def test_failed_download_keeps_paid_remote_evidence_and_recovery_access(tmp_path
         assert 'test-only-protected-reference' not in json.dumps(result)
     else:
         assert result['status'] == 'completed' and not remote and not access.exists()
+
+
+@pytest.mark.parametrize(
+    "create_evidence",
+    [
+        "definite_refusal", "empty_400", "unverified_inventory", "matching_instance",
+        "continuing_spend", "missing_create_identity", "unknown_create_status",
+    ],
+)
+def test_failed_create_cleans_staging_only_after_definite_refusal_and_verified_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_evidence: str
+) -> None:
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    access = staging / "provider_output_get_url.txt"
+    access.write_text("test-only-protected-reference", encoding="utf-8")
+    access.chmod(0o600)
+    remote = {"input": b"bootstrap"}
+    adapter = {
+        "status": "failed",
+        "provider_create_attempted": True,
+        "vast_instance_ids": [],
+        "vast_side_effects_may_have_occurred": False,
+        "continuing_spend_from_this_run": False,
+        "create_failure_diagnosis": {
+            "http_status_code": 400,
+            "error_preview": "invalid_args: no_such_ask Instance type is not available",
+            "definite_create_refusal": True,
+            "create_inventory_verified": True,
+            "create_inventory_http_status_code": 200,
+            "create_produced_no_instance": True,
+            "matching_attempt_instance_ids": [],
+            "attempted_labels": ["blueprint-task-evaluation-flora-test"],
+        },
+        "provider_attempt_classification": {
+            "classification": "pre_execution_provider_null",
+            "scientific_attempt_consumed": False,
+        },
+    }
+    diagnosis = adapter["create_failure_diagnosis"]
+    if create_evidence == "empty_400":
+        diagnosis["error_preview"] = ""
+        diagnosis["definite_create_refusal"] = False
+    elif create_evidence == "unverified_inventory":
+        diagnosis["create_inventory_verified"] = False
+    elif create_evidence == "matching_instance":
+        diagnosis["matching_attempt_instance_ids"] = [48650527]
+        diagnosis["create_produced_no_instance"] = False
+        adapter["vast_instance_ids"] = [48650527]
+    elif create_evidence == "continuing_spend":
+        adapter["continuing_spend_from_this_run"] = True
+    elif create_evidence == "missing_create_identity":
+        diagnosis["attempted_labels"] = []
+    elif create_evidence == "unknown_create_status":
+        adapter.pop("provider_create_attempted")
+
+    cleanup_path = staging / "wam_provider_object_store_cleanup.json"
+
+    def cleanup(path: Path) -> dict:
+        assert path == staging
+        remote.clear()
+        access.unlink()
+        result = {"status": "completed", "all_objects_absent": True, "blockers": []}
+        write_json(cleanup_path, result)
+        return result
+
+    monkeypatch.setattr(arena, "cleanup_staged_wam_provider_objects", cleanup)
+    result = arena._cleanup_downloaded_provider_objects(
+        staging_dir=staging, output_zip=tmp_path / "missing-output.zip", adapter=adapter
+    )
+    if create_evidence == "definite_refusal":
+        assert result["all_objects_absent"] is True
+        assert json.loads(cleanup_path.read_text(encoding="utf-8")) == result
+        assert not remote and not access.exists()
+    else:
+        assert result["status"] == "blocked"
+        assert result["remote_objects_retained_for_recovery"] is True
+        assert remote == {"input": b"bootstrap"} and access.is_file()
+        assert not cleanup_path.exists()
+        assert "test-only-protected-reference" not in json.dumps(result)
