@@ -11,8 +11,9 @@ and customer-reported outcomes.
 
 Use the existing website **Job workflow** panel. Record the options assessment
 directly when available evidence is sufficient. Its three dispositions remain
-options identified, more information, and no suitable option. Neither a video
-nor a buying budget is needed to start.
+options identified, more information, and no suitable option. A buying budget
+is optional. A saved draft may await video, but assessment requires actual
+retained job video and the confirmed brief.
 
 When new evidence is needed, record the exact question in that panel. A question
 without a current source-bound scientific request is saved with an information
