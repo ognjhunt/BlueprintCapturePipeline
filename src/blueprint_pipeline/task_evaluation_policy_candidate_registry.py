@@ -214,6 +214,115 @@ REGISTRY: tuple[PolicyCandidate, ...] = (
 
 _BY_ID = {candidate.candidate_id: candidate for candidate in REGISTRY}
 
+# Hosted policies run behind a provider's API. Nothing is downloaded, so there is
+# no checkpoint digest: identity is the provider's own model ID, recorded with
+# whether the provider promises that ID never changes. They stay out of REGISTRY
+# (whose unavailable rows the scene setup publishes with checkpoint digests) and
+# out of pair selection until a hosted runtime adapter has executed them.
+HOSTED_REGISTRY_SCHEMA_VERSION = "task_evaluation_hosted_policy_registry.v1"
+HEAD_AND_WRIST_CAMERAS_OBSERVATION = "head_and_per_arm_wrist_rgb_state_text_v1"
+BIMANUAL_EEF_POSE_ACTION = "bimanual_eef_pose_parallel_gripper_v1"
+DREAM1_NATIVE_JOINT_ACTION = "dream1_native_joint_positions_v1"
+Access = Literal["api_key", "sales_contact", "waitlist"]
+TermsStatus = Literal["reviewed", "under_review", "not_published"]
+
+
+@dataclass(frozen=True)
+class HostedPolicyCandidate:
+    candidate_id: str
+    display_name: str
+    provider: str
+    model_id: str
+    version_identity: str
+    version_frozen: bool
+    source_url: str
+    access: Access
+    credential_env: str
+    terms_status: TermsStatus
+    data_use_note: str
+    published_price_note: str
+    status: Status
+    adapter_id: str | None
+    observation_schema_id: str
+    action_schema_ids: tuple[str, ...]
+    native_embodiment_ids: tuple[str, ...]
+    blockers: tuple[str, ...]
+    reason: str
+    sends_site_images_to_provider: bool = True
+
+    @property
+    def runnable(self) -> bool:
+        return self.status == "runnable"
+
+
+HOSTED_REGISTRY: tuple[HostedPolicyCandidate, ...] = (
+    HostedPolicyCandidate(
+        candidate_id="dreamlabs_dream1",
+        display_name="Dream-1",
+        provider="Dream Labs",
+        model_id="dreamlabs/dream-1",
+        version_identity="Provider model ID dreamlabs/dream-1; no immutable version or digest is published.",
+        version_frozen=False,
+        source_url="https://dreamlabs.ai/research/dream-1/",
+        access="api_key",
+        credential_env="DREAM_LABS_API_KEY",
+        terms_status="not_published",
+        data_use_note="Retention and training use of submitted images and demonstrations are not stated.",
+        published_price_note="US$3/hour (Dream-1) or US$2/hour (Dream-1-flash), per the October 2026 launch post; research beta.",
+        status="integration_pending",
+        adapter_id=None,
+        observation_schema_id=HEAD_AND_WRIST_CAMERAS_OBSERVATION,
+        action_schema_ids=(DREAM1_NATIVE_JOINT_ACTION, BIMANUAL_EEF_POSE_ACTION),
+        native_embodiment_ids=("i2rt_yam_bimanual",),
+        blockers=(
+            "provider_api_key_not_configured",
+            "provider_terms_and_data_use_not_published",
+            "provider_request_response_schema_unverified",
+            "hosted_api_runtime_adapter_missing",
+            "no_runnable_embodiment_with_matching_camera_rig",
+            "integration_canary_receipt_missing",
+        ),
+        reason=(
+            "Coming soon. Dream-1 is a hosted two-arm policy. It needs an API key, published "
+            "terms for sending site images, and a matching two-arm, three-camera robot setup "
+            "before it can run."
+        ),
+    ),
+)
+
+_HOSTED_BY_ID = {candidate.candidate_id: candidate for candidate in HOSTED_REGISTRY}
+
+
+def hosted_candidate(candidate_id: str) -> HostedPolicyCandidate | None:
+    return _HOSTED_BY_ID.get(candidate_id)
+
+
+def hosted_registry_violations(configured_credential_envs: Sequence[str] = ()) -> list[str]:
+    """Why a hosted entry would overstate what can run; empty when it does not.
+
+    A runnable hosted policy needs a runtime adapter, reviewed provider terms,
+    a configured credential and no open blocker. Its ID must not collide with a
+    checkpoint policy, and anything not runnable must say why.
+    """
+
+    configured = set(configured_credential_envs)
+    violations = []
+    for item in HOSTED_REGISTRY:
+        if item.candidate_id in _BY_ID:
+            violations.append(f"hosted_id_collides_with_checkpoint_policy:{item.candidate_id}")
+        if item.runnable:
+            if not item.adapter_id:
+                violations.append(f"hosted_runnable_without_adapter:{item.candidate_id}")
+            if item.terms_status != "reviewed":
+                violations.append(f"hosted_runnable_without_reviewed_terms:{item.candidate_id}")
+            if item.credential_env not in configured:
+                violations.append(f"hosted_runnable_without_credential:{item.candidate_id}")
+            if item.blockers:
+                violations.append(f"hosted_runnable_with_open_blockers:{item.candidate_id}")
+        elif not item.reason or not item.blockers:
+            violations.append(f"hosted_unavailable_without_reason:{item.candidate_id}")
+    return violations
+
 
 def candidate(candidate_id: str) -> PolicyCandidate | None:
     return _BY_ID.get(candidate_id)
@@ -282,6 +391,12 @@ def registry_violations(canary_runtime_candidate_ids: Sequence[str]) -> list[str
 
 
 __all__ = [
+    "BIMANUAL_EEF_POSE_ACTION",
+    "DREAM1_NATIVE_JOINT_ACTION",
+    "HEAD_AND_WRIST_CAMERAS_OBSERVATION",
+    "HOSTED_REGISTRY",
+    "HOSTED_REGISTRY_SCHEMA_VERSION",
+    "HostedPolicyCandidate",
     "REGISTRY",
     "REGISTRY_SCHEMA_VERSION",
     "PolicyCandidate",
@@ -289,6 +404,8 @@ __all__ = [
     "THREE_CAMERA_OBSERVATION",
     "TWO_CAMERA_OBSERVATION",
     "candidate",
+    "hosted_candidate",
+    "hosted_registry_violations",
     "registry_violations",
     "runnable_candidate_ids",
     "unavailable_candidates",

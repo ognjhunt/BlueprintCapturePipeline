@@ -60,3 +60,22 @@ def test_a_runnable_policy_needs_verified_bytes_and_a_commercial_license(monkeyp
     violations = registry.registry_violations(CANDIDATE_IDS)
     assert "runnable_without_commercial_license:pi05_droid" in violations
     assert "runnable_without_verified_checkpoint:pi05_droid" in violations
+
+
+def test_hosted_policies_are_listed_but_never_selectable_without_runtime_terms_and_key(monkeypatch) -> None:
+    dream = registry.hosted_candidate("dreamlabs_dream1")
+    assert dream is not None and dream.runnable is False
+    assert dream.blockers and dream.reason and dream.version_frozen is False
+    assert registry.hosted_registry_violations() == []
+    assert "dreamlabs_dream1" not in registry.runnable_candidate_ids()
+    assert all(row.candidate_id != "dreamlabs_dream1" for row in registry.REGISTRY)
+    with pytest.raises(registry.PolicyCandidateRegistryError, match="policy_candidate_unknown:dreamlabs_dream1"):
+        registry.validate_selected_pair(["pi05_droid", "dreamlabs_dream1"])
+    # Flipping the label alone is caught: adapter, terms, credential and blockers are still missing.
+    monkeypatch.setattr(registry, "HOSTED_REGISTRY", (dataclasses.replace(dream, status="runnable"),))
+    assert set(registry.hosted_registry_violations()) == {
+        "hosted_runnable_without_adapter:dreamlabs_dream1",
+        "hosted_runnable_without_reviewed_terms:dreamlabs_dream1",
+        "hosted_runnable_without_credential:dreamlabs_dream1",
+        "hosted_runnable_with_open_blockers:dreamlabs_dream1",
+    }

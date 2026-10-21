@@ -59,3 +59,16 @@ def test_unavailable_robots_stay_listed_with_reasons_and_never_run():
     # Atlas is never a prerequisite: the default route still runs supported robots.
     assert route_job_capabilities("rigid_pick_place", provided_inputs=(
         "metric_object_geometry", "target_region"))["status"] == "supported"
+
+
+def test_default_route_shows_which_robot_would_unlock_each_unavailable_policy():
+    value = route_job_capabilities("rigid_pick_place", provided_inputs=("metric_object_geometry", "target_region"))
+    rows = {(row["kind"], row["id"]): row for row in value["unavailable"]}
+    dream = rows[("policy", "dreamlabs_dream1")]
+    assert "provider_api_key_not_configured" in dream["blockers"]
+    assert "verified_robot_asset" in rows[("embodiment", "i2rt_yam_bimanual")]["missing"]
+    assert ("embodiment", "universal_robots_ur5e") in rows
+    # Three-camera DROID checkpoints match no listed robot rig yet.
+    assert {"cosmos3_nano_policy_droid", "flux3_action_droid"} <= {row["id"] for row in value["unmatched_policies"]}
+    assert all(row["policy"]["kind"] == "checkpoint" for row in value["configurations"])
+    assert all(row["embodiment_id"] == "droid_franka_robotiq_2f85" for row in value["configurations"])
