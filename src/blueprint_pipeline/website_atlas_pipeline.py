@@ -69,7 +69,7 @@ def run_atlas_pipeline(*, output_root: Path, **options):
 
 
 def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, experimental=False,
-                       invoker=None, max_polls=2):
+                       invoker=None, max_polls=2, refinement_feedback: Path | None = None):
     from .atlas_video_inputs import survey_video, prepare_video_inputs
     from .atlas_scene_planner import proposal_review
     from .paid_resource_allocator import (run_sponsored_website_atlas_plan, run_sponsored_website_atlas_pose,
@@ -99,9 +99,33 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         write_json(saved, config)
     policy = config["policy"]
     os.environ[ATLAS_PROVIDER_RETENTION_ENV] = current["authority"]["provider_retention"]
+    feedback = None
+    if refinement_feedback is not None:
+        from .atlas_refinement import load_refinement_feedback
+        feedback = load_refinement_feedback(refinement_feedback, source_digest=source_digest,
+                                            context_digest=task_context["context_digest"])
+        if output_root.resolve() == Path(feedback["parent_root"]):
+            raise ValueError("atlas_refinement_requires_new_job")
+        binding_path = output_root / "refinement_binding.json"
+        binding = {"feedback_digest": feedback["digest"], "parent_result_digest": feedback["parent_result_digest"]}
+        if binding_path.exists() and json.loads(binding_path.read_text()) != binding:
+            raise ValueError("atlas_refinement_binding_changed")
+        if not binding_path.exists():
+            write_json(binding_path, binding)
     base_root = output_root / "survey"
     survey_path = base_root / "atlas_video_survey.json"
-    if not survey_path.exists():
+    if feedback is not None:
+        from .atlas_video_extension import extend_survey
+        parent = Path(feedback["parent_root"])
+        extended_root = output_root / "extended_survey"
+        survey_path = extended_root / "atlas_video_survey.json"
+        if not survey_path.exists():
+            indexes = list((parent / "survey/source").rglob("decoded_observation_index.json"))
+            if len(indexes) != 1:
+                raise ValueError("atlas_runtime_decoded_index_ambiguous")
+            extend_survey(source_video=source_video, base_survey=parent / "survey/atlas_video_survey.json",
+                decoded_index=indexes[0], review=feedback["prior_review"], output_root=extended_root)
+    elif not survey_path.exists():
         survey_video(source_video=source_video, output_root=base_root, capture_id=task_context["capture_id"])
     survey = json.loads(survey_path.read_text())
     if survey["source_video_digest"] != source_digest:
@@ -123,15 +147,23 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         review = selection["review"]
         receipt = selection["planner_receipt"]
     else:
+        plan_options = {"feedback": feedback} if feedback is not None else {}
         receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
-            configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
-        review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget)
+            configuration=config, output_root=reviews, invoker=invoker, experimental=experimental, **plan_options)
+        review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, feedback=feedback)
+    if review.get("action") == "keep":
+        result = {"schema_version": "atlas_refinement_decision.v1", "status": "needs_input",
+            "action": "keep", "gap_assessment": review["gap_assessment"],
+            "parent_result_digest": feedback["parent_result_digest"], "parent_root": feedback["parent_root"],
+            "planner_receipt": receipt, "claim_ceiling": "development_only", "simulation_qualified": False}
+        write_json(output_root / "result.json", result)
+        return result
     pose_root = output_root / "pose"
     pose_root.mkdir(exist_ok=True)
     try:
         inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root)
     except ValueError as error:
-        if "coverage_gap" not in str(error):
+        if feedback is not None or "coverage_gap" not in str(error):
             raise
         from .atlas_video_extension import extend_survey
         indexes = list((base_root / "source").rglob("decoded_observation_index.json"))
@@ -212,6 +244,10 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         "splat_manifest_digest": splat["digest"], "mesh_available": mesh_root is not None, "simulation_qualified": False,
         "claim_ceiling": "development_only", "physical_evidence": False,
         "scale_status": "unscaled_provider_world_units", "billing_status": "provider_usage_unreported"}
+    if feedback is not None:
+        result["refinement"] = {"parent_result_digest": feedback["parent_result_digest"],
+            "feedback_digest": feedback["digest"], "gap_assessment": review["gap_assessment"],
+            "prior_input_count": len(feedback["prior_selected_frame_ids"]), "new_input_count": count}
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result
@@ -240,6 +276,8 @@ def main():
     parser.add_argument("--scene-id", required=True)
     parser.add_argument("--maximum-runtime-seconds", type=int, default=1200)
     parser.add_argument("--experimental", action="store_true")
+    parser.add_argument("--refinement-feedback", type=Path,
+                        help="Digest-bound parent result and derived previews; uses a fresh revision job and the same allowance")
     args = vars(parser.parse_args())
     from .website_task_context import load_current_website_task_context
     context = load_current_website_task_context(request_id=args.pop("request_id"), capture_id=args.pop("capture_id"),

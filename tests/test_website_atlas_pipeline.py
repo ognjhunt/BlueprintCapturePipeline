@@ -33,6 +33,56 @@ def test_production_rollout_is_capture_specific_and_malformed_config_refuses(mon
         atlas_selected("admitted")
 
 
+def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_review(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_refinement as refinement
+    from blueprint_pipeline import atlas_video_extension as extension, atlas_video_inputs as inputs
+    from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
+    video = tmp_path / "video.mov"
+    video.write_bytes(b"source")
+    parent = tmp_path / "parent"
+    (parent / "survey/source").mkdir(parents=True)
+    (parent / "survey/source/decoded_observation_index.json").write_text("{}")
+    proposal = {"status": "proposed", "scene_state": "unchanged", "static_intervals_seconds": [[0, 3.5]],
+        "anchor_frame_id": "1", "coverage_requirements": [
+            {"role": "task_object", "label": "object", "required_frame_ids": ["1"]},
+            {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["0"]}],
+        "unsafe_frame_ids": [], "uncaptured_regions": ["rear"], "summary": "more angles help rack edges",
+        "selection_policy": {"minimum_sharpness": 20, "maximum_clipped_fraction": .5, "minimum_overlap_inliers": 12},
+        "action": "refine", "gap_assessment": ["Frame 2 covers rack edges"], "additional_input_frame_ids": ["2"]}
+    feedback = {"parent_root": str(parent), "digest": "feedback", "parent_result_digest": "parent-result",
+                "prior_review": proposal, "prior_selected_frame_ids": ["0", "1"]}
+    monkeypatch.setattr(refinement, "load_refinement_feedback", lambda *a, **k: feedback)
+    policy = {"model": "gpt-6.1-sol", "maximum_review_cost_usd": .5, "pose_input_cost_usd": .01,
+        "rgbd_view_cost_usd": .05, "mesh_export_cost_usd": .5, "rate_card_reference": "test", "reviewed_by": "test",
+        "reviewed_on": "2026-10-22"}
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *a: {"policy": policy, "remaining_cost_usd": 3.4,
+        "authority": {"provider_retention": "project_library_retention_approved"}})
+    monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("url", "secret"))
+    def extend(**kwargs):
+        path = kwargs["output_root"]
+        path.mkdir()
+        (path / "atlas_video_survey.json").write_text(json.dumps({"digest": "survey",
+            "source_video_digest": pipeline._sha256_file(video), "frames": [
+                {"frame_id": str(i), "timestamp_seconds": i} for i in range(3)]}))
+    monkeypatch.setattr(extension, "extend_survey", extend)
+    reviews = []
+    def plan(**kwargs):
+        reviews.append(kwargs)
+        return {"proposal": proposal, "model": policy["model"]}
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_plan", plan)
+    monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **k: {"frames": [{"frame_id": str(i)} for i in range(3)]})
+    poses = []
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", lambda **k: poses.append(k) or {
+        "status": "processing", "operation_id": "new-pose"})
+    options = dict(source_video=video, output_root=tmp_path / "revision", task_context={"capture_id": "c", "context_digest": "ctx"},
+                   refinement_feedback=tmp_path / "feedback.json")
+    assert pipeline.run_atlas_pipeline(**options)["stage"] == "pose"
+    assert pipeline.run_atlas_pipeline(**options)["stage"] == "pose"
+    assert len(reviews) == 1 and reviews[0]["feedback"] is feedback and len(poses) == 2
+    with pytest.raises(ValueError, match="requires_new_job"):
+        pipeline.run_atlas_pipeline(**{**options, "output_root": parent})
+
+
 @pytest.mark.parametrize("status", ["processing", "needs_input"])
 def test_rgbd_result_never_publishes_a_completed_scene_handoff(tmp_path, status):
     from blueprint_pipeline.website_atlas_pipeline import retain_site_preparation_hold

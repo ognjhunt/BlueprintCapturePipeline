@@ -65,8 +65,34 @@ class SceneProposal(BaseModel):
     summary: str
 
 
-def proposal_review(proposal, *, survey, policy, pose_budget):
-    value = SceneProposal.model_validate(proposal).model_dump(mode="json")
+class RefinementProposal(SceneProposal):
+    action: str = Field(pattern="^(keep|refine)$")
+    gap_assessment: list[str] = Field(min_length=1)
+    additional_input_frame_ids: list[str]
+
+
+REFINEMENT_INSTRUCTIONS = """
+This is an output-gap review of a completed reconstruction, not an initial
+minimum-cover selection. The labeled reconstruction previews are DERIVED depth
+splat renders, never new capture observations or physical ground truth. Review
+the whole room topology before the task detail. Compare visible holes with the
+candidate source frames. Recommend every useful distinct additional source view
+that addresses a named gap, improves overlap, or samples a new viewing angle;
+avoid near duplicates. Do not choose a target count or merely repeat the old
+minimum coverage. Keep the prior selected frames and exactly the prior static
+intervals and quality thresholds. Additional candidates are training-only; no
+held-out pixels are supplied. Specify additional_input_frame_ids separately from
+coverage_requirements: additional inputs do not require synthetic RGBD outputs.
+Explain which gaps more source views may help and which remain unobserved or
+limited by the depth-fused draft (not a photometrically trained native splat).
+Return action keep when new source frames cannot usefully address the gaps.
+The shared remaining budget is data, not authority to change prices or limits.
+"""
+
+
+def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None):
+    schema = RefinementProposal if feedback is not None else SceneProposal
+    value = schema.model_validate(proposal).model_dump(mode="json")
     if value["status"] != "proposed":
         raise ValueError("atlas_scene_planner_abstained:" + value["summary"])
     intervals = value["static_intervals_seconds"]
@@ -77,16 +103,28 @@ def proposal_review(proposal, *, survey, policy, pose_budget):
     unsafe = set(value["unsafe_frame_ids"])
     selected = {key for key, r in frames.items() if any(a <= r["timestamp_seconds"] <= b for a, b in intervals)}
     required = {key for row in value["coverage_requirements"] for key in row["required_frame_ids"]}
+    additional = set(value.get("additional_input_frame_ids", []))
     if (not unsafe <= frames.keys() or unsafe & selected or not required <= selected
+            or not additional <= selected or additional & unsafe
             or value["anchor_frame_id"] not in required or not {"task_object", "surrounding_scene"}
             <= {r["role"] for r in value["coverage_requirements"]}):
         raise ValueError("atlas_scene_planner_coverage_or_privacy_invalid")
+    if feedback is not None:
+        prior = feedback["prior_review"]
+        if (intervals != prior["static_intervals_seconds"]
+                or value["selection_policy"] != prior["selection_policy"]
+                or not set(feedback["prior_selected_frame_ids"]) <= required | additional
+                or (value["action"] == "keep" and additional)
+                or (value["action"] == "refine" and not (additional - set(feedback["prior_selected_frame_ids"])))):
+            raise ValueError("atlas_refinement_state_or_selection_invalid")
     # Hold the required RGBD coverage aside before selecting pose inputs.
     # Buying posing alone must not consume the rest of the shared allowance.
     pose_budget = round(pose_budget - len(required) * policy["rgbd_view_cost_usd"], 6)
     if pose_budget < 2 * policy["pose_input_cost_usd"]:
         raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
-    return {"schema_version": "atlas_scene_state_review.v1", "survey_digest": survey["digest"],
+    refinement = ({k: value[k] for k in ("action", "gap_assessment", "additional_input_frame_ids")}
+                  | {"feedback_digest": feedback["digest"]}) if feedback is not None else {}
+    return {"schema_version": "atlas_scene_state_review.v1", "survey_digest": survey["digest"], **refinement,
             **{k: value[k] for k in ("scene_state", "static_intervals_seconds", "anchor_frame_id",
                 "coverage_requirements", "uncaptured_regions", "selection_policy")},
             "moving_people_excluded": True, "same_scene_state": True,
@@ -97,7 +135,7 @@ def proposal_review(proposal, *, survey, policy, pose_budget):
                 **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}}
 
 
-def _input(survey, context):
+def _input(survey, context, feedback=None):
     content = [{"type": "input_text", "text": json.dumps({"task": context["description"],
         "task_items": context.get("task_items"), "frame_count": len(survey["frames"]),
         "hidden_pixels_included": False}, sort_keys=True)}]
@@ -114,11 +152,27 @@ def _input(survey, context):
             "frame_id", "timestamp_seconds", "sharpness", "clipped_fraction")})},
             {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(stream.getvalue()).decode(),
              "detail": "high"}]
+    if feedback is not None:
+        content.append({"type": "input_text", "text": json.dumps({
+            "reconstruction_feedback": {k: v for k, v in feedback.items() if k != "previews"}}, sort_keys=True)})
+        for row in feedback["previews"]:
+            source = Path(row["path"])
+            if _sha256_file(source) != row["sha256"]:
+                raise ValueError("atlas_refinement_preview_changed")
+            with Image.open(source) as image:
+                preview = image.convert("RGB")
+                preview.thumbnail((512, 512))
+                stream = BytesIO()
+                preview.save(stream, format="PNG")
+            content += [{"type": "input_text", "text": json.dumps({
+                "derived_reconstruction_preview": row["source_frame_id"], "not_source_observation": True})},
+                {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(stream.getvalue()).decode(),
+                 "detail": "high"}]
     return [{"role": "user", "content": content}]
 
 
 def review_survey(*, survey_path: Path, task_context, configuration, output_root: Path,
-                  invoker=None, release_blockers=None):
+                  invoker=None, release_blockers=None, feedback=None):
     """One idempotent proposal, reserved in the SAME source-bound test allowance."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
@@ -128,7 +182,7 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         raise ValueError("atlas_scene_planner_survey_invalid")
     policy = configuration["policy"]
     maximum = policy["maximum_review_cost_usd"]
-    tokens = 16_000 + 3000 * len(survey["frames"])
+    tokens = 16_000 + 3000 * (len(survey["frames"]) + len((feedback or {}).get("previews", [])))
     if tokens > 1_000_000:
         raise ValueError("atlas_scene_planner_context_budget_exceeded")
     from .openai_prompt_cache import worst_case_reservation_usd
@@ -136,10 +190,13 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
                                         max_output_tokens=4000, cache_policy=None)
     if ceiling is None or ceiling > maximum:
         raise ValueError("atlas_scene_planner_token_budget_exceeded")
+    instructions = INSTRUCTIONS + REFINEMENT_INSTRUCTIONS if feedback is not None else INSTRUCTIONS
     binding = {"survey_digest": survey["digest"], "task_context_digest": task_context["context_digest"],
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
-               "instructions": INSTRUCTIONS, "max_input_tokens": tokens, "max_output_tokens": 4000,
+               "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": 4000,
                "maximum_cost_usd": maximum}
+    if feedback is not None:
+        binding["feedback_digest"] = feedback["digest"]
     digest = canonical_digest(binding)
     output_root.mkdir(parents=True, exist_ok=True)
     path = output_root / (digest[7:] + ".json")
@@ -152,7 +209,7 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
             if receipt.get("binding_digest") != digest or receipt.get("proposal_digest") != canonical_digest(receipt["proposal"]):
                 raise ValueError("atlas_scene_planner_receipt_changed")
         else:
-            input_value = _input(survey, task_context)
+            input_value = _input(survey, task_context, feedback)
             if release_blockers is None:
                 raise ValueError("atlas_scene_planner_allocator_required")
             commit, blockers = release_blockers()
@@ -176,11 +233,13 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
                 record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
             try:
                 result = selected.invoke(AgentsSDKAgentSpec(run_id=digest[7:23], capability="atlas_scene_planner",
-                    name="Blueprint Atlas Scene Planner", instructions=INSTRUCTIONS, model=policy["model"], max_turns=1,
-                    max_output_tokens=4000, max_input_tokens=tokens, output_type=SceneProposal), input_value)
+                    name="Blueprint Atlas Scene Planner", instructions=instructions, model=policy["model"], max_turns=1,
+                    max_output_tokens=4000, max_input_tokens=tokens,
+                    output_type=RefinementProposal if feedback is not None else SceneProposal), input_value)
             finally:
                 audit.write_manifest()
-            proposal = SceneProposal.model_validate(result.output).model_dump(mode="json")
+            schema = RefinementProposal if feedback is not None else SceneProposal
+            proposal = schema.model_validate(result.output).model_dump(mode="json")
             cost = result.cost_usd
             if type(cost) not in (int, float) or not math.isfinite(cost) or not 0 <= cost <= maximum:
                 raise ValueError("atlas_scene_planner_usage_unknown")

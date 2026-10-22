@@ -32,6 +32,43 @@ ADP-040 / Day 28, owner-directed Atlas integration. Extend the admitted
 `website_atlas_pose` producer; do not submit Atlas through the Marble world API.
 The source adapter remains interchangeable and all results are development-only.
 
+## Review output gaps and refine source inputs
+
+The initial cover connects reviewed task/room anchors; its selected count is not
+a quality optimum or provider limit. For an output-aware second pass, retain an
+`atlas_reconstruction_feedback.v1` JSON with a canonical `digest`, `parent_root`,
+`parent_result_digest`, `parent_selection_sha256`, and `previews` entries containing
+`relative_path`, `sha256`, and `source_frame_id`. Previews are labeled derived
+reconnaissance, must reference already-selected source cameras, and never become
+new source observations. Include renderer provenance and diagnostic notes in the
+feedback manifest. Keep image bytes next to the feedback file.
+
+Run the same controller with a **new** `--output-root` and
+`--refinement-feedback FEEDBACK.json`. It verifies the parent capture/context and
+all preview hashes, densifies candidates inside the previously reviewed static
+interval without reading frozen holdouts, and invokes the same sponsored agent.
+The structured refinement names gaps and either retains the result or specifies
+additional input IDs. Original inputs, static intervals, and quality thresholds
+are preserved. New inputs require overlap and quality checks. Input additions
+are independent of synthetic output camera count, avoiding unnecessary generation
+charges. Every new operation shares the original WebApp dollar/request ledger;
+neither the authorization nor cap is reset. Each revision retains its parent
+result digest, review, costs, and independent provider operations.
+
+Inspect retained artifacts privately with the existing Spark/Three dependencies:
+
+```bash
+cd tools/splat_render
+npm ci --ignore-scripts
+node view_scene.mjs --splat SCENE.spz --mesh SUPPORTED.glb --cameras CAMERAS.json
+```
+
+Open the printed loopback URL. Orbit/pan/zoom, select captured cameras, and toggle
+the splat, supported mesh, or wireframe. Camera rows use the renderer's existing
+`{id, spec: {pos, target, up, fov}}` convention. Nothing uploads to another viewer
+service. This is an inspection preview, not a qualified method render or metric
+measurement. For a remote worker, forward the loopback port through SSH.
+
 Read the current [quickstart](https://atlas-beta.worldlabs.ai/docs/quickstart.md),
 [input guide](https://atlas-beta.worldlabs.ai/docs/images-to-posed-images),
 [camera conventions](https://atlas-beta.worldlabs.ai/docs/cameras-and-posed-images),
