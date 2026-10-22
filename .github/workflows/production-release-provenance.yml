@@ -71,7 +71,7 @@ jobs:
 
       - name: Install verification interpreter
         if: steps.promotion.outputs.eligible == 'true'
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           version: "0.10.7"
           python-version: "3.12"
