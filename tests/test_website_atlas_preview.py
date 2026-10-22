@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import website_atlas_preview as preview
+from blueprint_pipeline import website_atlas_preview_store as store
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 
@@ -331,7 +332,7 @@ def _ready(site, data=b"zip bytes"):
 
 def test_owner_downloads_read_only_the_ready_unwithdrawn_bundle_named_for_the_capture(site):
     digest, bucket = _ready(site)
-    body, size = preview.open_bundle(request_id="req1", capture_id="walkthrough-req1", digest=digest,
+    body, size = store.open_bundle(request_id="req1", capture_id="walkthrough-req1", digest=digest,
                                      storage_root=site.storage, client=bucket, bucket="b")
     assert body.read() == b"zip bytes" and size == 9
     refused = [dict(request_id="req1", capture_id="walkthrough-req2", digest=digest),
@@ -339,14 +340,14 @@ def test_owner_downloads_read_only_the_ready_unwithdrawn_bundle_named_for_the_ca
                dict(request_id="../req1", capture_id="walkthrough-../req1", digest=digest),
                dict(request_id="*", capture_id="walkthrough-*", digest=digest)]
     for selectors in refused:
-        with pytest.raises(preview.PreviewUnavailable):
-            preview.open_bundle(**selectors, storage_root=site.storage, client=bucket, bucket="b")
+        with pytest.raises(store.PreviewUnavailable):
+            store.open_bundle(**selectors, storage_root=site.storage, client=bucket, bucket="b")
     # After the workspace is retired only the object named for this capture and digest remains.
-    assert preview.open_bundle(request_id="req1", capture_id="walkthrough-req1", digest=digest,
+    assert store.open_bundle(request_id="req1", capture_id="walkthrough-req1", digest=digest,
                                storage_root=site.storage / "elsewhere", client=bucket, bucket="b")[1] == 9
     _withdraw(site)
-    with pytest.raises(preview.PreviewUnavailable):
-        preview.open_bundle(request_id="req1", capture_id="walkthrough-req1", digest=digest,
+    with pytest.raises(store.PreviewUnavailable):
+        store.open_bundle(request_id="req1", capture_id="walkthrough-req1", digest=digest,
                             storage_root=site.storage, client=bucket, bucket="b")
 
 
@@ -361,7 +362,7 @@ def test_download_route_streams_with_digest_headers_only_for_the_webapp_client(m
     http.register_website_atlas_preview_routes(app, require_admission=admission)
     digest, bucket = _ready(site)
     monkeypatch.setenv(http.HANDOFF_STORAGE_ROOT_ENV, str(site.storage))
-    monkeypatch.setattr(http, "open_bundle", lambda **kw: preview.open_bundle(**kw, client=bucket, bucket="b"))
+    monkeypatch.setattr(http, "open_bundle", lambda **kw: store.open_bundle(**kw, client=bucket, bucket="b"))
     client = TestClient(app)
     url = f"/api/live-pipeline/website-atlas-previews/walkthrough-req1/bundle?request_id=req1&digest={digest}"
     signed = {"x-blueprint-pipeline-signature": "sha256=x", "x-test-client": "blueprint-webapp"}

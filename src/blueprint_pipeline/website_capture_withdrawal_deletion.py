@@ -431,7 +431,7 @@ def _atlas_preview_uris(object_store: Any, identity: Mapping[str, str],
                         unresolved: list[dict[str, Any]]) -> list[str]:
     """Archived Atlas previews of the walkthrough, named for it by ``website_atlas_preview``."""
     from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
-    from .website_atlas_preview import ARTIFACT_KIND, bundle_filename
+    from .website_atlas_preview_store import ARTIFACT_KIND, bundle_filename
     prefix = f"{LARGE_ARTIFACT_KEY_PREFIX}/{ARTIFACT_KIND}/sha256/"
     if object_store is None:
         unresolved.append({"prefix": prefix, "reason": "website_withdrawal_deletion_object_store_unconfigured"})
@@ -575,7 +575,7 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     """
 
     _require(authorize_complete_deletion is True, "explicit_authorization_required")
-    from .website_atlas_preview import JOB_FILE, LOCK_FILE
+    from .website_atlas_preview_store import JOB_FILE, LOCK_FILE
     lock_path = Path(capture_root) / "pipeline" / "atlas" / LOCK_FILE
     if not lock_path.is_file():
         _require(not (lock_path.parent / JOB_FILE).exists(), "atlas_preview_lock_missing")

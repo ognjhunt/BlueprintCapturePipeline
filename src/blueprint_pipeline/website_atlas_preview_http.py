@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .website_atlas_preview import PreviewUnavailable, open_bundle
+from .website_atlas_preview_store import PreviewUnavailable, open_bundle
 from .website_preparation_status_http import HANDOFF_STORAGE_ROOT_ENV
 
 logger = logging.getLogger(__name__)
