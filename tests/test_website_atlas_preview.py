@@ -468,3 +468,12 @@ def test_cleanup_collects_nested_automation_outputs(tmp_path):
     stage.mkdir(parents=True)
     (stage / "result.json").write_text(json.dumps({"outputs": [{"asset_id": "asset_masked_output"}]}))
     assert atlas_asset_ids(tmp_path) == ["asset_masked_output"]
+
+
+def test_cleanup_covers_duplicate_purchases_that_reconciliation_found(tmp_path):
+    stage = tmp_path / "generated" / "atlas_pose"
+    stage.mkdir(parents=True)
+    (stage / "submission.json").write_text(json.dumps({"status": "submitted", "operation_id": "op_kept",
+        "reconciliations": [{"outcome": "bought", "operation_id": "op_kept",
+                             "duplicate_operation_ids": ["op_duplicate"]}]}))
+    assert preview._pending_operations(tmp_path) == ["op_kept", "op_duplicate"]

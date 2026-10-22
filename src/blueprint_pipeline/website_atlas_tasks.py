@@ -198,6 +198,33 @@ def _validate_response(task: str, request: Mapping[str, Any], response: Mapping[
                 raise ValueError("atlas_task_response_depth_missing")
 
 
+def _reconcile(client: pose.AtlasClient, state: dict[str, Any], path: Path, *, task: str,
+               now: float) -> dict[str, Any]:
+    """Settle an uncertain send from the operation list (the caller holds the lock).
+
+    A bought operation is adopted; a send proven to have bought nothing is
+    reopened for the identical resend under the same key, at most
+    RECONCILE_REOPEN_LIMIT times, then closed.
+    """
+    # Older records kept no send times; the record was written beside the send.
+    sent = [row["at_epoch"] for row in state.get("sends") or []] or [path.stat().st_mtime]
+    found = pose.reconcile_atlas_submission(client, task_name=task, request=state["request"],
+                                            owned_assets=state.get("created_assets", []), sent_at=sent, now=now)
+    state.setdefault("reconciliations", []).append(found)
+    reopens = state.get("reconciliation_reopens", 0)
+    if found["outcome"] == "bought":
+        state.update(status="submitted", operation_id=found["operation_id"])
+    elif found["outcome"] == "lapsed":
+        state.update(status="failed", terminal_error={"reason": "reconciliation_window_lapsed"})
+    elif reopens >= pose.RECONCILE_REOPEN_LIMIT:
+        state.update(status="rejected",
+                     provider_rejection={"status": None, "retryable": False, "reconciled_unbought": True})
+    else:
+        state.update(status="resend", reconciliation_reopens=reopens + 1)
+    pose._write_state(path, state)
+    return state
+
+
 def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_root: Path,
                             source_video_digest: str, task_context: Mapping[str, Any],
                             price_review: Mapping[str, Any], release_blockers: Callable,
@@ -261,6 +288,14 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
                 if _sha256_file(root / row["path"]) != row["sha256"]:
                     raise ValueError("atlas_task_output_changed")
             return result
+        if state and state.get("status") == "submitting":
+            if state.get("api_base") != base:
+                raise ValueError("atlas_task_api_base_changed")
+            state = _reconcile(client, state, state_path, task=task, now=now())
+        if state and state.get("status") == "rejected":
+            raise ValueError("atlas_task_attempt_rejected")
+        if state and state.get("status") == "failed" and not state.get("operation_id"):
+            raise ValueError("atlas_task_reconciliation_window_lapsed")
         if not state or not state.get("operation_id"):
             commit, blockers = release_blockers()
             if blockers:
@@ -281,26 +316,35 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
                          "created_assets": [], "uploads": [], "api_base": base,
                          "idempotency_key": "bp-atlas-task-" + request_digest[7:39]}
                 pose._write_state(state_path, state)
-            if state.get("status") != "uploading":
+            if state.get("status") == "uploading":
+                for label, row in uploads.items():
+                    if any(r["frame_id"] == label for r in state["uploads"]):
+                        continue
+                    frame = {"frame_id": label, "image_path": row["path"], "image_digest": row["sha256"]}
+                    uploaded = pose._upload_frame(client, frame, name="bp-" + request_digest[7:19], state=state,
+                        path=state_path, content_type=MIMES[Path(row["path"]).suffix.lower()])
+                    state["uploads"].append(uploaded)
+                    pose._write_state(state_path, state)
+                pose._await_ready(client, state, state_path, sleep)
+                body = _replace_uploads(request, {r["frame_id"]: r["asset_id"] for r in state["uploads"]})
+                validate_task_request(task, body)
+                state.update(request=body, request_body=pose._canonical_json(body))
+            elif state.get("status") != "resend":
                 # Never invent a second purchase after an unknown response.
                 raise ValueError("atlas_task_submission_requires_reconciliation")
-            for label, row in uploads.items():
-                if any(r["frame_id"] == label for r in state["uploads"]):
-                    continue
-                frame = {"frame_id": label, "image_path": row["path"], "image_digest": row["sha256"]}
-                uploaded = pose._upload_frame(client, frame, name="bp-" + request_digest[7:19], state=state,
-                    path=state_path, content_type=MIMES[Path(row["path"]).suffix.lower()])
-                state["uploads"].append(uploaded)
-                pose._write_state(state_path, state)
-            pose._await_ready(client, state, state_path, sleep)
-            body = _replace_uploads(request, {r["frame_id"]: r["asset_id"] for r in state["uploads"]})
-            validate_task_request(task, body)
             pose._require_admission(admission, request_digest=request_digest, binding=binding, now=now())
-            state.update(status="submitting", request=body, request_body=pose._canonical_json(body))
+            # Until an answer proves otherwise, this send may buy an operation.
+            state["status"] = "submitting"
+            state.setdefault("sends", []).append({"at_epoch": now(), "status": None})
             pose._write_state(state_path, state)
+            # The same bytes under the same key: a lost answer replays the original operation.
             status, payload = client.send_raw("POST", "/tasks:" + task, state["request_body"].encode(),
                                               headers={"Idempotency-Key": state["idempotency_key"]})
-            state["submission_http_status"] = status
+            state["submission_http_status"] = state["sends"][-1]["status"] = status
+            if 400 <= status < 500 and status not in pose._UNCERTAIN_4XX and status != 402:
+                # Any earlier send was reconciled as bought nothing, so a definitive
+                # refusal of this one closes the task without a purchase.
+                state.update(status="rejected", provider_rejection={"status": status, "retryable": False})
             pose._write_state(state_path, state)
             operation = pose._without_urls(pose._json_object(status, payload))
             state.update(status="submitted", operation_id=pose._safe_id(operation.get("id")))

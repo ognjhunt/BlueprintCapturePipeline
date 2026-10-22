@@ -109,6 +109,9 @@ class FakeAtlas:
         self.calls, self.created, self.uploaded, self.submissions = [], [], {}, []
         self.raw_submissions = []
         self.ready_checks, self.puts, self.polls = {}, 0, 0
+        # Operations the project holds, oldest first: (id, request). ``foreign``
+        # adds other callers' operations as {id: trace}; a None trace is unreadable.
+        self.bought, self.foreign, self.traces = [], {}, []
 
     @staticmethod
     def _json(status, value):
@@ -164,6 +167,8 @@ class FakeAtlas:
         match = re.fullmatch(r"/assets/([A-Za-z0-9_]+)", path)
         if method == "GET" and match:
             asset_id = match.group(1)
+            if asset_id in self.uploaded and "inputs_deleted" in self.mutations:
+                return self._json(404, {"detail": "Asset not found"})
             if asset_id in self.uploaded:
                 self.ready_checks[asset_id] += 1
                 ready = self.ready_checks[asset_id] >= self.ready_after_checks
@@ -175,20 +180,48 @@ class FakeAtlas:
             self.submissions.append((body, headers.get("Idempotency-Key")))
             self.raw_submissions.append(data)
             outcome = self.submit_outcomes.pop(0) if self.submit_outcomes else 201
-            if outcome == "timeout":
+            if outcome in {201, "lost"}:
+                suffix = f"_{len(self.bought)}" if self.bought else ""
+                self.bought.append((self.operation_id + suffix, body))
+            if outcome in {"timeout", "lost"}:
+                # "lost": Atlas accepted the task, but its answer never arrived.
                 raise atlas.AtlasTransportError("website_atlas_transport_failed:TimeoutError")
             if outcome == "bad_id":
                 return self._json(201, {"id": "operations/op_atlas_1", "done": False})
             if outcome != 201:
                 return self._json(outcome, {"code": "REFUSED_FOR_TEST"})
-            return self._json(201, {"id": self.operation_id, "done": False, "error": None, "response": None,
-                                    "name": f"accounts/a/projects/p/operations/{self.operation_id}",
+            operation_id = self.bought[-1][0]
+            return self._json(201, {"id": operation_id, "done": False, "error": None, "response": None,
+                                    "name": f"accounts/a/projects/p/operations/{operation_id}",
                                     "metadata": {"task": "images2PosedRGBD"}})
-        if method == "GET" and path == f"/operations/{self.operation_id}":
+        if method == "GET" and path.startswith("/operations?"):
+            query = dict(item.split("=", 1) for item in path.split("?", 1)[1].split("&"))
+            assert {"createdAfter", "createdBefore", "pageSize"} <= set(query)
+            # Newest first, as documented.
+            listed = [*self.foreign, *(operation_id for operation_id, _ in reversed(self.bought))]
+            return self._json(200, {"operations": [{"id": operation_id, "ownerId": "acct_test", "metadata": None,
+                                                    "done": False, "error": None} for operation_id in listed],
+                                    "nextPageToken": None})
+        match = re.fullmatch(r"/operations/([A-Za-z0-9_]+):trace", path)
+        if method == "GET" and match:
+            operation_id = match.group(1)
+            self.traces.append(operation_id)
+            if operation_id in self.foreign:
+                trace = self.foreign[operation_id]
+                return self._json(404, {"detail": "not found"}) if trace is None else self._json(200, trace)
+            request = dict(self.bought)[operation_id]
+            # Projected through the current public schema: defaults the caller never sent.
+            return self._json(200, {"operationId": operation_id, "taskName": "images2PosedRGBD", "taskVersion": "v1",
+                                    "request": {**request, "webhookUrl": None, "canonicalizeToFirstFrame": True,
+                                                "purgeContentOnOperationCompletion": None},
+                                    "response": None, "error": None})
+        match = re.fullmatch(r"/operations/([A-Za-z0-9_]+)", path)
+        if method == "GET" and match and (match.group(1) == self.operation_id
+                                          or match.group(1) in dict(self.bought)):
             if "gone" in self.mutations:
                 return self._json(404, {"code": "NOT_FOUND"})
             self.polls += 1
-            operation = {"id": "op_other" if "operation_id" in self.mutations else self.operation_id,
+            operation = {"id": "op_other" if "operation_id" in self.mutations else match.group(1),
                          "done": self.polls >= self.polls_until_done, "error": None, "response": None,
                          "metadata": {"task": "images2PosedRGBD"}}
             if operation["done"] and self.operation_error:
@@ -542,17 +575,135 @@ def test_an_uncertain_submission_is_resent_with_the_same_key_and_body(atlas_case
     assert _state(atlas_case)["resends"] == 1
 
 
-def test_an_uncertain_submission_past_the_resend_window_needs_reconciliation(atlas_case):
-    fake = FakeAtlas(atlas_case.events, submit_outcomes=["timeout"])
+PAST_WINDOW = atlas.UNCERTAIN_RESEND_WINDOW_SECONDS + 1
+
+
+def _bindings(case):
+    return {command["allocation_binding_digest"] for command in case.webapp.spend}
+
+
+def test_an_uncertain_submission_that_bought_is_adopted_from_the_operation_list(atlas_case):
+    atlas_case.webapp.lifetime_seconds = 7 * 86400  # the automatic grant's validity
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=["lost"])
     with pytest.raises(atlas.AtlasTransportError):
         atlas_case.run(fake)
-    reservations = len(atlas_case.webapp.spend)
-    with pytest.raises(ValueError, match="website_atlas_pose_submission_requires_reconciliation"):
-        atlas_case.run(fake, now=_later(atlas.UNCERTAIN_RESEND_WINDOW_SECONDS + 1))
-    assert len(fake.submissions) == 1 and len(atlas_case.webapp.spend) == reservations
     # It may have bought an operation, so it can never be set aside.
     with pytest.raises(ValueError, match="website_atlas_pose_attempt_not_closed"):
         atlas.archive_closed_atlas_pose_attempt(atlas_case.root)
+    # Past the resend window the key may have lapsed: the list, not a resend, decides.
+    assert atlas_case.run(fake, now=_later(PAST_WINDOW), max_polls=3)["status"] == "completed"
+    assert len(fake.submissions) == 1 and len(_bindings(atlas_case)) == 1
+    state = _state(atlas_case)
+    assert state["operation_id"] == "op_atlas_1" and state["api_base"] == BASE
+    assert state["reconciliations"][0]["outcome"] == "bought"
+    assert state["reconciliations"][0]["duplicate_operation_ids"] == []
+    # Matching is read from the trace, so the defaults it adds do not hide the purchase.
+    assert fake.traces == ["op_atlas_1"]
+
+
+def test_an_uncertain_submission_proven_unbought_is_resent_once_under_the_same_key(atlas_case):
+    atlas_case.webapp.lifetime_seconds = 7 * 86400  # the automatic grant's validity
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=["timeout"])
+    with pytest.raises(atlas.AtlasTransportError):
+        atlas_case.run(fake)
+    assert atlas_case.run(fake, now=_later(PAST_WINDOW), max_polls=3)["status"] == "completed"
+    # No new reservation, and the documented recovery: identical bytes, same key.
+    assert len(_bindings(atlas_case)) == 1 and len(fake.submissions) == 2
+    assert fake.submissions[0] == fake.submissions[1] and fake.raw_submissions[0] == fake.raw_submissions[1]
+    state = _state(atlas_case)
+    assert state["reconciliations"][0]["outcome"] == "not_bought"
+    assert state["reconciliations"][0]["project_asset"] in fake.uploaded
+    assert state["reconciliation_reopens"] == 1
+
+
+def test_reconciliation_waits_until_the_list_can_decide(atlas_case):
+    atlas_case.webapp.lifetime_seconds = 7 * 86400  # the automatic grant's validity
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=["timeout"] * 4)
+    for _ in range(4):
+        with pytest.raises(atlas.AtlasTransportError):
+            atlas_case.run(fake)
+    # Every resend is spent, but the last send is too recent to read "nothing bought".
+    with pytest.raises(atlas.AtlasReconciliationPending, match="settling"):
+        atlas_case.run(fake)
+    # An unreadable trace in the window could be ours.
+    fake.foreign["op_unreadable"] = None
+    with pytest.raises(atlas.AtlasReconciliationPending, match="listing_unresolved"):
+        atlas_case.run(fake, now=_later(atlas.RECONCILE_SETTLE_SECONDS + 1))
+    # So could another task that carries a frame only this attempt uploaded.
+    asset = _state(atlas_case)["created_assets"][0]
+    fake.foreign["op_unreadable"] = {"operationId": "op_unreadable", "taskName": "atlasGenerate", "taskVersion": "v1",
+                                     "request": {"contextFrames": [{"imageAsset": {"assetId": asset}}]}}
+    with pytest.raises(atlas.AtlasReconciliationPending, match="listing_unresolved"):
+        atlas_case.run(fake, now=_later(atlas.RECONCILE_SETTLE_SECONDS + 1))
+    # Someone else's operation is ruled out by its trace.
+    fake.foreign["op_unreadable"] = {"operationId": "op_unreadable", "taskName": "images2PosedRGBD",
+                                     "taskVersion": "v1", "request": {"frames": [{"imageAsset": {"assetId": "asset_x"}}]}}
+    # A key that cannot read the request's own frames may list another project.
+    fake.mutations.add("inputs_deleted")
+    with pytest.raises(atlas.AtlasReconciliationPending, match="project_unproven"):
+        atlas_case.run(fake, now=_later(atlas.RECONCILE_SETTLE_SECONDS + 1))
+    fake.mutations.discard("inputs_deleted")
+    assert len(fake.submissions) == 4
+    assert atlas_case.run(fake, now=_later(atlas.RECONCILE_SETTLE_SECONDS + 1), max_polls=3)["status"] == "completed"
+    assert len(fake.submissions) == 5 and len(set(fake.raw_submissions)) == 1 and len(_bindings(atlas_case)) == 1
+
+
+def test_a_repeatedly_unbought_attempt_closes_after_the_reopen_limit(atlas_case):
+    atlas_case.webapp.lifetime_seconds = 7 * 86400  # the automatic grant's validity
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=["timeout"] * (atlas.RECONCILE_REOPEN_LIMIT + 1))
+    with pytest.raises(atlas.AtlasTransportError):
+        atlas_case.run(fake)
+    for cycle in range(1, atlas.RECONCILE_REOPEN_LIMIT + 1):
+        with pytest.raises(atlas.AtlasTransportError):
+            atlas_case.run(fake, now=_later(cycle * 2 * PAST_WINDOW))
+    later = _later((atlas.RECONCILE_REOPEN_LIMIT + 1) * 2 * PAST_WINDOW)
+    with pytest.raises(ValueError, match="website_atlas_pose_attempt_rejected"):
+        atlas_case.run(fake, now=later)
+    assert len(fake.submissions) == atlas.RECONCILE_REOPEN_LIMIT + 1
+    assert _state(atlas_case)["provider_rejection"]["reconciled_unbought"] is True
+    # Proven to have bought nothing, the closed attempt can be set aside.
+    assert atlas.archive_closed_atlas_pose_attempt(atlas_case.root) == 1
+
+
+def test_a_duplicate_purchase_adopts_the_original_and_records_the_rest(atlas_case):
+    atlas_case.webapp.lifetime_seconds = 7 * 86400  # the automatic grant's validity
+    # A lapsed key let a resend buy a second operation.
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=["lost", "lost"])
+    for _ in range(2):
+        with pytest.raises(atlas.AtlasTransportError):
+            atlas_case.run(fake)
+    # Another operation in the window whose trace is unreadable could be a third
+    # purchase whose outputs would escape cleanup: nothing is adopted until it reads.
+    fake.foreign["op_unreadable"] = None
+    with pytest.raises(atlas.AtlasReconciliationPending, match="listing_unresolved"):
+        atlas_case.run(fake, now=_later(PAST_WINDOW))
+    assert "operation_id" not in _state(atlas_case)
+    fake.foreign["op_unreadable"] = {"operationId": "op_unreadable", "taskName": "atlasGenerate", "taskVersion": "v1",
+                                     "request": {"prompt": "someone else's"}}
+    assert atlas_case.run(fake, now=_later(PAST_WINDOW), max_polls=3)["status"] == "completed"
+    found = _state(atlas_case)["reconciliations"][0]
+    assert found["operation_id"] == "op_atlas_1" and found["duplicate_operation_ids"] == ["op_atlas_1_1"]
+
+
+def test_an_uncertain_submission_past_retention_fails_and_can_be_set_aside(atlas_case):
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=["timeout"])
+    with pytest.raises(atlas.AtlasTransportError):
+        atlas_case.run(fake)
+    with pytest.raises(ValueError, match="website_atlas_pose_attempt_failed"):
+        atlas_case.run(fake, now=_later(atlas.OPERATION_RETENTION_SECONDS))
+    assert _state(atlas_case)["terminal_error"] == {"reason": "reconciliation_window_lapsed"}
+    assert not [call for call in fake.calls if "/operations" in call[1]]
+    assert atlas.archive_closed_atlas_pose_attempt(atlas_case.root) == 1
+
+
+def test_trace_matching_needs_every_sent_field_unchanged():
+    sent = {"frames": [{"imageAsset": {"assetId": "asset_1"}}], "targetResolution": [1280, 720], "refinePoses": True}
+    assert atlas.request_matches_trace(sent, {**sent, "webhookUrl": None})
+    assert atlas.request_matches_trace({"fx": 900.0000001}, {"fx": 900.0})
+    assert not atlas.request_matches_trace(sent, {**sent, "refinePoses": 1})
+    assert not atlas.request_matches_trace(sent, {**sent, "targetResolution": [720, 1280]})
+    assert not atlas.request_matches_trace(sent, {key: sent[key] for key in ("frames", "refinePoses")})
+    assert not atlas.request_matches_trace(sent, {**sent, "frames": [*sent["frames"], {"imageAsset": {"assetId": "x"}}]})
 
 
 @pytest.mark.parametrize("status", [408, 429, 503])

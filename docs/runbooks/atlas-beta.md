@@ -17,7 +17,8 @@ exclusion, coverage, quality, overlap and budget. Every first run then densifies
 reviewed still interval and reviews the denser survey again, without reading frozen
 held-out pixels. Retained
 plans and operation IDs survive restarts without repeat purchases. Unknown model
-or provider submission outcomes hold for reconciliation.
+or provider submission outcomes hold until the operation list reconciles them
+(`docs/website-atlas-pose-operation.md`).
 
 After posing, the controller generates RGBD at both task and room anchors, retains
 every asset, and writes one portable ZIP. Its terminal status remains `needs_input`
@@ -223,8 +224,8 @@ the canonical `request_digest`, `maximum_cost_usd`, `reviewed_on`,
 The pinned official request and response schemas are in `_atlas_schemas/`.
 The adapter validates them before reservation and after completion, retains
 upload intent and the operation ID, and downloads every named output with
-byte-count and SHA-256 checks. An unknown POST outcome holds for reconciliation;
-rerunning never purchases another operation. A known operation resumes without
+byte-count and SHA-256 checks. An unknown POST outcome holds until the operation
+list shows what it bought; rerunning never purchases a second operation. A known operation resumes without
 another reservation. Billing stays `unreported` until provider usage is retained.
 
 Generation uses explicit 1280×720 target cameras. The returned RGBD context can
