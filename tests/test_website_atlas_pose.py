@@ -481,13 +481,19 @@ def test_another_captures_task_context_is_refused(atlas_case):
     ({"reviewed_on": "yesterday"}, "website_atlas_reviewed_price_invalid:reviewed_on"),
     ({"reviewed_on": 20261019}, "website_atlas_reviewed_price_invalid:reviewed_on"),
     ({"reviewed_on": "2026-W42"}, "website_atlas_reviewed_price_invalid:reviewed_on"),
-    ({"reviewed_on": (_today() + timedelta(days=1)).isoformat()}, "website_atlas_reviewed_price_invalid:reviewed_on"),
-    ({"reviewed_on": (_today() - timedelta(days=31)).isoformat()}, "website_atlas_reviewed_price_invalid:reviewed_on"),
+    ({"reviewed_on": timedelta(days=1)}, "website_atlas_reviewed_price_invalid:reviewed_on"),
+    ({"reviewed_on": timedelta(days=-31)}, "website_atlas_reviewed_price_invalid:reviewed_on"),
 ])
 def test_price_review_must_be_complete_current_and_cover_the_request(monkeypatch, override, code):
-    monkeypatch.setenv(atlas.ATLAS_PRICE_REVIEW_ENV, json.dumps(_review(**override)))
+    # Relative dates resolve against one date that the check is also given:
+    # a run that crosses UTC midnight must not turn "tomorrow" into today.
+    today = _today()
+    override = {key: (today + value).isoformat() if isinstance(value, timedelta) else value
+                for key, value in override.items()}
+    monkeypatch.setenv(atlas.ATLAS_PRICE_REVIEW_ENV,
+                       json.dumps(_review(**{"reviewed_on": today.isoformat(), **override})))
     with pytest.raises(ValueError, match=code):
-        atlas.atlas_pose_spend_line(planned_input_count=3, target_resolution=[1280, 720])
+        atlas.atlas_pose_spend_line(planned_input_count=3, target_resolution=[1280, 720], today=today)
 
 
 def test_reviewed_price_is_the_reservation_ceiling_however_it_was_typed(monkeypatch):
