@@ -233,29 +233,57 @@ def test_a_checkpoint_refusal_stops_the_run_before_the_first_paid_review(tmp_pat
                                     task_context={"capture_id": "c", "context_digest": "task"})
 
 
-def test_an_expired_price_review_waits_for_the_owner_before_buying_a_review(tmp_path, monkeypatch):
+def test_a_job_stopped_by_a_lapsed_price_review_resumes_once_the_owner_renews_it(tmp_path, monkeypatch):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
     video = tmp_path / "source.mov"
     video.write_bytes(b"capture")
-    stale = datetime.now(timezone.utc).date() - timedelta(days=pose_api.PRICE_REVIEW_MAX_AGE_DAYS + 1)
+    today = datetime.now(timezone.utc).date()
+    stale = today - timedelta(days=pose_api.PRICE_REVIEW_MAX_AGE_DAYS + 1)
+    policy = {"maximum_review_cost_usd": .1, "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05,
+              "rate_card_reference": "https://example.test/rates", "reviewed_by": "owner",
+              "reviewed_on": stale.isoformat()}
+    live = {"authority": {"provider_retention": "account_does_not_retain"}, "remaining_cost_usd": 2,
+            "policy": policy}
     monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "test-non-secret"))
-    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: {"authority": {"provider_retention":
-        "account_does_not_retain"}, "remaining_cost_usd": 2, "policy": {"maximum_review_cost_usd": .1,
-        "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05, "reviewed_on": stale.isoformat()}})
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: deepcopy(live))
 
     def survey(**kwargs):
         kwargs["output_root"].mkdir(parents=True)
         (kwargs["output_root"] / "atlas_video_survey.json").write_text(json.dumps(
             {"source_video_digest": pipeline._sha256_file(video), "frames": []}))
     monkeypatch.setattr(inputs, "survey_video", survey)
-    # Frame selection refuses a stale review, but only after the scene review
-    # was bought; every upload after the review lapses would pay for nothing.
-    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_plan",
-                        lambda **_: pytest.fail("a stale price review must not buy a scene review"))
+    bought = []
+
+    def plan(**kwargs):
+        bought.append(kwargs["configuration"]["policy"])
+        kwargs["output_root"].mkdir(parents=True, exist_ok=True)
+        raise RuntimeError("scene review bought")
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_plan", plan)
+    job = dict(source_video=video, output_root=tmp_path / "job",
+               task_context={"capture_id": "c", "context_digest": "task"})
+    # Frame selection refuses a stale review only after the paid scene review, so
+    # every upload after the review lapses would pay for nothing.
     with pytest.raises(ValueError, match="atlas_runtime_price_review_expired"):
-        pipeline.run_atlas_pipeline(source_video=video, output_root=tmp_path / "job",
-                                    task_context={"capture_id": "c", "context_digest": "task"})
+        pipeline.run_atlas_pipeline(**job)
+    assert bought == []
+    # The owner renews the review, here with a new price as well. Nothing was bought,
+    # so the waiting job takes the current policy whole rather than failing for good.
+    live["policy"] = {**policy, "maximum_review_cost_usd": .2, "reviewed_on": today.isoformat()}
+    with pytest.raises(RuntimeError, match="scene review bought"):
+        pipeline.run_atlas_pipeline(**job)
+    assert bought == [live["policy"]]
+    assert json.loads((tmp_path / "job/configuration.json").read_text())["policy"] == live["policy"]
+    # After a purchase, a renewed record of the same prices is still adopted; a
+    # changed price would rebind what was bought, so it refuses.
+    live["policy"] = {**live["policy"], "reviewed_by": "second owner"}
+    with pytest.raises(RuntimeError, match="scene review bought"):
+        pipeline.run_atlas_pipeline(**job)
+    assert bought[-1]["reviewed_by"] == "second owner"
+    live["policy"] = {**live["policy"], "maximum_review_cost_usd": .3}
+    with pytest.raises(ValueError, match="atlas_runtime_authority_or_policy_changed"):
+        pipeline.run_atlas_pipeline(**job)
+    assert len(bought) == 2
 
 
 def test_every_first_run_densifies_the_still_interval_within_the_review_image_budget(tmp_path, monkeypatch):
