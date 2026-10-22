@@ -63,7 +63,8 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
         preflight()
         admission, _grant = reserve_website_preparation_spend(task_context=task_context,
             binding_digest=digest, maximum_cost_usd=maximum_cost_usd, request_count=1,
-            resource_class="evaluator_api", provider="google", source_video_digest=source_video_digest)
+            resource_class="evaluator_api", provider="google", source_video_digest=source_video_digest,
+            atlas_auxiliary=source_video_digest is not None)
         with path.open("x") as stream:
             json.dump({"status": "submitting", "request_digest": digest,
                        "request": request, "admission": admission}, stream)

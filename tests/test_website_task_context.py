@@ -224,7 +224,8 @@ def test_visual_scene_publishes_only_viewer_assets_and_checks_receipt(monkeypatc
     assert len(calls) == 1
 
 
-def test_sam_spend_uses_signed_current_capture_reservation(monkeypatch):
+@pytest.mark.parametrize("source_digest", [None, "sha256:" + "9" * 64])
+def test_sam_spend_uses_signed_current_capture_reservation(monkeypatch, source_digest):
     from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
     calls = []
     def post(**kwargs):
@@ -234,14 +235,16 @@ def test_sam_spend_uses_signed_current_capture_reservation(monkeypatch):
     monkeypatch.setattr(module, "website_webapp_request", post)
     digest = "sha256:" + "a" * 64
     receipt, grant = module.reserve_website_sam_spend(task_context=context(), binding_digest=digest,
-                                                     maximum_cost_usd=0.02, request_count=2)
+                                                     maximum_cost_usd=0.02, request_count=2, source_video_digest=source_digest)
     require_paid_resource_admission_grant(grant, resource_class="evaluator_api", allocation_binding_digest=digest,
                                           require_allocation_binding=True)
     assert calls[0]["operation"] == "preparation-spend"
     assert receipt["maximum_cost_usd"] == .02
+    assert receipt.get("atlas_auxiliary", False) is (source_digest is not None)
     monkeypatch.setattr(module, "website_webapp_request", lambda **kw: {**receipt, "allocation_binding_digest": "sha256:" + "b" * 64})
     with pytest.raises(ValueError, match="receipt_invalid"):
-        module.reserve_website_sam_spend(task_context=context(), binding_digest=digest, maximum_cost_usd=.02, request_count=2)
+        module.reserve_website_sam_spend(task_context=context(), binding_digest=digest, maximum_cost_usd=.02, request_count=2,
+                                       source_video_digest=source_digest)
 
 
 def test_new_sponsorship_expiry_uses_signed_issuance_not_request_start(monkeypatch):

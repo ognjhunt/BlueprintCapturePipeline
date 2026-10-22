@@ -160,4 +160,5 @@ def test_atlas_review_keeps_source_binding_on_shared_reservation_and_cache(tmp_p
     args['source_video_digest']='sha256:'+'9'*64
     first=module.retained_gemini_call(**args)
     assert calls[0][1]['source_video_digest']==args['source_video_digest']
+    assert calls[0][1]['atlas_auxiliary'] is True
     assert module.retained_gemini_call(**args)==first and len(calls)==2
