@@ -285,6 +285,43 @@ def test_portable_export_is_verified_deterministic_and_excludes_unlisted_files(a
         export_pose_bundle(pose_root=atlas_case.root, output_root=tmp_path / "exports")
 
 
+def test_portable_export_carries_bound_splat_and_mesh_and_refuses_changed_ones(atlas_case, tmp_path):
+    import zipfile
+    from blueprint_pipeline.atlas_result_bundle import export_pose_bundle
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    atlas_case.run(FakeAtlas(atlas_case.events))
+    result = _result(atlas_case)
+    splat_root, mesh_root = tmp_path / "splat", tmp_path / "mesh"
+    splat_root.mkdir()
+    spz = splat_root / "atlas_depth_splat.spz"
+    spz.write_bytes(b"spz bytes")
+    splat = {"pose_result_digest": result["digest"], "splat_kind": "depth_fused_draft",
+             "outputs": [{"path": spz.name, "sha256": _sha256_file(spz)}]}
+    splat["digest"] = canonical_digest(splat, digest_field="digest")
+    (splat_root / "atlas_depth_splat_manifest.json").write_text(json.dumps(splat))
+    (mesh_root / "outputs").mkdir(parents=True)
+    glb = mesh_root / "outputs" / "mesh.glb"
+    glb.write_bytes(b"glTF mesh bytes")
+    mesh = {"status": "completed", "binding": {"source_video_digest": result["binding"]["source_video_digest"]},
+            "outputs": [{"path": "outputs/mesh.glb", "sha256": _sha256_file(glb), "bytes": glb.stat().st_size}]}
+    mesh["digest"] = canonical_digest(mesh, digest_field="digest")
+    (mesh_root / "result.json").write_text(json.dumps(mesh))
+    (mesh_root / "atlas_pose").mkdir()
+    (mesh_root / "atlas_pose" / "submission.json").write_text(
+        json.dumps({"status": "completed", "result_digest": mesh["digest"]}))
+    bundle = export_pose_bundle(pose_root=atlas_case.root, output_root=tmp_path / "exports",
+                                splat_root=splat_root, mesh_root=mesh_root)
+    with zipfile.ZipFile(bundle["zip_path"]) as archive:
+        names = set(archive.namelist())
+        manifest = json.loads(archive.read("manifest.json"))
+    assert {"splat/atlas_depth_splat.spz", "splat/atlas_depth_splat_manifest.json", "mesh/mesh.glb"} <= names
+    assert manifest["splat_available"] is True and manifest["mesh_available"] is True
+    assert manifest["splat_kind"] == "depth_fused_draft" and manifest["simulation_qualified"] is False
+    spz.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="splat_output_changed"):
+        export_pose_bundle(pose_root=atlas_case.root, output_root=tmp_path / "exports", splat_root=splat_root)
+
+
 def _result(case):
     return json.loads((case.root / "atlas_posed_rgbd_result.json").read_text())
 

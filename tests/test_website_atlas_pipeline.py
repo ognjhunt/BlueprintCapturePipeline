@@ -50,11 +50,12 @@ def test_rgbd_result_never_publishes_a_completed_scene_handoff(tmp_path, status)
         assert value["atlas_preparation"] == result and value["capture_id"] == "c"
 
 
+@pytest.mark.parametrize("mesh_price", [None, .5])
 @pytest.mark.parametrize("over_budget", [False, True])
-def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget):
+def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget, mesh_price):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import atlas_video_extension as extension, paid_resource_allocator as allocator
-    from blueprint_pipeline import atlas_result_bundle as bundles
+    from blueprint_pipeline import atlas_result_bundle as bundles, atlas_depth_splat as depth_splat
     from blueprint_pipeline import website_atlas_pose as pose_api
     monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "test-non-secret"))
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -64,10 +65,12 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     policy = {"model": "gpt-6.1-sol", "maximum_review_cost_usd": .5, "pose_input_cost_usd": .01,
         "rgbd_view_cost_usd": .05, "rate_card_reference": "https://example.test/rates", "reviewed_by": "test",
         "reviewed_on": "2026-10-21"}
+    if mesh_price:
+        policy["mesh_export_cost_usd"] = mesh_price
     config = {"authority": {"provider_retention": "project_library_retention_approved"},
-        "policy": policy, "remaining_cost_usd": 1.14 if over_budget else 4.76}
+        "policy": policy, "remaining_cost_usd": (1.14 if over_budget else 4.76) + (mesh_price or 0)}
     monkeypatch.setattr(pipeline, "load_configuration", lambda *_: config)
-    calls = {"review": 0, "pose": 0, "generation": 0}
+    calls = {"review": 0, "pose": 0, "atlasGenerate": 0, "splat": 0, "splats2Mesh": 0}
     def survey(**kwargs):
         path = kwargs["output_root"]
         (path / "source").mkdir(parents=True)
@@ -107,21 +110,40 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
         return {"status": "completed", "operation_id": "pose"}
     monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", pose)
     def generate(**kwargs):
-        calls["generation"] += 1
-        assert kwargs["price_review"]["maximum_cost_usd"] == .1
+        calls[kwargs["task"]] += 1
         assert kwargs["price_review"]["request_digest"] == canonical_digest(kwargs["request"])
+        if kwargs["task"] == "splats2Mesh":
+            assert kwargs["price_review"]["maximum_cost_usd"] == mesh_price
+            assert kwargs["uploads"]["splat"]["path"].endswith("atlas_depth_splat.spz")
+            return {"status": "completed", "digest": "mesh"}
+        assert kwargs["price_review"]["maximum_cost_usd"] == .1
         return {"status": "completed", "digest": "generated"}
     monkeypatch.setattr(allocator, "run_sponsored_website_atlas_task", generate)
-    monkeypatch.setattr(bundles, "export_pose_bundle", lambda **_: {"zip_path": "retained.zip"})
+    def splat(pose_root, splat_root):
+        calls["splat"] += 1
+        splat_root.mkdir(parents=True)
+        (splat_root / "splats2mesh_task_spec.json").write_text(json.dumps({
+            "request": {"splatAsset": {"assetId": "upload:splat"}},
+            "uploads": {"splat": {"path": str(splat_root / "atlas_depth_splat.spz"), "sha256": "sha256:" + "0" * 64}}}))
+        manifest = {"splat_kind": "depth_fused_draft", "digest": "splat"}
+        (splat_root / "atlas_depth_splat_manifest.json").write_text(json.dumps(manifest))
+        return manifest
+    monkeypatch.setattr(depth_splat, "build_depth_splat", splat)
+    exported = {}
+    monkeypatch.setattr(bundles, "export_pose_bundle", lambda **kw: exported.update(kw) or {"zip_path": "retained.zip"})
     options = {"source_video": video, "output_root": root, "task_context": {"capture_id": "c", "context_digest": "task"}}
     if over_budget:
         with pytest.raises(ValueError, match="budget_insufficient_for_pose_and_generation"):
             pipeline.run_atlas_pipeline(**options)
-        assert calls == {"review": 2, "pose": 0, "generation": 0}
+        assert calls == {"review": 2, "pose": 0, "atlasGenerate": 0, "splat": 0, "splats2Mesh": 0}
         return
     assert pipeline.run_atlas_pipeline(**options)["stage"] == "pose"
     result = pipeline.run_atlas_pipeline(**options)
-    assert calls == {"review": 2, "pose": 2, "generation": 1}
+    assert calls == {"review": 2, "pose": 2, "atlasGenerate": 1, "splat": 1, "splats2Mesh": 1 if mesh_price else 0}
     assert result["status"] == "needs_input" and result["simulation_qualified"] is False
     assert result["task_and_surrounding_scene_covered"] is True
-    assert result["blockers"][0] == "atlas_public_splat_creation_api_unavailable"
+    assert result["splat_available"] is True and result["mesh_available"] is bool(mesh_price)
+    assert (exported["mesh_root"] is not None) is bool(mesh_price) and exported["splat_root"] == root / "splat"
+    # No reviewed mesh price means no mesh purchase, never an implied mesh.
+    assert result["blockers"] == ([] if mesh_price else ["atlas_mesh_export_price_unreviewed"]) + [
+        "metric_scene_registration_unproven"]
