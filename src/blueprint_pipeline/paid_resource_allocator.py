@@ -781,6 +781,7 @@ def run_sponsored_website_atlas_automation(*, experimental: bool = False, **opti
 
     return run_automation(release_blockers=release_blockers,
         task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
+        planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw),
         pose_runner=lambda **kw: run_sponsored_website_atlas_pose(experimental=experimental, **kw), **options)
 
 

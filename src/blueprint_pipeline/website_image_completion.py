@@ -131,6 +131,24 @@ def _completion_prompt(targets: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _review_prompt(targets: Sequence[Mapping[str, Any]], *, frames: Sequence[Mapping[str, Any]] = ()) -> str:
+    if any(frame.get("novel_view") is True for frame in frames):
+        novel_prompt = (
+            "Review Atlas-generated NOVEL CAMERA views of the same object-absent environment. "
+            "Original images are appearance/context references, not same-camera pixel targets. "
+            "Different framing and newly revealed surfaces are expected. Check that the room, "
+            "floor, installation bay and surrounding fixtures remain coherent across views, "
+            "with plausible continuous surfaces rather than black holes, missing patches or "
+            "floating fragments. Every removed target, its contents and every person must be "
+            "absent; retain unrelated objects wherever visible. Do not reject an original "
+            "object simply because it is outside a novel view's field of view. Return JSON "
+            "with booleans consistent_background, task_objects_removed, unrelated_objects_preserved, "
+            "a short reason, unrelated_object_loss_frame_ids and remaining_task_object_frame_ids "
+            "using exact prepared frame IDs or empty lists. This is visual candidate review, "
+            "not collision, metric or physical qualification. Targets: "
+        )
+        if len(_removed_task_objects(targets)) >= 2:
+            novel_prompt += MULTI_OBJECT_REVIEW_PROMPT
+        return novel_prompt
     prompt = (REVIEW_PROMPT if len(_removed_task_objects(targets)) < 2 else
               REVIEW_PROMPT.removesuffix("Targets: ") + MULTI_OBJECT_REVIEW_PROMPT)
     if any(frame.get("target_guidance") == "sam_overlay_v1" for frame in frames):

@@ -156,6 +156,7 @@ def run_automation(
     task_runner,
     pose_runner,
     release_blockers,
+    planner_runner=None,
     max_polls=2,
     execute=True,
     checkpoint=None,
@@ -254,7 +255,30 @@ def run_automation(
                 derived_frames = _edited_frames(background)
                 provenance = background["result_digests"]
                 visual_digest = background["visual_review_digest"]
-            splat_root = output_root / "background_splat"
+            generated_roots = [Path(p) for p in background.get("stage_roots", [])]
+            completion = None
+            if background["status"] == "fallback_prepared" and "rgbd_view_cost_usd" in policy:
+                from .atlas_scene_completion import complete_scene, COMPLETION_REVISION
+
+                generated, completion = complete_scene(
+                    pose_root=effective_root, pose=effective_pose, frames=derived_frames,
+                    review=review, root=output_root / f"scene_completion-{COMPLETION_REVISION}", context=task_context,
+                    configuration=configuration, task_runner=task_runner, release_blockers=release_blockers,
+                    planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint)
+                if completion["status"] == "processing":
+                    return completion
+                if generated is None:
+                    raise ValueError(completion["reason"])
+                derived_frames = [*derived_frames, *generated]
+                provenance = [*provenance, completion["generation_result_digest"]]
+                visual_digest = canonical_digest({"reviews": [visual_digest, completion["review"]]})
+                generated_roots.append(Path(completion["generated_root"]))
+                background["completion"] = completion
+                background["reconstruction_frame_count"] = len(derived_frames)
+                background["generated_completion_frame_count"] = len(generated)
+            # Retain the earlier baseline rather than letting its existing
+            # manifest silently bypass the newly generated geometry.
+            splat_root = output_root / (f"background_completed_splat-{COMPLETION_REVISION}" if completion else "background_splat")
             manifest_path = splat_root / "atlas_depth_splat_manifest.json"
             splat = (
                 json.loads(manifest_path.read_text())
@@ -267,10 +291,15 @@ def run_automation(
                     visual_review_digest=visual_digest,
                 )
             )
+            if completion is not None and (
+                    splat.get("generated_result_digests") != provenance
+                    or {row["frame_id"] for row in splat.get("frames", [])}
+                    != {row["frame_id"] for row in derived_frames}):
+                raise ValueError("atlas_completion_splat_did_not_consume_generated_depth")
             mesh_root = None
             if "mesh_export_cost_usd" in policy:
                 spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
-                mesh_root = output_root / "background_mesh"
+                mesh_root = output_root / (f"background_completed_mesh-{COMPLETION_REVISION}" if completion else "background_mesh")
                 quote = {
                     "schema_version": "website_atlas_task_price_review.v1",
                     "task": "splats2Mesh",
@@ -313,11 +342,11 @@ def run_automation(
                 output_root=output_root / "downloads",
                 splat_root=splat_root,
                 mesh_root=mesh_root,
-                generated_roots=[Path(p) for p in background.get("stage_roots", [])],
+                generated_roots=generated_roots,
                 analysis_paths=[
                     output_root / "scene_measurements.json",
                     output_root / "background_review.json",
-                ],
+                ] + ([output_root / f"scene_completion-{COMPLETION_REVISION}/completion.json"] if completion else []),
             )
             background.update(
                 status="completed",

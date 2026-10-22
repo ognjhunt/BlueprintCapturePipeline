@@ -374,21 +374,22 @@ def splats2mesh_task_spec(*, frames: Sequence[Mapping[str, Any]], spz: Path,
                           source_video_digest: str) -> dict[str, Any]:
     """Mesh the splat from the capture's own cameras, resized to Atlas's render limits."""
     grids = {(int(frame["intrinsics"]["width"]), int(frame["intrinsics"]["height"])) for frame in frames}
-    if len(grids) != 1:
-        raise ValueError("atlas_depth_splat_camera_grids_differ")
-    ((width, height),) = grids
+    # Source portrait RGBD and generated landscape RGBD share a world frame,
+    # not a pixel grid. Mesh rendering needs one grid; scale each camera's own
+    # intrinsics independently so its original rays/FOV are preserved.
+    width, height = max(grids, key=lambda grid: grid[0] / grid[1])
     factor = max(min(1.0, SPLATS2MESH_MAX_RENDER / max(width, height)), SPLATS2MESH_MIN_RENDER / min(width, height))
     render = (round(width * factor), round(height * factor))
     if max(render) > SPLATS2MESH_MAX_RENDER:
         raise ValueError("atlas_depth_splat_render_aspect_unsupported")
-    sx, sy = render[0] / width, render[1] / height
     chosen = list(frames)
     if len(chosen) > SPLATS2MESH_MAX_CAMERAS:
         chosen = [chosen[i] for i in np.linspace(0, len(chosen) - 1, SPLATS2MESH_MAX_CAMERAS).round().astype(int)]
     cameras = [{"intrinsics": {"fx": k["fx"] * sx, "fy": k["fy"] * sy, "cx": k["cx"] * sx, "cy": k["cy"] * sy,
                                "width": render[0], "height": render[1]},
                 "extrinsics": {key: frame["extrinsics"][key] for key in ("position", "quaternion", "coordinateSystem")}}
-               for frame in chosen for k in (frame["intrinsics"],)]
+               for frame in chosen for k in (frame["intrinsics"],)
+               for sx, sy in ((render[0] / k["width"], render[1] / k["height"]),)]
     return {"task": "splats2Mesh", "source_video_digest": source_video_digest,
             "request": {"splatAsset": {"assetId": "upload:splat"}, "cameras": cameras, "textureMode": "image_texture"},
             "uploads": {"splat": {"path": str(spz.resolve()), "sha256": _sha256_file(spz)}}}
