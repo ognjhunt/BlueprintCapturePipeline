@@ -252,10 +252,13 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})
     write_json(output_root / "atlas_scene_review.json", review)
-    if any(obj.get("disposition") == "remove" for obj in (review.get("automation") or {}).get("objects", [])):
+    if (review.get("transient_frame_ids")
+            or any(obj.get("disposition") == "remove" for obj in (review.get("automation") or {}).get("objects", []))):
         # The editor/reviewer works from source pixels. Atlas receives no RGB
         # until the complete cleaned set passes; do not buy a raw-scene pose or
-        # synthetic views merely to start image removal.
+        # synthetic views merely to start image removal. People and other moving
+        # things in the one capture video are erased here too, so a scene with
+        # them never takes the raw path below.
         from .paid_resource_allocator import run_sponsored_website_atlas_automation
         check("reviewed_background")
         automation = run_sponsored_website_atlas_automation(

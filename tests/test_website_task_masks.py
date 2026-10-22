@@ -649,3 +649,21 @@ def test_a_sub_part_concept_with_no_whole_object_alternative_refuses(tmp_path, m
     assert [row["matched_only_part"] for row in grounds] == [True, True, True]
     assert [list(row["also_rejected"]) for row in grounds] == [
         ["cabinet"], ["cabinet", "drawers"], ["cabinet", "drawers", "drawer fronts"]]
+
+
+def test_a_carried_task_object_is_described_only_where_it_rests():
+    from blueprint_pipeline.website_task_masks import resting_views
+
+    rng = np.random.default_rng(0)
+    still = [rng.normal([0.0, 0.0, 2.0], 0.05, (200, 3)) for _ in range(5)]
+    # Model depth wobbles a few centimetres from view to view: nothing is dropped.
+    wobble = [view + [0.03 * i, 0.0, 0.0] for i, view in enumerate(still)]
+    assert len(resting_views(wobble)) == 5
+    # The worker picks it up and carries it 60 cm away for the last two views.
+    carried = [*still[:3], still[3] + [0.6, 0, 0], still[4] + [0.9, 0.2, 0]]
+    kept = resting_views(carried)
+    assert len(kept) == 3 and all(np.allclose(np.median(v, axis=0), [0, 0, 2], atol=0.05) for v in kept)
+    # Moving the whole time leaves no resting place to prefer: keep everything.
+    moving = [view + [0.5 * i, 0, 0] for i, view in enumerate(still)]
+    assert len(resting_views(moving)) == 5
+    assert len(resting_views(carried[:2])) == 2
