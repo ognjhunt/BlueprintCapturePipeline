@@ -33,6 +33,23 @@ def test_production_rollout_is_capture_specific_and_malformed_config_refuses(mon
         atlas_selected("admitted")
 
 
+@pytest.mark.parametrize("status", ["processing", "needs_input"])
+def test_rgbd_result_never_publishes_a_completed_scene_handoff(tmp_path, status):
+    from blueprint_pipeline.website_atlas_pipeline import retain_site_preparation_hold
+    from blueprint_pipeline.common import StageError
+    result = {"status": status, "blockers": ["atlas_public_splat_creation_api_unavailable"]}
+    with pytest.raises(StageError):
+        retain_site_preparation_hold(pipeline_dir=tmp_path, atlas_result=result, scene_id="s", capture_id="c")
+    assert json.loads((tmp_path / "atlas_preparation_result.json").read_text()) == result
+    handoff = tmp_path / "website_scene_preparation/handoff.json"
+    if status == "processing":
+        assert not handoff.exists()
+    else:
+        value = json.loads(handoff.read_text())
+        assert value["status"] == "needs_input" and value["simulator_ready"] is False
+        assert value["atlas_preparation"] == result and value["capture_id"] == "c"
+
+
 @pytest.mark.parametrize("over_budget", [False, True])
 def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs

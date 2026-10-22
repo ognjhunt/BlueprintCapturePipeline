@@ -155,8 +155,17 @@ jobs:
 
       - name: Install sealed-camera renderer packages
         working-directory: tools/splat_render
-        timeout-minutes: 2
-        run: npm ci
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          for attempt in 1 2; do
+            if timeout --kill-after=10s 100s npm ci --foreground-scripts; then
+              exit 0
+            fi
+            echo "renderer package install attempt ${attempt} did not complete"
+          done
+          echo "renderer package install failed after two bounded attempts"
+          exit 1
 
       - name: Install sealed-camera renderer dependencies
         working-directory: tools/splat_render

@@ -21,6 +21,28 @@ def _jobs(name: str) -> dict:
     return yaml.safe_load((ROOT / ".github/workflows" / name).read_text())["jobs"]
 
 
+@pytest.mark.parametrize("failures,expected_calls,success", [(0, 1, True), (1, 2, True), (2, 2, False)])
+def test_renderer_install_retry_is_bounded_and_never_hides_exhaustion(tmp_path, failures, expected_calls, success):
+    step = next(row for row in _jobs("full-test-lane.yml")["full-pytest-shard"]["steps"]
+                if row.get("name") == "Install sealed-camera renderer packages")
+    state = tmp_path / "attempts"
+    wrapper = tmp_path / "timeout"
+    wrapper.write_text('#!/bin/sh\n[ "$1" = "--kill-after=10s" ] && [ "$2" = "100s" ] || exit 99\n'
+                       'shift 2\nexec "$@"\n')
+    wrapper.chmod(0o755)
+    npm = tmp_path / "npm"
+    npm.write_text('#!/bin/sh\n[ "$*" = "ci --foreground-scripts" ] || exit 99\n'
+                   'n=0\n[ ! -f "$ATTEMPTS" ] || n=$(cat "$ATTEMPTS")\n'
+                   'n=$((n+1))\necho "$n" > "$ATTEMPTS"\n[ "$n" -gt "$FAILURES" ]\n')
+    npm.chmod(0o755)
+    process = subprocess.run(["bash", "-c", step["run"]], cwd=tmp_path, capture_output=True, text=True,
+        env=os.environ | {"PATH": str(tmp_path) + os.pathsep + os.defpath,
+                          "ATTEMPTS": str(state), "FAILURES": str(failures)}, check=False)
+    assert (process.returncode == 0) is success
+    assert int(state.read_text()) == expected_calls
+    assert step["timeout-minutes"] == 4
+
+
 @pytest.mark.parametrize(
     ("changed", "expected"),
     [
