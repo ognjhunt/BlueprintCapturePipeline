@@ -73,10 +73,24 @@ per-upload cap the WebApp grant enforces. It is development-only and unscaled.
   `GET /api/live-pipeline/website-atlas-previews/<capture>/bundle?request_id=&digest=`
   (WebApp client only), which serves a ready, unwithdrawn bundle of that exact digest.
 
+## Accuracy-first input selection
+
+Owner direction (2026-10-22): accuracy, not cost, decides the provider inputs.
+`prepare_video_inputs` first builds the connected cover of the reviewed task and
+room anchors, then `add_distinct_views` adds every other sharp, unclipped view of
+the still interval that overlaps a kept time neighbour (the cover's support rule)
+and moved at least 12 preview pixels from each overlapping one (the near-duplicate
+rule), up to `ACCURACY_FRAME_TARGET` (64). Extra distinct views beyond the target
+are thinned evenly over time; the cover is never dropped. The reviewed dollars are
+checked only after selection and refuse
+(`atlas_selection_budget_below_accurate_inputs`); they never pose fewer frames.
+Atlas has not published a per-request image limit, so the first 64-frame request
+settles whether it accepts that many.
+
 ## Review output gaps and refine source inputs
 
-The initial cover connects reviewed task/room anchors; its selected count is not
-a quality optimum or provider limit. For an output-aware second pass, retain an
+The initial cover connects reviewed task/room anchors and is then densified as
+above. For an output-aware second pass, retain an
 `atlas_reconstruction_feedback.v1` JSON with a canonical `digest`, `parent_root`,
 `parent_result_digest`, `parent_selection_sha256`, and `previews` entries containing
 `relative_path`, `sha256`, and `source_frame_id`. Previews are labeled derived
