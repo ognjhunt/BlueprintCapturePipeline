@@ -1,9 +1,9 @@
-"""Estimated source geometry for website task preparation, before pixel editing.
+"""Source frames for website task preparation, before pixel editing.
 
 ADP-009B / public_scene_day_14: preserve source placement for a development
-replica. Model-derived meters never establish measured scale or physical proof.
-The decoder owns source frames. Geometry providers are selected separately;
-MapAnything remains an explicit optional inference route.
+replica. The decoder owns source frames; World Labs Atlas poses them
+(``website_worldlabs``, ``atlas_source_geometry``). Estimated metres never
+establish measured scale or physical proof.
 """
 
 from __future__ import annotations
@@ -13,46 +13,21 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 import numpy as np
 from PIL import Image
 
-from .camera_geometry_validation import validate_se3_matrix
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import LocalDecodedObservationAdapter, _sha256_file
 
-MODEL_ID = "facebook/map-anything-apache"
-MODEL_CODE_REVISION = "3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9"
+# Retained adapter-v1 inputs name the model they were first prepared for; they still reopen.
+LEGACY_MODEL_ID = "facebook/map-anything-apache"
+LEGACY_MODEL_CODE_REVISION = "3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9"
 INPUT_SCHEMA = "website_geometry_inputs.v1"
 _FRAME_ARTIFACTS = (("source_image_path", "source_image_digest"),
                     ("image_path", "image_digest"), ("geometry_path", "geometry_digest"))
-
-
-def _array(value: Any) -> np.ndarray:
-    if hasattr(value, "detach"):
-        value = value.detach().float().cpu().numpy()
-    return np.asarray(value)
-
-
-def _infer(paths: list[str], *, model_path: Path) -> Sequence[Mapping[str, Any]]:
-    import torch
-    from mapanything.models import MapAnything
-    from mapanything.utils.image import load_images
-
-    # Images are already resized. Keeping this size avoids a hidden center crop
-    # that would invalidate the source-pixel-to-geometry transform.
-    with Image.open(paths[0]) as image:
-        size = image.size
-    views = load_images(paths, resize_mode="fixed_size", size=size)
-    if len(views) != len(paths):
-        raise ValueError("mapanything_source_view_missing")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = MapAnything.from_pretrained(str(model_path), local_files_only=True).to(device).eval()
-    with torch.inference_mode():
-        return model.infer(views, memory_efficient_inference=True, use_amp=device == "cuda",
-                           apply_mask=True, mask_edges=True, apply_confidence_mask=False)
 
 
 def source_to_view_pixels(*, width: int, height: int, rotation: float, size: tuple[int, int]) -> list[list[float]]:
@@ -89,36 +64,6 @@ def _prepare_image(source: Path, target: Path, rotation: float) -> dict[str, Any
         "source_to_geometry_pixels": source_to_view_pixels(width=width, height=height, rotation=rotation,
                                                            size=size),
     }
-
-
-def _write_prediction(prediction: Mapping[str, Any], frame: Mapping[str, Any], path: Path) -> dict[str, Any]:
-    height, width = int(frame["height"]), int(frame["width"])
-    depth = _array(prediction["depth_z"])
-    confidence = _array(prediction["conf"])
-    mask = _array(prediction["mask"])
-    if depth.shape != (1, height, width, 1) or confidence.shape != (1, height, width) or mask.shape != depth.shape:
-        raise ValueError("mapanything_geometry_shape_mismatch")
-    depth, confidence, mask = depth[0, :, :, 0], confidence[0], mask[0, :, :, 0]
-    if not np.isin(mask, [0, 1]).all():
-        raise ValueError("mapanything_validity_mask_invalid")
-    valid = mask.astype(bool) & np.isfinite(depth) & (depth > 0) & np.isfinite(confidence) & (confidence >= 0)
-    if not valid.any():
-        raise ValueError("mapanything_no_valid_geometry")
-    intrinsics, poses = _array(prediction["intrinsics"]), _array(prediction["camera_poses"])
-    if intrinsics.shape != (1, 3, 3) or poses.shape != (1, 4, 4):
-        raise ValueError("mapanything_camera_shape_mismatch")
-    k, pose = intrinsics[0], poses[0]
-    if not np.isfinite(k).all() or k[0, 0] <= 0 or k[1, 1] <= 0 or not np.allclose(k[2], [0, 0, 1]):
-        raise ValueError("mapanything_intrinsics_invalid")
-    if not validate_se3_matrix(pose.tolist(), field="world_from_camera")["valid"]:
-        raise ValueError("mapanything_camera_pose_invalid")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, depth_m=np.where(valid, depth, 0).astype(np.float32),
-                        confidence=np.where(valid, confidence, 0).astype(np.float32), valid_mask=valid)
-    return {**frame, "geometry_path": str(path), "geometry_digest": _sha256_file(path),
-            "intrinsics": k.tolist(), "world_from_camera": pose.tolist(),
-            "camera_from_world": np.linalg.inv(pose).tolist(),
-            "valid_pixel_fraction": float(valid.mean())}
 
 
 def _bound_frames(document: Mapping[str, Any], root: Path, *, geometry: bool) -> list[dict[str, Any]]:
@@ -164,8 +109,8 @@ def prepare_website_geometry_inputs(*, source_video: Path, output_root: Path, ca
                "adapter_version": 2}
     if manifest_path.is_file():
         previous = json.loads(manifest_path.read_text())
-        legacy_binding = {"source_video_digest": binding["source_video_digest"], "model_id": MODEL_ID,
-                          "model_code_revision": MODEL_CODE_REVISION, "adapter_version": 1}
+        legacy_binding = {"source_video_digest": binding["source_video_digest"], "model_id": LEGACY_MODEL_ID,
+                          "model_code_revision": LEGACY_MODEL_CODE_REVISION, "adapter_version": 1}
         accepted_bindings = (binding, legacy_binding) if maximum_frames == 16 else (binding,)
         if previous.get("binding") in accepted_bindings and previous.get("schema_version") == INPUT_SCHEMA:
             _bound_frames(previous, manifest_path.parent, geometry=False)
@@ -211,87 +156,6 @@ def prepare_website_geometry_inputs(*, source_video: Path, output_root: Path, ca
     return result
 
 
-def infer_website_geometry_inputs(*, input_manifest: Path, output_root: Path, model_path: Path) -> dict[str, Any]:
-    """Worker entry point; allocation and model installation remain outside this stage."""
-    weights, config = model_path / "model.safetensors", model_path / "config.json"
-    if not weights.is_file() or not config.is_file():
-        raise ValueError("mapanything_local_checkpoint_missing")
-    inputs = json.loads(input_manifest.read_text())
-    input_binding = inputs.get("binding", {})
-    legacy = (input_binding.get("model_id") == MODEL_ID
-              and input_binding.get("model_code_revision") == MODEL_CODE_REVISION)
-    neutral = (input_binding.get("adapter_version") == 2 and "model_id" not in input_binding
-               and "model_code_revision" not in input_binding)
-    if (inputs.get("schema_version") != INPUT_SCHEMA or inputs.get("heldout_pixels_included") is not False
-            or not (legacy or neutral)):
-        raise ValueError("website_geometry_inputs_invalid")
-    prepared = _bound_frames(inputs, input_manifest.parent, geometry=False)
-    if len(prepared) > 16:
-        raise ValueError("mapanything_geometry_batch_exceeded")
-    binding = {**inputs["binding"], "model_id": MODEL_ID, "model_code_revision": MODEL_CODE_REVISION,
-               "checkpoint_digest": _sha256_file(weights),
-               "model_config_digest": _sha256_file(config), "input_digest": inputs["digest"]}
-    output_root = output_root.resolve()
-    manifest_path = output_root / "source_geometry.json"
-    if manifest_path.is_file():
-        previous = json.loads(manifest_path.read_text())
-        if previous.get("binding") != binding or previous.get("status") != "estimated":
-            raise ValueError("website_geometry_result_identity_conflict")
-        return load_website_geometry_result(manifest_path=manifest_path, inputs=inputs)
-    # Retain input bytes beside the output so the whole result can move hosts.
-    for index, row in enumerate(prepared):
-        for key, _ in _FRAME_ARTIFACTS[:2]:
-            source = Path(row[key])
-            target = output_root / key / f"{index:06d}{source.suffix}"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
-            row[key] = str(target)
-    predictions = _infer([row["image_path"] for row in prepared], model_path=model_path)
-    if len(predictions) != len(prepared):
-        raise ValueError("mapanything_prediction_count_mismatch")
-    frames = [_write_prediction(prediction, row, output_root / "geometry" / f"{index:06d}.npz")
-              for index, (row, prediction) in enumerate(zip(prepared, predictions, strict=True))]
-    for frame in frames:
-        for key, _ in _FRAME_ARTIFACTS:
-            frame[key] = str(Path(frame[key]).relative_to(output_root))
-    result = {
-        "schema_version": "website_source_geometry.v1", "status": "estimated",
-        "binding": binding, "claim_ceiling": "development_only",
-        "coordinate_system": "opencv_camera_to_world", "unit": "estimated_meters",
-        "scale_status": "model_estimated", "metric_measurement_proven": False,
-        "physical_evidence": False, "confidence_is_calibrated_probability": False,
-        "frames": frames,
-    }
-    result["digest"] = canonical_digest(result, digest_field="digest")
-    write_json(manifest_path, result)
-    return load_website_geometry_result(manifest_path=manifest_path, inputs=inputs)
-
-
-def load_website_geometry_result(*, manifest_path: Path, inputs: Mapping[str, Any]) -> dict[str, Any]:
-    """Rebind a returned worker directory to this host, checking its input identity."""
-    result = json.loads(manifest_path.read_text())
-    binding = result.get("binding", {})
-    expected = {"schema_version": "website_source_geometry.v1", "status": "estimated",
-                "claim_ceiling": "development_only", "metric_measurement_proven": False,
-                "physical_evidence": False, "scale_status": "model_estimated",
-                "unit": "estimated_meters", "coordinate_system": "opencv_camera_to_world",
-                "confidence_is_calibrated_probability": False}
-    if (any(result.get(key) != value for key, value in expected.items())
-            or any(binding.get(key) != value for key, value in inputs["binding"].items())
-            or binding.get("input_digest") != inputs["digest"]):
-        raise ValueError("website_geometry_result_identity_conflict")
-    frames = _bound_frames(result, manifest_path.parent, geometry=True)
-    if len(frames) != len(inputs["frames"]):
-        raise ValueError("website_geometry_result_frame_mismatch")
-    for frame, source in zip(frames, inputs["frames"], strict=True):
-        if any(frame.get(key) != value for key, value in source.items()
-               if key not in {"source_image_path", "image_path"}):
-            raise ValueError("website_geometry_result_frame_mismatch")
-    result.update(frames=frames, manifest_path=str(manifest_path.resolve()))
-    result["digest"] = canonical_digest(result, digest_field="digest")
-    return result
-
-
 def prepare_website_source_frames(*, source_video: Path, output_root: Path, capture_id: str,
                                 maximum_frames: int | None = None) -> dict[str, Any]:
     """CPU-only source views for SAM and image editing, before any GPU job."""
@@ -304,99 +168,8 @@ def prepare_website_source_frames(*, source_video: Path, output_root: Path, capt
     return value
 
 
-def prepare_task_geometry_inputs(*, source_video: Path, output_root: Path, inputs: Mapping[str, Any],
-                                 task_masks: Mapping[str, Any]) -> tuple[dict[str, Any], Path]:
-    """Keep observed task pixels in the bounded geometry batch, preserving held-outs."""
-    base_root = output_root / "worker_inputs"
-    base = _bound_frames(inputs, base_root, geometry=False)
-    if (task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
-            or task_masks.get("source_video_digest") != inputs["binding"]["source_video_digest"]
-            or task_masks.get("binding", {}).get("geometry_input_digest") != inputs["digest"]
-            or _sha256_file(source_video) != inputs["binding"]["source_video_digest"]):
-        raise ValueError("website_task_geometry_input_mismatch")
-    base_ids = {row["frame_id"] for row in base}
-    tracks = [target["source_track"]["observations"] for target in task_masks["targets"]]
-    if all(any(row["source_frame_id"] in base_ids for row in observations) for observations in tracks):
-        return dict(inputs), output_root
-    splits = list((output_root / "source").rglob("frozen_split_manifest.json"))
-    if len(splits) != 1:
-        raise ValueError("website_task_geometry_frozen_split_missing")
-    split = json.loads(splits[0].read_text())
-    if (split.get("split_digest") != canonical_digest(split, digest_field="split_digest")
-            or split.get("capture_digest") != inputs["binding"]["source_video_digest"]):
-        raise ValueError("website_task_geometry_frozen_split_changed")
-    heldout = {row["frame_id"] for row in split["assignments"] if row["split"] == "held_out"}
-    registry = task_masks["source_frame_registry"]
-    if any(row["source_frame_id"] != f"decoded-{i:09d}" for i, row in enumerate(registry)):
-        raise ValueError("website_task_geometry_registry_invalid")
-    by_id = {row["source_frame_id"]: row for row in registry}
-    required = set()
-    for observations in tracks:
-        available = [row for row in observations if row["source_frame_id"] in by_id
-                     and row["source_frame_id"] not in heldout and row.get("runs")]
-        if not available:
-            raise ValueError("website_task_geometry_observation_missing")
-        # Prefer a retained candidate when it already observes this target.
-        choices = [row for row in available if row["source_frame_id"] in base_ids] or available
-        required.add(max(choices, key=lambda row: sum(run["length"] for run in row["runs"]))["source_frame_id"])
-    if len(required) > 16:
-        raise ValueError("website_task_geometry_batch_exceeded")
-    remaining = [row for row in base if row["frame_id"] not in required]
-    capacity = 16 - len(required)
-    if len(remaining) > capacity:
-        indexes = np.linspace(0, len(remaining) - 1, capacity, dtype=int) if capacity else []
-        remaining = [remaining[i] for i in indexes]
-    selected_ids = required | {row["frame_id"] for row in remaining}
-    binding = {**inputs["binding"], "tracking_input_digest": inputs["digest"],
-               "task_masks_digest": task_masks["digest"], "heldout_exclusion_digest": split["split_digest"]}
-    root = output_root / "task_inputs" / canonical_digest(binding)[7:23]
-    worker = root / "worker_inputs"
-    manifest = worker / "geometry_inputs.json"
-    if manifest.is_file():
-        previous = json.loads(manifest.read_text())
-        if previous.get("binding") != binding:
-            raise ValueError("website_task_geometry_retained_inputs_changed")
-        _bound_frames(previous, worker, geometry=False)
-        return previous, root
-    from .local_reconstruction_adapters import _extract_frames
-    indexes = sorted(by_id[frame_id]["model_frame_index"] for frame_id in required - base_ids)
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise ValueError("website_task_geometry_ffmpeg_missing")
-    decoded = _extract_frames(video_path=source_video, ffmpeg=ffmpeg, indexes=indexes,
-        presentation_times=[row["decoded_pts_seconds"] for row in registry],
-        decoded_frame_metadata=registry, frame_root=worker / "decoded")
-    rows = {row["frame_id"]: row for row in base if row["frame_id"] in selected_ids}
-    for row in decoded:
-        source = worker / "decoded" / f"{row['frame_id']}.png"
-        rows[row["frame_id"]] = {"frame_id": row["frame_id"], "timestamp_seconds": row["t_video_sec"],
-            "source_image_path": str(source), "source_image_digest": row["digest"],
-            **_prepare_image(source, worker / "model_inputs" / f"{row['frame_id']}.png", base[0]["display_rotation_degrees"])}
-    prepared = []
-    for row in sorted(rows.values(), key=lambda row: row["timestamp_seconds"]):
-        row = dict(row)
-        for path_key, digest_key in _FRAME_ARTIFACTS[:2]:
-            source = Path(row[path_key])
-            if _sha256_file(source) != row[digest_key]:
-                raise ValueError("website_task_geometry_source_changed")
-            destination = worker / ("observations" if path_key == "source_image_path" else "model_inputs") / f"{row['frame_id']}.png"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if source.resolve() != destination.resolve():
-                shutil.copyfile(source, destination)
-            row[path_key] = str(destination.relative_to(worker))
-        prepared.append(row)
-    result = {"schema_version": INPUT_SCHEMA, "binding": binding, "frames": prepared,
-              "heldout_pixels_included": False, "claim_ceiling": "development_only"}
-    result["digest"] = canonical_digest(result, digest_field="digest")
-    write_json(manifest, result)
-    _bound_frames(result, worker, geometry=False)
-    return result, root
-
-
 def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture_id: str,
                                task_context: Mapping[str, Any] | None = None,
-                               task_masks: Mapping[str, Any] | None = None,
-                               backend: str | None = None,
                                maximum_frames: int | None = None) -> dict[str, Any]:
     """Prepare source views; provider pose/depth never implies finished scene assets."""
     if task_context is not None:
@@ -410,10 +183,7 @@ def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture
             validate_website_task_context(task_context,
                 request_id=task_context.get("request_id"), scene_id=task_context.get("scene_id"),
                 capture_id=capture_id, purpose="scene_preparation")
-    selected = backend or os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND") or (
-        "mapanything" if (os.getenv("BLUEPRINT_MAPANYTHING_MODEL_PATH")
-                          or os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT")) else "atlas")
-    if selected == "atlas" and (output_root / "atlas_scene_review.json").is_file():
+    if (output_root / "atlas_scene_review.json").is_file():
         from .atlas_video_inputs import prepare_video_inputs, survey_video
         survey_path = output_root / "atlas_video_survey.json"
         if not survey_path.is_file():
@@ -423,32 +193,12 @@ def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture
             output_root=output_root, maximum_frames=maximum_frames)
     inputs = prepare_website_geometry_inputs(source_video=source_video, output_root=output_root,
                                            capture_id=capture_id, maximum_frames=maximum_frames)
-    if selected == "atlas":
-        # No API mutation or paid allocation here. Atlas consumes unposed RGB,
-        # then its own returned RGB/depth/cameras feed generation unchanged.
-        # The existing controller must admit uploads and operation spending.
-        from .website_worldlabs import prepare_atlas_pose_inputs
-        return prepare_atlas_pose_inputs(inputs=inputs,
-            input_root=output_root / "worker_inputs", output_root=output_root)
-    if selected != "mapanything":
-        raise ValueError("website_source_geometry_backend_invalid")
-    if task_masks is not None:
-        inputs, output_root = prepare_task_geometry_inputs(source_video=source_video, output_root=output_root,
-                                                           inputs=inputs, task_masks=task_masks)
-    if task_context is not None:
-        if len(inputs["frames"]) > 16:
-            raise ValueError("mapanything_geometry_batch_exceeded")
-        from .paid_resource_allocator import run_sponsored_website_geometry
-        return run_sponsored_website_geometry(input_manifest=output_root / "worker_inputs/geometry_inputs.json",
-                                               output_root=output_root, task_context=task_context)
-    remote_result = os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT")
-    if remote_result:
-        return load_website_geometry_result(manifest_path=Path(remote_result), inputs=inputs)
-    model_path = Path(os.getenv("BLUEPRINT_MAPANYTHING_MODEL_PATH") or "/opt/mapanything/map-anything-apache")
-    if not (model_path / "model.safetensors").is_file() or not (model_path / "config.json").is_file():
-        raise ValueError("mapanything_local_checkpoint_missing")
-    return infer_website_geometry_inputs(input_manifest=output_root / "worker_inputs" / "geometry_inputs.json",
-                                         output_root=output_root, model_path=model_path)
+    # No API mutation or paid allocation here. Atlas consumes unposed RGB,
+    # then its own returned RGB/depth/cameras feed generation unchanged.
+    # The existing controller must admit uploads and operation spending.
+    from .website_worldlabs import prepare_atlas_pose_inputs
+    return prepare_atlas_pose_inputs(inputs=inputs,
+        input_root=output_root / "worker_inputs", output_root=output_root)
 
 
 def main() -> None:
@@ -460,13 +210,9 @@ def main() -> None:
     prepare.add_argument("--output-root", type=Path, required=True)
     prepare.add_argument("--maximum-frames", type=int,
                          help="Source sample count (default 16 or BLUEPRINT_WEBSITE_SOURCE_MAXIMUM_FRAMES); provider capacity is separate")
-    infer = commands.add_parser("infer")
-    infer.add_argument("--input-manifest", type=Path, required=True)
-    infer.add_argument("--output-root", type=Path, required=True)
-    infer.add_argument("--model-path", type=Path, required=True)
     args = vars(parser.parse_args())
-    command = args.pop("command")
-    result = prepare_website_geometry_inputs(**args) if command == "prepare" else infer_website_geometry_inputs(**args)
+    args.pop("command")
+    result = prepare_website_geometry_inputs(**args)
     print(json.dumps({"status": result.get("status", "prepared"), "frame_count": len(result["frames"]),
                       "digest": result["digest"]}))
 

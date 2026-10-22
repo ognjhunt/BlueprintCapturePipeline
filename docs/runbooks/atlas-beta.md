@@ -176,8 +176,8 @@ maximum; this is not proof of unlimited server capacity.
    `maximum_pose_cost_usd`, current `input_cost_usd`, `rate_card_reference`,
    `reviewed_on` and `reviewed_by`; it determines the planning ceiling in images.
    The separate WebApp gate remains the actual authority to spend or upload.
-   Atlas receives lossless native upright source images, rather than the old
-   518-pixel MapAnything inputs. Gaps remain explicit. Existing source-geometry
+   Atlas receives lossless native upright source images, rather than 518-pixel
+   model inputs. Gaps remain explicit. Existing source-geometry
    orchestration uses this path when its root has an `atlas_scene_review.json`.
    For a temporal gap, run `python -m blueprint_pipeline.atlas_video_extension
    --source-video VIDEO --base-survey SURVEY --decoded-index INDEX --review

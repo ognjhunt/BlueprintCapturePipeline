@@ -64,7 +64,7 @@ HINGE_EDGES = ("bottom", "left", "right", "top")
 _PART = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
 MAX_LABEL_TEXTS = 8
 MAX_LABEL_TEXT_CHARS = 120
-# Estimated-metre tolerances on MapAnything depth, not measured accuracies.
+# Estimated-metre tolerances on source-geometry depth, not measured accuracies.
 FRONT_PLANE_TOLERANCE_M = 0.02
 FRONT_SLAB_M = 0.1
 FOOTPRINT_MARGIN_M = 0.02

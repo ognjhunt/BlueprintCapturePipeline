@@ -78,7 +78,6 @@ _SLOT_ONLY_BLOCKERS = frozenset({
 })
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _EXPECTED_RESULTS = {
-    "website_mapanything": "website_mapanything_result.v1",
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
 }
@@ -86,10 +85,7 @@ MAX_CANONICAL_RECEIPT_BYTES = 8 * 1024**2
 
 
 def reconstruction_resource_name(operation: str, request_digest: str) -> str:
-    # Website geometry uses the exact-resource watchdog contract. Preserve the
-    # names of older prefix-scoped lanes and their retained reconciliation data.
-    if operation == "website_mapanything":
-        return f"{NAME_PREFIX}website-mapanything-{request_digest[7:39]}"
+    # Preserve the names of prefix-scoped lanes and their retained reconciliation data.
     return f"{NAME_PREFIX}{operation.replace('_canary', '')}-{request_digest[7:19]}"
 
 
@@ -114,31 +110,6 @@ def _canonical_receipt_file(root: Path, receipt: Mapping[str, Any]) -> tuple[Pat
     ).encode("utf-8")
     path.write_bytes(payload)
     return path, "sha256:" + hashlib.sha256(payload).hexdigest()
-
-
-def _website_bootstrap_failure(path: Path, request: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Recognize a bound failure envelope; it can never count as worker success."""
-    if path.stat().st_size > 16 * 1024:
-        return None
-    try:
-        value = json.loads(path.read_text())
-    except (OSError, UnicodeError, ValueError):
-        return None
-    if not isinstance(value, dict) or value.get("schema_version") != "website_mapanything_bootstrap_failure.v1":
-        return None
-    expected = (("operation_request_digest", "operation_request_digest"),
-                ("operation_input_bundle_digest", "operation_input_bundle_digest"),
-                ("source_commit_sha", "source_commit_sha"))
-    if (value.get("status") != "failed"
-            or any(value.get(field) != request.get(source) for field, source in expected)
-            or not re.fullmatch(r"[a-z][a-z0-9_]{2,80}", str(value.get("phase") or ""))
-            or not re.fullmatch(r"[a-z][a-z0-9_]{2,100}", str(value.get("code") or ""))):
-        return {"status": "invalid", "code": "binding_invalid"}
-    return {"status": "failed", "phase": value["phase"], "code": value["code"],
-            "exception_type": str(value.get("exception_type") or "")[:80],
-            "operation_request_digest": value["operation_request_digest"],
-            "operation_input_bundle_digest": value["operation_input_bundle_digest"],
-            "source_commit_sha": value["source_commit_sha"]}
 
 
 def _watchdog_valid(
@@ -179,10 +150,7 @@ def _default_output_fetcher(url: str, destination: Path) -> SafeHttpFileTransfer
         raise
 
 
-def _bootstrap_script(*, canonical_splatfacto: bool = False, website_mapanything: bool = False) -> str:
-    if website_mapanything:
-        script = Path(__file__).with_name("website_mapanything_bootstrap.py").read_text()
-        return "set -euo pipefail\npython - <<'PY'\n" + script + "\nPY\n"
+def _bootstrap_script(*, canonical_splatfacto: bool = False) -> str:
     if canonical_splatfacto:
         return """set -euo pipefail
 python3 - <<'PY'
@@ -330,10 +298,6 @@ def _validate_bindings(
         or request.get("proof_effect") != "none"
     ):
         blockers.append("reconstruction_vast_operation_bound_request_not_executable")
-    if operation == "website_mapanything":
-        roles = [row.get("role") for row in receipt.get("artifact_members", [])]
-        if roles.count("worker_wheel") != 3 or roles.count("worker_dependencies") != 1:
-            blockers.append("website_mapanything_runtime_bundle_missing")
     bindings = [
         ("operation", "operation"),
         ("operation_request_digest", "operation_request_digest"),
@@ -440,7 +404,7 @@ def run_reconstruction_vast_operation(
             ["reconstruction_vast_operation_preflight_digest_mismatch"]
         )
     approved_offer = preflight.get("selected_offer")
-    if (operation == "website_mapanything" or approved_offer is not None) and not _approved_vast_offer_matches(approved_offer):
+    if approved_offer is not None and not _approved_vast_offer_matches(approved_offer):
         raise ReconstructionVastOperationError(
             ["reconstruction_vast_operation_approved_offer_invalid"]
         )
@@ -572,7 +536,7 @@ def run_reconstruction_vast_operation(
             name=name,
             image=worker_image,
             env=worker_environment,
-            bootstrap_argv=["-lc", _bootstrap_script(canonical_splatfacto=canonical_splatfacto, website_mapanything=operation == "website_mapanything")],
+            bootstrap_argv=["-lc", _bootstrap_script(canonical_splatfacto=canonical_splatfacto)],
             entrypoint=["bash"],
             container_disk_gb=container_disk_gb,
             volume_gb=0,
@@ -647,11 +611,6 @@ def run_reconstruction_vast_operation(
                     # Missing output alone is normal during work. Confirm a
                     # terminal provider state twice before ending a dead run;
                     # a failed status request must never count as an exit.
-                    if operation == "website_mapanything" and fetch_attempts % 6 == 1:
-                        from .website_vast_diagnostics import worker_log_diagnostic
-                        snapshot = worker_log_diagnostic(instance_id)
-                        if snapshot.get("status") == "observed":
-                            write_json(root / "website_worker_log_diagnostic.json", snapshot)
                     try:
                         observed = provider.inspect(instance_id)
                     except Exception:  # noqa: BLE001 - an observation failure is not death.
@@ -679,16 +638,6 @@ def run_reconstruction_vast_operation(
                         f"reconstruction_vast_operation_output_fetch_failed:{type(exc).__name__}"
                     )
                     break
-                if operation == "website_mapanything":
-                    failure = _website_bootstrap_failure(attempt_path, request)
-                    if failure is not None:
-                        failure["output_digest"] = retrieved_transfer.sha256
-                        write_json(root / "website_mapanything_bootstrap_failure.json", failure)
-                        blockers.append("website_mapanything_bootstrap_" + (
-                            failure["phase"] + "_" + failure["code"] if failure["status"] == "failed"
-                            else "binding_invalid"))
-                        output_retrieved_before_teardown = True
-                        break
                 try:
                     if canonical_splatfacto:
                         validated_output_receipt, runtime_result = (
@@ -870,7 +819,7 @@ def run_reconstruction_vast_operation(
     runtime_digest = None
     runtime_status = None
     if runtime_result is not None:
-        runtime_digest = runtime_result.get("website_mapanything_result_digest") or runtime_result.get("pose_estimation_result_digest") or runtime_result.get(
+        runtime_digest = runtime_result.get("pose_estimation_result_digest") or runtime_result.get(
             "reconstruction_training_result_digest"
         )
         runtime_status = runtime_result.get("status")

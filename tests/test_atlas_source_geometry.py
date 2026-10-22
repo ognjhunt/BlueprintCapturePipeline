@@ -178,7 +178,7 @@ SCALE = {"meters_per_unit": 1.25, "basis": "reference_estimate", "evidence_diges
 
 
 @pytest.mark.parametrize("axes", ["rub", "rdf"])
-def test_masks_lift_onto_atlas_depth_exactly_as_onto_mapanything_depth(tmp_path, axes):
+def test_masks_lift_onto_atlas_depth_exactly(tmp_path, axes):
     build(tmp_path, axes=axes)
     result = geometry.atlas_source_geometry(geometry_root=tmp_path)
     assert result["unit"] == "provider_world_units" and result["scale_status"] == "unscaled_provider_world_units"

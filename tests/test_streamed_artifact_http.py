@@ -16,11 +16,10 @@ from blueprint_pipeline import artifact_http_transport as transport
 from blueprint_pipeline import native_g1_team_vm_system_packages as native
 from blueprint_pipeline import production_blender_runtime as blender
 from blueprint_pipeline import task_evaluation_artifixer_pretraining as artifixer
-from blueprint_pipeline import website_mapanything_bootstrap as website
 from tests.test_artifact_https_transports import registry
 
 
-@pytest.mark.parametrize("module", [transport, native, website])
+@pytest.mark.parametrize("module", [transport, native])
 @pytest.mark.parametrize("url", [
     "http://artifact.example/a", "file:///a", "https://user:secret@artifact.example/a",
     "https://artifact.example:444/a", "https://artifact.example/a#fragment",
@@ -50,7 +49,7 @@ def test_initial_capability_query_is_preserved_and_headers_refuse_before_fetch(m
 
 @pytest.mark.parametrize("module,handler", [
     (transport, "_AnonymousArtifactRedirect"), (native, "_AnonymousArtifactRedirect"),
-    (website, "_AnonymousArtifactRedirect"), (registry, "_AnonymousBlobRedirect"),
+    (registry, "_AnonymousBlobRedirect"),
 ])
 def test_real_redirect_dispatch_closes_without_draining_or_forwarding_credentials(module, handler):
     class UnboundedBody:
@@ -83,7 +82,7 @@ def test_real_redirect_dispatch_closes_without_draining_or_forwarding_credential
 
 
 @pytest.mark.parametrize("module,handler", [
-    (registry, "_RegistryNoRedirect"), (website, "_CapabilityNoRedirect"),
+    (registry, "_RegistryNoRedirect"),
 ])
 def test_refused_control_redirect_closes_body_without_following(module, handler):
     closed = []
@@ -100,7 +99,6 @@ def test_refused_control_redirect_closes_body_without_following(module, handler)
     (transport, "_AnonymousArtifactRedirect", "GET", 302, "http://cdn.example/blob"),
     (registry, "_RegistryNoRedirect", "GET", 302, "https://cdn.example/blob"),
     (registry, "_AnonymousBlobRedirect", "GET", 302, "https://cdn.example/blob"),
-    (website, "_CapabilityNoRedirect", "PUT", 307, "https://cdn.example/blob"),
     (transport, "_AnonymousArtifactRedirect", "GET", 401, None),
 ])
 def test_actual_urllib_dispatch_keeps_refused_or_followed_responses_closed(
@@ -175,7 +173,7 @@ def test_actual_http_response_full_transfer_eof_and_size_cap(framing):
     (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n", b"X-Trailer: slow\r\n\r\n"),
     (b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n", b"xxx"),
 ])
-@pytest.mark.parametrize("module", [transport, native, website, registry])
+@pytest.mark.parametrize("module", [transport, native, registry])
 def test_real_http_parser_clamps_slow_headers_body_and_chunk_framing(module, prefix, suffix, monkeypatch):
     clock = [0.0]
     class Peer:
@@ -227,7 +225,7 @@ def test_original_socket_timeout_and_earlier_absolute_deadline_are_preserved(mon
     assert wrapped._remaining() == 5
 
 
-@pytest.mark.parametrize("module", [transport,native,website,registry])
+@pytest.mark.parametrize("module", [transport,native,registry])
 def test_each_late_redirect_connection_clamps_tcp_tls_timeout_before_connect(module,monkeypatch):
     clock,calls = [95],[]
     monkeypatch.setattr(module.time,"monotonic",lambda:clock[0])
@@ -287,15 +285,13 @@ def test_capsule_transfer_refuses_before_extraction_or_scientific_consumption(mo
         artifixer.consume_pretraining_capsule(environment=environment,stage_input={})
 
 
-@pytest.mark.parametrize("caller", ["website","blender","capsule"])
+@pytest.mark.parametrize("caller", ["blender","capsule"])
 def test_earlier_caller_deadline_refuses_before_network_or_file_creation(tmp_path,monkeypatch,caller):
     monkeypatch.setattr(transport.time,"monotonic",lambda:100)
     monkeypatch.setattr(urllib.request,"build_opener",lambda *a:pytest.fail("expired deadline cannot fetch"))
     path = tmp_path/"forbidden-download"
     with pytest.raises((TimeoutError,blender.BlenderRuntimeError)):
-        if caller == "website":
-            website._download("https://objects.example/a",path,"sha256:"+"0"*64,4,_deadline=99)
-        elif caller == "blender":
+        if caller == "blender":
             blender._download_archive(blender.ARCHIVE_URL,path,_deadline=99)
         else:
             artifixer.consume_pretraining_capsule(environment={
@@ -309,7 +305,7 @@ def test_standalone_source_cohorts_embed_the_exact_transport_contract():
     source = Path(transport.__file__).read_text()
     definitions = {node.name: ast.dump(node, include_attributes=False)
         for node in ast.parse(source).body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
-    for module in (native, website):
+    for module in (native,):
         actual = {node.name: ast.dump(node, include_attributes=False)
             for node in ast.parse(Path(module.__file__).read_text()).body
             if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in definitions}

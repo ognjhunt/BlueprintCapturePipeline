@@ -248,9 +248,6 @@ class FakeAtlas:
 @pytest.fixture
 def atlas_case(tmp_path, monkeypatch, request):
     sizes = getattr(request, "param", [LANDSCAPE] * 3)
-    for name in ("BLUEPRINT_MAPANYTHING_MODEL_PATH", "BLUEPRINT_WEBSITE_GEOMETRY_RESULT",
-                 "BLUEPRINT_WEBSITE_GEOMETRY_BACKEND"):
-        monkeypatch.delenv(name, raising=False)
     source = tmp_path / "raw.mov"
     source.write_bytes(b"original video")
 

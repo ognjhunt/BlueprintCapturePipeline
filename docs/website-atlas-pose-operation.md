@@ -51,7 +51,7 @@ No Marble-shaped request can name Atlas:
 
 The reservation uses the provider identity `world_labs_atlas`, not Marble's
 `world_labs`. Atlas has its own terms, and the producer uploads unedited source
-frames: the same 518-pixel frames MapAnything's worker receives, with people
+frames: the 518-pixel model inputs of the source-frame preparation, with people
 not removed. A site's consent to the Marble terms covers people-removed views
 sent to Marble, not this. The WebApp's `preparation-spend` route does not accept
 `world_labs_atlas` yet. **So until a sponsorship records the site's consent to
@@ -124,7 +124,7 @@ The body:
 
 - `frames`: the pending frames, in order, each as `{"imageAsset": {"assetId": …}}`
   after a single-object upload (create, `:createUploadUrl`, upload, `:completeUpload`).
-  These are the same 518-pixel model inputs MapAnything receives. Held-out
+  These are the 518-pixel model inputs of the source-frame preparation. Held-out
   pixels are never included.
 - `targetResolution`: the documented 1280×720 grid, in whichever orientation
   keeps the most of every view. Atlas scales each view to cover the grid and
@@ -224,5 +224,6 @@ See the hand-over list in the PR. In short:
 - **Settlement:** a usage-based settlement.
 - **Entry point:** an operator entry point. It must go through the allocator
   entry, which the verifier enforces.
-- **The comparison:** the side-by-side comparison in
-  [atlas-vs-mapanything-registration-plan.md](atlas-vs-mapanything-registration-plan.md).
+- **The comparison:** none. The owner removed MapAnything on 2026-10-22, so
+  the planned Atlas-vs-MapAnything comparison will not run; website scenes use
+  Atlas only ([website-atlas-scene-source.md](website-atlas-scene-source.md)).

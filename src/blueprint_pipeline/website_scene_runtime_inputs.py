@@ -52,7 +52,7 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
     if retained.shape != (4, 4) or not np.allclose(retained, expected, rtol=0, atol=1e-10):
         raise ValueError("website_native_coordinate_frame_mismatch")
     # Include the frame in the cache key: the same provider mesh with a revised
-    # MapAnything estimate must never reuse a prior coordinate conversion.
+    # source-geometry estimate must never reuse a prior coordinate conversion.
     cache_key = canonical_digest({"mesh": bindings["collision_mesh_digest"], "frame": frame})[7:]
     collision_root = output_root.resolve() / "collision" / cache_key
     source = Path(base_scene["collision_mesh_path"])
