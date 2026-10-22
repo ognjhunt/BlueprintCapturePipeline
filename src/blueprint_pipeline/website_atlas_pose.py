@@ -537,11 +537,13 @@ def reconcile_atlas_submission(client: AtlasClient, *, task_name: str, request: 
                                owned_assets: Sequence[str], sent_at: Sequence[float], now: float) -> dict[str, Any]:
     """What the operation list says an uncertain submission bought.
 
-    ``bought`` names the operation whose recorded request carries every field we
-    sent (the oldest, with any duplicates listed). ``not_bought`` needs a
-    complete listing of the window, read after the settle delay, in which no
-    trace is unreadable or carries an asset we uploaded without our request,
-    by a key that still reads an asset of the request. ``lapsed`` means the
+    Either answer needs a complete listing of the window in which no trace is
+    unreadable or carries an asset we uploaded without our request: an
+    operation left unresolved could be another purchase of ours, and its
+    outputs would then escape cleanup. ``bought`` names the operation whose
+    recorded request carries every field we sent (the oldest, with any
+    duplicates listed). ``not_bought`` is also read after the settle delay, by
+    a key that still reads an asset of the request. ``lapsed`` means the
     retention has run out. Anything less raises AtlasReconciliationPending.
     """
     first, last = min(sent_at), max(sent_at)
@@ -566,13 +568,13 @@ def reconcile_atlas_submission(client: AtlasClient, *, task_name: str, request: 
             # It carries a frame only this attempt uploaded, yet not our request:
             # never conclude that it is someone else's.
             unresolved.append(operation_id)
-    record.update(window=window, listed=len(listed), listing_complete=complete, unresolved=unresolved)
+    if not complete or unresolved:
+        raise AtlasReconciliationPending("website_atlas_reconciliation_pending:listing_unresolved")
+    record.update(window=window, listed=len(listed))
     if matches:
         # Newest first, as listed: the oldest match is the original purchase.
         return {**record, "outcome": "bought", "operation_id": matches[-1],
                 "duplicate_operation_ids": matches[:-1]}
-    if not complete or unresolved:
-        raise AtlasReconciliationPending("website_atlas_reconciliation_pending:listing_unresolved")
     if now - last < RECONCILE_SETTLE_SECONDS:
         raise AtlasReconciliationPending("website_atlas_reconciliation_pending:settling")
     proof = _project_asset(client, _asset_ids(request))

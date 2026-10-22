@@ -672,6 +672,14 @@ def test_a_duplicate_purchase_adopts_the_original_and_records_the_rest(atlas_cas
     for _ in range(2):
         with pytest.raises(atlas.AtlasTransportError):
             atlas_case.run(fake)
+    # Another operation in the window whose trace is unreadable could be a third
+    # purchase whose outputs would escape cleanup: nothing is adopted until it reads.
+    fake.foreign["op_unreadable"] = None
+    with pytest.raises(atlas.AtlasReconciliationPending, match="listing_unresolved"):
+        atlas_case.run(fake, now=_later(PAST_WINDOW))
+    assert "operation_id" not in _state(atlas_case)
+    fake.foreign["op_unreadable"] = {"operationId": "op_unreadable", "taskName": "atlasGenerate", "taskVersion": "v1",
+                                     "request": {"prompt": "someone else's"}}
     assert atlas_case.run(fake, now=_later(PAST_WINDOW), max_polls=3)["status"] == "completed"
     found = _state(atlas_case)["reconciliations"][0]
     assert found["operation_id"] == "op_atlas_1" and found["duplicate_operation_ids"] == ["op_atlas_1_1"]
