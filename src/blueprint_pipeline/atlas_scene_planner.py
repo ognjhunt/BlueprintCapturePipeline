@@ -81,6 +81,11 @@ def proposal_review(proposal, *, survey, policy, pose_budget):
             or value["anchor_frame_id"] not in required or not {"task_object", "surrounding_scene"}
             <= {r["role"] for r in value["coverage_requirements"]}):
         raise ValueError("atlas_scene_planner_coverage_or_privacy_invalid")
+    # Hold the required RGBD coverage aside before selecting pose inputs.
+    # Buying posing alone must not consume the rest of the shared allowance.
+    pose_budget = round(pose_budget - len(required) * policy["rgbd_view_cost_usd"], 6)
+    if pose_budget < 2 * policy["pose_input_cost_usd"]:
+        raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
     return {"schema_version": "atlas_scene_state_review.v1", "survey_digest": survey["digest"],
             **{k: value[k] for k in ("scene_state", "static_intervals_seconds", "anchor_frame_id",
                 "coverage_requirements", "uncaptured_regions", "selection_policy")},

@@ -143,6 +143,10 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                                    "review": review, "planner_receipt": receipt})
     write_json(output_root / "atlas_scene_review.json", review)
     count = len(inputs["frames"])
+    target_count = len({key for group in review["coverage_requirements"] for key in group["required_frame_ids"]})
+    planned_cost = round(count * policy["pose_input_cost_usd"] + target_count * policy["rgbd_view_cost_usd"], 6)
+    if planned_cost > budget + 1e-9:
+        raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
     pose_quote = {"schema_version": "website_atlas_pose_price_review.v1", "endpoint": "/api/v2/tasks:images2PosedRGBD",
         "maximum_cost_usd": round(count * policy["pose_input_cost_usd"], 6), "max_input_images": count,
         "target_resolutions": [[720, 1280], [1280, 720]], "request_options": request_options(),

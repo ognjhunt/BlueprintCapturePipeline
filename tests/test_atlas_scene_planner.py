@@ -28,6 +28,7 @@ def fixture(tmp_path):
         "selection_policy": {"minimum_sharpness": 20, "maximum_clipped_fraction": .5, "minimum_overlap_inliers": 24},
         "summary": "room and object visible"}
     policy = {"model": "gpt-6.1-sol", "maximum_review_cost_usd": .5, "pose_input_cost_usd": .01,
+        "rgbd_view_cost_usd": .05,
         "rate_card_reference": "https://example.test/rates", "reviewed_by": "operator", "reviewed_on": "2026-10-21"}
     return path, survey, proposal, policy
 
@@ -35,7 +36,7 @@ def fixture(tmp_path):
 def test_review_cannot_include_unsafe_frames_or_omit_room(tmp_path):
     _, survey, proposal, policy = fixture(tmp_path)
     result = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
-    assert result["selection_budget"]["maximum_pose_cost_usd"] == 4
+    assert result["selection_budget"]["maximum_pose_cost_usd"] == 3.9
     proposal["static_intervals_seconds"] = [[0, 2.5]]
     with pytest.raises(ValueError, match="privacy_invalid"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
@@ -43,6 +44,16 @@ def test_review_cannot_include_unsafe_frames_or_omit_room(tmp_path):
     proposal["coverage_requirements"] = proposal["coverage_requirements"][:1]
     with pytest.raises(ValueError, match="privacy_invalid"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+
+
+def test_selection_budget_preserves_generated_coverage_before_buying_pose(tmp_path):
+    _, survey, proposal, policy = fixture(tmp_path)
+    # An anchor used for two roles is generated and charged once.
+    proposal["coverage_requirements"][1]["required_frame_ids"].append("1")
+    review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=.13)
+    assert review["selection_budget"]["maximum_pose_cost_usd"] == .03
+    with pytest.raises(ValueError, match="budget_insufficient_for_pose_and_generation"):
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=.11)
 
 
 def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_path, monkeypatch):

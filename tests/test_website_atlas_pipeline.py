@@ -33,7 +33,8 @@ def test_production_rollout_is_capture_specific_and_malformed_config_refuses(mon
         atlas_selected("admitted")
 
 
-def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch):
+@pytest.mark.parametrize("over_budget", [False, True])
+def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import atlas_video_extension as extension, paid_resource_allocator as allocator
     from blueprint_pipeline import atlas_result_bundle as bundles
@@ -47,7 +48,7 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
         "rgbd_view_cost_usd": .05, "rate_card_reference": "https://example.test/rates", "reviewed_by": "test",
         "reviewed_on": "2026-10-21"}
     config = {"authority": {"provider_retention": "project_library_retention_approved"},
-        "policy": policy, "remaining_cost_usd": 4.76}
+        "policy": policy, "remaining_cost_usd": 1.14 if over_budget else 4.76}
     monkeypatch.setattr(pipeline, "load_configuration", lambda *_: config)
     calls = {"review": 0, "pose": 0, "generation": 0}
     def survey(**kwargs):
@@ -78,7 +79,7 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     def prepare(**kwargs):
         if kwargs["review"]["survey_digest"] == "base":
             raise ValueError("atlas_selection_coverage_gap")
-        return {"frames": [{"frame_id": "0"}, {"frame_id": "1"}]}
+        return {"frames": [{"frame_id": str(i)} for i in range(5 if over_budget else 2)]}
     monkeypatch.setattr(inputs, "prepare_video_inputs", prepare)
     def pose(**kwargs):
         calls["pose"] += 1
@@ -96,6 +97,11 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     monkeypatch.setattr(allocator, "run_sponsored_website_atlas_task", generate)
     monkeypatch.setattr(bundles, "export_pose_bundle", lambda **_: {"zip_path": "retained.zip"})
     options = {"source_video": video, "output_root": root, "task_context": {"capture_id": "c", "context_digest": "task"}}
+    if over_budget:
+        with pytest.raises(ValueError, match="budget_insufficient_for_pose_and_generation"):
+            pipeline.run_atlas_pipeline(**options)
+        assert calls == {"review": 2, "pose": 0, "generation": 0}
+        return
     assert pipeline.run_atlas_pipeline(**options)["stage"] == "pose"
     result = pipeline.run_atlas_pipeline(**options)
     assert calls == {"review": 2, "pose": 2, "generation": 1}

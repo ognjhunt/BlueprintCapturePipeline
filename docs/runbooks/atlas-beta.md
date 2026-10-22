@@ -126,9 +126,11 @@ are documented in the corresponding task guides.
 
 `splats2Mesh` consumes an existing `.spz` and returns a GLB. Its adapter refuses
 an image masquerading as a mesh. There is no images-to-splat task in the live
-2026-10-21 public OpenAPI contract. Studio's experimental splat builder is a
-separate interface, not a callable public API contract. Do not silently fall
-back to it or to the incompatible legacy Marble world API.
+2026-10-21 public OpenAPI contract. World Labs staff also report that Atlas
+splat generation/export is not available yet; a visible Studio splat control
+does not establish availability. Do not silently fall back to that control or
+to the incompatible legacy Marble world API. Required generated RGBD views
+are budgeted before selecting or purchasing pose inputs.
 
 Export a completed pose run with `python -m blueprint_pipeline.atlas_result_bundle
 --pose-root RUN_ROOT --output-root BUNDLE_ROOT`. This verifies the authoritative
