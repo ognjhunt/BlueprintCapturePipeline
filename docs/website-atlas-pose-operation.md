@@ -191,9 +191,10 @@ Every recovery is code; nothing is resolved by editing state.
 
 | State or error | Meaning | What happens next |
 |---|---|---|
-| `submitting` (possibly bought) | A send had no definitive answer: a transport failure, 408, 409, 429, 5xx, a refused redirect, or an unusable 2xx. Also any refusal of a later resend, which cannot prove the earlier send bought nothing. | Within an hour of the first uncertain send, the next pass resends the identical bytes under the same `Idempotency-Key`, which is the documented recovery, up to three times. Past that window or limit, `website_atlas_pose_submission_requires_reconciliation`: the key's lifetime is undocumented, and reconciling from the operation list is still to be coded. Such an attempt can never be archived. |
+| `submitting` (possibly bought) | A send had no definitive answer: a transport failure, 408, 409, 429, 5xx, a refused redirect, or an unusable 2xx. Also any refusal of a later resend, which cannot prove the earlier send bought nothing. | Within an hour of the first uncertain send, the next pass resends the identical bytes under the same `Idempotency-Key`, which is the documented recovery, up to three times. Past that window or limit the key's lifetime is undocumented, so the next pass reconciles from the operation list instead (below). Until reconciliation decides, such an attempt can never be archived. |
 | `rejected`, retryable | A 402 (`CREDITS_UNAVAILABLE` or `SPEND_LIMIT_EXCEEDED`), when no earlier send was uncertain | The same bytes are resent after at least five minutes, up to three times (`website_atlas_pose_resend_not_due` before that). An uncertain answer to one of those resends starts its own one-hour window. |
 | `rejected`, not retryable | Any other 4xx, when no earlier send was uncertain | `website_atlas_pose_attempt_rejected` |
+| Reconciling | An uncertain send past the resend window or limit | `GET /operations` lists every operation the key's project accepted from 15 minutes before the first send to 15 minutes after the last; each one's `:trace` request is compared with ours. One whose task and every field we sent match is **adopted** and collected (the oldest, if a lapsed key let a resend buy a duplicate; the rest are recorded and cleaned up with the job). **Nothing bought** is concluded only from a complete listing, read at least 15 minutes after the last send, with no unreadable trace and none carrying a frame this attempt uploaded, by a key that can still read a frame of the request (the same project). The attempt then reopens for the identical resend under the same key, which can buy at most that one operation; after two reopenings it closes as `rejected` and can be archived. Anything less raises `AtlasReconciliationPending` and the next pass reads again. Past the 30-day retention (less a day) it fails (`reconciliation_window_lapsed`). |
 | Operation not found | A 404 or 410 while polling, within 30 days of the first uncertain send. Eventual consistency, another project's key or another host can all answer that for an operation still running and billed. | `website_atlas_pose_operation_not_found`; nothing changes |
 | `failed` | The operation finished with an `error`, or it is still missing after the documented 30-day retention (`website_atlas_pose_operation_gone`) | `website_atlas_pose_attempt_failed`. No result is written. |
 | `website_atlas_pose_api_base_changed` | `WORLDLABS_ATLAS_API_BASE_URL` no longer matches the root the operation was created on | Refused before polling |
@@ -221,8 +222,6 @@ See the hand-over list in the PR. In short:
   whether output assets report `sizeBytes`. Only a real response can settle
   these.
 - **Settlement:** a usage-based settlement.
-- **Reconciliation:** reconciling uncertain submissions from the operation
-  list.
 - **Entry point:** an operator entry point. It must go through the allocator
   entry, which the verifier enforces.
 - **The comparison:** the side-by-side comparison in

@@ -1,5 +1,6 @@
 """No provider calls: durable task execution and the public beta schema boundary."""
 import json
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -28,6 +29,9 @@ class Fake:
         self.admission = None
         self.uncertain = False
         self.pending = False
+        # "lost": the task is accepted but its answer never arrives. A status code refuses it.
+        self.outcome = None
+        self.bought = []
 
     def reserve(self, *, capture_id, operation, payload):
         assert operation == "preparation-spend"
@@ -50,9 +54,19 @@ class Fake:
         if path == "/tasks:atlasGenerate":
             self.posts += 1
             assert headers["Idempotency-Key"].startswith("bp-atlas-task-")
-            if self.uncertain:
+            if isinstance(self.outcome, int):
+                return self.outcome, b'{"detail": "refused for test"}'
+            if not self.uncertain:
+                self.bought.append(json.loads(data))
+            if self.uncertain or self.outcome == "lost":
                 raise pose.AtlasTransportError("test uncertain POST")
             value = {"id": "op_task_1", "done": False}
+        elif path.startswith("/operations?"):
+            value = {"operations": [{"id": "op_task_1", "metadata": None, "done": False}] if self.bought else [],
+                     "nextPageToken": None}
+        elif path == "/operations/op_task_1:trace":
+            value = {"operationId": "op_task_1", "taskName": "atlasGenerate", "taskVersion": "v1",
+                     "request": {**self.bought[0], "modelParameters": {"seed": 42}}, "response": None, "error": None}
         elif path == "/operations/op_task_1":
             self.polls += 1
             value = {"id": "op_task_1", "done": not self.pending,
@@ -112,14 +126,68 @@ def test_polling_resumes_without_new_reservation(case):
     assert fake.posts == fake.reservations == 1
 
 
+def _later(seconds):
+    return lambda: time.time() + seconds
+
+
 def test_uncertain_send_never_causes_a_fresh_purchase(case):
     fake, _, _, run = case
     fake.uncertain = True
     with pytest.raises(pose.AtlasTransportError):
         run()
-    with pytest.raises(ValueError, match="submission_requires_reconciliation"):
+    # Too soon for the operation list to show that nothing was bought.
+    with pytest.raises(pose.AtlasReconciliationPending, match="settling"):
         run()
     assert fake.posts == fake.reservations == 1
+    # Proven unbought, the same bytes go again under the same key, on the same reservation.
+    fake.uncertain = False
+    assert run(now=_later(pose.RECONCILE_SETTLE_SECONDS + 1))["status"] == "completed"
+    assert fake.posts == 2 and fake.reservations == 1
+
+
+def test_a_lost_answer_is_adopted_from_the_operation_list(case, tmp_path):
+    fake, _, _, run = case
+    fake.outcome = "lost"
+    with pytest.raises(pose.AtlasTransportError):
+        run()
+    # The trace carries schema defaults we never sent; every field we sent still matches.
+    assert run()["status"] == "completed"
+    assert fake.posts == fake.reservations == 1
+    state = json.loads((tmp_path / "atlas_pose" / "submission.json").read_text())
+    assert state["reconciliations"][0]["outcome"] == "bought"
+
+
+def test_a_definitive_refusal_closes_the_task_without_a_purchase(case):
+    fake, _, _, run = case
+    fake.outcome = 422
+    with pytest.raises(pose.AtlasHttpError, match="website_atlas_api_422"):
+        run()
+    with pytest.raises(ValueError, match="atlas_task_attempt_rejected"):
+        run()
+    assert fake.posts == fake.reservations == 1
+
+
+def test_a_repeatedly_unbought_task_closes_after_the_reopen_limit(case):
+    fake, _, _, run = case
+    fake.uncertain = True
+    for cycle in range(pose.RECONCILE_REOPEN_LIMIT + 1):
+        with pytest.raises(pose.AtlasTransportError):
+            run(now=_later(cycle * 2 * pose.RECONCILE_SETTLE_SECONDS))
+    with pytest.raises(ValueError, match="atlas_task_attempt_rejected"):
+        run(now=_later((pose.RECONCILE_REOPEN_LIMIT + 1) * 2 * pose.RECONCILE_SETTLE_SECONDS))
+    assert fake.posts == pose.RECONCILE_REOPEN_LIMIT + 1 and fake.reservations == 1
+
+
+def test_a_legacy_uncertain_record_reconciles_from_its_write_time(case, tmp_path):
+    fake, _, _, run = case
+    fake.outcome = "lost"
+    with pytest.raises(pose.AtlasTransportError):
+        run()
+    path = tmp_path / "atlas_pose" / "submission.json"
+    state = json.loads(path.read_text())
+    state.pop("sends")
+    path.write_text(json.dumps(state))
+    assert run()["status"] == "completed" and fake.posts == 1
 
 
 def test_price_and_payload_refuse_before_reservation(case):

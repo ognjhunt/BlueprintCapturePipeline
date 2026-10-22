@@ -32,7 +32,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest
@@ -96,6 +96,21 @@ ADMISSION_MARGIN_SECONDS = 120
 #: Operations are kept this long. Before then a 404 is not proof one is gone.
 OPERATION_RETENTION_SECONDS = 30 * 86400
 _UNCERTAIN_4XX = frozenset({408, 409, 429})
+#: Reconciling an uncertain send from the operation list and each operation's
+#: request trace (docs/operations, api-reference/get-operation-trace). Both stay
+#: readable for the 30-day retention. A send is accepted within one request
+#: timeout; the window margin also absorbs clock skew between us and Atlas.
+RECONCILE_WINDOW_MARGIN_SECONDS = 900
+#: "Nothing was bought" is concluded only this long after the last send, so an
+#: operation accepted just before an answer was lost has reached the list.
+RECONCILE_SETTLE_SECONDS = 900
+#: The last day of retention is too close to call: an operation may expire mid-read.
+RECONCILE_RETENTION_MARGIN_SECONDS = 86400
+RECONCILE_PAGE_SIZE = 200
+RECONCILE_MAX_PAGES = 50
+#: A send proven to have bought nothing reopens for the documented recovery (the
+#: identical bytes under the same key) at most this many times, then closes.
+RECONCILE_REOPEN_LIMIT = 2
 _EXR_MAGIC = b"\x76\x2f\x31\x01"
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 _REVIEW_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -115,6 +130,10 @@ class AtlasHttpError(RuntimeError):
         self.status = status
         # Storage error bodies can echo signed query strings.
         super().__init__(f"website_atlas_api_{status}:{redacted_failure_text(detail)[:500]}")
+
+
+class AtlasReconciliationPending(RuntimeError):
+    """The operation list cannot show yet whether an uncertain send bought anything; read it again later."""
 
 
 def request_options() -> dict[str, bool]:
@@ -414,17 +433,26 @@ def atlas_pose_submission_state(output_root: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text()) if path.is_file() else None
 
 
+def needs_atlas_pose_reconciliation(state: Mapping[str, Any] | None, now: float) -> bool:
+    """A send that may have bought an operation, past the documented resend recovery."""
+    if not state:
+        return False
+    status = state.get("status")
+    return (status in {"submitting", "rejected"} and bool(state.get("possibly_bought") or status == "submitting")
+            and (state.get("resends", 0) >= RESEND_LIMIT or not state.get("possibly_bought")
+                 or now - state.get("uncertain_since_epoch", 0) > UNCERTAIN_RESEND_WINDOW_SECONDS))
+
+
 def refuse_closed_or_uncertain_attempt(state: Mapping[str, Any] | None, now: float) -> None:
     """Closed attempts, and uncertain ones past the documented resend, never buy another operation."""
     if not state:
         return
     status, resends = state.get("status"), state.get("resends", 0)
+    if needs_atlas_pose_reconciliation(state, now):
+        # A send may have bought an operation and its Idempotency-Key may have
+        # lapsed: only reconcile_atlas_pose_submission can move it on.
+        raise ValueError("website_atlas_pose_submission_requires_reconciliation")
     if status in {"submitting", "rejected"} and (state.get("possibly_bought") or status == "submitting"):
-        if (resends >= RESEND_LIMIT or not state.get("possibly_bought")
-                or now - state.get("uncertain_since_epoch", 0) > UNCERTAIN_RESEND_WINDOW_SECONDS):
-            # A send may have bought an operation and its Idempotency-Key may
-            # have lapsed. Reconciling from the operation list is still to be coded.
-            raise ValueError("website_atlas_pose_submission_requires_reconciliation")
         return
     if status == "rejected":
         if not (state.get("provider_rejection") or {}).get("retryable") or resends >= RESEND_LIMIT:
@@ -439,6 +467,151 @@ def _refuse_state_conflict(state: Mapping[str, Any] | None, binding: Mapping[str
     if state is not None and (state.get("request_digest") != canonical_digest(binding)
                               or state.get("binding") != binding):
         raise ValueError("website_atlas_pose_already_bound_to_other_inputs")
+
+
+def request_matches_trace(sent: Any, recorded: Any) -> bool:
+    """Every field we sent, unchanged, inside the provider's recorded request.
+
+    The trace projects a request through the task's current public schema, so
+    it may carry defaults we never sent; numbers allow float wire rounding.
+    """
+    if isinstance(sent, Mapping):
+        return isinstance(recorded, Mapping) and all(
+            key in recorded and request_matches_trace(value, recorded[key]) for key, value in sent.items())
+    if isinstance(sent, list):
+        return (isinstance(recorded, list) and len(sent) == len(recorded)
+                and all(request_matches_trace(a, b) for a, b in zip(sent, recorded)))
+    if isinstance(sent, bool) or isinstance(recorded, bool):
+        return sent is recorded
+    if isinstance(sent, (int, float)) and isinstance(recorded, (int, float)):
+        return (math.isfinite(sent) and math.isfinite(recorded)
+                and math.isclose(sent, recorded, rel_tol=1e-6, abs_tol=1e-9))
+    return sent == recorded
+
+
+def _asset_ids(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if key == "assetId" and isinstance(item, str):
+                found.append(item)
+            else:
+                found.extend(_asset_ids(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_asset_ids(item))
+    return list(dict.fromkeys(found))
+
+
+def _listed_operations(client: AtlasClient, *, created_after: int, created_before: int) -> tuple[list[str], bool]:
+    """Every operation the key's project accepted in the window, and whether the listing ended."""
+    ids: list[str] = []
+    token = None
+    for _ in range(RECONCILE_MAX_PAGES):
+        query = {"createdAfter": created_after, "createdBefore": created_before, "pageSize": RECONCILE_PAGE_SIZE}
+        page = client.call("GET", "/operations?" + urlencode({**query, **({"pageToken": token} if token else {})}))
+        rows, token = page.get("operations"), page.get("nextPageToken")
+        if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+            raise ValueError("website_atlas_operation_list_invalid")
+        ids.extend(_safe_id(row.get("id")) for row in rows)
+        if not token:
+            return list(dict.fromkeys(ids)), True
+        if not isinstance(token, str):
+            raise ValueError("website_atlas_operation_list_invalid")
+    return list(dict.fromkeys(ids)), False
+
+
+def _project_asset(client: AtlasClient, asset_ids: Sequence[str]) -> str | None:
+    """An asset of the request still readable by this key: the list is the same project's."""
+    for asset_id in asset_ids:
+        status, payload = client.send("GET", f"/assets/{_safe_id(asset_id)}")
+        if status in {403, 404, 410}:
+            continue
+        asset = _json_object(status, payload)
+        if asset.get("id") == asset_id and asset.get("state") != "DELETED":
+            return asset_id
+    return None
+
+
+def reconcile_atlas_submission(client: AtlasClient, *, task_name: str, request: Mapping[str, Any],
+                               owned_assets: Sequence[str], sent_at: Sequence[float], now: float) -> dict[str, Any]:
+    """What the operation list says an uncertain submission bought.
+
+    ``bought`` names the operation whose recorded request carries every field we
+    sent (the oldest, with any duplicates listed). ``not_bought`` needs a
+    complete listing of the window, read after the settle delay, in which no
+    trace is unreadable or carries an asset we uploaded without our request,
+    by a key that still reads an asset of the request. ``lapsed`` means the
+    retention has run out. Anything less raises AtlasReconciliationPending.
+    """
+    first, last = min(sent_at), max(sent_at)
+    record: dict[str, Any] = {"at_epoch": now, "task": task_name}
+    if now - first > OPERATION_RETENTION_SECONDS - RECONCILE_RETENTION_MARGIN_SECONDS:
+        return {**record, "outcome": "lapsed"}
+    window = [int(first) - RECONCILE_WINDOW_MARGIN_SECONDS, int(last) + RECONCILE_WINDOW_MARGIN_SECONDS + 1]
+    listed, complete = _listed_operations(client, created_after=window[0], created_before=window[1])
+    owned, matches, unresolved = set(owned_assets), [], []
+    for operation_id in listed:
+        status, payload = client.send("GET", f"/operations/{operation_id}:trace")
+        if status in {404, 410}:
+            unresolved.append(operation_id)
+            continue
+        trace = _json_object(status, payload)
+        recorded = trace.get("request")
+        if trace.get("operationId") != operation_id or not isinstance(recorded, Mapping):
+            unresolved.append(operation_id)
+        elif trace.get("taskName") == task_name and request_matches_trace(request, recorded):
+            matches.append(operation_id)
+        elif owned & set(_asset_ids(recorded)):
+            # It carries a frame only this attempt uploaded, yet not our request:
+            # never conclude that it is someone else's.
+            unresolved.append(operation_id)
+    record.update(window=window, listed=len(listed), listing_complete=complete, unresolved=unresolved)
+    if matches:
+        # Newest first, as listed: the oldest match is the original purchase.
+        return {**record, "outcome": "bought", "operation_id": matches[-1],
+                "duplicate_operation_ids": matches[:-1]}
+    if not complete or unresolved:
+        raise AtlasReconciliationPending("website_atlas_reconciliation_pending:listing_unresolved")
+    if now - last < RECONCILE_SETTLE_SECONDS:
+        raise AtlasReconciliationPending("website_atlas_reconciliation_pending:settling")
+    proof = _project_asset(client, _asset_ids(request))
+    if proof is None:
+        raise AtlasReconciliationPending("website_atlas_reconciliation_pending:project_unproven")
+    return {**record, "outcome": "not_bought", "project_asset": proof}
+
+
+def reconcile_atlas_pose_submission(output_root: Path, *, client: AtlasClient, now: float) -> dict[str, Any]:
+    """Move an uncertain attempt on from the operation list; the caller holds the attempt lock.
+
+    A bought operation is adopted and collected like any other. A send proven
+    to have bought nothing reopens for the identical resend under the same key,
+    which can buy at most that one operation, and closes after
+    RECONCILE_REOPEN_LIMIT reopenings. Past retention the attempt fails, and a
+    closed attempt can be archived.
+    """
+    path = output_root / "atlas_pose" / "submission.json"
+    state = atlas_pose_submission_state(output_root)
+    if not needs_atlas_pose_reconciliation(state, now):
+        return state
+    if not state.get("sends") or not isinstance(state.get("request"), Mapping):
+        raise ValueError("website_atlas_pose_submission_requires_reconciliation")
+    found = reconcile_atlas_submission(client, task_name=_POSE_TASK_PATH.split(":", 1)[1],
+                                       request=state["request"], owned_assets=state.get("created_assets", []),
+                                       sent_at=[row["at_epoch"] for row in state["sends"]], now=now)
+    state.setdefault("reconciliations", []).append(found)
+    if found["outcome"] == "bought":
+        state.update(status="submitted", operation_id=found["operation_id"], api_base=client.base_url)
+    elif found["outcome"] == "lapsed":
+        state.update(status="failed", terminal_error={"reason": "reconciliation_window_lapsed"})
+    else:
+        reopen = state.get("reconciliation_reopens", 0) < RECONCILE_REOPEN_LIMIT
+        state.update(status="rejected", possibly_bought=False, resends=0 if reopen else state.get("resends", 0),
+                     provider_rejection={"status": None, "retryable": reopen, "reconciled_unbought": True},
+                     reconciliation_reopens=state.get("reconciliation_reopens", 0) + reopen)
+        state.pop("uncertain_since_epoch", None)
+    _write_state(path, state)
+    return state
 
 
 def _attempt_number(output_root: Path) -> int:
@@ -828,6 +1001,8 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
     client = AtlasClient(base_url=base_url, api_key=api_key, transport=transport)
     with _locked(output_root):
         state = atlas_pose_submission_state(output_root)
+        if needs_atlas_pose_reconciliation(state, now()):
+            state = reconcile_atlas_pose_submission(output_root, client=client, now=now())
         refuse_closed_or_uncertain_attempt(state, now())
         if not (state and state.get("operation_id")):
             pose_inputs = load_pending_atlas_pose_inputs(output_root)

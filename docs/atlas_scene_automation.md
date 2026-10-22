@@ -35,7 +35,8 @@ The production Atlas controller runs the following for a new scene plan:
    or mesh reconstruction. The existing image editor is a bounded fallback for a
    failed visual review; its reviewed RGB must acquire new posed depth before
    reconstruction, rather than using original appliance depth under generated
-   pixels. An uncertain submission remains held for reconciliation.
+   pixels. An uncertain submission is held until the operation list shows
+   whether it bought anything.
 6. Passed generated RGBD uses the shared depth-splat writer and existing
    `splats2Mesh` / registration / download paths. Generated backgrounds get a
    separate ZIP and explicit result/review lineage. Original reconstruction and

@@ -269,6 +269,9 @@ def _pending_operations(job_dir: Path) -> list[str]:
         state = {} if path.is_symlink() else json.loads(path.read_text())
         if state.get("status") == "submitted" and isinstance(state.get("operation_id"), str):
             found.append(state["operation_id"])
+        # A duplicate purchase that reconciliation found is never collected either.
+        found.extend(operation_id for row in state.get("reconciliations") or []
+                     for operation_id in row.get("duplicate_operation_ids") or [] if isinstance(operation_id, str))
     return found
 
 
