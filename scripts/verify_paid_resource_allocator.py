@@ -150,9 +150,11 @@ APPROVED_ATLAS_POSE_CALLERS = {
     ("src/blueprint_pipeline/paid_resource_allocator.py", "run_sponsored_website_atlas_pose"),
     ("src/blueprint_pipeline/website_atlas_pose.py", "run_admitted_atlas_pose"),
 }
-ATLAS_TASK_CAPABILITIES = frozenset({"run_admitted_atlas_task"})
+ATLAS_TASK_CAPABILITIES = frozenset({"run_admitted_atlas_task", "_run_admitted_atlas_task_attempt"})
 APPROVED_ATLAS_TASK_CALLERS = {
     ("src/blueprint_pipeline/paid_resource_allocator.py", "run_sponsored_website_atlas_task"),
+    ("src/blueprint_pipeline/website_atlas_tasks.py", "run_admitted_atlas_task"),
+    ("src/blueprint_pipeline/website_atlas_tasks.py", "_retry_task"),
 }
 ATLAS_PLAN_CAPABILITIES = frozenset({"review_survey"})
 APPROVED_ATLAS_PLAN_CALLERS = {

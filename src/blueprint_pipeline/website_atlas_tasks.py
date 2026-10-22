@@ -368,8 +368,9 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
         if operation.get("id") != state["operation_id"] or operation.get("done") is not True:
             raise ValueError("atlas_task_terminal_operation_invalid")
         if operation.get("error") is not None:
-            state.update(status="failed", terminal_operation=operation)
-            pose._write_state(state_path, state)
+            if state.get("status") != "failed":
+                state.update(status="failed", terminal_operation=operation, terminal_observed_at_epoch=now())
+                pose._write_state(state_path, state)
             raise ValueError("atlas_task_operation_failed")
         _validate_response(task, state["request"], operation.get("response"))
         outputs = _collect(client, operation, root)
@@ -414,7 +415,7 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
                    now=now, sleep=sleep, max_polls=max_polls,
                    poll_interval_seconds=poll_interval_seconds)
 
-    def run(root, lineage=None):
+    def _retry_task(root, lineage=None):
         try:
             return _run_admitted_atlas_task_attempt(output_root=root, retry_lineage=lineage, **options)
         except ValueError as exc:
@@ -427,6 +428,7 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
                 if not _transient_upstream_failure(failed) or attempt >= 2:
                     raise
                 failure_digest = canonical_digest(failed["terminal_operation"])
+                failure_observed_at = failed.get("terminal_observed_at_epoch", state_path.stat().st_mtime)
                 following = {"attempt": attempt + 1,
                              "parent_request_digest": failed["request_digest"],
                              "parent_operation_id": failed["operation_id"],
@@ -436,7 +438,7 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
                 raise ValueError("atlas_task_retry_root_symlink")
             if not (retry_root / "atlas_pose/submission.json").exists():
                 sleep(30)
-            result = run(retry_root, following)
+            result = _retry_task(retry_root, following)
             if result.get("status") != "completed":
                 return result
             # Keep the normal portable result at the caller's root. Failed
@@ -446,6 +448,7 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
                 "retry_history": [{"operation_id": failed["operation_id"],
                                    "request_digest": failed["request_digest"],
                                    "terminal_operation": failed["terminal_operation"],
+                                   "observed_at_epoch": failure_observed_at,
                                    "reserved_usd": failed["binding"]["maximum_cost_usd"]}]
                                   + result.get("retry_history", []),
                 "billing": {**result["billing"], "total_reserved_usd": round(
@@ -465,4 +468,4 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
                 pose._write_state(state_path, current)
             return result
 
-    return run(output_root.resolve())
+    return _retry_task(output_root.resolve())
