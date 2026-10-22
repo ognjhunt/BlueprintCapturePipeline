@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import time
 
-from .common import write_json
+from .common import StageError, write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -182,6 +182,20 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result
+
+
+def retain_site_preparation_hold(*, pipeline_dir, atlas_result, scene_id, capture_id):
+    """RGBD completion preserves the existing final-scene handoff boundary."""
+    write_json(pipeline_dir / "atlas_preparation_result.json", atlas_result)
+    if atlas_result["status"] == "processing":
+        raise StageError("atlas_preparation", "website_atlas_operation_processing")
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+        "scene_id": scene_id, "capture_id": capture_id,
+        "blockers": atlas_result["blockers"], "atlas_preparation": atlas_result,
+        "claim_ceiling": "development_only", "simulator_ready": False}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(pipeline_dir / "website_scene_preparation/handoff.json", handoff)
+    raise StageError("website_scene_preparation", ",".join(atlas_result["blockers"]))
 
 
 def main():

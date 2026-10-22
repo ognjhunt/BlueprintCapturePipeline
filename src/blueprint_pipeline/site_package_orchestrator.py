@@ -47,7 +47,6 @@ from .common import (
     write_text,
 )
 from .consent_normalization import resolve_consent_signals
-from .decision_evidence_contracts import canonical_digest
 from .geometry_stage import build_geometry_stage_contract
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
@@ -4421,27 +4420,15 @@ def run_qualification_pipeline(
                 descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir, bucket=bucket,
                 load_task_context=load_current_website_task_context, load_sponsorship=load_website_scene_sponsorship)
             if descriptor.metadata.get("website_atlas_preparation_requested") is True:
-                from .website_atlas_pipeline import run_atlas_pipeline
+                from .website_atlas_pipeline import run_atlas_pipeline, retain_site_preparation_hold
                 source = _resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root)
                 if source is None or not source.is_file() or not source.resolve().is_relative_to(capture_root.resolve()):
                     raise StageError("atlas_preparation", "website_atlas_source_video_missing_or_outside_capture")
                 stage = "atlas_preparation"
                 atlas_result = run_atlas_pipeline(source_video=source, output_root=pipeline_dir / "atlas",
                     task_context=descriptor.metadata["site_task_context"], max_polls=120)
-                write_json(pipeline_dir / "atlas_preparation_result.json", atlas_result)
-                if atlas_result["status"] == "processing":
-                    raise StageError("atlas_preparation", "website_atlas_operation_processing")
-                # A completed RGBD operation is still held at the existing
-                # scene handoff until final assets and registration exist.
-                # The normal website status reader requires a native outbox
-                # before it may classify a completed capture as handed off.
-                handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
-                    "scene_id": descriptor.scene_id, "capture_id": descriptor.capture_id,
-                    "blockers": atlas_result["blockers"], "atlas_preparation": atlas_result,
-                    "claim_ceiling": "development_only", "simulator_ready": False}
-                handoff["digest"] = canonical_digest(handoff, digest_field="digest")
-                write_json(pipeline_dir / "website_scene_preparation/handoff.json", handoff)
-                raise StageError("website_scene_preparation", ",".join(atlas_result["blockers"]))
+                retain_site_preparation_hold(pipeline_dir=pipeline_dir, atlas_result=atlas_result,
+                    scene_id=descriptor.scene_id, capture_id=descriptor.capture_id)
         downstream_requested_lanes = _requested_downstream_lanes(
             descriptor=descriptor,
             requested_lanes=requested_lanes,
