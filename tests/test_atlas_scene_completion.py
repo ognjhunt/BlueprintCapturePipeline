@@ -65,9 +65,9 @@ def test_completion_reuploads_exact_reviewed_context_and_uses_planner_selection(
     frames = [frame(), frame("b", .2)]
     usage, returned = [], []
     for index, f in enumerate(frames):
-        image, depth = tmp_path / f"{index}.png", tmp_path / f"{index}.exr"
-        Image.fromarray(f["rgb"]).save(image)
-        depth.write_bytes(b"exr")
+        image, depth = tmp_path / f"{index}-image.bin", tmp_path / f"{index}-depth.bin"
+        Image.fromarray(f["rgb"]).save(image, format="PNG")
+        depth.write_bytes(b"\x76\x2f\x31\x01retained-exr")
         usage.append({"frame_id": f["frame_id"], "outputs": [
             {"role": role, "path": p.name, "sha256": _sha256_file(p)} for role, p in (("image", image), ("depth", depth))]})
         returned.append({"imageAsset": {"assetId": "expired-image"}, "depth": {"depthAsset": {"assetId": "expired-depth"}},
@@ -78,8 +78,8 @@ def test_completion_reuploads_exact_reviewed_context_and_uses_planner_selection(
     proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"],
                 "gap_assessment": ["Complete floor and empty bay"], "remaining_unknowns": ["Generated rear wall"]}
     monkeypatch.setattr(completion, "load_generated_views", lambda *a: ({"digest": "generated-depth"}, frames,
-        [{"frame_id": "novel-a", "image_path": str(tmp_path / "0.png"), "image_digest": _sha256_file(tmp_path / "0.png"), "novel_view": True},
-         {"frame_id": "novel-b", "image_path": str(tmp_path / "1.png"), "image_digest": _sha256_file(tmp_path / "1.png"), "novel_view": True}]))
+        [{"frame_id": "novel-a", "image_path": str(tmp_path / "0-image.bin"), "image_digest": _sha256_file(tmp_path / "0-image.bin"), "novel_view": True},
+         {"frame_id": "novel-b", "image_path": str(tmp_path / "1-image.bin"), "image_digest": _sha256_file(tmp_path / "1-image.bin"), "novel_view": True}]))
     reviews = []
     monkeypatch.setattr(website_image_completion, "verify_completed_background",
                         lambda **kw: reviews.append(kw) or {"status": "passed"})
@@ -99,7 +99,10 @@ def test_completion_reuploads_exact_reviewed_context_and_uses_planner_selection(
     assert len(calls[0]["request"]["targetCameras"]) == 2
     assert calls[0]["request"]["contextFrames"][0]["imageAsset"]["assetId"] == "upload:context-0-image"
     assert calls[0]["uploads"]["context-0-image"]["sha256"] == usage[0]["outputs"][0]["sha256"]
-    assert reviews[0]["frames"][1]["original_image_path"] == str(tmp_path / "1.png")
+    from pathlib import Path
+    assert Path(calls[0]["uploads"]["context-0-image"]["path"]).suffix == ".png"
+    assert Path(calls[0]["uploads"]["context-0-depth"]["path"]).suffix == ".exr"
+    assert reviews[0]["frames"][1]["original_image_path"] == str(tmp_path / "1-image.bin")
     proposal["selected_camera_ids"] = ["invented-camera"]
     with pytest.raises(ValueError, match="camera_selection_invalid"):
         completion.complete_scene(**args)

@@ -9,6 +9,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 
 import numpy as np
 
@@ -91,6 +92,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     from .website_image_completion import verify_completed_background
 
     root.mkdir(parents=True, exist_ok=True)
+    upload_root = root / "context-uploads"
+    upload_root.mkdir(exist_ok=True)
     policy = configuration["policy"]
     candidates = camera_candidates(frames)
     originals = {}
@@ -104,7 +107,19 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                 if (path.is_symlink() or not path.resolve().is_relative_to(pose_root.resolve())
                         or _sha256_file(path) != asset["sha256"]):
                     raise ValueError("atlas_completion_context_changed")
-                uploads[f"context-{index}-{asset['role']}"] = {"path": str(path), "sha256": asset["sha256"]}
+                # Pose downloads can have opaque .bin names. Preserve those
+                # files, but give the uploader an exact-byte, format-identified
+                # copy rather than inferring MIME from the opaque suffix.
+                from .atlas_result_bundle import _suffix
+                with path.open("rb") as stream:
+                    suffix = _suffix(stream.read(16))
+                if asset["role"] == "depth" and suffix != ".exr":
+                    raise ValueError("atlas_completion_context_depth_format_invalid")
+                target = upload_root / f"{index}-{asset['role']}{suffix}"
+                shutil.copyfile(path, target)
+                if _sha256_file(target) != asset["sha256"]:
+                    raise ValueError("atlas_completion_context_changed")
+                uploads[f"context-{index}-{asset['role']}"] = {"path": str(target), "sha256": asset["sha256"]}
         asset = next(value for value in row["outputs"] if value["role"] == "image")
         path = pose_root / asset["path"]
         if _sha256_file(path) != asset["sha256"]:
