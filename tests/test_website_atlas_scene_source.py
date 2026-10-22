@@ -198,6 +198,46 @@ def test_a_background_fused_on_the_source_pose_shares_its_world(tmp_path):
     assert np.allclose(anchor["source_world_to_provider_m"], np.eye(4), atol=1e-9)
 
 
+@pytest.mark.parametrize("tamper_bundle", [False, True])
+def test_scene_source_uses_the_final_completed_bundle_with_a_stale_baseline_present(tmp_path, tamper_bundle):
+    import shutil
+    job_dir = job_fixture(tmp_path)
+    final = job_dir / "automation/downloads/completed-scene"
+    shutil.copytree(job_dir / "automation/background_splat", final / "splat")
+    shutil.copytree(job_dir / "automation/background_mesh/registered", final / "mesh/registered")
+    ply, glb = final / "splat/atlas_depth_splat.ply", final / "mesh/registered/atlas_mesh_supported.glb"
+    ply.write_bytes(b"ply with completed generated geometry")
+    glb.write_bytes(b"glb with completed generated geometry")
+    splat_path = final / "splat/atlas_depth_splat_manifest.json"
+    splat = json.loads(splat_path.read_text())
+    splat["outputs"][0]["sha256"] = _sha256_file(ply)
+    write(splat_path, digest(splat))
+    reg_path = final / "mesh/registered/atlas_mesh_registration.json"
+    registration = json.loads(reg_path.read_text())
+    registration["splat_manifest_digest"] = splat["digest"]
+    registration["outputs"][0]["sha256"] = _sha256_file(glb)
+    write(reg_path, digest(registration))
+    bundle = digest({"schema_version": "atlas_download_bundle.v1", "splat_available": True,
+        "mesh_available": True, "splat_manifest_digest": splat["digest"],
+        "mesh_registration_digest": registration["digest"]})
+    write(final / "manifest.json", bundle)
+    result = json.loads((job_dir / "result.json").read_text())
+    result["automation"]["background"].update(splat_manifest_digest=splat["digest"],
+        download={"directory": str(final), "manifest_digest": bundle["digest"]})
+    write(job_dir / "result.json", digest(result))
+    write(job_dir / "preview_job.json", {"state": "ready", "result_digest": result["digest"]})
+    if tamper_bundle:
+        bundle["mesh_available"] = False
+        write(final / "manifest.json", bundle)
+        with pytest.raises(ValueError, match="website_atlas_scene_download_changed"):
+            source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    else:
+        value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+        assert value["status"] == "ready"
+        assert Path(value["base_scene"]["splat_path"]) == ply
+        assert Path(value["base_scene"]["collision_mesh_path"]) == glb
+
+
 def test_the_source_views_become_scaled_geometry_on_the_atlas_grid(tmp_path):
     geometry = ready(tmp_path)["source_geometry"]
     assert geometry["unit"] == "estimated_meters" and geometry["scale_status"] == "reference_scaled"
