@@ -31,7 +31,7 @@ def test_renderer_install_retry_is_bounded_and_never_hides_exhaustion(tmp_path, 
                        'shift 2\nexec "$@"\n')
     wrapper.chmod(0o755)
     npm = tmp_path / "npm"
-    npm.write_text('#!/bin/sh\n[ "$*" = "ci --foreground-scripts" ] || exit 99\n'
+    npm.write_text('#!/bin/sh\n[ "$*" = "ci --foreground-scripts --no-audit --no-fund --loglevel=verbose" ] || exit 99\n'
                    'n=0\n[ ! -f "$ATTEMPTS" ] || n=$(cat "$ATTEMPTS")\n'
                    'n=$((n+1))\necho "$n" > "$ATTEMPTS"\n[ "$n" -gt "$FAILURES" ]\n')
     npm.chmod(0o755)
@@ -41,6 +41,11 @@ def test_renderer_install_retry_is_bounded_and_never_hides_exhaustion(tmp_path, 
     assert (process.returncode == 0) is success
     assert int(state.read_text()) == expected_calls
     assert step["timeout-minutes"] == 4
+    node = next(row for row in _jobs("full-test-lane.yml")["full-pytest-shard"]["steps"]
+                if row.get("name") == "Setup Node.js")
+    minimum = json.loads((ROOT / "tools/splat_render/package-lock.json").read_text())["packages"][
+        "node_modules/@playcanvas/splat-transform"]["engines"]["node"]
+    assert int(node["with"]["node-version"]) >= int(re.search(r"\d+", minimum).group())
 
 
 @pytest.mark.parametrize(
