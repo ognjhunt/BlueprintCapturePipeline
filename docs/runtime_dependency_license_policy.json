@@ -848,29 +848,29 @@
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License"
     },
-    "opentelemetry-api==1.43.0": {
+    "opentelemetry-api==1.45.1": {
       "license_expression": "Apache-2.0",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-08-01",
-      "expires_on": "2027-08-01",
-      "source": "installed distribution metadata License-Expression and license file"
+      "reviewed_on": "2026-10-22",
+      "expires_on": "2027-10-22",
+      "source": "Exact locked release metadata: https://pypi.org/project/opentelemetry-api/1.45.1/ declares Apache-2.0; verified 2026-10-22, unchanged from prior reviewed release"
     },
-    "opentelemetry-sdk==1.43.0": {
+    "opentelemetry-sdk==1.45.1": {
       "license_expression": "Apache-2.0",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-08-01",
-      "expires_on": "2027-08-01",
-      "source": "installed distribution metadata License-Expression and license file"
+      "reviewed_on": "2026-10-22",
+      "expires_on": "2027-10-22",
+      "source": "Exact locked release metadata: https://pypi.org/project/opentelemetry-sdk/1.45.1/ declares Apache-2.0; verified 2026-10-22, unchanged from prior reviewed release"
     },
-    "opentelemetry-semantic-conventions==0.64b0": {
+    "opentelemetry-semantic-conventions==0.66b1": {
       "license_expression": "Apache-2.0",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-08-01",
-      "expires_on": "2027-08-01",
-      "source": "installed distribution metadata License-Expression and license file"
+      "reviewed_on": "2026-10-22",
+      "expires_on": "2027-10-22",
+      "source": "Exact locked release metadata: https://pypi.org/project/opentelemetry-semantic-conventions/0.66b1/ declares Apache-2.0; verified 2026-10-22, unchanged from prior reviewed release"
     },
     "packaging==26.2": {
       "license_expression": "Apache-2.0 OR BSD-2-Clause",
