@@ -4426,7 +4426,7 @@ def run_qualification_pipeline(
                     raise StageError("atlas_preparation", "website_atlas_source_video_missing_or_outside_capture")
                 stage = "atlas_preparation"
                 atlas_result = run_atlas_pipeline(source_video=source, output_root=pipeline_dir / "atlas",
-                    task_context=descriptor.metadata["site_task_context"])
+                    task_context=descriptor.metadata["site_task_context"], max_polls=120)
                 write_json(pipeline_dir / "atlas_preparation_result.json", atlas_result)
                 if atlas_result["status"] == "processing":
                     raise StageError("atlas_preparation", "website_atlas_operation_processing")
