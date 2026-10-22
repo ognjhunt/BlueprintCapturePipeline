@@ -85,9 +85,13 @@ COMPLETION_INSTRUCTIONS = """Plan Atlas novel-view completion of ONE reviewed
 object-absent environment. The supplied RGB views are already edited candidates,
 not raw capture truth. The camera candidate table is computed from their actual
 poses and depth. Select exact candidate_camera_ids as selected_camera_ids.
-Choose all useful distinct views for continuous room, floor, access space and
-the empty task-object bay. Survey the whole known room before close-ups. Include
-the context-position wide views and useful translated lower/side views to expose
+Choose all useful distinct views for continuous room, floor, ceiling, access space
+and the empty task-object bay. Every candidate with purpose
+required_full_room_coverage is required: include all those camera IDs to complete
+the environment around the source path, including unseen directions. These
+surfaces are generated assumptions, never recovered observations. Survey the
+whole room before close-ups. Also include useful context-position wide views at
+different source positions and translated lower/side views to expose
 holes and newly revealed surfaces. Avoid redundant cameras; do not choose a fixed
 count or spend the budget merely because it exists. Derived reconstruction
 previews, if supplied, are reconnaissance only. Name gaps that generation should

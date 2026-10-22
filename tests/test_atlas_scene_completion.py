@@ -26,7 +26,8 @@ def test_completion_camera_pool_preserves_vertical_rays_and_uses_scene_relative_
     for row in candidates:
         k = row["camera"]["intrinsics"]
         assert (k["width"], k["height"]) == (1280, 720)
-        assert k["fy"] / k["height"] == pytest.approx(first["intrinsics"]["fy"] / 8)
+        if row["purpose"] != "required_full_room_coverage":
+            assert k["fy"] / k["height"] == pytest.approx(first["intrinsics"]["fy"] / 8)
     scaled = deepcopy(first)
     scaled["depth"] *= 10
     scaled["position"] *= 10
@@ -37,6 +38,23 @@ def test_completion_camera_pool_preserves_vertical_rays_and_uses_scene_relative_
     first["depth"][:] = np.nan
     with pytest.raises(ValueError, match="no_context_depth"):
         completion.camera_candidates([first])
+
+
+def test_full_room_camera_frusta_cover_every_direction():
+    from scipy.spatial.transform import Rotation
+    cameras = [row["camera"] for row in completion.camera_candidates([frame()])
+               if row["purpose"] == "required_full_room_coverage"]
+    directions = np.array([[np.cos(p) * np.sin(y), np.sin(p), np.cos(p) * np.cos(y)]
+                           for y in np.linspace(-np.pi, np.pi, 73)
+                           for p in np.linspace(-np.pi / 2, np.pi / 2, 37)])
+    covered = np.zeros(len(directions), bool)
+    for camera in cameras:
+        local = directions @ Rotation.from_quat(camera["extrinsics"]["quaternion"]).as_matrix()
+        k = camera["intrinsics"]
+        covered |= ((local[:, 2] < 0) &
+                    (np.abs(local[:, 0]) <= -local[:, 2] * k["width"] / (2 * k["fx"]) + 1e-9) &
+                    (np.abs(local[:, 1]) <= -local[:, 2] * k["height"] / (2 * k["fy"]) + 1e-9))
+    assert np.all(covered), "A room direction would never be generated"
 
 
 def test_generated_loader_binds_every_pixel_and_keeps_generated_camera(tmp_path, monkeypatch):
@@ -75,11 +93,16 @@ def test_completion_reuploads_exact_reviewed_context_and_uses_planner_selection(
     pose = {"digest": "pose", "binding": {"source_video_digest": "source"},
             "operation": {"id": "pose", "done": True, "response": {"frames": returned}},
             "operation_receipt": {"input_usage": {"frames": usage}}}
-    proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"],
+    required = [row["camera_id"] for row in completion.camera_candidates(frames)
+                if row["purpose"] == "required_full_room_coverage"]
+    proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"] + required,
                 "gap_assessment": ["Complete floor and empty bay"], "remaining_unknowns": ["Generated rear wall"]}
-    monkeypatch.setattr(completion, "load_generated_views", lambda *a: ({"digest": "generated-depth"}, frames,
-        [{"frame_id": "novel-a", "image_path": str(tmp_path / "0-image.bin"), "image_digest": _sha256_file(tmp_path / "0-image.bin"), "novel_view": True},
-         {"frame_id": "novel-b", "image_path": str(tmp_path / "1-image.bin"), "image_digest": _sha256_file(tmp_path / "1-image.bin"), "novel_view": True}]))
+    def generated_views(root, ids):
+        generated = [frame(key) for key in ids]
+        images = [{"frame_id": key, "image_path": str(tmp_path / "0-image.bin"),
+                   "image_digest": _sha256_file(tmp_path / "0-image.bin"), "novel_view": True} for key in ids]
+        return {"digest": "generated-depth"}, generated, images
+    monkeypatch.setattr(completion, "load_generated_views", generated_views)
     reviews = []
     monkeypatch.setattr(website_image_completion, "verify_completed_background",
                         lambda **kw: reviews.append(kw) or {"status": "passed"})
@@ -93,16 +116,20 @@ def test_completion_reuploads_exact_reviewed_context_and_uses_planner_selection(
         planner_runner=lambda **_: {"proposal": proposal},
         release_blockers=lambda: ("commit", []), max_polls=1)
     output, report = completion.complete_scene(**args)
-    assert output is frames and report["generated_geometry_ready"] is True
+    assert len(output) == len(proposal["selected_camera_ids"]) and report["generated_geometry_ready"] is True
     assert len(calls) == 1 and calls[0]["request"]["returnDepth"] is True
-    assert calls[0]["price_review"]["maximum_cost_usd"] == .10
-    assert len(calls[0]["request"]["targetCameras"]) == 2
+    assert calls[0]["price_review"]["maximum_cost_usd"] == len(output) * .05
+    assert len(calls[0]["request"]["targetCameras"]) == len(output)
     assert calls[0]["request"]["contextFrames"][0]["imageAsset"]["assetId"] == "upload:context-0-image"
     assert calls[0]["uploads"]["context-0-image"]["sha256"] == usage[0]["outputs"][0]["sha256"]
     from pathlib import Path
     assert Path(calls[0]["uploads"]["context-0-image"]["path"]).suffix == ".png"
     assert Path(calls[0]["uploads"]["context-0-depth"]["path"]).suffix == ".exr"
     assert reviews[0]["frames"][1]["original_image_path"] == str(tmp_path / "1-image.bin")
+    proposal["selected_camera_ids"] = ["a-wide", "b-lower"]
+    with pytest.raises(ValueError, match="full_room_camera_coverage_missing"):
+        completion.complete_scene(**args)
+    assert len(calls) == 1
     proposal["selected_camera_ids"] = ["invented-camera"]
     with pytest.raises(ValueError, match="camera_selection_invalid"):
         completion.complete_scene(**args)
@@ -126,7 +153,7 @@ def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_pa
     def build(**kw):
         assert [f["frame_id"] for f in kw["frames"]] == ["a", "novel"]
         assert kw["generated_result_digests"][-1] == "generated"
-        assert kw["output_root"].name == "background_completed_splat-v1"
+        assert kw["output_root"].name == "background_completed_splat-" + completion.COMPLETION_REVISION
         return {"digest": "splat", "generated_result_digests": kw["generated_result_digests"],
                 "frames": [{"frame_id": f["frame_id"]} for f in (kw["frames"][:1] if drop_generated else kw["frames"])]}
     monkeypatch.setattr(atlas_depth_splat, "write_depth_splat", build)

@@ -258,11 +258,11 @@ def run_automation(
             generated_roots = [Path(p) for p in background.get("stage_roots", [])]
             completion = None
             if background["status"] == "fallback_prepared" and "rgbd_view_cost_usd" in policy:
-                from .atlas_scene_completion import complete_scene
+                from .atlas_scene_completion import complete_scene, COMPLETION_REVISION
 
                 generated, completion = complete_scene(
                     pose_root=effective_root, pose=effective_pose, frames=derived_frames,
-                    review=review, root=output_root / "scene_completion-v1", context=task_context,
+                    review=review, root=output_root / f"scene_completion-{COMPLETION_REVISION}", context=task_context,
                     configuration=configuration, task_runner=task_runner, release_blockers=release_blockers,
                     planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint)
                 if completion["status"] == "processing":
@@ -278,7 +278,7 @@ def run_automation(
                 background["generated_completion_frame_count"] = len(generated)
             # Retain the earlier baseline rather than letting its existing
             # manifest silently bypass the newly generated geometry.
-            splat_root = output_root / ("background_completed_splat-v1" if completion else "background_splat")
+            splat_root = output_root / (f"background_completed_splat-{COMPLETION_REVISION}" if completion else "background_splat")
             manifest_path = splat_root / "atlas_depth_splat_manifest.json"
             splat = (
                 json.loads(manifest_path.read_text())
@@ -299,7 +299,7 @@ def run_automation(
             mesh_root = None
             if "mesh_export_cost_usd" in policy:
                 spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
-                mesh_root = output_root / ("background_completed_mesh-v1" if completion else "background_mesh")
+                mesh_root = output_root / (f"background_completed_mesh-{COMPLETION_REVISION}" if completion else "background_mesh")
                 quote = {
                     "schema_version": "website_atlas_task_price_review.v1",
                     "task": "splats2Mesh",
@@ -346,7 +346,7 @@ def run_automation(
                 analysis_paths=[
                     output_root / "scene_measurements.json",
                     output_root / "background_review.json",
-                ] + ([output_root / "scene_completion-v1/completion.json"] if completion else []),
+                ] + ([output_root / f"scene_completion-{COMPLETION_REVISION}/completion.json"] if completion else []),
             )
             background.update(
                 status="completed",

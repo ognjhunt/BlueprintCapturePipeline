@@ -8,6 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 
@@ -16,6 +17,8 @@ import numpy as np
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+
+COMPLETION_REVISION = "v2"
 
 
 def camera_candidates(frames):
@@ -45,6 +48,26 @@ def camera_candidates(frames):
                                "source_frame_id": frame["frame_id"], "purpose": name,
                                "context_valid_depth_fraction": float(np.mean(valid)),
                                "translation_fraction_of_visible_depth": list(delta), "camera": target})
+    # Cover the environment around the observed free-space camera path, rather
+    # than only extrapolating the downward source views. Count follows angular
+    # coverage and overlap, not a fixed quota of source or generated images.
+    from scipy.spatial.transform import Rotation
+    vfov = math.radians(75)
+    focal = 720 / (2 * math.tan(vfov / 2))
+    hfov = 2 * math.atan(1280 / (2 * focal))
+    overlap_stride = .65
+    yaw_count = math.ceil(2 * math.pi / (hfov * overlap_stride))
+    pitch_count = math.ceil((math.pi - vfov) / (vfov * overlap_stride)) + 1
+    position = np.median([frame["position"] for frame in frames], axis=0).tolist()
+    for yi in range(yaw_count):
+        yaw = 2 * math.pi * yi / yaw_count
+        for pi, pitch in enumerate(np.linspace(-math.pi / 2 + vfov / 2, math.pi / 2 - vfov / 2, pitch_count)):
+            candidates.append({"camera_id": f"room-{yi}-{pi}", "source_frame_id": frames[0]["frame_id"],
+                "purpose": "required_full_room_coverage", "inferred_surface_views": True,
+                "camera": {"intrinsics": {"width": 1280, "height": 720, "fx": focal, "fy": focal, "cx": 640, "cy": 360},
+                           "extrinsics": {"position": position,
+                               "quaternion": Rotation.from_euler("YX", [yaw, float(pitch)]).as_quat().tolist(),
+                               "coordinateSystem": "rub"}}})
     return candidates
 
 
@@ -178,6 +201,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     if len(ids) != len(set(ids)) or any(key not in by_id for key in ids):
         raise ValueError("atlas_completion_camera_selection_invalid")
     selected = [by_id[key] for key in ids]
+    required = {row["camera_id"] for row in candidates if row["purpose"] == "required_full_room_coverage"}
+    if not required <= set(ids):
+        raise ValueError("atlas_completion_full_room_camera_coverage_missing")
     context_frames = _atlas_posed_context(operation=pose["operation"], expected_frame_count=len(frames))
     for index, frame in enumerate(context_frames):
         # Re-upload retained exact bytes for a new operation. Transient provider
@@ -189,8 +215,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     request = {"contextFrames": context_frames,
                "targetCameras": [row["camera"] for row in selected], "returnDepth": True,
                "enhancePrompt": True,
-               "prompt": ("Complete the SAME object-absent environment consistently across these views. "
-                          "Continuous floor, existing walls and cabinets, realistic newly revealed surfaces, "
+               "prompt": ("Complete the SAME bounded object-absent kitchen/work environment in all directions. "
+                          "Continuous floor, walls and ceiling, existing cabinets, realistic newly revealed surfaces, "
                           "no holes, missing patches, floating surfaces or added objects. Preserve the "
                           "surrounding scene and every unrelated appliance. The requested finished scene: "
                           + review["automation"]["removal_instruction"])}
@@ -230,7 +256,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "generated_frame_ids": [row["frame_id"] for row in generated], "review": visual,
               "selected_camera_ids": ids, "target_cameras": request["targetCameras"],
               "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": proposal["remaining_unknowns"],
-              "generated_geometry_ready": visual["status"] == "passed", "claim_ceiling": "development_only",
+              "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "full_room_directional_views",
+              "claim_ceiling": "development_only",
               "simulation_qualified": False, "metric_measurement_proven": False, "physical_evidence": False}
     if visual["status"] != "passed":
         report["reason"] = "atlas_completion_visual_review_required"
