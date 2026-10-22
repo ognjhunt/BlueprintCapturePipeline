@@ -412,7 +412,7 @@ def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture
             survey_video(source_video=source_video, output_root=output_root, capture_id=capture_id)
         return prepare_video_inputs(survey_path=survey_path,
             review=json.loads((output_root / "atlas_scene_review.json").read_text()),
-            output_root=output_root, maximum_frames=maximum_frames or 24)
+            output_root=output_root, maximum_frames=maximum_frames)
     inputs = prepare_website_geometry_inputs(source_video=source_video, output_root=output_root,
                                            capture_id=capture_id, maximum_frames=maximum_frames)
     if selected == "atlas":

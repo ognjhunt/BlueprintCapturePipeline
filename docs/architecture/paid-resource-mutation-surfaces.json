@@ -598,6 +598,17 @@
         "atlas_task_submission_requires_reconciliation",
         "Idempotency-Key"
       ]
+    },
+    {
+      "path": "src/blueprint_pipeline/atlas_scene_planner.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "require_allocation_binding=True",
+        "reserve_website_preparation_spend",
+        "atlas_scene_planner_allocator_required",
+        "atlas_scene_planner_requires_reconciliation"
+      ]
     }
   ]
 }

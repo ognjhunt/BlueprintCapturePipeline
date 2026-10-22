@@ -771,6 +771,17 @@ def run_sponsored_website_atlas_task(*, experimental: bool = False, **options: A
     return run_admitted_atlas_task(release_blockers=release_blockers, **options)
 
 
+def run_sponsored_website_atlas_plan(*, experimental: bool = False, **options: Any) -> dict[str, Any]:
+    """Source review uses the same allocator release gate and WebApp test cap."""
+    from .atlas_scene_planner import review_survey
+
+    def release_blockers() -> tuple[str, list[str]]:
+        commit, _, _ = _current_checkout_source_state()
+        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
+
+    return review_survey(release_blockers=release_blockers, **options)
+
+
 def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
     """Canonical allocator entry retaining the provider operation across restarts."""
     from .provider_preview import WorldLabsPreviewProvider, _worldlabs_api_key

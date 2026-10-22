@@ -253,6 +253,12 @@ def atlas_api_config() -> tuple[str, str]:
             or not (host == "worldlabs.ai" or host.endswith(".worldlabs.ai"))):
         raise ValueError("website_atlas_api_base_url_invalid")
     key = (os.environ.get(ATLAS_API_KEY_ENV) or os.environ.get("WLT_API_KEY") or "").strip()
+    key_file = os.environ.get("WORLDLABS_ATLAS_API_KEY_FILE", "").strip()
+    if not key and key_file:
+        path = Path(key_file)
+        if not path.is_absolute() or path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
+            raise ValueError("website_atlas_api_key_file_unsafe")
+        key = path.read_text().strip()
     if not key:
         raise ValueError("website_atlas_api_key_missing")
     if any(character.isspace() or not character.isprintable() for character in key):

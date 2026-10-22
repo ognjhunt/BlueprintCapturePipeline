@@ -358,6 +358,20 @@ def test_admitted_operation_uploads_submits_polls_and_retains_bound_outputs(atla
     assert again["status"] == "completed" and len(fake.calls) == calls
 
 
+def test_production_key_file_is_explicit_protected_and_never_falls_back_to_legacy(tmp_path, monkeypatch):
+    monkeypatch.setenv(atlas.ATLAS_API_BASE_URL_ENV, BASE)
+    monkeypatch.delenv(atlas.ATLAS_API_KEY_ENV, raising=False)
+    monkeypatch.delenv("WLT_API_KEY", raising=False)
+    key = tmp_path / "atlas-key"
+    key.write_text("test-file-key")
+    key.chmod(0o600)
+    monkeypatch.setenv("WORLDLABS_ATLAS_API_KEY_FILE", str(key))
+    assert atlas.atlas_api_config() == (BASE, "test-file-key")
+    key.chmod(0o644)
+    with pytest.raises(ValueError, match="key_file_unsafe"):
+        atlas.atlas_api_config()
+
+
 @pytest.mark.parametrize("missing,code", [
     ("price", "website_atlas_reviewed_price_required"),
     ("retention", "website_atlas_provider_retention_decision_required"),

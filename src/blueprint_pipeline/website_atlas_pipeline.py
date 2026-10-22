@@ -1,0 +1,209 @@
+"""Production Atlas preparation controller on the existing website capture path.
+
+Source review, adaptive inputs, admitted posing, generated RGBD and portable
+downloads run on the worker. The public API cannot create a splat; that explicit
+vendor blocker never becomes a fabricated mesh or a simulator-ready result.
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+from copy import deepcopy
+import json
+import os
+from pathlib import Path
+import time
+
+from .common import write_json
+from .decision_evidence_contracts import canonical_digest
+from .local_reconstruction_adapters import _sha256_file
+
+
+def atlas_selected(capture_id: str) -> bool:
+    """Production rollout is explicit per capture; consent still gates every call."""
+    values = json.loads(os.getenv("BLUEPRINT_WEBSITE_ATLAS_CAPTURE_IDS_JSON", "[]"))
+    if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
+        raise ValueError("atlas_runtime_capture_rollout_invalid")
+    return capture_id in values
+
+
+def load_configuration(context, source_digest):
+    from .website_task_context import website_webapp_request
+    value = website_webapp_request(capture_id=context["capture_id"], operation="atlas-configuration", payload={
+        "request_id": context["request_id"], "scene_id": context["scene_id"],
+        "task_context_digest": context["context_digest"], "source_video_digest": source_digest})
+    if (value.get("schema_version") != "website_atlas_configuration.v1"
+            or value.get("source_video_digest") != source_digest
+            or value.get("task_context_digest") != context["context_digest"]
+            or value.get("dispatch_authorized") is not False):
+        raise ValueError("atlas_runtime_configuration_invalid")
+    return value
+
+
+def generation_request(*, pose, inputs, review):
+    """Cover reviewed task AND room anchors at their observed camera locations."""
+    from .website_worldlabs import _atlas_posed_context
+    from .website_atlas_tasks import validate_task_request
+    context = _atlas_posed_context(operation=pose["operation"], expected_frame_count=len(inputs["frames"]))
+    by_id = {row["frame_id"]: frame for row, frame in zip(inputs["frames"], context, strict=True)}
+    ids = list(dict.fromkeys(key for group in review["coverage_requirements"] for key in group["required_frame_ids"]))
+    targets = []
+    for key in ids:
+        camera = deepcopy(by_id[key]["camera"])
+        k = camera["intrinsics"]
+        scale = 720 / k["height"]
+        k.update(width=1280, height=720, fx=k["fx"] * scale, fy=k["fy"] * scale, cx=640, cy=360)
+        targets.append(camera)
+    request = {"contextFrames": context, "targetCameras": targets, "returnDepth": True,
+               "prompt": "The same captured scene: " + review["scene_state"], "enhancePrompt": True}
+    validate_task_request("atlasGenerate", request)
+    return request
+
+
+def run_atlas_pipeline(*, output_root: Path, **options):
+    output_root.mkdir(parents=True, exist_ok=True)
+    with (output_root / "controller.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return _run_atlas_pipeline(output_root=output_root, **options)
+
+
+def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, experimental=False,
+                       invoker=None, max_polls=2):
+    from .atlas_video_inputs import survey_video, prepare_video_inputs
+    from .atlas_scene_planner import proposal_review
+    from .paid_resource_allocator import (run_sponsored_website_atlas_plan, run_sponsored_website_atlas_pose,
+                                          run_sponsored_website_atlas_task)
+    from .website_atlas_pose import ATLAS_PRICE_REVIEW_ENV, ATLAS_PROVIDER_RETENTION_ENV, request_options, atlas_api_config
+    from .atlas_result_bundle import export_pose_bundle
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    source_digest = _sha256_file(source_video)
+    current = load_configuration(task_context, source_digest)
+    atlas_api_config()  # Refuse missing/unsafe production secrets before buying a review.
+    saved = output_root / "configuration.json"
+    if saved.exists():
+        config = json.loads(saved.read_text())
+        if config["authority"] != current["authority"] or config["policy"] != current["policy"]:
+            raise ValueError("atlas_runtime_authority_or_policy_changed")
+    else:
+        config = current
+        write_json(saved, config)
+    policy = config["policy"]
+    os.environ[ATLAS_PROVIDER_RETENTION_ENV] = current["authority"]["provider_retention"]
+    base_root = output_root / "survey"
+    survey_path = base_root / "atlas_video_survey.json"
+    if not survey_path.exists():
+        survey_video(source_video=source_video, output_root=base_root, capture_id=task_context["capture_id"])
+    survey = json.loads(survey_path.read_text())
+    if survey["source_video_digest"] != source_digest:
+        raise ValueError("atlas_runtime_source_changed")
+    reviews = output_root / "scene_planner"
+    # Reserve room for a second review and depth views. These are dollar
+    # allowances, not arbitrary limits on the number of source images.
+    budget = config["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
+    if budget < 2 * policy["pose_input_cost_usd"] + 2 * policy["rgbd_view_cost_usd"]:
+        raise ValueError("atlas_runtime_budget_insufficient")
+    selection_path = output_root / "selection_binding.json"
+    if selection_path.exists():
+        selection = json.loads(selection_path.read_text())
+        survey_path = output_root / selection["survey_relative_path"]
+        if not survey_path.resolve().is_relative_to(output_root.resolve()):
+            raise ValueError("atlas_runtime_selection_escape")
+        survey = json.loads(survey_path.read_text())
+        review = selection["review"]
+        receipt = selection["planner_receipt"]
+    else:
+        receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
+            configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
+        review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget)
+    pose_root = output_root / "pose"
+    pose_root.mkdir(exist_ok=True)
+    try:
+        inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root)
+    except ValueError as error:
+        if "coverage_gap" not in str(error):
+            raise
+        from .atlas_video_extension import extend_survey
+        indexes = list((base_root / "source").rglob("decoded_observation_index.json"))
+        if len(indexes) != 1:
+            raise ValueError("atlas_runtime_decoded_index_ambiguous") from error
+        extended_root = output_root / "extended_survey"
+        extended_path = extended_root / "atlas_video_survey.json"
+        if not extended_path.exists():
+            extend_survey(source_video=source_video, base_survey=survey_path, decoded_index=indexes[0],
+                review=review, output_root=extended_root)
+        survey = json.loads(extended_path.read_text())
+        receipt = run_sponsored_website_atlas_plan(survey_path=extended_path, task_context=task_context,
+            configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
+        review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget)
+        inputs = prepare_video_inputs(survey_path=extended_path, review=review, output_root=pose_root)
+        survey_path = extended_path
+    if not selection_path.exists():
+        write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
+                                   "review": review, "planner_receipt": receipt})
+    write_json(output_root / "atlas_scene_review.json", review)
+    count = len(inputs["frames"])
+    pose_quote = {"schema_version": "website_atlas_pose_price_review.v1", "endpoint": "/api/v2/tasks:images2PosedRGBD",
+        "maximum_cost_usd": round(count * policy["pose_input_cost_usd"], 6), "max_input_images": count,
+        "target_resolutions": [[720, 1280], [1280, 720]], "request_options": request_options(),
+        **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
+    # Validate all deterministic quote/camera options before reserving a call.
+    os.environ[ATLAS_PRICE_REVIEW_ENV] = json.dumps(pose_quote)
+    posed = run_sponsored_website_atlas_pose(output_root=pose_root, capture_id=task_context["capture_id"],
+        task_context=task_context, experimental=experimental, max_polls=max_polls)
+    if posed["status"] != "completed":
+        return {"status": "processing", "stage": "pose", "operation_id": posed.get("operation_id")}
+    pose = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
+    request = generation_request(pose=pose, inputs=inputs, review=review)
+    cost = round(len(request["targetCameras"]) * policy["rgbd_view_cost_usd"], 6)
+    quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "atlasGenerate",
+        "request_digest": canonical_digest(request), "maximum_cost_usd": cost,
+        **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
+    generated_root = output_root / "generated"
+    generated = run_sponsored_website_atlas_task(task="atlasGenerate", request=request,
+        source_video_digest=source_digest, output_root=generated_root, task_context=task_context,
+        price_review=quote, experimental=experimental, max_polls=max_polls)
+    if generated["status"] != "completed":
+        return {"status": "processing", "stage": "generated_rgbd", "operation_id": generated.get("operation_id")}
+    bundle = export_pose_bundle(pose_root=pose_root, output_root=output_root / "downloads",
+                               generated_roots=[generated_root])
+    result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
+        "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
+        "pose": posed, "generated_result_digest": generated["digest"], "download": bundle,
+        "task_and_surrounding_scene_covered": True, "model": receipt["model"],
+        "blockers": ["atlas_public_splat_creation_api_unavailable", "metric_scene_registration_unproven"],
+        "splat_available": False, "mesh_available": False, "simulation_qualified": False,
+        "claim_ceiling": "development_only", "physical_evidence": False,
+        "scale_status": "unscaled_provider_world_units", "billing_status": "provider_usage_unreported"}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    write_json(output_root / "result.json", result)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-video", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--request-id", required=True)
+    parser.add_argument("--capture-id", required=True)
+    parser.add_argument("--scene-id", required=True)
+    parser.add_argument("--maximum-runtime-seconds", type=int, default=1200)
+    parser.add_argument("--experimental", action="store_true")
+    args = vars(parser.parse_args())
+    from .website_task_context import load_current_website_task_context
+    context = load_current_website_task_context(request_id=args.pop("request_id"), capture_id=args.pop("capture_id"),
+        scene_id=args.pop("scene_id"), purpose="scene_preparation")
+    seconds = args.pop("maximum_runtime_seconds")
+    if not 1 <= seconds <= 86400:
+        raise ValueError("atlas_runtime_deadline_invalid")
+    deadline = time.monotonic() + seconds
+    while True:
+        result = run_atlas_pipeline(task_context=context, **args)
+        print(json.dumps(result), flush=True)
+        if result["status"] != "processing" or time.monotonic() >= deadline:
+            break
+        time.sleep(5)
+
+
+if __name__ == "__main__":
+    main()

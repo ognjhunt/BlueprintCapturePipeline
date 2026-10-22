@@ -4419,6 +4419,19 @@ def run_qualification_pipeline(
             descriptor = prepare_website_task_descriptor(
                 descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir, bucket=bucket,
                 load_task_context=load_current_website_task_context, load_sponsorship=load_website_scene_sponsorship)
+            if descriptor.metadata.get("website_atlas_preparation_requested") is True:
+                from .website_atlas_pipeline import run_atlas_pipeline
+                source = _resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root)
+                if source is None or not source.is_file() or not source.resolve().is_relative_to(capture_root.resolve()):
+                    raise StageError("atlas_preparation", "website_atlas_source_video_missing_or_outside_capture")
+                stage = "atlas_preparation"
+                atlas_result = run_atlas_pipeline(source_video=source, output_root=pipeline_dir / "atlas",
+                    task_context=descriptor.metadata["site_task_context"])
+                write_json(pipeline_dir / "atlas_preparation_result.json", atlas_result)
+                if atlas_result["status"] == "processing":
+                    raise StageError("atlas_preparation", "website_atlas_operation_processing")
+                return {"status": "completed", "lane": "atlas_preparation", "atlas_preparation": atlas_result,
+                        "native_execution_complete": False, "simulation_qualified": False}
         downstream_requested_lanes = _requested_downstream_lanes(
             descriptor=descriptor,
             requested_lanes=requested_lanes,

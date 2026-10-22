@@ -29,7 +29,7 @@ def _suffix(data: bytes) -> str:
     raise ValueError("atlas_bundle_output_format_unknown")
 
 
-def export_pose_bundle(*, pose_root: Path, output_root: Path) -> dict:
+def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()) -> dict:
     pose_root = pose_root.resolve()
     result = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
     inputs = load_pending_atlas_pose_inputs(pose_root)
@@ -42,7 +42,19 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path) -> dict:
                 "scale_status": "unscaled_provider_world_units", "physical_evidence": False,
                 "splat_available": False, "mesh_available": False, "simulation_qualified": False,
                 "billing": receipt["billing"], "assets": []}
-    target = output_root / ("atlas-pose-" + result["digest"][7:23])
+    generated = []
+    for root in generated_roots:
+        value = json.loads((root / "result.json").read_text())
+        if (value.get("status") != "completed" or value.get("digest") != canonical_digest(value, digest_field="digest")
+                or value["binding"]["source_video_digest"] != result["binding"]["source_video_digest"]):
+            raise ValueError("atlas_bundle_generated_result_invalid")
+        state = json.loads((root / "atlas_pose/submission.json").read_text())
+        if state.get("status") != "completed" or state.get("result_digest") != value["digest"]:
+            raise ValueError("atlas_bundle_generated_receipt_invalid")
+        generated.append((root, value))
+    manifest["generated_result_digests"] = [value["digest"] for _, value in generated]
+    identity = canonical_digest({"pose": result["digest"], "generated": manifest["generated_result_digests"]})
+    target = output_root / (("atlas-scene-" + identity[7:23]) if generated else ("atlas-pose-" + result["digest"][7:23]))
     if target.is_symlink():
         raise ValueError("atlas_bundle_output_symlink")
     target.mkdir(parents=True, exist_ok=True)
@@ -54,6 +66,15 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path) -> dict:
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, path)
         manifest["assets"].append({"path": str(relative), "sha256": _sha256_file(path), "bytes": path.stat().st_size})
+
+    for index, (root, value) in enumerate(generated):
+        for row in value["outputs"]:
+            source = root / row["path"]
+            if (not source.resolve().is_relative_to(root.resolve()) or source.is_symlink()
+                    or source.stat().st_size != row["bytes"] or _sha256_file(source) != row["sha256"]):
+                raise ValueError("atlas_bundle_generated_output_changed")
+            copy(source, Path("generated") / str(index) / Path(row["path"]).name)
+        copy(root / "result.json", Path("generated") / str(index) / "result.json")
 
     for index, row in enumerate(receipt["input_usage"]["frames"]):
         for asset in row["outputs"]:

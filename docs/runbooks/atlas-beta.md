@@ -1,5 +1,33 @@
 # Atlas beta source preparation
 
+Production uses `blueprint_pipeline.website_atlas_pipeline`, also reached by the
+normal capture orchestrator for IDs in `BLUEPRINT_WEBSITE_ATLAS_CAPTURE_IDS_JSON`.
+The worker loads current task/source consent and the runtime rate policy from
+the signed WebApp `atlas-configuration` endpoint. The source-bound authorization
+must explicitly include OpenAI planner disclosure. Planner and Atlas reservations
+share the same dollar/request cap; legacy native/Marble authority is untouched.
+
+`BLUEPRINT_WEBSITE_ATLAS_RUNTIME_POLICY_JSON` selects the role model (initially
+`gpt-6.1-sol`) and a reviewed per-call allowance/rate card. The existing Agents SDK
+uses structured output, disabled tracing and `store=False`. It reviews candidate
+frames, proposes static intervals and required task/room anchors, and records
+actual model, SDK, usage and cost. CPU checks validate source hashes, unsafe-frame
+exclusion, coverage, quality, overlap and budget. Missing bridges trigger candidate
+densification and another review without reading frozen held-out pixels. Retained
+plans and operation IDs survive restarts without repeat purchases. Unknown model
+or provider submission outcomes hold for reconciliation.
+
+After posing, the controller generates RGBD at both task and room anchors, retains
+every asset, and writes one portable ZIP. Its terminal status remains `needs_input`
+while the public API lacks splat creation or metric registration is unproven.
+Use the same controller entrypoint for an explicit production-host test; it needs
+only server-resident video, normal secret integration and capture/request identity:
+
+```bash
+python -m blueprint_pipeline.website_atlas_pipeline --source-video VIDEO \
+  --output-root ROOT --request-id REQUEST --scene-id SCENE --capture-id CAPTURE
+```
+
 ADP-040 / Day 28, owner-directed Atlas integration. Extend the admitted
 `website_atlas_pose` producer; do not submit Atlas through the Marble world API.
 The source adapter remains interchangeable and all results are development-only.
