@@ -99,7 +99,11 @@ def test_controller_deadline_terminates_child_processes(tmp_path):
         run_controller([sys.executable, "-c", source, str(pid_file)], cwd=tmp_path, env=dict(os.environ), timeout=0.3)
     pid = json.loads(pid_file.read_text())
     status = Path(f"/proc/{pid}/stat")
-    assert not status.exists() or status.read_text().rpartition(")")[2].split()[0] == "Z"
+    try:
+        process_stat = status.read_text()
+    except FileNotFoundError:
+        return  # The terminated child can be reaped before or during this read.
+    assert process_stat.rpartition(")")[2].split()[0] == "Z"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux kernel sandbox")
