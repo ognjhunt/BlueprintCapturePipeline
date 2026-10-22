@@ -88,6 +88,7 @@ def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest
 def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], binding_digest: str,
                                      maximum_cost_usd: float, request_count: int,
                                      resource_class: str, provider: str,
+                                     source_video_digest: str | None = None,
                                      retained_admission: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
@@ -100,6 +101,8 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
     command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": binding_digest,
                "resource_class": resource_class, "provider": provider, "maximum_cost_usd": maximum_cost_usd,
                "request_count": request_count}
+    if source_video_digest is not None:
+        command["source_video_digest"] = source_video_digest
     value = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-spend",
         payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
     if (any(value.get(key) != expected for key, expected in command.items())

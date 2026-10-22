@@ -744,6 +744,7 @@ def run_sponsored_website_geometry(*, input_manifest: Path, output_root: Path,
 
 
 def run_sponsored_website_atlas_pose(*, output_root: Path, capture_id: str, task_context: Mapping[str, Any],
+                                     experimental: bool = False,
                                      **options: Any) -> dict[str, Any]:
     """Canonical allocator entry for one admitted Atlas images2PosedRGBD operation.
 
@@ -753,7 +754,7 @@ def run_sponsored_website_atlas_pose(*, output_root: Path, capture_id: str, task
 
     def release_blockers() -> tuple[str, list[str]]:
         commit, _, _ = _current_checkout_source_state()
-        return commit, _source_checkout_blockers(commit)[0]
+        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
 
     return run_admitted_atlas_pose(output_root=output_root, capture_id=capture_id, task_context=task_context,
                                    release_blockers=release_blockers, **options)
