@@ -526,14 +526,14 @@ def _require_reported_size(asset: Mapping[str, Any], size: int, *, required: boo
 
 
 def _upload_frame(client: AtlasClient, frame: Mapping[str, Any], *, name: str,
-                  state: dict[str, Any], path: Path) -> dict[str, Any]:
+                  state: dict[str, Any], path: Path, content_type: str | None = None) -> dict[str, Any]:
     """Single-object upload: create, upload URL, bytes, complete."""
     image = Path(frame["image_path"])
     data = image.read_bytes()
     # Hash the bytes actually sent, not the file as it was when admitted.
     if _sha256_bytes(data) != frame["image_digest"]:
         raise ValueError("website_atlas_pose_input_changed")
-    content_type = _CONTENT_TYPES[image.suffix.lower()]
+    content_type = content_type or _CONTENT_TYPES[image.suffix.lower()]
     asset_id = _safe_id(client.call("POST", "/assets", {"asset": {"displayName": name}}).get("id"))
     # Every asset that may come to hold site pixels is on record before the
     # bytes go, so a failed upload never leaves an untracked copy.

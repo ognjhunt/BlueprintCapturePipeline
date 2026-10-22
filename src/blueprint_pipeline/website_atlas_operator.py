@@ -21,6 +21,8 @@ def main() -> None:
     parser.add_argument("--provider-retention", choices=["account_does_not_retain", "project_library_retention_approved"], required=True)
     parser.add_argument("--experimental", action="store_true", help="Require a clean, remotely retained codex branch")
     parser.add_argument("--max-polls", type=int, default=2)
+    parser.add_argument("--task-spec", type=Path, help="A validated Atlas view/edit/mesh request; otherwise pose")
+    parser.add_argument("--operator-admission", type=Path, help="Short-lived WebApp-signed reservation handoff")
     args = parser.parse_args()
     from .paid_resource_allocator import run_sponsored_website_atlas_pose
     from .website_atlas_pose import ATLAS_API_BASE_URL_ENV, ATLAS_API_KEY_ENV, ATLAS_PRICE_REVIEW_ENV, ATLAS_PROVIDER_RETENTION_ENV
@@ -32,8 +34,20 @@ def main() -> None:
     os.environ[ATLAS_PRICE_REVIEW_ENV] = args.price_review.read_text()
     os.environ[ATLAS_PROVIDER_RETENTION_ENV] = args.provider_retention
     context = json.loads(args.task_context.read_text())
-    result = run_sponsored_website_atlas_pose(output_root=args.output_root, capture_id=context["capture_id"],
-        task_context=context, experimental=args.experimental, max_polls=args.max_polls)
+    if args.operator_admission:
+        os.environ["BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE"] = str(args.operator_admission.resolve())
+    if args.task_spec:
+        from .paid_resource_allocator import run_sponsored_website_atlas_task
+        spec = json.loads(args.task_spec.read_text())
+        result = run_sponsored_website_atlas_task(task=spec["task"], request=spec["request"],
+            uploads=spec.get("uploads"), source_video_digest=spec["source_video_digest"],
+            output_root=args.output_root, task_context=context, price_review=json.loads(args.price_review.read_text()),
+            experimental=args.experimental, max_polls=args.max_polls)
+        result = {"status": result["status"], "operation_id": result.get("operation_id") or result.get("operation", {}).get("id"),
+                  "result_path": str(args.output_root / "result.json"), "result_digest": result.get("digest")}
+    else:
+        result = run_sponsored_website_atlas_pose(output_root=args.output_root, capture_id=context["capture_id"],
+            task_context=context, experimental=args.experimental, max_polls=args.max_polls)
     print(json.dumps(result, indent=2))
 
 

@@ -586,6 +586,18 @@
         "authorize_complete_deletion",
         "object_versions_remaining"
       ]
+    },
+    {
+      "path": "src/blueprint_pipeline/website_atlas_tasks.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "require_allocation_binding=True",
+        "reserve_website_preparation_spend",
+        "atlas_task_reviewed_price_required",
+        "atlas_task_submission_requires_reconciliation",
+        "Idempotency-Key"
+      ]
     }
   ]
 }

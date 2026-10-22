@@ -1,0 +1,311 @@
+"""Durable admitted Atlas generation, editing and mesh tasks. ADP-040 / Day 28.
+
+Reuses the existing pose adapter's audited transport, uploads, locking and
+retention. Posing remains the original producer. There is no splat-creation
+endpoint in the public beta contract; splats2Mesh requires an admitted splat.
+"""
+from __future__ import annotations
+
+import json
+import math
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from . import website_atlas_pose as pose
+from .decision_evidence_contracts import canonical_digest
+from .local_reconstruction_adapters import _sha256_file
+from .paid_resource_admission import require_paid_resource_admission_grant
+
+TASKS = frozenset({"atlasGenerate", "atlasMasked", "atlasChisel", "atlasTextToImage", "splats2Mesh"})
+MIMES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+         ".exr": "image/x-exr", ".ply": "application/octet-stream", ".spz": "application/octet-stream"}
+
+
+def validate_task_request(task: str, request: Mapping[str, Any]) -> None:
+    """Pinned official OpenAPI request schema plus Blueprint disclosure limits."""
+    if task not in TASKS:
+        raise ValueError("atlas_task_unavailable")
+    import jsonschema
+    schema = json.loads((Path(__file__).parent / "_atlas_schemas" / (task + ".json")).read_text())
+    root = schema["$ref"].split("/")[-1]
+    allowed = schema["components"]["schemas"][root]["properties"]
+    if set(request) - set(allowed):
+        raise ValueError("atlas_task_unknown_fields")
+    try:
+        jsonschema.Draft202012Validator(schema).validate(dict(request))
+    except jsonschema.ValidationError:
+        raise ValueError("atlas_task_request_schema_invalid") from None
+    if request.get("webhookUrl") or request.get("base64Outputs") is True:
+        raise ValueError("atlas_task_durable_assets_required")
+
+    def visit(value):
+        if isinstance(value, Mapping):
+            if any(key in value for key in ("url", "base64")):
+                raise ValueError("atlas_task_private_project_assets_required")
+            if "assetId" in value and not (isinstance(value["assetId"], str) and value["assetId"]):
+                raise ValueError("atlas_task_asset_invalid")
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("atlas_task_nonfinite_value")
+    visit(request)
+    for camera in request.get("targetCameras", []):
+        if (camera["intrinsics"]["width"], camera["intrinsics"]["height"]) != (1280, 720):
+            raise ValueError("atlas_task_target_grid_invalid")
+        q = camera["extrinsics"]["quaternion"]
+        if not math.isclose(sum(v * v for v in q), 1, abs_tol=1e-3):
+            raise ValueError("atlas_task_camera_quaternion_invalid")
+    if task == "atlasGenerate":
+        pose_context = {"id": "validation", "done": True, "response": {"frames": request["contextFrames"]}}
+        from .website_worldlabs import _atlas_posed_context
+        _atlas_posed_context(operation=pose_context, expected_frame_count=len(request["contextFrames"]),
+                             target_cameras=request["targetCameras"])
+        if request.get("returnDepth") is True:
+            centers = [r["camera"]["extrinsics"]["position"] for r in request["contextFrames"]]
+            centers += [r["extrinsics"]["position"] for r in request["targetCameras"]]
+            if max(math.dist(centers[0], p) for p in centers) < 1e-6:
+                raise ValueError("atlas_generated_depth_requires_translation")
+    if task == "atlasMasked":
+        context = request["contextFrames"]
+        if len(context) != len(request["targetCameras"]):
+            raise ValueError("atlas_masked_view_pairing_invalid")
+        for frame, target in zip(context, request["targetCameras"], strict=True):
+            if frame["camera"] != target:
+                raise ValueError("atlas_masked_view_pairing_invalid")
+    if task == "atlasChisel":
+        context = request.get("contextFrames") or []
+        targets = request["targetCameras"]
+        if context and (len(context) != len(targets) or any(
+                frame["camera"] != target for frame, target in zip(context, targets, strict=True))):
+            raise ValueError("atlas_chisel_depth_pairing_invalid")
+        if len(context) + len(targets) + len(request.get("sourceFrames") or []) > 64:
+            raise ValueError("atlas_chisel_rollout_limit_exceeded")
+    if task in {"atlasMasked", "atlasChisel"} and request.get("returnDepth") is True:
+        targets = request["targetCameras"]
+        centers = [r["extrinsics"]["position"] for r in targets]
+        if len(targets) < 2 or max(math.dist(centers[0], p) for p in centers) < 1e-6:
+            raise ValueError("atlas_task_depth_requires_translated_targets")
+
+
+def _price(review: Mapping[str, Any], task: str, request: Mapping[str, Any]) -> float:
+    if (review.get("schema_version") != "website_atlas_task_price_review.v1"
+            or review.get("task") != task or review.get("request_digest") != canonical_digest(request)
+            or not pose._positive_finite(review.get("maximum_cost_usd"))
+            or review["maximum_cost_usd"] > pose.MAX_REVIEWED_COST_USD
+            or not review.get("rate_card_reference") or not review.get("reviewed_by")
+            or not pose._reviewed_recently(review.get("reviewed_on"), datetime.now(timezone.utc).date())):
+        raise ValueError("atlas_task_reviewed_price_required")
+    return float(review["maximum_cost_usd"])
+
+
+def _replace_uploads(value: Any, uploaded: Mapping[str, str]) -> Any:
+    if isinstance(value, Mapping):
+        return {k: (uploaded[v[7:]] if k == "assetId" and isinstance(v, str) and v.startswith("upload:")
+                    else _replace_uploads(v, uploaded)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_replace_uploads(v, uploaded) for v in value]
+    return value
+
+
+def _collect(client: pose.AtlasClient, operation: Mapping[str, Any], root: Path) -> list[dict[str, Any]]:
+    refs = []
+    response = operation["response"]
+    if response.get("mesh"):
+        refs.append(("mesh", pose._safe_id(response["mesh"].get("assetId"))))
+    for index, frame in enumerate(response.get("frames") or []):
+        refs.append((f"frames-{index}-imageAsset", pose._safe_id(frame["imageAsset"].get("assetId"))))
+        for role in ("depthAsset", "logDepthAsset", "confidenceAsset"):
+            ref = (frame.get("depth") or {}).get(role)
+            if ref:
+                refs.append((f"frames-{index}-depth-{role}", pose._safe_id(ref.get("assetId"))))
+    if not refs:
+        raise ValueError("atlas_task_output_assets_missing")
+    retained = []
+    for role, asset_id in refs:
+        url = client.call("POST", f"/assets/{asset_id}:createReadUrl").get("readUrl")
+        data = client.fetch_bytes(url)
+        asset = client.call("GET", f"/assets/{asset_id}")
+        if asset.get("id") != asset_id:
+            raise ValueError("atlas_task_asset_identity_mismatch")
+        pose._require_reported_size(asset, len(data), required=True)
+        if role.endswith("depthAsset") and not data.startswith(pose._EXR_MAGIC):
+            raise ValueError("website_atlas_depth_not_exr")
+        if role == "mesh":
+            import struct
+            if len(data) < 12 or data[:4] != b"glTF" or struct.unpack("<II", data[4:12]) != (2, len(data)):
+                raise ValueError("atlas_task_mesh_not_glb")
+        mime = asset.get("mimeType", "")
+        suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/x-exr": ".exr",
+                  "model/gltf-binary": ".glb"}.get(mime, ".bin")
+        if data.startswith(b"glTF"):
+            suffix = ".glb"
+        elif data.startswith(pose._EXR_MAGIC):
+            suffix = ".exr"
+        elif data.startswith(b"\x89PNG"):
+            suffix = ".png"
+        path = Path("outputs") / (role + suffix)
+        pose._write_durable(root / path, data)
+        retained.append({"role": role, "asset_id": asset_id, "path": str(path),
+                         "sha256": pose._sha256_bytes(data), "bytes": len(data)})
+    return retained
+
+
+def _validate_response(task: str, request: Mapping[str, Any], response: Mapping[str, Any]) -> None:
+    import jsonschema
+    schema = json.loads((Path(__file__).parent / "_atlas_schemas" / (task + ".json")).read_text())
+    try:
+        jsonschema.Draft202012Validator({**schema, "$ref": schema["x-response-schema"]}).validate(response)
+    except jsonschema.ValidationError:
+        raise ValueError("atlas_task_response_schema_invalid") from None
+    if "targetCameras" in request:
+        frames = response.get("frames")
+        if not isinstance(frames, list) or len(frames) != len(request["targetCameras"]):
+            raise ValueError("atlas_task_response_frame_count_mismatch")
+        for frame, camera in zip(frames, request["targetCameras"], strict=True):
+            if frame["camera"] != camera:
+                raise ValueError("atlas_task_response_camera_mismatch")
+            if request.get("returnDepth") is True and not (frame.get("depth") or {}).get("depthAsset"):
+                raise ValueError("atlas_task_response_depth_missing")
+
+
+def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_root: Path,
+                            source_video_digest: str, task_context: Mapping[str, Any],
+                            price_review: Mapping[str, Any], release_blockers: Callable,
+                            uploads: Mapping[str, Mapping[str, Any]] | None = None,
+                            transport=None, now=time.time, sleep=time.sleep, max_polls=2,
+                            poll_interval_seconds=15) -> dict[str, Any]:
+    """One exact, reserved task. Ambiguous submissions hold; reruns reuse intent."""
+    from .website_task_context import reserve_website_preparation_spend
+    from .website_task_context_contracts import validate_website_task_context
+    validate_task_request(task, request)
+    validate_website_task_context(task_context, request_id=task_context["request_id"],
+        scene_id=task_context["scene_id"], capture_id=task_context["capture_id"], purpose="scene_preparation")
+    uploads = dict(uploads or {})
+    referenced = set()
+    masks = set()
+    def refs(value, is_mask=False):
+        if isinstance(value, Mapping):
+            asset = value.get("assetId")
+            if isinstance(asset, str) and asset.startswith("upload:"):
+                referenced.add(asset[7:])
+                if is_mask:
+                    masks.add(asset[7:])
+            for key, item in value.items():
+                refs(item, key == "maskAsset")
+        elif isinstance(value, list):
+            for item in value:
+                refs(item)
+    refs(request)
+    if referenced != set(uploads):
+        raise ValueError("atlas_task_upload_references_mismatch")
+    for label, row in uploads.items():
+        pose._safe_id(label)
+        path = Path(row["path"])
+        if path.is_symlink() or path.suffix.lower() not in MIMES or _sha256_file(path) != row["sha256"]:
+            raise ValueError("atlas_task_upload_binding_invalid")
+        if label in masks:
+            from PIL import Image
+            with Image.open(path) as image:
+                if image.mode != "L" or image.size != (1280, 720):
+                    raise ValueError("atlas_task_grayscale_keep_mask_required")
+    cost = _price(price_review, task, request)
+    retention = pose.atlas_provider_retention()
+    binding = {"task": task, "request_template": dict(request), "source_video_digest": source_video_digest,
+               "task_context_digest": task_context["context_digest"], "uploads": uploads,
+               "maximum_cost_usd": cost, "price_review_digest": canonical_digest(price_review),
+               "provider_retention": retention, "provider": pose.PROVIDER}
+    request_digest = canonical_digest(binding)
+    root = output_root.resolve()
+    state_path = root / "atlas_pose" / "submission.json"
+    base, key = pose.atlas_api_config()
+    client = pose.AtlasClient(base_url=base, api_key=key, transport=transport)
+    with pose._locked(root):
+        state = json.loads(state_path.read_text()) if state_path.is_file() else None
+        if state and state.get("request_digest") != request_digest:
+            raise ValueError("atlas_task_binding_changed")
+        if state and state.get("status") == "completed":
+            result = json.loads((root / "result.json").read_text())
+            if result.get("digest") != canonical_digest(result, digest_field="digest") or result["digest"] != state["result_digest"]:
+                raise ValueError("atlas_task_result_changed")
+            for row in result["outputs"]:
+                if _sha256_file(root / row["path"]) != row["sha256"]:
+                    raise ValueError("atlas_task_output_changed")
+            return result
+        if not state or not state.get("operation_id"):
+            commit, blockers = release_blockers()
+            if blockers:
+                raise ValueError("atlas_task_release_not_admitted:" + ",".join(blockers))
+            admission_path = root / "controller_admission.json"
+            retained = json.loads(admission_path.read_text()) if admission_path.is_file() else None
+            admission, grant = reserve_website_preparation_spend(task_context=task_context, binding_digest=request_digest,
+                maximum_cost_usd=cost, request_count=1, resource_class=pose.RESOURCE_CLASS,
+                provider=pose.PROVIDER, source_video_digest=source_video_digest, retained_admission=retained)
+            pose._require_admission(admission, request_digest=request_digest, binding=binding, now=now())
+            require_paid_resource_admission_grant(grant, resource_class=pose.RESOURCE_CLASS,
+                allocation_binding_digest=request_digest, require_allocation_binding=True)
+            if admission.get("provider_retention", retention) != retention:
+                raise ValueError("atlas_task_retention_admission_mismatch")
+            pose._write_state(admission_path, {**admission, "source_commit": commit})
+            if not state:
+                state = {"status": "uploading", "request_digest": request_digest, "binding": binding,
+                         "created_assets": [], "uploads": [], "api_base": base,
+                         "idempotency_key": "bp-atlas-task-" + request_digest[7:39]}
+                pose._write_state(state_path, state)
+            if state.get("status") != "uploading":
+                # Never invent a second purchase after an unknown response.
+                raise ValueError("atlas_task_submission_requires_reconciliation")
+            for label, row in uploads.items():
+                if any(r["frame_id"] == label for r in state["uploads"]):
+                    continue
+                frame = {"frame_id": label, "image_path": row["path"], "image_digest": row["sha256"]}
+                uploaded = pose._upload_frame(client, frame, name="bp-" + request_digest[7:19], state=state,
+                    path=state_path, content_type=MIMES[Path(row["path"]).suffix.lower()])
+                state["uploads"].append(uploaded)
+                pose._write_state(state_path, state)
+            pose._await_ready(client, state, state_path, sleep)
+            body = _replace_uploads(request, {r["frame_id"]: r["asset_id"] for r in state["uploads"]})
+            validate_task_request(task, body)
+            pose._require_admission(admission, request_digest=request_digest, binding=binding, now=now())
+            state.update(status="submitting", request=body, request_body=pose._canonical_json(body))
+            pose._write_state(state_path, state)
+            status, payload = client.send_raw("POST", "/tasks:" + task, state["request_body"].encode(),
+                                              headers={"Idempotency-Key": state["idempotency_key"]})
+            state["submission_http_status"] = status
+            pose._write_state(state_path, state)
+            operation = pose._without_urls(pose._json_object(status, payload))
+            state.update(status="submitted", operation_id=pose._safe_id(operation.get("id")))
+            pose._write_state(state_path, state)
+        if state["api_base"] != base:
+            raise ValueError("atlas_task_api_base_changed")
+        for attempt in range(max_polls):
+            operation = pose._without_urls(client.call("GET", "/operations/" + state["operation_id"]))
+            if operation.get("id") != state["operation_id"]:
+                raise ValueError("atlas_task_operation_identity_mismatch")
+            if operation.get("done") is True:
+                break
+            if attempt + 1 < max_polls:
+                sleep(poll_interval_seconds)
+        else:
+            return {"status": "processing", "operation_id": state["operation_id"]}
+        if operation.get("error") is not None:
+            state.update(status="failed", terminal_operation=operation)
+            pose._write_state(state_path, state)
+            raise ValueError("atlas_task_operation_failed")
+        _validate_response(task, state["request"], operation.get("response"))
+        outputs = _collect(client, operation, root)
+        result = {"schema_version": "website_atlas_task_result.v1", "status": "completed", "task": task,
+                  "operation": operation, "binding": binding, "request_digest": request_digest,
+                  "outputs": outputs, "billing": {"status": "unreported", "reserved_usd": cost},
+                  "claim_ceiling": "development_only", "physical_evidence": False,
+                  "metric_measurement_proven": False, "scale_status": "unscaled_provider_world_units",
+                  "generated_content": task != "splats2Mesh"}
+        result["digest"] = canonical_digest(result, digest_field="digest")
+        pose._write_state(root / "result.json", result)
+        state.update(status="completed", result_digest=result["digest"])
+        pose._write_state(state_path, state)
+        return result

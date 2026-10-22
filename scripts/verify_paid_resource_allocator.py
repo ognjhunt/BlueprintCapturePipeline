@@ -150,6 +150,10 @@ APPROVED_ATLAS_POSE_CALLERS = {
     ("src/blueprint_pipeline/paid_resource_allocator.py", "run_sponsored_website_atlas_pose"),
     ("src/blueprint_pipeline/website_atlas_pose.py", "run_admitted_atlas_pose"),
 }
+ATLAS_TASK_CAPABILITIES = frozenset({"run_admitted_atlas_task"})
+APPROVED_ATLAS_TASK_CALLERS = {
+    ("src/blueprint_pipeline/paid_resource_allocator.py", "run_sponsored_website_atlas_task"),
+}
 SURFACE_CLASSIFICATIONS = {
     "canonical_allocator",
     "canonical_adapter",
@@ -583,6 +587,8 @@ def _verify_mutation_surface_contract() -> list[str]:
         blockers.append("remote_cpu_object_store_writer_caller_set_mismatch")
     if _s3_transport_capability_callers(source_by_path, ATLAS_POSE_CAPABILITIES) != APPROVED_ATLAS_POSE_CALLERS:
         blockers.append("atlas_pose_capability_caller_set_mismatch")
+    if _s3_transport_capability_callers(source_by_path, ATLAS_TASK_CAPABILITIES) != APPROVED_ATLAS_TASK_CALLERS:
+        blockers.append("atlas_task_capability_caller_set_mismatch")
     transport_module = "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py"
     for relative, source in source_by_path.items():
         if relative != transport_module and (

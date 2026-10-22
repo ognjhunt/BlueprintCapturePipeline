@@ -1,0 +1,501 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/components/schemas/Splats2MeshRequest",
+  "components": {
+    "schemas": {
+      "CamerasAutoAnchors": {
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "const": "auto_anchors"
+          },
+          "oriented": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "strategy"
+        ]
+      },
+      "CamerasExteriorSphere": {
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "const": "exterior_sphere"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "strategy"
+        ]
+      },
+      "CamerasManualAnchors": {
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "const": "manual_anchors"
+          },
+          "anchors": {
+            "items": {
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array",
+              "maxItems": 3,
+              "minItems": 3,
+              "items": {
+                "type": "number"
+              }
+            },
+            "type": "array",
+            "maxItems": 64,
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "strategy",
+          "anchors"
+        ]
+      },
+      "CoordinateFrame": {
+        "properties": {
+          "position": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 3,
+            "minItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "quaternion": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "items": {
+              "type": "number"
+            }
+          },
+          "coordinateSystem": {
+            "type": "string",
+            "enum": [
+              "rub",
+              "rdf"
+            ],
+            "default": "rub"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "position",
+          "quaternion"
+        ]
+      },
+      "PinholeCamera": {
+        "properties": {
+          "extrinsics": {
+            "$ref": "#/components/schemas/CoordinateFrame"
+          },
+          "intrinsics": {
+            "$ref": "#/components/schemas/PinholeCameraIntrinsics"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "extrinsics",
+          "intrinsics"
+        ]
+      },
+      "PinholeCameraIntrinsics": {
+        "properties": {
+          "fx": {
+            "type": "number"
+          },
+          "fy": {
+            "type": "number"
+          },
+          "cx": {
+            "type": "number"
+          },
+          "cy": {
+            "type": "number"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "fx",
+          "fy",
+          "cx",
+          "cy",
+          "width",
+          "height"
+        ]
+      },
+      "Splats2MeshAdvancedOptions": {
+        "properties": {
+          "renderHw": {
+            "type": "integer",
+            "maximum": 1024,
+            "minimum": 64,
+            "default": 1024
+          },
+          "renderHwSecondary": {
+            "type": "integer",
+            "maximum": 1024,
+            "minimum": 64,
+            "default": 256
+          },
+          "normalSource": {
+            "type": "string",
+            "enum": [
+              "depth",
+              "render"
+            ],
+            "default": "depth"
+          },
+          "depthSource": {
+            "type": "string",
+            "enum": [
+              "render",
+              "stereo"
+            ],
+            "default": "render"
+          },
+          "resolution": {
+            "type": "integer",
+            "maximum": 8192,
+            "minimum": 64,
+            "default": 512
+          },
+          "trimQuantile": {
+            "type": "number",
+            "exclusiveMaximum": 1,
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "Splats2MeshOrientedBoundingBox": {
+        "properties": {
+          "center": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 3,
+            "minItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "orientation": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "items": {
+              "type": "number"
+            }
+          },
+          "halfExtents": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 3,
+            "minItems": 3,
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "center",
+          "orientation",
+          "halfExtents"
+        ]
+      },
+      "Splats2MeshRequest": {
+        "properties": {
+          "webhookUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "purgeContentOnOperationCompletion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cameras": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PinholeCamera"
+                },
+                "type": "array",
+                "maxItems": 512,
+                "minItems": 1
+              },
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/CamerasManualAnchors"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CamerasAutoAnchors"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CamerasExteriorSphere"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "strategy",
+                  "mapping": {
+                    "auto_anchors": "#/components/schemas/CamerasAutoAnchors",
+                    "exterior_sphere": "#/components/schemas/CamerasExteriorSphere",
+                    "manual_anchors": "#/components/schemas/CamerasManualAnchors"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "advancedOptions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Splats2MeshAdvancedOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "orientedBoundingBox": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Splats2MeshOrientedBoundingBox"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetFaces": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "textureMode": {
+            "type": "string",
+            "enum": [
+              "image_texture",
+              "vertex_color",
+              "none"
+            ],
+            "default": "image_texture"
+          },
+          "textureSize": {
+            "type": "integer",
+            "maximum": 8192,
+            "minimum": 1,
+            "default": 4096
+          },
+          "splatAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "splatAsset"
+        ]
+      },
+      "TaskAsset": {
+        "properties": {
+          "assetId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "Splats2MeshResponse": {
+        "properties": {
+          "mesh": {
+            "$ref": "#/components/schemas/TaskAsset"
+          },
+          "anchorPositions": {
+            "anyOf": [
+              {
+                "items": {
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array",
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "deprecated": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "mesh"
+        ]
+      }
+    }
+  },
+  "x-source-url": "https://atlas-beta.worldlabs.ai/docs/api-reference/splats2-mesh",
+  "x-source-document-sha256": "70b5cb51665970f95568fe282438ac2e4a882777da1e87be9f90ad7ca48145a9",
+  "x-retrieved-on": "2026-10-21",
+  "x-response-schema": "#/components/schemas/Splats2MeshResponse"
+}

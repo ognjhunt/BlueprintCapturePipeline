@@ -53,3 +53,42 @@ Posing returns cameras/depth, not a Gaussian splat. `splats2Mesh` needs an
 existing splat. A splat-creation price on the platform is not a published API
 endpoint. Preserve this distinction when planning the full appearance and mesh
 package. Both need independent scale and collision/articulation validation.
+
+## Generation, editing, and mesh API tasks
+
+Use the same operator with `--task-spec SPEC.json` for `atlasGenerate`,
+`atlasMasked`, `atlasChisel`, `atlasTextToImage`, or `splats2Mesh`. The spec
+contains `task`, `request`, `source_video_digest`, and optional `uploads`.
+Local uploads are a map of label to `{path, sha256}`; reference them in the
+request as `{assetId: "upload:label"}`. Existing inputs use private project
+asset IDs. Every task uses the same source-bound WebApp consent and aggregate
+spend cap. A separate `website_atlas_task_price_review.v1` records `task`,
+the canonical `request_digest`, `maximum_cost_usd`, `reviewed_on`,
+`rate_card_reference`, and `reviewed_by`. Do not reuse a pose price review.
+
+The pinned official request and response schemas are in `_atlas_schemas/`.
+The adapter validates them before reservation and after completion, retains
+upload intent and the operation ID, and downloads every named output with
+byte-count and SHA-256 checks. An unknown POST outcome holds for reconciliation;
+rerunning never purchases another operation. A known operation resumes without
+another reservation. Billing stays `unreported` until provider usage is retained.
+
+Generation uses explicit 1280×720 target cameras. The returned RGBD context can
+retain its original grid. Do not distort portrait source observations to fill
+landscape targets. Reuse `promptUsed` with `enhancePrompt: false` for later
+views of the same scene. Chisel and masked edits require paired context and
+target cameras; output depth needs translated targets. Their exact constraints
+are documented in the corresponding task guides.
+
+`splats2Mesh` consumes an existing `.spz` and returns a GLB. Its adapter refuses
+an image masquerading as a mesh. There is no images-to-splat task in the live
+2026-10-21 public OpenAPI contract. Studio's experimental splat builder is a
+separate interface, not a callable public API contract. Do not silently fall
+back to it or to the incompatible legacy Marble world API.
+
+Export a completed pose run with `python -m blueprint_pipeline.atlas_result_bundle
+--pose-root RUN_ROOT --output-root BUNDLE_ROOT`. This verifies the authoritative
+receipt and emits a reproducible ZIP of native inputs, returned color/depth/
+confidence, cameras, and evidence. The manifest explicitly records missing
+splat/mesh and unproven metric scale; a downloadable RGBD package is not a
+qualified simulation scene.

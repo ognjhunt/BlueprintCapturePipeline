@@ -264,6 +264,27 @@ def _state(case):
     return json.loads((case.root / "atlas_pose" / "submission.json").read_text())
 
 
+def test_portable_export_is_verified_deterministic_and_excludes_unlisted_files(atlas_case, tmp_path):
+    import zipfile
+    from blueprint_pipeline.atlas_result_bundle import export_pose_bundle
+    atlas_case.run(FakeAtlas(atlas_case.events))
+    first = export_pose_bundle(pose_root=atlas_case.root, output_root=tmp_path / "exports")
+    Path(first["directory"], "unlisted.txt").write_text("not part of the admitted run")
+    second = export_pose_bundle(pose_root=atlas_case.root, output_root=tmp_path / "exports")
+    assert first["zip_sha256"] == second["zip_sha256"]
+    with zipfile.ZipFile(second["zip_path"]) as archive:
+        assert "unlisted.txt" not in archive.namelist()
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["provider_input_count"] == 3
+        assert manifest["simulation_qualified"] is False
+        assert manifest["mesh_available"] is False and manifest["splat_available"] is False
+    result = _result(atlas_case)
+    output = result["operation_receipt"]["input_usage"]["frames"][0]["outputs"][0]
+    (atlas_case.root / output["path"]).write_bytes(b"corrupted")
+    with pytest.raises(ValueError, match="retained_output_changed"):
+        export_pose_bundle(pose_root=atlas_case.root, output_root=tmp_path / "exports")
+
+
 def _result(case):
     return json.loads((case.root / "atlas_posed_rgbd_result.json").read_text())
 
