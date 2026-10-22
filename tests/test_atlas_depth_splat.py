@@ -106,8 +106,13 @@ def test_mesh_spec_renders_capture_cameras_within_atlas_limits(tmp_path):
     assert rendered["extrinsics"] == portrait["extrinsics"]
     assert spec["uploads"]["splat"]["sha256"].startswith("sha256:")
     frames.append(frame(camera(), np.ones((64, 48), np.float32)))
-    with pytest.raises(ValueError, match="camera_grids_differ"):
-        depth_splat.splats2mesh_task_spec(frames=frames, spz=spz, source_video_digest="sha256:" + "0" * 64)
+    spec = depth_splat.splats2mesh_task_spec(frames=frames, spz=spz, source_video_digest="sha256:" + "0" * 64)
+    # Different source/output grids still render identical world-space rays.
+    for source, target in zip(frames, spec["request"]["cameras"], strict=True):
+        before, after = source["intrinsics"], target["intrinsics"]
+        for axis, size in (("x", "width"), ("y", "height")):
+            assert after["f" + axis] / after[size] == pytest.approx(before["f" + axis] / before[size])
+            assert after["c" + axis] / after[size] == pytest.approx(before["c" + axis] / before[size])
 
 
 def write_exr(path, depth, compression=3):
