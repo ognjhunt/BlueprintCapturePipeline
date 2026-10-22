@@ -14,20 +14,36 @@ maximum; this is not proof of unlimited server capacity.
 1. Run `python -m blueprint_pipeline.atlas_video_inputs survey --source-video
    VIDEO --capture-id ID --output-root ROOT`. The existing decoder freezes a
    hidden holdout. Only candidate frames appear in `candidate-survey.jpg`.
+   Initial survey size follows video duration and a per-run `--sampling-policy`;
+   `--sample-count` is an explicit override, not a provider limit.
 2. The harness inspects that sheet and records `atlas_scene_state_review.v1`
    with its `survey_digest`, `reviewed_by`, `scene_state`,
    `same_scene_state: true`, `moving_people_excluded: true`, and
-   `static_intervals_seconds: [[start, stop]]`. Optional `anchor_frame_id`
-   selects the task's visible subject. Do not combine different door/rack
+   `static_intervals_seconds: [[start, stop]]`. `anchor_frame_id`
+   selects the task's visible subject. `coverage_requirements` must include
+   `task_object` and `surrounding_scene` roles, each with a reviewed `label`
+   and `required_frame_ids`. Add separate groups for each needed object and
+   interaction/support region. Do not combine different door/rack
    states. Image matching does not prove scene-state identity.
 3. Run `python -m blueprint_pipeline.atlas_video_inputs prepare --survey-path
    ROOT/atlas_video_survey.json --review REVIEW --output-root RUN_ROOT`.
-   Selection rejects blur, clipped exposure, near duplicates and disconnected
-   viewpoints. It chooses an overlapping chain around the reviewed anchor and
-   retains its decisions. The ceiling defaults to 24, not a fixed input count.
+   Selection connects every required object/context anchor with overlap
+   bridges and retains its decisions. A disconnected region blocks preparation
+   rather than silently yielding only object close-ups. Per-run
+   `selection_policy` controls sharpness, clipping and match thresholds.
+   There is no fixed 24/64-frame input cap. `selection_budget` requires
+   `maximum_pose_cost_usd`, current `input_cost_usd`, `rate_card_reference`,
+   `reviewed_on` and `reviewed_by`; it determines the planning ceiling in images.
+   The separate WebApp gate remains the actual authority to spend or upload.
    Atlas receives lossless native upright source images, rather than the old
    518-pixel MapAnything inputs. Gaps remain explicit. Existing source-geometry
    orchestration uses this path when its root has an `atlas_scene_review.json`.
+   For a temporal gap, run `python -m blueprint_pipeline.atlas_video_extension
+   --source-video VIDEO --base-survey SURVEY --decoded-index INDEX --review
+   REVIEW --output-root EXTENSION_ROOT`. It derives denser sampling from the
+   input cadence, preserves every original hidden frame exclusion, and labels
+   added frames as development-only training observations. Review that new
+   candidate sheet and bind the updated survey digest before preparation.
 4. Obtain the WebApp's explicit source-bound Atlas beta authorization. It
    records the owner-accepted retention/training terms and a separate test cap.
    A key, a rate estimate, or an old Marble sponsorship is insufficient.
