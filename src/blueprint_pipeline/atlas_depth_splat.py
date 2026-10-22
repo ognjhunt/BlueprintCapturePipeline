@@ -1,0 +1,352 @@
+"""Fuse Atlas posed RGBD into a draft Gaussian splat that splats2Mesh can mesh.
+
+The public Atlas beta API poses images and returns per-frame depth, but it has no
+task that creates a splat, and ``splats2Mesh`` (its only mesh export) accepts
+nothing else. This stage back-projects every returned depth grid with its
+returned camera, keeps finite, confident pixels away from depth discontinuities,
+merges them on a voxel grid sized from the capture's own pixel footprint, and
+writes one surface-aligned Gaussian per voxel as a standard 3DGS PLY and an SPZ
+v2 upload. Cross-view depth agreement is measured before fusion, so poses and
+depths that do not describe one surface fail closed instead of smearing.
+
+The splat is a depth-fused draft without photometric optimization. Positions
+stay in Atlas world units on RUB axes (Y up, gravity-levelled), the frame SPZ
+stores natively, and remain development_only until a published size calibrates
+the scale.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import json
+import math
+import os
+import struct
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+import numpy as np
+
+from .decision_evidence_contracts import canonical_digest
+from .gaussian_splat_decode import SplatData, write_standard_3dgs_ply
+from .local_reconstruction_adapters import _sha256_file
+
+SCHEMA_VERSION = "atlas_depth_splat.v1"
+POSE_RESULT = "atlas_posed_rgbd_result.json"
+SH_C0 = 0.28209479177387814
+# A 5 % depth jump between neighbouring pixels is a discontinuity: a continuous
+# surface only reaches it beyond ~88 degrees of obliquity at Atlas's focal length.
+EDGE_RELATIVE_JUMP = 0.05
+MAX_MEDIAN_CROSS_VIEW_RESIDUAL = 0.05
+CROSS_VIEW_SAMPLES = 20_000
+# Tangent sigma per voxel edge keeps neighbouring discs overlapping without gaps.
+DISC_SIGMA_PER_VOXEL = 0.7
+DISC_THICKNESS_RATIO = 0.1
+SPLATS2MESH_MAX_RENDER = 1024
+SPLATS2MESH_MIN_RENDER = 64
+SPLATS2MESH_MAX_CAMERAS = 512
+SPZ_MAGIC = 0x5053474E
+SPZ_VERSION = 2
+SPZ_FRACTIONAL_BITS = 12
+SPZ_COLOR_SCALE = 0.15
+PLY_PROPERTIES = ("x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1",
+                  "scale_2", "rot_0", "rot_1", "rot_2", "rot_3")
+
+
+def _rotation_matrix(quaternion_xyzw: Sequence[float]) -> np.ndarray:
+    x, y, z, w = (float(value) for value in quaternion_xyzw)
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if not math.isfinite(norm) or norm < 1e-6:
+        raise ValueError("atlas_depth_splat_camera_rotation_invalid")
+    x, y, z, w = x / norm, y / norm, z / norm, w / norm
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def posed_frame(*, frame_id: str, rgb: np.ndarray, depth: np.ndarray, confidence: np.ndarray,
+                camera: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind one returned image/depth/confidence bundle to the camera Atlas returned with it."""
+    extrinsics, intrinsics = camera["extrinsics"], camera["intrinsics"]
+    if extrinsics.get("coordinateSystem", "rub") != "rub":
+        raise ValueError("atlas_depth_splat_camera_axes_unsupported")
+    grid = (int(intrinsics["height"]), int(intrinsics["width"]))
+    confidence = np.asarray(confidence)
+    if np.shape(depth) != grid or confidence.shape != grid or np.shape(rgb) != (*grid, 3):
+        raise ValueError("atlas_depth_splat_grid_mismatch")
+    scale = float(np.iinfo(confidence.dtype).max) if confidence.dtype.kind == "u" else 1.0
+    return {"frame_id": frame_id, "rgb": np.asarray(rgb, dtype=np.uint8),
+            "depth": np.asarray(depth, dtype=np.float32), "confidence": confidence.astype(np.float32) / scale,
+            "intrinsics": dict(intrinsics), "extrinsics": dict(extrinsics),
+            "rotation": _rotation_matrix(extrinsics["quaternion"]),
+            "position": np.asarray(extrinsics["position"], dtype=np.float64)}
+
+
+def load_posed_rgbd(pose_root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Read a retained images2PosedRGBD result and its digest-bound downloads."""
+    result = json.loads((pose_root / POSE_RESULT).read_text())
+    if result.get("digest") != canonical_digest(result, digest_field="digest"):
+        raise ValueError("atlas_depth_splat_pose_result_changed")
+    returned = result["operation"]["response"]["frames"]
+    usage = result["operation_receipt"]["input_usage"]["frames"]
+    if not returned or len(returned) != len(usage):
+        raise ValueError("atlas_depth_splat_frame_count_mismatch")
+    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
+    import cv2
+
+    frames = []
+    for frame, row in zip(returned, usage):
+        paths = {}
+        for output in row["outputs"]:
+            path = pose_root / output["path"]
+            if path.is_symlink() or not path.is_file() or _sha256_file(path) != output["sha256"]:
+                raise ValueError("atlas_depth_splat_output_changed")
+            paths[output["role"]] = path
+        if not {"image", "depth", "confidence"} <= set(paths):
+            raise ValueError("atlas_depth_splat_output_missing")
+        image = cv2.imread(str(paths["image"]), cv2.IMREAD_COLOR)
+        depth = cv2.imread(str(paths["depth"]), cv2.IMREAD_UNCHANGED)
+        confidence = cv2.imread(str(paths["confidence"]), cv2.IMREAD_UNCHANGED)
+        if image is None or depth is None or confidence is None or depth.ndim != 2 or confidence.ndim != 2:
+            raise ValueError("atlas_depth_splat_output_undecodable")
+        frames.append(posed_frame(frame_id=row["frame_id"], rgb=image[..., ::-1], depth=depth,
+                                  confidence=confidence, camera=frame["camera"]))
+    return result, frames
+
+
+def surface_samples(frame: Mapping[str, Any]) -> dict[str, np.ndarray]:
+    """World points, colours, confidences and camera-facing normals of usable pixels."""
+    k = frame["intrinsics"]
+    depth = np.where((frame["confidence"] > 0) & (frame["depth"] > 0), frame["depth"], np.nan).astype(np.float64)
+    center = depth[1:-1, 1:-1]
+    with np.errstate(invalid="ignore"):
+        keep = np.isfinite(center)
+        for neighbour in (depth[1:-1, 2:], depth[1:-1, :-2], depth[2:, 1:-1], depth[:-2, 1:-1]):
+            keep &= np.abs(neighbour - center) <= EDGE_RELATIVE_JUMP * center
+    u = (np.arange(depth.shape[1]) + 0.5 - k["cx"]) / k["fx"]
+    v = (np.arange(depth.shape[0]) + 0.5 - k["cy"]) / k["fy"]
+    world = np.stack([u[None, :] * depth, -v[:, None] * depth, -depth], axis=-1) @ frame["rotation"].T
+    world += frame["position"]
+    normal = np.cross(world[1:-1, 2:] - world[1:-1, :-2], world[2:, 1:-1] - world[:-2, 1:-1])
+    length = np.linalg.norm(normal, axis=-1)
+    with np.errstate(invalid="ignore"):
+        keep &= length > 0
+    points = world[1:-1, 1:-1][keep]
+    normal = normal[keep] / length[keep][:, None]
+    normal[np.einsum("ij,ij->i", normal, frame["position"] - points) < 0] *= -1.0
+    return {"points": points, "normals": normal,
+            "colors": frame["rgb"][1:-1, 1:-1][keep].astype(np.float64) / 255.0,
+            "weights": frame["confidence"][1:-1, 1:-1][keep].astype(np.float64),
+            "footprint": center[keep] / math.sqrt(k["fx"] * k["fy"])}
+
+
+def cross_view_agreement(frames: Sequence[Mapping[str, Any]],
+                         samples: Sequence[Mapping[str, np.ndarray]]) -> dict[str, Any]:
+    """Relative disagreement between each frame's points and the depth other frames returned."""
+    pairs, residuals = [], []
+    for source, sample in zip(frames, samples):
+        points = sample["points"]
+        if not len(points):
+            continue
+        picked = points[np.linspace(0, len(points) - 1, min(CROSS_VIEW_SAMPLES, len(points))).astype(np.int64)]
+        for target in frames:
+            if target is source:
+                continue
+            k = target["intrinsics"]
+            local = (picked - target["position"]) @ target["rotation"]
+            planar = -local[:, 2]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                column = np.floor(local[:, 0] / planar * k["fx"] + k["cx"])
+                row = np.floor(-local[:, 1] / planar * k["fy"] + k["cy"])
+                inside = (planar > 0) & (column >= 0) & (column < k["width"]) & (row >= 0) & (row < k["height"])
+            observed = np.full(len(picked), np.nan)
+            index = (row[inside].astype(np.int64), column[inside].astype(np.int64))
+            observed[inside] = np.where(target["confidence"][index] > 0, target["depth"][index], np.nan)
+            seen = np.isfinite(observed) & (observed > 0)
+            if seen.sum() < 0.01 * len(picked):
+                continue
+            relative = np.abs(observed[seen] - planar[seen]) / planar[seen]
+            residuals.append(relative)
+            pairs.append({"source": source["frame_id"], "target": target["frame_id"],
+                          "overlap_samples": int(seen.sum()), "median_relative_residual": float(np.median(relative))})
+    pooled = float(np.median(np.concatenate(residuals))) if residuals else None
+    return {"pairs": pairs, "median_relative_residual": pooled, "limit": MAX_MEDIAN_CROSS_VIEW_RESIDUAL}
+
+
+def fuse_samples(samples: Sequence[Mapping[str, np.ndarray]], voxel: float) -> dict[str, np.ndarray]:
+    """Confidence-weighted per-voxel means of position, colour and normal."""
+    points = np.concatenate([sample["points"] for sample in samples])
+    weights = np.concatenate([sample["weights"] for sample in samples])
+    keys = np.floor(points / voxel).astype(np.int64)
+    keys -= keys.min(axis=0)
+    span = keys.max(axis=0) + 1
+    flat = (keys[:, 0] * span[1] + keys[:, 1]) * span[2] + keys[:, 2]
+    _, inverse, counts = np.unique(flat, return_inverse=True, return_counts=True)
+    inverse = inverse.reshape(-1)
+    total = np.bincount(inverse, weights=weights)
+
+    def mean(values: np.ndarray) -> np.ndarray:
+        return np.stack([np.bincount(inverse, weights=values[:, axis] * weights)
+                         for axis in range(values.shape[1])], axis=1) / total[:, None]
+
+    normal = mean(np.concatenate([sample["normals"] for sample in samples]))
+    agreement = np.linalg.norm(normal, axis=1)
+    return {"xyz": mean(points), "rgb": mean(np.concatenate([sample["colors"] for sample in samples])),
+            "normal": normal / np.maximum(agreement, 1e-12)[:, None], "normal_agreement": agreement,
+            "confidence": total / counts, "observations": counts}
+
+
+def depth_fused_splat(fused: Mapping[str, np.ndarray], voxel: float) -> SplatData:
+    """One Gaussian per voxel: a thin disc on the fused normal, isotropic where normals disagree."""
+    count = len(fused["xyz"])
+    normal = fused["normal"] * np.where(fused["normal"][:, 2:3] < 0, -1.0, 1.0)
+    quats = np.stack([1.0 + normal[:, 2], -normal[:, 1], normal[:, 0], np.zeros(count)], axis=1)
+    quats /= np.linalg.norm(quats, axis=1, keepdims=True)
+    sigma = DISC_SIGMA_PER_VOXEL * voxel
+    scales = np.full((count, 3), math.log(sigma))
+    scales[fused["normal_agreement"] >= 0.5, 2] = math.log(sigma * DISC_THICKNESS_RATIO)
+    opacity = 0.5 + 0.49 * np.clip(fused["confidence"], 0.0, 1.0)
+    return SplatData(count=count, xyz=fused["xyz"].astype(np.float32),
+                     opacity=np.log(opacity / (1.0 - opacity)).astype(np.float32),
+                     f_dc=((fused["rgb"] - 0.5) / SH_C0).astype(np.float32), scales=scales.astype(np.float32),
+                     quats=quats.astype(np.float32), properties=PLY_PROPERTIES)
+
+
+def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
+                      voxel_footprint_multiple: float = 2.0) -> tuple[SplatData, dict[str, Any]]:
+    """Gate cross-view agreement, then fuse every usable pixel into a draft splat."""
+    if not math.isfinite(voxel_footprint_multiple) or voxel_footprint_multiple <= 0:
+        raise ValueError("atlas_depth_splat_voxel_multiple_invalid")
+    samples = [surface_samples(frame) for frame in frames]
+    agreement = cross_view_agreement(frames, samples)
+    if (agreement["median_relative_residual"] is not None
+            and agreement["median_relative_residual"] > MAX_MEDIAN_CROSS_VIEW_RESIDUAL):
+        raise ValueError("atlas_depth_splat_cross_view_inconsistent")
+    footprints = np.concatenate([sample["footprint"] for sample in samples])
+    if not len(footprints):
+        raise ValueError("atlas_depth_splat_no_usable_depth")
+    voxel = float(voxel_footprint_multiple * np.median(footprints))
+    fused = fuse_samples(samples, voxel)
+    report = {"frames": [{"frame_id": frame["frame_id"],
+                          "usable_pixel_fraction": len(sample["points"]) / frame["depth"].size}
+                         for frame, sample in zip(frames, samples)],
+              "cross_view_agreement": agreement, "voxel_size": voxel,
+              "voxel_footprint_multiple": voxel_footprint_multiple,
+              "median_observations_per_gaussian": float(np.median(fused["observations"]))}
+    return depth_fused_splat(fused, voxel), report
+
+
+def _uint8(values: np.ndarray) -> np.ndarray:
+    return np.clip(np.round(values), 0, 255).astype(np.uint8)
+
+
+def encode_spz(splat: SplatData) -> bytes:
+    """Niantic SPZ v2 with degree-0 colour, gzip-wrapped and byte-reproducible."""
+    fixed = np.round(splat.xyz.astype(np.float64) * (1 << SPZ_FRACTIONAL_BITS)).astype(np.int64)
+    if np.any(np.abs(fixed) >= 1 << 23):
+        raise ValueError("atlas_depth_splat_spz_position_out_of_range")
+    positions = ((fixed[..., None] & 0xFFFFFF) >> np.array([0, 8, 16])) & 0xFF
+    quats = splat.quats.astype(np.float64)
+    quats /= np.linalg.norm(quats, axis=1, keepdims=True)
+    quats *= np.where(quats[:, :1] < 0, -1.0, 1.0)
+    payload = b"".join([
+        struct.pack("<IIIBBBB", SPZ_MAGIC, SPZ_VERSION, splat.count, 0, SPZ_FRACTIONAL_BITS, 0, 0),
+        positions.astype(np.uint8).tobytes(),
+        _uint8(255.0 / (1.0 + np.exp(-splat.opacity.astype(np.float64)))).tobytes(),
+        _uint8(splat.f_dc.astype(np.float64) * (SPZ_COLOR_SCALE * 255.0) + 127.5).tobytes(),
+        _uint8((splat.scales.astype(np.float64) + 10.0) * 16.0).tobytes(),
+        _uint8(quats[:, 1:] * 127.5 + 127.5).tobytes(),
+    ])
+    return gzip.compress(payload, compresslevel=9, mtime=0)
+
+
+def decode_spz(data: bytes) -> SplatData:
+    raw = gzip.decompress(data)
+    magic, version, count, degree, fractional, _flags, _reserved = struct.unpack_from("<IIIBBBB", raw)
+    if magic != SPZ_MAGIC or version != SPZ_VERSION or degree != 0 or len(raw) != 16 + count * 19:
+        raise ValueError("atlas_depth_splat_spz_invalid")
+    body = np.frombuffer(raw, dtype=np.uint8, offset=16).astype(np.int64)
+    position, rest = body[:count * 9].reshape(count, 3, 3), body[count * 9:]
+    fixed = position[..., 0] | (position[..., 1] << 8) | (position[..., 2] << 16)
+    fixed = np.where(fixed & 0x800000, fixed - (1 << 24), fixed)
+    alpha = np.clip(rest[:count] / 255.0, 1e-6, 1 - 1e-6)
+    colors, scales, rotation = (rest[count + 3 * count * index:count + 3 * count * (index + 1)].reshape(count, 3)
+                                for index in range(3))
+    xyz = rotation / 127.5 - 1.0
+    w = np.sqrt(np.clip(1.0 - np.sum(xyz * xyz, axis=1), 0.0, None))
+    return SplatData(count=count, xyz=(fixed / float(1 << fractional)).astype(np.float32),
+                     opacity=np.log(alpha / (1 - alpha)).astype(np.float32),
+                     f_dc=((colors / 255.0 - 0.5) / SPZ_COLOR_SCALE).astype(np.float32),
+                     scales=(scales / 16.0 - 10.0).astype(np.float32),
+                     quats=np.column_stack([w, xyz]).astype(np.float32), properties=PLY_PROPERTIES)
+
+
+def splats2mesh_task_spec(*, frames: Sequence[Mapping[str, Any]], spz: Path,
+                          source_video_digest: str) -> dict[str, Any]:
+    """Mesh the splat from the capture's own cameras, resized to Atlas's render limits."""
+    grids = {(int(frame["intrinsics"]["width"]), int(frame["intrinsics"]["height"])) for frame in frames}
+    if len(grids) != 1:
+        raise ValueError("atlas_depth_splat_camera_grids_differ")
+    ((width, height),) = grids
+    factor = max(min(1.0, SPLATS2MESH_MAX_RENDER / max(width, height)), SPLATS2MESH_MIN_RENDER / min(width, height))
+    render = (round(width * factor), round(height * factor))
+    if max(render) > SPLATS2MESH_MAX_RENDER:
+        raise ValueError("atlas_depth_splat_render_aspect_unsupported")
+    sx, sy = render[0] / width, render[1] / height
+    chosen = list(frames)
+    if len(chosen) > SPLATS2MESH_MAX_CAMERAS:
+        chosen = [chosen[i] for i in np.linspace(0, len(chosen) - 1, SPLATS2MESH_MAX_CAMERAS).round().astype(int)]
+    cameras = [{"intrinsics": {"fx": k["fx"] * sx, "fy": k["fy"] * sy, "cx": k["cx"] * sx, "cy": k["cy"] * sy,
+                               "width": render[0], "height": render[1]},
+                "extrinsics": {key: frame["extrinsics"][key] for key in ("position", "quaternion", "coordinateSystem")}}
+               for frame in chosen for k in (frame["intrinsics"],)]
+    return {"task": "splats2Mesh", "source_video_digest": source_video_digest,
+            "request": {"splatAsset": {"assetId": "upload:splat"}, "cameras": cameras, "textureMode": "image_texture"},
+            "uploads": {"splat": {"path": str(spz.resolve()), "sha256": _sha256_file(spz)}}}
+
+
+def build_depth_splat(pose_root: Path, output_root: Path, *, voxel_footprint_multiple: float = 2.0) -> dict[str, Any]:
+    """Write the draft splat (PLY + SPZ), its manifest and the splats2Mesh task spec."""
+    result, frames = load_posed_rgbd(pose_root)
+    splat, report = fuse_posed_frames(frames, voxel_footprint_multiple=voxel_footprint_multiple)
+    data = encode_spz(splat)
+    decoded = decode_spz(data)
+    if decoded.count != splat.count or np.max(np.abs(decoded.xyz - splat.xyz)) > 1.0 / (1 << SPZ_FRACTIONAL_BITS):
+        raise ValueError("atlas_depth_splat_spz_round_trip_failed")
+    output_root.mkdir(parents=True, exist_ok=True)
+    ply = write_standard_3dgs_ply(splat, output_root / "atlas_depth_splat.ply")
+    spz = output_root / "atlas_depth_splat.spz"
+    spz.write_bytes(data)
+    source_video_digest = result["binding"]["source_video_digest"]
+    manifest = {"schema_version": SCHEMA_VERSION, "pose_result_digest": result["digest"],
+                "pose_operation_id": result["operation"]["id"], "source_video_digest": source_video_digest,
+                **report, "gaussian_count": splat.count,
+                "outputs": [{"role": role, "path": path.name, "bytes": path.stat().st_size, "sha256": _sha256_file(path)}
+                            for role, path in (("splat_ply", ply), ("splat_spz", spz))],
+                "world_frame": "atlas_world_rub_y_up", "units": result.get("depth_unit"),
+                "scale_status": result.get("scale_status"), "splat_kind": "depth_fused_draft",
+                "photometric_optimization": False, "generated_content": False,
+                "metric_measurement_proven": False, "claim_scope": "development_only"}
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    (output_root / "atlas_depth_splat_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    spec = splats2mesh_task_spec(frames=frames, spz=spz, source_video_digest=source_video_digest)
+    (output_root / "splats2mesh_task_spec.json").write_text(json.dumps(spec, indent=2) + "\n")
+    return manifest
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Fuse Atlas posed RGBD into a draft splat for splats2Mesh")
+    parser.add_argument("--pose-root", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--voxel-footprint-multiple", type=float, default=2.0)
+    args = parser.parse_args(argv)
+    manifest = build_depth_splat(args.pose_root, args.output_root,
+                                 voxel_footprint_multiple=args.voxel_footprint_multiple)
+    print(json.dumps({"gaussian_count": manifest["gaussian_count"], "voxel_size": manifest["voxel_size"],
+                      "median_relative_residual": manifest["cross_view_agreement"]["median_relative_residual"],
+                      "digest": manifest["digest"]}))
+
+
+if __name__ == "__main__":
+    main()
