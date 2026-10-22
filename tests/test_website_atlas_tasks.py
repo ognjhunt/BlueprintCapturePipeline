@@ -117,6 +117,131 @@ def test_retains_all_outputs_and_returns_replayed_result_without_another_purchas
     assert fake.posts == fake.reservations == 1
 
 
+class TransientFake(Fake):
+    def __init__(self, failures=1, code=14):
+        super().__init__()
+        self.failures, self.code = failures, code
+        self.admissions, self.keys = {}, []
+
+    def reserve(self, *, capture_id, operation, payload):
+        spend = payload["spend"]
+        key = spend["allocation_binding_digest"]
+        if key not in self.admissions:
+            self.reservations += 1
+            self.admissions[key] = {**spend, "schema_version": "paid_lane_admission.v1",
+                "status": "admitted", "blockers": [], "external_disclosure_allowed": True,
+                "expires_at_epoch": 1e12}
+        return self.admissions[key]
+
+    def transport(self, method, url, headers, data):
+        if url.endswith("/tasks:atlasGenerate"):
+            self.keys.append(headers["Idempotency-Key"])
+            status, body = super().transport(method, url, headers, data)
+            return status, json.dumps({"id": f"op_task_{self.posts}", "done": False}).encode()
+        if "/operations/op_task_" in url and not url.endswith(":trace"):
+            index = int(url.rsplit("_", 1)[-1])
+            self.polls += 1
+            if index <= self.failures:
+                return 200, json.dumps({"id": f"op_task_{index}", "done": True,
+                    "error": {"code": self.code, "message": "upstream unavailable",
+                              "details": [{"domain": "api.worldlabs.ai", "reason": "TRANSIENT_UPSTREAM"}]}}).encode()
+            return 200, json.dumps({"id": f"op_task_{index}", "done": not self.pending,
+                "response": {"frames": [{"imageAsset": {"assetId": "asset_output"}, "camera": camera(.1),
+                    "depth": {"depthAsset": {"assetId": "asset_depth"},
+                              "confidenceAsset": {"assetId": "asset_confidence"}}}], "promptUsed": "same kitchen"}}).encode()
+        return super().transport(method, url, headers, data)
+
+
+def transient_case(case, monkeypatch, failures=1, code=14):
+    _, _, _, run = case
+    fake = TransientFake(failures, code)
+    monkeypatch.setattr(control, "website_webapp_request", fake.reserve)
+    # The fixture closure intentionally uses Fake.transport; replace its target.
+    original = case[0]
+    original.transport = fake.transport
+    return fake, run
+
+
+def test_terminal_upstream_retry_keeps_separate_spend_and_replays_without_purchase(case, monkeypatch, tmp_path):
+    fake, run = transient_case(case, monkeypatch)
+    result = run()
+    assert result["status"] == "completed" and result["operation"]["id"] == "op_task_2"
+    assert fake.posts == fake.reservations == len(set(fake.keys)) == 2
+    assert result["billing"]["total_reserved_usd"] == .1
+    assert result["retry_history"][0]["operation_id"] == "op_task_1"
+    state = json.loads((tmp_path / "atlas_pose/submission.json").read_text())
+    assert state["terminal_operation"]["error"]["code"] == 14
+    assert state["completed_operation_id"] == "op_task_2"
+    assert all((tmp_path / row["path"]).is_file() for row in result["outputs"])
+    assert run() == result and fake.posts == fake.reservations == 2
+
+
+def test_upstream_retry_limit_persists_across_restarts(case, monkeypatch):
+    fake, run = transient_case(case, monkeypatch, failures=9)
+    for _ in range(2):
+        with pytest.raises(ValueError, match="atlas_task_operation_failed"):
+            run()
+        assert fake.posts == fake.reservations == len(set(fake.keys)) == 3
+
+
+def test_pending_retry_resumes_the_same_purchase(case, monkeypatch):
+    fake, run = transient_case(case, monkeypatch)
+    fake.pending = True
+    assert run()["operation_id"] == "op_task_2"
+    assert run()["status"] == "processing"
+    assert fake.posts == fake.reservations == 2
+    fake.pending = False
+    assert run()["status"] == "completed"
+    assert fake.posts == fake.reservations == 2
+
+
+def test_two_failures_keep_all_receipts_and_portable_outputs(case, monkeypatch, tmp_path):
+    fake, run = transient_case(case, monkeypatch, failures=2)
+    result = run()
+    assert result["operation"]["id"] == "op_task_3"
+    assert [r["operation_id"] for r in result["retry_history"]] == ["op_task_1", "op_task_2"]
+    assert result["billing"]["total_reserved_usd"] == .15
+    assert all((tmp_path / row["path"]).is_file() for row in result["outputs"])
+    assert run() == result and fake.posts == fake.reservations == 3
+
+
+def test_retry_refuses_an_external_symlink(case, monkeypatch, tmp_path):
+    fake, run = transient_case(case, monkeypatch)
+    (tmp_path / "retry").symlink_to(tmp_path.parent, target_is_directory=True)
+    with pytest.raises(ValueError, match="retry_root_symlink"):
+        run()
+    assert fake.posts == fake.reservations == 1
+
+
+def test_nontransient_terminal_failure_never_retries(case, monkeypatch):
+    fake, run = transient_case(case, monkeypatch, code=3)
+    with pytest.raises(ValueError, match="atlas_task_operation_failed"):
+        run()
+    assert fake.posts == fake.reservations == 1
+
+
+def test_transient_retry_requires_new_budget_and_release_admission(case, monkeypatch):
+    fake, run = transient_case(case, monkeypatch)
+    def refuse_retry(*_a, **_kw):
+        return (["release_changed"] if fake.posts else [], "a" * 40)
+    monkeypatch.setattr(allocator, "_source_checkout_blockers", refuse_retry)
+    with pytest.raises(ValueError, match="release_not_admitted"):
+        run()
+    assert fake.posts == fake.reservations == 1
+
+
+def test_transient_retry_stops_before_post_when_budget_refuses(case, monkeypatch):
+    fake, run = transient_case(case, monkeypatch)
+    def budget(**kw):
+        if fake.reservations:
+            raise ValueError("test_budget_exhausted")
+        return fake.reserve(**kw)
+    monkeypatch.setattr(control, "website_webapp_request", budget)
+    with pytest.raises(ValueError, match="test_budget_exhausted"):
+        run()
+    assert fake.posts == fake.reservations == 1
+
+
 def test_polling_resumes_without_new_reservation(case):
     fake, _, _, run = case
     fake.pending = True
