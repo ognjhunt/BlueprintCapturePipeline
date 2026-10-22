@@ -70,6 +70,19 @@ def validate_task_request(task: str, request: Mapping[str, Any]) -> None:
             centers += [r["extrinsics"]["position"] for r in request["targetCameras"]]
             if max(math.dist(centers[0], p) for p in centers) < 1e-6:
                 raise ValueError("atlas_generated_depth_requires_translation")
+            # Routing is automatic. Some routes only reconstruct context on
+            # the centered output grid. Portrait context cannot be assumed to
+            # anchor a one-target reconstruction on every available route.
+            eligible = []
+            for frame in request["contextFrames"]:
+                k = frame["camera"]["intrinsics"]
+                if ((k["width"], k["height"]) == (1280, 720)
+                        and math.isclose(k["cx"], 640, abs_tol=1e-3)
+                        and math.isclose(k["cy"], 360, abs_tol=1e-3)):
+                    eligible.append(frame["camera"]["extrinsics"]["position"])
+            reliable_centers = eligible + [r["extrinsics"]["position"] for r in request["targetCameras"]]
+            if max(math.dist(reliable_centers[0], p) for p in reliable_centers) < 1e-6:
+                raise ValueError("atlas_generated_depth_anchor_baseline_missing")
     if task == "atlasMasked":
         context = request["contextFrames"]
         if len(context) != len(request["targetCameras"]):
@@ -155,6 +168,18 @@ def _collect(client: pose.AtlasClient, operation: Mapping[str, Any], root: Path)
     return retained
 
 
+def _camera_matches(returned: Mapping[str, Any], requested: Mapping[str, Any]) -> bool:
+    """Allow float32 wire rounding, never a different camera or pixel grid."""
+    if any(returned["intrinsics"][key] != requested["intrinsics"][key] for key in ("width", "height")):
+        return False
+    if returned["extrinsics"].get("coordinateSystem", "rub") != requested["extrinsics"].get("coordinateSystem", "rub"):
+        return False
+    pairs = [(returned["intrinsics"][key], requested["intrinsics"][key]) for key in ("fx", "fy", "cx", "cy")]
+    for key in ("position", "quaternion"):
+        pairs.extend(zip(returned["extrinsics"][key], requested["extrinsics"][key], strict=True))
+    return all(math.isfinite(a) and math.isfinite(b) and math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-6) for a, b in pairs)
+
+
 def _validate_response(task: str, request: Mapping[str, Any], response: Mapping[str, Any]) -> None:
     import jsonschema
     schema = json.loads((Path(__file__).parent / "_atlas_schemas" / (task + ".json")).read_text())
@@ -167,7 +192,7 @@ def _validate_response(task: str, request: Mapping[str, Any], response: Mapping[
         if not isinstance(frames, list) or len(frames) != len(request["targetCameras"]):
             raise ValueError("atlas_task_response_frame_count_mismatch")
         for frame, camera in zip(frames, request["targetCameras"], strict=True):
-            if frame["camera"] != camera:
+            if not _camera_matches(frame["camera"], camera):
                 raise ValueError("atlas_task_response_camera_mismatch")
             if request.get("returnDepth") is True and not (frame.get("depth") or {}).get("depthAsset"):
                 raise ValueError("atlas_task_response_depth_missing")

@@ -173,6 +173,26 @@ def test_response_shape_cameras_depth_and_mesh_bytes_are_not_assumed(case):
     assert fake.posts == 1
 
 
+def test_camera_wire_rounding_is_allowed_but_grid_and_view_changes_are_not():
+    requested = camera(.1)
+    returned = camera(.10000000149)
+    returned["intrinsics"]["fx"] += .00005
+    assert tasks._camera_matches(returned, requested)
+    returned["intrinsics"]["width"] = 1279
+    assert not tasks._camera_matches(returned, requested)
+    assert not tasks._camera_matches(camera(.11), requested)
+
+
+def test_portrait_context_cannot_be_assumed_to_anchor_generated_depth():
+    body = request()
+    k = body["contextFrames"][0]["camera"]["intrinsics"]
+    k.update(width=720, height=1280, cx=360, cy=640)
+    with pytest.raises(ValueError, match="anchor_baseline_missing"):
+        tasks.validate_task_request("atlasGenerate", body)
+    body["targetCameras"].append(camera(.2))
+    tasks.validate_task_request("atlasGenerate", body)
+
+
 def test_chisel_rollout_and_depth_constraints_are_checked_before_spend():
     body = {"targetCameras": [camera()], "prompt": "Same kitchen", "returnDepth": True}
     with pytest.raises(ValueError, match="depth_requires_translated_targets"):
