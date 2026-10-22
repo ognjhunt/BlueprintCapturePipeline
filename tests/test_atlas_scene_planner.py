@@ -89,3 +89,37 @@ def test_unpriced_or_overbudget_model_refused_before_reservation(tmp_path):
     policy["maximum_review_cost_usd"] = .00001
     with pytest.raises(ValueError, match="token_budget_exceeded"):
         planner.review_survey(survey_path=path, task_context={}, configuration={"policy": policy}, output_root=tmp_path)
+
+
+def test_gap_review_preserves_state_quality_and_original_views(tmp_path):
+    _, survey, proposal, policy = fixture(tmp_path)
+    from copy import deepcopy
+    prior = deepcopy(proposal)
+    prior["static_intervals_seconds"] = [[0, 2.5]]
+    proposal.update(static_intervals_seconds=[[0, 2.5]], unsafe_frame_ids=[], action="refine",
+                    gap_assessment=["Frame 2 covers the edge missing from the draft"], additional_input_frame_ids=["2"])
+    feedback = {"prior_review": prior, "prior_selected_frame_ids": ["0", "1"], "digest": "feedback"}
+    review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2, feedback=feedback)
+    assert review["additional_input_frame_ids"] == ["2"]
+    assert review["selection_budget"]["maximum_pose_cost_usd"] == 1.9  # No synthetic view purchase for frame 2.
+    for mutation in ({"static_intervals_seconds": [[0, 2.4]]},
+                     {"selection_policy": {**proposal["selection_policy"], "minimum_overlap_inliers": 8}},
+                     {"action": "keep"}):
+        with pytest.raises(ValueError, match="refinement_state_or_selection_invalid"):
+            planner.proposal_review({**proposal, **mutation}, survey=survey, policy=policy, pose_budget=2, feedback=feedback)
+    feedback["prior_selected_frame_ids"].append("missing")
+    with pytest.raises(ValueError, match="refinement_state_or_selection_invalid"):
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2, feedback=feedback)
+
+
+def test_gap_pixels_are_labeled_derived_and_digest_checked(tmp_path):
+    _, survey, _, _ = fixture(tmp_path)
+    image = tmp_path / "render.png"
+    Image.new("RGB", (20, 30), "red").save(image)
+    feedback = {"digest": "feedback", "previews": [{"path": str(image), "sha256": _sha256_file(image),
+                                                     "source_frame_id": "1"}]}
+    content = planner._input(survey, {"description": "task"}, feedback)[0]["content"]
+    assert json.loads(content[-2]["text"])["not_source_observation"] is True
+    image.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="preview_changed"):
+        planner._input(survey, {"description": "task"}, feedback)

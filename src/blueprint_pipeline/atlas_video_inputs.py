@@ -288,6 +288,9 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     if anchor_id is not None and anchor_id not in {r["frame_id"] for r in frames}:
         raise ValueError("atlas_anchor_outside_static_candidate_split")
     requirements = review.get("coverage_requirements")
+    if review.get("additional_input_frame_ids"):
+        requirements = [*requirements, {"role": "support_surface", "label": "Reviewed reconstruction gap inputs",
+            "required_frame_ids": review["additional_input_frame_ids"]}]
     try:
         selected, diagnostics = select_coverage_views(frames=frames, features=[_features(r, rotation) for r in frames],
             maximum_frames=maximum_frames, requirements=requirements, anchor_id=anchor_id,
