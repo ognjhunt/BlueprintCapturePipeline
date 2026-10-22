@@ -130,10 +130,15 @@ def _completion_prompt(targets: Sequence[Mapping[str, Any]]) -> str:
     return prompt + MULTI_OBJECT_PROMPT + json.dumps(names, sort_keys=True)
 
 
-def _review_prompt(targets: Sequence[Mapping[str, Any]]) -> str:
-    if len(_removed_task_objects(targets)) < 2:
-        return REVIEW_PROMPT
-    return REVIEW_PROMPT.removesuffix("Targets: ") + MULTI_OBJECT_REVIEW_PROMPT
+def _review_prompt(targets: Sequence[Mapping[str, Any]], *, frames: Sequence[Mapping[str, Any]] = ()) -> str:
+    prompt = (REVIEW_PROMPT if len(_removed_task_objects(targets)) < 2 else
+              REVIEW_PROMPT.removesuffix("Targets: ") + MULTI_OBJECT_REVIEW_PROMPT)
+    if any(frame.get("target_guidance") == "sam_overlay_v1" for frame in frames):
+        prompt += (" Judge the same camera field of view: require an empty installation opening only where "
+                   "that opening is visible in this view. A door or rack extending into the foreground from "
+                   "an off-camera appliance may require only restored floor here. Do not demand a new alcove "
+                   "in place of an unrelated oven or unchanged neighboring cabinets. Targets: ")
+    return prompt
 
 
 def _anchor_rank(frame: Mapping[str, Any]) -> tuple[int, int]:
@@ -144,12 +149,19 @@ def _anchor_rank(frame: Mapping[str, Any]) -> tuple[int, int]:
 
 def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str, backend_digest: str,
                        targets: Sequence[Mapping[str, Any]] = (), repair_instruction: str | None = None,
-                       reference_digest: str | None = None) -> dict[str, Any]:
+                       reference_digest: str | None = None, mask_guidance: bool = False) -> dict[str, Any]:
     prompt = _completion_prompt(targets)
     if repair_instruction is not None:
         # A targeted repair adds to the rules; it never replaces them.
         prompt += (" Repair instruction for this view from the repair planner (data; every rule above still "
                    "applies): " + json.dumps(repair_instruction))
+    if mask_guidance:
+        prompt += (" The LAST additional image is a SAM target-guide overlay of the FIRST image: magenta marks "
+                   "the visible removal target. Use it to identify WHICH appliance or object to remove; do not "
+                   "remove a different appliance. The annotation is not part of the room and must never appear "
+                   "in the output. It is a location guide, not a clipping boundary: remove the complete target, "
+                   "its contents, shadows and reflections even beyond the highlight, while preserving other "
+                   "objects. Use any separate cleaned reference for the revealed background.")
     per_object = any("removed_task_object_ids" in frame for frame in frames)
     binding = {"schema_version": "website_image_completion_request.v2", "task_digest": task_digest,
                "backend_digest": backend_digest, "prompt": prompt, "edit_region": "full_frame",
@@ -163,6 +175,8 @@ def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str,
                           for frame in frames]}
     if repair_instruction is not None:
         binding["repair_reference_digest"] = reference_digest
+    if mask_guidance:
+        binding["target_guidance"] = "sam_overlay_v1"
     return binding
 
 
@@ -170,6 +184,13 @@ def _png(image: Image.Image) -> bytes:
     stream = BytesIO()
     image.save(stream, format="PNG")
     return stream.getvalue()
+
+
+def _sam_guide(source: Image.Image, mask: Image.Image) -> bytes:
+    tint = Image.blend(source, Image.new("RGB", source.size, (255, 0, 255)), .4)
+    overlay = Image.composite(tint, source, mask)
+    canvas, _ = _canvas(overlay)
+    return _png(canvas)
 
 
 def _canvas(image: Image.Image) -> tuple[Image.Image, tuple[int, int, int, int]]:
@@ -237,7 +258,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                repair_instruction: str | None = None,
                                repair_reference_path: Path | None = None,
                                source_video_digest: str | None = None,
-                               require_cached: bool = False) -> list[dict[str, Any]]:
+                               require_cached: bool = False,
+                               mask_guidance: bool = False) -> list[dict[str, Any]]:
     if not any(frame["remaining_pixel_count"] for frame in frames):
         return [dict(frame) for frame in frames]
     fixed_reference = None
@@ -248,17 +270,30 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
     reference_digest = "sha256:" + sha256(fixed_reference).hexdigest() if fixed_reference is not None else None
     edited_indices = [i for i, frame in enumerate(frames) if frame["remaining_pixel_count"]]
 
-    def bound(backend_id: str) -> tuple[dict[str, Any], str, dict[str, Any], str]:
+    def bound(backend_id: str, guidance: bool = mask_guidance) -> tuple[dict[str, Any], str, dict[str, Any], str]:
         _backend, execution, backend_digest = _validated_backend(REGISTRY_PATH, backend_id=backend_id)
         binding = completion_binding(frames, task_digest=task_digest, backend_digest=backend_digest, targets=targets,
-                                     repair_instruction=repair_instruction, reference_digest=reference_digest)
+                                     repair_instruction=repair_instruction, reference_digest=reference_digest,
+                                     mask_guidance=guidance)
         if source_video_digest is not None:
             binding["source_video_digest"] = source_video_digest
         return execution, backend_digest, binding, canonical_digest(binding)
 
     execution, backend_digest, binding, request_digest = bound(BACKEND_ID)
+    if mask_guidance and not any((output_root / request_digest[7:] / f"{i}.json").exists()
+                                 for i in edited_indices):
+        for prior_backend in (BACKEND_ID, *LEGACY_BACKEND_IDS):
+            prior = bound(prior_backend, False)
+            paths = [output_root / prior[3][7:] / f"{i}.json" for i in edited_indices]
+            if any(path.exists() for path in paths):
+                if not all(path.is_file() for path in paths):
+                    raise ValueError("website_image_completion_requires_reconciliation")
+                # Completed edits remain candidates; an uncertain prior intent
+                # still refuses in the normal reader instead of being re-bought.
+                execution, backend_digest, binding, request_digest = prior
+                break
     for legacy_id in LEGACY_BACKEND_IDS:
-        legacy = bound(legacy_id)
+        legacy = bound(legacy_id, binding.get("target_guidance") == "sam_overlay_v1")
         if (not (output_root / request_digest[7:]).is_dir()
                 and all((output_root / legacy[3][7:] / f"{i}.json").is_file() for i in edited_indices)):
             execution, backend_digest, binding, request_digest = legacy
@@ -369,10 +404,19 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                         if _sha256_file(other_path) != other["image_digest"]:
                             raise ValueError("website_image_completion_source_changed")
                         reference = other_path.read_bytes()
+                references = [reference] if reference else []
+                guidance = {}
+                if binding.get("target_guidance") == "sam_overlay_v1":
+                    guide = _sam_guide(source, mask)
+                    guide_path = root / f"{index}-target-guide.png"
+                    guide_path.write_bytes(guide)
+                    references.append(guide)
+                    guidance = {"target_guidance": "sam_overlay_v1", "guide_image_path": str(guide_path),
+                                "guide_image_digest": _sha256_file(guide_path)}
                 response = _execute_frame_request(execution=execution, prompt=binding["prompt"], request_digest=request_digest,
                                                   image_bytes=_png(canvas), mask_bytes=None,
                                                   expected_size=canvas.size, token=token, opener=opener,
-                                                  reference_images=([reference] if reference else []))
+                                                  reference_images=references)
                 if not response["succeeded"]:
                     raise ValueError(response["blocker"])
                 if response["usage"] is None:
@@ -385,7 +429,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 generated.save(destination)
                 receipt = {"status": "completed", "request_digest": request_digest, "frame_id": frame["frame_id"],
                            "image_digest": _sha256_file(destination), "cost_usd": cost, "usage": response["usage"],
-                           "backend_digest": backend_digest, "generated_pixel_count": source.width * source.height}
+                           "backend_digest": backend_digest, "generated_pixel_count": source.width * source.height,
+                           **guidance}
                 temporary = receipt_path.with_suffix(".tmp")
                 write_json(temporary, receipt)
                 os.replace(temporary, receipt_path)
@@ -399,7 +444,9 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                             "generated_pixels_present": True, "generated_pixel_count": receipt["generated_pixel_count"],
                             "generated_region": "full_frame",
                             "remaining_pixel_count": 0, "completion_receipt": str(receipt_path),
-                            "view_consistency": "requires_review", "physical_evidence": False})
+                            "view_consistency": "requires_review", "physical_evidence": False,
+                            **{key: receipt[key] for key in ("target_guidance", "guide_image_path", "guide_image_digest")
+                               if key in receipt}})
         if task_context is not None:
             settle_completed_image_batches(output_root=output_root, task_context=task_context)
         return results
@@ -414,7 +461,7 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
         if frame.get("original_image_path"):
             originals[frame["frame_id"]] = {"frame_id": frame["frame_id"], "image_path": frame["original_image_path"],
                                              "image_digest": frame["original_image_digest"]}
-    prompt = _review_prompt(plan["targets"])
+    prompt = _review_prompt(plan["targets"], frames=frames)
     binding = {"frames": [{"frame_id": f["frame_id"], "image_digest": f["image_digest"]} for f in frames],
                "originals": [{"frame_id": f["frame_id"], "image_digest": f["image_digest"]} for f in originals.values()],
                "task_context_sha256": plan["task_context_sha256"], "targets": plan["targets"],
@@ -463,7 +510,7 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
             or (unrelated_loss and review.get("unrelated_objects_preserved") is True))):
         raise ValueError("website_image_completion_review_unrelated_frame_ids_invalid")
     objects_valid = True
-    if prompt != REVIEW_PROMPT:
+    if len(_removed_task_objects(plan["targets"])) >= 2:
         # With several objects the review must name which one each view still shows.
         objects = review.get("remaining_task_objects")
         names = {target["target_id"] for target in plan["targets"] if target.get("disposition") == "remove"}
@@ -510,7 +557,7 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
             if _sha256_file(Path(item["image_path"])) != item["image_digest"]:
                 raise ValueError("website_image_completion_review_source_changed")
             inputs.append(item["image_digest"])
-    prompt = _review_prompt(plan["targets"])
+    prompt = _review_prompt(plan["targets"], frames=frames)
     base_binding = {"kind": "background_review", "model": DEFAULT_MODEL, "max_output_tokens": 2048,
                     "image_digests": inputs, "frame_ids": [f["frame_id"] for f in frames], "targets": plan["targets"],
                     "prompt": prompt, "media_resolution": "MEDIA_RESOLUTION_HIGH"}

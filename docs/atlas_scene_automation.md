@@ -28,6 +28,12 @@ The production Atlas controller runs the following for a new scene plan:
    a new capture does not need an original-scene Atlas pose to start editing.
    Older completed editor batches can supply exact candidate bytes without
    buying their images again. Superseded views do not silently become inputs.
+   New edits additionally receive a SAM overlay as the last visual reference,
+   aligned to the first image's canvas. This identifies the target without
+   using an API mask or pasting the fill through its silhouette; shadows,
+   reflections and contents can extend beyond the highlighted region. The
+   overlay and its checksum are retained with the image receipt. Completed
+   earlier edits remain reusable; uncertain earlier intents still refuse.
 5. Gemini independently reviews the complete selected edited set before Atlas
    receives any RGB. Rejected views cannot enter reconstruction. Accepted RGB
    acquires fresh Atlas cameras and depth, rather than putting original
@@ -69,6 +75,10 @@ the source video, source pose, input selection, task context, automation plan,
 review binding and image checksums first. Changed or rejected artifacts cannot
 be adopted. Keep this manifest, its referenced files and provider receipts in
 the retained job; a new geometry job does not require new image generation.
+The fresh background pose owns its RGB inputs under `fallback_pose-v2/inputs`.
+The canonical pose-input loader validates that handoff before dispatch. A
+refused older sibling-directory handoff remains intact; an older submission
+intent requires reconciliation before a different pose can be bought.
 
 For a zero-spend retained-run measurement replay:
 

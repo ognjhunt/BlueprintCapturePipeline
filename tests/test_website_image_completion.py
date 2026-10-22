@@ -53,8 +53,13 @@ def _inputs(tmp_path):
     return frames, admission
 
 
-def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and_reuses_paid_outputs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mask_guidance", [False, True])
+def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and_reuses_paid_outputs(tmp_path, monkeypatch, mask_guidance):
     frames, admission = _inputs(tmp_path)
+    if mask_guidance:
+        backend = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)[2]
+        admission["allocation_binding_digest"] = canonical_digest(completion.completion_binding(
+            frames, task_digest="task", backend_digest=backend, mask_guidance=True))
     calls = []
 
     def edit(**kwargs):
@@ -64,13 +69,22 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
         return {"succeeded": True, "generated": stream.getvalue(), "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
 
     monkeypatch.setattr(completion, "_execute_frame_request", edit)
-    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission, admission_grant=_grant(admission), token="test")
+    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission,
+                admission_grant=_grant(admission), token="test", mask_guidance=mask_guidance)
     outputs = completion.complete_background_images(**args)
     assert len(calls) == 2
-    assert calls[0]["reference_images"] == [Path(frames[1]["image_path"]).read_bytes()]
-    assert calls[1]["reference_images"] == [Path(outputs[0]["image_path"]).read_bytes()]
-    # No segmentation mask reaches the editor, and the first image is the plain frame
-    # (letterboxed), never a frame with the object cut out.
+    assert calls[0]["reference_images"][0] == Path(frames[1]["image_path"]).read_bytes()
+    assert calls[1]["reference_images"][0] == Path(outputs[0]["image_path"]).read_bytes()
+    assert all(len(call["reference_images"]) == (2 if mask_guidance else 1) for call in calls)
+    if mask_guidance:
+        assert "SAM target-guide overlay" in calls[0]["prompt"]
+        assert calls[0]["reference_images"][-1] == completion._sam_guide(
+            Image.open(frames[0]["image_path"]).convert("RGB"), Image.open(frames[0]["remaining_mask_path"]).convert("L"))
+        receipt = json.loads(Path(outputs[0]["completion_receipt"]).read_text())
+        assert receipt["target_guidance"] == "sam_overlay_v1"
+        assert _sha256_file(Path(receipt["guide_image_path"])) == receipt["guide_image_digest"]
+    # The first image is plain; SAM guidance is a separate reference. The API
+    # mask field and silhouette paste-back remain unused.
     assert all(call["mask_bytes"] is None for call in calls)
     sent = np.asarray(Image.open(BytesIO(calls[0]["image_bytes"])).convert("RGB"))
     assert sent.shape == (1536, 1024, 3) and not np.any(np.all(sent == [255, 255, 255], axis=-1))
@@ -88,6 +102,15 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
         assert output["view_consistency"] == "requires_review"
     assert completion.complete_background_images(**args) == outputs
     assert len(calls) == 2
+    if not mask_guidance:
+        assert completion.complete_background_images(**{**args, "mask_guidance": True}) == outputs
+        path = Path(outputs[0]["completion_receipt"])
+        receipt = json.loads(path.read_text())
+        receipt["status"] = "submitting"
+        path.write_text(json.dumps(receipt))
+        with pytest.raises(ValueError, match="requires_reconciliation"):
+            completion.complete_background_images(**{**args, "mask_guidance": True})
+        assert len(calls) == 2
 
 
 def _admission_for(frames, backend_id):
@@ -471,7 +494,9 @@ def test_background_review_preserves_or_supersedes_exact_prior_receipt(
                                               .read_text())["status"] == prior_status
 
 
-def test_incomplete_review_retains_provider_stop_reason_and_never_approves(tmp_path, monkeypatch):
+@pytest.mark.parametrize("finish_reason", ["MAX_TOKENS", "STOP"])
+def test_review_retains_incomplete_reason_and_accepts_a_guided_single_target_only_after_review(
+        tmp_path, monkeypatch, finish_reason):
     from types import SimpleNamespace
     import sys
     frames, _ = _inputs(tmp_path)
@@ -489,13 +514,23 @@ def test_incomplete_review_retains_provider_stop_reason_and_never_approves(tmp_p
 
         def generate_content(self, **kwargs):
             assert kwargs["config"].max_output_tokens == 8192
-            return SimpleNamespace(candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")])
+            return SimpleNamespace(candidates=[SimpleNamespace(finish_reason=finish_reason)], text=json.dumps({
+                "consistent_background": True, "task_objects_removed": True, "unrelated_objects_preserved": True,
+                "remaining_task_object_frame_ids": [], "unrelated_object_loss_frame_ids": []}))
 
     types = SimpleNamespace(
         Part=SimpleNamespace(from_bytes=lambda **_: "image"),
         HttpOptions=lambda **kw: SimpleNamespace(**kw), HttpRetryOptions=lambda **kw: SimpleNamespace(**kw),
         GenerateContentConfig=lambda **kw: SimpleNamespace(**kw))
     monkeypatch.setitem(sys.modules, "google.genai", SimpleNamespace(Client=Client, types=types))
+    if finish_reason == "STOP":
+        selected = [{**frame, "target_guidance": "sam_overlay_v1"} for frame in frames]
+        result = completion._verify_completed_background(frames=selected, original_frames=frames,
+            plan={"targets": [{"task_effect": "manipulated", "disposition": "remove"}],
+                  "task_context_sha256": "task"}, output_root=tmp_path / "review",
+            retain_result=False, max_output_tokens=8192)
+        assert result["status"] == "passed" and "same camera field of view" in result["binding"]["review_prompt"]
+        return
     with pytest.raises(ValueError, match="review_incomplete"):
         completion._verify_completed_background(frames=frames, original_frames=frames,
             plan={"targets": [], "task_context_sha256": "task"}, output_root=tmp_path / "review",

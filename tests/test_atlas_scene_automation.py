@@ -512,6 +512,37 @@ def test_source_cleanup_needs_no_pose_and_keeps_only_current_reviewed_frames(tmp
     assert result["digest"] == canonical_digest(result, digest_field="digest")
 
 
+def test_accepted_rgb_passes_real_pose_capture_boundary_before_any_paid_runner(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_scene_automation as worker, website_atlas_pose as atlas
+
+    monkeypatch.setenv(atlas.ATLAS_PRICE_REVIEW_ENV, "")
+    frame, second = view(tmp_path), view(tmp_path, "b", .1)
+    root = tmp_path / "job"
+    legacy = root / "fallback_pose/atlas_pose_inputs.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"refused_legacy_handoff": true}')
+    called = []
+
+    def validate(**kw):
+        inputs = atlas.load_pending_atlas_pose_inputs(kw["output_root"])
+        assert inputs["generated_input_content"] is True
+        assert Path(inputs["frames"][0]["image_path"]).is_relative_to(kw["output_root"])
+        assert inputs["frames"][0]["image_digest"] == frame["image_digest"]
+        called.append(kw)
+        return {"status": "processing", "operation_id": "not-purchased"}
+
+    result, state = worker._fallback_pose({"frames": [frame, second]}, root, "source", {"capture_id": "c"},
+        {"pose_input_cost_usd": .01, "rate_card_reference": "reviewed", "reviewed_by": "test",
+         "reviewed_on": "2026-10-22"}, validate, 2)
+    assert result is None and state["status"] == "processing" and len(called) == 1
+    assert legacy.read_text() == '{"refused_legacy_handoff": true}'
+    (legacy.parent / "atlas_pose").mkdir()
+    (legacy.parent / "atlas_pose/submission.json").write_text('{"status":"submitting"}')
+    with pytest.raises(ValueError, match="legacy_pose_requires_reconciliation"):
+        worker._fallback_pose({"frames": [frame]}, root, "source", {}, {}, validate, 2)
+    assert len(called) == 1
+
+
 def test_rejected_atlas_fallback_enters_existing_repair_and_retains_passed_set(tmp_path, monkeypatch):
     from blueprint_pipeline import website_image_completion as image_edit, website_image_repair_agent as repair
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
