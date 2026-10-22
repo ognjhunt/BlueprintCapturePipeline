@@ -377,9 +377,11 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                    admission_grant: PaidResourceAdmissionGrant | None = None,
                    task_context: Mapping[str, Any] | None = None,
                    video_artifact: Mapping[str, Any] | None = None,
-                   opener: Any = _open_no_redirect) -> dict[str, Any]:
+                   opener: Any = _open_no_redirect, source_video_digest: str | None = None) -> dict[str, Any]:
     binding = request_binding(frame_registry=frame_registry, frame_artifacts=frame_artifacts, prompts=prompts,
                               video_artifact=video_artifact)
+    if source_video_digest is not None:
+        binding["atlas_source_video_digest"] = source_video_digest
     digest = canonical_digest(binding)
     root = output_root / digest[7:]
     pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
@@ -427,7 +429,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             from .website_task_context import reserve_website_sam_spend
             admission, admission_grant = reserve_website_sam_spend(task_context=task_context,
                 binding_digest=admission_digest, maximum_cost_usd=unit_cost * len(pending),
-                request_count=len(pending))
+                request_count=len(pending), source_video_digest=source_video_digest)
         require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
                                               allocation_binding_digest=admission_digest, require_allocation_binding=True)
         budget = admission.get("maximum_cost_usd")

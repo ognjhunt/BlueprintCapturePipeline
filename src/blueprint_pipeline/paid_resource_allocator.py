@@ -771,6 +771,19 @@ def run_sponsored_website_atlas_task(*, experimental: bool = False, **options: A
     return run_admitted_atlas_task(release_blockers=release_blockers, **options)
 
 
+def run_sponsored_website_atlas_automation(*, experimental: bool = False, **options: Any) -> dict[str, Any]:
+    """The existing source gate protects SAM, editor and Atlas automation alike."""
+    from .atlas_scene_automation import run_automation
+
+    def release_blockers():
+        commit, _, _ = _current_checkout_source_state()
+        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
+
+    return run_automation(release_blockers=release_blockers,
+        task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
+        pose_runner=lambda **kw: run_sponsored_website_atlas_pose(experimental=experimental, **kw), **options)
+
+
 def run_sponsored_website_atlas_plan(*, experimental: bool = False, **options: Any) -> dict[str, Any]:
     """Source review uses the same allocator release gate and WebApp test cap."""
     from .atlas_scene_planner import review_survey

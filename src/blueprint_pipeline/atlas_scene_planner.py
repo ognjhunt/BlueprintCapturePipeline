@@ -17,6 +17,7 @@ from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
+from .atlas_automation_plan import AutomationPlan, AUTOMATION_INSTRUCTIONS
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
@@ -63,6 +64,7 @@ class SceneProposal(BaseModel):
     uncaptured_regions: list[str]
     selection_policy: SelectionPolicy
     summary: str
+    automation: AutomationPlan | None = None
 
 
 class RefinementProposal(SceneProposal):
@@ -90,9 +92,9 @@ The shared remaining budget is data, not authority to change prices or limits.
 """
 
 
-def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None):
+def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, reference_sources=()):
     schema = RefinementProposal if feedback is not None else SceneProposal
-    value = schema.model_validate(proposal).model_dump(mode="json")
+    value = schema.model_validate(proposal).model_dump(mode="json", exclude_none=True)
     if value["status"] != "proposed":
         raise ValueError("atlas_scene_planner_abstained:" + value["summary"])
     intervals = value["static_intervals_seconds"]
@@ -124,6 +126,12 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None):
                 or (value["action"] == "keep" and additional)
                 or (value["action"] == "refine" and not (additional - set(feedback["prior_selected_frame_ids"])))):
             raise ValueError("atlas_refinement_state_or_selection_invalid")
+    automation = value.get("automation")
+    if automation:
+        referenced = {r["frame_id"] for r in automation["scale_references"]}
+        referenced |= {r["frame_id"] for obj in automation["objects"] for r in obj["regions"]}
+        if not referenced <= required | additional or referenced & unsafe:
+            raise ValueError("atlas_automation_frames_not_selected")
     # Hold the required RGBD coverage aside before selecting pose inputs.
     # Buying posing alone must not consume the rest of the shared allowance.
     pose_budget = round(pose_budget - len(required) * policy["rgbd_view_cost_usd"], 6)
@@ -134,6 +142,7 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None):
     quality = ({"quality_excluded_frame_ids": sorted(unsafe & selected & quality_rejected)}
                if unsafe & selected & quality_rejected else {})
     return {"schema_version": "atlas_scene_state_review.v1", "survey_digest": survey["digest"], **refinement, **quality,
+            **({"automation": automation, "scale_reference_sources": list(reference_sources)} if automation else {}),
             **{k: value[k] for k in ("scene_state", "static_intervals_seconds", "anchor_frame_id",
                 "coverage_requirements", "uncaptured_regions", "selection_policy")},
             "moving_people_excluded": True, "same_scene_state": True,
@@ -191,19 +200,21 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         raise ValueError("atlas_scene_planner_survey_invalid")
     policy = configuration["policy"]
     maximum = policy["maximum_review_cost_usd"]
-    tokens = 16_000 + 3000 * (len(survey["frames"]) + len((feedback or {}).get("previews", [])))
+    tokens = 24_000 + 3000 * (len(survey["frames"]) + len((feedback or {}).get("previews", [])))
     if tokens > 1_000_000:
         raise ValueError("atlas_scene_planner_context_budget_exceeded")
     from .openai_prompt_cache import worst_case_reservation_usd
     ceiling = worst_case_reservation_usd(model=policy["model"], input_token_ceiling=tokens,
                                         max_output_tokens=4000, cache_policy=None)
-    if ceiling is None or ceiling > maximum:
+    search_calls = 2
+    search_fee = .01  # Official hosted web search: $10 / 1k calls, checked 2026-10-22.
+    if ceiling is None or ceiling + search_calls * search_fee > maximum:
         raise ValueError("atlas_scene_planner_token_budget_exceeded")
-    instructions = INSTRUCTIONS + REFINEMENT_INSTRUCTIONS if feedback is not None else INSTRUCTIONS
+    instructions = INSTRUCTIONS + AUTOMATION_INSTRUCTIONS + (REFINEMENT_INSTRUCTIONS if feedback is not None else "")
     binding = {"survey_digest": survey["digest"], "task_context_digest": task_context["context_digest"],
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
                "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": 4000,
-               "maximum_cost_usd": maximum}
+               "maximum_cost_usd": maximum, "web_search": {"maximum_calls": search_calls, "per_call_usd": search_fee, "context": "low"}}
     if feedback is not None:
         binding["feedback_digest"] = feedback["digest"]
     digest = canonical_digest(binding)
@@ -240,21 +251,27 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
             audit = InferenceReservationAudit(run_root=output_root / digest[7:], run_id=digest[7:23])
             selected.configure_reservation_audit(record_reservation=audit.record_reservation,
                 record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
+            from agents import WebSearchTool
             try:
                 result = selected.invoke(AgentsSDKAgentSpec(run_id=digest[7:23], capability="atlas_scene_planner",
                     name="Blueprint Atlas Scene Planner", instructions=instructions, model=policy["model"], max_turns=1,
                     max_output_tokens=4000, max_input_tokens=tokens,
+                    hosted_tools=(WebSearchTool(search_context_size="low", external_web_access=True),),
+                    max_hosted_tool_calls_per_turn=search_calls, hosted_tool_call_usd=search_fee,
                     output_type=RefinementProposal if feedback is not None else SceneProposal), input_value)
             finally:
                 audit.write_manifest()
             schema = RefinementProposal if feedback is not None else SceneProposal
-            proposal = schema.model_validate(result.output).model_dump(mode="json")
+            proposal = schema.model_validate(result.output).model_dump(mode="json", exclude_none=True)
+            from .atlas_reference_research import retain_references
+            reference_sources = retain_references(proposal, output_root / digest[7:])
             cost = result.cost_usd
             if type(cost) not in (int, float) or not math.isfinite(cost) or not 0 <= cost <= maximum:
                 raise ValueError("atlas_scene_planner_usage_unknown")
             receipt = {"status": "completed", "binding_digest": digest, "binding": binding,
                 "proposal": proposal, "proposal_digest": canonical_digest(proposal), "usage": dict(result.usage),
                 "cost_usd": cost, "model": result.model, "sdk_version": result.sdk_version,
+                "reference_sources": reference_sources,
                 "source_commit": commit, "admission": admission, "claim_ceiling": "development_only"}
             temporary = path.with_suffix(".tmp")
             write_json(temporary, receipt)

@@ -45,6 +45,9 @@ def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
               "metric_measurement_proven": False, "physical_evidence": False,
               "provider_mutation_performed": False,
               "blockers": ["website_atlas_admitted_pose_operation_required"]}
+    if inputs.get("generated_content") is True:
+        result["generated_input_content"] = True
+        result["input_content_basis"] = inputs["binding"].get("content_basis")
     result["digest"] = canonical_digest(result, digest_field="digest")
     path = output_root / "atlas_pose_inputs.json"
     if path.is_file():

@@ -100,9 +100,10 @@ def test_rgbd_result_never_publishes_a_completed_scene_handoff(tmp_path, status)
         assert value["atlas_preparation"] == result and value["capture_id"] == "c"
 
 
+@pytest.mark.parametrize("automation_enabled", [False, True])
 @pytest.mark.parametrize("mesh_price", [None, .5])
 @pytest.mark.parametrize("over_budget", [False, True])
-def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget, mesh_price):
+def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget, mesh_price, automation_enabled):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import atlas_video_extension as extension, paid_resource_allocator as allocator
     from blueprint_pipeline import atlas_result_bundle as bundles, atlas_depth_splat as depth_splat
@@ -135,6 +136,11 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
             {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["0"]}],
         "unsafe_frame_ids": [], "uncaptured_regions": ["rear"], "summary": "reviewed",
         "selection_policy": {"minimum_sharpness": 20, "maximum_clipped_fraction": .5, "minimum_overlap_inliers": 24}}
+    automated = []
+    if automation_enabled:
+        proposal["automation"] = {"scale_references": [], "objects": [], "removal_instruction": "", "mask_margin_fraction": .01}
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation",
+        lambda **kw: automated.append(kw) or {"status": "relative_sizes_only", "measurements": {"status": "relative_sizes_only"}})
     def review(**kwargs):
         calls["review"] += 1
         return {"proposal": proposal, "model": policy["model"]}
@@ -196,6 +202,7 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     assert pipeline.run_atlas_pipeline(**options)["stage"] == "pose"
     result = pipeline.run_atlas_pipeline(**options)
     assert calls == {"review": 2, "pose": 2, "atlasGenerate": 1, "splat": 1, "splats2Mesh": 1 if mesh_price else 0}
+    assert bool(automated) is automation_enabled
     assert result["status"] == "needs_input" and result["simulation_qualified"] is False
     assert result["task_and_surrounding_scene_covered"] is True
     assert result["splat_available"] is True and result["mesh_available"] is bool(mesh_price)

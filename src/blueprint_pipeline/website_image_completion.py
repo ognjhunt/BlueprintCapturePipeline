@@ -235,7 +235,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                targets: Sequence[Mapping[str, Any]] = (), opener: Any = _open_no_redirect,
                                task_context: Mapping[str, Any] | None = None,
                                repair_instruction: str | None = None,
-                               repair_reference_path: Path | None = None) -> list[dict[str, Any]]:
+                               repair_reference_path: Path | None = None,
+                               source_video_digest: str | None = None) -> list[dict[str, Any]]:
     if not any(frame["remaining_pixel_count"] for frame in frames):
         return [dict(frame) for frame in frames]
     fixed_reference = None
@@ -250,6 +251,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
         _backend, execution, backend_digest = _validated_backend(REGISTRY_PATH, backend_id=backend_id)
         binding = completion_binding(frames, task_digest=task_digest, backend_digest=backend_digest, targets=targets,
                                      repair_instruction=repair_instruction, reference_digest=reference_digest)
+        if source_video_digest is not None:
+            binding["source_video_digest"] = source_video_digest
         return execution, backend_digest, binding, canonical_digest(binding)
 
     execution, backend_digest, binding, request_digest = bound(BACKEND_ID)
@@ -306,7 +309,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 admission, admission_grant = reserve_website_preparation_spend(
                     task_context=task_context, binding_digest=request_digest,
                     maximum_cost_usd=len(edited_indices) * cap, request_count=len(edited_indices),
-                    resource_class="openai_api_candidate", provider="openai")
+                    resource_class="openai_api_candidate", provider="openai", source_video_digest=source_video_digest)
             require_paid_resource_admission_grant(admission_grant, resource_class="openai_api_candidate",
                                                   allocation_binding_digest=request_digest, require_allocation_binding=True)
             if admission.get("allocation_binding_digest") != request_digest or admission.get("external_disclosure_allowed") is not True:
@@ -475,7 +478,8 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
 
 def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original_frames: Sequence[Mapping[str, Any]],
                                 plan: Mapping[str, Any], output_root: Path,
-                                task_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                                task_context: Mapping[str, Any] | None = None,
+                                source_video_digest: str | None = None) -> dict[str, Any]:
     if not (task_context or {}).get("capture_id"):
         return _verify_completed_background(frames=frames, original_frames=original_frames,
                                             plan=plan, output_root=output_root)
@@ -512,6 +516,8 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
     prior_binding = {**base_binding, "revision": 1}
     prior_request = {"binding": prior_binding, "task_context_digest": task_context["context_digest"],
                      "maximum_cost_usd": quote}
+    if source_video_digest is not None:
+        prior_request["source_video_digest"] = source_video_digest
     prior_digest = canonical_digest(prior_request)
     prior_path = output_root / "gemini_reviews" / f"{prior_digest[7:]}.json"
     prior_status = None
@@ -534,7 +540,7 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
 
     return retained_gemini_call(output_root=output_root / "gemini_reviews", binding=binding,
         task_context=task_context, maximum_cost_usd=quote,
-        preflight=preflight, invoke=lambda: _verify_completed_background(frames=frames,
+        source_video_digest=source_video_digest, preflight=preflight, invoke=lambda: _verify_completed_background(frames=frames,
             original_frames=original_frames, plan=plan, output_root=output_root, retain_result=False,
             timeout_ms=timeout_ms))
 

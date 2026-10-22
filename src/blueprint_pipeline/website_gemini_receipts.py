@@ -30,7 +30,8 @@ def gemini_quote(*, model: str, input_tokens: int, max_output_tokens: int = 65_5
 
 def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
                         task_context: Mapping[str, Any], maximum_cost_usd: float,
-                        preflight: Callable[[], None], invoke: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+                        preflight: Callable[[], None], invoke: Callable[[], dict[str, Any]],
+                        source_video_digest: str | None = None) -> dict[str, Any]:
     """Reuse completed results; an uncertain call never authorizes another call.
 
     The existing WebApp transaction is the cross-worker spending authority.
@@ -40,6 +41,8 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
         scene_id=task_context["scene_id"], capture_id=task_context["capture_id"], purpose="scene_preparation")
     request = {"binding": dict(binding), "task_context_digest": task_context["context_digest"],
                "maximum_cost_usd": maximum_cost_usd}
+    if source_video_digest is not None:
+        request["source_video_digest"] = source_video_digest
     digest = canonical_digest(request)
     output_root.mkdir(parents=True, exist_ok=True)
     path = output_root / f"{digest[7:]}.json"
@@ -60,7 +63,7 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
         preflight()
         admission, _grant = reserve_website_preparation_spend(task_context=task_context,
             binding_digest=digest, maximum_cost_usd=maximum_cost_usd, request_count=1,
-            resource_class="evaluator_api", provider="google")
+            resource_class="evaluator_api", provider="google", source_video_digest=source_video_digest)
         with path.open("x") as stream:
             json.dump({"status": "submitting", "request_digest": digest,
                        "request": request, "admission": admission}, stream)

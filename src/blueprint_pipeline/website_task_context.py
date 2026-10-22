@@ -82,10 +82,10 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
 
 
 def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest: str,
-                            maximum_cost_usd: float, request_count: int) -> tuple[dict[str, Any], Any]:
+                            maximum_cost_usd: float, request_count: int, source_video_digest: str | None = None) -> tuple[dict[str, Any], Any]:
     return reserve_website_preparation_spend(task_context=task_context, binding_digest=binding_digest,
         maximum_cost_usd=maximum_cost_usd, request_count=request_count,
-        resource_class="evaluator_api", provider="meta")
+        resource_class="evaluator_api", provider="meta", source_video_digest=source_video_digest)
 
 
 def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], binding_digest: str,

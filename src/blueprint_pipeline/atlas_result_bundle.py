@@ -43,7 +43,7 @@ def _completed_task(root: Path, source_video_digest: str, label: str) -> dict:
 
 
 def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=(), splat_root: Path | None = None,
-                       mesh_root: Path | None = None) -> dict:
+                       mesh_root: Path | None = None, analysis_paths=()) -> dict:
     pose_root = pose_root.resolve()
     result = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
     inputs = load_pending_atlas_pose_inputs(pose_root)
@@ -56,6 +56,8 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
                 "scale_status": "unscaled_provider_world_units", "physical_evidence": False,
                 "splat_available": False, "mesh_available": False, "simulation_qualified": False,
                 "billing": receipt["billing"], "assets": []}
+    if inputs.get("generated_input_content") is True:
+        manifest["generated_pose_inputs"] = True
     source_digest = result["binding"]["source_video_digest"]
     generated = [(root, _completed_task(root, source_digest, "generated")) for root in generated_roots]
     mesh = _completed_task(mesh_root, source_digest, "mesh") if mesh_root is not None else None
@@ -81,6 +83,8 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
     if mesh is not None:
         parts["mesh"] = manifest["mesh_result_digest"] = mesh["digest"]
         parts["mesh_registration"] = manifest["mesh_registration_digest"] = registration["digest"]
+    if analysis_paths:
+        parts["analysis"] = [_sha256_file(p) for p in analysis_paths]
     identity = canonical_digest(parts)
     scene = bool(generated) or splat is not None or mesh is not None
     target = output_root / (("atlas-scene-" + identity[7:23]) if scene else ("atlas-pose-" + result["digest"][7:23]))
@@ -140,6 +144,11 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
     copy(pose_root / "atlas_posed_rgbd_result.json", Path("evidence/atlas_posed_rgbd_result.json"))
     if (pose_root / "atlas_view_selection.json").exists():
         copy(pose_root / "atlas_view_selection.json", Path("evidence/atlas_view_selection.json"))
+    for index, source in enumerate(analysis_paths):
+        copy(source, Path("analysis") / f"{index:03d}-{source.name}")
+    if splat is not None and splat.get("generated_content"):
+        manifest["generated_background_splat"] = True
+        manifest["visual_review_digest"] = splat.get("visual_review_digest")
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
     if (target / "manifest.json").is_symlink():
         raise ValueError("atlas_bundle_output_symlink")
