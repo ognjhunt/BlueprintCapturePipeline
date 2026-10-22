@@ -54,7 +54,7 @@ _AWAITING_AUTHORITY = frozenset({
     "provider_terms_not_configured_or_changed", "website_atlas_planner_consent_required",
     "website_atlas_runtime_policy_required", "website_atlas_authorization_invalid", "task_brief_missing",
     "website_atlas_api_key_missing", "website_atlas_api_base_url_missing",
-    "website_atlas_provider_retention_decision_required"})
+    "website_atlas_provider_retention_decision_required", "atlas_runtime_price_review_expired"})
 # The recording cannot give a safe, consistent scene: only a new one can.
 _NEEDS_NEW_CAPTURE = frozenset({"atlas_scene_planner_abstained", "atlas_task_and_scene_coverage_gap",
                                 "atlas_insufficient_overlapping_distinct_views",

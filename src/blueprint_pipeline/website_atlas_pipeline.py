@@ -35,6 +35,18 @@ def load_configuration(context, source_digest):
     return value
 
 
+#: Who read the rate card, and when. Renewing it re-confirms the same prices.
+_REVIEW_RECORD = ("rate_card_reference", "reviewed_by", "reviewed_on")
+
+
+def _require_current_price_review(policy) -> None:
+    """Frame selection and posing refuse a stale price review; refuse it before buying a review."""
+    from datetime import datetime, timezone
+    from .website_atlas_pose import _reviewed_recently
+    if not _reviewed_recently(policy.get("reviewed_on"), datetime.now(timezone.utc).date()):
+        raise ValueError("atlas_runtime_price_review_expired")
+
+
 def generation_request(*, pose, inputs, review):
     """Cover reviewed task AND room anchors at their observed camera locations."""
     from .website_worldlabs import _atlas_posed_context
@@ -103,15 +115,22 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     current = load_configuration(task_context, source_digest)
     atlas_api_config()  # Refuse missing/unsafe production secrets before buying a review.
     saved = output_root / "configuration.json"
+    reviews = output_root / "scene_planner"
+    selection_path = output_root / "selection_binding.json"
     if saved.exists():
-        config = json.loads(saved.read_text())
-        # A resumed job may gain a reviewed price for a stage it has not bought;
-        # any changed price or authority still refuses.
-        if (config["authority"] != current["authority"]
-                or any(current["policy"].get(key) != value for key, value in config["policy"].items())):
+        stored = config = json.loads(saved.read_text())
+        if not reviews.exists() and not selection_path.exists():
+            # The scene review is the first purchase, and a lapsed price review stops a
+            # job before it: a job that bought nothing takes the current configuration whole.
+            config = current
+        # A resumed job may gain a reviewed price for a stage it has not bought, or a
+        # renewed review of the same prices; any changed price or authority refuses.
+        elif (config["authority"] != current["authority"]
+                or any(current["policy"].get(key) != value for key, value in config["policy"].items()
+                       if key not in _REVIEW_RECORD)):
             raise ValueError("atlas_runtime_authority_or_policy_changed")
-        if config["policy"] != current["policy"]:
-            config = {**config, "policy": current["policy"]}
+        config = {**config, "policy": current["policy"]}
+        if config != stored:
             write_json(saved, config)
     else:
         config = current
@@ -149,14 +168,12 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     survey = json.loads(survey_path.read_text())
     if survey["source_video_digest"] != source_digest:
         raise ValueError("atlas_runtime_source_changed")
-    reviews = output_root / "scene_planner"
     # Reserve room for a second review, depth views and the mesh export. These are
     # dollar allowances, not arbitrary limits on the number of source images.
     budget = (config["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
               - policy.get("mesh_export_cost_usd", 0))
     if budget < 2 * policy["pose_input_cost_usd"] + 2 * policy["rgbd_view_cost_usd"]:
         raise ValueError("atlas_runtime_budget_insufficient")
-    selection_path = output_root / "selection_binding.json"
     if selection_path.exists():
         selection = json.loads(selection_path.read_text())
         survey_path = output_root / selection["survey_relative_path"]
@@ -167,6 +184,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         receipt = selection["planner_receipt"]
     else:
         check("plan")
+        _require_current_price_review(policy)
         plan_options = {"feedback": feedback} if feedback is not None else {}
         receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
             configuration=config, output_root=reviews, invoker=invoker, experimental=experimental, **plan_options)
@@ -178,6 +196,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                                           review=review, output_root=output_root)
             survey = json.loads(survey_path.read_text())
             check("plan")
+            _require_current_price_review(policy)
             receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
                 configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
             review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, reference_sources=receipt.get("reference_sources", []))
