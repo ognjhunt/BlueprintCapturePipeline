@@ -60,6 +60,10 @@ try {
         mesh.traverse(item => {
           if (item.isMesh) for (const material of [item.material].flat()) {
             material.wireframe = mode === 'wire'; material.side = THREE.DoubleSide;
+            // A material-less GLB defaults to a fully metallic surface. This
+            // vertex-colour inspection has no reflection environment.
+            material.metalness = 0;
+            material.roughness = 1;
           }
         });
       }
