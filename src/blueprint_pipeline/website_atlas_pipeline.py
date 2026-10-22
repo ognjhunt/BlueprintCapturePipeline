@@ -77,6 +77,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     from .website_atlas_pose import ATLAS_PRICE_REVIEW_ENV, ATLAS_PROVIDER_RETENTION_ENV, request_options, atlas_api_config
     from .atlas_result_bundle import export_pose_bundle
     from .atlas_depth_splat import build_depth_splat
+    from .atlas_mesh_registration import register_atlas_mesh
 
     output_root.mkdir(parents=True, exist_ok=True)
     source_digest = _sha256_file(source_video)
@@ -189,6 +190,10 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             price_review=mesh_quote, experimental=experimental, max_polls=max_polls)
         if mesh["status"] != "completed":
             return {"status": "processing", "stage": "mesh", "operation_id": mesh.get("operation_id")}
+        if not (mesh_root / "registered" / "atlas_mesh_registration.json").exists():
+            outputs = json.loads((mesh_root / "result.json").read_text())["outputs"]
+            register_atlas_mesh(glb=mesh_root / next(row["path"] for row in outputs if row["role"] == "mesh"),
+                                splat_root=splat_root, output_root=mesh_root / "registered")
     else:
         blockers.insert(0, "atlas_mesh_export_price_unreviewed")
     bundle = export_pose_bundle(pose_root=pose_root, output_root=output_root / "downloads",

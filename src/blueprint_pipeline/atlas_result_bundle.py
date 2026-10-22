@@ -59,6 +59,15 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
     source_digest = result["binding"]["source_video_digest"]
     generated = [(root, _completed_task(root, source_digest, "generated")) for root in generated_roots]
     mesh = _completed_task(mesh_root, source_digest, "mesh") if mesh_root is not None else None
+    registration = None
+    if mesh is not None:
+        # The raw provider GLB is in another frame and closes unseen regions;
+        # it ships only beside its registration to the observed splat.
+        record = mesh_root / "registered" / "atlas_mesh_registration.json"
+        registration = json.loads(record.read_text()) if record.is_file() else None
+        if (registration is None or registration.get("digest") != canonical_digest(registration, digest_field="digest")
+                or registration["source_glb_sha256"] not in {row["sha256"] for row in mesh["outputs"]}):
+            raise ValueError("atlas_bundle_mesh_unregistered")
     splat = None
     if splat_root is not None:
         splat = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
@@ -71,6 +80,7 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
         parts["splat"] = manifest["splat_manifest_digest"] = splat["digest"]
     if mesh is not None:
         parts["mesh"] = manifest["mesh_result_digest"] = mesh["digest"]
+        parts["mesh_registration"] = manifest["mesh_registration_digest"] = registration["digest"]
     identity = canonical_digest(parts)
     scene = bool(generated) or splat is not None or mesh is not None
     target = output_root / (("atlas-scene-" + identity[7:23]) if scene else ("atlas-pose-" + result["digest"][7:23]))
@@ -99,7 +109,14 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
         copy_task(root, value, Path("generated") / str(index), "generated")
     if mesh is not None:
         copy_task(mesh_root, mesh, Path("mesh"), "mesh")
-        manifest["mesh_available"] = True
+        for row in registration["outputs"]:
+            source = mesh_root / "registered" / row["path"]
+            if source.is_symlink() or _sha256_file(source) != row["sha256"]:
+                raise ValueError("atlas_bundle_mesh_output_changed")
+            copy(source, Path("mesh/registered") / row["path"])
+        copy(mesh_root / "registered" / "atlas_mesh_registration.json", Path("mesh/registered/atlas_mesh_registration.json"))
+        manifest.update(mesh_available=True, mesh_frame=registration["glb_frame"],
+                        supported_mesh_path="mesh/registered/" + registration["outputs"][0]["path"])
     if splat is not None:
         for row in splat["outputs"]:
             source = splat_root / row["path"]

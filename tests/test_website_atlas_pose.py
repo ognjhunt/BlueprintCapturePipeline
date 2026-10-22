@@ -309,12 +309,23 @@ def test_portable_export_carries_bound_splat_and_mesh_and_refuses_changed_ones(a
     (mesh_root / "atlas_pose").mkdir()
     (mesh_root / "atlas_pose" / "submission.json").write_text(
         json.dumps({"status": "completed", "result_digest": mesh["digest"]}))
+    with pytest.raises(ValueError, match="mesh_unregistered"):
+        export_pose_bundle(pose_root=atlas_case.root, output_root=tmp_path / "exports", mesh_root=mesh_root)
+    (mesh_root / "registered").mkdir()
+    supported = mesh_root / "registered" / "atlas_mesh_supported.glb"
+    supported.write_bytes(b"glTF supported mesh")
+    record = {"source_glb_sha256": _sha256_file(glb), "glb_frame": "atlas_world_rotated_180_x",
+              "outputs": [{"path": supported.name, "sha256": _sha256_file(supported)}]}
+    record["digest"] = canonical_digest(record, digest_field="digest")
+    (mesh_root / "registered" / "atlas_mesh_registration.json").write_text(json.dumps(record))
     bundle = export_pose_bundle(pose_root=atlas_case.root, output_root=tmp_path / "exports",
                                 splat_root=splat_root, mesh_root=mesh_root)
     with zipfile.ZipFile(bundle["zip_path"]) as archive:
         names = set(archive.namelist())
         manifest = json.loads(archive.read("manifest.json"))
-    assert {"splat/atlas_depth_splat.spz", "splat/atlas_depth_splat_manifest.json", "mesh/mesh.glb"} <= names
+    assert {"splat/atlas_depth_splat.spz", "splat/atlas_depth_splat_manifest.json", "mesh/mesh.glb",
+            "mesh/registered/atlas_mesh_supported.glb"} <= names
+    assert manifest["mesh_frame"] == "atlas_world_rotated_180_x"
     assert manifest["splat_available"] is True and manifest["mesh_available"] is True
     assert manifest["splat_kind"] == "depth_fused_draft" and manifest["simulation_qualified"] is False
     spz.write_bytes(b"changed")
