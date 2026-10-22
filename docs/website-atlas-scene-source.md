@@ -43,10 +43,13 @@ nothing.
   near-straight walk still fixes it; scale and translation come from their
   centres. This is the registration anchor (`source_world_alignment`). Without
   agreeing shared cameras, registration falls back to its search.
-- **Task masks:** SAM 3.1 tracks every frame of the source video, so its tracks
-  name each posed view by decoded frame index. They lift onto the Atlas
-  geometry only when every geometry frame is the registry frame of that index,
-  at the same presentation time and upright size.
+- **Task masks:** hosted SAM 3.1 tracks on the source video's timeline (the
+  continuous video, or the selected original views with
+  `BLUEPRINT_WEBSITE_VIEW_FIRST_SAM`), so its tracks name each posed view by
+  decoded frame index. They lift onto the Atlas geometry only when every
+  geometry frame is the registry frame of that index, at the same presentation
+  time and upright size. Only frames a track observed contribute, so a target
+  no posed view observed fails rather than guessing.
 
 ## What it waits for
 

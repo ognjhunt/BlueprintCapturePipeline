@@ -236,9 +236,12 @@ def continuous_masks(rows=None, *, width=UPRIGHT[0], height=UPRIGHT[1]):
                        {**observation, "source_frame_id": frame_id} for frame_id in FRAME_IDS[:2]]}}]})
 
 
-def test_tracks_of_every_source_frame_lift_onto_atlas_geometry_by_frame_identity(tmp_path):
+@pytest.mark.parametrize("mode", ["continuous_source_video_v1", "selected_original_views_v1"])
+def test_tracks_on_the_source_timeline_lift_onto_atlas_geometry_by_frame_identity(tmp_path, mode):
     geometry = ready(tmp_path)["source_geometry"]
-    bound = bind_task_masks_to_geometry(task_masks=continuous_masks(), source_geometry=geometry)
+    masks = continuous_masks()
+    masks["binding"]["mask_input_pixels"] = mode
+    bound = bind_task_masks_to_geometry(task_masks=digest(masks), source_geometry=geometry)
     target = bound["targets"][0]
     assert {row["source_frame_id"] for row in target["track"]["observations"]} == set(FRAME_IDS[:2])
     points = masked_source_points(target["track"], geometry["frames"])
@@ -257,7 +260,7 @@ def test_tracks_that_cannot_name_the_geometry_frames_are_refused(tmp_path, chang
         masks = continuous_masks(width=UPRIGHT[1], height=UPRIGHT[0])
     else:
         masks = continuous_masks()
-        masks["binding"]["mask_input_pixels"] = "selected_original_views_v1"
+        masks["binding"]["mask_input_pixels"] = "geometry_v1"
         masks = digest(masks)
     with pytest.raises(ValueError, match="website_task_geometry_binding_mismatch"):
         bind_task_masks_to_geometry(task_masks=masks, source_geometry=geometry)

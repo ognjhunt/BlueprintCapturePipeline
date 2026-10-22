@@ -812,14 +812,17 @@ def _same_frame_sample(task_masks: Mapping[str, Any], source_geometry: Mapping[s
                  or binding.get("task_masks_digest") == task_masks["digest"]))
 
 
-def _continuous_track_frames(task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> bool:
-    """Tracks of every source frame name each geometry frame by its decoded index and time.
+def _registry_frames(task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> bool:
+    """Tracks on the source video's timeline name each geometry frame by its decoded index and time.
 
-    A geometry estimated on any decoded frames of the same video then needs no
-    shared sample: each frame must be the registry frame of that index, at the
-    same presentation time and upright size.
+    Both hosted-SAM modes, the continuous video and the selected original views,
+    keep the full decoded-frame registry. A geometry estimated on any decoded
+    frames of the same video then needs no shared sample: each frame must be the
+    registry frame of that index, at the same presentation time and upright size.
+    Only frames a track observed contribute; a target with none still fails.
     """
-    if task_masks["binding"].get("mask_input_pixels") != "continuous_source_video_v1":
+    if task_masks["binding"].get("mask_input_pixels") not in {"continuous_source_video_v1",
+                                                              "selected_original_views_v1"}:
         return False
     registry = {row["source_frame_id"]: row for row in task_masks.get("source_frame_registry") or []}
     for frame in source_geometry["frames"]:
@@ -841,7 +844,7 @@ def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometr
             or source_geometry.get("digest") != canonical_digest(source_geometry, digest_field="digest")
             or task_masks.get("source_video_digest") != source_geometry["binding"].get("source_video_digest")
             or not (_same_frame_sample(task_masks, source_geometry)
-                    or _continuous_track_frames(task_masks, source_geometry))):
+                    or _registry_frames(task_masks, source_geometry))):
         raise ValueError("website_task_geometry_binding_mismatch")
     frames = source_geometry["frames"]
     ids = {frame["frame_id"] for frame in frames}
