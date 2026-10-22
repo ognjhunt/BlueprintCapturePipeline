@@ -38,7 +38,6 @@ from blueprint_pipeline.clean_plate_stage import (
     PROGRAM_ID,
     STAGE_MANIFEST_SCHEMA_VERSION,
     CleanPlatePolicy,
-    anchor_reconstruction_views_to_geometry,
     apply_clean_plate_to_reconstruction_input,
     run_clean_plate_stage,
     validate_clean_plate_stage_manifest,
@@ -49,22 +48,10 @@ _ANALYSIS_ATTR = "blueprint_pipeline.clean_plate_stage.analyze_removal_targets"
 _SAFE_PRIVACY = {"status": "no_people_detected", "world_model_video_uri": "gs://b/x.mov"}
 
 
-def test_reconstruction_first_view_has_a_source_geometry_camera():
-    reviewed = [{"frame_id": "decoded-000000026"}, {"frame_id": "decoded-000000035"},
-                {"frame_id": "decoded-000000173"}]
-    source = {"frames": [{"frame_id": "decoded-000000035"}, {"frame_id": "decoded-000000173"}]}
-    ordered = anchor_reconstruction_views_to_geometry(frames=reviewed, source_geometry=source)
-    assert [row["frame_id"] for row in ordered] == ["decoded-000000035", "decoded-000000026",
-                                                 "decoded-000000173"]
-    assert reviewed[0]["frame_id"] == "decoded-000000026"
-    with pytest.raises(ValueError, match="website_reconstruction_anchor_geometry_frame_missing"):
-        anchor_reconstruction_views_to_geometry(frames=[reviewed[0]], source_geometry=source)
-
-
-@pytest.mark.parametrize("status", ["blocked", "failed_closed", "disabled", "unknown"])
-def test_website_preparation_hold_cannot_fall_back_to_original_video(status):
+@pytest.mark.parametrize("status", ["blocked", "failed_closed", "unknown"])
+def test_legacy_preparation_hold_cannot_fall_back_to_original_video(status):
     original = {"status": "ready", "output_video_uri": "gs://b/original.mov"}
-    result = apply_clean_plate_to_reconstruction_input(original, {"status": status}, required=True)
+    result = apply_clean_plate_to_reconstruction_input(original, {"status": status})
     assert result["status"] == "blocked"
     assert result["output_video_uri"] is None
     assert original["output_video_uri"] == "gs://b/original.mov"
@@ -72,24 +59,15 @@ def test_website_preparation_hold_cannot_fall_back_to_original_video(status):
 
 def test_only_validated_preparation_selects_reconstruction_media():
     original = {"status": "ready", "output_video_uri": "gs://b/original.mov"}
-    assert apply_clean_plate_to_reconstruction_input(original, {"status": "disabled"}, required=False) == original
+    assert apply_clean_plate_to_reconstruction_input(original, {"status": "disabled"}) == original
     noop = {"status": "noop", "privacy_verified": True, "blockers": []}
-    assert apply_clean_plate_to_reconstruction_input(original, noop, required=True) == original
+    assert apply_clean_plate_to_reconstruction_input(original, noop) == original
     edited = {**noop, "status": "objects_removed", "clean_plate_video_uri": "gs://b/edited.mov"}
-    assert apply_clean_plate_to_reconstruction_input(original, edited, required=True)["output_video_uri"] == "gs://b/edited.mov"
+    assert apply_clean_plate_to_reconstruction_input(original, edited)["output_video_uri"] == "gs://b/edited.mov"
     for invalid in ({**noop, "blockers": ["task_object_ambiguous"]},
                     {**noop, "privacy_verified": False},
                     {**edited, "clean_plate_video_uri": None}):
-        assert apply_clean_plate_to_reconstruction_input(original, invalid, required=True)["status"] == "blocked"
-
-
-def test_prepared_images_cannot_override_an_existing_rights_hold():
-    held = {"status": "blocked", "reason": "rights_not_cleared_for_derived_scene_generation"}
-    prepared = {"status": "objects_removed", "privacy_verified": True, "prepared_views": {"status": "ready"}}
-    result = apply_clean_plate_to_reconstruction_input(held, prepared, required=True)
-    assert result["status"] == "blocked"
-    assert result["reason"] == held["reason"]
-    assert result["prepared_views"] is None
+        assert apply_clean_plate_to_reconstruction_input(original, invalid)["status"] == "blocked"
 
 _GATE_AND_KEY_ENVS = (
     FLAG_ENV,
@@ -216,10 +194,10 @@ def test_website_person_observation_does_not_require_removal(tmp_path, monkeypat
     assert source.read_bytes() == b"RAWVIDEO"
 
 
-@pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked", "review_repair",
-                                        "review_repair_edited", "inconsistent_repair", "inconsistent_unedited",
-                                        "unrelated_loss", "unrelated_unedited", "unrelated_inconsistent"])
-def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, monkeypatch, fill_result):
+def test_website_stage_is_ready_once_task_masks_exist_and_edits_no_pixels(tmp_path, monkeypatch):
+    # Owner decision 2026-10-22: no Marble world is bought for a website capture.
+    # The capture's Atlas job erases the task objects from its own views, so the
+    # stage stops at the plan, source frames and task masks scene preparation needs.
     capture_root = _make_capture(tmp_path)
     source = capture_root / "raw/walkthrough.mp4"
     order = []
@@ -232,213 +210,29 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
         "target_class": "person", "target_role": "person", "task_effect": "privacy",
         "disposition": "remove", "rebuild_intent": "none", "spatial_evidence": [],
     }], status="completed", model="test", processing="agentic")
-    plan["task_context_sha256"] = "task-digest"
     geometry = {"status": "estimated", "digest": "geometry-digest", "frames": [{"frame_id": f"f{i}"} for i in range(13)]}
     masks = {"targets": [{"track": {"observations": [{"source_frame_id": "f0"}, {"source_frame_id": "f1"}]}}]}
 
-    def analyze(**kwargs):
-        order.append("analysis")
-        assert kwargs["video_path"] == source
-        return plan
-
-    def estimate(**kwargs):
-        order.append("source_frames")
-        return geometry
-
     def track(**kwargs):
         order.append("masks")
-        # People are tracked and removed like the task object (owner decision, 2026-09-24).
-        assert [target["target_id"] for target in kwargs["plan"]["targets"]] == ["box", "operator_hand"]
-        assert kwargs["defer_kept_static"] is True
-        assert kwargs["source_geometry"] == geometry
-        assert kwargs["source_video"] == source
+        assert kwargs["defer_kept_static"] is True and kwargs["source_video"] == source
+        assert "view_plan" not in kwargs
         return masks
 
-    def recover(**kwargs):
-        from PIL import Image
-        from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
-        order.append("mask_preparation")
-        assert kwargs["task_masks"] == masks
-        frames = []
-        for i, frame in enumerate(geometry["frames"]):
-            image = tmp_path / f"context-{i}.png"
-            Image.new("RGB", (16, 16), (i * 15, 40, 90)).save(image)
-            frames.append({"frame_id": frame["frame_id"], "image_path": str(image), "image_digest": _sha256_file(image),
-                           "remaining_pixel_count": int(fill_result != "unneeded" and i < 2)})
-        return frames
-
-    def complete(**kwargs):
-        order.append("completion")
-        assert [target["target_id"] for target in kwargs["targets"]] == ["box", "operator_hand"]
-        assert len(kwargs["frames"]) == 8
-        assert sum(f["remaining_pixel_count"] > 0 for f in kwargs["frames"]) == 2
-        return [{**frame, "remaining_pixel_count": 0,
-                 "generated_pixels_present": bool(frame["remaining_pixel_count"])} for frame in kwargs["frames"]]
-
-    def review(**kwargs):
-        order.append("review")
-        assert [target["target_id"] for target in kwargs["plan"]["targets"]] == ["box", "operator_hand"]
-        if fill_result in {"unrelated_loss", "unrelated_unedited"}:
-            ids = [frame["frame_id"] for frame in kwargs["frames"]]
-            if len(ids) == 8:
-                loss_id = "f1" if fill_result == "unrelated_loss" else "f2"
-                return {"status": "blocked", "review": {"consistent_background": True,
-                    "task_objects_removed": False, "unrelated_objects_preserved": False,
-                    "unrelated_object_loss_frame_ids": [loss_id],
-                    "remaining_task_object_frame_ids": ["f2"]}}
-            assert fill_result == "unrelated_loss"
-            if len(ids) == 7:
-                assert "f1" not in ids
-                return {"status": "blocked", "review": {"consistent_background": True,
-                    "task_objects_removed": False, "unrelated_objects_preserved": True,
-                    "unrelated_object_loss_frame_ids": [],
-                    "remaining_task_object_frame_ids": ["f2"]}}
-            assert len(ids) == 6 and "f2" not in ids
-            return {"status": "passed", "review": {"consistent_background": True,
-                "task_objects_removed": True, "unrelated_objects_preserved": True,
-                "unrelated_object_loss_frame_ids": [], "remaining_task_object_frame_ids": []}}
-        if fill_result == "unrelated_inconsistent":
-            # Production 2026-10-12: one regenerated view lost an unrelated
-            # object and its background; the rest of the set was clean.
-            ids = [frame["frame_id"] for frame in kwargs["frames"]]
-            if len(ids) == 8:
-                return {"status": "blocked", "review": {"consistent_background": False,
-                    "task_objects_removed": True, "unrelated_objects_preserved": False,
-                    "unrelated_object_loss_frame_ids": ["f1"], "remaining_task_object_frame_ids": []}}
-            assert len(ids) == 7 and "f1" not in ids
-            return {"status": "passed", "review": {"consistent_background": True,
-                "task_objects_removed": True, "unrelated_objects_preserved": True,
-                "unrelated_object_loss_frame_ids": [], "remaining_task_object_frame_ids": []}}
-        if fill_result in {"inconsistent_repair", "inconsistent_unedited"}:
-            ids = [frame["frame_id"] for frame in kwargs["frames"]]
-            if len(ids) == 8:
-                return {"status": "blocked", "request_digest": "review-digest", "review": {
-                    "consistent_background": False, "task_objects_removed": True,
-                    "people_absent": True, "unrelated_objects_preserved": True,
-                    "remaining_task_object_frame_ids": []}}
-            assert "f0" not in ids and len(ids) == 7
-            return {"status": "passed", "review": {"consistent_background": True,
-                "task_objects_removed": True, "remaining_task_object_frame_ids": []}}
-        if fill_result in {"review_repair", "review_repair_edited"}:
-            ids = [frame["frame_id"] for frame in kwargs["frames"]]
-            if len(ids) == 8:
-                remaining = "f0" if fill_result == "review_repair_edited" else "f2"
-                assert remaining in ids
-                return {"status": "blocked", "review": {"consistent_background": True,
-                    "task_objects_removed": False, "people_absent": True,
-                    "unrelated_objects_preserved": True,
-                    "remaining_task_object_frame_ids": [remaining]}}
-            assert "f2" not in ids and len(ids) == 7
-            return {"status": "passed", "review": {"task_objects_removed": True,
-                "remaining_task_object_frame_ids": []}}
-        return {"status": fill_result}
-
-    monkeypatch.setattr(_ANALYSIS_ATTR, analyze)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_website_source_frames", estimate)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", track)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_object_removal_frames", recover)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.complete_background_images", complete)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.verify_completed_background", review)
-    def diagnose(**kwargs):
-        order.append("diagnosis")
-        assert kwargs["failed_review"]["request_digest"] == "review-digest"
-        return {"status": "completed", "diagnosis": {"inconsistent_background_frame_ids":
-            ["f0" if fill_result == "inconsistent_repair" else "f2"], "visual_evidence": "invented panel"}}
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.diagnose_inconsistent_background", diagnose)
-    result = run_clean_plate_stage(capture_root=capture_root, privacy_processing={"status": "pending_website_review"},
-                                   website_source_video=source)
-    assert result["privacy_verified"] is True
-    assert result["source_geometry"] is None
-    assert result["source_frames"] == geometry
-    assert order == ["analysis", "source_frames", "masks", "mask_preparation"] + (
-        [] if fill_result == "unneeded" else ["completion", "review"] +
-        (["review", "review"] if fill_result == "unrelated_loss" else
-         ["review"] if fill_result == "unrelated_inconsistent" else
-         ["review"] if fill_result == "review_repair" else
-         ["diagnosis", "review"] if fill_result == "inconsistent_repair" else
-         ["diagnosis"] if fill_result == "inconsistent_unedited" else []))
-    if fill_result in {"blocked", "review_repair_edited", "inconsistent_unedited", "unrelated_unedited"}:
-        assert result["status"] == "blocked"
-        assert result["prepared_views"] is None
-        assert ("website_background_consistency_exclusion_invalid" if fill_result == "inconsistent_unedited"
-                else "website_image_completion_review_failed") in result["blockers"]
-        return
-    assert result["status"] == "objects_removed"
-    assert len(result["prepared_views"]["frames"]) == (
-        6 if fill_result == "unrelated_loss" else
-        7 if fill_result in {"review_repair", "inconsistent_repair", "unrelated_inconsistent"} else 8)
-    if fill_result == "unrelated_inconsistent":
-        assert result["prepared_views"]["completion_review"]["excluded_unrelated_loss_frame_ids"] == ["f1"]
-    if fill_result == "unrelated_loss":
-        reviewed = result["prepared_views"]["completion_review"]
-        assert reviewed["excluded_unmasked_frame_ids"] == ["f2"]
-        assert reviewed["prior_failed_review"]["excluded_unrelated_loss_frame_ids"] == ["f1"]
-    if fill_result == "review_repair":
-        assert result["prepared_views"]["completion_review"]["excluded_unmasked_frame_ids"] == ["f2"]
-        assert result["prepared_views"]["completion_review"]["prior_failed_review"]["status"] == "blocked"
-    if fill_result == "inconsistent_repair":
-        reviewed = result["prepared_views"]["completion_review"]
-        assert reviewed["excluded_inconsistent_frame_ids"] == ["f0"]
-        assert reviewed["prior_inconsistent_review"]["status"] == "blocked"
-    forwarded = apply_clean_plate_to_reconstruction_input({"output_video_uri": "gs://raw.mov"}, result, required=True)
-    assert forwarded["output_video_uri"] is None
-    assert forwarded["prepared_views"] == result["prepared_views"]
-
-
-def test_view_first_plan_precedes_masks_and_supplies_only_selected_views(tmp_path, monkeypatch):
-    capture_root = _make_capture(tmp_path)
-    source = capture_root / "raw/walkthrough.mp4"
-    plan = build_removal_plan(targets=[{
-        "target_id": "box", "semantic_label": "blue box", "target_class": "movable_object",
-        "target_role": "task_object", "task_effect": "manipulated", "disposition": "remove",
-        "rebuild_intent": "rebuild_and_compose", "spatial_evidence": [], "confidence": 0.9,
-    }], status="completed", model="test", processing="agentic")
-    plan["task_context_sha256"] = "task-digest"
-    geometry = {"digest": "geometry-digest", "frames": [{"frame_id": "context"}]}
-    selected = [{"frame_id": "task"}, {"frame_id": "context"}]
-    view_plan = {"digest": "views-digest", "frames": selected,
-                 "binding": {"selected_frame_ids": ["task", "context"]}}
-    order = []
-    monkeypatch.setenv("BLUEPRINT_WEBSITE_VIEW_FIRST_SAM", "true")
-    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **kwargs: plan)
+    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **_: order.append("analysis") or plan)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_website_source_frames",
-                        lambda **kwargs: geometry)
-
-    def choose(**kwargs):
-        order.append("choose")
-        assert kwargs["limit"] == 8
-        return view_plan
-
-    def segment(**kwargs):
-        order.append("segment")
-        assert kwargs["view_plan"] is view_plan
-        return {"targets": []}
-
-    def prepare(**kwargs):
-        order.append("prepare")
-        assert kwargs["frames"] == selected
-        return [{"frame_id": frame["frame_id"], "image_digest": frame["frame_id"],
-                 "remaining_pixel_count": 0} for frame in selected]
-
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_mask_view_plan", choose)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", segment)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.reconstruction_source_frames",
-                        lambda **kwargs: pytest.fail("full-video view expansion was called"))
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.corroborate_removal_views",
-                        lambda **kwargs: (kwargs["frames"], {"status": "passed"}))
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_object_removal_frames", prepare)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.select_reconstruction_frames",
-                        lambda **kwargs: kwargs["frames"])
+                        lambda **_: order.append("source_frames") or geometry)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", track)
     result = run_clean_plate_stage(capture_root=capture_root, website_source_video=source,
                                    privacy_processing={"status": "pending_website_review"})
-    assert order == ["choose", "segment", "prepare"]
-    assert result["status"] == "objects_removed"
-    assert result["prepared_views"]["mask_view_plan_digest"] == "views-digest"
-
-
-# --------------------------------------------------------------------------- #
-# Fail-closed analysis (no paid call)
-# --------------------------------------------------------------------------- #
+    assert order == ["analysis", "source_frames", "masks"]
+    assert result["status"] == "objects_removed" and result["mode"] == "task_masks_ready"
+    assert result["task_masks"] == masks and result["source_frames"] == geometry
+    assert result["blockers"] == [] and "prepared_views" not in result
+    manifest = read_json(Path(result["stage_manifest_path"]))
+    assert manifest["generated_regions_present"] is False and "prepared_views" not in manifest
+    assert validate_clean_plate_stage_manifest(manifest) == []
+    assert source.read_bytes() == b"RAWVIDEO"
 
 
 def test_analysis_fail_closed_without_gate():

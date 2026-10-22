@@ -4774,8 +4774,9 @@ def run_qualification_pipeline(
             metadata=descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
         )
         privacy_descriptor = CaptureDescriptor.from_dict(descriptor_payload)
-        if website_capture and preview_requested_for_worldlabs and worldlabs_derived_rights_allowed:
-            worldlabs_input = {"status": "awaiting_prepared_images", "output_video_uri": None, "manifest_uri": None}
+        if website_capture:
+            # Website scenes come from the capture's Atlas job; no Marble input is made.
+            worldlabs_input = {"status": "not_requested", "manifest_uri": None, "output_video_uri": None}
         elif preview_requested_for_worldlabs and worldlabs_derived_rights_allowed:
             worldlabs_input = _prepare_worldlabs_input_video(
                 descriptor=privacy_descriptor,
@@ -4807,7 +4808,6 @@ def run_qualification_pipeline(
             worldlabs_input=worldlabs_input,
             task_context=(descriptor.metadata or {}).get("site_task_context"),
             website_source_video=(raw_video_path if website_capture else None),
-            image_edit_admission=(descriptor.metadata or {}).get("website_image_edit_admission"),
             policy=(CleanPlatePolicy(enabled=worldlabs_derived_rights_allowed and preview_requested_for_worldlabs)
                     if website_capture else None),
         )
@@ -4818,9 +4818,8 @@ def run_qualification_pipeline(
                 f"status={clean_plate.get('status')} mode={clean_plate.get('mode')}",
             )
         )
-        worldlabs_input = apply_clean_plate_to_reconstruction_input(
-            worldlabs_input, clean_plate, required=website_capture,
-        )
+        if not website_capture:
+            worldlabs_input = apply_clean_plate_to_reconstruction_input(worldlabs_input, clean_plate)
         if website_capture and clean_plate.get("status") not in {"noop", "objects_removed"}:
             raise StageError("clean_plate", ",".join(clean_plate.get("blockers") or ["website_preparation_pending"]))
         if website_capture:
@@ -4886,7 +4885,6 @@ def run_qualification_pipeline(
             "clean_plate_video_uri": clean_plate.get("clean_plate_video_uri"),
             "stage_manifest_uri": clean_plate.get("stage_manifest_uri"),
             "source_geometry": clean_plate.get("source_geometry"),
-            "prepared_views": clean_plate.get("prepared_views"),
         }
         descriptor_payload["metadata"] = metadata_payload
         write_json(descriptor_output_path, descriptor_payload)
@@ -5288,9 +5286,31 @@ def run_qualification_pipeline(
             qualification_state=qualification_state,
         )
 
+        website_scene_preparation = None
+        if website_capture:
+            # The capture's Atlas job is the website scene; no Marble world is bought.
+            from .website_scene_handoff import prepare_website_scene_handoff
+            website_scene_preparation = prepare_website_scene_handoff(
+                descriptor=descriptor.to_dict(), clean_plate=clean_plate,
+                capture_root=capture_root, now=time.time(),
+            )
+            write_json(pipeline_dir / "provider_run_manifest.json", {
+                "schema_version": "v1", "provider_name": None, "status": "not_requested",
+                "website_scene_preparation": website_scene_preparation})
+            outbox = website_scene_preparation.get("website_intake_outbox") or {}
+            if outbox.get("state") != "forward_pending":
+                raise StageError("website_scene_preparation", ",".join(
+                    website_scene_preparation.get("blockers")
+                    or (website_scene_preparation.get("runtime_inputs") or {}).get("blockers")
+                    or ["website_native_intake_pending"]))
+            # The authenticated website outbox owns the next stage. Do not
+            # project a device capture job or pretend native execution finished.
+            return {"status": "completed", "lane": "qualification",
+                    "website_scene_preparation": website_scene_preparation,
+                    "native_execution_complete": False}
         preview_provider_name = str(os.getenv("BLUEPRINT_PREVIEW_PROVIDER") or "world_labs").strip()
         preview_requested = preview_requested_for_worldlabs  # the rule that ran paid preparation reaches Marble
-        preview_input_ready = bool(worldlabs_input.get("output_video_uri") or worldlabs_input.get("prepared_views")) and str(worldlabs_input.get("status") or "").strip().lower() == "ready"
+        preview_input_ready = bool(worldlabs_input.get("output_video_uri")) and str(worldlabs_input.get("status") or "").strip().lower() == "ready"
         provider_run = (
             run_preview_provider(
                 provider_name=preview_provider_name,
@@ -5335,26 +5355,6 @@ def run_qualification_pipeline(
                 "provenance": {"canonical": False, "derived": True},
             }
         )
-        website_scene_preparation = None
-        if website_capture:
-            from .website_scene_handoff import prepare_website_scene_handoff
-            website_scene_preparation = prepare_website_scene_handoff(
-                descriptor=descriptor.to_dict(), clean_plate=clean_plate,
-                provider_run=provider_run, capture_root=capture_root, now=time.time(),
-            )
-            provider_run["website_scene_preparation"] = website_scene_preparation
-            write_json(pipeline_dir / "provider_run_manifest.json", provider_run)
-            outbox = website_scene_preparation.get("website_intake_outbox") or {}
-            if outbox.get("state") != "forward_pending":
-                raise StageError("website_scene_preparation", ",".join(
-                    website_scene_preparation.get("blockers")
-                    or (website_scene_preparation.get("runtime_inputs") or {}).get("blockers")
-                    or ["website_native_intake_pending"]))
-            # The authenticated website outbox owns the next stage. Do not
-            # project a device capture job or pretend native execution finished.
-            return {"status": "completed", "lane": "qualification",
-                    "website_scene_preparation": website_scene_preparation,
-                    "native_execution_complete": False}
         worldlabs_request_manifest_path = pipeline_dir / "worldlabs_request_manifest.json"
         worldlabs_request_manifest_uri = (
             f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json"

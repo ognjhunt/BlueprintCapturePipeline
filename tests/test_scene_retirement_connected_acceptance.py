@@ -881,8 +881,6 @@ def _website_owned_configuration(base, monkeypatch, policy):
     import pwd
     from urllib.parse import urlsplit
 
-    import numpy as np
-    import trimesh
 
     from blueprint_pipeline import public_scene_host_input_intake
     from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
@@ -890,7 +888,7 @@ def _website_owned_configuration(base, monkeypatch, policy):
     from blueprint_pipeline import task_evaluation_scene_progression as engine
     from blueprint_pipeline.common import write_json
     from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_json
-    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.task_evaluation_launch_preparation_queue import ensure_launch_preparation_queue_root
     from blueprint_pipeline.task_evaluation_public_scene_attempt_factory import RELEASE_SCHEMA, record
     from blueprint_pipeline.task_evaluation_scene_intake import stage_scene_intent
@@ -912,15 +910,16 @@ def _website_owned_configuration(base, monkeypatch, policy):
     # Retirement, not authoring, is under test: keep the Astra route these fixtures seal.
     args['spend']['replacement_authoring_backend'] = 'astra_cad_blender_v1'
     args['spend']['consent']['accepted_at_epoch'] = SCENE_SOURCE_EPOCH - 1
-    collider = Path(args['base_scene']['collision_mesh_path'])
-    mesh = trimesh.load(collider, force='mesh')
-    mesh.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
-    mesh.export(collider)
-    assets = pipeline / 'assets.json'
-    write_json(assets, {'world_id': 'world-1', 'downloads': [
-        {'kind': kind, 'local_path': args['base_scene'][key + '_path'],
-         'sha256': _sha256_file(Path(args['base_scene'][key + '_path']))[7:]}
-        for kind, key in (('splat_ply', 'splat'), ('collider_mesh_glb', 'collision_mesh'))]})
+    # The capture's Atlas job supplies the scene and the posed source geometry.
+    geometry = {**args['source_geometry'], 'geometry_backend': 'world_labs_atlas'}
+    geometry['digest'] = canonical_digest(geometry, digest_field='digest')
+    masks = {**args['task_masks'], 'source_geometry_digest': geometry['digest']}
+    masks['digest'] = canonical_digest(masks, digest_field='digest')
+    monkeypatch.setattr('blueprint_pipeline.website_atlas_scene_source.atlas_scene_source', lambda **_: {
+        'status': 'ready', 'base_scene': {**args['base_scene'], 'provider': 'world_labs_atlas'},
+        'source_geometry': geometry, 'alignment': 'anchored', 'source_pose_digest': 'sha256:' + '1' * 64,
+        'background_pose_digest': 'sha256:' + '2' * 64})
+    monkeypatch.setattr('blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry', lambda **_: masks)
     removal = pipeline / 'removal.json'
     write_json(removal, args['removal_manifest'])
     binding_root = source / 'bindings'
@@ -931,8 +930,6 @@ def _website_owned_configuration(base, monkeypatch, policy):
         clean_plate={'privacy_verified': True, 'status': 'objects_removed',
                      'task_masks': args['task_masks'], 'source_geometry': args['source_geometry'],
                      'removal_manifest_path': str(removal)},
-        provider_run={'status': 'ready', 'world_id': 'world-1', 'provider_run_id': 'op-1',
-                      'worldlabs_asset_materialization': {'manifest_path': str(assets)}},
         capture_root=capture, now=SCENE_SOURCE_EPOCH)
     assert handoff['status'] == 'intake_ready' and handoff.get('source_registration'), handoff
     preparation = json.loads(Path(handoff['preparation_path']).read_bytes())

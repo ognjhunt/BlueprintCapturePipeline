@@ -11,11 +11,9 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 from PIL import Image
-from scipy.ndimage import binary_dilation
 
 from blueprint_pipeline import website_image_completion as completion
 from blueprint_pipeline import website_image_repair_agent as repair
-from blueprint_pipeline import website_object_removal as removal
 from blueprint_pipeline import website_task_masks as masks
 from blueprint_pipeline.clean_plate_removal_analysis_gemini import (
     build_removal_plan, parse_removal_plan_response, validate_removal_plan)
@@ -115,21 +113,6 @@ def test_tracking_selects_every_object_and_removal_masks_union_them_with_the_per
     assert [row["target_id"] for row in result["targets"] if row["task_effect"] == "manipulated"] == ["cup", "bowl"]
     assert by_id["counter"]["disposition"] == "keep"
 
-    source = tmp_path / "anchor.png"
-    Image.fromarray(np.random.default_rng(0).integers(0, 255, (SIZE, SIZE, 3), dtype=np.uint8)).save(source)
-    frame = {"frame_id": "anchor", "source_image_path": str(source), "source_image_digest": _sha256_file(source),
-             "display_rotation_degrees": 0}
-    prepared = removal.prepare_object_removal_frames(frames=[frame], task_masks=result, output_root=tmp_path / "edit")[0]
-    expected = np.zeros((SIZE, SIZE), dtype=bool)
-    for row, col in BOXES.values():
-        expected[row:row + 4, col:col + 4] = True
-    expected = binary_dilation(expected, iterations=3)
-    mask = np.asarray(Image.open(prepared["remaining_mask_path"])) == 255
-    np.testing.assert_array_equal(mask, expected)
-    # The kept support is never erased.
-    assert not mask[28:].any()
-    assert prepared["removed_task_object_ids"] == ["cup", "bowl"]
-
 
 def test_two_objects_of_one_class_share_a_concept_but_never_a_track(tmp_path, monkeypatch):
     left = {"target_id": "cup-left", "semantic_label": "cup", "segmentation_prompt": "white cup",
@@ -152,79 +135,6 @@ def test_two_objects_of_one_class_share_a_concept_but_never_a_track(tmp_path, mo
     assert len(calls[0]) == 1
     assert {row["target_id"]: row["track"]["track_id"] for row in result["targets"]} == {
         "cup-left": "cup-1", "cup-right": "cup-0"}
-
-
-def _views(tmp_path, count):
-    frames = []
-    for index in range(count):
-        path = tmp_path / f"view-{index}.png"
-        Image.fromarray(np.random.default_rng(index).integers(0, 255, (16, 16, 3), dtype=np.uint8)).save(path)
-        frames.append({"frame_id": f"f{index}", "image_path": str(path), "image_digest": _sha256_file(path),
-                       "remaining_pixel_count": 0})
-    return frames
-
-
-def _observed(*indexes):
-    return {"observations": [{"source_frame_id": f"f{i}"} for i in indexes]}
-
-
-def test_every_manipulated_object_keeps_its_own_work_views(tmp_path):
-    frames = _views(tmp_path, 20)
-    # The dishwasher is in every view; the cup and bowl only briefly. The union
-    # of observations spans the whole clip, so first/last of the union alone
-    # would say nothing about the cup or the bowl.
-    task_masks = {"targets": [
-        {"target_id": "dishwasher", "task_effect": "manipulated", "track": _observed(*range(20))},
-        {"target_id": "cup", "task_effect": "manipulated", "track": _observed(5, 6)},
-        {"target_id": "bowl", "task_effect": "manipulated", "source_track": _observed(12, 13), "track": _observed()},
-        {"target_id": "person", "task_effect": "privacy", "track": _observed(9)},
-        {"target_id": "counter", "task_effect": "static_contact", "track": _observed(3)}]}
-    selected = {row["frame_id"] for row in removal.select_reconstruction_frames(frames=frames, task_masks=task_masks,
-                                                                                limit=3)}
-    assert selected == {"f0", "f5", "f12"}
-    selected = {row["frame_id"] for row in removal.select_reconstruction_frames(frames=frames, task_masks=task_masks,
-                                                                                limit=8)}
-    assert {"f0", "f19", "f5", "f6", "f12", "f13"} <= selected and len(selected) == 8
-    with pytest.raises(ValueError, match="frame_limit_below_task_objects"):
-        removal.select_reconstruction_frames(frames=frames, task_masks=task_masks, limit=2)
-
-
-def test_single_object_view_selection_is_unchanged(tmp_path):
-    frames = _views(tmp_path, 20)
-    frames[19] = {**frames[19], "image_digest": frames[4]["image_digest"], "image_path": frames[4]["image_path"]}
-    task_masks = {"targets": [{"task_effect": "manipulated", "track": _observed(4, 7, 19)},
-                              {"target_id": "person", "task_effect": "privacy", "track": _observed(0)}]}
-    selected = removal.select_reconstruction_frames(frames=frames, task_masks=task_masks, limit=5)
-    # Same-image last anchor is dropped exactly as before; context fills the rest.
-    assert "f4" in {row["frame_id"] for row in selected} and "f19" not in {row["frame_id"] for row in selected}
-    assert len(selected) == 5
-
-
-def test_short_lived_views_of_every_object_are_decoded(tmp_path, monkeypatch):
-    video = tmp_path / "video.mov"
-    video.write_bytes(b"source")
-    registry = [{"source_frame_id": f"decoded-{i:09d}", "decoded_pts_seconds": i / 30} for i in range(90)]
-    existing = [{"frame_id": registry[i]["source_frame_id"], "timestamp_seconds": i / 30,
-                 "display_rotation_degrees": 0} for i in range(0, 90, 10)]
-    geometry = {"frames": existing, "binding": {"source_video_digest": _sha256_file(video)}}
-    task_masks = {"source_video_digest": _sha256_file(video), "source_frame_registry": registry, "targets": [
-        {"task_effect": "manipulated", "source_track": {"observations": [
-            {"source_frame_id": registry[i]["source_frame_id"]} for i in (43, 44, 45)]}},
-        {"task_effect": "manipulated", "source_track": {"observations": [
-            {"source_frame_id": registry[i]["source_frame_id"]} for i in (71, 72, 73)]}},
-        {"task_effect": "privacy", "target_class": "person", "source_track": {"observations": [
-            {"source_frame_id": registry[i]["source_frame_id"]} for i in (15, 16)]}}]}
-    indexes = []
-
-    def extract(**kw):
-        indexes.extend(kw["indexes"])
-        return [{"frame_id": registry[i]["source_frame_id"], "t_video_sec": i / 30, "digest": f"digest-{i}"}
-                for i in kw["indexes"]]
-    monkeypatch.setattr(removal, "_extract_frames", extract)
-    monkeypatch.setattr(removal.shutil, "which", lambda _: "/ffmpeg")
-    removal.reconstruction_source_frames(source_geometry=geometry, task_masks=task_masks, source_video=video,
-                                         limit=8, output_root=tmp_path / "frames")
-    assert indexes == [43, 45, 71, 73]
 
 
 def _edit_inputs(tmp_path, counts, objects):
@@ -309,18 +219,6 @@ def test_single_object_edit_and_review_requests_are_byte_identical_to_before(tmp
     assert hashlib.sha256(completion.PROMPT.encode()).hexdigest() == PROMPT_SHA256
     assert hashlib.sha256(completion.REVIEW_PROMPT.encode()).hexdigest() == REVIEW_PROMPT_SHA256
     assert completion._review_prompt(targets) is completion.REVIEW_PROMPT
-    # A single-object frame record gains no per-object field.
-    source = tmp_path / "view.png"
-    Image.new("RGB", (8, 8)).save(source)
-    prepared = removal.prepare_object_removal_frames(
-        frames=[{"frame_id": "f0", "source_image_path": str(source), "source_image_digest": _sha256_file(source),
-                 "display_rotation_degrees": 0}],
-        task_masks={"targets": [{"target_id": "dishwasher", "task_effect": "manipulated", "disposition": "remove",
-                                 "track": {"observations": [_square("f0", 0, 0, size=2, extent=8)]}},
-                                {"target_id": "person", "target_class": "person", "task_effect": "privacy",
-                                 "disposition": "remove", "track": {"observations": []}}]},
-        output_root=tmp_path / "edit")[0]
-    assert "removed_task_object_ids" not in prepared
 
 
 def _fake_review(monkeypatch, answer):

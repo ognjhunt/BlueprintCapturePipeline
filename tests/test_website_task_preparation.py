@@ -483,35 +483,30 @@ def test_pose_and_authoring_bounds_share_normalized_simulator_frame(tmp_path):
     assert value["intake_request"]["consent"] == SPEND["consent"]
 
 
-def test_collected_reconstruction_reaches_real_website_preparation(tmp_path):
+def test_a_ready_atlas_scene_reaches_real_website_preparation(tmp_path, monkeypatch):
     from blueprint_pipeline.common import write_json
     from blueprint_pipeline.website_scene_handoff import prepare_website_scene_handoff
     pipeline = tmp_path / "pipeline"
     pipeline.mkdir()
     args = _arguments(pipeline)
-    base = args["base_scene"]
-    # A World Labs export uses OpenCV Y-down, unlike the generic fixture.
-    collider_path = Path(base["collision_mesh_path"])
-    collider = trimesh.load(collider_path, force="mesh", process=False)
-    collider.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
-    collider.export(collider_path)
-    base["collision_mesh_digest"] = _sha256_file(collider_path)
-    rows = [{"kind": kind, "local_path": base[path], "sha256": base[digest][7:]}
-            for kind, path, digest in (("splat_ply", "splat_path", "splat_digest"),
-                                      ("collider_mesh_glb", "collision_mesh_path", "collision_mesh_digest"))]
-    assets_path = pipeline / "assets.json"
+    base = {**args["base_scene"], "provider": "world_labs_atlas", "scale_authority": "atlas_reference_estimate"}
+    geometry = {**args["source_geometry"], "geometry_backend": "world_labs_atlas"}
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    masks = {**args["task_masks"], "source_geometry_digest": geometry["digest"]}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
     removal_path = pipeline / "removal.json"
-    write_json(assets_path, {"world_id": "world-1", "downloads": rows})
     write_json(removal_path, args["removal_manifest"])
+    # The capture's Atlas job supplies the scene and the posed source geometry.
+    monkeypatch.setattr("blueprint_pipeline.website_atlas_scene_source.atlas_scene_source", lambda **_: {
+        "status": "ready", "base_scene": base, "source_geometry": geometry, "alignment": "anchored", "source_pose_digest": "sha256:" + "1" * 64,
+        "background_pose_digest": "sha256:" + "2" * 64})
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **_: masks)
     context = args["task_context"]
     result = prepare_website_scene_handoff(
         descriptor={"capture_id": context["capture_id"], "scene_id": context["scene_id"], "metadata": {
             "site_task_context": context, "website_scene_execution_authority": SPEND}},
-        clean_plate={"status": "objects_removed", "privacy_verified": True,
-                     "task_masks": args["task_masks"], "source_geometry": args["source_geometry"],
-                     "removal_manifest_path": str(removal_path)},
-        provider_run={"status": "ready", "world_id": "world-1", "provider_run_id": "op-1",
-                      "worldlabs_asset_materialization": {"manifest_path": str(assets_path)}},
+        clean_plate={"status": "objects_removed", "privacy_verified": True, "source_geometry": None,
+                     "task_masks": args["task_masks"], "removal_manifest_path": str(removal_path)},
         capture_root=tmp_path, now=NOW,
     )
     assert result["status"] == "intake_ready", result["blockers"]
@@ -519,7 +514,6 @@ def test_collected_reconstruction_reaches_real_website_preparation(tmp_path):
     assert compiled["coordinate_frame"]["declared_meters_per_unit"] == pytest.approx(1 / RUNTIME_SCALE)
     assert Path(result["thumbnail"]["path"]).is_file()
     assert result["simulator_ready"] is False
-    assert result["provider_mutation_performed"] is False
     assert result["runtime_inputs"]["status"] == "background_collision_prepared"
     assert Path(result["runtime_inputs"]["path"]).is_file()
 

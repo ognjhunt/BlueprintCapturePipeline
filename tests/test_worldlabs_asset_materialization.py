@@ -354,33 +354,21 @@ def test_worldlabs_asset_materialization_statuses_and_cli(
         assert exc.code == 0
 
 
-def test_website_collects_one_splat_and_collider_and_reuses_checked_bytes(tmp_path, monkeypatch):
+def test_a_retained_download_is_reused_only_while_its_bytes_check(tmp_path, monkeypatch):
     root = _build_capture_root(tmp_path)
     _write_json(root / "pipeline" / "worldlabs_world_manifest.json", {
-        "id": "world-website", "assets": {
-            "mesh": {"collider_mesh_url": "https://x/collider.glb", "high_quality_mesh_url": "https://x/hq.glb"},
-            "splats": {"spz_urls": {"full_res": "https://x/full.spz", "500k": "https://x/small.spz"},
-                       "ply_url": "https://x/scene.ply"}}})
+        "id": "world-retained", "assets": {"mesh": {"collider_mesh_url": "https://x/collider.glb"}}})
     calls = []
     def download(url, path, *, max_bytes):
         calls.append(url)
         path.write_bytes(url.encode())
         return {"size_bytes": path.stat().st_size, "sha256": w._sha_file(path)}
     monkeypatch.setattr(w, "_download_remote_asset", download)
-    first = materialize_worldlabs_assets(capture_root=root, scene_preparation=True)
-    assert first["status"] == "complete"
-    assert calls == ["https://x/collider.glb", "https://x/scene.ply"]
-    second = materialize_worldlabs_assets(capture_root=root, scene_preparation=True)
-    assert second["status"] == "complete" and len(calls) == 2
+    first = materialize_worldlabs_assets(capture_root=root)
+    assert first["status"] == "complete" and calls == ["https://x/collider.glb"]
+    second = materialize_worldlabs_assets(capture_root=root)
+    assert second["status"] == "complete" and len(calls) == 1
     manifest = json.loads(Path(second["manifest_path"]).read_text())
-    Path(manifest["downloads"][1]["local_path"]).write_bytes(b"tampered")
-    materialize_worldlabs_assets(capture_root=root, scene_preparation=True)
-    assert calls[-1] == "https://x/scene.ply" and len(calls) == 3
-
-
-def test_website_missing_splat_does_not_report_complete(tmp_path, monkeypatch):
-    root = _build_capture_root(tmp_path)
-    _write_json(root / "pipeline" / "worldlabs_world_manifest.json", {"id": "world-empty"})
-    result = materialize_worldlabs_assets(capture_root=root, scene_preparation=True)
-    assert result["status"] == "blocked_scene_assets_incomplete"
-    assert result["blockers"] == ["worldlabs_collider_required", "worldlabs_splat_required"]
+    Path(manifest["downloads"][0]["local_path"]).write_bytes(b"tampered")
+    materialize_worldlabs_assets(capture_root=root)
+    assert calls == ["https://x/collider.glb"] * 2
