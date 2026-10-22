@@ -219,13 +219,18 @@ def test_a_tombstone_seen_at_the_next_tick_ends_the_job_without_running(monkeypa
     assert world.advance() == "withdrawn" and world.runs == []
 
 
-def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypatch, site):
+@pytest.mark.parametrize("refusal,reason", [
+    (ValueError("website_control_atlas-configuration_http_409:website_atlas_source_consent_required"),
+     "website_atlas_source_consent_required"),
+    # A lapsed price review is the owner's to renew, like a missing grant.
+    (ValueError("atlas_runtime_price_review_expired"), "atlas_runtime_price_review_expired"),
+])
+def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypatch, site, refusal, reason):
     _enqueue(site)
-    refusal = ValueError("website_control_atlas-configuration_http_409:website_atlas_source_consent_required")
     world = World(monkeypatch, site, [refusal, {"status": "processing", "stage": "plan"}])
     assert world.advance() == "needs_input"
     job = _job(site)
-    assert job["reason"] == "website_atlas_source_consent_required"
+    assert job["reason"] == reason
     assert job["retry_at_epoch"] == world.clock + preview.AUTHORITY_RECHECK_SECONDS
     assert job["provider_cleanup"] is None  # still waiting, so nothing is torn down yet
     world.clock += 60
@@ -234,7 +239,7 @@ def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypa
     assert world.advance() == "processing"
     # Each tick tells the WebApp only its newest state.
     assert [(row["state"], row["reason"], row["revision"]) for row in world.pushed] == [
-        ("needs_input", "website_atlas_source_consent_required", 2), ("processing", None, 3)]
+        ("needs_input", reason, 2), ("processing", None, 3)]
 
 
 @pytest.mark.parametrize("error,state,reason", [

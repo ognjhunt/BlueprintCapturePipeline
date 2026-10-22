@@ -35,6 +35,14 @@ def load_configuration(context, source_digest):
     return value
 
 
+def _require_current_price_review(policy) -> None:
+    """Frame selection and posing refuse a stale price review; refuse it before buying a review."""
+    from datetime import datetime, timezone
+    from .website_atlas_pose import _reviewed_recently
+    if not _reviewed_recently(policy.get("reviewed_on"), datetime.now(timezone.utc).date()):
+        raise ValueError("atlas_runtime_price_review_expired")
+
+
 def generation_request(*, pose, inputs, review):
     """Cover reviewed task AND room anchors at their observed camera locations."""
     from .website_worldlabs import _atlas_posed_context
@@ -167,6 +175,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         receipt = selection["planner_receipt"]
     else:
         check("plan")
+        _require_current_price_review(policy)
         plan_options = {"feedback": feedback} if feedback is not None else {}
         receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
             configuration=config, output_root=reviews, invoker=invoker, experimental=experimental, **plan_options)
@@ -178,6 +187,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                                           review=review, output_root=output_root)
             survey = json.loads(survey_path.read_text())
             check("plan")
+            _require_current_price_review(policy)
             receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
                 configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
             review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, reference_sources=receipt.get("reference_sources", []))

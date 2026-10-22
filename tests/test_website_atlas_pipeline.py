@@ -1,10 +1,17 @@
 """Production camera coverage and routing never imply simulator readiness."""
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import json
 
 import pytest
 
 from blueprint_pipeline.website_atlas_pipeline import generation_request
+
+
+def _reviewed_today():
+    # The pipeline checks the review's age against the real date, so fixtures
+    # must not carry a fixed day that expires a month later.
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 def frame(x):
@@ -46,7 +53,7 @@ def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_rev
     monkeypatch.setattr(refinement, "load_refinement_feedback", lambda *a, **k: feedback)
     policy = {"model": "gpt-6.1-sol", "maximum_review_cost_usd": .5, "pose_input_cost_usd": .01,
         "rgbd_view_cost_usd": .05, "mesh_export_cost_usd": .5, "rate_card_reference": "test", "reviewed_by": "test",
-        "reviewed_on": "2026-10-22"}
+        "reviewed_on": _reviewed_today()}
     monkeypatch.setattr(pipeline, "load_configuration", lambda *a: {"policy": policy, "remaining_cost_usd": 3.4,
         "authority": {"provider_retention": "project_library_retention_approved"}})
     monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("url", "secret"))
@@ -90,7 +97,7 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     root = tmp_path / "job"
     policy = {"model": "gpt-6.1-sol", "maximum_review_cost_usd": .5, "pose_input_cost_usd": .01,
         "rgbd_view_cost_usd": .05, "rate_card_reference": "https://example.test/rates", "reviewed_by": "test",
-        "reviewed_on": "2026-10-21"}
+        "reviewed_on": _reviewed_today()}
     if mesh_price:
         policy["mesh_export_cost_usd"] = mesh_price
     config = {"authority": {"provider_retention": "project_library_retention_approved"},
@@ -223,6 +230,31 @@ def test_a_checkpoint_refusal_stops_the_run_before_the_first_paid_review(tmp_pat
         raise RuntimeError(f"withdrawn before {stage}")
     with pytest.raises(RuntimeError, match="withdrawn before plan"):
         pipeline.run_atlas_pipeline(source_video=video, output_root=tmp_path / "job", checkpoint=withdrawn,
+                                    task_context={"capture_id": "c", "context_digest": "task"})
+
+
+def test_an_expired_price_review_waits_for_the_owner_before_buying_a_review(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
+    from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
+    video = tmp_path / "source.mov"
+    video.write_bytes(b"capture")
+    stale = datetime.now(timezone.utc).date() - timedelta(days=pose_api.PRICE_REVIEW_MAX_AGE_DAYS + 1)
+    monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "test-non-secret"))
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: {"authority": {"provider_retention":
+        "account_does_not_retain"}, "remaining_cost_usd": 2, "policy": {"maximum_review_cost_usd": .1,
+        "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05, "reviewed_on": stale.isoformat()}})
+
+    def survey(**kwargs):
+        kwargs["output_root"].mkdir(parents=True)
+        (kwargs["output_root"] / "atlas_video_survey.json").write_text(json.dumps(
+            {"source_video_digest": pipeline._sha256_file(video), "frames": []}))
+    monkeypatch.setattr(inputs, "survey_video", survey)
+    # Frame selection refuses a stale review, but only after the scene review
+    # was bought; every upload after the review lapses would pay for nothing.
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_plan",
+                        lambda **_: pytest.fail("a stale price review must not buy a scene review"))
+    with pytest.raises(ValueError, match="atlas_runtime_price_review_expired"):
+        pipeline.run_atlas_pipeline(source_video=video, output_root=tmp_path / "job",
                                     task_context={"capture_id": "c", "context_digest": "task"})
 
 
