@@ -41,6 +41,7 @@ ROUTING_MODES = ("off", "allowlist", "consented")
 SCHEMA = "website_atlas_preview_job.v1"
 PREVIEW_SCHEMA = "website_atlas_preview.v1"
 JOB_FILE = "preview_job.json"
+LOCK_FILE = "preview.lock"
 ARTIFACT_KIND = "atlas-scene-bundle"
 TERMINAL = frozenset({"ready", "needs_input", "failed", "withdrawn"})
 MAXIMUM_JOB_SECONDS = 7 * 86400
@@ -146,6 +147,8 @@ def enqueue_preview(*, descriptor: Any, capture_root: Path, pipeline_dir: Path,
                "transient_failures": 0, "archive": None, "provider_cleanup": None, "delivered_revision": 0,
                "delivery_attempts": 0, "delivery_next_at_epoch": 0}
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Withdrawal deletion holds this same lock, so it exists before any job does.
+        (path.parent / LOCK_FILE).touch()
         write_json(path, job)
         return job
     except Exception:  # noqa: BLE001 - the preview is optional; intake continues without it
@@ -248,9 +251,15 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
         if result["status"] == "processing":
             return _transition(job, current, "processing", None, stage=result["stage"], transient_failures=0,
                                next_attempt_at_epoch=current)
+        # The last paid-stage checkpoint is behind the final provider call, fusion and export.
+        checkpoint("archive")
         archive = _archive(job, result)
     except Exception as error:  # noqa: BLE001 - every outcome is a typed job state, never a raise
         return _failed_step(job, error, current)
+    if _withdrawn(capture_root):
+        # The withdrawal landed during the upload: the copy is taken back before anything uses it.
+        return _transition(job, current, "withdrawn", "website_capture_withdrawn", archive=archive,
+                           archive_retraction="pending")
     return _transition(job, current, "ready", None, stage="archived", archive=archive, transient_failures=0,
                        result_digest=result["digest"], splat_available=bool(result.get("splat_available")),
                        mesh_available=bool(result.get("mesh_available")))
@@ -279,11 +288,48 @@ def atlas_asset_ids(job_dir: Path) -> list[str]:
     return sorted(found)
 
 
-def delete_atlas_assets(asset_ids: list[str], *, transport: Any = None) -> tuple[list[str], list[str]]:
+def _pending_operations(job_dir: Path) -> list[str]:
+    """Operations submitted but never collected: only World Labs knows their outputs."""
+    found = []
+    for path in sorted(job_dir.rglob("atlas_pose/submission.json")):
+        state = {} if path.is_symlink() else json.loads(path.read_text())
+        if state.get("status") == "submitted" and isinstance(state.get("operation_id"), str):
+            found.append(state["operation_id"])
+    return found
+
+
+def _operation_outputs(client: Any, operation_id: str) -> list[str] | None:
+    """A finished operation's output asset ids; None while it runs (its cancellation is requested)."""
+    from . import website_atlas_pose as pose
+    status, payload = client.send("GET", f"/operations/{pose._safe_id(operation_id)}")
+    if status in {404, 410}:
+        return []  # Past the provider's retention nothing names its outputs any more.
+    operation = pose._json_object(status, payload)
+    if operation.get("done") is not True:
+        try:
+            client.call("POST", f"/operations/{operation_id}:cancel", {})
+        except Exception:  # noqa: BLE001 - best effort; the next attempt polls it again
+            pass
+        return None
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "assetId" and isinstance(item, str):
+                    found.append(item)
+                else:
+                    walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+    walk(operation.get("response"))
+    return found
+
+
+def _delete_assets(client: Any, asset_ids: list[str]) -> tuple[list[str], list[str]]:
     """Delete each asset at World Labs (needs ``assets.delete``); one already gone counts as deleted."""
     from . import website_atlas_pose as pose
-    base, key = pose.atlas_api_config()
-    client = pose.AtlasClient(base_url=base, api_key=key, transport=transport)
     deleted, failed = [], []
     for asset_id in asset_ids:
         try:
@@ -301,23 +347,52 @@ def delete_atlas_assets(asset_ids: list[str], *, transport: Any = None) -> tuple
 
 def _clean_provider(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float],
                     transport: Any = None) -> dict[str, Any]:
+    """Delete every Atlas asset the job made, reconciling operations it never collected first."""
     current = int(now())
     cleanup = job.get("provider_cleanup") or {"state": "pending", "attempts": 0, "deleted": [], "remaining": [],
-                                              "next_attempt_at_epoch": 0}
+                                              "operations_running": [], "next_attempt_at_epoch": 0}
     if cleanup["state"] != "pending" or current < cleanup["next_attempt_at_epoch"]:
         return job
-    remaining = [asset for asset in atlas_asset_ids(job_dir) if asset not in set(cleanup["deleted"])]
-    failed: list[str] = []
-    if remaining:
+    operations = _pending_operations(job_dir)
+    assets = [asset for asset in atlas_asset_ids(job_dir) if asset not in set(cleanup["deleted"])]
+    failed, running = [], []
+    if operations or assets:
         try:
-            deleted, failed = delete_atlas_assets(remaining, transport=transport)
+            from . import website_atlas_pose as pose
+            base, key = pose.atlas_api_config()
+            client = pose.AtlasClient(base_url=base, api_key=key, transport=transport)
+            for operation_id in operations:
+                outputs = _operation_outputs(client, operation_id)
+                if outputs is None:
+                    running.append(operation_id)
+                else:
+                    assets.extend(asset for asset in outputs if asset not in set(cleanup["deleted"]))
+            deleted, failed = _delete_assets(client, sorted(set(assets)))
         except Exception:  # noqa: BLE001 - e.g. no key on this host yet; retried with backoff
-            deleted, failed = [], remaining
+            deleted, failed, running = [], sorted(set(assets)), operations
         cleanup = {**cleanup, "deleted": sorted({*cleanup["deleted"], *deleted})}
     attempts = cleanup["attempts"] + 1
-    state = "complete" if not failed else ("failed" if attempts >= MAXIMUM_CLEANUP_ATTEMPTS else "pending")
+    done = not failed and not running
+    state = "complete" if done else ("failed" if attempts >= MAXIMUM_CLEANUP_ATTEMPTS else "pending")
     return {**job, "provider_cleanup": {**cleanup, "state": state, "attempts": attempts, "remaining": failed,
+                                        "operations_running": running,
                                         "next_attempt_at_epoch": current + min(6 * 3600, 300 * 2 ** attempts)}}
+
+
+def _retract_archive(job: dict[str, Any]) -> dict[str, Any]:
+    """Delete every version of a bundle a withdrawal overtook; retried each tick until gone."""
+    if job.get("archive_retraction") != "pending":
+        return job
+    try:
+        from .website_capture_withdrawal_deletion import B2ObjectVersions
+        store, uri = B2ObjectVersions.configured(), job["archive"]["uri"]
+        for key, version in store.versions(uri):
+            store.delete(key, version)
+        if store.versions(uri):
+            raise ValueError("atlas_preview_archive_versions_remaining")
+    except Exception as error:  # noqa: BLE001 - storage errors retry on the next tick
+        return {**job, "archive_retraction_error": _reason(error)}
+    return {**job, "archive_retraction": "complete", "archive_retraction_error": None}
 
 
 def preview(job: Mapping[str, Any]) -> dict[str, Any]:
@@ -361,7 +436,7 @@ def _deliver(job: dict[str, Any], *, now: Callable[[], float]) -> dict[str, Any]
 def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: Any = None) -> str:
     """One bounded step for one job: Atlas progress, provider cleanup, WebApp delivery."""
     job_dir, capture_root = path.parent, path.parents[2]
-    with (job_dir / "preview.lock").open("a") as lock:
+    with (job_dir / LOCK_FILE).open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -371,6 +446,7 @@ def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: 
         if job["state"] not in TERMINAL or job.get("retry_at_epoch"):
             job = _step(job, job_dir=job_dir, capture_root=capture_root, now=now)
         if job["state"] in TERMINAL and not job.get("retry_at_epoch"):
+            job = _retract_archive(job)
             job = _clean_provider(job, job_dir=job_dir, now=now, transport=transport)
         job = _deliver(job, now=now)
         if json.dumps(job, sort_keys=True) != before:

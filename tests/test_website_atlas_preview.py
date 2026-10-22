@@ -57,6 +57,7 @@ class World:
         self.site, self.steps, self.runs, self.pushed, self.deleted, self.published = site, list(steps), [], [], [], []
         # The worker's clock starts where intake recorded the job.
         self.clock, self.refuse_push, self.missing = _job(site)["enqueued_at_epoch"], None, {"gone1"}
+        self.operations, self.cancelled = {}, []
         monkeypatch.setattr(context, "load_current_website_task_context",
                             lambda **kw: {"context_digest": "sha256:" + "c" * 64, **kw})
         monkeypatch.setattr(pipeline, "run_atlas_pipeline", self.run)
@@ -91,7 +92,15 @@ class World:
                 "revision": payload["preview"]["revision"], "preview_digest": payload["preview"]["preview_digest"]}
 
     def transport(self, method, url, headers, data):
-        assert method == "DELETE" and headers["WLT-Api-Key"] == "key"
+        assert headers["WLT-Api-Key"] == "key"
+        if "/operations/" in url:
+            operation = url.rsplit("/", 1)[1]
+            if method == "POST":
+                self.cancelled.append(operation.removesuffix(":cancel"))
+                return 200, b"{}"
+            value = self.operations.get(operation)
+            return (404, b"{}") if value is None else (200, json.dumps({"id": operation, **value}).encode())
+        assert method == "DELETE"
         asset = url.rsplit("/", 1)[1]
         self.deleted.append(asset)
         return (404, b'{"error":"gone"}') if asset in self.missing else (200, b"{}")
@@ -139,6 +148,7 @@ def test_routing_is_off_unless_set_and_an_unreadable_setting_routes_nothing(monk
 def test_routed_walkthroughs_get_one_job_and_intake_never_fails_for_it(site, tmp_path):
     job = _enqueue(site)
     assert (job["state"], job["source_video"], job["revision"]) == ("processing", "raw/walkthrough.mov", 1)
+    assert (site.job.parent / preview.LOCK_FILE).is_file()  # withdrawal deletion holds the same lock
     assert _enqueue(site) == job == _job(site)  # a redelivered upload keeps its job
     assert _enqueue(site, descriptor=_descriptor(capture_id="supplement-" + "a" * 40)) is None
     assert _enqueue(site, descriptor=_descriptor(request="other")) is None
@@ -369,3 +379,78 @@ def test_download_route_streams_with_digest_headers_only_for_the_webapp_client(m
     monkeypatch.setattr(http, "open_bundle", broken)
     failed = client.get(url, headers=signed)
     assert failed.status_code == 503 and "secret" not in failed.text
+
+
+def test_a_withdrawal_after_the_last_paid_stage_still_prevents_the_archive(monkeypatch, site):
+    _enqueue(site)
+
+    def finished_then_withdrawn(kwargs):
+        result = _completed(kwargs)
+        _withdraw(site)  # during fusion or export, after the mesh checkpoint
+        return result
+    world = World(monkeypatch, site, [finished_then_withdrawn])
+    assert world.advance() == "withdrawn"
+    assert world.published == [] and _job(site)["archive"] is None
+    assert world.pushed[-1]["state"] == "withdrawn" and world.pushed[-1]["bundle"] is None
+
+
+class _Versions:
+    """``list_object_versions``/``delete_object`` as boto3 answers them on B2."""
+
+    def __init__(self):
+        self.objects, self.deleted = {}, []
+
+    def list_object_versions(self, *, Bucket, Prefix, **_markers):
+        rows = [{"Key": key, "VersionId": version} for key, versions in self.objects.items()
+                if key.startswith(Prefix) for version in versions]
+        return {"Versions": rows, "DeleteMarkers": [], "IsTruncated": False}
+
+    def delete_object(self, *, Bucket, Key, VersionId):
+        self.deleted.append((Key, VersionId))
+        self.objects[Key] = [version for version in self.objects[Key] if version != VersionId]
+
+
+def test_a_copy_published_while_the_withdrawal_landed_is_taken_back(monkeypatch, site):
+    from blueprint_pipeline import website_capture_withdrawal_deletion as deletion
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed])
+    versions = _Versions()
+    monkeypatch.setattr(deletion.B2ObjectVersions, "configured", classmethod(lambda cls: cls(versions, "bucket")))
+    publish = world.publish
+
+    def publish_while_withdrawn(**kwargs):
+        reference = publish(**kwargs)
+        versions.objects[reference["uri"].split("s3://bucket/", 1)[1]] = ["v1", "v2"]
+        _withdraw(site)
+        return reference
+    monkeypatch.setattr(world, "publish", publish_while_withdrawn)
+    from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
+    monkeypatch.setattr(store, "publish_configured_scene_artifact", publish_while_withdrawn)
+    assert world.advance() == "withdrawn"
+    job = _job(site)
+    assert job["archive_retraction"] == "complete" and len(versions.deleted) == 2
+    assert all(not rows for rows in versions.objects.values())
+    assert world.pushed[-1]["state"] == "withdrawn" and world.pushed[-1]["bundle"] is None
+
+
+def test_cleanup_waits_for_operations_it_never_collected_and_deletes_their_outputs(monkeypatch, site):
+    _enqueue(site)
+
+    def submitted_then_withdrawn(kwargs):
+        stage = kwargs["output_root"] / "generated/atlas_pose"
+        stage.mkdir(parents=True)
+        (stage / "submission.json").write_text(json.dumps({"status": "submitted", "operation_id": "op1"}))
+        _withdraw(site)
+        kwargs["checkpoint"]("mesh")
+    world = World(monkeypatch, site, [submitted_then_withdrawn])
+    world.operations["op1"] = {"done": False}
+    assert world.advance() == "withdrawn"
+    cleanup = _job(site)["provider_cleanup"]
+    assert cleanup["state"] == "pending" and cleanup["operations_running"] == ["op1"] and world.cancelled == ["op1"]
+    world.operations["op1"] = {"done": True, "response": {"frames": [
+        {"imageAsset": {"assetId": "out1"}, "depth": {"depthAsset": {"assetId": "out2"}}}]}}
+    world.clock = cleanup["next_attempt_at_epoch"]
+    world.advance()
+    cleanup = _job(site)["provider_cleanup"]
+    assert cleanup["state"] == "complete" and sorted(world.deleted) == ["out1", "out2"]
+    assert cleanup["operations_running"] == []

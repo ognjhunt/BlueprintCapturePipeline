@@ -40,6 +40,7 @@ Pipeline roots it does not cover, and the retained audit and lineage metadata.
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
 import os
 import re
@@ -566,9 +567,30 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
 
 def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                               authorize_complete_deletion: bool = False, **resolution: Any) -> dict[str, Any]:
-    """Delete exactly a reviewed plan's copies; refuse anything unresolved, held or changed."""
+    """Delete exactly a reviewed plan's copies; refuse anything unresolved, held or changed.
+
+    It holds the capture's Atlas preview lock throughout, so no preview step can
+    publish a new copy between this plan's object listing and its deletion; a step
+    in progress refuses (``atlas_preview_busy``) and the operator retries.
+    """
 
     _require(authorize_complete_deletion is True, "explicit_authorization_required")
+    from .website_atlas_preview import JOB_FILE, LOCK_FILE
+    lock_path = Path(capture_root) / "pipeline" / "atlas" / LOCK_FILE
+    if not lock_path.is_file():
+        _require(not (lock_path.parent / JOB_FILE).exists(), "atlas_preview_lock_missing")
+        return _apply_withdrawal_deletion(capture_root=capture_root, expected_plan_digest=expected_plan_digest,
+                                          **resolution)
+    with lock_path.open("r") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise WithdrawalDeletionError("website_withdrawal_deletion_atlas_preview_busy") from None
+        return _apply_withdrawal_deletion(capture_root=capture_root, expected_plan_digest=expected_plan_digest,
+                                          **resolution)
+
+
+def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str, **resolution: Any) -> dict[str, Any]:
     _require(re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_plan_digest)), "plan_digest_invalid")
     plan = plan_withdrawal_deletion(capture_root=capture_root, **resolution)
     _require(plan["digest"] == expected_plan_digest, "plan_changed")
