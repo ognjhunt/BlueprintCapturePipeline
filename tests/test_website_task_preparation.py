@@ -742,3 +742,40 @@ def test_unlevelled_prior_from_a_pitched_camera_stays_a_typed_refusal(tmp_path, 
     with pytest.raises(ValueError, match="website_registration_"):
         preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path,
                                                anchor=anchor)
+
+
+def _yaw(degrees):
+    angle = np.radians(degrees)
+    return np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0], [-np.sin(angle), 0, np.cos(angle)]])
+
+
+def test_a_shared_camera_alignment_anchors_registration_in_any_orientation(tmp_path):
+    geometry = _source_geometry(tmp_path)
+    rotation, translation = _yaw(35.0), np.array([0.4, -0.2, 0.3])
+    base = _anchored_base_scene(tmp_path, geometry, rotation=rotation, translation=translation,
+                                ground_plane_offset_m=None)
+    transform = np.eye(4)
+    transform[:3, :3], transform[:3, 3] = rotation, translation / RUNTIME_SCALE
+    anchor = {"kind": "source_world_alignment", "source_world_to_provider_m": transform.tolist(),
+              "meters_per_unit": 1 / RUNTIME_SCALE, "up_axis": "Y", "ground_plane_offset_m": None}
+    value = preparation.register_source_to_runtime(
+        source_geometry=geometry, collision_mesh_path=Path(base["collision_mesh_path"]), anchor=anchor)
+    assert value["scale_status"] == "provider_declared_anchor"
+    assert value["scale"] == pytest.approx(RUNTIME_SCALE, rel=1e-3)
+    assert np.allclose(value["rotation"], rotation, atol=1e-3)
+    assert value["translation"] == pytest.approx(translation.tolist(), abs=1e-3)
+    assert value["anchor"]["kind"] == "source_world_alignment" and value["anchor"]["frame_id"] is None
+    assert value["anchor"]["roll_degrees"] == 0 and value["anchor"]["rotation_deviation_degrees"] < 0.5
+    assert value["ground_plane"] is None
+
+
+@pytest.mark.parametrize("transform", [np.diag([1.0, 1.0, -1.0, 1.0]), np.diag([2.0, 2.0, 2.0, 1.0]),
+                                       np.full((4, 4), np.nan)])
+def test_an_alignment_that_is_not_a_proper_rigid_motion_is_refused(tmp_path, transform):
+    geometry = _source_geometry(tmp_path)
+    base = _anchored_base_scene(tmp_path, geometry, ground_plane_offset_m=None)
+    anchor = {"kind": "source_world_alignment", "source_world_to_provider_m": transform.tolist(),
+              "meters_per_unit": 1 / RUNTIME_SCALE, "up_axis": "Y", "ground_plane_offset_m": None}
+    with pytest.raises(ValueError, match="website_registration_anchor_frame_invalid"):
+        preparation.register_source_to_runtime(source_geometry=geometry,
+            collision_mesh_path=Path(base["collision_mesh_path"]), anchor=anchor)

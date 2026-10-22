@@ -22,6 +22,8 @@ from .local_reconstruction_adapters import LocalDecodedObservationAdapter, _sha2
 
 SURVEY_SCHEMA = "atlas_video_survey.v1"
 REVIEW_SCHEMA = "atlas_scene_state_review.v1"
+# The exact pose-input document, beside the posed run that binds its digest.
+GEOMETRY_INPUTS_FILE = "atlas_geometry_inputs.json"
 #: A view that moved less than this (896-px preview pixels) from an overlapping
 #: kept neighbour adds no new viewpoint: the ``select_views`` near-duplicate rule.
 DISTINCT_VIEW_MINIMUM_DISPLACEMENT = 12
@@ -398,6 +400,12 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
               "frames": prepared, "source_sample_count": survey["sample_count"],
               "heldout_frame_count": survey["heldout_frame_count"], "heldout_pixels_included": False}
     inputs["digest"] = canonical_digest(inputs, digest_field="digest")
+    # Scene preparation reads the posed views as source geometry, so keep the
+    # exact document the pose binds to, not only its digest.
+    retained = root / GEOMETRY_INPUTS_FILE
+    if retained.is_file() and json.loads(retained.read_text()) != inputs:
+        raise ValueError("atlas_geometry_inputs_identity_conflict")
+    write_json(retained, inputs)
     plan = {"schema_version": "atlas_view_selection.v1", "review": dict(review),
             "input_digest": inputs["digest"], "selected_frame_count": len(prepared),
             "maximum_frames": maximum_frames, "diagnostics": diagnostics,

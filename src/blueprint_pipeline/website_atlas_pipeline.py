@@ -4,8 +4,10 @@ Source review, adaptive inputs, admitted posing, generated RGBD and portable
 downloads run on the worker. The public API cannot create a splat, so the worker
 fuses Atlas's own posed depth into a draft splat and meshes it with splats2Mesh
 once a reviewed mesh price exists; neither becomes a metric or simulator-ready result.
-Website uploads reach it only through the side-lane worker in
-``website_atlas_preview``; the main preparation never waits on it.
+Website uploads reach it through the worker in ``website_atlas_preview``. It is
+the capture's only paid reconstruction lane: once its object-removed background
+is complete it also poses the selected original views, and scene preparation
+reads both (``website_atlas_scene_source``) without buying anything itself.
 """
 from __future__ import annotations
 
@@ -87,6 +89,42 @@ def accuracy_survey(*, source_video: Path, base_root: Path, base_survey: Path, r
         extend_survey(source_video=source_video, base_survey=base_survey, decoded_index=indexes[0], review=review,
                       output_root=extended_path.parent, step_seconds=step, gap_threshold_seconds=2 * step)
     return extended_path
+
+
+def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check, experimental, max_polls):
+    """The selected original views' own Atlas pose and the scale its reviewed references give.
+
+    Retained receipts make a resume free. A refused purchase leaves the
+    background intact and is reported, not raised.
+    """
+    from .atlas_scene_automation import measurement_plan
+    from .atlas_scene_measurements import estimate_sizes, load_views
+    from .paid_resource_allocator import run_sponsored_website_atlas_pose
+    from .website_atlas_pose import ATLAS_PRICE_REVIEW_ENV, request_options
+
+    count = len(inputs["frames"])
+    quote = {"schema_version": "website_atlas_pose_price_review.v1", "endpoint": "/api/v2/tasks:images2PosedRGBD",
+        "maximum_cost_usd": round(count * policy["pose_input_cost_usd"], 6), "max_input_images": count,
+        "target_resolutions": [[720, 1280], [1280, 720]], "request_options": request_options(),
+        **{k: policy[k] for k in _REVIEW_RECORD}}
+    try:
+        os.environ[ATLAS_PRICE_REVIEW_ENV] = json.dumps(quote)
+        if not (pose_root / "atlas_posed_rgbd_result.json").is_file():
+            _require_current_price_review(policy)
+            check("source_pose")
+        posed = run_sponsored_website_atlas_pose(output_root=pose_root, capture_id=task_context["capture_id"],
+            task_context=task_context, experimental=experimental, max_polls=max_polls)
+        if posed["status"] != "completed":
+            return {"status": "processing", "stage": "source_pose", "operation_id": posed.get("operation_id")}
+        pose, frames = load_views(pose_root, inputs)
+        measurements = estimate_sizes(frames=frames, automation=measurement_plan(review), pose_digest=pose["digest"],
+                                      output=pose_root / "scene_measurements.json")
+    except ValueError as exc:
+        return {"status": "needs_input", "reason": str(exc)}
+    return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],
+            "submitted_frame_count": count, "scene_measurements_digest": measurements["digest"],
+            "meters_per_unit_estimate": measurements.get("meters_per_unit_estimate"),
+            "scale_status": measurements.get("scale_status")}
 
 
 def run_atlas_pipeline(*, output_root: Path, **options):
@@ -228,6 +266,14 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             return automation
         background = automation.get("background") or {}
         complete = automation["status"] == "completed"
+        source_pose = None
+        if complete:
+            # Scene preparation lifts task masks onto observed depth and needs a
+            # scale: the original views' own pose, bought once here and shared.
+            source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
+                task_context=task_context, check=check, experimental=experimental, max_polls=max_polls)
+            if source_pose["status"] == "processing":
+                return source_pose
         result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
                   "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
                   "automation": automation, "download": background.get("download"),
@@ -238,6 +284,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                   "splat_manifest_digest": background.get("splat_manifest_digest"),
                   "mesh_available": background.get("mesh_available", False),
                   "scene_measurements": automation.get("measurements"),
+                  "source_pose": source_pose,
                   "simulation_qualified": False, "claim_ceiling": "development_only",
                   "physical_evidence": False, "scale_status": "unscaled_provider_world_units",
                   "billing_status": "provider_usage_unreported"}

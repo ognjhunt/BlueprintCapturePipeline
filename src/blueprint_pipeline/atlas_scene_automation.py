@@ -145,6 +145,19 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
     return (result, frames, pose_root), state
 
 
+def measurement_plan(review):
+    """The reviewed automation plan with the scene facts size estimates are bound to."""
+    from .atlas_automation_plan import AutomationPlan
+
+    automation = AutomationPlan.model_validate(review["automation"]).model_dump(mode="json")
+    return {
+        **automation,
+        "uncaptured_regions": review.get("uncaptured_regions", []),
+        "anchor_frame_id": review.get("anchor_frame_id"),
+        "reference_sources": review.get("scale_reference_sources", []),
+    }
+
+
 def run_automation(
     *,
     pose_root,
@@ -163,20 +176,11 @@ def run_automation(
     from .atlas_scene_measurements import load_views, estimate_sizes
     from .atlas_background_automation import run_background
 
-    automation = review.get("automation")
-    if automation is None:
+    if review.get("automation") is None:
         return {"status": "legacy_plan_without_automation", "new_paid_calls": 0}
-    from .atlas_automation_plan import AutomationPlan
-
-    automation = AutomationPlan.model_validate(automation).model_dump(mode="json")
+    automation = measurement_plan(review)
     output_root.mkdir(parents=True, exist_ok=True)
     pose, frames = load_views(pose_root, inputs) if pose_root is not None else _unposed_source_views(inputs)
-    automation = {
-        **automation,
-        "uncaptured_regions": review.get("uncaptured_regions", []),
-        "anchor_frame_id": review.get("anchor_frame_id"),
-        "reference_sources": review.get("scale_reference_sources", []),
-    }
     measurements = estimate_sizes(
         frames=frames,
         automation=automation,

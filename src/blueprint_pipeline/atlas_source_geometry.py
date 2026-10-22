@@ -140,46 +140,32 @@ def _rgb(path: Path) -> np.ndarray:
     return value[..., ::-1]
 
 
-def atlas_source_geometry(*, geometry_root: Path, output_root: Path | None = None,
-                          scale: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Write ``source_geometry.json`` from a retained, admitted Atlas pose run over these inputs."""
-    from .atlas_depth_splat import read_exr_depth
+def _verified_pose(*, inputs: Mapping[str, Any], frames: list[Mapping[str, Any]], pose_root: Path) -> dict[str, Any]:
+    """Only an admitted run whose receipt still binds these exact frames and retained outputs."""
     from .website_atlas_pose import verify_atlas_pose_receipt
-    from .website_scene_geometry import INPUT_SCHEMA, _bound_frames
     from .website_worldlabs import _atlas_posed_context
 
-    geometry_root = geometry_root.resolve()
-    output_root = (output_root or geometry_root / "atlas_source_geometry").resolve()
-    input_manifest = geometry_root / "worker_inputs" / "geometry_inputs.json"
-    inputs = json.loads(input_manifest.read_text())
-    if inputs.get("schema_version") != INPUT_SCHEMA or inputs.get("heldout_pixels_included") is not False:
-        raise ValueError("atlas_source_geometry_inputs_invalid")
-    prepared = _bound_frames(inputs, input_manifest.parent, geometry=False)
-    pose = json.loads((geometry_root / POSE_RESULT).read_text())
+    pose = json.loads((pose_root / POSE_RESULT).read_text())
     if (pose.get("schema_version") != "website_atlas_pose_result.v1"
             or pose.get("digest") != canonical_digest(pose, digest_field="digest")
             or pose.get("binding") != {"source_video_digest": inputs["binding"]["source_video_digest"],
                                        "geometry_input_digest": inputs["digest"]}):
         raise ValueError("atlas_source_geometry_pose_binding_mismatch")
-    # Only an admitted run whose receipt still binds these exact frames and retained outputs.
-    verify_atlas_pose_receipt(pose=pose, frames=prepared, output_root=geometry_root)
-    _atlas_posed_context(operation=pose["operation"], expected_frame_count=len(prepared))
-    record = _scale_record(scale)
-    meters_per_unit = record["meters_per_unit"] if record else 1.0
-    binding = {**inputs["binding"], "input_digest": inputs["digest"], "geometry_backend": BACKEND,
-               "atlas_geometry_adapter_version": ADAPTER_VERSION, "atlas_pose_result_digest": pose["digest"],
-               "atlas_operation_id": pose["operation"]["id"], "scale": record}
-    manifest_path = output_root / "source_geometry.json"
-    if manifest_path.is_file():
-        previous = json.loads(manifest_path.read_text())
-        if previous.get("binding") != binding:
-            raise ValueError("atlas_source_geometry_identity_conflict")
-        return _rebound(previous, manifest_path)
+    verify_atlas_pose_receipt(pose=pose, frames=frames, output_root=pose_root)
+    _atlas_posed_context(operation=pose["operation"], expected_frame_count=len(frames))
+    return pose
+
+
+def _geometry_frames(*, views: list[Mapping[str, Any]], pose: Mapping[str, Any], pose_root: Path,
+                     output_root: Path, meters_per_unit: float, retain_inputs: bool) -> list[dict[str, Any]]:
+    """Each view's pixels take the Atlas pixel their centre falls in, after cover-and-centre-crop."""
+    from .atlas_depth_splat import read_exr_depth
+
     usage = pose["operation_receipt"]["input_usage"]["frames"]
     frames = []
-    for index, (row, returned, used) in enumerate(zip(prepared, pose["operation"]["response"]["frames"], usage,
+    for index, (row, returned, used) in enumerate(zip(views, pose["operation"]["response"]["frames"], usage,
                                                       strict=True)):
-        outputs = {output["role"]: geometry_root / output["path"] for output in used["outputs"]}
+        outputs = {output["role"]: pose_root / output["path"] for output in used["outputs"]}
         if "confidence" not in outputs:
             raise ValueError("atlas_source_geometry_confidence_missing")
         camera = returned["camera"]
@@ -210,13 +196,15 @@ def atlas_source_geometry(*, geometry_root: Path, output_root: Path | None = Non
                             depth_m=np.where(valid, sampled_depth * meters_per_unit, 0).astype(np.float32),
                             confidence=np.where(valid, sampled_confidence, 0).astype(np.float32), valid_mask=valid)
         frame = dict(row)
-        # Retain input bytes beside the output so the whole result can move hosts.
         for key, _ in _FRAME_FILES:
             source = Path(row[key])
-            target = output_root / key / f"{index:06d}{source.suffix}"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
-            frame[key] = str(target.relative_to(output_root))
+            if retain_inputs:
+                # Retain input bytes beside the output so the whole result can move hosts.
+                target = output_root / key / f"{index:06d}{source.suffix}"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                source = target
+            frame[key] = str(source.resolve().relative_to(output_root))
         frames.append({**frame, "geometry_path": str(geometry_path.relative_to(output_root)),
                        "geometry_digest": _sha256_file(geometry_path),
                        "intrinsics": model_intrinsics(camera["intrinsics"], mapping),
@@ -226,16 +214,122 @@ def atlas_source_geometry(*, geometry_root: Path, output_root: Path | None = Non
                        "atlas_frame": {"grid": list(grid), "cover_scale": mapping["scale"],
                                        "crop_offset": list(mapping["offset"]), "pixel_binding_ncc": ncc,
                                        "coordinate_system": camera["extrinsics"].get("coordinateSystem", "rub")}})
-    result = {"schema_version": SCHEMA_VERSION, "status": "estimated", "binding": binding,
+    return frames
+
+
+def _write_result(*, binding: Mapping[str, Any], frames: list[Mapping[str, Any]], record: Mapping[str, Any] | None,
+                  manifest_path: Path) -> dict[str, Any]:
+    result = {"schema_version": SCHEMA_VERSION, "status": "estimated", "binding": dict(binding),
               "geometry_backend": BACKEND, "claim_ceiling": "development_only",
               "coordinate_system": "opencv_camera_to_world",
               "unit": "estimated_meters" if record else "provider_world_units",
               "scale_status": "reference_scaled" if record else "unscaled_provider_world_units",
               "metric_measurement_proven": False, "physical_evidence": False,
-              "confidence_is_calibrated_probability": False, "frames": frames}
+              "confidence_is_calibrated_probability": False, "frames": list(frames)}
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(manifest_path, result)
     return _rebound(result, manifest_path)
+
+
+def atlas_source_geometry(*, geometry_root: Path, output_root: Path | None = None,
+                          scale: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Write ``source_geometry.json`` from a retained, admitted Atlas pose run over these inputs."""
+    from .website_scene_geometry import INPUT_SCHEMA, _bound_frames
+
+    geometry_root = geometry_root.resolve()
+    output_root = (output_root or geometry_root / "atlas_source_geometry").resolve()
+    input_manifest = geometry_root / "worker_inputs" / "geometry_inputs.json"
+    inputs = json.loads(input_manifest.read_text())
+    if inputs.get("schema_version") != INPUT_SCHEMA or inputs.get("heldout_pixels_included") is not False:
+        raise ValueError("atlas_source_geometry_inputs_invalid")
+    prepared = _bound_frames(inputs, input_manifest.parent, geometry=False)
+    pose = _verified_pose(inputs=inputs, frames=prepared, pose_root=geometry_root)
+    record = _scale_record(scale)
+    binding = {**inputs["binding"], "input_digest": inputs["digest"], "geometry_backend": BACKEND,
+               "atlas_geometry_adapter_version": ADAPTER_VERSION, "atlas_pose_result_digest": pose["digest"],
+               "atlas_operation_id": pose["operation"]["id"], "scale": record}
+    manifest_path = output_root / "source_geometry.json"
+    if manifest_path.is_file():
+        previous = json.loads(manifest_path.read_text())
+        if previous.get("binding") != binding:
+            raise ValueError("atlas_source_geometry_identity_conflict")
+        return _rebound(previous, manifest_path)
+    frames = _geometry_frames(views=prepared, pose=pose, pose_root=geometry_root, output_root=output_root,
+                              meters_per_unit=record["meters_per_unit"] if record else 1.0, retain_inputs=True)
+    return _write_result(binding=binding, frames=frames, record=record, manifest_path=manifest_path)
+
+
+def atlas_posed_view_geometry(*, pose_root: Path, rotation: float, scale: Mapping[str, Any],
+                              output_root: Path) -> dict[str, Any]:
+    """The Atlas preview's own posed source views as scaled source geometry, on Atlas's grid resolution.
+
+    The preview posts native-resolution upright views and retains the exact
+    input document its pose binds (``atlas_geometry_inputs.json``). Each view is
+    resized by Atlas's cover scale, so one geometry pixel is one Atlas pixel and
+    the crop's margins stay invalid. The result is a ``website_source_geometry.v1``
+    over its own geometry inputs, whose frames keep the source frame identities
+    and an exact source-to-geometry pixel transform.
+    """
+    from .atlas_video_inputs import GEOMETRY_INPUTS_FILE
+    from .website_scene_geometry import INPUT_SCHEMA, _bound_frames, source_to_view_pixels
+
+    pose_root, output_root = pose_root.resolve(), output_root.resolve()
+    inputs = json.loads((pose_root / GEOMETRY_INPUTS_FILE).read_text())
+    if inputs.get("schema_version") != INPUT_SCHEMA or inputs.get("heldout_pixels_included") is not False:
+        raise ValueError("atlas_source_geometry_inputs_invalid")
+    prepared = _bound_frames(inputs, pose_root, geometry=False)
+    pose = _verified_pose(inputs=inputs, frames=prepared, pose_root=pose_root)
+    record = _scale_record(scale)
+    if record is None:
+        raise ValueError("atlas_source_geometry_scale_invalid")
+    worker = output_root / "worker_inputs"
+    views = []
+    for index, (row, returned) in enumerate(zip(prepared, pose["operation"]["response"]["frames"], strict=True)):
+        intrinsics = returned["camera"]["intrinsics"]
+        grid = (int(intrinsics["width"]), int(intrinsics["height"]))
+        with Image.open(row["image_path"]) as upright, Image.open(row["source_image_path"]) as source:
+            width, height = upright.size
+            cover = max(grid[0] / width, grid[1] / height)
+            size = (max(2, round(width * cover)), max(2, round(height * cover)))
+            view_path = worker / "views" / f"{index:06d}.png"
+            view_path.parent.mkdir(parents=True, exist_ok=True)
+            upright.convert("RGB").resize(size, Image.Resampling.LANCZOS).save(view_path)
+            source_size = source.size
+        observation = worker / "observations" / f"{index:06d}{Path(row['source_image_path']).suffix}"
+        observation.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(row["source_image_path"], observation)
+        expected = (source_size[1], source_size[0]) if int(rotation) % 180 else source_size
+        if (width, height) != expected:
+            raise ValueError("atlas_source_geometry_rotation_mismatch")
+        views.append({"frame_id": row["frame_id"], "timestamp_seconds": row["timestamp_seconds"],
+                      "source_image_path": str(observation.relative_to(worker)),
+                      "source_image_digest": _sha256_file(observation),
+                      "image_path": str(view_path.relative_to(worker)), "image_digest": _sha256_file(view_path),
+                      "source_width": source_size[0], "source_height": source_size[1],
+                      "width": size[0], "height": size[1], "display_rotation_degrees": float(rotation),
+                      "source_to_geometry_pixels": source_to_view_pixels(
+                          width=source_size[0], height=source_size[1], rotation=rotation, size=size)})
+    if any(row["source_image_digest"] != view["source_image_digest"] for row, view in zip(prepared, views)):
+        raise ValueError("atlas_source_geometry_artifact_changed")
+    geometry_inputs = {"schema_version": INPUT_SCHEMA,
+                       "binding": {"source_video_digest": inputs["binding"]["source_video_digest"],
+                                   "atlas_pose_input_digest": inputs["digest"],
+                                   "adapter_version": "atlas_posed_views_v1"},
+                       "frames": views, "heldout_pixels_included": False, "claim_ceiling": "development_only"}
+    geometry_inputs["digest"] = canonical_digest(geometry_inputs, digest_field="digest")
+    write_json(worker / "geometry_inputs.json", geometry_inputs)
+    binding = {**geometry_inputs["binding"], "input_digest": geometry_inputs["digest"], "geometry_backend": BACKEND,
+               "atlas_geometry_adapter_version": ADAPTER_VERSION, "atlas_pose_result_digest": pose["digest"],
+               "atlas_operation_id": pose["operation"]["id"], "scale": record}
+    manifest_path = output_root / "source_geometry.json"
+    if manifest_path.is_file():
+        previous = json.loads(manifest_path.read_text())
+        if previous.get("binding") == binding:
+            return _rebound(previous, manifest_path)
+    bound = _bound_frames(geometry_inputs, worker, geometry=False)
+    frames = _geometry_frames(views=bound, pose=pose, pose_root=pose_root, output_root=output_root,
+                              meters_per_unit=record["meters_per_unit"], retain_inputs=False)
+    return _write_result(binding=binding, frames=frames, record=record, manifest_path=manifest_path)
 
 
 def _rebound(result: Mapping[str, Any], manifest_path: Path) -> dict[str, Any]:

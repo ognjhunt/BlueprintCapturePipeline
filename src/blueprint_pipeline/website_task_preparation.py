@@ -201,15 +201,28 @@ def _observed_declared_ground(source: np.ndarray, camera_to_world: np.ndarray, o
 
 
 def _anchor_prior(source_geometry: Mapping[str, Any], anchor: Mapping[str, Any]) -> tuple[float, np.ndarray]:
-    """The provider world is anchored at its first input view's camera, in the same OpenCV convention."""
-    frame = next((row for row in source_geometry["frames"] if row["frame_id"] == anchor.get("frame_id")), None)
-    if frame is None:
-        raise ValueError("website_registration_anchor_frame_missing")
+    """A rigid map from source metres to the provider world in metres, and the provider's metres per unit.
+
+    Marble's world is anchored at its first input view's camera, in the same
+    OpenCV convention. An Atlas world is aligned to the source pose by the
+    cameras both poses share (``source_world_alignment``).
+    """
     mpu = anchor.get("meters_per_unit")
     if isinstance(mpu, bool) or not isinstance(mpu, (int, float)) or not math.isfinite(mpu) or mpu <= 0:
         raise ValueError("website_base_scene_scale_invalid")
     if anchor.get("up_axis") not in _UP_INDEX:
         raise ValueError("website_registration_anchor_frame_invalid")
+    if anchor.get("kind") == "source_world_alignment":
+        transform = np.asarray(anchor.get("source_world_to_provider_m"), dtype=np.float64)
+        if (transform.shape != (4, 4) or not np.isfinite(transform).all()
+                or not np.allclose(transform[3], [0, 0, 0, 1])
+                or not np.allclose(transform[:3, :3] @ transform[:3, :3].T, np.eye(3), atol=1e-6)
+                or np.linalg.det(transform[:3, :3]) <= 0):
+            raise ValueError("website_registration_anchor_frame_invalid")
+        return float(mpu), transform
+    frame = next((row for row in source_geometry["frames"] if row["frame_id"] == anchor.get("frame_id")), None)
+    if frame is None:
+        raise ValueError("website_registration_anchor_frame_missing")
     return float(mpu), np.linalg.inv(np.asarray(frame["world_from_camera"], dtype=np.float64))
 
 
@@ -340,7 +353,7 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         same_pose = [row for row in better if same_hypothesis(row)]
         if same_pose:
             best = min(same_pose, key=lambda row: row[0])
-        anchor_report = {"kind": anchor.get("kind"), "frame_id": anchor["frame_id"], "roll_degrees": roll,
+        anchor_report = {"kind": anchor.get("kind"), "frame_id": anchor.get("frame_id"), "roll_degrees": roll,
                          "hypothesis_axis": "camera_optical" if floor is None else "declared_up",
                          "levelled_tilt_degrees": _rotation_degrees(level, np.eye(3)),
                          "rotation_deviation_degrees": _rotation_degrees(best[2], prior[1]),

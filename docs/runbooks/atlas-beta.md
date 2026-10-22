@@ -1,8 +1,10 @@
 # Atlas beta source preparation
 
 Production uses `blueprint_pipeline.website_atlas_pipeline`. Website uploads
-reach it only through the side-lane worker described in the next section; the
-normal preparation never waits on it or skips its own sponsorship for it.
+reach it through the worker described in the next section. It is the capture's
+only paid reconstruction lane: scene preparation waits for it and reads its
+outputs (`docs/website-atlas-scene-source.md`), and never skips its own
+sponsorship for it.
 The worker loads current task/source consent and the runtime rate policy from
 the signed WebApp `atlas-configuration` endpoint. The source-bound authorization
 must explicitly include OpenAI planner disclosure. Planner and Atlas reservations

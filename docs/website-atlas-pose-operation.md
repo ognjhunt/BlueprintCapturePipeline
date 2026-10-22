@@ -31,12 +31,12 @@ the audited boundary, `safe_outbound_http`:
   receive the API key.
 - Redirects are refused.
 
-Atlas stays off every default path:
+Scene preparation never buys Atlas itself:
 
-- The default geometry route (`run_website_scene_geometry` without MapAnything)
-  still only writes the pending `atlas_pose_inputs.json`, with or without a
-  task context.
-- The scene handoff never selects Atlas. Unsponsored captures still wait at
+- The default geometry route (`run_website_scene_geometry`) still only writes
+  the pending `atlas_pose_inputs.json`, with or without a task context.
+- The scene handoff reads the capture's finished Atlas job
+  (`docs/website-atlas-scene-source.md`). Without one, it waits at
   `needs_input`.
 
 No Marble-shaped request can name Atlas:
