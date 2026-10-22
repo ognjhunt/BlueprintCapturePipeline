@@ -150,13 +150,29 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
                                          scale=scale, output_root=output_root / "source_geometry")
 
     automation_root = job_dir / "automation"
-    splat_root, registered_root = automation_root / "background_splat", automation_root / "background_mesh" / "registered"
+    bundle = None
+    download = background.get("download") or {}
+    if download.get("directory"):
+        bundle_path = _inside(Path(download["directory"]) / "manifest.json", job_dir)
+        bundle = _read(bundle_path)
+        if (bundle.get("schema_version") != "atlas_download_bundle.v1"
+                or bundle.get("digest") != canonical_digest(bundle, digest_field="digest")
+                or bundle["digest"] != download.get("manifest_digest")
+                or bundle.get("splat_manifest_digest") != background.get("splat_manifest_digest")
+                or not bundle.get("splat_available") or not bundle.get("mesh_available")):
+            raise ValueError("website_atlas_scene_download_changed")
+        # The final portable bundle is stable across reconstruction revisions;
+        # generated completion uses different working directories from baseline.
+        splat_root, registered_root = bundle_path.parent / "splat", bundle_path.parent / "mesh/registered"
+    else:
+        splat_root, registered_root = automation_root / "background_splat", automation_root / "background_mesh/registered"
     splat_manifest = _read(_inside(splat_root / "atlas_depth_splat_manifest.json", job_dir))
     registration = _read(_inside(registered_root / "atlas_mesh_registration.json", job_dir))
     if (splat_manifest.get("digest") != canonical_digest(splat_manifest, digest_field="digest")
             or splat_manifest["digest"] != background.get("splat_manifest_digest")
             or registration.get("digest") != canonical_digest(registration, digest_field="digest")
-            or registration.get("splat_manifest_digest") != splat_manifest["digest"]):
+            or registration.get("splat_manifest_digest") != splat_manifest["digest"]
+            or (bundle is not None and registration.get("digest") != bundle.get("mesh_registration_digest"))):
         raise ValueError("website_atlas_scene_background_changed")
     splat_path, splat_digest = _artifact(splat_root, next(
         row for row in splat_manifest["outputs"] if row["role"] == "splat_ply"))
