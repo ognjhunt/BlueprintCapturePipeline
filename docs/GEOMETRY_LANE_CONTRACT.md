@@ -432,7 +432,8 @@ Interpretation:
   development surface.
 - Better providers can replace the service internals as long as they preserve this
   normalized geometry contract and provider-truth labels.
-- MapAnything remains optional later as a unified evaluation / model-swap framework.
+- MapAnything was removed on 2026-10-22; website source geometry comes from
+  World Labs Atlas (`docs/website-atlas-scene-source.md`).
 
 ## Integration Points
 

@@ -1,10 +1,10 @@
-"""Atlas posing as website source geometry, in the shape MapAnything returns.
+"""Atlas posing as website source geometry.
 
 Beta journey step: concurrent scene preparation. An admitted Atlas
 images2PosedRGBD run over the scene's own geometry inputs
 (``website_worldlabs.prepare_atlas_pose_inputs``, bound to their digest)
-becomes a ``website_source_geometry.v1`` result on the same uncropped
-model-input grid MapAnything returns, so task masks lift onto it unchanged.
+becomes a ``website_source_geometry.v1`` result on the uncropped model-input
+grid, so task masks lift onto it unchanged.
 
 Atlas scales each input to cover its grid and centre-crops it
 (docs/images-to-posed-images). Each model-input pixel takes the Atlas pixel

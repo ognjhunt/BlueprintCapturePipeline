@@ -1000,10 +1000,10 @@ def test_website_preparation_skips_legacy_privacy_video_and_geometry(tmp_path, m
     def prepare(**kwargs):
         calls.append(kwargs)
         return {"status": "blocked", "mode": "source_geometry_blocked", "privacy_status": "no_people_detected",
-                "privacy_verified": True, "blockers": ["mapanything_local_checkpoint_missing"]}
+                "privacy_verified": True, "blockers": ["website_source_geometry_unavailable"]}
 
     monkeypatch.setattr(q, "run_clean_plate_stage", prepare)
-    with pytest.raises(PipelineError, match="mapanything_local_checkpoint_missing"):
+    with pytest.raises(PipelineError, match="website_source_geometry_unavailable"):
         q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
     assert len(calls) == 1
     assert calls[0]["policy"].enabled is True

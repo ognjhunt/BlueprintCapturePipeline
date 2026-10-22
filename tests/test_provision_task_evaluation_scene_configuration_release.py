@@ -155,14 +155,6 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
         "materialize_vgg16_weights",
         lambda **_kwargs: vgg16_weights,
     )
-    from scripts import provision_website_geometry_runtime as website
-    website_profile = tmp_path / "website-profile.json"
-    website_calls = []
-    def provision_website(**kwargs):
-        website_calls.append(kwargs)
-        return website_profile
-    monkeypatch.setattr(website, "provision_website_geometry_runtime", provision_website)
-
     result = subject.provision_scene_configuration_release(
         authoring_backend="astra_cad_blender_v1" if astra else "content_agents",
         repository_root=tmp_path / "release",
@@ -177,7 +169,6 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
         text_to_cad_root=tmp_path / "text-to-cad-source",
         multi_agent_cad_root=tmp_path / "multi-agent-cad-source",
         astra_blender_archive_path=(tmp_path / "blender.tar.xz" if astra else None),
-        website_mapanything_template=(tmp_path / "website-template.json" if astra else None),
         readback=lambda path: path.read_bytes(),
         readback_actor="service-account:blueprint",
     )
@@ -197,7 +188,6 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
     assert result["provider_mutation_performed"] is False
     assert result["paid_resource_allocated"] is False
     assert result["environment"] == {
-        **({"BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE": str(website_profile)} if astra else {}),
         "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT": str(
             tmp_path / "system-runtimes/splat-render" / commit
         ),
@@ -211,15 +201,11 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
             "s3://blueprint/task-evaluation/production-inputs/task-evaluation-activations"
         ),
     }
-    assert len(website_calls) == int(astra)
-    if astra:
-        assert website_calls[0]["source_commit"] == commit
-        assert website_calls[0]["template_path"] == tmp_path / "website-template.json"
     # Exercise the consumer too: new bindings must survive the real installer.
     from scripts import deploy_control_plane_commit as deployment
     installed = tmp_path / "scene-runtime.env"
     deployment._install_scene_configuration_environment(installed, environment=result["environment"])
-    assert ("BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE=" in installed.read_text()) == astra
+    assert "BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE" not in installed.read_text()
     with pytest.raises(deployment.ControlPlaneDeployError, match="environment_invalid"):
         deployment._install_scene_configuration_environment(
             installed, environment={**result["environment"], "UNEXPECTED_SETTING": "value"})

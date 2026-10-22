@@ -4,8 +4,8 @@ Steps 10-14 of the website design already exist as the Task Evaluation
 scene-configuration run: Content Agents/Astra replacement authoring, SimReady
 static and native Isaac qualification, scene assembly, configured-scene
 publication, and the Franka DROID controls. This module only compiles the
-website preparation (confirmed task, SAM 3.1 masks, MapAnything estimates,
-clean-plate removal manifest, Marble world) into that path's typed inputs.
+website preparation (confirmed task, SAM 3.1 masks, Atlas source geometry,
+clean-plate removal manifest, Atlas or Marble scene) into that path's typed inputs.
 Every scale here is estimated, or published for the identified product or its
 category; nothing is promoted to a physical measurement.
 """
@@ -671,8 +671,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         blockers.append(str(exc))
         independent_object = True
         up, up_sign, declared_mpu = 2, 1, 1.0
-    # With browser video, use MapAnything's estimated metres to scale the
-    # generated world. A provider's declared factor is an estimate too, and
+    # With browser video, use the source geometry's estimated metres to scale
+    # the generated world. A provider's declared factor is an estimate too, and
     # the two must agree; neither is a physical measurement.
     mpu = 1.0 / registration["scale"] if declared_mpu is None else float(declared_mpu)
     if not independent_object and declared_mpu is not None and anchor is None and not 0.75 <= registration["scale"] * mpu <= 4.0 / 3.0:

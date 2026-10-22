@@ -1,7 +1,8 @@
 """Prepare task-aware website images before a single reconstruction.
 
 Website inputs retain original frames, bind SAM3.1 task masks, and edit selected
-objects out of original-resolution frames. MapAnything runs after visual publication.
+objects out of original-resolution frames. Source geometry comes later, from the
+capture's Atlas job.
 Legacy capture keeps its existing opt-in behavior. All inferred geometry and
 repairs remain development evidence (ADP-009B, public_scene_day_14).
 """
@@ -60,8 +61,8 @@ def anchor_reconstruction_views_to_geometry(*, frames: list[dict[str, Any]],
     """Put a source-geometry view first, so the provider's camera anchor is registered.
 
     Image reconstruction accepts distinct views in submission order. Its first
-    view defines the world origin, and the later MapAnything registration needs
-    that exact original frame. Keep all reviewed views and their original IDs.
+    view defines the world origin, and the later registration needs that exact
+    original frame. Keep all reviewed views and their original IDs.
     """
     geometry_ids = {row["frame_id"] for row in source_geometry["frames"]}
     anchor = next((index for index, frame in enumerate(frames)

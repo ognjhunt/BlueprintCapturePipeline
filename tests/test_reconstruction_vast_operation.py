@@ -196,28 +196,11 @@ def _fetcher(_url: str, destination: Path) -> SafeHttpFileTransfer:
     )
 
 
-def test_website_bootstrap_failure_is_typed_and_binding_checked(tmp_path: Path) -> None:
-    request = {"operation_request_digest": D[1], "operation_input_bundle_digest": D[2],
-               "source_commit_sha": SHA}
-    path = tmp_path / "failure.json"
-    failure = {"schema_version": "website_mapanything_bootstrap_failure.v1", "status": "failed",
-               "phase": "model_download", "code": "network_or_timeout", "exception_type": "TimeoutError",
-               **request}
-    path.write_text(json.dumps(failure))
-    assert vast_operation._website_bootstrap_failure(path, request)["phase"] == "model_download"
-    failure["operation_input_bundle_digest"] = D[3]
-    path.write_text(json.dumps(failure))
-    assert vast_operation._website_bootstrap_failure(path, request) == {
-        "status": "invalid", "code": "binding_invalid"}
-    path.write_bytes(b"x" * (16 * 1024 + 1))
-    assert vast_operation._website_bootstrap_failure(path, request) is None
-
-
 def _validator(**_kwargs):
     return _validated_output()
 
 
-@pytest.mark.parametrize("operation", ["pose_canary", "website_mapanything"])
+@pytest.mark.parametrize("operation", ["pose_canary", "trainer_canary"])
 @pytest.mark.parametrize("change", ["ask", "fee", "remove_offer"])
 def test_admitted_offer_snapshot_cannot_change_before_provider_access(tmp_path, operation, change):
     preflight = _preflight()
@@ -230,13 +213,6 @@ def test_admitted_offer_snapshot_cannot_change_before_provider_access(tmp_path, 
     request, receipt = _bound_request(preflight), _bundle_receipt()
     request["operation"] = receipt["operation"] = operation
     request["expected_runtime_result_schema"] = vast_operation._EXPECTED_RESULTS[operation]
-    if operation == "website_mapanything":
-        receipt["artifact_members"].extend({
-            "archive_path": f"inputs/runtime{index}.whl" if index < 3 else "inputs/dependencies.lock",
-            "digest": D[0], "bytes": 1,
-            "role": "worker_wheel" if index < 3 else "worker_dependencies",
-        } for index in range(4))
-        receipt["artifact_member_count"] = len(receipt["artifact_members"])
     request["bound_request_digest"] = canonical_digest(request, digest_field="bound_request_digest")
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     if change == "ask":
@@ -616,8 +592,7 @@ def test_declined_launch_preserves_provider_blocker_and_leaves_zero_resources(tm
 def test_watchdog_can_guard_exact_operation_but_never_another_operations_name():
     import os
     from blueprint_pipeline.vast_independent_watchdog_control import validate_independent_vast_watchdog_names
-    name = vast_operation.reconstruction_resource_name("website_mapanything", "sha256:" + "a" * 64)
-    assert name == vast_operation.NAME_PREFIX + "website-mapanything-" + "a" * 32
+    name = vast_operation.NAME_PREFIX + "exact-" + "a" * 32
     validate_independent_vast_watchdog_names(pod_name_prefix=vast_operation.NAME_PREFIX, resource_name_exact=name)
     watchdog = {"status": "armed", "independent_process": True, "name_prefix": name,
                 "pid": os.getpid(), "deadline_epoch": 10000}

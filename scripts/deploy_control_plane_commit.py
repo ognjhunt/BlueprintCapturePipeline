@@ -3587,9 +3587,8 @@ def _install_scene_configuration_environment(
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_RELEASE_WINDOW_PREFIX",
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX",
     }
-    allowed_names = expected_names | {"BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE"}
     if (
-        not expected_names <= set(environment) <= allowed_names
+        set(environment) != expected_names
         or path.is_symlink()
         or (path.exists() and not stat.S_ISREG(path.stat().st_mode))
         or any(
