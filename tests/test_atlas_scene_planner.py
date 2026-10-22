@@ -123,3 +123,20 @@ def test_gap_pixels_are_labeled_derived_and_digest_checked(tmp_path):
     image.write_bytes(b"changed")
     with pytest.raises(ValueError, match="preview_changed"):
         planner._input(survey, {"description": "task"}, feedback)
+
+
+def test_unselected_blurry_candidate_does_not_invalidate_sharp_static_inputs(tmp_path):
+    _, survey, proposal, policy = fixture(tmp_path)
+    proposal["static_intervals_seconds"] = [[0, 2.5]]
+    survey["frames"][2]["sharpness"] = 19  # Existing retained threshold is 20.
+    review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2)
+    assert review["quality_excluded_frame_ids"] == ["2"]
+    assert review["selection_policy"]["minimum_sharpness"] == 20
+    # An unsafe frame that passes quality is still a privacy/state refusal.
+    survey["frames"][2]["sharpness"] = 20
+    with pytest.raises(ValueError, match="privacy_invalid"):
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2)
+    survey["frames"][2]["sharpness"] = 19
+    proposal["coverage_requirements"][0]["required_frame_ids"].append("2")
+    with pytest.raises(ValueError, match="privacy_invalid"):
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2)
