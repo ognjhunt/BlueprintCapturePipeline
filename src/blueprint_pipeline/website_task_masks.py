@@ -342,17 +342,20 @@ RESTING_TOLERANCE_M = 0.10
 def resting_views(views: list[np.ndarray]) -> list[np.ndarray]:
     """The views that agree on where the object rests, earliest place first.
 
-    Each view's observed surfaces are reduced to a median point. Views within
-    the tolerance (or the object's own visible spread, if larger) of the best
-    supported view form its resting place. Without a place seen in at least a
-    third of the views, nothing is dropped: there is no rest to prefer.
+    Each view's observed surfaces are reduced to a median point. A still object
+    seen from opposite sides puts those points up to its own size apart, so the
+    tolerance is the largest extent any view observed (5th to 95th percentile
+    diagonal), never less than ``RESTING_TOLERANCE_M``. Only an object moved
+    farther than its own size leaves views behind. Views within the tolerance of
+    the best supported view form its resting place. Without a place seen in at
+    least a third of the views, nothing is dropped: there is no rest to prefer.
     """
     if len(views) < 3:
         return views
     centers = np.array([np.median(view, axis=0) for view in views])
-    spread = float(np.median([np.median(np.linalg.norm(view - center, axis=1))
-                              for view, center in zip(views, centers)]))
-    together = np.linalg.norm(centers[:, None] - centers[None], axis=2) <= max(RESTING_TOLERANCE_M, spread)
+    extent = max(float(np.linalg.norm(np.subtract(*np.quantile(view, [0.95, 0.05], axis=0))))
+                 for view in views)
+    together = np.linalg.norm(centers[:, None] - centers[None], axis=2) <= max(RESTING_TOLERANCE_M, extent)
     counts = together.sum(axis=1)
     best = int(np.argmax(counts))
     if counts[best] < max(2, -(-len(views) // 3)):

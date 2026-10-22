@@ -238,7 +238,12 @@ def test_accuracy_target_is_independent_of_dollars_which_only_refuse(tmp_path, m
                                    output_root=tmp_path / "pose-low")
 
 
-def test_frames_the_review_excluded_inside_a_still_interval_never_become_candidates(tmp_path, monkeypatch):
+@pytest.mark.parametrize("left_out", [
+    {"excluded_frame_ids": ["1"]},
+    # On the direct path a frame showing a person is never posed as captured.
+    {"transient_frame_ids": ["1"]},
+])
+def test_frames_the_review_excluded_inside_a_still_interval_never_become_candidates(tmp_path, monkeypatch, left_out):
     from PIL import Image
     from blueprint_pipeline import atlas_privacy_screen as screen
     from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
@@ -258,7 +263,7 @@ def test_frames_the_review_excluded_inside_a_still_interval_never_become_candida
     # Someone fills frame 1 while working; the rest of the interval stays usable.
     review = {"schema_version": video.REVIEW_SCHEMA, "survey_digest": survey["digest"], "moving_people_excluded": True,
               "same_scene_state": True, "reviewed_by": "test", "scene_state": "unchanged",
-              "static_intervals_seconds": [[0, 2]], "anchor_frame_id": "0", "excluded_frame_ids": ["1"],
+              "static_intervals_seconds": [[0, 2]], "anchor_frame_id": "0", **left_out,
               "coverage_requirements": [
                   {"role": "task_object", "label": "object", "required_frame_ids": ["0"]},
                   {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["2"]}],
@@ -274,3 +279,16 @@ def test_frames_the_review_excluded_inside_a_still_interval_never_become_candida
     assert candidates == [["0", "2"]]
     selection = json.loads((tmp_path / "pose" / "atlas_view_selection.json").read_text())
     assert [frame["frame_id"] for frame in selection["frames"]] == ["0", "2"]
+
+
+@pytest.mark.parametrize("review, edited", [
+    ({"automation": {"objects": [{"disposition": "remove"}]}}, True),
+    ({"automation": {"objects": [{"disposition": "keep"}]}, "transient_frame_ids": ["9"],
+      "coverage_requirements": [{"required_frame_ids": ["0"]}], "additional_input_frame_ids": ["9"]}, True),
+    # A person only in frames the editor never processes needs no edit.
+    ({"automation": {"objects": [{"disposition": "keep"}]}, "transient_frame_ids": ["5"],
+      "coverage_requirements": [{"required_frame_ids": ["0"]}]}, False),
+    ({}, False),
+])
+def test_only_a_removal_or_a_transient_in_an_edited_view_takes_the_reviewed_background(review, edited):
+    assert video.takes_reviewed_background(review) is edited

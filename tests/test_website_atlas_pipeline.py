@@ -210,8 +210,9 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
 
 @pytest.mark.parametrize("review", [
     {"automation": {"objects": [{"disposition": "remove"}]}},
-    # One video of people at work: nothing to remove but the people themselves.
-    {"automation": {"objects": [{"disposition": "keep"}]}, "transient_frame_ids": ["0"]},
+    # One video of people at work: nothing to remove but the people in the edited views.
+    {"automation": {"objects": [{"disposition": "keep"}]}, "transient_frame_ids": ["0"],
+     "coverage_requirements": [{"role": "task_object", "required_frame_ids": ["0"]}]},
 ])
 def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatch, review):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs

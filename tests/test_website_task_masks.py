@@ -667,3 +667,18 @@ def test_a_carried_task_object_is_described_only_where_it_rests():
     moving = [view + [0.5 * i, 0, 0] for i, view in enumerate(still)]
     assert len(resting_views(moving)) == 5
     assert len(resting_views(carried[:2])) == 2
+
+
+def test_a_still_object_seen_from_opposite_sides_keeps_every_view():
+    from blueprint_pipeline.website_task_masks import resting_views
+
+    rng = np.random.default_rng(1)
+
+    def face(z):
+        # One visible face of a still 1 m box: a 1 x 1 m square at depth z.
+        return np.column_stack([rng.uniform(0, 1, 300), rng.uniform(0, 1, 300), np.full(300, z)])
+    # Two front views and one rear view: their surface medians are 1 m apart.
+    views = [face(2.0), face(2.0), face(3.0)]
+    assert len(resting_views(views)) == 3
+    # The same box carried 3 m away is no longer where it rested.
+    assert len(resting_views([*views, face(2.0) + [3.0, 0, 0]])) == 3

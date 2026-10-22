@@ -91,13 +91,16 @@ nobody in view, but the job must work when people keep working in it.
   (someone hides most of the view or the task object, motion blur, another door
   state) is recorded in `excluded_frame_ids` and never becomes a candidate.
   Required and additional views can never be unsafe.
-- **People are erased before Atlas reconstructs anything.** A scene with transients
-  always takes the editor-first path. SAM masks every instance of each transient in
-  every selected view, the editor erases them with the task objects, and the
-  reviewer rejects any view still showing one.
+- **People are erased before Atlas reconstructs anything.** A transient in a view
+  the editor processes (the required and additional views) sends the scene down
+  the editor-first path: SAM masks every instance of each transient in those
+  views, the editor erases them with the task objects, and the reviewer rejects
+  any view still showing one. On the direct path, no frame showing a transient
+  is posed (`atlas_video_inputs.takes_reviewed_background`).
 - **A carried task object is described where it rests.** Scene preparation lifts a
   task object only from the views that agree on one resting place
-  (`website_task_masks.resting_views`), so its bounds never span two positions.
+  (`website_task_masks.resting_views`). A still object seen from opposite sides
+  stays whole: views count as one place within the object's own visible extent.
 
 ## Accuracy-first input selection
 
