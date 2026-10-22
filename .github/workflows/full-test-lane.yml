@@ -149,7 +149,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: tools/splat_render/package-lock.json
 
@@ -159,7 +159,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2; do
-            if timeout --kill-after=10s 100s npm ci --foreground-scripts; then
+            if timeout --kill-after=10s 100s npm ci --foreground-scripts --no-audit --no-fund --loglevel=verbose; then
               exit 0
             fi
             echo "renderer package install attempt ${attempt} did not complete"
