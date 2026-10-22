@@ -77,6 +77,31 @@ per-upload cap the WebApp grant enforces. It is development-only and unscaled.
   `GET /api/live-pipeline/website-atlas-previews/<capture>/bundle?request_id=&digest=`
   (WebApp client only), which serves a ready, unwithdrawn bundle of that exact digest.
 
+## One video, even while people work
+
+Owner direction (2026-10-22): a site sends one video. We ask for a still scene with
+nobody in view, but the job must work when people keep working in it.
+
+- **Transients are not a new scene state.** People, hands, carried items and moving
+  equipment are transient. Frames showing them stay usable and are listed in
+  `transient_frame_ids`, with each kind named by a segmentation prompt (`person` is
+  always added). A still interval spans one state of the room and its doors,
+  drawers and lids.
+- **Unusable frames are left out, not fatal.** An unsafe frame inside an interval
+  (someone hides most of the view or the task object, motion blur, another door
+  state) is recorded in `excluded_frame_ids` and never becomes a candidate.
+  Required and additional views can never be unsafe.
+- **People are erased before Atlas reconstructs anything.** A transient in a view
+  the editor processes (the required and additional views) sends the scene down
+  the editor-first path: SAM masks every instance of each transient in those
+  views, the editor erases them with the task objects, and the reviewer rejects
+  any view still showing one. On the direct path, no frame showing a transient
+  is posed (`atlas_video_inputs.takes_reviewed_background`).
+- **A carried task object is described where it rests.** Scene preparation lifts a
+  task object only from the views that agree on one resting place
+  (`website_task_masks.resting_views`). A still object seen from opposite sides
+  stays whole: views count as one place within the object's own visible extent.
+
 ## Accuracy-first input selection
 
 Owner direction (2026-10-22): accuracy, not cost, decides the provider inputs.
@@ -160,7 +185,9 @@ maximum; this is not proof of unlimited server capacity.
 2. The harness inspects that sheet and records `atlas_scene_state_review.v1`
    with its `survey_digest`, `reviewed_by`, `scene_state`,
    `same_scene_state: true`, `moving_people_excluded: true`, and
-   `static_intervals_seconds: [[start, stop]]`. `anchor_frame_id`
+   `static_intervals_seconds: [[start, stop]]`. Frames inside an interval that
+   show people or other transients go in `transient_frame_ids` with a
+   `transients` list; unusable ones go in `excluded_frame_ids`. `anchor_frame_id`
    selects the task's visible subject. `coverage_requirements` must include
    `task_object` and `surrounding_scene` roles, each with a reviewed `label`
    and `required_frame_ids`. Add separate groups for each needed object and

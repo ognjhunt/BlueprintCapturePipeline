@@ -102,9 +102,14 @@ def object_evidence(*, frames, objects, inputs):
     return result
 
 
-def segment_objects(*, frames, objects, inputs, task_context, source_digest, root):
+def segment_objects(*, frames, objects, inputs, task_context, source_digest, root, transients=()):
+    """Exact masks for each reviewed object and every instance of each transient.
+
+    A transient (people, carried items, moving equipment) is never a single
+    chosen instance: every one the concept finds is merged per view and erased.
+    """
     from .meta_sam31 import run_meta_sam31
-    from .website_task_masks import select_task_track
+    from .website_task_masks import select_task_track, union_person_tracks
 
     spatial = object_evidence(frames=frames, objects=objects, inputs=inputs)
     registry = [
@@ -125,7 +130,7 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
             "output_label": o["target_id"],
             "text": o["segmentation_prompt"],
         }
-        for o in objects
+        for o in [*objects, *transients]
     ]
     tracks = run_meta_sam31(
         frame_registry=registry,
@@ -151,6 +156,10 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
         if {o["source_frame_id"] for o in track["observations"]} != set(by_id):
             raise ValueError("atlas_object_mask_view_coverage_incomplete")
         selected.append({**obj, "track": track})
+    for transient in transients:
+        members = [t for t in tracks if t.get("label") == transient["target_id"]]
+        selected.append({**transient, "disposition": "remove", "task_effect": "transient",
+                         "track": union_person_tracks(members, label=transient["target_id"])})
     write_json(
         root / "selected_objects.json", {"objects": selected, "source_video_digest": source_digest}
     )
@@ -165,21 +174,26 @@ def prepare_masked_frames(*, frames, targets, margin, root):
     for index, frame in enumerate(frames):
         h, w = frame["rgb"].shape[:2]
         mask = np.zeros((h, w), bool)
-        shown = []
+        shown, transients = [], []
         for target in targets:
             if target["disposition"] != "remove":
                 continue
             observation = next(
-                o
-                for o in target["track"]["observations"]
-                if o["source_frame_id"] == frame["frame_id"]
+                (o for o in target["track"]["observations"]
+                 if o["source_frame_id"] == frame["frame_id"]),
+                None,
             )
+            if observation is None:
+                # Object tracks report every view; a transient is simply absent.
+                if target.get("task_effect") != "transient":
+                    raise ValueError("atlas_object_mask_view_coverage_incomplete")
+                continue
             part = decode_track_mask(observation)
             if part.shape != mask.shape:
                 raise ValueError("atlas_object_mask_grid_mismatch")
             mask |= part
             if part.any():
-                shown.append(target["target_id"])
+                (transients if target.get("task_effect") == "transient" else shown).append(target["target_id"])
         if mask.any():
             mask = binary_dilation(mask, iterations=max(1, round(min(h, w) * margin)))
         image = root / f"{index:04d}.png"
@@ -197,6 +211,7 @@ def prepare_masked_frames(*, frames, targets, margin, root):
                 "remaining_mask_digest": _sha256_file(path),
                 "remaining_pixel_count": int(mask.sum()),
                 "removed_task_object_ids": shown,
+                **({"removed_transient_ids": transients} if transients else {}),
                 "generated_pixels_present": False,
             }
         )
@@ -434,6 +449,7 @@ def run_background(
     checkpoint=None,
     selected_frame_ids=None,
     editor_first=True,
+    transients=(),
 ):
     from .website_image_completion import (
         complete_background_images,
@@ -449,7 +465,8 @@ def run_background(
             checkpoint(stage)
 
     root.mkdir(parents=True, exist_ok=True)
-    if not objects:
+    transients = list(transients)
+    if not objects and not transients:
         return {"status": "not_requested", "reason": "no_object_regions_proposed"}
     commit, blockers = release_blockers()
     if blockers:
@@ -460,7 +477,8 @@ def run_background(
                         "automation_digest": canonical_digest(automation),
                         "task_context_digest": canonical_digest(dict(context)),
                         "selected_frame_ids": selected_frame_ids,
-                        "editor_first": editor_first}
+                        "editor_first": editor_first,
+                        **({"transients": transients} if transients else {})}
     retained = _prepared_background(prepared_path, prepared_binding)
     if retained is not None:
         check("automation_reuse_prepared_background")
@@ -484,7 +502,7 @@ def run_background(
     forecast = round(
         (tile_count + 2 * groups) * policy["rgbd_view_cost_usd"] * 2
         + float(execution["pricing_binding"]["max_cost_per_request_usd"])
-        + max(50, len(frames)) * 0.0002 * len(objects)
+        + max(50, len(frames)) * 0.0002 * (len(objects) + len(transients))
         + 0.10
         + groups * 0.10
         + policy.get("mesh_export_cost_usd", 0),
@@ -516,7 +534,10 @@ def run_background(
         task_context=context,
         source_digest=source_digest,
         root=root / "sam",
+        **({"transients": transients} if transients else {}),
     )
+    found = [r for r in selected if r.get("task_effect") == "transient"]
+    selected = [r for r in selected if r.get("task_effect") != "transient"]
     measurements = estimate_sizes(
         frames=frames,
         automation=automation,
@@ -528,7 +549,7 @@ def run_background(
         "metric_measurement_proven": False, "physical_evidence": False,
     }
     removed = [r for r in selected if r["disposition"] == "remove"]
-    if not removed:
+    if not removed and not any(o["runs"] for r in found for o in r["track"]["observations"]):
         return {
             "status": "not_requested",
             "measurements": measurements,
@@ -536,7 +557,7 @@ def run_background(
         }
     prepared = prepare_masked_frames(
         frames=frames,
-        targets=selected,
+        targets=[*selected, *found],
         margin=automation["mask_margin_fraction"],
         root=root / "originals",
     )
@@ -549,6 +570,10 @@ def run_background(
             "task_effect": "manipulated" if r["disposition"] == "remove" else "static_contact",
         }
         for r in objects
+    ] + [
+        {key: r[key] for key in ("target_id", "label", "segmentation_prompt", "disposition", "task_effect")}
+        | {"semantic_label": r["label"]}
+        for r in found
     ]
     task_digest = sha256(
         json.dumps(dict(context), sort_keys=True, separators=(",", ":")).encode()

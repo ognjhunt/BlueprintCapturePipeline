@@ -225,6 +225,7 @@ def run_automation(
             configuration=configuration,
             checkpoint=checkpoint,
             selected_frame_ids=selected_ids,
+            transients=review.get("transients", []),
         )
         if background["status"] == "processing":
             return background

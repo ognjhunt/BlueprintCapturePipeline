@@ -236,3 +236,59 @@ def test_accuracy_target_is_independent_of_dollars_which_only_refuse(tmp_path, m
     with pytest.raises(ValueError, match="budget_below_accurate_inputs"):
         video.prepare_video_inputs(survey_path=root / "atlas_video_survey.json", review=review,
                                    output_root=tmp_path / "pose-low")
+
+
+@pytest.mark.parametrize("left_out", [
+    {"excluded_frame_ids": ["1"]},
+    # On the direct path a frame showing a person is never posed as captured.
+    {"transient_frame_ids": ["1"]},
+])
+def test_frames_the_review_excluded_inside_a_still_interval_never_become_candidates(tmp_path, monkeypatch, left_out):
+    from PIL import Image
+    from blueprint_pipeline import atlas_privacy_screen as screen
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    survey_root = tmp_path / "survey"
+    (survey_root / "frames").mkdir(parents=True)
+    rows = []
+    for index in range(3):
+        path = survey_root / "frames" / f"{index}.png"
+        Image.new("RGB", (64, 48), (40 * index, 90, 160)).save(path)
+        rows.append({"frame_id": str(index), "timestamp_seconds": index, "source_image_path": str(path),
+                     "source_image_digest": _sha256_file(path), "sharpness": 50, "clipped_fraction": 0})
+    survey = {"schema_version": video.SURVEY_SCHEMA, "heldout_pixels_included": False, "frames": rows,
+              "display_rotation_degrees": 0, "source_video_digest": "sha256:" + "a" * 64, "sample_count": 3,
+              "heldout_frame_count": 0}
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    (survey_root / "atlas_video_survey.json").write_text(json.dumps(survey))
+    # Someone fills frame 1 while working; the rest of the interval stays usable.
+    review = {"schema_version": video.REVIEW_SCHEMA, "survey_digest": survey["digest"], "moving_people_excluded": True,
+              "same_scene_state": True, "reviewed_by": "test", "scene_state": "unchanged",
+              "static_intervals_seconds": [[0, 2]], "anchor_frame_id": "0", **left_out,
+              "coverage_requirements": [
+                  {"role": "task_object", "label": "object", "required_frame_ids": ["0"]},
+                  {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["2"]}],
+              "selection_budget": {"maximum_pose_cost_usd": 1, "input_cost_usd": .01, "rate_card_reference": "test",
+                                   "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}}
+    monkeypatch.setattr(video, "_features", lambda *_: None)
+    candidates = []
+    monkeypatch.setattr(video, "select_coverage_views",
+                        lambda **kw: candidates.append([f["frame_id"] for f in kw["frames"]]) or ([0, 1], []))
+    monkeypatch.setattr(screen, "blur_faces", lambda image: (image, []))
+    video.prepare_video_inputs(survey_path=survey_root / "atlas_video_survey.json", review=review,
+                               output_root=tmp_path / "pose")
+    assert candidates == [["0", "2"]]
+    selection = json.loads((tmp_path / "pose" / "atlas_view_selection.json").read_text())
+    assert [frame["frame_id"] for frame in selection["frames"]] == ["0", "2"]
+
+
+@pytest.mark.parametrize("review, edited", [
+    ({"automation": {"objects": [{"disposition": "remove"}]}}, True),
+    ({"automation": {"objects": [{"disposition": "keep"}]}, "transient_frame_ids": ["9"],
+      "coverage_requirements": [{"required_frame_ids": ["0"]}], "additional_input_frame_ids": ["9"]}, True),
+    # A person only in frames the editor never processes needs no edit.
+    ({"automation": {"objects": [{"disposition": "keep"}]}, "transient_frame_ids": ["5"],
+      "coverage_requirements": [{"required_frame_ids": ["0"]}]}, False),
+    ({}, False),
+])
+def test_only_a_removal_or_a_transient_in_an_edited_view_takes_the_reviewed_background(review, edited):
+    assert video.takes_reviewed_background(review) is edited

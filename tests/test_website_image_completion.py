@@ -661,3 +661,21 @@ def test_another_controller_cannot_rebuy_reserved_image_work(tmp_path, monkeypat
     with pytest.raises(RuntimeError):
         completion.complete_background_images(frames=frames, task_digest=task_digest,
             task_context=context, output_root=tmp_path / "edits", admission={}, token="test")
+
+
+def test_only_a_scene_with_transients_extends_the_bound_edit_and_review_prompts():
+    from blueprint_pipeline import website_image_completion as completion
+
+    still = [{"target_id": "obj", "semantic_label": "dishwasher", "task_effect": "manipulated",
+              "disposition": "remove"}]
+    working = [*still, {"target_id": "transient-0", "semantic_label": "person", "task_effect": "transient",
+                        "disposition": "remove"}]
+    assert completion.TRANSIENT_PROMPT not in completion._completion_prompt(still)
+    assert completion.TRANSIENT_REVIEW_PROMPT not in completion._review_prompt(still)
+    assert completion._review_prompt(still) == completion.REVIEW_PROMPT
+    edit = completion._completion_prompt(working)
+    assert completion.TRANSIENT_PROMPT in edit and '"task_effect": "transient"' in edit
+    review = completion._review_prompt(working)
+    assert completion.TRANSIENT_REVIEW_PROMPT in review and review.endswith("Targets: ")
+    # A person is not one of several task objects; the single-object prompts stay.
+    assert completion.MULTI_OBJECT_PROMPT not in edit

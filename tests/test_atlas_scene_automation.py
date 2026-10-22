@@ -633,3 +633,72 @@ def test_editor_repairs_follow_latest_review_and_stop_when_pixels_do_not_change(
         assert calls[1]["selected"][0]["image_path"].endswith("repair-0.png")
         assert calls[1]["output_root"].name == "fallback_repairs-0002"
     assert (root / "prepared_background.json").exists() is makes_progress
+
+
+def _sam_person_tracks(frames):
+    """Two people in the first view (one instance each), nobody in the second."""
+    first = frames[0]
+    h, w = first["rgb"].shape[:2]
+    people = []
+    for index, columns in enumerate([(2, 10), (60, 70)]):
+        runs = [{"start": y * w + columns[0], "length": columns[1] - columns[0]} for y in range(10, 50)]
+        people.append({"track_id": f"p{index}", "label": "transient-0", "observations": [
+            {"source_frame_id": first["frame_id"], "width": w, "height": h, "runs": runs}]})
+    return people
+
+
+def _transient_run(tmp_path, monkeypatch, tracks):
+    from blueprint_pipeline import meta_sam31, website_image_completion as image_edit
+
+    frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
+    for frame in frames:
+        del frame["depth"]  # Editor-first runs before any depth is bought.
+    prompts, edits_seen = [], []
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: None)
+    monkeypatch.setattr(meta_sam31, "run_meta_sam31",
+                        lambda **kw: prompts.extend(kw["prompts"]) or {"tracks": tracks(frames)})
+    monkeypatch.setattr(image_edit, "_validated_backend", lambda *a, **k:
+                        ({}, {"pricing_binding": {"max_cost_per_request_usd": 0.2}}, "b"))
+    monkeypatch.setattr(image_edit, "complete_background_images",
+                        lambda **k: edits_seen.append(k) or k["frames"])
+    monkeypatch.setattr(image_edit, "verify_completed_background", lambda **_: {"status": "blocked"})
+    result = edits.run_background(
+        frames=frames, objects=[], automation={**plan(), "objects": []},
+        inputs={"frames": [{"frame_id": f["frame_id"]} for f in frames]}, pose={"digest": "pose"},
+        root=tmp_path / "run", context={}, policy={"rgbd_view_cost_usd": 0.05}, source_digest="video",
+        task_runner=None, release_blockers=lambda: ("commit", []), configuration={"remaining_cost_usd": 10},
+        transients=[{"target_id": "transient-0", "label": "person", "segmentation_prompt": "person"}])
+    return result, prompts, edits_seen
+
+
+def test_every_person_in_the_one_video_is_erased_even_with_no_task_object_to_remove(tmp_path, monkeypatch):
+    result, prompts, edits_seen = _transient_run(tmp_path, monkeypatch, _sam_person_tracks)
+    assert prompts == [{"prompt_id": "transient-0", "output_label": "transient-0", "text": "person"}]
+    anchor = edits_seen[0]["frames"][0]
+    # Both people are erased, not one chosen instance.
+    assert anchor["frame_id"] == "a" and anchor["removed_transient_ids"] == ["transient-0"]
+    assert anchor["removed_task_object_ids"] == [] and anchor["remaining_pixel_count"] > 2 * 8 * 40
+    mask = np.asarray(Image.open(anchor["remaining_mask_path"])) == 255
+    assert mask[30, 5] and mask[30, 65] and not mask[30, 35]
+    empty = np.asarray(Image.open(tmp_path / "run/originals/0001-edit.png"))
+    assert not empty.any()  # Nobody in the second view: nothing to edit there.
+    transient = next(t for t in edits_seen[0]["targets"] if t["target_id"] == "transient-0")
+    assert transient["task_effect"] == "transient" and transient["disposition"] == "remove"
+    assert result["status"] == "quality_rejected" and result["stage"] == "anchor"
+
+
+def test_a_scene_with_no_people_found_and_nothing_to_remove_buys_no_edit(tmp_path, monkeypatch):
+    result, prompts, edits_seen = _transient_run(tmp_path, monkeypatch, lambda frames: [])
+    assert result["status"] == "not_requested" and result["reason"] == "all_objects_kept"
+    assert prompts and edits_seen == []
+
+
+def test_an_object_track_missing_a_view_refuses_but_an_absent_transient_is_empty(tmp_path):
+    a, b = view(tmp_path), view(tmp_path, "b", 0.1)
+    partial = track([a])
+    with pytest.raises(ValueError, match="mask_view_coverage_incomplete"):
+        edits.prepare_masked_frames(frames=[a, b], targets=[partial], margin=0.01, root=tmp_path / "bad")
+    prepared = edits.prepare_masked_frames(
+        frames=[a, b], targets=[{**partial, "task_effect": "transient"}], margin=0.01, root=tmp_path / "ok")
+    assert prepared[0]["removed_transient_ids"] == ["obj"] and prepared[1]["remaining_pixel_count"] == 0
+    assert "removed_transient_ids" not in prepared[1]

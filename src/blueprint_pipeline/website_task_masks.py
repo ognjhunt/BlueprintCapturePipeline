@@ -333,6 +333,36 @@ def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[
         {"frame_id": frame["source_frame_id"], "timestamp_seconds": frame["decoded_pts_seconds"]}])
 
 
+# One capture video may show the task object being carried. Model depth from
+# view to view stays well inside this distance; a held or moved object goes
+# farther. Only the views where the object rests in one place describe it.
+RESTING_TOLERANCE_M = 0.10
+
+
+def resting_views(views: list[np.ndarray]) -> list[np.ndarray]:
+    """The views that agree on where the object rests, earliest place first.
+
+    Each view's observed surfaces are reduced to a median point. A still object
+    seen from opposite sides puts those points up to its own size apart, so the
+    tolerance is the largest extent any view observed (5th to 95th percentile
+    diagonal), never less than ``RESTING_TOLERANCE_M``. Only an object moved
+    farther than its own size leaves views behind. Views within the tolerance of
+    the best supported view form its resting place. Without a place seen in at
+    least a third of the views, nothing is dropped: there is no rest to prefer.
+    """
+    if len(views) < 3:
+        return views
+    centers = np.array([np.median(view, axis=0) for view in views])
+    extent = max(float(np.linalg.norm(np.subtract(*np.quantile(view, [0.95, 0.05], axis=0))))
+                 for view in views)
+    together = np.linalg.norm(centers[:, None] - centers[None], axis=2) <= max(RESTING_TOLERANCE_M, extent)
+    counts = together.sum(axis=1)
+    best = int(np.argmax(counts))
+    if counts[best] < max(2, -(-len(views) // 3)):
+        return views
+    return [view for view, keep in zip(views, together[best]) if keep]
+
+
 def masked_source_points(track: Mapping[str, Any], frames: list[Mapping[str, Any]]) -> np.ndarray:
     by_id = {frame["frame_id"]: frame for frame in frames}
     points = []
@@ -354,7 +384,7 @@ def masked_source_points(track: Mapping[str, Any], frames: list[Mapping[str, Any
         points.append(camera_points @ pose[:3, :3].T + pose[:3, 3])
     if not points:
         raise ValueError("task_target_has_no_estimated_geometry")
-    return np.concatenate(points)
+    return np.concatenate(resting_views(points))
 
 
 def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]],

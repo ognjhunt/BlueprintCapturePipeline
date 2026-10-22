@@ -139,7 +139,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # ``checkpoint(stage)`` runs before every paid stage; raising there (a
     # withdrawal) stops the job before it buys or uploads anything more.
     check = checkpoint or (lambda _stage: None)
-    from .atlas_video_inputs import survey_video, prepare_video_inputs
+    from .atlas_video_inputs import survey_video, prepare_video_inputs, takes_reviewed_background
     from .atlas_scene_planner import proposal_review
     from .paid_resource_allocator import (run_sponsored_website_atlas_plan, run_sponsored_website_atlas_pose,
                                           run_sponsored_website_atlas_task)
@@ -252,10 +252,12 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})
     write_json(output_root / "atlas_scene_review.json", review)
-    if any(obj.get("disposition") == "remove" for obj in (review.get("automation") or {}).get("objects", [])):
+    if takes_reviewed_background(review):
         # The editor/reviewer works from source pixels. Atlas receives no RGB
         # until the complete cleaned set passes; do not buy a raw-scene pose or
-        # synthetic views merely to start image removal.
+        # synthetic views merely to start image removal. People and other moving
+        # things in the edited views are erased here too; the raw path below
+        # never receives a frame showing one.
         from .paid_resource_allocator import run_sponsored_website_atlas_automation
         check("reviewed_background")
         automation = run_sponsored_website_atlas_automation(

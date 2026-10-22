@@ -37,9 +37,17 @@ def test_review_cannot_include_unsafe_frames_or_omit_room(tmp_path):
     _, survey, proposal, policy = fixture(tmp_path)
     result = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
     assert result["selection_budget"]["maximum_pose_cost_usd"] == 3.9
+    assert "excluded_frame_ids" not in result and "transient_frame_ids" not in result
+    # Owner direction 2026-10-22: one video must work while people keep working
+    # in it. An unusable frame inside the interval is left out, not fatal...
     proposal["static_intervals_seconds"] = [[0, 2.5]]
+    assert planner.proposal_review(proposal, survey=survey, policy=policy,
+                                   pose_budget=4)["excluded_frame_ids"] == ["2"]
+    # ...but it can never be a required view.
+    proposal["coverage_requirements"][0]["required_frame_ids"].append("2")
     with pytest.raises(ValueError, match="privacy_invalid"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    proposal["coverage_requirements"][0]["required_frame_ids"].remove("2")
     proposal["static_intervals_seconds"] = [[0, 1.5]]
     proposal["coverage_requirements"] = proposal["coverage_requirements"][:1]
     with pytest.raises(ValueError, match="privacy_invalid"):
@@ -140,11 +148,62 @@ def test_unselected_blurry_candidate_does_not_invalidate_sharp_static_inputs(tmp
     review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2)
     assert review["quality_excluded_frame_ids"] == ["2"]
     assert review["selection_policy"]["minimum_sharpness"] == 20
-    # An unsafe frame that passes quality is still a privacy/state refusal.
+    # An unsafe frame that passes quality is left out of selection by the review.
     survey["frames"][2]["sharpness"] = 20
-    with pytest.raises(ValueError, match="privacy_invalid"):
-        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2)
+    review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2)
+    assert review["excluded_frame_ids"] == ["2"] and "quality_excluded_frame_ids" not in review
     survey["frames"][2]["sharpness"] = 19
     proposal["coverage_requirements"][0]["required_frame_ids"].append("2")
     with pytest.raises(ValueError, match="privacy_invalid"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2)
+
+
+def _automation():
+    return {"scale_references": [], "objects": [{"target_id": "obj", "label": "object",
+            "segmentation_prompt": "object", "disposition": "remove",
+            "regions": [{"frame_id": "1", "box_xywh_normalized": [.2, .2, .5, .5]}]}],
+            "removal_instruction": "Remove the object.", "mask_margin_fraction": .01}
+
+
+def test_people_working_in_the_one_video_stay_usable_and_are_named_for_erasing(tmp_path):
+    _, survey, proposal, policy = fixture(tmp_path)
+    proposal.update(static_intervals_seconds=[[0, 2.5]], unsafe_frame_ids=[], automation=_automation(),
+                    transient_frame_ids=["0", "1"],
+                    transients=[{"label": "rolling cart", "segmentation_prompt": "cart"}])
+    review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    assert review["transient_frame_ids"] == ["0", "1"]
+    assert review["transient_policy"] == "erased_before_reconstruction"
+    # People are always looked for, whatever else the planner names.
+    assert review["transients"] == [
+        {"target_id": "transient-0", "label": "rolling cart", "segmentation_prompt": "cart"},
+        {"target_id": "transient-1", "label": "person", "segmentation_prompt": "person"}]
+    assert "excluded_frame_ids" not in review
+    # A transient named only outside every still interval is not a selected view.
+    proposal["static_intervals_seconds"] = [[0, 1.5]]
+    proposal["transient_frame_ids"] = ["2"]
+    assert "transient_frame_ids" not in planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+
+
+@pytest.mark.parametrize("change, reason", [
+    ({"transient_frame_ids": ["2"], "unsafe_frame_ids": ["2"]}, "transients_invalid"),
+    ({"transient_frame_ids": ["missing"]}, "transients_invalid"),
+    ({"transient_frame_ids": ["0"], "automation": None}, "transients_require_automation"),
+])
+def test_transients_cannot_be_unusable_unknown_or_unplanned(tmp_path, change, reason):
+    _, survey, proposal, policy = fixture(tmp_path)
+    proposal.update(static_intervals_seconds=[[0, 2.5]], unsafe_frame_ids=[], automation=_automation(),
+                    transient_frame_ids=[], transients=[])
+    proposal.update(change)
+    if proposal["automation"] is None:
+        del proposal["automation"]
+    with pytest.raises(ValueError, match=reason):
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+
+
+def test_transient_targets_never_collide_with_reviewed_objects(tmp_path):
+    _, survey, proposal, policy = fixture(tmp_path)
+    automation = _automation()
+    automation["objects"][0]["target_id"] = "transient-0"
+    proposal.update(static_intervals_seconds=[[0, 1.5]], automation=automation, transient_frame_ids=["0"])
+    with pytest.raises(ValueError, match="transients_invalid"):
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)

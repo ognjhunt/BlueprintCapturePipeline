@@ -208,7 +208,13 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
             pipeline.run_atlas_pipeline(**options)
 
 
-def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatch):
+@pytest.mark.parametrize("review", [
+    {"automation": {"objects": [{"disposition": "remove"}]}},
+    # One video of people at work: nothing to remove but the people in the edited views.
+    {"automation": {"objects": [{"disposition": "keep"}]}, "transient_frame_ids": ["0"],
+     "coverage_requirements": [{"role": "task_object", "required_frame_ids": ["0"]}]},
+])
+def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatch, review):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
 
@@ -218,7 +224,6 @@ def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatc
     video.write_bytes(b"source")
     survey = {"source_video_digest": pipeline._sha256_file(video)}
     (root / "survey/atlas_video_survey.json").write_text(json.dumps(survey))
-    review = {"automation": {"objects": [{"disposition": "remove"}]}}
     (root / "selection_binding.json").write_text(json.dumps({"survey_relative_path": "survey/atlas_video_survey.json",
         "review": review, "planner_receipt": {"model": "agent"}}))
     config = {"authority": {"provider_retention": "approved"}, "remaining_cost_usd": 10,

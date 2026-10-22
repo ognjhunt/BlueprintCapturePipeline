@@ -296,6 +296,22 @@ def add_distinct_views(*, frames, features, selected, maximum_frames, policy=Non
                           for i, decision in sorted(decisions.items(), key=lambda item: times[item[0]])]
 
 
+def takes_reviewed_background(review: Mapping[str, Any]) -> bool:
+    """Whether Atlas may receive only reviewed, edited views (the editor-first path).
+
+    A removed object needs the edit, and so does a transient (a person, a carried
+    item) in a view the editor processes: the required and additional views. A
+    transient seen only in other frames needs no edit; the direct path leaves
+    those frames out of its inputs instead.
+    """
+    automation = review.get("automation") or {}
+    if any(row.get("disposition") == "remove" for row in automation.get("objects", [])):
+        return True
+    edited = {key for group in review.get("coverage_requirements", []) for key in group["required_frame_ids"]}
+    edited |= set(review.get("additional_input_frame_ids", []))
+    return bool(edited & set(review.get("transient_frame_ids", [])))
+
+
 def selection_frame_budget(review: Mapping[str, Any]) -> int:
     """A planning ceiling from reviewed dollars, never provider authority."""
     from datetime import datetime, timezone
@@ -344,7 +360,14 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     # explicit lower limit); added views by the provider's configured input capacity.
     capacity = MAX_POSE_INPUT_IMAGES if maximum_frames is None else maximum_frames
     cover_limit = budget_frames if maximum_frames is None else min(maximum_frames, budget_frames)
-    frames = [r for r in survey["frames"] if any(a <= r["timestamp_seconds"] <= b for a, b in intervals)]
+    # Frames the review judged unusable inside a still interval (someone filling
+    # the view, another door state) never become candidates. The direct path
+    # poses every input as captured, so no frame showing a transient joins it.
+    excluded = set(review.get("excluded_frame_ids", []))
+    if not takes_reviewed_background(review):
+        excluded |= set(review.get("transient_frame_ids", []))
+    frames = [r for r in survey["frames"] if any(a <= r["timestamp_seconds"] <= b for a, b in intervals)
+              and r["frame_id"] not in excluded]
     for r in frames:
         path = Path(r["source_image_path"])
         if not path.resolve().is_relative_to(survey_path.parent.resolve()) or _sha256_file(path) != r["source_image_digest"]:
