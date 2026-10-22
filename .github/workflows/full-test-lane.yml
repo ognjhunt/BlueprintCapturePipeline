@@ -176,6 +176,15 @@ jobs:
         run: |
           set -euo pipefail
           task_node="$(command -v node)"
+          # The Azure archive drip-fed font/runtime packages until both bounded
+          # cgroups expired (run 39768835541). Use Ubuntu's primary HTTPS mirror
+          # for that exact source on these disposable runners; keep every
+          # dependency, installation check and cgroup deadline in place.
+          if test -f /etc/apt/apt-mirrors.txt; then
+            sudo --non-interactive sed -i \
+              's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/apt-mirrors.txt
+          fi
           task_deps_ready=0
           for attempt in 1 2; do
             task_unit="blueprint-ci-browser-deps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${FULL_TEST_LANE_SHARD_INDEX}-${attempt}"
