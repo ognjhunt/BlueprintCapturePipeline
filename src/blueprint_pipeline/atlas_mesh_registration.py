@@ -24,7 +24,7 @@ from .decision_evidence_contracts import canonical_digest
 from .gaussian_splat_decode import read_standard_3dgs_ply
 from .local_reconstruction_adapters import _sha256_file
 
-SCHEMA_VERSION = "atlas_mesh_registration.v1"
+SCHEMA_VERSION = "atlas_mesh_registration.v2"
 GLB_FRAMES = {"atlas_world": (1.0, 1.0, 1.0), "atlas_world_rotated_180_x": (1.0, -1.0, -1.0)}
 MAX_MEDIAN_RESIDUAL_VOXELS = 3.0
 SUPPORT_VOXELS = 4.0
@@ -111,22 +111,48 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path) -> di
         raise ValueError("atlas_mesh_splat_changed")
     splat = read_standard_3dgs_ply(ply)
     voxel = float(splat_manifest["voxel_size"])
+    if not np.isfinite(voxel) or voxel <= 0:
+        raise ValueError("atlas_mesh_voxel_size_invalid")
     vertices, faces = read_glb_triangles(glb)
     tree = cKDTree(splat.xyz)
+    mesh_tree = cKDTree(vertices)
     sample = vertices[np.linspace(0, len(vertices) - 1, min(REGISTRATION_SAMPLES, len(vertices))).astype(np.int64)]
-    residuals = {name: float(np.median(tree.query(sample * np.array(sign))[0])) for name, sign in GLB_FRAMES.items()}
-    frame = min(residuals, key=residuals.get)
-    if residuals[frame] > MAX_MEDIAN_RESIDUAL_VOXELS * voxel:
+    source_sample = splat.xyz[np.linspace(0, len(splat.xyz) - 1,
+                                         min(REGISTRATION_SAMPLES, len(splat.xyz))).astype(np.int64)]
+    limit = MAX_MEDIAN_RESIDUAL_VOXELS * voxel
+    diagnostics, residuals, candidates = {}, {}, []
+    for name, sign in GLB_FRAMES.items():
+        # A partial mesh can cover less than half the source; closing sheets can
+        # outnumber supported mesh vertices. Measure both directions at the same
+        # fixed tolerance. These declared axis flips are their own inverses.
+        mesh_distance = tree.query(sample * np.array(sign), distance_upper_bound=np.nextafter(limit, np.inf))[0]
+        source_distance = mesh_tree.query(source_sample * np.array(sign),
+                                          distance_upper_bound=np.nextafter(limit, np.inf))[0]
+        medians = [float(np.median(value)) for value in (mesh_distance, source_distance)]
+        best = min(medians)
+        residuals[name] = best if np.isfinite(best) else None
+        diagnostics[name] = {"mesh_to_source_median": medians[0] if np.isfinite(medians[0]) else None,
+                             "source_to_mesh_median": medians[1] if np.isfinite(medians[1]) else None,
+                             "mesh_supported_fraction": float(np.mean(mesh_distance <= limit)),
+                             "source_supported_fraction": float(np.mean(source_distance <= limit))}
+        if best <= limit:
+            candidates.append(name)
+    if not candidates:
         raise ValueError("atlas_mesh_not_registered_to_splat")
+    if len(candidates) != 1:
+        raise ValueError("atlas_mesh_frame_ambiguous")
+    frame = candidates[0]
     vertices = vertices * np.array(GLB_FRAMES[frame])
     triangles = vertices[faces]
     edge = float(np.median(np.linalg.norm(triangles[:, 1] - triangles[:, 0], axis=1)))
     support = max(SUPPORT_VOXELS * voxel, SUPPORT_MESH_EDGES * edge)
-    kept = faces[tree.query(triangles.mean(axis=1))[0] <= support]
+    vertex_distance, vertex_nearest = tree.query(vertices, distance_upper_bound=np.nextafter(support, np.inf))
+    centroid_distance = tree.query(triangles.mean(axis=1), distance_upper_bound=np.nextafter(support, np.inf))[0]
+    kept = faces[np.all(vertex_distance[faces] <= support, axis=1) & (centroid_distance <= support)]
     if not len(kept):
         raise ValueError("atlas_mesh_no_supported_faces")
     used, remapped = np.unique(kept, return_inverse=True)
-    nearest = tree.query(vertices[used])[1]
+    nearest = vertex_nearest[used]
     colors = np.clip((0.5 + SH_C0 * splat.f_dc[nearest]) * 255.0, 0, 255).round()
     out = write_glb_triangles(output_root / "atlas_mesh_supported.glb", vertices[used], remapped.reshape(-1, 3), colors)
 
@@ -135,7 +161,9 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path) -> di
 
     record = {"schema_version": SCHEMA_VERSION, "source_glb_sha256": _sha256_file(glb),
               "splat_manifest_digest": splat_manifest["digest"], "glb_frame": frame,
-              "median_residual_by_frame": residuals, "voxel_size": voxel, "median_mesh_edge": edge,
+              "median_residual_by_frame": residuals, "frame_support": diagnostics,
+              "registration_distance_limit": limit, "registration_basis": "majority_overlap_in_either_direction",
+              "support_basis": "all_vertices_and_centroid", "voxel_size": voxel, "median_mesh_edge": edge,
               "support_distance": support, "faces_in": int(len(faces)), "faces_kept": int(len(kept)),
               "area_kept_fraction": area(vertices[kept]) / area(triangles),
               "outputs": [{"role": "supported_mesh_glb", "path": out.name, "bytes": out.stat().st_size,

@@ -24,8 +24,9 @@ def grid(z, extent=0.5, step=VOXEL, x0=0.0):
     return vertices, faces
 
 
-def splat_root(root):
-    points, _ = grid(-2.0)
+def splat_root(root, points=None):
+    if points is None:
+        points, _ = grid(-2.0)
     count = len(points)
     splat = SplatData(count=count, xyz=points.astype(np.float32), opacity=np.full(count, 3.0, np.float32),
                       f_dc=np.tile(np.array([[1.0, -0.5, 0.0]], np.float32), (count, 1)),
@@ -74,4 +75,35 @@ def test_mesh_that_fits_no_declared_frame_fails_closed(tmp_path):
     root = splat_root(tmp_path / "splat")
     glb = exported_glb(tmp_path / "mesh.glb", grid(-2.0, x0=0.6), sign=(1.0, 1.0, 1.0))
     with pytest.raises(ValueError, match="atlas_mesh_not_registered_to_splat"):
+        registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+
+
+def test_closing_sheets_can_outnumber_observed_vertices_without_hiding_source_overlap(tmp_path):
+    root = splat_root(tmp_path / "splat")
+    observed, phantom = grid(-2.0), grid(-1.6, step=VOXEL / 2)
+    glb = exported_glb(tmp_path / "mesh.glb", observed, phantom)
+    record = registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+    support = record["frame_support"]["atlas_world_rotated_180_x"]
+    assert support["mesh_to_source_median"] is None
+    assert support["mesh_supported_fraction"] < 0.5
+    assert support["source_supported_fraction"] == 1.0
+    assert record["registration_distance_limit"] == 3 * VOXEL
+    assert record["faces_kept"] == len(observed[1])
+    assert record["median_residual_by_frame"]["atlas_world"] is None
+    json.dumps(record, allow_nan=False)
+
+
+def test_triangle_with_supported_centroid_but_unseen_vertices_is_removed(tmp_path):
+    root = splat_root(tmp_path / "splat")
+    observed = grid(-2.0)
+    bridge = (np.array([[-10, 0, -2], [5, -8.66, -2], [5, 8.66, -2]]), np.array([[0, 1, 2]]))
+    glb = exported_glb(tmp_path / "mesh.glb", observed, bridge)
+    record = registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+    assert record["faces_kept"] == len(observed[1])
+
+
+def test_two_supported_declared_frames_are_ambiguous(tmp_path):
+    root = splat_root(tmp_path / "splat", np.concatenate([grid(-2.0)[0], grid(2.0)[0]]))
+    glb = exported_glb(tmp_path / "mesh.glb", grid(-2.0))
+    with pytest.raises(ValueError, match="atlas_mesh_frame_ambiguous"):
         registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
