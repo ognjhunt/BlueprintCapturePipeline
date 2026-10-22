@@ -64,7 +64,7 @@ Nothing is defaulted. A missing value refuses before any reservation or upload.
 
 | Variable | Meaning |
 |---|---|
-| `WORLDLABS_ATLAS_API_KEY` | Project API key with `tasks.create`, `operations.read`, `assets.create` and `assets.read` scopes. It may not contain whitespace or control characters. |
+| `WORLDLABS_ATLAS_API_KEY` | Project API key with `tasks.create`, `operations.read`, `assets.create` and `assets.read` scopes, plus `assets.delete` for the automatic website preview worker, which deletes every asset a job made once its bundle is archived. It may not contain whitespace or control characters. |
 | `WORLDLABS_ATLAS_API_BASE_URL` | The documented `$WLT_API_BASE_URL`: `https://<host>.worldlabs.ai/api/v2`. The docs give no production host, so the value is copied from the platform. |
 | `BLUEPRINT_ATLAS_POSE_PRICE_REVIEW_JSON` | The reviewed price (below). Without it: `website_atlas_reviewed_price_required` |
 | `BLUEPRINT_ATLAS_PROVIDER_RETENTION` | The owner's decision on where World Labs keeps uploaded frames and outputs. One of `account_does_not_retain` (the account is set not to keep uploads and outputs) or `project_library_retention_approved`. Anything else: `website_atlas_provider_retention_decision_required` |

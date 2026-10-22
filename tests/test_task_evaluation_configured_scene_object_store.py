@@ -377,6 +377,21 @@ def test_large_artifact_publication_reuses_verified_content_address(
     assert client.upload_count == 1
 
 
+def test_large_artifact_can_be_named_for_its_owner_and_refuses_unsafe_names(tmp_path: Path) -> None:
+    source = tmp_path / "atlas-scene-0123.zip"
+    source.write_bytes(b"bundle")
+    client = _ContentAddressedClient()
+    named = store.publish_configured_scene_artifact(path=source, artifact_kind="atlas-scene-bundle",
+        client=client, bucket="blueprint-inputs", filename="walkthrough-req1.zip")
+    digest = hashlib.sha256(b"bundle").hexdigest()
+    assert named["uri"].endswith(f"/artifacts/atlas-scene-bundle/sha256/{digest}/walkthrough-req1.zip")
+    for unsafe in ("../escape.zip", "nested/name.zip", ".hidden"):
+        with pytest.raises(store.TaskEvaluationConfiguredSceneObjectStoreError, match="filename_invalid"):
+            store.publish_configured_scene_artifact(path=source, artifact_kind="atlas-scene-bundle",
+                client=client, bucket="blueprint-inputs", filename=unsafe)
+    assert client.upload_count == 1
+
+
 def test_large_artifact_publication_refuses_existing_identity_mismatch(
     tmp_path: Path,
 ) -> None:

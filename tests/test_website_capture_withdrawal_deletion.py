@@ -273,6 +273,44 @@ def test_apply_deletes_exactly_the_plan_and_names_what_remains(world):
     assert receipt["digest"] == canonical_digest(receipt, digest_field="digest")
 
 
+def test_archived_atlas_previews_of_the_walkthrough_are_found_by_name_even_after_retirement(world):
+    # The workspace is retired (its receipt is all that is local), yet the preview archive is found.
+    mine = _uri("atlas-scene-bundle", "3", "walkthrough-req1.zip")
+    theirs = _uri("atlas-scene-bundle", "4", "walkthrough-req2.zip")
+    world["store"].put(mine, b"preview", versions=2, marker=True)
+    world["store"].put(theirs, b"another site's preview")
+    plan = _plan(world)
+    assert plan["unresolved"] == []
+    found = {row["uri"]: row for row in plan["objects"]}
+    assert len(found[mine]["versions"]) == 3 and theirs not in found
+    _apply(world, plan)
+    assert not world["store"].present(mine) and world["store"].present(theirs)
+
+
+def test_deletion_waits_for_a_running_preview_step_and_then_holds_it_off(world):
+    import fcntl
+    from blueprint_pipeline import website_atlas_preview as preview
+    job_dir = world["capture"] / "pipeline/atlas"
+    job_dir.mkdir(parents=True)
+    (job_dir / preview.LOCK_FILE).touch()
+    (job_dir / preview.JOB_FILE).write_text("{}")
+    plan = _plan(world)
+    with (job_dir / preview.LOCK_FILE).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with pytest.raises(deletion.WithdrawalDeletionError, match="atlas_preview_busy"):
+            _apply(world, plan)
+    assert world["store"].deleted == []
+    _apply(world, plan)
+    # The local cleanup removes the job and its lock with the site's other files.
+    assert not (job_dir / preview.JOB_FILE).exists() and not (job_dir / preview.LOCK_FILE).exists()
+
+
+def test_previews_cannot_be_ruled_out_without_the_object_store(world):
+    plan = _plan(world, object_store=None)
+    assert {"prefix": f"{PREFIX}/atlas-scene-bundle/sha256/",
+            "reason": "website_withdrawal_deletion_object_store_unconfigured"} in plan["unresolved"]
+
+
 def test_complete_only_with_source_bucket_and_no_uncovered_root(world):
     plan = _plan(world, uncovered_roots=())
     receipt = _apply(world, plan, uncovered_roots=())

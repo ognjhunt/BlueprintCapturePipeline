@@ -419,13 +419,15 @@ def publish_configured_scene_artifact(
     artifact_kind: str,
     client: Any | None = None,
     bucket: str | None = None,
+    filename: str | None = None,
 ) -> dict[str, Any]:
     """Publish a large immutable artifact once and prove exact remote bytes.
 
     The key is independent of the run and source path, so identical provider
     bundles, provider outputs, and diagnostic checkpoint archives are reused.
     An existing object is never overwritten: its size and digest metadata must
-    agree before a full streaming readback is accepted.
+    agree before a full streaming readback is accepted. ``filename`` replaces the
+    source's name in the key, for an owner who must find its objects by name.
     """
 
     unresolved = Path(path)
@@ -438,10 +440,12 @@ def publish_configured_scene_artifact(
         raise TaskEvaluationConfiguredSceneObjectStoreError(
             "configured_scene_artifact_source_invalid"
         )
+    if filename is not None and _SAFE_KEY_COMPONENT.fullmatch(filename) is None:
+        raise TaskEvaluationConfiguredSceneObjectStoreError("configured_scene_artifact_filename_invalid")
     digest, size = _sha256_and_size(source)
     def upload(resolved_client, resolved_bucket, key, metadata):
         resolved_client.upload_file(str(source), resolved_bucket, key, ExtraArgs=metadata)
-    return _publish_configured_scene_data(digest=digest, size=size, filename=source.name,
+    return _publish_configured_scene_data(digest=digest, size=size, filename=filename or source.name,
         artifact_kind=artifact_kind, upload=upload, client=client, bucket=bucket)
 
 

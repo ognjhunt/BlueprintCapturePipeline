@@ -1,9 +1,11 @@
-"""Production Atlas preparation controller on the existing website capture path.
+"""Production Atlas preparation controller for one website capture.
 
 Source review, adaptive inputs, admitted posing, generated RGBD and portable
 downloads run on the worker. The public API cannot create a splat, so the worker
 fuses Atlas's own posed depth into a draft splat and meshes it with splats2Mesh
 once a reviewed mesh price exists; neither becomes a metric or simulator-ready result.
+Website uploads reach it only through the side-lane worker in
+``website_atlas_preview``; the main preparation never waits on it.
 """
 from __future__ import annotations
 
@@ -15,17 +17,9 @@ import os
 from pathlib import Path
 import time
 
-from .common import StageError, write_json
+from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-
-
-def atlas_selected(capture_id: str) -> bool:
-    """Production rollout is explicit per capture; consent still gates every call."""
-    values = json.loads(os.getenv("BLUEPRINT_WEBSITE_ATLAS_CAPTURE_IDS_JSON", "[]"))
-    if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
-        raise ValueError("atlas_runtime_capture_rollout_invalid")
-    return capture_id in values
 
 
 def load_configuration(context, source_digest):
@@ -69,7 +63,10 @@ def run_atlas_pipeline(*, output_root: Path, **options):
 
 
 def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, experimental=False,
-                       invoker=None, max_polls=2, refinement_feedback: Path | None = None):
+                       invoker=None, max_polls=2, refinement_feedback: Path | None = None, checkpoint=None):
+    # ``checkpoint(stage)`` runs before every paid stage; raising there (a
+    # withdrawal) stops the job before it buys or uploads anything more.
+    check = checkpoint or (lambda _stage: None)
     from .atlas_video_inputs import survey_video, prepare_video_inputs
     from .atlas_scene_planner import proposal_review
     from .paid_resource_allocator import (run_sponsored_website_atlas_plan, run_sponsored_website_atlas_pose,
@@ -147,6 +144,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         review = selection["review"]
         receipt = selection["planner_receipt"]
     else:
+        check("plan")
         plan_options = {"feedback": feedback} if feedback is not None else {}
         receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
             configuration=config, output_root=reviews, invoker=invoker, experimental=experimental, **plan_options)
@@ -175,6 +173,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             extend_survey(source_video=source_video, base_survey=survey_path, decoded_index=indexes[0],
                 review=review, output_root=extended_root)
         survey = json.loads(extended_path.read_text())
+        check("plan")
         receipt = run_sponsored_website_atlas_plan(survey_path=extended_path, task_context=task_context,
             configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
         review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget)
@@ -195,6 +194,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
     # Validate all deterministic quote/camera options before reserving a call.
     os.environ[ATLAS_PRICE_REVIEW_ENV] = json.dumps(pose_quote)
+    check("pose")
     posed = run_sponsored_website_atlas_pose(output_root=pose_root, capture_id=task_context["capture_id"],
         task_context=task_context, experimental=experimental, max_polls=max_polls)
     if posed["status"] != "completed":
@@ -206,6 +206,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         "request_digest": canonical_digest(request), "maximum_cost_usd": cost,
         **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
     generated_root = output_root / "generated"
+    check("generated_rgbd")
     generated = run_sponsored_website_atlas_task(task="atlasGenerate", request=request,
         source_video_digest=source_digest, output_root=generated_root, task_context=task_context,
         price_review=quote, experimental=experimental, max_polls=max_polls)
@@ -223,6 +224,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             "request_digest": canonical_digest(spec["request"]), "maximum_cost_usd": policy["mesh_export_cost_usd"],
             **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
         mesh_root = output_root / "mesh"
+        check("mesh")
         mesh = run_sponsored_website_atlas_task(task="splats2Mesh", request=spec["request"], uploads=spec["uploads"],
             source_video_digest=source_digest, output_root=mesh_root, task_context=task_context,
             price_review=mesh_quote, experimental=experimental, max_polls=max_polls)
@@ -251,20 +253,6 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result
-
-
-def retain_site_preparation_hold(*, pipeline_dir, atlas_result, scene_id, capture_id):
-    """RGBD completion preserves the existing final-scene handoff boundary."""
-    write_json(pipeline_dir / "atlas_preparation_result.json", atlas_result)
-    if atlas_result["status"] == "processing":
-        raise StageError("atlas_preparation", "website_atlas_operation_processing")
-    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
-        "scene_id": scene_id, "capture_id": capture_id,
-        "blockers": atlas_result["blockers"], "atlas_preparation": atlas_result,
-        "claim_ceiling": "development_only", "simulator_ready": False}
-    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
-    write_json(pipeline_dir / "website_scene_preparation/handoff.json", handoff)
-    raise StageError("website_scene_preparation", ",".join(atlas_result["blockers"]))
 
 
 def main():

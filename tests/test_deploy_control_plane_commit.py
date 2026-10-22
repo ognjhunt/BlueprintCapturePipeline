@@ -653,6 +653,10 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-control-plane\n",
         encoding="utf-8",
     )
+    preview_service = unit_dir / "blueprint-website-atlas-preview.service"
+    preview_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-website-atlas-preview\n", encoding="utf-8")
+    preview_timer = unit_dir / "blueprint-website-atlas-preview.timer"
+    preview_timer.write_text("[Timer]\nOnUnitInactiveSec=60s\n", encoding="utf-8")
     additional_sources = []
     for name in (
         "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
@@ -724,6 +728,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         preflight_timer,
         control_plane_service,
         intake_service,
+        preview_service,
+        preview_timer,
     ):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
@@ -810,6 +816,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-control-plane-preflight.timer",
         "blueprint-pipeline-control-plane.service",
         "blueprint-pipeline-intake.service",
+        "blueprint-website-atlas-preview.service",
+        "blueprint-website-atlas-preview.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
@@ -833,6 +841,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-completed-replay-cache-gc.timer",
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.timer",
+        "blueprint-website-atlas-preview.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
         "blueprint-task-evaluation-sam31-preparation-execution.path",

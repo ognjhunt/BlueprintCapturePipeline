@@ -1,7 +1,8 @@
 # Atlas beta source preparation
 
-Production uses `blueprint_pipeline.website_atlas_pipeline`, also reached by the
-normal capture orchestrator for IDs in `BLUEPRINT_WEBSITE_ATLAS_CAPTURE_IDS_JSON`.
+Production uses `blueprint_pipeline.website_atlas_pipeline`. Website uploads
+reach it only through the side-lane worker described in the next section; the
+normal preparation never waits on it or skips its own sponsorship for it.
 The worker loads current task/source consent and the runtime rate policy from
 the signed WebApp `atlas-configuration` endpoint. The source-bound authorization
 must explicitly include OpenAI planner disclosure. Planner and Atlas reservations
@@ -31,6 +32,46 @@ python -m blueprint_pipeline.website_atlas_pipeline --source-video VIDEO \
 ADP-040 / Day 28, owner-directed Atlas integration. Extend the admitted
 `website_atlas_pose` producer; do not submit Atlas through the Marble world API.
 The source adapter remains interchangeable and all results are development-only.
+
+## Automatic previews of website uploads
+
+Owner decisions D1-D6 (2026-10-22): consented website uploads get an Atlas 3D
+preview automatically, beside the existing preparation, under a Blueprint-paid
+per-upload cap the WebApp grant enforces. It is development-only and unscaled.
+
+- **Routing.** Intake reads `BLUEPRINT_WEBSITE_ATLAS_ROUTING` from
+  `/etc/blueprint/pipeline-control-plane.env`: `off` (the default, and any
+  unreadable value), `allowlist` (walkthrough IDs in
+  `BLUEPRINT_WEBSITE_ATLAS_CAPTURE_IDS_JSON`) or `consented` (every walkthrough).
+  A routed upload gets `pipeline/atlas/preview_job.json`; recording it never
+  raises into intake. A malformed setting routes nothing and breaks nothing else.
+- **Worker.** `blueprint-website-atlas-preview.timer` runs
+  `python -m blueprint_pipeline.website_atlas_preview tick` as `blueprint`. Each
+  tick moves each job one bounded step (one poll per provider stage) and keeps
+  it in one plain state: `processing`, `ready`, `needs_input`, `failed` or
+  `withdrawn`. A missing grant or terms waits as `needs_input` and is re-checked
+  every 30 minutes; transport errors back off and fail after 8 tries; jobs end
+  after 7 days. With routing off no job exists and the tick does nothing.
+- **Secrets.** Only the worker reads `/etc/blueprint/website-atlas-preview.env`:
+  `WORLDLABS_ATLAS_API_KEY` (or `_FILE`), `WORLDLABS_ATLAS_API_BASE_URL` and
+  `BLUEPRINT_ATLAS_PROVIDER_RETENTION`. The key needs `assets.delete` besides the
+  scopes in `docs/website-atlas-pose-operation.md`.
+- **Privacy.** Every frame Atlas receives is face-screened first
+  (`atlas_privacy_screen`, YuNet, refusing when the model or OpenCV detector is
+  missing) and recorded in `atlas_view_selection.json`; the planner still excludes
+  frames with people. The download bundle carries no input frames.
+- **Archive and cleanup.** A finished preview is published to the dedicated B2
+  store (never the legacy fallback) as `atlas-scene-bundle/sha256/<digest>/<capture>.zip`
+  with a full readback; withdrawal deletion finds it by that name, also after the
+  workspace is retired. Then every Atlas asset the job uploaded or received is
+  deleted at World Labs. Operation records stay there for 30 days.
+- **Withdrawal.** The tombstone is re-checked every tick and before every paid
+  stage. A withdrawn job archives nothing, deletes its Atlas assets and tells the
+  WebApp.
+- **WebApp.** Each state change is pushed through the signed `atlas-preview`
+  operation. The owner download is streamed from
+  `GET /api/live-pipeline/website-atlas-previews/<capture>/bundle?request_id=&digest=`
+  (WebApp client only), which serves a ready, unwithdrawn bundle of that exact digest.
 
 ## Review output gaps and refine source inputs
 

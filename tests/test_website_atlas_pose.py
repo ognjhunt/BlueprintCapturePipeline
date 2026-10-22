@@ -274,6 +274,9 @@ def test_portable_export_is_verified_deterministic_and_excludes_unlisted_files(a
     assert first["zip_sha256"] == second["zip_sha256"]
     with zipfile.ZipFile(second["zip_path"]) as archive:
         assert "unlisted.txt" not in archive.namelist()
+        # Source frames stay with the job (D5): the views are the provider's own posed images.
+        assert not [name for name in archive.namelist() if name.startswith("inputs/")]
+        assert any(name.startswith("views/") for name in archive.namelist())
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["provider_input_count"] == 3
         assert manifest["simulation_qualified"] is False

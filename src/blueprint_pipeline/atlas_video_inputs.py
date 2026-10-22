@@ -300,8 +300,9 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
             "survey_digest": survey["digest"], "review_digest": canonical_digest(review),
             "task_and_surrounding_scene_covered": False, "paid_task_started": False})
         raise
+    from .atlas_privacy_screen import blur_faces, screen_identity
     root = output_root.resolve()
-    prepared = []
+    prepared, blurred = [], {}
     for i in selected:
         row = frames[i]
         target = root / "atlas_source_views" / (row["frame_id"] + ".png")
@@ -311,13 +312,17 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
         shutil.copyfile(row["source_image_path"], retained_source)
         with Image.open(row["source_image_path"]) as image:
             # Native resolution, lossless upright RGB; never the 518px model input.
-            image.convert("RGB").rotate(rotation, expand=True).save(target)
+            # Faces are blurred before the digest that the provider upload is bound to.
+            screened, faces = blur_faces(image.convert("RGB").rotate(rotation, expand=True))
+        screened.save(target)
+        blurred[row["frame_id"]] = len(faces)
         prepared.append({**row, "source_image_path": str(retained_source),
                          "image_path": str(target), "image_digest": _sha256_file(target)})
     inputs = {"schema_version": INPUT_SCHEMA,
               "binding": {"source_video_digest": survey["source_video_digest"], "maximum_frames": maximum_frames,
                           "adapter_version": 3, "survey_digest": survey["digest"],
-                          "scene_state_review_digest": canonical_digest(review)},
+                          "scene_state_review_digest": canonical_digest(review),
+                          "privacy_screen": {**screen_identity(), "blurred_faces_by_frame": blurred}},
               "frames": prepared, "source_sample_count": survey["sample_count"],
               "heldout_frame_count": survey["heldout_frame_count"], "heldout_pixels_included": False}
     inputs["digest"] = canonical_digest(inputs, digest_field="digest")
@@ -326,6 +331,7 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
             "maximum_frames": maximum_frames, "diagnostics": diagnostics,
             "task_and_surrounding_scene_covered": True,
             "coverage_requirements": requirements, "coverage_authority": "source_image_review_and_overlap_heuristic",
+            "privacy_screen": inputs["binding"]["privacy_screen"],
             "frames": [{k: r[k] for k in ("frame_id", "timestamp_seconds", "image_digest")} for r in prepared],
             "unseen_regions_recovered": False, "geometry_or_static_state_proven": False,
             "excluded_interval_frames": len(survey["frames"]) - len(frames) + survey.get("excluded_base_interval_frame_count", 0)}
