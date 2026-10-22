@@ -165,22 +165,37 @@ def test_accuracy_first_adds_every_distinct_sharp_connected_view_and_keeps_the_c
     monkeypatch.setattr(video, "_overlap", overlap)
     kept, diagnostics = video.add_distinct_views(frames=frames, features=list(range(8)), selected=[0, 4],
                                                  maximum_frames=64)
-    assert kept == [0, 1, 3, 4]
+    # Widest gap first: 2 is admitted before 1, and 1 then barely differs from it.
+    assert kept == [0, 2, 3, 4]
     decisions = {row["frame_id"]: row["decision"] for row in diagnostics}
-    assert decisions == {"1": "distinct_view", "2": "near_duplicate", "3": "distinct_view", "7": "disconnected_view"}
+    assert decisions == {"1": "near_duplicate", "2": "distinct_view", "3": "distinct_view", "7": "disconnected_view"}
 
 
-def test_more_distinct_views_than_the_target_are_thinned_evenly_and_never_the_cover(monkeypatch):
-    frames = _timeline(20)
-    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 30))
-    kept, diagnostics = video.add_distinct_views(frames=frames, features=list(range(20)), selected=[10],
+def _chain(count):
+    """Overlap only between consecutive frames: the hardest case for keeping inputs connected."""
+    return lambda a, b: (100, 30) if abs(a - b) == 1 else (0, 0.0)
+
+
+def test_earlier_context_is_reached_through_its_own_bridges(monkeypatch):
+    monkeypatch.setattr(video, "_overlap", _chain(10))
+    kept, _ = video.add_distinct_views(frames=_timeline(10), features=list(range(10)), selected=[8, 9],
+                                       maximum_frames=64)
+    assert kept == list(range(10))
+
+
+def test_a_binding_capacity_keeps_every_input_connected_and_never_drops_the_cover(monkeypatch):
+    monkeypatch.setattr(video, "_overlap", _chain(10))
+    kept, diagnostics = video.add_distinct_views(frames=_timeline(10), features=list(range(10)), selected=[0, 1],
                                                  maximum_frames=5)
-    assert 10 in kept and len(kept) == 5
-    extras = [index for index in kept if index != 10]
-    assert extras[0] == 0 and extras[-1] == 19  # spread over the whole interval, not the first seconds
-    assert sum(row["decision"] == "thinned_to_frame_target" for row in diagnostics) == 15
+    assert kept == [0, 1, 2, 3, 4]  # each added view overlaps a kept one; no stranded far views
+    assert {row["decision"] for row in diagnostics} == {"distinct_view", "beyond_input_capacity"}
+    # With wider overlap, the same capacity spreads the inputs over the whole interval.
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 30) if abs(a - b) <= 5 else (0, 0.0))
+    kept, _ = video.add_distinct_views(frames=_timeline(20), features=list(range(20)), selected=[10],
+                                       maximum_frames=5)
+    assert kept == [0, 5, 10, 15, 19] or (min(kept) <= 1 and max(kept) >= 18 and len(kept) == 5)
     with pytest.raises(ValueError, match="coverage_exceeds_frame_budget"):
-        video.add_distinct_views(frames=frames, features=list(range(20)), selected=[1, 2, 3], maximum_frames=2)
+        video.add_distinct_views(frames=_timeline(20), features=list(range(20)), selected=[1, 2, 3], maximum_frames=2)
 
 
 def test_accuracy_target_is_independent_of_dollars_which_only_refuse(tmp_path, monkeypatch):
@@ -212,8 +227,9 @@ def test_accuracy_target_is_independent_of_dollars_which_only_refuse(tmp_path, m
     monkeypatch.setattr(screen, "blur_faces", lambda image: (image, []))
     video.prepare_video_inputs(survey_path=root / "atlas_video_survey.json", review=review, output_root=tmp_path / "pose")
     selection = json.loads((tmp_path / "pose/atlas_view_selection.json").read_text())
-    assert selection["selected_frame_count"] == video.ACCURACY_FRAME_TARGET == 64
-    assert selection["frame_policy"] == {"basis": "accuracy_first", "frame_target": 64,
+    from blueprint_pipeline.website_atlas_pose import MAX_POSE_INPUT_IMAGES
+    assert selection["selected_frame_count"] == MAX_POSE_INPUT_IMAGES == 64
+    assert selection["frame_policy"] == {"basis": "accuracy_first", "provider_input_capacity": 64, "frame_target": 64,
                                          "connected_cover_frames": 2, "distinct_views_added": 62}
     # A budget that cannot pay for the accurate set refuses; it never quietly poses fewer frames.
     review["selection_budget"]["maximum_pose_cost_usd"] = .3

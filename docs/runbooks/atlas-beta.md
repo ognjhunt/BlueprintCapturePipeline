@@ -84,15 +84,18 @@ any selection. A second review of about 80 images reserves about $0.56 worst cas
 so the runtime policy's `maximum_review_cost_usd` must allow it (about $4 covers a
 300-image review).
 `prepare_video_inputs` then builds the connected cover of the reviewed task and
-room anchors, then `add_distinct_views` adds every other sharp, unclipped view of
-the still interval that overlaps a kept time neighbour (the cover's support rule)
-and moved at least 12 preview pixels from each overlapping one (the near-duplicate
-rule), up to `ACCURACY_FRAME_TARGET` (64). Extra distinct views beyond the target
-are thinned evenly over time; the cover is never dropped. The reviewed dollars are
-checked only after selection and refuse
-(`atlas_selection_budget_below_accurate_inputs`); they never pose fewer frames.
-Atlas has not published a per-request image limit, so the first 64-frame request
-settles whether it accepts that many.
+room anchors, bounded only by the reviewed dollars, and `add_distinct_views` grows
+it: each step admits the sharp, unclipped candidate farthest in time from the kept
+set that still overlaps a kept time neighbour (the cover's support rule) and moved
+at least 12 preview pixels from each overlapping one (the near-duplicate rule).
+Every posed view therefore overlaps another, earlier context is reached through
+its own bridges, and a binding capacity keeps the widest connected spread. Added
+views stop at the Atlas pose adapter's configured input capacity
+(`website_atlas_pose.MAX_POSE_INPUT_IMAGES`, 64, provider data per the package
+AGENTS.md); the cover is never cut by it. The reviewed dollars are checked only
+after selection and refuse (`atlas_selection_budget_below_accurate_inputs`); they
+never pose fewer frames. Atlas has not published a per-request image limit, so the
+first 64-frame request settles whether it accepts that many.
 
 ## Review output gaps and refine source inputs
 
