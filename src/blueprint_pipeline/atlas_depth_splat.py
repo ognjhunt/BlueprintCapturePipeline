@@ -21,8 +21,8 @@ import argparse
 import gzip
 import json
 import math
-import os
 import struct
+import zlib
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -48,6 +48,9 @@ DISC_THICKNESS_RATIO = 0.1
 SPLATS2MESH_MAX_RENDER = 1024
 SPLATS2MESH_MIN_RENDER = 64
 SPLATS2MESH_MAX_CAMERAS = 512
+EXR_MAGIC = b"\x76\x2f\x31\x01"
+_EXR_LINES_PER_BLOCK = {0: 1, 2: 1, 3: 16}  # none, ZIPS, ZIP
+_EXR_PIXEL_TYPES = {1: "<f2", 2: "<f4"}
 SPZ_MAGIC = 0x5053474E
 SPZ_VERSION = 2
 SPZ_FRACTIONAL_BITS = 12
@@ -65,6 +68,60 @@ def _rotation_matrix(quaternion_xyzw: Sequence[float]) -> np.ndarray:
     return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
                      [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
                      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def read_exr_depth(path: Path) -> np.ndarray:
+    """One-channel scanline OpenEXR (uncompressed, ZIPS or ZIP) as float32, NaN preserved.
+
+    Atlas returns depth in exactly this shape. Production's long-lived virtualenv
+    carries an OpenCV build that cannot decode EXR, so this stays dependency-free
+    and refuses every other layout rather than guessing.
+    """
+    data = path.read_bytes()
+    if data[:4] != EXR_MAGIC or struct.unpack_from("<I", data, 4)[0] != 2:
+        raise ValueError("atlas_depth_exr_layout_unsupported")
+    position, header = 8, {}
+    while data[position] != 0:
+        name_end = data.index(b"\0", position)
+        kind_end = data.index(b"\0", name_end + 1)
+        size = struct.unpack_from("<I", data, kind_end + 1)[0]
+        header[data[position:name_end].decode()] = data[kind_end + 5:kind_end + 5 + size]
+        position = kind_end + 5 + size
+    position += 1
+    channels = header.get("channels", b"")
+    name_end = channels.find(b"\0")
+    if name_end < 0 or len(channels) != name_end + 18 or channels[-1] != 0:
+        raise ValueError("atlas_depth_exr_channels_unsupported")
+    pixel_type, _, x_sampling, y_sampling = struct.unpack_from("<iB3xii", channels, name_end + 1)
+    compression = header.get("compression", b"\xff")[0]
+    if (pixel_type not in _EXR_PIXEL_TYPES or (x_sampling, y_sampling) != (1, 1)
+            or compression not in _EXR_LINES_PER_BLOCK or header.get("lineOrder", b"\0") != b"\0"):
+        raise ValueError("atlas_depth_exr_encoding_unsupported")
+    x_min, y_min, x_max, y_max = struct.unpack("<iiii", header["dataWindow"])
+    width, height = x_max - x_min + 1, y_max - y_min + 1
+    dtype = np.dtype(_EXR_PIXEL_TYPES[pixel_type])
+    lines = _EXR_LINES_PER_BLOCK[compression]
+    blocks = -(-height // lines)
+    offsets = struct.unpack_from(f"<{blocks}Q", data, position)
+    rows = []
+    for block, offset in enumerate(offsets):
+        y, size = struct.unpack_from("<ii", data, offset)
+        count = min(lines, height - block * lines)
+        expected = count * width * dtype.itemsize
+        if y != y_min + block * lines or offset + 8 + size > len(data):
+            raise ValueError("atlas_depth_exr_block_invalid")
+        payload = data[offset + 8:offset + 8 + size]
+        if size != expected:
+            delta = np.frombuffer(zlib.decompress(payload), dtype=np.uint8).astype(np.int64)
+            if len(delta) != expected:
+                raise ValueError("atlas_depth_exr_block_invalid")
+            delta[1:] -= 128
+            interleaved = (np.cumsum(delta) & 0xFF).astype(np.uint8)
+            raw = np.empty(expected, np.uint8)
+            raw[0::2], raw[1::2] = interleaved[:(expected + 1) // 2], interleaved[(expected + 1) // 2:]
+            payload = raw.tobytes()
+        rows.append(np.frombuffer(payload, dtype=dtype).reshape(count, width))
+    return np.concatenate(rows).astype(np.float32)
 
 
 def posed_frame(*, frame_id: str, rgb: np.ndarray, depth: np.ndarray, confidence: np.ndarray,
@@ -94,7 +151,6 @@ def load_posed_rgbd(pose_root: Path) -> tuple[dict[str, Any], list[dict[str, Any
     usage = result["operation_receipt"]["input_usage"]["frames"]
     if not returned or len(returned) != len(usage):
         raise ValueError("atlas_depth_splat_frame_count_mismatch")
-    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
     import cv2
 
     frames = []
@@ -108,7 +164,7 @@ def load_posed_rgbd(pose_root: Path) -> tuple[dict[str, Any], list[dict[str, Any
         if not {"image", "depth", "confidence"} <= set(paths):
             raise ValueError("atlas_depth_splat_output_missing")
         image = cv2.imread(str(paths["image"]), cv2.IMREAD_COLOR)
-        depth = cv2.imread(str(paths["depth"]), cv2.IMREAD_UNCHANGED)
+        depth = read_exr_depth(paths["depth"])
         confidence = cv2.imread(str(paths["confidence"]), cv2.IMREAD_UNCHANGED)
         if image is None or depth is None or confidence is None or depth.ndim != 2 or confidence.ndim != 2:
             raise ValueError("atlas_depth_splat_output_undecodable")

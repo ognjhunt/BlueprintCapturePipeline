@@ -1,7 +1,8 @@
 """No provider calls: Atlas posed RGBD fuses into a draft splat that splats2Mesh accepts."""
 import json
 import math
-import os
+import struct
+import zlib
 
 import numpy as np
 import pytest
@@ -109,8 +110,56 @@ def test_mesh_spec_renders_capture_cameras_within_atlas_limits(tmp_path):
         depth_splat.splats2mesh_task_spec(frames=frames, spz=spz, source_video_digest="sha256:" + "0" * 64)
 
 
+def write_exr(path, depth, compression=3):
+    """Single-channel HALF scanline EXR, the layout Atlas returns, without OpenCV."""
+    half = np.ascontiguousarray(depth, dtype="<f2")
+    height, width = half.shape
+    lines = 16 if compression == 3 else 1
+
+    def attribute(name, kind, value):
+        return name.encode() + b"\0" + kind.encode() + b"\0" + struct.pack("<I", len(value)) + value
+
+    window = struct.pack("<iiii", 0, 0, width - 1, height - 1)
+    header = b"".join([depth_splat.EXR_MAGIC, struct.pack("<I", 2),
+                       attribute("channels", "chlist", b"Y\0" + struct.pack("<iB3xii", 1, 0, 1, 1) + b"\0"),
+                       attribute("compression", "compression", bytes([compression])),
+                       attribute("dataWindow", "box2i", window), attribute("displayWindow", "box2i", window),
+                       attribute("lineOrder", "lineOrder", b"\0"), b"\0"])
+    chunks = []
+    for y in range(0, height, lines):
+        raw = np.frombuffer(half[y:y + lines].tobytes(), np.uint8)
+        payload = raw.tobytes()
+        if compression:
+            interleaved = np.concatenate([raw[0::2], raw[1::2]]).astype(np.int64)
+            delta = interleaved.copy()
+            delta[1:] = (interleaved[1:] - interleaved[:-1] + 128) & 0xFF
+            packed = zlib.compress(delta.astype(np.uint8).tobytes())
+            payload = packed if len(packed) < len(payload) else payload
+        chunks.append(struct.pack("<ii", y, len(payload)) + payload)
+    offsets, offset = [], len(header) + 8 * len(chunks)
+    for chunk in chunks:
+        offsets.append(offset)
+        offset += len(chunk)
+    path.write_bytes(header + struct.pack(f"<{len(chunks)}Q", *offsets) + b"".join(chunks))
+    return path
+
+
+@pytest.mark.parametrize("compression", [0, 3])
+def test_exr_depth_reader_matches_written_half_floats_and_refuses_other_layouts(tmp_path, compression):
+    depth = np.linspace(0.5, 3.0, 40 * 33, dtype=np.float32).reshape(40, 33)
+    depth[3, 4] = np.nan
+    path = write_exr(tmp_path / "d.exr", depth, compression)
+    read, expected = depth_splat.read_exr_depth(path), depth.astype(np.float16).astype(np.float32)
+    assert np.array_equal(np.isnan(read), np.isnan(expected))
+    assert np.array_equal(read[~np.isnan(read)], expected[~np.isnan(expected)])
+    tiled = bytearray(path.read_bytes())
+    tiled[5] |= 0x02
+    (tmp_path / "tiled.exr").write_bytes(bytes(tiled))
+    with pytest.raises(ValueError, match="layout_unsupported"):
+        depth_splat.read_exr_depth(tmp_path / "tiled.exr")
+
+
 def retained_pose_root(root):
-    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
     import cv2
 
     cameras, usage = [], []
@@ -118,16 +167,14 @@ def retained_pose_root(root):
         item = frame(cam, plane_depth(cam), f"f{index}")
         folder = root / "atlas_pose" / "outputs" / f"{index:06d}"
         folder.mkdir(parents=True)
-        outputs = []
-        for role, suffix, pixels, options in (
-                ("image", ".png", np.ascontiguousarray(item["rgb"][..., ::-1]), []),
-                ("depth", ".exr", item["depth"], [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_HALF]),
-                ("confidence", ".png", np.full(item["depth"].shape, 255, np.uint8), [])):
-            encoded = folder / f"{role}{suffix}"
-            assert cv2.imwrite(str(encoded), pixels, options)
-            path = encoded.rename(folder / f"{role}.bin")
-            outputs.append({"role": role, "path": str(path.relative_to(root)),
-                            "sha256": depth_splat._sha256_file(path)})
+        write_exr(folder / "depth.bin", item["depth"])
+        for role, pixels in (("image", np.ascontiguousarray(item["rgb"][..., ::-1])),
+                             ("confidence", np.full(item["depth"].shape, 255, np.uint8))):
+            encoded = folder / f"{role}.png"
+            assert cv2.imwrite(str(encoded), pixels)
+            encoded.rename(folder / f"{role}.bin")
+        outputs = [{"role": role, "path": str((folder / f"{role}.bin").relative_to(root)),
+                    "sha256": depth_splat._sha256_file(folder / f"{role}.bin")} for role in ("image", "depth", "confidence")]
         cameras.append({"camera": cam})
         usage.append({"frame_id": f"f{index}", "outputs": outputs})
     result = {"binding": {"source_video_digest": "sha256:" + "1" * 64}, "depth_unit": "provider_world_units",
