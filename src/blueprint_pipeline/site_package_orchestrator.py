@@ -4415,20 +4415,14 @@ def run_qualification_pipeline(
         ensure_dir(pipeline_dir)
         if is_website_entry_source(descriptor.metadata.get("capture_entry_source")):
             stage = "website_task_context"
+            from .website_atlas_preview import enqueue_preview
             from .website_task_evidence import prepare_website_task_descriptor
+            # A routed upload's Atlas preview is a side lane: recording it never raises or holds this run.
+            enqueue_preview(descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir,
+                            source_video=lambda: _resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root))
             descriptor = prepare_website_task_descriptor(
                 descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir, bucket=bucket,
                 load_task_context=load_current_website_task_context, load_sponsorship=load_website_scene_sponsorship)
-            if descriptor.metadata.get("website_atlas_preparation_requested") is True:
-                from .website_atlas_pipeline import run_atlas_pipeline, retain_site_preparation_hold
-                source = _resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root)
-                if source is None or not source.is_file() or not source.resolve().is_relative_to(capture_root.resolve()):
-                    raise StageError("atlas_preparation", "website_atlas_source_video_missing_or_outside_capture")
-                stage = "atlas_preparation"
-                atlas_result = run_atlas_pipeline(source_video=source, output_root=pipeline_dir / "atlas",
-                    task_context=descriptor.metadata["site_task_context"], max_polls=120)
-                retain_site_preparation_hold(pipeline_dir=pipeline_dir, atlas_result=atlas_result,
-                    scene_id=descriptor.scene_id, capture_id=descriptor.capture_id)
         downstream_requested_lanes = _requested_downstream_lanes(
             descriptor=descriptor,
             requested_lanes=requested_lanes,

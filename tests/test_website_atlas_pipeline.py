@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from blueprint_pipeline.website_atlas_pipeline import generation_request, atlas_selected
+from blueprint_pipeline.website_atlas_pipeline import generation_request
 
 
 def frame(x):
@@ -23,14 +23,6 @@ def test_generated_depth_targets_keep_task_and_room_and_never_extrapolate_source
     assert [r["extrinsics"]["position"] for r in request["targetCameras"]] == [[0, 0, 0], [1, 0, 0]]
     assert all(r["intrinsics"]["width"] == 1280 for r in request["targetCameras"])
     assert request["returnDepth"] and pose == original
-
-
-def test_production_rollout_is_capture_specific_and_malformed_config_refuses(monkeypatch):
-    monkeypatch.setenv("BLUEPRINT_WEBSITE_ATLAS_CAPTURE_IDS_JSON", '["admitted"]')
-    assert atlas_selected("admitted") and not atlas_selected("another")
-    monkeypatch.setenv("BLUEPRINT_WEBSITE_ATLAS_CAPTURE_IDS_JSON", '{"admitted":true}')
-    with pytest.raises(ValueError, match="rollout_invalid"):
-        atlas_selected("admitted")
 
 
 def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_review(tmp_path, monkeypatch):
@@ -81,23 +73,6 @@ def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_rev
     assert len(reviews) == 1 and reviews[0]["feedback"] is feedback and len(poses) == 2
     with pytest.raises(ValueError, match="requires_new_job"):
         pipeline.run_atlas_pipeline(**{**options, "output_root": parent})
-
-
-@pytest.mark.parametrize("status", ["processing", "needs_input"])
-def test_rgbd_result_never_publishes_a_completed_scene_handoff(tmp_path, status):
-    from blueprint_pipeline.website_atlas_pipeline import retain_site_preparation_hold
-    from blueprint_pipeline.common import StageError
-    result = {"status": status, "blockers": ["atlas_public_splat_creation_api_unavailable"]}
-    with pytest.raises(StageError):
-        retain_site_preparation_hold(pipeline_dir=tmp_path, atlas_result=result, scene_id="s", capture_id="c")
-    assert json.loads((tmp_path / "atlas_preparation_result.json").read_text()) == result
-    handoff = tmp_path / "website_scene_preparation/handoff.json"
-    if status == "processing":
-        assert not handoff.exists()
-    else:
-        value = json.loads(handoff.read_text())
-        assert value["status"] == "needs_input" and value["simulator_ready"] is False
-        assert value["atlas_preparation"] == result and value["capture_id"] == "c"
 
 
 @pytest.mark.parametrize("mesh_price", [None, .5])
@@ -187,7 +162,9 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     monkeypatch.setattr(mesh_registration, "register_atlas_mesh", lambda **kw: registered.append(kw))
     exported = {}
     monkeypatch.setattr(bundles, "export_pose_bundle", lambda **kw: exported.update(kw) or {"zip_path": "retained.zip"})
-    options = {"source_video": video, "output_root": root, "task_context": {"capture_id": "c", "context_digest": "task"}}
+    stages = []
+    options = {"source_video": video, "output_root": root, "task_context": {"capture_id": "c", "context_digest": "task"},
+               "checkpoint": stages.append}
     if over_budget:
         with pytest.raises(ValueError, match="budget_insufficient_for_pose_and_generation"):
             pipeline.run_atlas_pipeline(**options)
@@ -196,6 +173,8 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     assert pipeline.run_atlas_pipeline(**options)["stage"] == "pose"
     result = pipeline.run_atlas_pipeline(**options)
     assert calls == {"review": 2, "pose": 2, "atlasGenerate": 1, "splat": 1, "splats2Mesh": 1 if mesh_price else 0}
+    # A withdrawal is re-checked before every paid stage, including each resumed one.
+    assert stages == ["plan", "plan", "pose", "pose", "generated_rgbd"] + (["mesh"] if mesh_price else [])
     assert result["status"] == "needs_input" and result["simulation_qualified"] is False
     assert result["task_and_surrounding_scene_covered"] is True
     assert result["splat_available"] is True and result["mesh_available"] is bool(mesh_price)
@@ -213,3 +192,28 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
         policy["pose_input_cost_usd"] = .02
         with pytest.raises(ValueError, match="authority_or_policy_changed"):
             pipeline.run_atlas_pipeline(**options)
+
+
+def test_a_checkpoint_refusal_stops_the_run_before_the_first_paid_review(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
+    from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
+    video = tmp_path / "source.mov"
+    video.write_bytes(b"capture")
+    monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "test-non-secret"))
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: {"authority": {"provider_retention":
+        "account_does_not_retain"}, "remaining_cost_usd": 2, "policy": {"maximum_review_cost_usd": .1,
+        "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05}})
+
+    def survey(**kwargs):
+        kwargs["output_root"].mkdir(parents=True)
+        (kwargs["output_root"] / "atlas_video_survey.json").write_text(json.dumps(
+            {"source_video_digest": pipeline._sha256_file(video), "frames": []}))
+    monkeypatch.setattr(inputs, "survey_video", survey)
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_plan",
+                        lambda **_: pytest.fail("a withdrawn capture must not buy a review"))
+
+    def withdrawn(stage):
+        raise RuntimeError(f"withdrawn before {stage}")
+    with pytest.raises(RuntimeError, match="withdrawn before plan"):
+        pipeline.run_atlas_pipeline(source_video=video, output_root=tmp_path / "job", checkpoint=withdrawn,
+                                    task_context={"capture_id": "c", "context_digest": "task"})

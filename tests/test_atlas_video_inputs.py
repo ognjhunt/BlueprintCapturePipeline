@@ -93,3 +93,54 @@ def test_scene_specific_quality_and_overlap_policy_can_admit_sparse_texture(monk
     selected, _ = video.select_coverage_views(frames=frames, features=[None, None], maximum_frames=476,
         requirements=requirements, anchor_id="0", policy={"minimum_sharpness": 5, "minimum_overlap_inliers": 10})
     assert selected == [0, 1]
+
+
+def test_provider_inputs_are_face_screened_before_their_digest_and_raw_frames_stay_local(tmp_path, monkeypatch):
+    from PIL import Image
+    from blueprint_pipeline import atlas_privacy_screen as screen
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    survey_root = tmp_path / "survey"
+    (survey_root / "frames").mkdir(parents=True)
+    rows = []
+    for index in range(2):
+        path = survey_root / "frames" / f"{index}.png"
+        Image.new("RGB", (64, 48), (40 * index, 90, 160)).save(path)
+        rows.append({"frame_id": str(index), "timestamp_seconds": index, "source_image_path": str(path),
+                     "source_image_digest": _sha256_file(path)})
+    survey = {"schema_version": video.SURVEY_SCHEMA, "heldout_pixels_included": False, "frames": rows,
+              "display_rotation_degrees": 0, "source_video_digest": "sha256:" + "a" * 64, "sample_count": 2,
+              "heldout_frame_count": 0}
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    (survey_root / "atlas_video_survey.json").write_text(json.dumps(survey))
+    review = {"schema_version": video.REVIEW_SCHEMA, "survey_digest": survey["digest"], "moving_people_excluded": True,
+              "same_scene_state": True, "reviewed_by": "test", "scene_state": "unchanged",
+              "static_intervals_seconds": [[0, 1]], "anchor_frame_id": "0", "coverage_requirements": [
+                  {"role": "task_object", "label": "object", "required_frame_ids": ["0"]},
+                  {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["1"]}],
+              "selection_budget": {"maximum_pose_cost_usd": 1, "input_cost_usd": .01, "rate_card_reference": "test",
+                                   "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}}
+    monkeypatch.setattr(video, "_features", lambda *_: None)
+    monkeypatch.setattr(video, "select_coverage_views", lambda **_: ([0, 1], []))
+    screened = []
+
+    def blur(image):
+        screened.append(image.size)
+        pixels = image.copy()
+        pixels.paste((0, 0, 0), (0, 0, 8, 8))
+        return pixels, [[0, 0, 8, 8]] if len(screened) == 1 else []
+    monkeypatch.setattr(screen, "blur_faces", blur)
+    output = tmp_path / "pose"
+    video.prepare_video_inputs(survey_path=survey_root / "atlas_video_survey.json", review=review, output_root=output)
+    assert screened == [(64, 48), (64, 48)]
+    for row in rows:
+        sent = output / "atlas_source_views" / f"{row['frame_id']}.png"
+        with Image.open(sent) as image:
+            assert image.getpixel((1, 1)) == (0, 0, 0)  # the provider receives only screened pixels
+        assert _sha256_file(output / "atlas_observations" / f"{row['frame_id']}.png") == row["source_image_digest"]
+    selection = json.loads((output / "atlas_view_selection.json").read_text())
+    assert [frame["image_digest"] for frame in selection["frames"]] == [
+        _sha256_file(output / "atlas_source_views" / f"{row['frame_id']}.png") for row in rows]
+    assert selection["privacy_screen"]["blurred_faces_by_frame"] == {"0": 1, "1": 0}
+    assert selection["privacy_screen"]["model_sha256"] == screen.MODEL_SHA256
+    pending = json.loads((output / "atlas_pose_inputs.json").read_text())
+    assert [frame["image_digest"] for frame in pending["frames"]] == [frame["image_digest"] for frame in selection["frames"]]

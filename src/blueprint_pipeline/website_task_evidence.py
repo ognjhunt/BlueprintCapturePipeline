@@ -34,16 +34,14 @@ def prepare_website_task_descriptor(*, descriptor: CaptureDescriptor, capture_ro
     evidence = ingest_website_task_evidence(task_context=context, bucket=bucket,
         output_root=pipeline_dir / "website_task_evidence" / context["context_digest"][7:])
     publish_website_item_evidence(task_context=context, evidence=evidence)
-    from .website_atlas_pipeline import atlas_selected
-    atlas = atlas_selected(descriptor.capture_id)
-    sponsorship = None if atlas else load_sponsorship(task_context=context, now=time.time())
-    if sponsorship is not None:
-        write_json(pipeline_dir / "website_scene_sponsorship.json", sponsorship)
+    # An Atlas preview is a separate side lane (website_atlas_preview); it never
+    # replaces or skips this sponsorship.
+    sponsorship = load_sponsorship(task_context=context, now=time.time())
+    write_json(pipeline_dir / "website_scene_sponsorship.json", sponsorship)
     return CaptureDescriptor.from_dict({
         **descriptor.to_dict(),
         "metadata": {**descriptor.metadata, "site_task_context": context,
                      "site_task_evidence": evidence, "website_scene_execution_authority": sponsorship,
-                     **({"website_atlas_preparation_requested": True} if atlas else {}),
                      "capture_rights": dict(context.get("capture_rights") or {}),
                      "task_statement": context["description"]},
     })

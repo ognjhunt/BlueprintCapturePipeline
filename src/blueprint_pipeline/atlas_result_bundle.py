@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-from .website_atlas_pose import load_pending_atlas_pose_inputs, verify_atlas_pose_receipt, _safe_id
+from .website_atlas_pose import load_pending_atlas_pose_inputs, verify_atlas_pose_receipt
 
 
 def _suffix(data: bytes) -> str:
@@ -136,7 +136,8 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
         camera_path.write_text(json.dumps(camera, indent=2) + "\n")
         manifest["assets"].append({"path": str(camera_path.relative_to(target)), "sha256": _sha256_file(camera_path),
                                    "bytes": camera_path.stat().st_size})
-        copy(Path(inputs["frames"][index]["image_path"]), Path("inputs") / (_safe_id(row["frame_id"]) + ".png"))
+    # Source frames stay with the job (owner decision D5): the views above are
+    # the provider's own posed images, so the download carries no input copies.
     copy(pose_root / "atlas_posed_rgbd_result.json", Path("evidence/atlas_posed_rgbd_result.json"))
     if (pose_root / "atlas_view_selection.json").exists():
         copy(pose_root / "atlas_view_selection.json", Path("evidence/atlas_view_selection.json"))

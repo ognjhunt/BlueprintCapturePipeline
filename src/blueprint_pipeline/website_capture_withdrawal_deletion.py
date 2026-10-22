@@ -21,7 +21,8 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   the records inside their archive, read through the existing client;
 - every B2 object those pointers and the bound runs' registered remote result
   artifacts name, with each object version and delete marker listed through
-  the existing artifact store client;
+  the existing artifact store client, and every archived Atlas preview of the
+  site's walkthrough (found by its name, so also after workspace retirement);
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
 
 The plan reads every run's JSON records once (streamed, any size), so it is an
@@ -379,6 +380,20 @@ class B2ObjectVersions:
             markers = {"KeyMarker": page["NextKeyMarker"], "VersionIdMarker": page["NextVersionIdMarker"]}
         raise WithdrawalDeletionError("website_withdrawal_deletion_object_listing_unbounded")
 
+    def named(self, prefix: str, filename: str) -> list[str]:
+        """Every key under ``prefix`` whose last part is ``filename``, in any version."""
+        keys, markers = set(), {}
+        for _page in range(10_000):
+            page = self.client.list_object_versions(Bucket=self.bucket, Prefix=prefix, **markers)
+            for row in [*(page.get("Versions") or []), *(page.get("DeleteMarkers") or [])]:
+                key = str(row.get("Key") or "")
+                if key.rpartition("/")[2] == filename:
+                    keys.add(key)
+            if not page.get("IsTruncated"):
+                return sorted(f"s3://{self.bucket}/{key}" for key in keys)
+            markers = {"KeyMarker": page["NextKeyMarker"], "VersionIdMarker": page["NextVersionIdMarker"]}
+        raise WithdrawalDeletionError("website_withdrawal_deletion_object_listing_unbounded")
+
     def delete(self, key: str, version: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key, VersionId=version)
 
@@ -409,6 +424,22 @@ def _scene_workspace(site: Path, identity: Mapping[str, str], unresolved: list[d
             value["receipt"] = str(receipt_path)
             value["archive_uri"] = _pointer_uri(receipt)
     return value
+
+
+def _atlas_preview_uris(object_store: Any, identity: Mapping[str, str],
+                        unresolved: list[dict[str, Any]]) -> list[str]:
+    """Archived Atlas previews of the walkthrough, named for it by ``website_atlas_preview``."""
+    from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
+    from .website_atlas_preview import ARTIFACT_KIND, bundle_filename
+    prefix = f"{LARGE_ARTIFACT_KEY_PREFIX}/{ARTIFACT_KIND}/sha256/"
+    if object_store is None:
+        unresolved.append({"prefix": prefix, "reason": "website_withdrawal_deletion_object_store_unconfigured"})
+        return []
+    try:
+        return object_store.named(prefix, bundle_filename(identity["capture_id"]))
+    except WithdrawalDeletionError as error:
+        unresolved.append({"prefix": prefix, "reason": str(error)})
+        return []
 
 
 def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = DEFAULT_RUN_ROOTS,
@@ -469,7 +500,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                      "judged_by": unit["judged_by"]})
     workspace = _scene_workspace(site, identity, unresolved)
     uris = sorted({uri for run in runs for uri in run["object_uris"]}
-                  | ({workspace["archive_uri"]} if workspace["archive_uri"] else set()))
+                  | ({workspace["archive_uri"]} if workspace["archive_uri"] else set())
+                  | set(_atlas_preview_uris(object_store, identity, unresolved)))
     # A content-addressed object an unbound run also names is not this site's to delete.
     unbound_uris = set()
     for key, unit in units.items():
