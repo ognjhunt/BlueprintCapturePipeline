@@ -55,6 +55,14 @@ charges. Every new operation shares the original WebApp dollar/request ledger;
 neither the authorization nor cap is reset. Each revision retains its parent
 result digest, review, costs, and independent provider operations.
 
+An unsafe flag inside the selected interval still refuses privacy/state review
+unless that unselected frame deterministically fails the retained blur/clipping
+threshold. Such quality failures are recorded and never selected; they do not
+invalidate the sharp static inputs. Required or additional unsafe inputs always
+refuse. Never lower thresholds to admit them. Keep the pushed experimental branch
+available until the canary is terminal: repository auto-delete-on-merge can remove
+that ref and correctly stop subsequent admission before any provider purchase.
+
 Inspect retained artifacts privately with the existing Spark/Three dependencies:
 
 ```bash

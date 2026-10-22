@@ -104,8 +104,15 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None):
     selected = {key for key, r in frames.items() if any(a <= r["timestamp_seconds"] <= b for a, b in intervals)}
     required = {key for row in value["coverage_requirements"] for key in row["required_frame_ids"]}
     additional = set(value.get("additional_input_frame_ids", []))
-    if (not unsafe <= frames.keys() or unsafe & selected or not required <= selected
-            or not additional <= selected or additional & unsafe
+    # A rejected, unselected blurry frame need not invalidate every sharp view
+    # in the same static interval. Only deterministic quality failures can take
+    # this path; other unsafe frames inside the interval still fail closed.
+    thresholds = value["selection_policy"]
+    quality_rejected = {key for key, row in frames.items()
+                        if row.get("sharpness", float("inf")) < thresholds["minimum_sharpness"]
+                        or row.get("clipped_fraction", 0) > thresholds["maximum_clipped_fraction"]}
+    if (not unsafe <= frames.keys() or (unsafe & selected) - quality_rejected or not required <= selected
+            or not additional <= selected or (required | additional) & unsafe
             or value["anchor_frame_id"] not in required or not {"task_object", "surrounding_scene"}
             <= {r["role"] for r in value["coverage_requirements"]}):
         raise ValueError("atlas_scene_planner_coverage_or_privacy_invalid")
@@ -124,7 +131,9 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None):
         raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
     refinement = ({k: value[k] for k in ("action", "gap_assessment", "additional_input_frame_ids")}
                   | {"feedback_digest": feedback["digest"]}) if feedback is not None else {}
-    return {"schema_version": "atlas_scene_state_review.v1", "survey_digest": survey["digest"], **refinement,
+    quality = ({"quality_excluded_frame_ids": sorted(unsafe & selected & quality_rejected)}
+               if unsafe & selected & quality_rejected else {})
+    return {"schema_version": "atlas_scene_state_review.v1", "survey_digest": survey["digest"], **refinement, **quality,
             **{k: value[k] for k in ("scene_state", "static_intervals_seconds", "anchor_frame_id",
                 "coverage_requirements", "uncaptured_regions", "selection_policy")},
             "moving_people_excluded": True, "same_scene_state": True,
