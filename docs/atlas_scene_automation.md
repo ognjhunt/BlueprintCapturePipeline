@@ -45,8 +45,10 @@ The production Atlas controller runs the following for a new scene plan:
 
 All provider stages retain existing durable intents/receipts and reserve against
 the same source-video allowance. Meta segmentation and Google review additionally
-require their existing native sponsorship and accepted provider terms; Atlas
-consent cannot grant another provider's disclosure. Forecasts cover the main
+need their own accepted provider terms; Atlas consent cannot grant another
+provider's disclosure. An automatic preview grant carries that consent itself,
+pinned to each provider's terms when the grant is made (Blueprint-WebApp #1097);
+an explicit owner authorization still needs the native sponsorship. Forecasts cover the main
 route, while each actual reservation remains the transaction authority. Fallback
 work requires remaining allowance. There is no budget reset or automatic retry
 of an uncertain purchase. A blocked auxiliary stage preserves the source result
