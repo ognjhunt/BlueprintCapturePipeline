@@ -1,6 +1,8 @@
 """Portable, digest-bound downloads of an admitted Atlas pose run (ADP-040).
 
 This exports observations, never manufactures a world, splat or qualified mesh.
+A depth-fused draft splat and an Atlas splats2Mesh result travel only with their
+digest-bound manifests and stay unscaled and development_only.
 Provider read URLs often have no suffix; identify the retained bytes without
 renaming or rewriting the authoritative run's files.
 """
@@ -29,7 +31,19 @@ def _suffix(data: bytes) -> str:
     raise ValueError("atlas_bundle_output_format_unknown")
 
 
-def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()) -> dict:
+def _completed_task(root: Path, source_video_digest: str, label: str) -> dict:
+    value = json.loads((root / "result.json").read_text())
+    if (value.get("status") != "completed" or value.get("digest") != canonical_digest(value, digest_field="digest")
+            or value["binding"]["source_video_digest"] != source_video_digest):
+        raise ValueError(f"atlas_bundle_{label}_result_invalid")
+    state = json.loads((root / "atlas_pose/submission.json").read_text())
+    if state.get("status") != "completed" or state.get("result_digest") != value["digest"]:
+        raise ValueError(f"atlas_bundle_{label}_receipt_invalid")
+    return value
+
+
+def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=(), splat_root: Path | None = None,
+                       mesh_root: Path | None = None) -> dict:
     pose_root = pose_root.resolve()
     result = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
     inputs = load_pending_atlas_pose_inputs(pose_root)
@@ -42,19 +56,34 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
                 "scale_status": "unscaled_provider_world_units", "physical_evidence": False,
                 "splat_available": False, "mesh_available": False, "simulation_qualified": False,
                 "billing": receipt["billing"], "assets": []}
-    generated = []
-    for root in generated_roots:
-        value = json.loads((root / "result.json").read_text())
-        if (value.get("status") != "completed" or value.get("digest") != canonical_digest(value, digest_field="digest")
-                or value["binding"]["source_video_digest"] != result["binding"]["source_video_digest"]):
-            raise ValueError("atlas_bundle_generated_result_invalid")
-        state = json.loads((root / "atlas_pose/submission.json").read_text())
-        if state.get("status") != "completed" or state.get("result_digest") != value["digest"]:
-            raise ValueError("atlas_bundle_generated_receipt_invalid")
-        generated.append((root, value))
+    source_digest = result["binding"]["source_video_digest"]
+    generated = [(root, _completed_task(root, source_digest, "generated")) for root in generated_roots]
+    mesh = _completed_task(mesh_root, source_digest, "mesh") if mesh_root is not None else None
+    registration = None
+    if mesh is not None:
+        # The raw provider GLB is in another frame and closes unseen regions;
+        # it ships only beside its registration to the observed splat.
+        record = mesh_root / "registered" / "atlas_mesh_registration.json"
+        registration = json.loads(record.read_text()) if record.is_file() else None
+        if (registration is None or registration.get("digest") != canonical_digest(registration, digest_field="digest")
+                or registration["source_glb_sha256"] not in {row["sha256"] for row in mesh["outputs"]}):
+            raise ValueError("atlas_bundle_mesh_unregistered")
+    splat = None
+    if splat_root is not None:
+        splat = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
+        if (splat.get("digest") != canonical_digest(splat, digest_field="digest")
+                or splat["pose_result_digest"] != result["digest"]):
+            raise ValueError("atlas_bundle_splat_manifest_invalid")
     manifest["generated_result_digests"] = [value["digest"] for _, value in generated]
-    identity = canonical_digest({"pose": result["digest"], "generated": manifest["generated_result_digests"]})
-    target = output_root / (("atlas-scene-" + identity[7:23]) if generated else ("atlas-pose-" + result["digest"][7:23]))
+    parts = {"pose": result["digest"], "generated": manifest["generated_result_digests"]}
+    if splat is not None:
+        parts["splat"] = manifest["splat_manifest_digest"] = splat["digest"]
+    if mesh is not None:
+        parts["mesh"] = manifest["mesh_result_digest"] = mesh["digest"]
+        parts["mesh_registration"] = manifest["mesh_registration_digest"] = registration["digest"]
+    identity = canonical_digest(parts)
+    scene = bool(generated) or splat is not None or mesh is not None
+    target = output_root / (("atlas-scene-" + identity[7:23]) if scene else ("atlas-pose-" + result["digest"][7:23]))
     if target.is_symlink():
         raise ValueError("atlas_bundle_output_symlink")
     target.mkdir(parents=True, exist_ok=True)
@@ -67,14 +96,36 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
         shutil.copyfile(source, path)
         manifest["assets"].append({"path": str(relative), "sha256": _sha256_file(path), "bytes": path.stat().st_size})
 
-    for index, (root, value) in enumerate(generated):
+    def copy_task(root, value, folder, label):
         for row in value["outputs"]:
             source = root / row["path"]
             if (not source.resolve().is_relative_to(root.resolve()) or source.is_symlink()
                     or source.stat().st_size != row["bytes"] or _sha256_file(source) != row["sha256"]):
-                raise ValueError("atlas_bundle_generated_output_changed")
-            copy(source, Path("generated") / str(index) / Path(row["path"]).name)
-        copy(root / "result.json", Path("generated") / str(index) / "result.json")
+                raise ValueError(f"atlas_bundle_{label}_output_changed")
+            copy(source, folder / Path(row["path"]).name)
+        copy(root / "result.json", folder / "result.json")
+
+    for index, (root, value) in enumerate(generated):
+        copy_task(root, value, Path("generated") / str(index), "generated")
+    if mesh is not None:
+        copy_task(mesh_root, mesh, Path("mesh"), "mesh")
+        for row in registration["outputs"]:
+            source = mesh_root / "registered" / row["path"]
+            if source.is_symlink() or _sha256_file(source) != row["sha256"]:
+                raise ValueError("atlas_bundle_mesh_output_changed")
+            copy(source, Path("mesh/registered") / row["path"])
+        copy(mesh_root / "registered" / "atlas_mesh_registration.json", Path("mesh/registered/atlas_mesh_registration.json"))
+        manifest.update(mesh_available=True, mesh_frame=registration["glb_frame"],
+                        supported_mesh_path="mesh/registered/" + registration["outputs"][0]["path"])
+    if splat is not None:
+        for row in splat["outputs"]:
+            source = splat_root / row["path"]
+            if (source.is_symlink() or not source.resolve().is_relative_to(splat_root.resolve())
+                    or _sha256_file(source) != row["sha256"]):
+                raise ValueError("atlas_bundle_splat_output_changed")
+            copy(source, Path("splat") / row["path"])
+        copy(splat_root / "atlas_depth_splat_manifest.json", Path("splat/atlas_depth_splat_manifest.json"))
+        manifest.update(splat_available=True, splat_kind=splat["splat_kind"])
 
     for index, row in enumerate(receipt["input_usage"]["frames"]):
         for asset in row["outputs"]:

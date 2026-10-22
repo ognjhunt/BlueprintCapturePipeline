@@ -141,7 +141,7 @@ def _collect(client: pose.AtlasClient, operation: Mapping[str, Any], root: Path)
     retained = []
     for role, asset_id in refs:
         url = client.call("POST", f"/assets/{asset_id}:createReadUrl").get("readUrl")
-        data = client.fetch_bytes(url)
+        data = client.fetch_bytes(url, max_bytes=pose.MAX_MESH_OUTPUT_BYTES if role == "mesh" else pose.MAX_OUTPUT_BYTES)
         asset = client.call("GET", f"/assets/{asset_id}")
         if asset.get("id") != asset_id:
             raise ValueError("atlas_task_asset_identity_mismatch")

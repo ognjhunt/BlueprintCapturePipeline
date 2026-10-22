@@ -1,8 +1,9 @@
 """Production Atlas preparation controller on the existing website capture path.
 
 Source review, adaptive inputs, admitted posing, generated RGBD and portable
-downloads run on the worker. The public API cannot create a splat; that explicit
-vendor blocker never becomes a fabricated mesh or a simulator-ready result.
+downloads run on the worker. The public API cannot create a splat, so the worker
+fuses Atlas's own posed depth into a draft splat and meshes it with splats2Mesh
+once a reviewed mesh price exists; neither becomes a metric or simulator-ready result.
 """
 from __future__ import annotations
 
@@ -75,6 +76,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                                           run_sponsored_website_atlas_task)
     from .website_atlas_pose import ATLAS_PRICE_REVIEW_ENV, ATLAS_PROVIDER_RETENTION_ENV, request_options, atlas_api_config
     from .atlas_result_bundle import export_pose_bundle
+    from .atlas_depth_splat import build_depth_splat
+    from .atlas_mesh_registration import register_atlas_mesh
 
     output_root.mkdir(parents=True, exist_ok=True)
     source_digest = _sha256_file(source_video)
@@ -83,8 +86,14 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     saved = output_root / "configuration.json"
     if saved.exists():
         config = json.loads(saved.read_text())
-        if config["authority"] != current["authority"] or config["policy"] != current["policy"]:
+        # A resumed job may gain a reviewed price for a stage it has not bought;
+        # any changed price or authority still refuses.
+        if (config["authority"] != current["authority"]
+                or any(current["policy"].get(key) != value for key, value in config["policy"].items())):
             raise ValueError("atlas_runtime_authority_or_policy_changed")
+        if config["policy"] != current["policy"]:
+            config = {**config, "policy": current["policy"]}
+            write_json(saved, config)
     else:
         config = current
         write_json(saved, config)
@@ -98,9 +107,10 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     if survey["source_video_digest"] != source_digest:
         raise ValueError("atlas_runtime_source_changed")
     reviews = output_root / "scene_planner"
-    # Reserve room for a second review and depth views. These are dollar
-    # allowances, not arbitrary limits on the number of source images.
-    budget = config["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
+    # Reserve room for a second review, depth views and the mesh export. These are
+    # dollar allowances, not arbitrary limits on the number of source images.
+    budget = (config["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
+              - policy.get("mesh_export_cost_usd", 0))
     if budget < 2 * policy["pose_input_cost_usd"] + 2 * policy["rgbd_view_cost_usd"]:
         raise ValueError("atlas_runtime_budget_insufficient")
     selection_path = output_root / "selection_binding.json"
@@ -169,14 +179,37 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         price_review=quote, experimental=experimental, max_polls=max_polls)
     if generated["status"] != "completed":
         return {"status": "processing", "stage": "generated_rgbd", "operation_id": generated.get("operation_id")}
+    splat_root = output_root / "splat"
+    splat_manifest = splat_root / "atlas_depth_splat_manifest.json"
+    splat = (json.loads(splat_manifest.read_text()) if splat_manifest.exists()
+             else build_depth_splat(pose_root, splat_root))
+    blockers = ["metric_scene_registration_unproven"]
+    mesh_root = None
+    if "mesh_export_cost_usd" in policy:
+        spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+        mesh_quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "splats2Mesh",
+            "request_digest": canonical_digest(spec["request"]), "maximum_cost_usd": policy["mesh_export_cost_usd"],
+            **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
+        mesh_root = output_root / "mesh"
+        mesh = run_sponsored_website_atlas_task(task="splats2Mesh", request=spec["request"], uploads=spec["uploads"],
+            source_video_digest=source_digest, output_root=mesh_root, task_context=task_context,
+            price_review=mesh_quote, experimental=experimental, max_polls=max_polls)
+        if mesh["status"] != "completed":
+            return {"status": "processing", "stage": "mesh", "operation_id": mesh.get("operation_id")}
+        if not (mesh_root / "registered" / "atlas_mesh_registration.json").exists():
+            outputs = json.loads((mesh_root / "result.json").read_text())["outputs"]
+            register_atlas_mesh(glb=mesh_root / next(row["path"] for row in outputs if row["role"] == "mesh"),
+                                splat_root=splat_root, output_root=mesh_root / "registered")
+    else:
+        blockers.insert(0, "atlas_mesh_export_price_unreviewed")
     bundle = export_pose_bundle(pose_root=pose_root, output_root=output_root / "downloads",
-                               generated_roots=[generated_root])
+                               generated_roots=[generated_root], splat_root=splat_root, mesh_root=mesh_root)
     result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
         "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
         "pose": posed, "generated_result_digest": generated["digest"], "download": bundle,
         "task_and_surrounding_scene_covered": True, "model": receipt["model"],
-        "blockers": ["atlas_public_splat_creation_api_unavailable", "metric_scene_registration_unproven"],
-        "splat_available": False, "mesh_available": False, "simulation_qualified": False,
+        "blockers": blockers, "splat_available": True, "splat_kind": splat["splat_kind"],
+        "splat_manifest_digest": splat["digest"], "mesh_available": mesh_root is not None, "simulation_qualified": False,
         "claim_ceiling": "development_only", "physical_evidence": False,
         "scale_status": "unscaled_provider_world_units", "billing_status": "provider_usage_unreported"}
     result["digest"] = canonical_digest(result, digest_field="digest")

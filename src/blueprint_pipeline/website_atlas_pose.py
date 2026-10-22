@@ -77,6 +77,8 @@ PRICE_REVIEW_MAX_AGE_DAYS = 30
 MAX_REVIEWED_COST_USD = 1000.0
 API_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
+#: A textured splats2Mesh GLB (4096 px atlas by default) routinely exceeds image outputs.
+MAX_MESH_OUTPUT_BYTES = 1024 * 1024 * 1024
 READY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0, 16.0)
 #: The documented recovery for an uncertain or 402-refused submission is the
 #: identical body under the same Idempotency-Key. It is bounded, and an
@@ -128,7 +130,7 @@ def _safe_transport(base_url: str) -> Transport:
     def send(method: str, url: str, headers: Mapping[str, str], data: bytes | None) -> tuple[int, bytes]:
         api = url.startswith(base_url + "/")
         policy = api_policy if api else boundary.presigned_transfer_policy(
-            url, max_response_bytes=MAX_OUTPUT_BYTES)
+            url, max_response_bytes=MAX_MESH_OUTPUT_BYTES)
         try:
             response = boundary.request(url, method=method, data=data, headers=headers,
                                         timeout_seconds=120 if api else 600, policy=policy)
@@ -223,11 +225,11 @@ class AtlasClient:
         if not 200 <= status < 300:
             raise AtlasHttpError(status, payload.decode("utf-8", "replace"))
 
-    def fetch_bytes(self, url: Any) -> bytes:
+    def fetch_bytes(self, url: Any, *, max_bytes: int | None = None) -> bytes:
         status, payload = self._transport("GET", _https(url), {}, None)
         if not 200 <= status < 300:
             raise AtlasHttpError(status, payload.decode("utf-8", "replace"))
-        if len(payload) > MAX_OUTPUT_BYTES:
+        if len(payload) > (MAX_OUTPUT_BYTES if max_bytes is None else max_bytes):
             raise ValueError("website_atlas_output_too_large")
         return payload
 
