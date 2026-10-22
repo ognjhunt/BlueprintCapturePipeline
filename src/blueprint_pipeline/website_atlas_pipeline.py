@@ -170,7 +170,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         plan_options = {"feedback": feedback} if feedback is not None else {}
         receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
             configuration=config, output_root=reviews, invoker=invoker, experimental=experimental, **plan_options)
-        review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, feedback=feedback)
+        review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, feedback=feedback, reference_sources=receipt.get("reference_sources", []))
         if feedback is None:
             # Every frame of the reviewed still interval becomes a candidate; the
             # denser survey is reviewed again before anything is selected or sent.
@@ -180,7 +180,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             check("plan")
             receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
                 configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
-            review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget)
+            review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, reference_sources=receipt.get("reference_sources", []))
     if review.get("action") == "keep":
         result = {"schema_version": "atlas_refinement_decision.v1", "status": "needs_input",
             "action": "keep", "gap_assessment": review["gap_assessment"],
@@ -258,6 +258,25 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         "splat_manifest_digest": splat["digest"], "mesh_available": mesh_root is not None, "simulation_qualified": False,
         "claim_ceiling": "development_only", "physical_evidence": False,
         "scale_status": "unscaled_provider_world_units", "billing_status": "provider_usage_unreported"}
+    if review.get("automation") is not None:
+        from .paid_resource_allocator import run_sponsored_website_atlas_automation
+        automation = run_sponsored_website_atlas_automation(pose_root=pose_root, inputs=inputs, review=review,
+            output_root=output_root / "automation", task_context=task_context,
+            configuration=load_configuration(task_context, source_digest), experimental=experimental, max_polls=max_polls,
+            checkpoint=checkpoint)
+        result["automation"] = automation
+        result["size_estimates"] = automation.get("measurements")
+        if automation["status"] == "processing":
+            result.update(status="processing", stage="automation", operation_id=automation.get("operation_id"))
+        analysis = [p for p in (output_root / "automation/scene_measurements.json", output_root / "automation/result.json") if p.is_file()]
+        background_download = (automation.get("background") or {}).get("download")
+        if background_download:
+            background_zip = Path(background_download["zip_path"])
+            if _sha256_file(background_zip) != background_download["zip_sha256"]:
+                raise ValueError("atlas_background_bundle_changed")
+            analysis.append(background_zip)
+        result["download"] = export_pose_bundle(pose_root=pose_root, output_root=output_root / "downloads",
+            generated_roots=[generated_root], splat_root=splat_root, mesh_root=mesh_root, analysis_paths=analysis)
     if feedback is not None:
         result["refinement"] = {"parent_result_digest": feedback["parent_result_digest"],
             "feedback_digest": feedback["digest"], "gap_assessment": review["gap_assessment"],

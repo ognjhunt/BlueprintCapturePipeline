@@ -83,16 +83,18 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
 
 
 def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest: str,
-                            maximum_cost_usd: float, request_count: int) -> tuple[dict[str, Any], Any]:
+                            maximum_cost_usd: float, request_count: int, source_video_digest: str | None = None) -> tuple[dict[str, Any], Any]:
     return reserve_website_preparation_spend(task_context=task_context, binding_digest=binding_digest,
         maximum_cost_usd=maximum_cost_usd, request_count=request_count,
-        resource_class="evaluator_api", provider="meta")
+        resource_class="evaluator_api", provider="meta", source_video_digest=source_video_digest,
+        atlas_auxiliary=source_video_digest is not None)
 
 
 def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], binding_digest: str,
                                      maximum_cost_usd: float, request_count: int,
                                      resource_class: str, provider: str,
                                      source_video_digest: str | None = None,
+                                     atlas_auxiliary: bool = False,
                                      retained_admission: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
@@ -107,6 +109,10 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
                "request_count": request_count}
     if source_video_digest is not None:
         command["source_video_digest"] = source_video_digest
+    if atlas_auxiliary:
+        if provider not in {"meta", "google"} or source_video_digest is None:
+            raise ValueError("website_atlas_auxiliary_binding_invalid")
+        command["atlas_auxiliary"] = True
     operator_file = os.getenv("BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "").strip()
     if operator_file:
         value = load_atlas_operator_admission(Path(operator_file), command=command, task_context=task_context)

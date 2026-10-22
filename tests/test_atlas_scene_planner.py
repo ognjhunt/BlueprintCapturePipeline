@@ -69,6 +69,8 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
             pass
         def invoke(self, spec, input_value):
             assert spec.model == policy["model"] and len(input_value[0]["content"]) == 7
+            assert len(spec.hosted_tools) == 1
+            assert spec.max_hosted_tool_calls_per_turn == 2 and spec.hosted_tool_call_usd == .01
             return SimpleNamespace(output=proposal, cost_usd=.03, usage={"input_tokens": 100},
                                    model=spec.model, sdk_version="test")
     options = dict(survey_path=path, task_context={"description": "test task", "context_digest": "sha256:" + "b" * 64,

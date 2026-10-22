@@ -255,8 +255,8 @@ def atlas_asset_ids(job_dir: Path) -> list[str]:
         elif isinstance(value, list):
             for item in value:
                 walk(item)
-    for path in sorted({*job_dir.rglob("atlas_pose/submission.json"), *job_dir.glob("*/result.json"),
-                        *job_dir.glob("*/atlas_posed_rgbd_result.json")}):
+    for path in sorted({*job_dir.rglob("atlas_pose/submission.json"), *job_dir.rglob("result.json"),
+                        *job_dir.rglob("atlas_posed_rgbd_result.json")}):
         if not path.is_symlink():
             walk(json.loads(path.read_text()))
     return sorted(found)

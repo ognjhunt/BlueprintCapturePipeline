@@ -241,3 +241,15 @@ def test_streamed_voxel_sums_match_one_batch_fusion():
         streamed.add(sample)
     batched.add({key: np.concatenate([sample[key] for sample in samples]) for key in samples[0]})
     assert np.array_equal(streamed.keys, batched.keys) and np.allclose(streamed.sums, batched.sums)
+
+
+def test_generated_background_writer_retains_edit_and_review_provenance(tmp_path):
+    root=retained_pose_root(tmp_path/'pose')
+    result,frames=depth_splat.load_posed_rgbd(root)
+    manifest=depth_splat.write_depth_splat(frames=frames,result=result,output_root=tmp_path/'generated',
+        generated_result_digests=['atlas-masked-task'],visual_review_digest='independent-review')
+    assert manifest['generated_content'] is True
+    assert manifest['generated_result_digests']==['atlas-masked-task']
+    assert manifest['visual_review_digest']=='independent-review'
+    assert manifest['appearance_basis']=='generated_object_absent_background'
+    assert manifest['metric_measurement_proven'] is False

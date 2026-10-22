@@ -455,3 +455,11 @@ def test_cleanup_waits_for_operations_it_never_collected_and_deletes_their_outpu
     cleanup = _job(site)["provider_cleanup"]
     assert cleanup["state"] == "complete" and sorted(world.deleted) == ["out1", "out2"]
     assert cleanup["operations_running"] == []
+
+
+def test_cleanup_collects_nested_automation_outputs(tmp_path):
+    from blueprint_pipeline.website_atlas_preview import atlas_asset_ids
+    stage = tmp_path / "automation/background/masked/0"
+    stage.mkdir(parents=True)
+    (stage / "result.json").write_text(json.dumps({"outputs": [{"asset_id": "asset_masked_output"}]}))
+    assert atlas_asset_ids(tmp_path) == ["asset_masked_output"]
