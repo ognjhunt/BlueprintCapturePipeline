@@ -131,6 +131,7 @@ def run_automation(
     release_blockers,
     max_polls=2,
     execute=True,
+    checkpoint=None,
 ):
     from .atlas_scene_measurements import load_views, estimate_sizes
     from .atlas_background_automation import run_background
@@ -178,6 +179,7 @@ def run_automation(
             release_blockers=release_blockers,
             max_polls=max_polls,
             configuration=configuration,
+            checkpoint=checkpoint,
         )
         if background["status"] == "processing":
             return background
@@ -185,6 +187,8 @@ def run_automation(
             from .atlas_depth_splat import write_depth_splat
 
             if background["status"] == "fallback_prepared":
+                if checkpoint is not None:
+                    checkpoint("automation_fallback_pose")
                 derived, state = _fallback_pose(
                     background, output_root, source, task_context, policy, pose_runner, max_polls
                 )
@@ -226,6 +230,8 @@ def run_automation(
                     "maximum_cost_usd": policy["mesh_export_cost_usd"],
                     **{k: policy[k] for k in ["rate_card_reference", "reviewed_by", "reviewed_on"]},
                 }
+                if checkpoint is not None:
+                    checkpoint("automation_mesh")
                 mesh = task_runner(
                     task="splats2Mesh",
                     request=spec["request"],

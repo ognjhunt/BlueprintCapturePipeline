@@ -485,6 +485,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-control-plane-preflight.timer",
     "blueprint-pipeline-control-plane.service",
     "blueprint-pipeline-intake.service",
+    "blueprint-website-atlas-preview.service",
+    "blueprint-website-atlas-preview.timer",
 )
 #: Watchers whose execution surface is provably no-spend and may be armed on a
 #: fresh host without widening provider authority.  The paid dispatcher is
@@ -544,6 +546,10 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-completed-replay-cache-gc.timer",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.timer",
+    # Advances only preview jobs that intake recorded for routed uploads
+    # (BLUEPRINT_WEBSITE_ATLAS_ROUTING, off by default): with routing off there
+    # are none. Every paid call still needs that upload's WebApp grant and cap.
+    "blueprint-website-atlas-preview.timer",
 )
 
 CONFIGURED_CONTROLS_AUTOMATION_UNITS = (

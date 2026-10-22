@@ -327,6 +327,7 @@ def run_background(
     release_blockers,
     max_polls=2,
     configuration=None,
+    checkpoint=None,
 ):
     from .website_image_completion import (
         complete_background_images,
@@ -336,6 +337,10 @@ def run_background(
         BACKEND_ID,
     )
     from .atlas_scene_measurements import estimate_sizes
+
+    def check(stage):
+        if checkpoint is not None:
+            checkpoint(stage)
 
     root.mkdir(parents=True, exist_ok=True)
     if not objects:
@@ -386,6 +391,7 @@ def run_background(
     ):
         raise ValueError("atlas_automation_budget_insufficient:" + str(forecast))
     _provider_preflight()
+    check("automation_segmentation")
     selected = segment_objects(
         frames=frames,
         objects=objects,
@@ -441,6 +447,7 @@ def run_background(
     )
     if preferred is not None:
         anchor_source = preferred
+    check("automation_anchor")
     anchor = complete_background_images(
         frames=[anchor_source],
         task_digest=task_digest,
@@ -452,6 +459,7 @@ def run_background(
         source_video_digest=source_digest,
         repair_instruction=automation["removal_instruction"],
     )[0]
+    check("automation_anchor_review")
     anchor_review = verify_completed_background(
         frames=[anchor],
         original_frames=[anchor_source],
@@ -484,6 +492,7 @@ def run_background(
             **{k: policy[k] for k in ["rate_card_reference", "reviewed_by", "reviewed_on"]},
         }
         stage = root / "masked" / str(i)
+        check("automation_masked")
         result = task_runner(
             task="atlasMasked",
             request=request,
@@ -520,6 +529,7 @@ def run_background(
                     "image_digest": row["original_image_digest"],
                 }
             )
+        check("automation_masked_review")
         review = verify_completed_background(
             frames=candidates,
             original_frames=originals,
@@ -536,6 +546,7 @@ def run_background(
             # The shared reservation API accepts <=32 requests per transaction;
             # retain separate batches instead of imposing that limit on a scene.
             for offset in range(0, len(prepared), 32):
+                check("automation_fallback")
                 fallback.extend(
                     complete_background_images(
                         frames=prepared[offset : offset + 32],
@@ -550,6 +561,7 @@ def run_background(
                         repair_reference_path=Path(anchor["image_path"]),
                     )
                 )
+            check("automation_fallback_review")
             fallback_review = verify_completed_background(
                 frames=fallback,
                 original_frames=prepared,

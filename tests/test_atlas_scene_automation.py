@@ -240,6 +240,7 @@ def test_rejected_anchor_never_calls_atlas_or_splat_builder(tmp_path, monkeypatc
     def forbidden(**_):
         raise AssertionError("Rejected pixels reached Atlas")
 
+    stages = []
     result = edits.run_background(
         frames=frames,
         objects=plan()["objects"],
@@ -253,8 +254,10 @@ def test_rejected_anchor_never_calls_atlas_or_splat_builder(tmp_path, monkeypatc
         task_runner=forbidden,
         release_blockers=lambda: ("commit", []),
         configuration={"remaining_cost_usd": 10},
+        checkpoint=stages.append,
     )
     assert result["status"] == "quality_rejected" and result["stage"] == "anchor"
+    assert stages == ["automation_segmentation", "automation_anchor", "automation_anchor_review"]
 
 
 def test_insufficient_entire_path_budget_refuses_before_sam(tmp_path, monkeypatch):
