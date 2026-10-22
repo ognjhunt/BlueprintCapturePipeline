@@ -7,7 +7,6 @@ discard completed preparation or label the scene simulator-ready.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -16,6 +15,63 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .website_task_preparation import compile_website_scene_preparation
 from .website_scene_runtime_inputs import prepare_website_runtime_inputs
+
+
+def _marble_base_scene(*, provider_run: Mapping[str, Any], clean_plate: Mapping[str, Any],
+                       metadata: Mapping[str, Any], capture_root: Path, root: Path, result: dict[str, Any],
+                       context: Mapping[str, Any]) -> dict[str, Any]:
+    """A verified Marble world's splat and collider, while no Atlas scene exists."""
+    if provider_run.get("status") not in {"ready", "completed"}:
+        raise ValueError("website_reconstruction_pending")
+    path = Path((provider_run.get("worldlabs_asset_materialization") or {}).get("manifest_path") or root / "missing")
+    if not path.resolve().is_relative_to(capture_root.resolve() / "pipeline") or not path.is_file():
+        raise ValueError("website_reconstruction_assets_pending")
+    assets = json.loads(path.read_text())
+    if assets.get("world_id") != provider_run.get("world_id"):
+        raise ValueError("website_reconstruction_world_mismatch")
+    rows = assets.get("downloads") or []
+    collision = next((row for row in rows if row.get("kind") == "collider_mesh_glb"), None)
+    splat = next((row for row in rows if row.get("kind") in {"splat_ply", "splat_spz"}), None)
+    if collision is None or splat is None:
+        raise ValueError("website_reconstruction_assets_pending")
+    for row in (collision, splat):
+        artifact = Path(row["local_path"])
+        if (not artifact.resolve().is_relative_to(capture_root.resolve() / "pipeline")
+                or not artifact.is_file() or _sha256_file(artifact) != "sha256:" + row["sha256"]):
+            raise ValueError("website_reconstruction_asset_changed")
+    from .website_worldlabs import settle_website_reconstruction
+    settlement = settle_website_reconstruction(provider_run=provider_run, capture_root=capture_root,
+                                                task_context=context)
+    if settlement is not None:
+        result["reconstruction_settlement"] = settlement
+    # World Labs exports are OpenCV Y-down, including their GLB meshes:
+    # https://docs.worldlabs.ai/marble/export/specs . The world manifest
+    # declares an estimated metric factor and ground plane (raw units x
+    # factor = metres; ground at y = offset after scaling), and the world
+    # is generated from the prepared views in submission order, so the
+    # first view's camera anchors registration. None of it is measured.
+    semantics: dict[str, Any] = {}
+    world_path = Path(assets.get("source_world_manifest") or root / "missing")
+    if world_path.resolve().is_relative_to(capture_root.resolve() / "pipeline") and world_path.is_file():
+        from .marble_sim_assets import _semantics_metadata
+        world = json.loads(world_path.read_text())
+        if world.get("world_id") == assets["world_id"]:
+            semantics = _semantics_metadata(world)
+    prepared = ((clean_plate.get("prepared_views") or (metadata.get("clean_plate") or {}).get("prepared_views")
+                 or {}).get("frames") or [])
+    declared = semantics.get("metric_scale_factor")
+    return {
+        "splat_path": splat["local_path"], "splat_digest": "sha256:" + splat["sha256"],
+        "splat_binding_id": "website-splat-" + splat["sha256"][:32],
+        "collision_mesh_path": collision["local_path"], "collision_mesh_digest": "sha256:" + collision["sha256"],
+        "collision_binding_id": "website-collider-" + collision["sha256"][:32],
+        "up_axis": "-Y", "meters_per_unit": declared, "provider": "world_labs",
+        "scale_authority": "provider_declared_estimate" if declared else "registration_estimate",
+        "ground_plane_offset_m": semantics.get("ground_plane_offset") if declared else None,
+        "anchor": ({"kind": "first_input_view_camera", "frame_id": prepared[0]["frame_id"]}
+                   if declared and prepared else None),
+        "operation_id": provider_run.get("provider_run_id"), "world_id": assets["world_id"],
+    }
 
 
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
@@ -42,6 +98,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         failed_fixture = (provider_run.get("status") == "failed"
             and provider_run.get("operation_terminal_status") == "failed"
             and enabled(context["context_digest"]))
+        # The capture's Atlas job is its one paid reconstruction lane: its
+        # object-removed background is the scene and its source pose the
+        # geometry. Nothing here buys anything.
+        atlas: Mapping[str, Any] = {"status": "not_needed"}
+        if clean_plate.get("source_geometry") is None:
+            from .website_atlas_scene_source import atlas_scene_source
+            atlas = atlas_scene_source(capture_root=capture_root, output_root=root / "atlas")
         if failed_fixture:
             operation_path = Path(provider_run.get("worldlabs_operation_manifest_uri") or root / "missing")
             if (not operation_path.resolve().is_relative_to(capture_root.resolve() / "pipeline")
@@ -53,38 +116,6 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 raise ValueError("website_reconstruction_failure_evidence_invalid")
             result["captured_scene_reconstruction"] = {"status": "failed", "operation_id": operation["operation_id"],
                 "operation_digest": canonical_digest(operation), "claim_ceiling": "development_only"}
-            assets = None
-        else:
-            if provider_run.get("status") not in {"ready", "completed"}:
-                raise ValueError("website_reconstruction_pending")
-            path = Path((provider_run.get("worldlabs_asset_materialization") or {}).get("manifest_path") or root / "missing")
-            if not path.resolve().is_relative_to(capture_root.resolve() / "pipeline") or not path.is_file():
-                raise ValueError("website_reconstruction_assets_pending")
-            assets = json.loads(path.read_text())
-            if assets.get("world_id") != provider_run.get("world_id"):
-                raise ValueError("website_reconstruction_world_mismatch")
-            rows = assets.get("downloads") or []
-            collision = next((row for row in rows if row.get("kind") == "collider_mesh_glb"), None)
-            splat = next((row for row in rows if row.get("kind") in {"splat_ply", "splat_spz"}), None)
-            if collision is None or splat is None:
-                raise ValueError("website_reconstruction_assets_pending")
-            for row in (collision, splat):
-                artifact = Path(row["local_path"])
-                if (not artifact.resolve().is_relative_to(capture_root.resolve() / "pipeline")
-                        or not artifact.is_file() or _sha256_file(artifact) != "sha256:" + row["sha256"]):
-                    raise ValueError("website_reconstruction_asset_changed")
-        from .website_worldlabs import settle_website_reconstruction
-        settlement = settle_website_reconstruction(provider_run=provider_run, capture_root=capture_root,
-                                                    task_context=context)
-        if settlement is not None:
-            result["reconstruction_settlement"] = settlement
-        # World Labs exports are OpenCV Y-down, including their GLB meshes:
-        # https://docs.worldlabs.ai/marble/export/specs . The world manifest
-        # declares an estimated metric factor and ground plane (raw units x
-        # factor = metres; ground at y = offset after scaling), and the world
-        # is generated from the prepared views in submission order, so the
-        # first view's camera anchors registration. None of it is measured.
-        if failed_fixture:
             import trimesh
             seed_path = root / "development_fixture_seed.glb"
             if not seed_path.is_file():
@@ -95,65 +126,53 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 "collision_mesh_digest": seed_digest, "collision_binding_id": "website-development-seed-" + seed_digest[7:39],
                 "up_axis": "Z", "meters_per_unit": 1.0, "scale_authority": "model_estimated_object_frame",
                 "operation_id": provider_run.get("provider_run_id"), "physical_registration_proven": False}
+        elif atlas["status"] == "ready":
+            base = dict(atlas["base_scene"])
+        elif atlas["status"] == "not_needed":
+            base = _marble_base_scene(provider_run=provider_run, clean_plate=clean_plate, metadata=metadata,
+                                      capture_root=capture_root, root=root, result=result, context=context)
         else:
-            semantics: dict[str, Any] = {}
-            world_path = Path(assets.get("source_world_manifest") or root / "missing")
-            if world_path.resolve().is_relative_to(capture_root.resolve() / "pipeline") and world_path.is_file():
-                from .marble_sim_assets import _semantics_metadata
-                world = json.loads(world_path.read_text())
-                if world.get("world_id") == assets["world_id"]:
-                    semantics = _semantics_metadata(world)
-            prepared = ((clean_plate.get("prepared_views") or (metadata.get("clean_plate") or {}).get("prepared_views")
-                         or {}).get("frames") or [])
-            declared = semantics.get("metric_scale_factor")
-            base = {
-                "splat_path": splat["local_path"], "splat_digest": "sha256:" + splat["sha256"],
-                "splat_binding_id": "website-splat-" + splat["sha256"][:32],
-                "collision_mesh_path": collision["local_path"], "collision_mesh_digest": "sha256:" + collision["sha256"],
-                "collision_binding_id": "website-collider-" + collision["sha256"][:32],
-                "up_axis": "-Y", "meters_per_unit": declared, "provider": "world_labs",
-                "scale_authority": "provider_declared_estimate" if declared else "registration_estimate",
-                "ground_plane_offset_m": semantics.get("ground_plane_offset") if declared else None,
-                "anchor": ({"kind": "first_input_view_camera", "frame_id": prepared[0]["frame_id"]}
-                           if declared and prepared else None),
-                "operation_id": provider_run.get("provider_run_id"), "world_id": assets["world_id"],
-            }
+            # Source poses and depth come only from the capture's Atlas job. A
+            # Marble world, when one exists, is reported but cannot replace it.
+            try:
+                base = _marble_base_scene(provider_run=provider_run, clean_plate=clean_plate, metadata=metadata,
+                                          capture_root=capture_root, root=root, result=result, context=context)
+            except ValueError:
+                base = None
+            if base is not None:
+                write_json(root / "base_scene.json", base)
+                result["base_scene_path"] = str(root / "base_scene.json")
+            result.update(status="awaiting_reconstruction" if atlas["status"] == "pending" else "needs_input",
+                blockers=[atlas["reason"]], geometry_backend=None, provider_mutation_performed=False,
+                visual_reconstruction_ready=base is not None,
+                atlas_scene_source={key: atlas.get(key) for key in ("status", "reason", "stage", "job_reason")},
+                native_geometry_requirements={
+                    "source_aligned_depth_and_camera_poses": "required_for_mask_lifting_and_scene_registration",
+                    "measured_scale": "unknown", "provider_scale": base and base["scale_authority"],
+                    "available_scene_assets": "verified_marble_splat_and_collider" if base else None,
+                    "atlas_required": True})
+            result["digest"] = canonical_digest(result, digest_field="digest")
+            write_json(handoff_path, result)
+            return result
         write_json(root / "base_scene.json", base)
         result.update(base_scene_path=str(root / "base_scene.json"),
                       visual_reconstruction_ready=not failed_fixture)
         if clean_plate.get("source_geometry") is None:
-            selected = os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND")
-            # A scene_preparation sponsorship funds the geometry its compile
-            # needs. With Atlas unavailable, that route is the release's pinned
-            # MapAnything profile; unsponsored captures keep waiting.
-            from .website_task_context_contracts import sponsors_scene_preparation
-            sponsored_geometry = bool(os.getenv("BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE")) and sponsors_scene_preparation(metadata)
-            geometry_backend = "mapanything" if (selected == "mapanything" or (not selected and (
-                os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT") or sponsored_geometry))) else None
-            if geometry_backend is None:
-                # Marble assets remain useful while exact native source poses
-                # and mask registration are missing. Atlas is unavailable;
-                # neither geometry nor deferred mask work is automatic.
-                result.update(status="needs_input", visual_reconstruction_ready=not failed_fixture,
-                    blockers=["website_source_camera_depth_registration_required"],
-                    geometry_controller_invoked=False, provider_mutation_performed=False, geometry_backend=None,
-                    native_geometry_requirements={
-                        "source_aligned_depth_and_camera_poses": "required_for_mask_lifting_and_scene_registration",
-                        "measured_scale": "unknown", "provider_scale": base["scale_authority"],
-                        "available_scene_assets": ("development_fixture_seed" if failed_fixture
-                                                   else "verified_marble_splat_and_collider"),
-                        "mapanything_required": False, "atlas_required": False})
+            if atlas["status"] != "ready":
+                result.update(status="needs_input", blockers=[atlas["reason"]], geometry_backend=None,
+                              provider_mutation_performed=False, atlas_scene_source={
+                                  key: atlas.get(key) for key in ("status", "reason", "stage", "job_reason")},
+                              native_geometry_requirements={
+                                  "source_aligned_depth_and_camera_poses":
+                                      "required_for_mask_lifting_and_scene_registration",
+                                  "measured_scale": "unknown", "provider_scale": base["scale_authority"],
+                                  "available_scene_assets": "development_fixture_seed", "atlas_required": True})
                 result["digest"] = canonical_digest(result, digest_field="digest")
                 write_json(handoff_path, result)
                 return result
-            from .website_scene_geometry import run_website_scene_geometry
             from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
-            video = Path(clean_plate.get("input_video_path") or "")
-            if not video.is_file() or not video.resolve().is_relative_to(capture_root.resolve()):
-                raise ValueError("website_source_video_outside_capture")
             result.pop("provider_mutation_performed", None)
             if (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
-                result["visual_reconstruction_ready"] = not failed_fixture
                 result["deferred_masks_controller_invoked"] = True
                 plan_path = Path(clean_plate["removal_plan_path"])
                 if not plan_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
@@ -163,11 +182,10 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     output_root=plan_path.parent / "task_masks",
                     view_plan_root=plan_path.parent / "mask_view_plan")
                 clean_plate = {**clean_plate, "task_masks": masks}
-            result["geometry_controller_invoked"] = True
-            geometry = run_website_scene_geometry(source_video=video,
-                output_root=Path(clean_plate["stage_manifest_path"]).parent / "source_geometry",
-                capture_id=context["capture_id"], task_context=context, task_masks=clean_plate["task_masks"],
-                backend=geometry_backend)
+            geometry = atlas["source_geometry"]
+            result.update(geometry_backend=geometry["geometry_backend"],
+                          atlas_scene_source={key: atlas[key] for key in (
+                              "status", "source_pose_digest", "background_pose_digest", "alignment")})
             masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
             write_json(root / "task_masks.geometry.json", masks)
             clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}

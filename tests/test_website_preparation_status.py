@@ -238,7 +238,7 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
     # actual owner validation, lease, handoff refusal and final ledger execute.
     monkeypatch.setattr(listener, "stage_handoff_capture", lambda *args, **kwargs: root)
     # Synthetic current assessment admission only. The real worker still
-    # reaches the original reconstruction refusal; no providers execute.
+    # reaches the real handoff's wait for the Atlas job; no providers execute.
     monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", lambda **kwargs: {
         "assessment_preparation_proposal": {"schema_version": "site_assessment_preparation_proposal.v1",
             "request_id": owner["request_id"], "capture_id": owner["capture_id"],
@@ -247,6 +247,8 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
             "questions_pending": True, "scope": "scene_preparation_only",
             "robot_suitability_verified": False, "physical_trial_authorized": False}})
     runner_calls = []
+    # The capture's Atlas job is still running, so scene preparation waits on it.
+    write_json(root / "pipeline/atlas/preview_job.json", {"state": "processing", "stage": "pose"})
     def held(**kwargs):
         assert kwargs["pipeline_lane"] == "qualification" and kwargs["run_evaluation_prep"] is False
         assert kwargs["resume_completed_stages"] is True
@@ -254,9 +256,9 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
         result = prepare_website_scene_handoff(descriptor={"scene_id": owner["scene_id"], "capture_id": owner["capture_id"],
             "metadata": {"site_task_context": context}}, clean_plate={"privacy_verified": True, "status": "noop"},
             provider_run={"status": "not_requested"}, capture_root=root, now=0)
-        assert result["status"] == "awaiting_inputs" and result["blockers"] == ["website_reconstruction_pending"]
-        raise PipelineError("website_reconstruction_pending") from StageError("website_scene_preparation", "website_reconstruction_pending")
-    with pytest.raises(PipelineError, match="website_reconstruction_pending"):
+        assert result["status"] == "awaiting_reconstruction" and result["blockers"] == ["website_atlas_job_processing"]
+        raise PipelineError("website_atlas_job_processing") from StageError("website_scene_preparation", "website_atlas_job_processing")
+    with pytest.raises(PipelineError, match="website_atlas_job_processing"):
         listener.process_handoff_payload(payload, storage_root=root.parents[4], provider="openai", run_e2e=held,
                                          run_e2e_enabled=False, stage_control_plane=True)
     assert len(runner_calls) == 1

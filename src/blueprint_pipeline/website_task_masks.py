@@ -803,6 +803,39 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
     return complete
 
 
+def _same_frame_sample(task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> bool:
+    """Tracks started from the very frames the geometry was estimated on."""
+    binding = source_geometry["binding"]
+    return (task_masks["binding"].get("geometry_input_digest")
+            == binding.get("tracking_input_digest", binding.get("input_digest"))
+            and (binding.get("tracking_input_digest") is None
+                 or binding.get("task_masks_digest") == task_masks["digest"]))
+
+
+def _registry_frames(task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> bool:
+    """Tracks on the source video's timeline name each geometry frame by its decoded index and time.
+
+    Both hosted-SAM modes, the continuous video and the selected original views,
+    keep the full decoded-frame registry. A geometry estimated on any decoded
+    frames of the same video then needs no shared sample: each frame must be the
+    registry frame of that index, at the same presentation time and upright size.
+    Only frames a track observed contribute; a target with none still fails.
+    """
+    if task_masks["binding"].get("mask_input_pixels") not in {"continuous_source_video_v1",
+                                                              "selected_original_views_v1"}:
+        return False
+    registry = {row["source_frame_id"]: row for row in task_masks.get("source_frame_registry") or []}
+    for frame in source_geometry["frames"]:
+        row = registry.get(frame["frame_id"])
+        if row is None or abs(float(row["decoded_pts_seconds"]) - float(frame["timestamp_seconds"])) > 0.002:
+            return False
+        rotation = int(frame.get("display_rotation_degrees") or 0) % 180
+        size = (frame.get("source_width"), frame.get("source_height"))
+        if (row.get("width"), row.get("height")) != (size[::-1] if rotation else size):
+            return False
+    return True
+
+
 def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> dict[str, Any]:
     """Lift the retained selected tracks after reconstruction; never call SAM again."""
     if task_masks.get("deferred_target_ids"):
@@ -810,10 +843,8 @@ def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometr
     if (task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
             or source_geometry.get("digest") != canonical_digest(source_geometry, digest_field="digest")
             or task_masks.get("source_video_digest") != source_geometry["binding"].get("source_video_digest")
-            or task_masks["binding"].get("geometry_input_digest") != source_geometry["binding"].get(
-                "tracking_input_digest", source_geometry["binding"].get("input_digest"))
-            or (source_geometry["binding"].get("tracking_input_digest") is not None
-                and source_geometry["binding"].get("task_masks_digest") != task_masks["digest"])):
+            or not (_same_frame_sample(task_masks, source_geometry)
+                    or _registry_frames(task_masks, source_geometry))):
         raise ValueError("website_task_geometry_binding_mismatch")
     frames = source_geometry["frames"]
     ids = {frame["frame_id"] for frame in frames}

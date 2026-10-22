@@ -1,0 +1,202 @@
+"""A website capture's Atlas job as the scene source for scene preparation.
+
+Beta journey step: concurrent scene preparation. The capture's Atlas job
+(``website_atlas_preview``, under ``pipeline/atlas``) is the only paid
+reconstruction lane. Scene preparation buys nothing; it reads what that job
+retained:
+
+- the object-removed background splat and its supported mesh, as the scene;
+- the selected original views' own pose, as source geometry for lifting task
+  masks, scaled by the job's reviewed reference estimate;
+- the cameras both poses share, which align the source to the scene exactly.
+
+Every value stays an estimate: the scale comes from named reference
+assumptions, never a measurement, and nothing here qualifies a scene.
+"""
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+from typing import Any, Mapping
+
+import numpy as np
+
+from .decision_evidence_contracts import canonical_digest
+from .local_reconstruction_adapters import _sha256_file
+
+PROVIDER = "world_labs_atlas"
+SCALE_AUTHORITY = "atlas_reference_estimate"
+#: Shared cameras must agree on one similarity: orientations to this many
+#: degrees, centres to this fraction of their spread.
+ALIGNMENT_MAX_ROTATION_DEGREES = 5.0
+ALIGNMENT_MAX_CENTRE_RESIDUAL = 0.05
+
+
+def _read(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _inside(path: Path, root: Path) -> Path:
+    resolved = path.resolve()
+    if path.is_symlink() or not resolved.is_relative_to(root.resolve()) or not resolved.is_file():
+        raise ValueError("website_atlas_scene_artifact_missing")
+    return resolved
+
+
+def _artifact(root: Path, row: Mapping[str, Any]) -> tuple[Path, str]:
+    path = _inside(root / row["path"], root)
+    if _sha256_file(path) != row["sha256"]:
+        raise ValueError("website_atlas_scene_artifact_changed")
+    return path, row["sha256"]
+
+
+def _cameras(pose: Mapping[str, Any]) -> dict[str, np.ndarray]:
+    """OpenCV camera-to-world per frame id, in the pose's own Atlas world units."""
+    from .atlas_source_geometry import opencv_world_from_camera
+    rows = pose["operation_receipt"]["input_usage"]["frames"]
+    return {row["frame_id"]: opencv_world_from_camera(frame["camera"]["extrinsics"])
+            for row, frame in zip(rows, pose["operation"]["response"]["frames"], strict=True)}
+
+
+def world_alignment(source: Mapping[str, np.ndarray], target: Mapping[str, np.ndarray]) -> dict[str, Any] | None:
+    """The similarity taking one Atlas world to another, from cameras both poses share.
+
+    Rotation comes from the cameras' orientations, so a near-straight walk still
+    fixes it; scale and translation then come from their centres. Returns None
+    when the shared cameras are too few or disagree.
+    """
+    shared = [key for key in source if key in target]
+    if len(shared) < 2:
+        return None
+    pairs = [(source[key], target[key]) for key in shared]
+    u, _, vt = np.linalg.svd(sum(b[:3, :3] @ a[:3, :3].T for a, b in pairs))
+    rotation = u @ np.diag([1.0, 1.0, float(np.sign(np.linalg.det(u @ vt)))]) @ vt
+    a_centres = np.array([a[:3, 3] for a, _ in pairs]) @ rotation.T
+    b_centres = np.array([b[:3, 3] for _, b in pairs])
+    a_mean, b_mean = a_centres.mean(0), b_centres.mean(0)
+    spread = float(((a_centres - a_mean) ** 2).sum())
+    if spread <= 1e-12:
+        return None
+    scale = float(((a_centres - a_mean) * (b_centres - b_mean)).sum() / spread)
+    if not math.isfinite(scale) or scale <= 0:
+        return None
+    translation = b_mean - scale * a_mean
+    angles = [math.degrees(math.acos(max(-1.0, min(1.0, (float(np.trace(
+        (rotation @ a[:3, :3]).T @ b[:3, :3])) - 1) / 2)))) for a, b in pairs]
+    residual = float(np.sqrt(((scale * a_centres + translation - b_centres) ** 2).sum(1).mean()))
+    extent = float(np.sqrt(((b_centres - b_mean) ** 2).sum(1).mean()))
+    if max(angles) > ALIGNMENT_MAX_ROTATION_DEGREES or residual > ALIGNMENT_MAX_CENTRE_RESIDUAL * extent:
+        return None
+    return {"scale": scale, "rotation": rotation, "translation": translation, "shared_frame_count": len(shared),
+            "max_rotation_residual_degrees": max(angles), "centre_residual_fraction": residual / extent}
+
+
+def _survey_rotation(job_dir: Path, inputs: Mapping[str, Any]) -> float:
+    selection = _read(job_dir / "selection_binding.json")
+    survey = _read(_inside(job_dir / selection.get("survey_relative_path", "missing"), job_dir))
+    if (survey.get("digest") != canonical_digest(survey, digest_field="digest")
+            or survey.get("digest") != inputs["binding"].get("survey_digest")):
+        raise ValueError("website_atlas_scene_survey_changed")
+    return float(survey["display_rotation_degrees"])
+
+
+def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, Any]:
+    """``ready`` with a base scene and source geometry, ``pending``, or ``needs_input`` with a reason."""
+    from .atlas_source_geometry import atlas_posed_view_geometry
+    from .atlas_video_inputs import GEOMETRY_INPUTS_FILE
+
+    job_dir = capture_root / "pipeline" / "atlas"
+    job = _read(job_dir / "preview_job.json")
+    if not job:
+        return {"status": "needs_input", "reason": "website_atlas_job_required"}
+    if job.get("state") in {None, "processing"}:
+        return {"status": "pending", "reason": "website_atlas_job_processing", "stage": job.get("stage")}
+    if job.get("state") != "ready":
+        return {"status": "needs_input", "reason": f"website_atlas_job_{job.get('state')}",
+                "job_reason": job.get("reason")}
+    result = _read(job_dir / "result.json")
+    if result.get("digest") != canonical_digest(result, digest_field="digest") or result["digest"] != job.get("result_digest"):
+        raise ValueError("website_atlas_scene_result_changed")
+    background = (result.get("automation") or {}).get("background") or {}
+    if (result.get("automation") or {}).get("status") != "completed" or background.get("status") != "completed":
+        return {"status": "needs_input", "reason": "website_atlas_background_unavailable",
+                "job_reason": background.get("reason")}
+    if not background.get("mesh_available"):
+        return {"status": "needs_input", "reason": "website_atlas_background_mesh_unavailable"}
+    source_pose = result.get("source_pose") or {}
+    if source_pose.get("status") != "completed":
+        return {"status": "needs_input", "reason": "website_atlas_source_pose_unavailable",
+                "job_reason": source_pose.get("reason")}
+
+    pose_root = job_dir / "pose"
+    measurements_path = _inside(pose_root / "scene_measurements.json", job_dir)
+    measurements = _read(measurements_path)
+    mpu = measurements.get("meters_per_unit_estimate")
+    if (measurements.get("digest") != canonical_digest(measurements, digest_field="digest")
+            or measurements["digest"] != source_pose.get("scene_measurements_digest")):
+        raise ValueError("website_atlas_scene_measurements_changed")
+    if (measurements.get("status") != "estimated" or isinstance(mpu, bool) or not isinstance(mpu, (int, float))
+            or not math.isfinite(mpu) or mpu <= 0):
+        return {"status": "needs_input", "reason": "website_atlas_scale_estimate_unavailable"}
+    scale = {"meters_per_unit": float(mpu), "basis": "reference_estimate", "evidence_digest": measurements["digest"],
+             "evidence_reference": str(measurements_path.relative_to(capture_root.resolve()))}
+    inputs = _read(_inside(pose_root / GEOMETRY_INPUTS_FILE, job_dir))
+    geometry = atlas_posed_view_geometry(pose_root=pose_root, rotation=_survey_rotation(job_dir, inputs),
+                                         scale=scale, output_root=output_root / "source_geometry")
+
+    automation_root = job_dir / "automation"
+    splat_root, registered_root = automation_root / "background_splat", automation_root / "background_mesh" / "registered"
+    splat_manifest = _read(_inside(splat_root / "atlas_depth_splat_manifest.json", job_dir))
+    registration = _read(_inside(registered_root / "atlas_mesh_registration.json", job_dir))
+    if (splat_manifest.get("digest") != canonical_digest(splat_manifest, digest_field="digest")
+            or splat_manifest["digest"] != background.get("splat_manifest_digest")
+            or registration.get("digest") != canonical_digest(registration, digest_field="digest")
+            or registration.get("splat_manifest_digest") != splat_manifest["digest"]):
+        raise ValueError("website_atlas_scene_background_changed")
+    splat_path, splat_digest = _artifact(splat_root, next(
+        row for row in splat_manifest["outputs"] if row["role"] == "splat_ply"))
+    mesh_path, mesh_digest = _artifact(registered_root, next(
+        row for row in registration["outputs"] if row["role"] == "supported_mesh_glb"))
+
+    # The background was fused on whichever pose posed its views: the original
+    # views' own, or a fresh pose of the reviewed edited views.
+    source = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
+    if splat_manifest["pose_result_digest"] == source["digest"]:
+        background_pose = source
+    else:
+        candidates = [_read(path) for path in sorted(automation_root.glob("fallback_pose*/atlas_posed_rgbd_result.json"))]
+        background_pose = next((row for row in candidates if row.get("digest") == splat_manifest["pose_result_digest"]
+                                and row["digest"] == canonical_digest(row, digest_field="digest")), None)
+        if background_pose is None:
+            raise ValueError("website_atlas_scene_background_pose_missing")
+    alignment = world_alignment(_cameras(source), _cameras(background_pose))
+    anchor, runtime_mpu = None, float(mpu)
+    if alignment is not None:
+        # Source metres -> background units: (R x / mpu) * s + t. In the
+        # registration's terms, metres per background unit is mpu / s and the
+        # rigid part carries the translation in those metres.
+        runtime_mpu = float(mpu) / alignment["scale"]
+        transform = np.eye(4)
+        transform[:3, :3], transform[:3, 3] = alignment["rotation"], alignment["translation"] * runtime_mpu
+        anchor = {"kind": "source_world_alignment", "source_world_to_provider_m": transform.tolist(),
+                  "basis": "same_atlas_pose" if background_pose is source else "shared_atlas_cameras",
+                  **{key: alignment[key] for key in ("shared_frame_count", "max_rotation_residual_degrees",
+                                                     "centre_residual_fraction")}}
+    base = {
+        "splat_path": str(splat_path), "splat_digest": splat_digest,
+        "splat_binding_id": "website-splat-" + splat_digest[7:39],
+        "collision_mesh_path": str(mesh_path), "collision_mesh_digest": mesh_digest,
+        "collision_binding_id": "website-collider-" + mesh_digest[7:39],
+        # Atlas worlds are right-up-back with +Y up (atlas_world_rub_y_up).
+        "up_axis": "Y", "meters_per_unit": runtime_mpu, "provider": PROVIDER, "scale_authority": SCALE_AUTHORITY,
+        "ground_plane_offset_m": None, "anchor": anchor,
+        "operation_id": background_pose["operation"]["id"], "atlas_result_digest": result["digest"],
+    }
+    return {"status": "ready", "base_scene": base, "source_geometry": geometry,
+            "source_pose_digest": source["digest"], "background_pose_digest": background_pose["digest"],
+            "alignment": "anchored" if anchor else "registration_search"}

@@ -55,6 +55,22 @@ def _infer(paths: list[str], *, model_path: Path) -> Sequence[Mapping[str, Any]]
                            apply_mask=True, mask_edges=True, apply_confidence_mask=False)
 
 
+def source_to_view_pixels(*, width: int, height: int, rotation: float, size: tuple[int, int]) -> list[list[float]]:
+    """Source pixel (integer centres) to a view of the upright frame resized to ``size``."""
+    if not np.isfinite(rotation) or rotation % 90:
+        raise ValueError("website_source_rotation_not_supported")
+    transforms = {
+        0: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        90: [[0, 1, 0], [-1, 0, width - 1], [0, 0, 1]],
+        180: [[-1, 0, width - 1], [0, -1, height - 1], [0, 0, 1]],
+        270: [[0, -1, height - 1], [1, 0, 0], [0, 0, 1]],
+    }
+    upright_width, upright_height = (height, width) if int(rotation) % 180 else (width, height)
+    sx, sy = size[0] / upright_width, size[1] / upright_height
+    resize = np.array([[sx, 0, (sx - 1) / 2], [0, sy, (sy - 1) / 2], [0, 0, 1]])
+    return (resize @ np.array(transforms[int(rotation) % 360])).tolist()
+
+
 def _prepare_image(source: Path, target: Path, rotation: float) -> dict[str, Any]:
     """Keep an exact source-to-model pixel transform, including phone rotation."""
     if not np.isfinite(rotation) or rotation % 90:
@@ -62,24 +78,16 @@ def _prepare_image(source: Path, target: Path, rotation: float) -> dict[str, Any
     with Image.open(source) as original:
         width, height = original.size
         image = original.convert("RGB").rotate(rotation, expand=True)
-        upright_width, upright_height = image.size
         scale = 518 / max(image.size)
         size = tuple(max(14, round(dimension * scale / 14) * 14) for dimension in image.size)
         target.parent.mkdir(parents=True, exist_ok=True)
         image.resize(size, Image.Resampling.LANCZOS).save(target)
-    transforms = {
-        0: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-        90: [[0, 1, 0], [-1, 0, width - 1], [0, 0, 1]],
-        180: [[-1, 0, width - 1], [0, -1, height - 1], [0, 0, 1]],
-        270: [[0, -1, height - 1], [1, 0, 0], [0, 0, 1]],
-    }
-    sx, sy = size[0] / upright_width, size[1] / upright_height
-    resize = np.array([[sx, 0, (sx - 1) / 2], [0, sy, (sy - 1) / 2], [0, 0, 1]])
     return {
         "image_path": str(target), "image_digest": _sha256_file(target),
         "source_width": width, "source_height": height,
         "width": size[0], "height": size[1], "display_rotation_degrees": rotation,
-        "source_to_geometry_pixels": (resize @ np.array(transforms[int(rotation) % 360])).tolist(),
+        "source_to_geometry_pixels": source_to_view_pixels(width=width, height=height, rotation=rotation,
+                                                           size=size),
     }
 
 

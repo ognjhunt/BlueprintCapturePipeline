@@ -237,6 +237,72 @@ def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatc
     assert result["blockers"] == ["atlas_background_review_required"]
 
 
+@pytest.mark.parametrize("refused", [False, True])
+def test_a_completed_background_buys_the_original_views_pose_once_for_scene_preparation(tmp_path, monkeypatch, refused):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
+    from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
+    from blueprint_pipeline import atlas_scene_measurements as measurements, atlas_scene_automation as automation
+
+    root = tmp_path / "job"
+    (root / "survey").mkdir(parents=True)
+    video = tmp_path / "source.mov"
+    video.write_bytes(b"source")
+    (root / "survey/atlas_video_survey.json").write_text(json.dumps({"source_video_digest": pipeline._sha256_file(video)}))
+    review = {"automation": {"objects": [{"disposition": "remove"}]}}
+    (root / "selection_binding.json").write_text(json.dumps({"survey_relative_path": "survey/atlas_video_survey.json",
+        "review": review, "planner_receipt": {"model": "agent"}}))
+    policy = {"maximum_review_cost_usd": 1, "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05,
+              "rate_card_reference": "https://example.test/rates", "reviewed_by": "test",
+              "reviewed_on": _reviewed_today()}
+    config = {"authority": {"provider_retention": "approved"}, "remaining_cost_usd": 10, "policy": policy}
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: config)
+    monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "non-secret"))
+    monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **_: {"frames": [{"frame_id": "a"}, {"frame_id": "b"}]})
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", lambda **kw: {
+        "status": "completed", "measurements": {"status": "relative_sizes_only"},
+        "background": {"status": "completed", "splat_manifest_digest": "splat", "mesh_available": True}})
+    quotes, poses = [], []
+
+    def pose(**kw):
+        quotes.append(json.loads(pipeline.os.environ[pose_api.ATLAS_PRICE_REVIEW_ENV]))
+        if refused:
+            raise ValueError("website_atlas_allowance_exhausted")
+        poses.append(kw)
+        if len(poses) == 1:
+            return {"status": "processing", "operation_id": "source"}
+        (kw["output_root"] / "atlas_posed_rgbd_result.json").write_text("{}")
+        return {"status": "completed", "operation_id": "source"}
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", pose)
+    monkeypatch.setattr(automation, "measurement_plan", lambda review: {"plan": "reviewed"})
+    monkeypatch.setattr(measurements, "load_views", lambda root, value: (
+        {"digest": "sha256:pose", "operation": {"id": "source"}}, ["views"]))
+    measured = []
+    monkeypatch.setattr(measurements, "estimate_sizes", lambda **kw: measured.append(kw) or {
+        "digest": "sha256:sizes", "meters_per_unit_estimate": 0.8, "scale_status": "estimated_from_named_assumptions"})
+    stages = []
+    options = {"source_video": video, "output_root": root, "checkpoint": stages.append,
+               "task_context": {"capture_id": "c", "context_digest": "task"}}
+    first = pipeline.run_atlas_pipeline(**options)
+    assert quotes[0]["max_input_images"] == 2 and quotes[0]["maximum_cost_usd"] == .02
+    assert stages[-1] == "source_pose"
+    if refused:
+        # A refused purchase keeps the finished background and says why.
+        assert first["source_pose"] == {"status": "needs_input", "reason": "website_atlas_allowance_exhausted"}
+        assert first["splat_available"] is True and json.loads((root / "result.json").read_text()) == first
+        return
+    assert first == {"status": "processing", "stage": "source_pose", "operation_id": "source"}
+    result = pipeline.run_atlas_pipeline(**options)
+    assert result["source_pose"] == {"status": "completed", "result_digest": "sha256:pose", "operation_id": "source",
+        "submitted_frame_count": 2, "scene_measurements_digest": "sha256:sizes", "meters_per_unit_estimate": 0.8,
+        "scale_status": "estimated_from_named_assumptions"}
+    assert measured[0]["automation"] == {"plan": "reviewed"}
+    assert measured[0]["output"] == root / "pose" / "scene_measurements.json"
+    assert [kw["output_root"] for kw in poses] == [root / "pose"] * 2
+    # The retained pose resumes without another withdrawal check or quote.
+    pipeline.run_atlas_pipeline(**options)
+    assert len(poses) == 3 and stages.count("source_pose") == 2
+
+
 def test_a_checkpoint_refusal_stops_the_run_before_the_first_paid_review(tmp_path, monkeypatch):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
