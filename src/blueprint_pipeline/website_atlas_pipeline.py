@@ -134,8 +134,24 @@ def run_atlas_pipeline(*, output_root: Path, **options):
         return _run_atlas_pipeline(output_root=output_root, **options)
 
 
+def _job_edit_scope(output_root: Path, requested: str | None) -> str:
+    """The job's edit scope, chosen once: a resume can never change which views were cleaned."""
+    from .atlas_scene_automation import EDIT_SCOPES
+    path = output_root / "edit_scope.json"
+    stored = json.loads(path.read_text()).get("edit_scope") if path.is_file() else None
+    if requested is not None and requested not in EDIT_SCOPES:
+        raise ValueError("atlas_edit_scope_invalid")
+    if stored is not None and requested is not None and requested != stored:
+        raise ValueError("atlas_edit_scope_changed")
+    scope = stored or requested or EDIT_SCOPES[0]
+    if stored is None:
+        write_json(path, {"schema_version": "atlas_edit_scope.v1", "edit_scope": scope})
+    return scope
+
+
 def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, experimental=False,
-                       invoker=None, max_polls=2, refinement_feedback: Path | None = None, checkpoint=None):
+                       invoker=None, max_polls=2, refinement_feedback: Path | None = None, checkpoint=None,
+                       edit_scope: str | None = None):
     # ``checkpoint(stage)`` runs before every paid stage; raising there (a
     # withdrawal) stops the job before it buys or uploads anything more.
     check = checkpoint or (lambda _stage: None)
@@ -174,6 +190,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         config = current
         write_json(saved, config)
     policy = config["policy"]
+    edit_scope = _job_edit_scope(output_root, edit_scope)
     os.environ[ATLAS_PROVIDER_RETENTION_ENV] = current["authority"]["provider_retention"]
     feedback = None
     if refinement_feedback is not None:
@@ -263,7 +280,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         automation = run_sponsored_website_atlas_automation(
             pose_root=None, inputs=inputs, review=review, output_root=output_root / "automation",
             task_context=task_context, configuration=load_configuration(task_context, source_digest),
-            experimental=experimental, max_polls=max_polls, checkpoint=checkpoint)
+            experimental=experimental, max_polls=max_polls, checkpoint=checkpoint, edit_scope=edit_scope)
         if automation["status"] == "processing":
             return automation
         background = automation.get("background") or {}
@@ -278,7 +295,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                 return source_pose
         result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
                   "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
-                  "automation": automation, "download": background.get("download"),
+                  "automation": automation, "download": background.get("download"), "edit_scope": edit_scope,
                   "task_and_surrounding_scene_covered": True, "model": receipt["model"],
                   "blockers": (["metric_scene_registration_unproven"] if complete else
                                [background.get("reason", "atlas_background_review_required")]),
@@ -361,7 +378,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         automation = run_sponsored_website_atlas_automation(pose_root=pose_root, inputs=inputs, review=review,
             output_root=output_root / "automation", task_context=task_context,
             configuration=load_configuration(task_context, source_digest), experimental=experimental, max_polls=max_polls,
-            checkpoint=checkpoint)
+            checkpoint=checkpoint, edit_scope=edit_scope)
         result["automation"] = automation
         result["size_estimates"] = automation.get("measurements")
         if automation["status"] == "processing":
@@ -395,6 +412,9 @@ def main():
     parser.add_argument("--experimental", action="store_true")
     parser.add_argument("--refinement-feedback", type=Path,
                         help="Digest-bound parent result and derived previews; uses a fresh revision job and the same allowance")
+    from .atlas_scene_automation import EDIT_SCOPES
+    parser.add_argument("--edit-scope", choices=EDIT_SCOPES,
+                        help="Views the editor cleans; fixed for the job at its first run (trial: all_selected_views)")
     args = vars(parser.parse_args())
     from .website_task_context import load_current_website_task_context
     context = load_current_website_task_context(request_id=args.pop("request_id"), capture_id=args.pop("capture_id"),
