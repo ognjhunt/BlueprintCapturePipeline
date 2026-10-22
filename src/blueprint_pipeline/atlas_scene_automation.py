@@ -12,6 +12,28 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 
+def _unposed_source_views(inputs):
+    """Read reviewed source RGB without inventing cameras or purchasing depth."""
+    import numpy as np
+    from PIL import Image
+
+    frames = []
+    for row in inputs["frames"]:
+        path = Path(row["image_path"])
+        if _sha256_file(path) != row["image_digest"]:
+            raise ValueError("atlas_automation_source_changed")
+        with Image.open(path) as image:
+            rgb = np.asarray(image.convert("RGB"))
+        h, w = rgb.shape[:2]
+        frames.append({"frame_id": row["frame_id"], "image_path": str(path),
+                       "image_digest": row["image_digest"], "rgb": rgb,
+                       "intrinsics": {"width": w, "height": h}, "camera_calibrated": False,
+                       "pixel_alignment": {"source_grid": [w, h], "method": "same_source_pixels",
+                                           "matrix": np.eye(3).tolist()}})
+    return {"digest": canonical_digest({"unposed_source_inputs": inputs["digest"]}),
+            "binding": inputs["binding"], "geometry_kind": "unposed_source_rgb"}, frames
+
+
 def _edited_frames(background):
     from .atlas_depth_splat import posed_frame, read_exr_depth
     import cv2
@@ -143,7 +165,7 @@ def run_automation(
 
     automation = AutomationPlan.model_validate(automation).model_dump(mode="json")
     output_root.mkdir(parents=True, exist_ok=True)
-    pose, frames = load_views(pose_root, inputs)
+    pose, frames = load_views(pose_root, inputs) if pose_root is not None else _unposed_source_views(inputs)
     automation = {
         **automation,
         "uncaptured_regions": review.get("uncaptured_regions", []),
@@ -155,7 +177,10 @@ def run_automation(
         automation=automation,
         pose_digest=pose["digest"],
         output=output_root / "scene_measurements.json",
-    )
+    ) if pose_root is not None else {
+        "status": "unavailable", "reason": "pre_edit_observed_depth_not_requested",
+        "metric_measurement_proven": False, "physical_evidence": False,
+    }
     if not execute:
         return {
             "status": "measurements_complete",
@@ -164,6 +189,15 @@ def run_automation(
         }
     source = pose["binding"]["source_video_digest"]
     policy = configuration["policy"]
+    requested = list(dict.fromkeys([
+        key for group in review.get("coverage_requirements", [])
+        for key in group["required_frame_ids"]
+    ] + review.get("additional_input_frame_ids", [])))
+    selected_ids = [row["frame_id"] for row in frames if row["frame_id"] in requested] if requested else None
+    if requested and set(selected_ids) != set(requested):
+        raise ValueError("atlas_background_reviewed_selection_missing")
+    if pose_root is None and selected_ids is not None:
+        frames = [row for row in frames if row["frame_id"] in selected_ids]
     try:
         background = run_background(
             frames=frames,
@@ -180,6 +214,7 @@ def run_automation(
             max_polls=max_polls,
             configuration=configuration,
             checkpoint=checkpoint,
+            selected_frame_ids=selected_ids,
         )
         if background["status"] == "processing":
             return background
@@ -199,6 +234,14 @@ def run_automation(
                         "operation_id": state.get("operation_id"),
                     }
                 effective_pose, derived_frames, effective_root = derived
+                if pose_root is None:
+                    # Removed appliances cannot become scale references in the
+                    # generated background. Report relative scene coverage only.
+                    _, measured_frames = load_views(effective_root, json.loads(
+                        (effective_root / "atlas_pose_inputs.json").read_text()))
+                    measurements = estimate_sizes(frames=measured_frames,
+                        automation={**automation, "scale_references": []}, pose_digest=effective_pose["digest"],
+                        output=output_root / "scene_measurements.json")
                 provenance = [canonical_digest({"frames": background["frames"]})]
                 visual_digest = canonical_digest(background["review"])
             else:
@@ -290,7 +333,7 @@ def run_automation(
         "status": background["status"],
         "measurements": measurements,
         "background": background,
-        "source_pose_digest": pose["digest"],
+        "source_pose_digest": pose["digest"] if pose_root is not None else None,
         "automation_plan_digest": canonical_digest(automation),
         "raw_capture_preserved": True,
         "metric_measurement_proven": False,

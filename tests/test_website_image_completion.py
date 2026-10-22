@@ -21,6 +21,19 @@ def _grant(admission):
                                            expected_schema_version="paid_lane_admission.v1")
 
 
+def test_read_only_image_adoption_cannot_buy_a_missing_or_partial_batch(tmp_path, monkeypatch):
+    frames, admission = _inputs(tmp_path)
+    monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("bought cached image"))
+    with pytest.raises(ValueError, match="cached_batch_missing"):
+        completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "out",
+                                              admission=admission, token="", require_cached=True)
+    root = next((tmp_path / "out").glob("[0-9a-f]" * 64))
+    (root / "0.json").write_text(json.dumps({"status": "submitting"}))
+    with pytest.raises(ValueError, match="cached_batch_incomplete"):
+        completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "out",
+                                              admission=admission, token="", require_cached=True)
+
+
 def _inputs(tmp_path):
     frames = []
     for index in range(2):

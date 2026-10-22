@@ -208,6 +208,35 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
             pipeline.run_atlas_pipeline(**options)
 
 
+def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
+    from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
+
+    root = tmp_path / "job"
+    (root / "survey").mkdir(parents=True)
+    video = tmp_path / "source.mov"
+    video.write_bytes(b"source")
+    survey = {"source_video_digest": pipeline._sha256_file(video)}
+    (root / "survey/atlas_video_survey.json").write_text(json.dumps(survey))
+    review = {"automation": {"objects": [{"disposition": "remove"}]}}
+    (root / "selection_binding.json").write_text(json.dumps({"survey_relative_path": "survey/atlas_video_survey.json",
+        "review": review, "planner_receipt": {"model": "agent"}}))
+    config = {"authority": {"provider_retention": "approved"}, "remaining_cost_usd": 10,
+              "policy": {"maximum_review_cost_usd": 1, "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05}}
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: config)
+    monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "non-secret"))
+    monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **_: {"frames": []})
+    for name in ("run_sponsored_website_atlas_pose", "run_sponsored_website_atlas_task"):
+        monkeypatch.setattr(allocator, name, lambda **_: pytest.fail("unreviewed RGB reached Atlas"))
+    seen = []
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", lambda **kw:
+        seen.append(kw) or {"status": "quality_rejected", "background": {"status": "quality_rejected"}})
+    result = pipeline.run_atlas_pipeline(source_video=video, output_root=root,
+                                        task_context={"capture_id": "c", "context_digest": "task"})
+    assert seen[0]["pose_root"] is None and not result["splat_available"]
+    assert result["blockers"] == ["atlas_background_review_required"]
+
+
 def test_a_checkpoint_refusal_stops_the_run_before_the_first_paid_review(tmp_path, monkeypatch):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api

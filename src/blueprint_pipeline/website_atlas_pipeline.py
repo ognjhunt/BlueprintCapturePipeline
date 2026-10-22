@@ -214,6 +214,36 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})
     write_json(output_root / "atlas_scene_review.json", review)
+    if any(obj.get("disposition") == "remove" for obj in (review.get("automation") or {}).get("objects", [])):
+        # The editor/reviewer works from source pixels. Atlas receives no RGB
+        # until the complete cleaned set passes; do not buy a raw-scene pose or
+        # synthetic views merely to start image removal.
+        from .paid_resource_allocator import run_sponsored_website_atlas_automation
+        check("reviewed_background")
+        automation = run_sponsored_website_atlas_automation(
+            pose_root=None, inputs=inputs, review=review, output_root=output_root / "automation",
+            task_context=task_context, configuration=load_configuration(task_context, source_digest),
+            experimental=experimental, max_polls=max_polls, checkpoint=checkpoint)
+        if automation["status"] == "processing":
+            return automation
+        background = automation.get("background") or {}
+        complete = automation["status"] == "completed"
+        result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
+                  "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
+                  "automation": automation, "download": background.get("download"),
+                  "task_and_surrounding_scene_covered": True, "model": receipt["model"],
+                  "blockers": (["metric_scene_registration_unproven"] if complete else
+                               [background.get("reason", "atlas_background_review_required")]),
+                  "splat_available": complete, "splat_kind": "depth_fused_draft" if complete else None,
+                  "splat_manifest_digest": background.get("splat_manifest_digest"),
+                  "mesh_available": background.get("mesh_available", False),
+                  "scene_measurements": automation.get("measurements"),
+                  "simulation_qualified": False, "claim_ceiling": "development_only",
+                  "physical_evidence": False, "scale_status": "unscaled_provider_world_units",
+                  "billing_status": "provider_usage_unreported"}
+        result["digest"] = canonical_digest(result, digest_field="digest")
+        write_json(output_root / "result.json", result)
+        return result
     count = len(inputs["frames"])
     target_count = len({key for group in review["coverage_requirements"] for key in group["required_frame_ids"]})
     planned_cost = round(count * policy["pose_input_cost_usd"] + target_count * policy["rgbd_view_cost_usd"], 6)

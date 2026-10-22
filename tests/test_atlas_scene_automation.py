@@ -441,3 +441,119 @@ def test_public_reference_quote_requires_retained_page_text_and_matching_units(t
     reference["citation_quote"] = "Range width: 99 inches."
     invalid = retain_references(proposal, tmp_path, fetcher=Fetcher())
     assert invalid[0]["status"] == "unconfirmed_reference" and invalid[0]["quote_found"] is False
+
+
+def test_reviewed_background_resume_reuses_images_before_any_provider_preflight(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    image = view(tmp_path)
+    row = {"frame_id": "a", "image_path": image["image_path"],
+           "image_digest": image["image_digest"], "original_image_path": image["image_path"],
+           "original_image_digest": image["image_digest"]}
+    review_binding = {"frames": [{"frame_id": "a", "image_digest": row["image_digest"]}]}
+    background = {"status": "fallback_prepared", "ready_for_reconstruction": True,
+                  "frames": [row], "review": {"status": "passed", "binding": review_binding,
+                  "request_digest": canonical_digest(review_binding), "review": {
+                      "consistent_background": True, "task_objects_removed": True,
+                      "unrelated_objects_preserved": True}}}
+    args = dict(frames=[image], objects=plan()["objects"], automation=plan(),
+                inputs={"digest": "inputs"}, pose={"digest": "pose"}, root=tmp_path / "run",
+                context={}, policy={}, source_digest="source", task_runner=None,
+                release_blockers=lambda: ("commit", []))
+    args["root"].mkdir()
+    binding = {"source_video_digest": "source", "source_pose_digest": "pose", "inputs_digest": "inputs",
+               "automation_digest": canonical_digest(plan()), "task_context_digest": canonical_digest({}),
+               "selected_frame_ids": None, "editor_first": True}
+    path = args["root"] / "prepared_background.json"
+    edits._prepared_background(path, binding, background)
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: pytest.fail("bought completed edits again"))
+    monkeypatch.setattr(edits, "object_evidence", lambda **_: pytest.fail("repeated completed masks"))
+    assert edits.run_background(**args) == background
+    with pytest.raises(ValueError, match="binding_changed"):
+        edits.run_background(**{**args, "source_digest": "different-video"})
+    Path(row["image_path"]).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="pixels_changed"):
+        edits.run_background(**args)
+
+
+def test_rejected_or_unbound_background_cannot_be_adopted(tmp_path):
+    for review in ({"status": "blocked"}, {"status": "passed", "binding": {"frames": []}}):
+        with pytest.raises(ValueError, match="review_invalid"):
+            edits._prepared_background(tmp_path / "prepared.json", {}, {
+                "status": "fallback_prepared", "ready_for_reconstruction": True,
+                "frames": [{"frame_id": "a", "image_digest": "sha256:a"}], "review": review})
+    assert not (tmp_path / "prepared.json").exists()
+
+
+def test_source_cleanup_needs_no_pose_and_keeps_only_current_reviewed_frames(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_scene_automation as worker
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    a, b = view(tmp_path), view(tmp_path, "b", 0.1)
+    inputs = {"frames": [{k: f[k] for k in ("frame_id", "image_path", "image_digest")} for f in (a, b)],
+              "binding": {"source_video_digest": "source"}, "digest": "inputs"}
+    observed = []
+
+    def reject(**kw):
+        observed.append(kw)
+        assert [f["frame_id"] for f in kw["frames"]] == ["a"]
+        assert "depth" not in kw["frames"][0] and "extrinsics" not in kw["frames"][0]
+        assert not kw["frames"][0]["camera_calibrated"]
+        return {"status": "quality_rejected"}
+
+    monkeypatch.setattr(edits, "run_background", reject)
+    result = worker.run_automation(pose_root=None, inputs=inputs,
+        review={"automation": plan(), "coverage_requirements": [{"required_frame_ids": ["a"]}]},
+        output_root=tmp_path / "out", task_context={}, configuration={"policy": {}},
+        task_runner=lambda **_: pytest.fail("rejected image reached Atlas"),
+        pose_runner=lambda **_: pytest.fail("rejected image reached Atlas"), release_blockers=None)
+    assert result["status"] == "quality_rejected" and result["source_pose_digest"] is None
+    assert observed[0]["selected_frame_ids"] == ["a"]
+    assert result["digest"] == canonical_digest(result, digest_field="digest")
+
+
+def test_rejected_atlas_fallback_enters_existing_repair_and_retains_passed_set(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_image_completion as image_edit, website_image_repair_agent as repair
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: None)
+    monkeypatch.setattr(edits, "segment_objects", lambda **_: [{**plan()["objects"][0], **track(frames)}])
+    monkeypatch.setattr(image_edit, "_validated_backend", lambda *a, **k:
+                        ({}, {"pricing_binding": {"max_cost_per_request_usd": 0.2}}, "b"))
+    monkeypatch.setattr(image_edit, "complete_background_images", lambda **k: [{
+        **row, "original_image_path": row["image_path"], "original_image_digest": row["image_digest"],
+    } for row in k["frames"]])
+    monkeypatch.setattr(image_edit, "verify_completed_background", lambda **k:
+                        {"status": "passed" if k["output_root"].name == "anchor_review" else "blocked"})
+    monkeypatch.setattr(repair, "image_repair_enabled", lambda: True)
+    calls = []
+
+    def repaired(**kw):
+        calls.append(kw)
+        binding = {"frames": [{"frame_id": r["frame_id"], "image_digest": r["image_digest"]}
+                              for r in kw["selected"]]}
+        return kw["selected"], {"status": "passed", "binding": binding,
+                                "request_digest": canonical_digest(binding), "review": {
+                                    "consistent_background": True, "task_objects_removed": True,
+                                    "unrelated_objects_preserved": True}}
+
+    monkeypatch.setattr(repair, "repair_rejected_views", repaired)
+
+    def task(**kw):
+        return {"status": "completed", "outputs": [
+            {"role": f"frames-{i}-imageAsset", "path": "unused.png", "sha256": "unused"}
+            for i in range(len(kw["request"]["contextFrames"]))]}
+
+    args = dict(frames=frames, objects=plan()["objects"], automation=plan(), editor_first=False,
+                inputs={"frames": [{"frame_id": f["frame_id"]} for f in frames]},
+                pose={"digest": "pose"}, root=tmp_path / "run", context={},
+                policy={"rgbd_view_cost_usd": 0.05, "rate_card_reference": "reviewed",
+                        "reviewed_by": "operator", "reviewed_on": "2026-10-22"},
+                source_digest="video", task_runner=task,
+                release_blockers=lambda: ("commit", []), configuration={"remaining_cost_usd": 10})
+    result = edits.run_background(**args)
+    assert result["status"] == "fallback_prepared" and len(calls) == 1
+    assert calls[0]["max_repairs"] == 2 and calls[0]["source_video_digest"] == "video"
+    assert calls[0]["repair_reference_path"].is_file()
+    assert edits.run_background(**args) == result and len(calls) == 1
