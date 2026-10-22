@@ -39,18 +39,19 @@ Scene preparation never buys Atlas itself:
   (`docs/website-atlas-scene-source.md`). Without one, it waits at
   `needs_input`.
 
-No Marble-shaped request can name Atlas:
+Website captures no longer buy Marble worlds (owner decision 2026-10-22):
+`WorldLabsPreviewProvider.submit` refuses a website capture
+(`website_marble_reconstruction_retired`), and the Pipeline no longer requests a
+`world_labs` reservation. No Marble-shaped request can name Atlas either:
 
 - The WebApp refuses every model name that starts with `atlas`.
-- Here, the Marble request builder refuses any model that is not a Marble model
-  (`worldlabs_model_not_a_world_model`).
-- `website_reconstruction_profile` refuses Atlas names
-  (`website_reconstruction_atlas_not_a_world_model`).
+- The legacy Marble request builder refuses any model that is not a Marble
+  model (`worldlabs_model_not_a_world_model`).
 
 ## Spend identity and consent
 
-The reservation uses the provider identity `world_labs_atlas`, not Marble's
-`world_labs`. Atlas has its own terms, and the producer uploads unedited source
+The reservation uses the provider identity `world_labs_atlas`; the Pipeline no
+longer reserves Marble's `world_labs` for website captures. Atlas has its own terms, and the producer uploads unedited source
 frames: the 518-pixel model inputs of the source-frame preparation, with people
 not removed. A site's consent to the Marble terms covers people-removed views
 sent to Marble, not this. The WebApp's `preparation-spend` route does not accept
@@ -73,8 +74,8 @@ Nothing is defaulted. A missing value refuses before any reservation or upload.
 
 Atlas pricing is unpublished. The billing page points to the platform's rate
 card, warns that it may change during the beta, and gives a beta conversion of
-1,000 credits per US dollar. Marble's `MAX_GENERATION_COST_USD` uses 1,250
-credits per dollar and does not apply here. The reservation ceiling is whatever
+1,000 credits per US dollar (Marble used 1,250, which does not apply here).
+The reservation ceiling is whatever
 an owner records after reading the rate card:
 
 ```json
@@ -205,8 +206,7 @@ Every recovery is code; nothing is resolved by editing state.
 | `website_atlas_pose_frames_invalid`, `_grid_not_requested`, `_operation_identity_mismatch`, `website_atlas_identifier_invalid`, `website_atlas_depth_not_exr`, `website_atlas_transfer_size_mismatch`, `website_atlas_output_size_unreported` | The returned bundle does not match the request | No result is written. References are checked before the first download. |
 
 The reservation is never settled. Nothing reports what an Atlas operation
-actually cost, so the full ceiling stays charged against the sponsorship. Marble
-has a settlement path because its operations report `total_credits`.
+actually cost, so the full ceiling stays charged against the sponsorship.
 
 ## Not done, because it needs Atlas access, pricing or a decision
 

@@ -255,7 +255,7 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
         runner_calls.append(kwargs)
         result = prepare_website_scene_handoff(descriptor={"scene_id": owner["scene_id"], "capture_id": owner["capture_id"],
             "metadata": {"site_task_context": context}}, clean_plate={"privacy_verified": True, "status": "noop"},
-            provider_run={"status": "not_requested"}, capture_root=root, now=0)
+            capture_root=root, now=0)
         assert result["status"] == "awaiting_reconstruction" and result["blockers"] == ["website_atlas_job_processing"]
         raise PipelineError("website_atlas_job_processing") from StageError("website_scene_preparation", "website_atlas_job_processing")
     with pytest.raises(PipelineError, match="website_atlas_job_processing"):
