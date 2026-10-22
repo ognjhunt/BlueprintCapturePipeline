@@ -22,6 +22,9 @@ from .local_reconstruction_adapters import LocalDecodedObservationAdapter, _sha2
 
 SURVEY_SCHEMA = "atlas_video_survey.v1"
 REVIEW_SCHEMA = "atlas_scene_state_review.v1"
+#: A view that moved less than this (896-px preview pixels) from an overlapping
+#: kept neighbour adds no new viewpoint: the ``select_views`` near-duplicate rule.
+DISTINCT_VIEW_MINIMUM_DISPLACEMENT = 12
 
 
 def initial_survey_count(times, sampling_policy):
@@ -234,6 +237,63 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
     return sorted(selected), diagnostics
 
 
+def add_distinct_views(*, frames, features, selected, maximum_frames, policy=None):
+    """Grow the connected cover with distinct, sharp, overlapping views, widest spread first.
+
+    Owner direction 2026-10-22: accuracy, not cost, decides the provider inputs.
+    Each step admits the candidate farthest in time from the kept set that still
+    overlaps a kept time neighbour under the cover's support rule and moved enough
+    from every overlapping one to be a new viewpoint. Every admitted view therefore
+    overlaps a kept view, earlier context is reached through its own bridges, and
+    a binding ``maximum_frames`` keeps the widest connected spread. Overlap is a
+    selection heuristic, never geometry.
+    """
+    policy = dict(policy or {})
+    minimum_sharpness = policy.get("minimum_sharpness", 25)
+    maximum_clipping = policy.get("maximum_clipped_fraction", .45)
+    minimum_support = policy.get("minimum_overlap_inliers", 24)
+    cover = set(selected)
+    if type(maximum_frames) is not int or maximum_frames < len(cover):
+        raise ValueError("atlas_coverage_exceeds_frame_budget")
+    times = [row["timestamp_seconds"] for row in frames]
+    kept, cache, decisions = set(cover), {}, {}
+    pending = {i for i, row in enumerate(frames) if i not in kept and row["sharpness"] >= minimum_sharpness
+               and row["clipped_fraction"] <= maximum_clipping}
+
+    def overlap(a, b):
+        pair = (min(a, b), max(a, b))
+        if pair not in cache:
+            cache[pair] = _overlap(features[pair[0]], features[pair[1]])
+        return cache[pair]
+    while pending and len(kept) < maximum_frames:
+        best, best_gap = None, -1.0
+        for i in sorted(pending, key=lambda index: (times[index], index)):
+            before = [k for k in kept if times[k] <= times[i]]
+            after = [k for k in kept if times[k] >= times[i]]
+            neighbours = [max(before, key=lambda k: times[k])] if before else []
+            neighbours += [min(after, key=lambda k: times[k])] if after else []
+            connected = [(support, moved) for support, moved in (overlap(i, k) for k in neighbours)
+                         if support >= minimum_support]
+            if not connected:
+                continue  # Not reachable yet; a nearer admitted view may bridge it.
+            if min(moved for _, moved in connected) < DISTINCT_VIEW_MINIMUM_DISPLACEMENT:
+                decisions[i] = "near_duplicate"
+                continue
+            gap = min(abs(times[i] - times[k]) for k in neighbours)
+            if gap > best_gap:
+                best, best_gap = i, gap
+        pending -= set(decisions)
+        if best is None:
+            break
+        kept.add(best)
+        pending.discard(best)
+        decisions[best] = "distinct_view"
+    leftover = "beyond_input_capacity" if len(kept) >= maximum_frames else "disconnected_view"
+    decisions.update({i: leftover for i in pending})
+    return sorted(kept), [{"frame_id": frames[i]["frame_id"], "decision": decision}
+                          for i, decision in sorted(decisions.items(), key=lambda item: times[item[0]])]
+
+
 def selection_frame_budget(review: Mapping[str, Any]) -> int:
     """A planning ceiling from reviewed dollars, never provider authority."""
     from datetime import datetime, timezone
@@ -274,10 +334,14 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
                 or any(type(v) not in (int, float) or not math.isfinite(v) for v in interval)
                 or not 0 <= interval[0] < interval[1]):
             raise ValueError("atlas_static_interval_invalid")
+    from .website_atlas_pose import MAX_POSE_INPUT_IMAGES
     budget_frames = selection_frame_budget(review)
     if maximum_frames is not None and (type(maximum_frames) is not int or maximum_frames < 2):
         raise ValueError("atlas_selection_limit_invalid")
-    maximum_frames = min(maximum_frames, budget_frames) if maximum_frames is not None else budget_frames
+    # The connected cover is bounded only by the reviewed dollars (or an operator's
+    # explicit lower limit); added views by the provider's configured input capacity.
+    capacity = MAX_POSE_INPUT_IMAGES if maximum_frames is None else maximum_frames
+    cover_limit = budget_frames if maximum_frames is None else min(maximum_frames, budget_frames)
     frames = [r for r in survey["frames"] if any(a <= r["timestamp_seconds"] <= b for a, b in intervals)]
     for r in frames:
         path = Path(r["source_image_path"])
@@ -291,15 +355,23 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     if review.get("additional_input_frame_ids"):
         requirements = [*requirements, {"role": "support_surface", "label": "Reviewed reconstruction gap inputs",
             "required_frame_ids": review["additional_input_frame_ids"]}]
+    features = [_features(r, rotation) for r in frames]
     try:
-        selected, diagnostics = select_coverage_views(frames=frames, features=[_features(r, rotation) for r in frames],
-            maximum_frames=maximum_frames, requirements=requirements, anchor_id=anchor_id,
+        cover, diagnostics = select_coverage_views(frames=frames, features=features,
+            maximum_frames=cover_limit, requirements=requirements, anchor_id=anchor_id,
             policy=review.get("selection_policy"))
     except ValueError as error:
         write_json(output_root / "atlas_coverage_gap.json", {"status": "blocked_before_upload", "reason": str(error),
             "survey_digest": survey["digest"], "review_digest": canonical_digest(review),
             "task_and_surrounding_scene_covered": False, "paid_task_started": False})
         raise
+    maximum_frames = max(capacity, len(cover))
+    selected, added = add_distinct_views(frames=frames, features=features, selected=cover,
+                                         maximum_frames=maximum_frames, policy=review.get("selection_policy"))
+    diagnostics = [*diagnostics, *added]
+    if len(selected) > budget_frames:
+        # Dollars only ever refuse the accurate set; they never pose fewer frames.
+        raise ValueError("atlas_selection_budget_below_accurate_inputs")
     from .atlas_privacy_screen import blur_faces, screen_identity
     root = output_root.resolve()
     prepared, blurred = [], {}
@@ -329,6 +401,9 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     plan = {"schema_version": "atlas_view_selection.v1", "review": dict(review),
             "input_digest": inputs["digest"], "selected_frame_count": len(prepared),
             "maximum_frames": maximum_frames, "diagnostics": diagnostics,
+            "frame_policy": {"basis": "accuracy_first", "provider_input_capacity": capacity,
+                             "frame_target": maximum_frames,
+                             "connected_cover_frames": len(cover), "distinct_views_added": len(selected) - len(cover)},
             "task_and_surrounding_scene_covered": True,
             "coverage_requirements": requirements, "coverage_authority": "source_image_review_and_overlap_heuristic",
             "privacy_screen": inputs["binding"]["privacy_screen"],

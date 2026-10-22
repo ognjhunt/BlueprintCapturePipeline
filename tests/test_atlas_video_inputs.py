@@ -144,3 +144,95 @@ def test_provider_inputs_are_face_screened_before_their_digest_and_raw_frames_st
     assert selection["privacy_screen"]["model_sha256"] == screen.MODEL_SHA256
     pending = json.loads((output / "atlas_pose_inputs.json").read_text())
     assert [frame["image_digest"] for frame in pending["frames"]] == [frame["image_digest"] for frame in selection["frames"]]
+
+
+def _timeline(count):
+    return [{"frame_id": str(i), "timestamp_seconds": i * .5, "sharpness": 50, "clipped_fraction": 0} for i in range(count)]
+
+
+def test_accuracy_first_adds_every_distinct_sharp_connected_view_and_keeps_the_cover(monkeypatch):
+    frames = _timeline(8)
+    frames[5]["sharpness"] = 1  # blurred
+    frames[6]["clipped_fraction"] = .9  # blown out
+
+    def overlap(a, b):
+        a, b = sorted((a, b))
+        if (a, b) == (1, 2):
+            return 100, 3  # frame 2 barely moved: a near duplicate of 1
+        if 7 in (a, b):
+            return 2, 40  # nothing matches frame 7: disconnected
+        return 100, 30
+    monkeypatch.setattr(video, "_overlap", overlap)
+    kept, diagnostics = video.add_distinct_views(frames=frames, features=list(range(8)), selected=[0, 4],
+                                                 maximum_frames=64)
+    # Widest gap first: 2 is admitted before 1, and 1 then barely differs from it.
+    assert kept == [0, 2, 3, 4]
+    decisions = {row["frame_id"]: row["decision"] for row in diagnostics}
+    assert decisions == {"1": "near_duplicate", "2": "distinct_view", "3": "distinct_view", "7": "disconnected_view"}
+
+
+def _chain(count):
+    """Overlap only between consecutive frames: the hardest case for keeping inputs connected."""
+    return lambda a, b: (100, 30) if abs(a - b) == 1 else (0, 0.0)
+
+
+def test_earlier_context_is_reached_through_its_own_bridges(monkeypatch):
+    monkeypatch.setattr(video, "_overlap", _chain(10))
+    kept, _ = video.add_distinct_views(frames=_timeline(10), features=list(range(10)), selected=[8, 9],
+                                       maximum_frames=64)
+    assert kept == list(range(10))
+
+
+def test_a_binding_capacity_keeps_every_input_connected_and_never_drops_the_cover(monkeypatch):
+    monkeypatch.setattr(video, "_overlap", _chain(10))
+    kept, diagnostics = video.add_distinct_views(frames=_timeline(10), features=list(range(10)), selected=[0, 1],
+                                                 maximum_frames=5)
+    assert kept == [0, 1, 2, 3, 4]  # each added view overlaps a kept one; no stranded far views
+    assert {row["decision"] for row in diagnostics} == {"distinct_view", "beyond_input_capacity"}
+    # With wider overlap, the same capacity spreads the inputs over the whole interval.
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 30) if abs(a - b) <= 5 else (0, 0.0))
+    kept, _ = video.add_distinct_views(frames=_timeline(20), features=list(range(20)), selected=[10],
+                                       maximum_frames=5)
+    assert kept == [0, 5, 10, 15, 19] or (min(kept) <= 1 and max(kept) >= 18 and len(kept) == 5)
+    with pytest.raises(ValueError, match="coverage_exceeds_frame_budget"):
+        video.add_distinct_views(frames=_timeline(20), features=list(range(20)), selected=[1, 2, 3], maximum_frames=2)
+
+
+def test_accuracy_target_is_independent_of_dollars_which_only_refuse(tmp_path, monkeypatch):
+    from PIL import Image
+    from blueprint_pipeline import atlas_privacy_screen as screen
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    root = tmp_path / "survey"
+    (root / "frames").mkdir(parents=True)
+    rows = []
+    for index in range(70):
+        path = root / "frames" / f"{index}.png"
+        Image.new("RGB", (32, 24), (index, 90, 160)).save(path)
+        rows.append({"frame_id": str(index), "timestamp_seconds": index * .5, "source_image_path": str(path),
+                     "source_image_digest": _sha256_file(path), "sharpness": 50, "clipped_fraction": 0})
+    survey = {"schema_version": video.SURVEY_SCHEMA, "heldout_pixels_included": False, "frames": rows,
+              "display_rotation_degrees": 0, "source_video_digest": "sha256:" + "a" * 64, "sample_count": 70,
+              "heldout_frame_count": 0}
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    (root / "atlas_video_survey.json").write_text(json.dumps(survey))
+    review = {"schema_version": video.REVIEW_SCHEMA, "survey_digest": survey["digest"], "moving_people_excluded": True,
+              "same_scene_state": True, "reviewed_by": "test", "scene_state": "unchanged",
+              "static_intervals_seconds": [[0, 40]], "anchor_frame_id": "0", "coverage_requirements": [
+                  {"role": "task_object", "label": "object", "required_frame_ids": ["0"]},
+                  {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["1"]}],
+              "selection_budget": {"maximum_pose_cost_usd": 10, "input_cost_usd": .01, "rate_card_reference": "test",
+                                   "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}}
+    monkeypatch.setattr(video, "_features", lambda row, rotation: int(row["frame_id"]))
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 30))
+    monkeypatch.setattr(screen, "blur_faces", lambda image: (image, []))
+    video.prepare_video_inputs(survey_path=root / "atlas_video_survey.json", review=review, output_root=tmp_path / "pose")
+    selection = json.loads((tmp_path / "pose/atlas_view_selection.json").read_text())
+    from blueprint_pipeline.website_atlas_pose import MAX_POSE_INPUT_IMAGES
+    assert selection["selected_frame_count"] == MAX_POSE_INPUT_IMAGES == 64
+    assert selection["frame_policy"] == {"basis": "accuracy_first", "provider_input_capacity": 64, "frame_target": 64,
+                                         "connected_cover_frames": 2, "distinct_views_added": 62}
+    # A budget that cannot pay for the accurate set refuses; it never quietly poses fewer frames.
+    review["selection_budget"]["maximum_pose_cost_usd"] = .3
+    with pytest.raises(ValueError, match="budget_below_accurate_inputs"):
+        video.prepare_video_inputs(survey_path=root / "atlas_video_survey.json", review=review,
+                                   output_root=tmp_path / "pose-low")

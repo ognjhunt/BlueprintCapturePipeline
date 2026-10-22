@@ -13,8 +13,9 @@ share the same dollar/request cap; legacy native/Marble authority is untouched.
 uses structured output, disabled tracing and `store=False`. It reviews candidate
 frames, proposes static intervals and required task/room anchors, and records
 actual model, SDK, usage and cost. CPU checks validate source hashes, unsafe-frame
-exclusion, coverage, quality, overlap and budget. Missing bridges trigger candidate
-densification and another review without reading frozen held-out pixels. Retained
+exclusion, coverage, quality, overlap and budget. Every first run then densifies the
+reviewed still interval and reviews the denser survey again, without reading frozen
+held-out pixels. Retained
 plans and operation IDs survive restarts without repeat purchases. Unknown model
 or provider submission outcomes hold for reconciliation.
 
@@ -73,10 +74,33 @@ per-upload cap the WebApp grant enforces. It is development-only and unscaled.
   `GET /api/live-pipeline/website-atlas-previews/<capture>/bundle?request_id=&digest=`
   (WebApp client only), which serves a ready, unwithdrawn bundle of that exact digest.
 
+## Accuracy-first input selection
+
+Owner direction (2026-10-22): accuracy, not cost, decides the provider inputs.
+After the first review, `accuracy_survey` adds candidates every 0.1 s inside the
+reviewed still interval (coarser only when the interval is long, so the second
+review stays under 300 images), and the planner reviews that denser survey before
+any selection. A second review of about 80 images reserves about $0.56 worst case,
+so the runtime policy's `maximum_review_cost_usd` must allow it (about $4 covers a
+300-image review).
+`prepare_video_inputs` then builds the connected cover of the reviewed task and
+room anchors, bounded only by the reviewed dollars, and `add_distinct_views` grows
+it: each step admits the sharp, unclipped candidate farthest in time from the kept
+set that still overlaps a kept time neighbour (the cover's support rule) and moved
+at least 12 preview pixels from each overlapping one (the near-duplicate rule).
+Every posed view therefore overlaps another, earlier context is reached through
+its own bridges, and a binding capacity keeps the widest connected spread. Added
+views stop at the Atlas pose adapter's configured input capacity
+(`website_atlas_pose.MAX_POSE_INPUT_IMAGES`, 64, provider data per the package
+AGENTS.md); the cover is never cut by it. The reviewed dollars are checked only
+after selection and refuse (`atlas_selection_budget_below_accurate_inputs`); they
+never pose fewer frames. Atlas has not published a per-request image limit, so the
+first 64-frame request settles whether it accepts that many.
+
 ## Review output gaps and refine source inputs
 
-The initial cover connects reviewed task/room anchors; its selected count is not
-a quality optimum or provider limit. For an output-aware second pass, retain an
+The initial cover connects reviewed task/room anchors and is then densified as
+above. For an output-aware second pass, retain an
 `atlas_reconstruction_feedback.v1` JSON with a canonical `digest`, `parent_root`,
 `parent_result_digest`, `parent_selection_sha256`, and `previews` entries containing
 `relative_path`, `sha256`, and `source_frame_id`. Previews are labeled derived
