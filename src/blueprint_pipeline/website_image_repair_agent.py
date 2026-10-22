@@ -245,7 +245,7 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
             task_context=task_context, repair_instruction=row["instruction"],
             repair_reference_path=(repair_reference_path if repair_reference_path is not None
                                    else Path(anchor["image_path"]) if anchor is not None else None),
-            source_video_digest=source_video_digest)[0]
+            source_video_digest=source_video_digest, mask_guidance=True)[0]
         result[index] = {**edited, "repair_instruction": row["instruction"]}
     review = verify_completed_background(frames=result, original_frames=original_frames, plan=plan,
                                          output_root=output_root, task_context=task_context,

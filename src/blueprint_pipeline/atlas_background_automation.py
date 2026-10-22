@@ -361,7 +361,7 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
     options = dict(task_digest=plan["task_context_sha256"], admission={}, token="",
                    targets=plan["targets"], task_context=context, source_video_digest=source_digest,
                    repair_instruction=automation["removal_instruction"],
-                   repair_reference_path=Path(anchor["image_path"]))
+                   repair_reference_path=Path(anchor["image_path"]), mask_guidance=True)
     candidates = []
     # A prior run may have edited a larger set. Read its exact completed batch
     # without authority to buy a missing image, then review only the current set.
@@ -578,6 +578,7 @@ def run_background(
         task_context=context,
         source_video_digest=source_digest,
         repair_instruction=automation["removal_instruction"],
+        mask_guidance=True,
     )[0]
     check("automation_anchor_review")
     anchor_review = verify_completed_background(

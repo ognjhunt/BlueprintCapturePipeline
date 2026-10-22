@@ -78,10 +78,16 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
     """Re-estimate edited RGB's geometry; never paste original depth under a fill."""
     from .website_worldlabs import prepare_atlas_pose_inputs
     from .website_scene_geometry import INPUT_SCHEMA
-    from .website_atlas_pose import ATLAS_PRICE_REVIEW_ENV, request_options
+    from .website_atlas_pose import ATLAS_PRICE_REVIEW_ENV, request_options, load_pending_atlas_pose_inputs
     import os
 
-    input_root = root / "fallback_inputs"
+    legacy = root / "fallback_pose/atlas_pose/submission.json"
+    if legacy.exists():
+        raise ValueError("atlas_fallback_legacy_pose_requires_reconciliation")
+    # V1 put RGB in a sibling directory, outside the canonical producer's
+    # capture boundary. Preserve that refused handoff; v2 owns its own inputs.
+    pose_root = root / "fallback_pose-v2"
+    input_root = pose_root / "inputs"
     input_root.mkdir(parents=True, exist_ok=True)
     rows = []
     for i, row in enumerate(background["frames"]):
@@ -113,9 +119,8 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
         "heldout_frame_count": 0,
     }
     inputs["digest"] = canonical_digest(inputs, digest_field="digest")
-    pose_root = root / "fallback_pose"
-    pose_root.mkdir(exist_ok=True)
     prepare_atlas_pose_inputs(inputs=inputs, input_root=input_root, output_root=pose_root)
+    load_pending_atlas_pose_inputs(pose_root)
     quote = {
         "schema_version": "website_atlas_pose_price_review.v1",
         "endpoint": "/api/v2/tasks:images2PosedRGBD",
