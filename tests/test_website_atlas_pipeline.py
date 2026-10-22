@@ -97,6 +97,9 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
         if kwargs["task"] == "splats2Mesh":
             assert kwargs["price_review"]["maximum_cost_usd"] == mesh_price
             assert kwargs["uploads"]["splat"]["path"].endswith("atlas_depth_splat.spz")
+            kwargs["output_root"].mkdir(parents=True, exist_ok=True)
+            (kwargs["output_root"] / "result.json").write_text(json.dumps(
+                {"outputs": [{"role": "mesh", "path": "outputs/mesh.glb"}]}))
             return {"status": "completed", "digest": "mesh"}
         assert kwargs["price_review"]["maximum_cost_usd"] == .1
         return {"status": "completed", "digest": "generated"}
@@ -111,6 +114,9 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
         (splat_root / "atlas_depth_splat_manifest.json").write_text(json.dumps(manifest))
         return manifest
     monkeypatch.setattr(depth_splat, "build_depth_splat", splat)
+    from blueprint_pipeline import atlas_mesh_registration as mesh_registration
+    registered = []
+    monkeypatch.setattr(mesh_registration, "register_atlas_mesh", lambda **kw: registered.append(kw))
     exported = {}
     monkeypatch.setattr(bundles, "export_pose_bundle", lambda **kw: exported.update(kw) or {"zip_path": "retained.zip"})
     options = {"source_video": video, "output_root": root, "task_context": {"capture_id": "c", "context_digest": "task"}}
@@ -121,6 +127,7 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     assert result["task_and_surrounding_scene_covered"] is True
     assert result["splat_available"] is True and result["mesh_available"] is bool(mesh_price)
     assert (exported["mesh_root"] is not None) is bool(mesh_price) and exported["splat_root"] == root / "splat"
+    assert [str(kw["glb"]) for kw in registered] == ([str(root / "mesh/outputs/mesh.glb")] if mesh_price else [])
     # No reviewed mesh price means no mesh purchase, never an implied mesh.
     assert result["blockers"] == ([] if mesh_price else ["atlas_mesh_export_price_unreviewed"]) + [
         "metric_scene_registration_unproven"]
