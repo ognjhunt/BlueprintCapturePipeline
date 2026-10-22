@@ -1,5 +1,6 @@
 """Source selection cannot promote state review, heldout pixels or generated views."""
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -31,3 +32,64 @@ def test_no_paid_set_with_only_duplicate_views(monkeypatch):
     with pytest.raises(ValueError, match="insufficient_overlapping_distinct_views"):
         video.select_views(frames=[{"frame_id": str(i), "sharpness": 50, "clipped_fraction": 0} for i in range(3)],
                            features=[None] * 3, maximum_frames=24)
+
+
+def test_task_closeups_without_surrounding_scene_are_refused():
+    frames = [{"frame_id": str(i), "sharpness": 50, "clipped_fraction": 0} for i in range(3)]
+    with pytest.raises(ValueError, match="task_and_scene_coverage_review_required"):
+        video.select_coverage_views(frames=frames, features=[None] * 3, maximum_frames=3, anchor_id="0",
+            requirements=[{"role": "task_object", "label": "dishwasher", "required_frame_ids": ["0"]}])
+
+
+def test_required_context_uses_overlap_bridges_and_never_silently_drops_context(monkeypatch):
+    frames = [{"frame_id": str(i), "sharpness": 50, "clipped_fraction": 0} for i in range(5)]
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 25) if abs(a-b) == 1 else (0, 0))
+    requirements = [{"role": "task_object", "label": "dishwasher", "required_frame_ids": ["4"]},
+                    {"role": "surrounding_scene", "label": "counter and floor", "required_frame_ids": ["0"]}]
+    selected, _ = video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=5,
+        requirements=requirements, anchor_id="4")
+    assert selected == list(range(5))
+    with pytest.raises(ValueError, match="coverage_exceeds_frame_budget"):
+        video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=4,
+            requirements=requirements, anchor_id="4")
+    frames[2]["sharpness"] = 0
+    with pytest.raises(ValueError, match="coverage_gap"):
+        video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=5,
+            requirements=requirements, anchor_id="4")
+
+
+def test_financial_frame_budget_has_no_invented_64_frame_ceiling():
+    review = {"selection_budget": {"maximum_pose_cost_usd": 4.76, "input_cost_usd": .01,
+        "rate_card_reference": "fixture only", "reviewed_by": "test operator",
+        "reviewed_on": datetime.now(timezone.utc).date().isoformat()}}
+    assert video.selection_frame_budget(review) == 476
+    review["selection_budget"]["input_cost_usd"] = 0
+    with pytest.raises(ValueError, match="reviewed_selection_budget_required"):
+        video.selection_frame_budget(review)
+
+
+def test_candidate_densification_preserves_existing_hidden_ids():
+    from blueprint_pipeline.atlas_video_extension import gap_indexes
+    times = [i / 10 for i in range(31)]
+    result = gap_indexes(times=times, base_indexes=[0, 5, 10, 15, 20, 25, 30],
+        visible_indexes={0, 5, 20, 25, 30}, intervals=[[0, 2.5]], step_seconds=.2)
+    assert result and set(result).isdisjoint({10, 15})
+    assert all(5 < i < 20 for i in result)
+
+
+def test_survey_scales_with_video_and_per_run_cadence_instead_of_64_frames():
+    short = [i / 30 for i in range(31)]
+    long = [i / 30 for i in range(3001)]
+    assert video.initial_survey_count(long, {}) > 64
+    assert video.initial_survey_count(short, {}) < 64
+    assert video.initial_survey_count(long, {"initial_candidate_interval_seconds": .1}) > video.initial_survey_count(long, {})
+
+
+def test_scene_specific_quality_and_overlap_policy_can_admit_sparse_texture(monkeypatch):
+    frames = [{"frame_id": str(i), "sharpness": 10, "clipped_fraction": .2} for i in range(2)]
+    requirements = [{"role": "task_object", "label": "scene-specific object", "required_frame_ids": ["0"]},
+                    {"role": "surrounding_scene", "label": "scene-specific support", "required_frame_ids": ["1"]}]
+    monkeypatch.setattr(video, "_overlap", lambda *_: (12, 20))
+    selected, _ = video.select_coverage_views(frames=frames, features=[None, None], maximum_frames=476,
+        requirements=requirements, anchor_id="0", policy={"minimum_sharpness": 5, "minimum_overlap_inliers": 10})
+    assert selected == [0, 1]

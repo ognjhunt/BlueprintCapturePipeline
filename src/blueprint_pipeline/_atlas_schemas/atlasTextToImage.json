@@ -1,0 +1,386 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/components/schemas/AtlasTextToImageRequest",
+  "components": {
+    "schemas": {
+      "AtlasTextToImageRequest": {
+        "properties": {
+          "webhookUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "purgeContentOnOperationCompletion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "aspectRatio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "4:3",
+                  "3:4",
+                  "1:1"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enhancePrompt": {
+            "type": "boolean",
+            "default": true
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "numSteps": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100,
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "numSamples": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 4,
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "returnDepth": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "prompt"
+        ]
+      },
+      "AtlasTextToImageResponse": {
+        "properties": {
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/FrameRGBAsset"
+            },
+            "type": "array"
+          },
+          "promptUsed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "aspectRatio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "4:3",
+                  "3:4",
+                  "1:1"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "frames"
+        ]
+      },
+      "FrameRGBAsset": {
+        "properties": {
+          "imageAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          },
+          "maskAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "camera": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PinholeCamera"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LogDepthBufferAsset"
+              },
+              {
+                "$ref": "#/components/schemas/LinearDepthBufferAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "imageAsset"
+        ]
+      },
+      "LinearDepthBufferAsset": {
+        "properties": {
+          "confidenceAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "depthAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "depthAsset"
+        ]
+      },
+      "TaskAsset": {
+        "properties": {
+          "assetId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "LogDepthBufferAsset": {
+        "properties": {
+          "confidenceAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "logDepthAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          },
+          "zMin": {
+            "type": "number"
+          },
+          "zMax": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "logDepthAsset",
+          "zMin",
+          "zMax"
+        ]
+      },
+      "PinholeCamera": {
+        "properties": {
+          "extrinsics": {
+            "$ref": "#/components/schemas/CoordinateFrame"
+          },
+          "intrinsics": {
+            "$ref": "#/components/schemas/PinholeCameraIntrinsics"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "extrinsics",
+          "intrinsics"
+        ]
+      },
+      "PinholeCameraIntrinsics": {
+        "properties": {
+          "fx": {
+            "type": "number"
+          },
+          "fy": {
+            "type": "number"
+          },
+          "cx": {
+            "type": "number"
+          },
+          "cy": {
+            "type": "number"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "fx",
+          "fy",
+          "cx",
+          "cy",
+          "width",
+          "height"
+        ]
+      },
+      "CoordinateFrame": {
+        "properties": {
+          "position": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 3,
+            "minItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "quaternion": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "items": {
+              "type": "number"
+            }
+          },
+          "coordinateSystem": {
+            "type": "string",
+            "enum": [
+              "rub",
+              "rdf"
+            ],
+            "default": "rub"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "position",
+          "quaternion"
+        ]
+      }
+    }
+  },
+  "x-source-url": "https://atlas-beta.worldlabs.ai/docs/api-reference/atlas-text-to-image",
+  "x-source-document-sha256": "8840726de6b4d7af495a5c9a7ce9aab72b92ea72c69fec74b25b2d3e6b64db8a",
+  "x-retrieved-on": "2026-10-21",
+  "x-response-schema": "#/components/schemas/AtlasTextToImageResponse"
+}

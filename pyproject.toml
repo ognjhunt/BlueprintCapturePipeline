@@ -50,6 +50,8 @@ dependencies = [
     # runtime extra.
     "scipy>=1.10.0",
     "Pillow>=13.0.0",
+    # The production Atlas adapter validates the pinned provider contract.
+    "jsonschema>=4.23.0",
     # Official CPU-only decoder for hosted SAM 3.1 masks.
     "meta-sam-parser==0.0.5",
     "fastapi>=0.115.0",
@@ -473,7 +475,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"blueprint_pipeline" = ["_catalog_schemas/*.schema.json"]
+"blueprint_pipeline" = ["_catalog_schemas/*.schema.json", "_atlas_schemas/*.json"]
 "blueprint_pipeline._sam_parser_js" = ["runner.mjs", "LICENSE", "README.md", "VENDORED_SOURCE.md", "package.json", "dist/*.js", "dist/*.d.ts"]
 
 [tool.ruff]
