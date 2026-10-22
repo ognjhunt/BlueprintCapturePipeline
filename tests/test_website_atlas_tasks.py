@@ -215,3 +215,24 @@ def test_undeclared_uploads_and_wrong_asset_bytes_do_not_become_meshes(case, tmp
     with pytest.raises(ValueError, match="mesh_not_glb"):
         tasks._collect(client, {"response": {"mesh": {"assetId": "asset_output"}}}, tmp_path)
 
+
+
+def test_textured_mesh_may_exceed_the_image_output_ceiling_but_images_may_not(tmp_path, monkeypatch):
+    import struct
+    monkeypatch.setattr(pose, "MAX_OUTPUT_BYTES", 64)
+    monkeypatch.setattr(pose, "MAX_MESH_OUTPUT_BYTES", 4096)
+    blobs = {"asset_mesh": b"glTF" + struct.pack("<II", 2, 200) + bytes(188),
+             "asset_image": b"\x89PNG\r\n\x1a\n" + bytes(100)}
+    def transport(method, url, headers, data):
+        if url.startswith("https://read.example.test/"):
+            return 200, blobs[url.rsplit("/", 1)[-1]]
+        path = url.split("/api/v2")[1]
+        if path.endswith(":createReadUrl"):
+            return 200, json.dumps({"readUrl": "https://read.example.test/" + path.split("/")[-1].split(":")[0]}).encode()
+        asset_id = path.split("/")[-1]
+        return 200, json.dumps({"id": asset_id, "sizeBytes": len(blobs[asset_id]), "mimeType": "model/gltf-binary"}).encode()
+    client = pose.AtlasClient(base_url="https://api.atlas-beta.worldlabs.ai/api/v2", api_key="test-key", transport=transport)
+    retained = tasks._collect(client, {"response": {"mesh": {"assetId": "asset_mesh"}}}, tmp_path)
+    assert retained[0]["bytes"] == 200 and retained[0]["path"].endswith(".glb")
+    with pytest.raises(ValueError, match="output_too_large"):
+        tasks._collect(client, {"response": {"frames": [{"imageAsset": {"assetId": "asset_image"}}]}}, tmp_path)
