@@ -49,3 +49,48 @@ def test_the_isolated_import_preflight_tolerates_a_cold_runtime(tmp_path, monkey
     monkeypatch.setattr(builder.subprocess, "run", fake_run)
     builder._runtime_preflight(tmp_path)
     assert seen["timeout"] == builder.PREFLIGHT_TIMEOUT_SECONDS >= 300
+
+
+def test_sealed_runtime_package_shares_bytes_and_survives_staging_cleanup(tmp_path):
+    """Packaging must not double the large temporary runtime's disk footprint."""
+    import shutil
+    from scripts.build_task_evaluation_scene_configuration_component_package import build_scene_configuration_component_package
+    from blueprint_pipeline.task_evaluation_scene_configuration_component_package import validate_scene_configuration_component_package
+
+    staging = tmp_path / "owned-staging"
+    staging.mkdir()
+    driver = staging / "run"
+    driver.write_text("#!/bin/sh\nexit 0\n")
+    driver.chmod(0o755)
+    payload = staging / "runtime.bin"
+    original = b"locked vendor runtime\n" * 10000
+    payload.write_bytes(original)
+    payload.chmod(0o644)
+    builder = _builder()
+    builder._seal_staging_files(staging)
+    output = tmp_path / "published-package"
+    receipt = build_scene_configuration_component_package(adapter_id="content_agents_rigid_replacement",
+        source_root=staging, driver_entrypoint="run", source_repository="https://github.com/ognjhunt/BlueprintCapturePipeline",
+        source_commit="a" * 40, source_license="test", output_root=output)
+    for source in (driver, payload):
+        target = output / source.name
+        assert source.stat().st_ino == target.stat().st_ino
+        assert not target.stat().st_mode & 0o222
+    assert (output / "run").stat().st_mode & 0o111
+    shutil.rmtree(staging)
+    assert (output / "runtime.bin").read_bytes() == original
+    assert validate_scene_configuration_component_package(root=output,
+        expected_adapter_id="content_agents_rigid_replacement") == receipt
+
+
+def test_staging_seal_refuses_links_before_changing_any_permissions(tmp_path):
+    import pytest
+    staging = tmp_path / "owned-staging"
+    staging.mkdir()
+    vendor = tmp_path / "vendor.bin"
+    vendor.write_bytes(b"vendor installation")
+    vendor.chmod(0o644)
+    (staging / "escape").symlink_to(vendor)
+    with pytest.raises(ValueError, match="artisan_staging_symlink_forbidden"):
+        _builder()._seal_staging_files(staging)
+    assert vendor.stat().st_mode & 0o222
