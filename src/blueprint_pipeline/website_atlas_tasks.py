@@ -225,12 +225,12 @@ def _reconcile(client: pose.AtlasClient, state: dict[str, Any], path: Path, *, t
     return state
 
 
-def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_root: Path,
+def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], output_root: Path,
                             source_video_digest: str, task_context: Mapping[str, Any],
                             price_review: Mapping[str, Any], release_blockers: Callable,
                             uploads: Mapping[str, Mapping[str, Any]] | None = None,
                             transport=None, now=time.time, sleep=time.sleep, max_polls=2,
-                            poll_interval_seconds=15) -> dict[str, Any]:
+                            poll_interval_seconds=15, retry_lineage=None) -> dict[str, Any]:
     """One exact, reserved task. Ambiguous submissions hold; reruns reuse intent."""
     from .website_task_context import reserve_website_preparation_spend
     from .website_task_context_contracts import validate_website_task_context
@@ -271,6 +271,8 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
                "task_context_digest": task_context["context_digest"], "uploads": uploads,
                "maximum_cost_usd": cost, "price_review_digest": canonical_digest(price_review),
                "provider_retention": retention, "provider": pose.PROVIDER}
+    if retry_lineage is not None:
+        binding["retry_lineage"] = retry_lineage
     request_digest = canonical_digest(binding)
     root = output_root.resolve()
     state_path = root / "atlas_pose" / "submission.json"
@@ -351,19 +353,24 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
             pose._write_state(state_path, state)
         if state["api_base"] != base:
             raise ValueError("atlas_task_api_base_changed")
-        for attempt in range(max_polls):
-            operation = pose._without_urls(client.call("GET", "/operations/" + state["operation_id"]))
-            if operation.get("id") != state["operation_id"]:
-                raise ValueError("atlas_task_operation_identity_mismatch")
-            if operation.get("done") is True:
-                break
-            if attempt + 1 < max_polls:
-                sleep(poll_interval_seconds)
-        else:
-            return {"status": "processing", "operation_id": state["operation_id"]}
+        operation = state.get("terminal_operation") if state.get("status") == "failed" else None
+        if operation is None:
+            for attempt in range(max_polls):
+                operation = pose._without_urls(client.call("GET", "/operations/" + state["operation_id"]))
+                if operation.get("id") != state["operation_id"]:
+                    raise ValueError("atlas_task_operation_identity_mismatch")
+                if operation.get("done") is True:
+                    break
+                if attempt + 1 < max_polls:
+                    sleep(poll_interval_seconds)
+            else:
+                return {"status": "processing", "operation_id": state["operation_id"]}
+        if operation.get("id") != state["operation_id"] or operation.get("done") is not True:
+            raise ValueError("atlas_task_terminal_operation_invalid")
         if operation.get("error") is not None:
-            state.update(status="failed", terminal_operation=operation)
-            pose._write_state(state_path, state)
+            if state.get("status") != "failed":
+                state.update(status="failed", terminal_operation=operation, terminal_observed_at_epoch=now())
+                pose._write_state(state_path, state)
             raise ValueError("atlas_task_operation_failed")
         _validate_response(task, state["request"], operation.get("response"))
         outputs = _collect(client, operation, root)
@@ -378,3 +385,87 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
         state.update(status="completed", result_digest=result["digest"])
         pose._write_state(state_path, state)
         return result
+
+
+def _transient_upstream_failure(state):
+    operation = state.get("terminal_operation") or {}
+    error = operation.get("error") or {}
+    return (state.get("status") == "failed" and operation.get("done") is True
+            and operation.get("id") == state.get("operation_id") and error.get("code") == 14
+            and any(row.get("reason") == "TRANSIENT_UPSTREAM"
+                    and row.get("domain") == "api.worldlabs.ai"
+                    for row in error.get("details", []) if isinstance(row, dict)))
+
+
+def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_root: Path,
+                            source_video_digest: str, task_context: Mapping[str, Any],
+                            price_review: Mapping[str, Any], release_blockers: Callable,
+                            uploads: Mapping[str, Mapping[str, Any]] | None = None,
+                            transport=None, now=time.time, sleep=time.sleep, max_polls=2,
+                            poll_interval_seconds=15) -> dict[str, Any]:
+    """At most three admitted operations; only confirmed upstream failures retry.
+
+    Every attempt keeps its own intent, reservation and idempotency key. A
+    pending or ambiguous send never creates another purchase. Completed inputs
+    and the caller's request remain unchanged across attempts and restarts.
+    """
+    options = dict(task=task, request=request, source_video_digest=source_video_digest,
+                   task_context=task_context, price_review=price_review,
+                   release_blockers=release_blockers, uploads=uploads, transport=transport,
+                   now=now, sleep=sleep, max_polls=max_polls,
+                   poll_interval_seconds=poll_interval_seconds)
+
+    def _retry_task(root, lineage=None):
+        try:
+            return _run_admitted_atlas_task_attempt(output_root=root, retry_lineage=lineage, **options)
+        except ValueError as exc:
+            if str(exc) != "atlas_task_operation_failed":
+                raise
+            state_path = root / "atlas_pose/submission.json"
+            with pose._locked(root):
+                failed = json.loads(state_path.read_text())
+                attempt = (lineage or {}).get("attempt", 0)
+                if not _transient_upstream_failure(failed) or attempt >= 2:
+                    raise
+                failure_digest = canonical_digest(failed["terminal_operation"])
+                failure_observed_at = failed.get("terminal_observed_at_epoch", state_path.stat().st_mtime)
+                following = {"attempt": attempt + 1,
+                             "parent_request_digest": failed["request_digest"],
+                             "parent_operation_id": failed["operation_id"],
+                             "terminal_operation_digest": failure_digest}
+            retry_root = root / "retry"
+            if retry_root.is_symlink():
+                raise ValueError("atlas_task_retry_root_symlink")
+            if not (retry_root / "atlas_pose/submission.json").exists():
+                sleep(30)
+            result = _retry_task(retry_root, following)
+            if result.get("status") != "completed":
+                return result
+            # Keep the normal portable result at the caller's root. Failed
+            # provider receipts remain in the parent state and retry history.
+            result = {**result, "outputs": [
+                {**row, "path": str(Path("retry") / row["path"])} for row in result["outputs"]],
+                "retry_history": [{"operation_id": failed["operation_id"],
+                                   "request_digest": failed["request_digest"],
+                                   "terminal_operation": failed["terminal_operation"],
+                                   "observed_at_epoch": failure_observed_at,
+                                   "reserved_usd": failed["binding"]["maximum_cost_usd"]}]
+                                  + result.get("retry_history", []),
+                "billing": {**result["billing"], "total_reserved_usd": round(
+                    failed["binding"]["maximum_cost_usd"]
+                    + result["billing"].get("total_reserved_usd", result["billing"]["reserved_usd"]), 6)}}
+            result["digest"] = canonical_digest(result, digest_field="digest")
+            with pose._locked(root):
+                current = json.loads(state_path.read_text())
+                if (current["request_digest"] != failed["request_digest"]
+                        or current["operation_id"] != failed["operation_id"]
+                        or canonical_digest(current.get("terminal_operation")) != failure_digest):
+                    raise ValueError("atlas_task_retry_parent_changed")
+                pose._write_state(root / "result.json", result)
+                current.update(status="completed", result_digest=result["digest"],
+                               completed_operation_id=result["operation"]["id"],
+                               retry_history=result["retry_history"])
+                pose._write_state(state_path, current)
+            return result
+
+    return _retry_task(output_root.resolve())

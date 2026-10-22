@@ -25,6 +25,20 @@ VAST_PROVIDER_ADAPTER = "src/blueprint_pipeline/vast_provider_adapter.py"
 VAST_PROVIDER_ADAPTER_CLI = "src/blueprint_pipeline/vast_provider_adapter_cli.py"
 
 
+def test_atlas_task_retry_attempt_cannot_be_called_outside_the_allocator_adapter():
+    root = SCRIPT.parent.parent
+    paths = ["src/blueprint_pipeline/website_atlas_tasks.py",
+             "src/blueprint_pipeline/paid_resource_allocator.py"]
+    sources = {p: (root / p).read_text() for p in paths}
+    capabilities = verifier.ATLAS_TASK_CAPABILITIES
+    assert verifier._s3_transport_capability_callers(sources, capabilities) == verifier.APPROVED_ATLAS_TASK_CALLERS
+    sources["scripts/bypass.py"] = (
+        "from blueprint_pipeline.website_atlas_tasks import _run_admitted_atlas_task_attempt as attempt\n"
+        "def bypass():\n    return attempt()\n")
+    assert verifier._s3_transport_capability_callers(sources, capabilities) - verifier.APPROVED_ATLAS_TASK_CALLERS == {
+        ("scripts/bypass.py", "bypass")}
+
+
 def test_selected_g1_controller_is_a_registered_canonical_admission_surface():
     path = "src/blueprint_pipeline/native_g1_team_paid_policy.py"
     manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text())
