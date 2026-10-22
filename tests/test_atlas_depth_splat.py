@@ -160,3 +160,37 @@ def test_changed_retained_depth_is_refused(tmp_path):
     depth.write_bytes(depth.read_bytes() + b"\0")
     with pytest.raises(ValueError, match="atlas_depth_splat_output_changed"):
         depth_splat.load_posed_rgbd(pose_root)
+
+
+def test_a_nearer_surface_hiding_points_is_occlusion_not_disagreement():
+    # Camera b sees a panel at depth 0.5 in front of most of the background camera a sees.
+    first, second = camera(), camera((0.5, 0.0, 0.0))
+    k = second["intrinsics"]
+    panel_x = 0.5 + (np.arange(k["width"]) + 0.5 - k["cx"]) / k["fx"] * 0.5
+    occluded = np.where(((panel_x >= 0.35) & (panel_x <= 0.75))[None, :], 0.5, 2.0)
+    frames = [frame(first, plane_depth(first), "a"),
+              frame(second, np.broadcast_to(occluded, (k["height"], k["width"])).astype(np.float32), "b")]
+    _, report = depth_splat.fuse_posed_frames(frames)
+    agreement = report["cross_view_agreement"]
+    assert agreement["median_relative_residual"] < 0.01
+    hidden = next(pair for pair in agreement["pairs"] if (pair["source"], pair["target"]) == ("a", "b"))
+    assert hidden["occluded_samples"] > hidden["overlap_samples"]
+
+
+def test_cross_view_work_is_bounded_to_nearest_views():
+    cams = [camera((0.05 * index, 0.0, 0.0), width=16, height=16, focal=20.0) for index in range(12)]
+    frames = [frame(cam, plane_depth(cam), f"f{index}") for index, cam in enumerate(cams)]
+    _, report = depth_splat.fuse_posed_frames(frames)
+    pairs = report["cross_view_agreement"]["pairs"]
+    assert len(pairs) == 12 * depth_splat.CROSS_VIEW_NEIGHBOURS
+    assert [pair["target"] for pair in pairs if pair["source"] == "f0"] == [f"f{index}" for index in range(1, 9)]
+
+
+def test_streamed_voxel_sums_match_one_batch_fusion():
+    first, second = camera(), camera((0.2, 0.0, 0.0), yaw_degrees=10.0)
+    samples = [depth_splat.surface_samples(frame(cam, plane_depth(cam))) for cam in (first, second)]
+    streamed, batched = depth_splat.VoxelSums(0.05), depth_splat.VoxelSums(0.05)
+    for sample in samples:
+        streamed.add(sample)
+    batched.add({key: np.concatenate([sample[key] for sample in samples]) for key in samples[0]})
+    assert np.array_equal(streamed.keys, batched.keys) and np.allclose(streamed.sums, batched.sums)

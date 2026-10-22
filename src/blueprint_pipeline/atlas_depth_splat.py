@@ -40,6 +40,8 @@ SH_C0 = 0.28209479177387814
 EDGE_RELATIVE_JUMP = 0.05
 MAX_MEDIAN_CROSS_VIEW_RESIDUAL = 0.05
 CROSS_VIEW_SAMPLES = 20_000
+CROSS_VIEW_NEIGHBOURS = 8
+_KEY_BITS = 21
 # Tangent sigma per voxel edge keeps neighbouring discs overlapping without gaps.
 DISC_SIGMA_PER_VOXEL = 0.7
 DISC_THICKNESS_RATIO = 0.1
@@ -141,18 +143,27 @@ def surface_samples(frame: Mapping[str, Any]) -> dict[str, np.ndarray]:
             "footprint": center[keep] / math.sqrt(k["fx"] * k["fy"])}
 
 
+def _subsample(sample: Mapping[str, np.ndarray]) -> dict[str, Any]:
+    count = len(sample["points"])
+    pick = np.linspace(0, count - 1, min(CROSS_VIEW_SAMPLES, count)).astype(np.int64)
+    return {"points": sample["points"][pick], "footprint": sample["footprint"][pick], "usable": count}
+
+
 def cross_view_agreement(frames: Sequence[Mapping[str, Any]],
                          samples: Sequence[Mapping[str, np.ndarray]]) -> dict[str, Any]:
-    """Relative disagreement between each frame's points and the depth other frames returned."""
+    """Disagreement between each frame's points and the depth its nearest views returned.
+
+    A target that sees a nearer surface at the projected pixel is occluding the point,
+    which is not a disagreement; a target that sees past the point still counts.
+    """
+    centres = np.array([frame["position"] for frame in frames])
     pairs, residuals = [], []
-    for source, sample in zip(frames, samples):
-        points = sample["points"]
-        if not len(points):
+    for index, (source, sample) in enumerate(zip(frames, samples)):
+        picked = sample["points"]
+        if not len(picked):
             continue
-        picked = points[np.linspace(0, len(points) - 1, min(CROSS_VIEW_SAMPLES, len(points))).astype(np.int64)]
-        for target in frames:
-            if target is source:
-                continue
+        order = np.argsort(np.linalg.norm(centres - centres[index], axis=1), kind="stable")
+        for target in (frames[i] for i in order[order != index][:CROSS_VIEW_NEIGHBOURS]):
             k = target["intrinsics"]
             local = (picked - target["position"]) @ target["rotation"]
             planar = -local[:, 2]
@@ -161,40 +172,55 @@ def cross_view_agreement(frames: Sequence[Mapping[str, Any]],
                 row = np.floor(-local[:, 1] / planar * k["fy"] + k["cy"])
                 inside = (planar > 0) & (column >= 0) & (column < k["width"]) & (row >= 0) & (row < k["height"])
             observed = np.full(len(picked), np.nan)
-            index = (row[inside].astype(np.int64), column[inside].astype(np.int64))
-            observed[inside] = np.where(target["confidence"][index] > 0, target["depth"][index], np.nan)
+            index_pair = (row[inside].astype(np.int64), column[inside].astype(np.int64))
+            observed[inside] = np.where(target["confidence"][index_pair] > 0, target["depth"][index_pair], np.nan)
             seen = np.isfinite(observed) & (observed > 0)
-            if seen.sum() < 0.01 * len(picked):
+            visible = seen & (observed >= planar * (1.0 - MAX_MEDIAN_CROSS_VIEW_RESIDUAL))
+            if visible.sum() < 0.01 * len(picked):
                 continue
-            relative = np.abs(observed[seen] - planar[seen]) / planar[seen]
+            relative = np.abs(observed[visible] - planar[visible]) / planar[visible]
             residuals.append(relative)
             pairs.append({"source": source["frame_id"], "target": target["frame_id"],
-                          "overlap_samples": int(seen.sum()), "median_relative_residual": float(np.median(relative))})
+                          "overlap_samples": int(visible.sum()), "occluded_samples": int((seen & ~visible).sum()),
+                          "median_relative_residual": float(np.median(relative))})
     pooled = float(np.median(np.concatenate(residuals))) if residuals else None
     return {"pairs": pairs, "median_relative_residual": pooled, "limit": MAX_MEDIAN_CROSS_VIEW_RESIDUAL}
 
 
-def fuse_samples(samples: Sequence[Mapping[str, np.ndarray]], voxel: float) -> dict[str, np.ndarray]:
-    """Confidence-weighted per-voxel means of position, colour and normal."""
-    points = np.concatenate([sample["points"] for sample in samples])
-    weights = np.concatenate([sample["weights"] for sample in samples])
-    keys = np.floor(points / voxel).astype(np.int64)
-    keys -= keys.min(axis=0)
-    span = keys.max(axis=0) + 1
-    flat = (keys[:, 0] * span[1] + keys[:, 1]) * span[2] + keys[:, 2]
-    _, inverse, counts = np.unique(flat, return_inverse=True, return_counts=True)
-    inverse = inverse.reshape(-1)
-    total = np.bincount(inverse, weights=weights)
+def _voxel_keys(points: np.ndarray, voxel: float) -> np.ndarray:
+    cells = np.floor(points / voxel).astype(np.int64) + (1 << (_KEY_BITS - 1))
+    if cells.size and (cells.min() < 0 or cells.max() >= 1 << _KEY_BITS):
+        raise ValueError("atlas_depth_splat_scene_exceeds_voxel_grid")
+    return (cells[:, 0] << (2 * _KEY_BITS)) | (cells[:, 1] << _KEY_BITS) | cells[:, 2]
 
-    def mean(values: np.ndarray) -> np.ndarray:
-        return np.stack([np.bincount(inverse, weights=values[:, axis] * weights)
-                         for axis in range(values.shape[1])], axis=1) / total[:, None]
 
-    normal = mean(np.concatenate([sample["normals"] for sample in samples]))
-    agreement = np.linalg.norm(normal, axis=1)
-    return {"xyz": mean(points), "rgb": mean(np.concatenate([sample["colors"] for sample in samples])),
-            "normal": normal / np.maximum(agreement, 1e-12)[:, None], "normal_agreement": agreement,
-            "confidence": total / counts, "observations": counts}
+class VoxelSums:
+    """Running confidence-weighted sums per voxel, so memory follows voxels rather than pixels."""
+
+    def __init__(self, voxel: float):
+        self.voxel = voxel
+        self.keys = np.empty(0, np.int64)
+        self.sums = np.empty((0, 11))  # weight, weighted xyz, rgb and normal, sample count
+
+    def add(self, sample: Mapping[str, np.ndarray]) -> None:
+        weights = sample["weights"][:, None]
+        values = np.concatenate([self.sums, np.concatenate([
+            weights, sample["points"] * weights, sample["colors"] * weights, sample["normals"] * weights,
+            np.ones_like(weights)], axis=1)])
+        keys, inverse = np.unique(np.concatenate([self.keys, _voxel_keys(sample["points"], self.voxel)]),
+                                  return_inverse=True)
+        inverse = inverse.reshape(-1)
+        self.sums = np.stack([np.bincount(inverse, weights=values[:, column], minlength=len(keys))
+                              for column in range(values.shape[1])], axis=1)
+        self.keys = keys
+
+    def fused(self) -> dict[str, np.ndarray]:
+        total = self.sums[:, :1]
+        normal = self.sums[:, 7:10] / total
+        agreement = np.linalg.norm(normal, axis=1)
+        return {"xyz": self.sums[:, 1:4] / total, "rgb": self.sums[:, 4:7] / total,
+                "normal": normal / np.maximum(agreement, 1e-12)[:, None], "normal_agreement": agreement,
+                "confidence": total[:, 0] / self.sums[:, 10], "observations": self.sums[:, 10]}
 
 
 def depth_fused_splat(fused: Mapping[str, np.ndarray], voxel: float) -> SplatData:
@@ -215,10 +241,14 @@ def depth_fused_splat(fused: Mapping[str, np.ndarray], voxel: float) -> SplatDat
 
 def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
                       voxel_footprint_multiple: float = 2.0) -> tuple[SplatData, dict[str, Any]]:
-    """Gate cross-view agreement, then fuse every usable pixel into a draft splat."""
+    """Gate cross-view agreement, then stream every usable pixel into a draft splat.
+
+    Full-resolution samples exist for one frame at a time; only bounded subsamples and
+    per-voxel sums persist, so memory follows the scene's voxels, not its frame count.
+    """
     if not math.isfinite(voxel_footprint_multiple) or voxel_footprint_multiple <= 0:
         raise ValueError("atlas_depth_splat_voxel_multiple_invalid")
-    samples = [surface_samples(frame) for frame in frames]
+    samples = [_subsample(surface_samples(frame)) for frame in frames]
     agreement = cross_view_agreement(frames, samples)
     if (agreement["median_relative_residual"] is not None
             and agreement["median_relative_residual"] > MAX_MEDIAN_CROSS_VIEW_RESIDUAL):
@@ -227,9 +257,11 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
     if not len(footprints):
         raise ValueError("atlas_depth_splat_no_usable_depth")
     voxel = float(voxel_footprint_multiple * np.median(footprints))
-    fused = fuse_samples(samples, voxel)
-    report = {"frames": [{"frame_id": frame["frame_id"],
-                          "usable_pixel_fraction": len(sample["points"]) / frame["depth"].size}
+    sums = VoxelSums(voxel)
+    for frame in frames:
+        sums.add(surface_samples(frame))
+    fused = sums.fused()
+    report = {"frames": [{"frame_id": frame["frame_id"], "usable_pixel_fraction": sample["usable"] / frame["depth"].size}
                          for frame, sample in zip(frames, samples)],
               "cross_view_agreement": agreement, "voxel_size": voxel,
               "voxel_footprint_multiple": voxel_footprint_multiple,
