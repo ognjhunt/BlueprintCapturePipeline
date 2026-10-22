@@ -6,10 +6,13 @@ confirmation. The authenticated snapshot is retained as derived run evidence.
 from __future__ import annotations
 
 import json
+import hmac
+import hashlib
 import os
 import re
 from collections.abc import Mapping
 from typing import Any
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 
@@ -88,6 +91,7 @@ def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest
 def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], binding_digest: str,
                                      maximum_cost_usd: float, request_count: int,
                                      resource_class: str, provider: str,
+                                     source_video_digest: str | None = None,
                                      retained_admission: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
@@ -100,8 +104,14 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
     command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": binding_digest,
                "resource_class": resource_class, "provider": provider, "maximum_cost_usd": maximum_cost_usd,
                "request_count": request_count}
-    value = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-spend",
-        payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
+    if source_video_digest is not None:
+        command["source_video_digest"] = source_video_digest
+    operator_file = os.getenv("BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "").strip()
+    if operator_file:
+        value = load_atlas_operator_admission(Path(operator_file), command=command, task_context=task_context)
+    else:
+        value = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-spend",
+            payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
     if (any(value.get(key) != expected for key, expected in command.items())
             or value.get("external_disclosure_allowed") is not True
             or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):
@@ -119,6 +129,36 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
         value = retained
     grant = require_paid_resource_admission(value, resource_class=resource_class, expected_schema_version="paid_lane_admission.v1")
     return value, grant
+
+
+def load_atlas_operator_admission(path: Path, *, command: Mapping[str, Any],
+                                  task_context: Mapping[str, Any]) -> dict[str, Any]:
+    """A short-lived signed handoff from the actual WebApp reservation transaction.
+
+    The operator runs WebApp's committed utility; this never invents authority
+    or reserves locally. The same canonical admission check still issues the
+    in-process grant, and the same allocator/input/release gates still apply.
+    """
+    import time
+    if command.get("provider") != "world_labs_atlas" or command.get("resource_class") != "provider_reconstruction_api":
+        raise ValueError("atlas_operator_admission_provider_invalid")
+    value = json.loads(path.read_text())
+    signature = value.pop("signature", None)
+    expected = hmac.new(load_pipeline_sync_token().encode(), cross_runtime_canonical_digest(value).encode(), hashlib.sha256).hexdigest()
+    admission = value.get("admission")
+    if (not isinstance(signature, str) or not hmac.compare_digest(signature, expected)
+            or value.get("schema_version") != "website_atlas_operator_admission.v1"
+            or value.get("request_id") != task_context["request_id"]
+            or value.get("capture_id") != task_context["capture_id"]
+            or not isinstance(value.get("expires_at_epoch"), (int, float))
+            or value["expires_at_epoch"] <= time.time()
+            or not isinstance(value.get("issued_at_epoch"), (int, float))
+            or value["expires_at_epoch"] - value["issued_at_epoch"] > 600
+            or not isinstance(admission, Mapping)
+            or any(admission.get(k) != v for k, v in command.items())
+            or admission.get("status") not in {"admitted", "already_reserved"}):
+        raise ValueError("atlas_operator_admission_invalid")
+    return dict(admission)
 
 
 def publish_website_visual_scene(*, descriptor: Mapping[str, Any], world: Mapping[str, Any],

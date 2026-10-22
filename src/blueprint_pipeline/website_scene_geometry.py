@@ -402,11 +402,19 @@ def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture
             validate_website_task_context(task_context,
                 request_id=task_context.get("request_id"), scene_id=task_context.get("scene_id"),
                 capture_id=capture_id, purpose="scene_preparation")
-    inputs = prepare_website_geometry_inputs(source_video=source_video, output_root=output_root,
-                                           capture_id=capture_id, maximum_frames=maximum_frames)
     selected = backend or os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND") or (
         "mapanything" if (os.getenv("BLUEPRINT_MAPANYTHING_MODEL_PATH")
                           or os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT")) else "atlas")
+    if selected == "atlas" and (output_root / "atlas_scene_review.json").is_file():
+        from .atlas_video_inputs import prepare_video_inputs, survey_video
+        survey_path = output_root / "atlas_video_survey.json"
+        if not survey_path.is_file():
+            survey_video(source_video=source_video, output_root=output_root, capture_id=capture_id)
+        return prepare_video_inputs(survey_path=survey_path,
+            review=json.loads((output_root / "atlas_scene_review.json").read_text()),
+            output_root=output_root, maximum_frames=maximum_frames or 24)
+    inputs = prepare_website_geometry_inputs(source_video=source_video, output_root=output_root,
+                                           capture_id=capture_id, maximum_frames=maximum_frames)
     if selected == "atlas":
         # No API mutation or paid allocation here. Atlas consumes unposed RGB,
         # then its own returned RGB/depth/cameras feed generation unchanged.

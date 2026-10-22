@@ -238,7 +238,7 @@ def atlas_api_config() -> tuple[str, str]:
     Neither is defaulted: the docs name no production host, and a key sent to
     a guessed host is a leaked key.
     """
-    raw = os.environ.get(ATLAS_API_BASE_URL_ENV, "").strip()
+    raw = (os.environ.get(ATLAS_API_BASE_URL_ENV) or os.environ.get("WLT_API_BASE_URL") or "").strip()
     if not raw:
         raise ValueError("website_atlas_api_base_url_missing")
     base = raw.rstrip("/")
@@ -252,7 +252,7 @@ def atlas_api_config() -> tuple[str, str]:
             or parts.username or parts.password or port not in (None, 443)
             or not (host == "worldlabs.ai" or host.endswith(".worldlabs.ai"))):
         raise ValueError("website_atlas_api_base_url_invalid")
-    key = os.environ.get(ATLAS_API_KEY_ENV, "").strip()
+    key = (os.environ.get(ATLAS_API_KEY_ENV) or os.environ.get("WLT_API_KEY") or "").strip()
     if not key:
         raise ValueError("website_atlas_api_key_missing")
     if any(character.isspace() or not character.isprintable() for character in key):
@@ -835,7 +835,10 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
             admission, grant = reserve_website_preparation_spend(
                 task_context=task_context, binding_digest=canonical_digest(binding),
                 maximum_cost_usd=spend["maximum_cost_usd"], request_count=1,
-                resource_class=RESOURCE_CLASS, provider=PROVIDER, retained_admission=retained)
+                resource_class=RESOURCE_CLASS, provider=PROVIDER, retained_admission=retained,
+                source_video_digest=pose_inputs["binding"]["source_video_digest"])
+            if admission.get("provider_retention", retention) != retention:
+                raise ValueError("website_atlas_provider_retention_admission_mismatch")
             admission = {**admission, "source_commit": commit}
             _write_state(retained_path, admission)
             submit_atlas_pose_operation(pose_inputs=pose_inputs, output_root=output_root, client=client,
