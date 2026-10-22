@@ -104,6 +104,40 @@ below.
    Composing that with the stored `source_to_geometry_pixels` maps source
    pixels to Atlas pixels.
 
+### The adapter: Atlas posing in MapAnything's shape
+
+`python -m blueprint_pipeline.atlas_source_geometry --geometry-root ROOT
+[--scale SCALE.json]` implements steps 1–3 for scene preparation. `ROOT` is the
+CPU preparation's source-geometry directory: `worker_inputs/geometry_inputs.json`
+(digest **D**), the `atlas_pose_inputs.json` that `prepare_atlas_pose_inputs`
+bound to **D**, and the admitted pose run that `website_atlas_operator
+--output-root ROOT` leaves there. It needs no network and no credentials.
+
+- It accepts only a run whose receipt still binds those exact frames and
+  retained outputs (`verify_atlas_pose_receipt`).
+- It reads the conventions `atlas_depth_splat` applies to real responses:
+  x-y-z-w quaternions, camera-to-world poses, `rub` (or `rdf`) axes, and
+  z-depth. That module's cross-view depth agreement check refuses poses and
+  depths that don't describe one surface.
+- It writes a `website_source_geometry.v1` result on the same uncropped
+  model-input grid MapAnything returns:
+  - each model pixel takes the Atlas pixel its centre falls in, and the
+    pixels the crop removed are invalid;
+  - intrinsics follow the cover-and-crop map, with Atlas's +0.5 pixel centres
+    moved to integer centres;
+  - cameras become OpenCV camera-to-world.
+- Task masks therefore lift onto it unchanged.
+- It refuses a run whose returned RGB, averaged back onto the model grid,
+  correlates below 0.9 with what was sent. This floor catches a wrong crop
+  map; measurement 1's threshold stays in the frozen profile.
+
+Atlas depth is unscaled. Without `--scale` the result keeps
+`unit: provider_world_units` for this comparison, and
+`load_atlas_source_geometry` refuses it as metres. A scale file names
+`meters_per_unit`, its `basis` (`measured_calibration` or `reference_estimate`),
+the `evidence_digest` and the `evidence_reference`. Even scaled,
+`metric_measurement_proven` stays false.
+
 ## Measurements, per arm, side by side
 
 | # | Measurement | Why it matters |
@@ -176,9 +210,11 @@ Order:
 ## Follow-ups this plan needs
 
 - **The analysis script.** CPU-only, with hermetic tests on synthetic fixtures
-  that have known poses and depth.
-- **An operator entry point for arm A.** An allocator subcommand, or a
-  controller hook that only an explicit selection reaches.
+  that have known poses and depth. It can read arm A through
+  `atlas_source_geometry` (above), so both arms share one frame format.
+- **Arm A's operator run** goes through `website_atlas_operator --output-root
+  ROOT` on the geometry root. Routing captures to Atlas is still a separate,
+  reviewed change after this plan's decision.
 - **Atlas on full-resolution upright frames,** as a second run. Arm A uses the
   518-pixel model inputs so that both arms see identical pixels. Atlas
   upsamples them onto its 1280×720 grid, so input resolution may matter more
