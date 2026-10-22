@@ -87,6 +87,19 @@ def _git(root: Path, *args) -> str:
                           capture_output=True, text=True).stdout.strip()
 
 
+def _seal_staging_files(staging: Path) -> None:
+    """Seal owned copies so the package publisher can hard-link their bytes.
+
+    This runs after the isolated import check. Vendor installations are never
+    chmodded; the private staging tree is deleted after the package is sealed.
+    """
+    paths = list(staging.rglob("*"))
+    require(not any(path.is_symlink() for path in paths), "artisan_staging_symlink_forbidden")
+    for path in paths:
+        if path.is_file():
+            path.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
+
+
 def build_artisan_scene_configuration_component(*, repository_root, expected_blueprint_commit,
                                                artisan_root, site_packages_root, blender_root, output_root):
     repository, upstream = Path(repository_root).resolve(), Path(artisan_root).resolve()
@@ -160,6 +173,7 @@ def build_artisan_scene_configuration_component(*, repository_root, expected_blu
                  "claim_ceiling": "development_only"}
         value["manifest_digest"] = canonical_digest(value, digest_field="manifest_digest")
         (staging / MANIFEST).write_text(canonical_json(value) + "\n")
+        _seal_staging_files(staging)
         return build_scene_configuration_component_package(adapter_id="content_agents_rigid_replacement",
             source_root=staging, driver_entrypoint="run", source_repository="https://github.com/ognjhunt/BlueprintCapturePipeline",
             source_commit=expected_blueprint_commit, source_license="Blueprint integration; ARTISAN Apache-2.0; upstream dependency notices",
