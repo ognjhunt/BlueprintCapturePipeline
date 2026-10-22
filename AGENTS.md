@@ -168,6 +168,12 @@ dependent step as blocked instead of guessing.
 
 ## Working Rules
 
+- **Site research standard (owner direction 2026-10-15):** before researching
+  sites or contacts, read and apply the [site research standard](tools/daily_research/saved-agent-discovery-policy.md#site-research-standard--owner-direction-october-15-2026),
+  including fixed queues and follow-up recovery. Research the exact site, search
+  alternative relevant people and usable business routes, and resolve promising
+  gaps before recording a precise hold. Keep evidence, research completion,
+  draft eligibility and send authority separate; batch size never lowers depth.
 - **Agent autonomy (user direction `Sentinel_ee0f838338808191b9e431227a652f65`):**
   agents choose research strategy, configured tools and depth. Harmless formatting,
   extra metadata, date precision, expected pending usage and arbitrary result quotas

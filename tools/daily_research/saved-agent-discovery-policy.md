@@ -197,3 +197,169 @@ two output-repair turns are retained at
 No improved yield or fewer repair turns is claimed before the next real run.
 Existing budgets, unknown-usage holds, Exa admission, access, expiry, scheduling,
 qualification and draft-only/no-send direction remain unchanged.
+
+## Site research standard — owner direction, October 15, 2026
+
+Policy ID: `BP-SITE-RESEARCH-STANDARD-20261015`. Apply to each assigned site,
+including large fixed queues and contact-research follow-ups. It supports
+ADP-010 partner selection, partner-phase day 7, and free-beta site intake.
+A larger queue changes batching, not the evidence standard. This section
+supplements the discovery rules above; it does not expand a run's admitted scope.
+
+### Work from the site outward
+
+Read existing research, source identity, contact history and owner feedback first.
+Retain the original queue position, source/site IDs and selected address. Reuse
+sound findings; refresh consequential or stale claims. Resolve trading names,
+acquisitions, relocations, suites and contractor/client relationships. An office,
+mailing address or former facility must not inherit production evidence from
+another location. Record corrections without silently substituting a new site.
+
+Establish what physical work is attributable to that location using operator
+pages, employer postings, permits, trade or other attributable evidence. A job
+title, industry code, OSHA entry or company-wide capability alone is insufficient.
+Keep actual observations, third-party assertions and possible tasks separate.
+Unknown manual share, pain, budget, buying authority, interest or robot fit does
+not erase a supported discovery or automatically prevent a conditional question.
+A relevant physical-work premise suffices for exploration; do not demand proof of
+a bottleneck or a robot deployment before asking.
+
+### Search openly for people and routes
+
+Do not anchor the search to the first name or require an exact job title.
+Investigate relevant alternatives: site/plant/branch leadership, operations,
+production, maintenance, engineering, facilities, warehouse/logistics, the owner,
+and regional or corporate staff who can route to the site. Follow promising
+additional people when available; record roles, current employer, site connection
+and why a lead was accepted or rejected. There is no invented minimum headcount.
+
+Use several relevant evidence routes when the answer is missing: current company
+location/team/contact pages and their actual visible email links; employer job
+descriptions; professional profiles; chambers and trade associations; dated
+government or supplier records; and accessible publications or PDFs. Search both
+by exact address/operator and by function, local terminology and alternative names.
+Inspect the source supporting an email or role, including relevant PDF pages;
+a search snippet or directory label alone must not silently become verified fact.
+When direct access fails, use another authorized public route and retain the
+access limitation and original source date. Do not bypass authentication or infer
+absence from a failed page load.
+
+An appropriate published shared business inbox can be a valid routing contact.
+Record it as a shared inbox, not a verified personal mailbox. A suitable regional
+or commercial contact may be asked for a referral; do not call that person the
+local task owner. Do not repurpose a channel restricted to jobs, privacy, legal
+notices, billing, media, customer incidents or another incompatible purpose.
+Respect published solicitation restrictions.
+
+Never invent an email, extrapolate a naming pattern, expand a masked address or
+substitute a private personal contact. Separate:
+
+- the literal published address and its source/date;
+- corroboration of current employment and the selected-site connection;
+- the person's actual remit versus ability to route;
+- mailbox currency and deliverability, which remain untested unless separately
+  established by an authorized method.
+
+Prefer primary published routes. Secondary directories are leads. A literal
+directory-published business email may support an unsent review draft only when
+identity, current affiliation and an appropriate site-routing relationship are
+independently corroborated and no contrary evidence exists. Keep its limitation
+explicit. Historical email publication needs current affiliation corroboration;
+a fresh crawl does not refresh an old role or prove mailbox currency.
+
+### Resolve a blocker before recording it as the outcome
+
+Treat a missing fact as a targeted research question. Before a research hold,
+make a focused recovery pass through the relevant untried routes above. Try
+alternative people and appropriate shared or regional routes, resolve conflicting
+roles/addresses, and distinguish inaccessible evidence from negative evidence.
+Do not stop after one name, one query, an empty directory result or a missing
+direct email while a useful authorized path remains.
+
+Persist while a concrete next search can resolve the missing fact within the
+current time/access/spend envelope. Stop when adequate evidence supports the
+next authorized action, credible contrary evidence supports a specific hold, or
+useful accessible paths show diminishing returns. An actual time, budget or
+access limit means interrupted research with a resumable next question, not
+exhaustive research or rejection. Do not search indefinitely just to fill a
+field, invent a recipient, or purchase enrichment without authority.
+
+For every hold, retain the exact unresolved claim, routes/roles examined,
+source/access failures, conflicting or stale evidence, the stopping reason and
+the next specific action. Use precise reasons such as current business route
+missing, operator/location unresolved, selected-site work unconfirmed, restricted
+contact, suppression, prior conversation/draft, writer conflict or inaccessible
+authoritative checks. Several can apply; report one primary reason plus secondary
+gaps. "Blocked" or "no contact found" alone is not an adequate handoff.
+
+### Keep research progress separate from outreach permission
+
+Research coverage, contact evidence, draft eligibility and send authority are
+separate states. A completed research pass may end in a documented hold; an
+interrupted pass must remain incomplete. "Every queue row has an outcome" never
+means every site is qualified or every evidence question is resolved. Map these
+distinctions to existing schema fields/notes and allowed enums; do not invent
+incompatible output fields or mark unresolved coverage as `coverage_complete`.
+
+Before saving any draft, independently recheck live recipient suppression,
+recipient history, exact-site history, current Gmail drafts and sent threads,
+draft bindings and relevant job/ledger ownership. Verify the account and
+authoritative project from current configuration and authenticated reads, not
+names or prior access claims. A failed essential check holds that draft action;
+continue independent research. No suppression match is not send authority.
+
+Use one writer. Preserve owner edits and existing drafts; a second researched
+person does not authorize a duplicate site draft. Read messages to distinguish
+real replies and edits from model hypotheses. When an authorized draft is saved,
+read back recipient, subject, full body, draft ID and message binding; retain the
+actual copy in a durable review record. Reconcile uncertain writes before retry.
+Only update relevant CRM fields after reading current rows, preserve unrelated
+fields/notes/dates, and verify the changes by readback. Never label unsaved text
+as a Gmail draft.
+
+Lead with one useful, easy question. Vary restrained subjects and wording around
+the supported work; omit research details that do not help the recipient.
+Suspected needs stay questions. Do not force every note into an assessment pitch.
+Read the current approved offer and signature instead of copying old prices or
+templates. Make no unsupported hardware, deployment, performance or savings claim.
+
+### Scale through retained evidence and review
+
+For an owner-authorized large queue, work in the requested batches (normally
+10–20 when no narrower envelope is assigned), preserve every original site, and
+checkpoint evidence and outcomes after each batch. Respect a smaller trusted
+runtime batch; this policy does not enlarge it. Save unresolved work so another
+run resumes the next question rather than repeating the first pass.
+
+Use a compact per-site research trail in existing records: source/site identity;
+operator/address evidence; physical-work evidence; people/roles and contact
+routes considered; dated sources and checked timestamps; contradictions and
+unknowns; searches/pivots; research completion or interruption; draft checks and
+bindings when applicable; primary/secondary holds; and the next action. Keep raw
+receipts in existing authorized storage when the schema cannot carry the detail.
+
+When delegation is explicitly authorized and available, partition fixed site IDs
+among research-only agents. Give each this standard and disallow independent
+CRM/Gmail writes. One owner verifies the evidence, reconciles cross-site/recipient
+duplicates and performs writes. Delegation is optional; it grants no access,
+spend, additional prospects or reduced review standard.
+
+Before closing a batch, review every proposed new draft, every contradiction,
+and every hold for skipped relevant recovery paths or an unnecessarily narrow
+contact requirement. A repeated blocker across many rows triggers a review of
+the research method as well as the sites. Continue useful in-scope recovery;
+do not inflate completion with shallow dispositions. Report research coverage,
+usable routes with evidence levels, new/preserved drafts and exact hold counts
+separately. Never use draft volume as proof of qualified demand.
+
+This rule is based on the October 15 fixed-queue recovery: deeper research
+revisited 165 initial holds and produced 47 additional read-back-verified unsent
+drafts. These are descriptive workflow results, not replies, demand, deliverability
+or causal proof of future performance. Keep original evidence and owner feedback.
+
+Source publication, saved-agent installation and observed runtime behavior are
+distinct. Hosted adoption follows `research-improvement-loop.md`: preserve the
+previous instruction definition, review the diff, publish/read back the version
+and align its expected hash through the existing authorized release path. Do not
+change active-run inputs, schedules, grants, expiry, model/tools, credentials,
+access or no-send direction to apply this research-quality rule.
