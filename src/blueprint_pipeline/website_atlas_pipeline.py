@@ -55,6 +55,28 @@ def generation_request(*, pose, inputs, review):
     return request
 
 
+#: Owner direction 2026-10-22 (accuracy first): candidates every 0.1 s inside the
+#: reviewed still interval, coarsened only to keep the second review within the
+#: planner's image budget (16k + 3k tokens per image, under 1M).
+ACCURACY_CANDIDATE_STEP_SECONDS = 0.1
+MAXIMUM_REVIEW_FRAMES = 300
+
+
+def accuracy_survey(*, source_video: Path, base_root: Path, base_survey: Path, review, output_root: Path) -> Path:
+    """The reviewed still interval densified for accuracy; built once, then reused on resume."""
+    from .atlas_video_extension import extend_survey
+    extended_path = output_root / "extended_survey" / "atlas_video_survey.json"
+    if not extended_path.exists():
+        indexes = list((base_root / "source").rglob("decoded_observation_index.json"))
+        if len(indexes) != 1:
+            raise ValueError("atlas_runtime_decoded_index_ambiguous")
+        span = sum(end - start for start, end in review["static_intervals_seconds"])
+        step = max(ACCURACY_CANDIDATE_STEP_SECONDS, span / MAXIMUM_REVIEW_FRAMES)
+        extend_survey(source_video=source_video, base_survey=base_survey, decoded_index=indexes[0], review=review,
+                      output_root=extended_path.parent, step_seconds=step, gap_threshold_seconds=2 * step)
+    return extended_path
+
+
 def run_atlas_pipeline(*, output_root: Path, **options):
     output_root.mkdir(parents=True, exist_ok=True)
     with (output_root / "controller.lock").open("a") as lock:
@@ -149,6 +171,16 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
             configuration=config, output_root=reviews, invoker=invoker, experimental=experimental, **plan_options)
         review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, feedback=feedback, reference_sources=receipt.get("reference_sources", []))
+        if feedback is None:
+            # Every frame of the reviewed still interval becomes a candidate; the
+            # denser survey is reviewed again before anything is selected or sent.
+            survey_path = accuracy_survey(source_video=source_video, base_root=base_root, base_survey=survey_path,
+                                          review=review, output_root=output_root)
+            survey = json.loads(survey_path.read_text())
+            check("plan")
+            receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
+                configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
+            review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, reference_sources=receipt.get("reference_sources", []))
     if review.get("action") == "keep":
         result = {"schema_version": "atlas_refinement_decision.v1", "status": "needs_input",
             "action": "keep", "gap_assessment": review["gap_assessment"],
@@ -158,27 +190,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         return result
     pose_root = output_root / "pose"
     pose_root.mkdir(exist_ok=True)
-    try:
-        inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root)
-    except ValueError as error:
-        if feedback is not None or "coverage_gap" not in str(error):
-            raise
-        from .atlas_video_extension import extend_survey
-        indexes = list((base_root / "source").rglob("decoded_observation_index.json"))
-        if len(indexes) != 1:
-            raise ValueError("atlas_runtime_decoded_index_ambiguous") from error
-        extended_root = output_root / "extended_survey"
-        extended_path = extended_root / "atlas_video_survey.json"
-        if not extended_path.exists():
-            extend_survey(source_video=source_video, base_survey=survey_path, decoded_index=indexes[0],
-                review=review, output_root=extended_root)
-        survey = json.loads(extended_path.read_text())
-        check("plan")
-        receipt = run_sponsored_website_atlas_plan(survey_path=extended_path, task_context=task_context,
-            configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
-        review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, reference_sources=receipt.get("reference_sources", []))
-        inputs = prepare_video_inputs(survey_path=extended_path, review=review, output_root=pose_root)
-        survey_path = extended_path
+    inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root)
     if not selection_path.exists():
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})

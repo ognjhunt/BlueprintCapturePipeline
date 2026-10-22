@@ -48,7 +48,8 @@ def gap_indexes(*, times, base_indexes, visible_indexes, intervals, step_seconds
 
 
 def extend_survey(*, source_video: Path, base_survey: Path, decoded_index: Path,
-                  review: dict, output_root: Path) -> dict:
+                  review: dict, output_root: Path, step_seconds: float | None = None,
+                  gap_threshold_seconds: float | None = None) -> dict:
     import cv2
     from .atlas_video_inputs import REVIEW_SCHEMA, SURVEY_SCHEMA
     survey = json.loads(base_survey.read_text())
@@ -74,8 +75,11 @@ def extend_survey(*, source_video: Path, base_survey: Path, decoded_index: Path,
     if visible != indexed_visible or len(hidden) != survey["heldout_frame_count"]:
         raise ValueError("atlas_extension_frozen_split_changed")
     policy = review.get("selection_policy") or {}
+    # A caller's explicit cadence (accuracy-first densification) wins over the review's.
     extras = gap_indexes(times=times, base_indexes=base, visible_indexes=visible, intervals=intervals,
-        step_seconds=policy.get("candidate_step_seconds"), gap_threshold_seconds=policy.get("gap_threshold_seconds"))
+        step_seconds=policy.get("candidate_step_seconds") if step_seconds is None else step_seconds,
+        gap_threshold_seconds=policy.get("gap_threshold_seconds") if gap_threshold_seconds is None
+        else gap_threshold_seconds)
     ffprobe, ffmpeg, runtime, runtime_digest = _tool_identity()
     probe = _probe_video(source_video, ffprobe)
     if probe["presentation_times_seconds"] != times:

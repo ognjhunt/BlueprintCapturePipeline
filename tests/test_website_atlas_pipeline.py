@@ -224,3 +224,27 @@ def test_a_checkpoint_refusal_stops_the_run_before_the_first_paid_review(tmp_pat
     with pytest.raises(RuntimeError, match="withdrawn before plan"):
         pipeline.run_atlas_pipeline(source_video=video, output_root=tmp_path / "job", checkpoint=withdrawn,
                                     task_context={"capture_id": "c", "context_digest": "task"})
+
+
+def test_every_first_run_densifies_the_still_interval_within_the_review_image_budget(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_extension as extension
+    base_root = tmp_path / "job/survey"
+    (base_root / "source").mkdir(parents=True)
+    (base_root / "source/decoded_observation_index.json").write_text("{}")
+    calls = []
+
+    def extend(**kwargs):
+        calls.append(kwargs)
+        kwargs["output_root"].mkdir(parents=True, exist_ok=True)
+        (kwargs["output_root"] / "atlas_video_survey.json").write_text("{}")
+    monkeypatch.setattr(extension, "extend_survey", extend)
+    options = dict(source_video=tmp_path / "video.mov", base_root=base_root, base_survey=base_root / "atlas_video_survey.json",
+                   output_root=tmp_path / "job")
+    path = pipeline.accuracy_survey(review={"static_intervals_seconds": [[0, 8.1]]}, **options)
+    assert path == tmp_path / "job/extended_survey/atlas_video_survey.json"
+    assert (calls[0]["step_seconds"], calls[0]["gap_threshold_seconds"]) == (.1, .2)
+    pipeline.accuracy_survey(review={"static_intervals_seconds": [[0, 8.1]]}, **options)
+    assert len(calls) == 1  # a resumed job reuses the densified survey and its review
+    path.unlink()
+    pipeline.accuracy_survey(review={"static_intervals_seconds": [[0, 40], [50, 70]]}, **options)
+    assert calls[1]["step_seconds"] == 60 / pipeline.MAXIMUM_REVIEW_FRAMES == .2  # long stillness stays reviewable

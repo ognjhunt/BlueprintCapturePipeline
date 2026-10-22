@@ -75,6 +75,11 @@ MIN_VIEW_KEPT_FRACTION = 0.95
 PRICE_REVIEW_MAX_AGE_DAYS = 30
 #: The WebApp's preparation-spend route refuses more than this per reservation.
 MAX_REVIEWED_COST_USD = 1000.0
+#: Configured input capacity of one images2PosedRGBD request: provider data, as
+#: src/blueprint_pipeline/AGENTS.md requires. Atlas publishes no per-request limit,
+#: so this is the owner's accuracy target of 2026-10-22, unverified until a real
+#: request of this size succeeds; raise it when Atlas states or proves more.
+MAX_POSE_INPUT_IMAGES = 64
 API_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 #: A textured splats2Mesh GLB (4096 px atlas by default) routinely exceeds image outputs.
