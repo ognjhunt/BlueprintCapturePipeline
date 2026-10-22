@@ -17,26 +17,28 @@ The production Atlas controller runs the following for a new scene plan:
    public-page fetcher retains up to two pages, verifies exact short quotes and
    unit conversion, and labels unmatched references unconfirmed. A manufacturer's
    generic dimension does not identify the actual captured appliance.
-3. Hash-checked original posed RGB/depth/confidence/cameras are registered to
+3. When original posed RGB/depth/confidence/cameras already exist, they are registered to
    upright source pixels. Named assumed lengths produce an approximate scale
    and range; deterministic robust visible-point bounds produce scene dimensions
    in provider units, meters, and feet. Hosted SAM supplies object masks for
    object extents. Missing depth/alignment yields explicit gaps. Raw geometry
    remains unchanged; these are estimates of visible coverage.
-4. SAM masks cover the removal targets and all selected posed views. An existing
-   image editor produces one clean anchor, independently reviewed with Gemini.
-   Atlas `atlasMasked` gets the clean anchor, same-index source cameras, and
-   grayscale 255-keep / 0-fill masks. Overlapping cover-crop tiles preserve long
-   images without letterbox padding or stretching; camera intrinsics follow the
-   exact resize/crop. Requests use up to 16 context views with a common anchor,
-   without imposing an overall input-frame ceiling. Depth requires translated
-   source views.
-5. Every Atlas batch is independently reviewed. Failed edits cannot enter splat
-   or mesh reconstruction. The existing image editor is a bounded fallback for a
-   failed visual review; its reviewed RGB must acquire new posed depth before
-   reconstruction, rather than using original appliance depth under generated
-   pixels. An uncertain submission is held until the operation list shows
-   whether it bought anything.
+4. For object removal, the existing editor prepares a clean anchor and then the
+   current review's task/context/additional views. SAM uses source RGB pixels;
+   a new capture does not need an original-scene Atlas pose to start editing.
+   Older completed editor batches can supply exact candidate bytes without
+   buying their images again. Superseded views do not silently become inputs.
+5. Gemini independently reviews the complete selected edited set before Atlas
+   receives any RGB. Rejected views cannot enter reconstruction. Accepted RGB
+   acquires fresh Atlas cameras and depth, rather than putting original
+   appliance depth under generated pixels. The earlier Atlas inpainting path
+   remains an explicit alternative (`editor_first=False`), with its own masks
+   and per-batch review; it is not the default object-removal path.
+   With the existing `BLUEPRINT_WEBSITE_IMAGE_REPAIR_AGENT` option enabled,
+   rejected editor views enter the existing targeted repair agent. It can select
+   as many repairs as this scene needs, using the passed anchor as its fixed
+   reference; every call stays on the same source allowance. A fresh independent
+   review of the complete set decides whether reconstruction can proceed.
 6. Passed generated RGBD uses the shared depth-splat writer and existing
    `splats2Mesh` / registration / download paths. Generated backgrounds get a
    separate ZIP and explicit result/review lineage. Original reconstruction and
@@ -59,6 +61,14 @@ SAM masks, edited anchor/review receipts, `tile_lineage.json`, Atlas result asse
 the generated splat manifest, registered mesh, separate downloads, and the final
 `atlas_scene_automation.v1` result. Physical evidence, measured metric calibration,
 and simulation qualification remain false.
+
+`background/prepared_background.json` retains the accepted edited RGB set before
+posing or meshing. Resuming this job reuses those exact images without repeating
+segmentation, editing or review, even in another operator session. It verifies
+the source video, source pose, input selection, task context, automation plan,
+review binding and image checksums first. Changed or rejected artifacts cannot
+be adopted. Keep this manifest, its referenced files and provider receipts in
+the retained job; a new geometry job does not require new image generation.
 
 For a zero-spend retained-run measurement replay:
 

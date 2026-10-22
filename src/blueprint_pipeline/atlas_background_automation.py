@@ -38,6 +38,42 @@ def _provider_preflight():
         raise ValueError("atlas_automation_segmentation_runtime_missing")
 
 
+def _prepared_background(path, binding, value=None):
+    """Retain reviewed RGB independently of later pose/mesh jobs and sessions."""
+    if value is None:
+        if not path.is_file():
+            return None
+        saved = json.loads(path.read_text())
+        if (saved.get("digest") != canonical_digest(saved, digest_field="digest")
+                or saved.get("binding") != binding):
+            raise ValueError("atlas_prepared_background_binding_changed")
+        value = saved["background"]
+    review = value.get("review") or {}
+    rows = [{"frame_id": row["frame_id"], "image_digest": row["image_digest"]}
+            for row in value.get("frames", [])]
+    if (value.get("status") != "fallback_prepared" or not rows
+            or value.get("ready_for_reconstruction") is not True
+            or review.get("status") != "passed"
+            or review.get("binding", {}).get("frames") != rows
+            or review.get("request_digest") != canonical_digest(review.get("binding"))
+            or not all(review.get("review", {}).get(key) is True for key in (
+                "consistent_background", "task_objects_removed", "unrelated_objects_preserved"))):
+        raise ValueError("atlas_prepared_background_review_invalid")
+    for row in value["frames"]:
+        for prefix in ("image", "original_image"):
+            if _sha256_file(Path(row[f"{prefix}_path"])) != row[f"{prefix}_digest"]:
+                raise ValueError("atlas_prepared_background_pixels_changed")
+    if not path.is_file():
+        saved = {"schema_version": "atlas_prepared_background.v1", "binding": binding,
+                 "background": value, "raw_capture_preserved": True,
+                 "claim_ceiling": "development_only"}
+        saved["digest"] = canonical_digest(saved, digest_field="digest")
+        temporary = path.with_suffix(".tmp")
+        write_json(temporary, saved)
+        temporary.replace(path)
+    return value
+
+
 def object_evidence(*, frames, objects, inputs):
     """Validate/clip source boxes in the returned grid before a paid SAM call."""
     timestamps = {
@@ -127,7 +163,7 @@ def prepare_masked_frames(*, frames, targets, margin, root):
     root.mkdir(parents=True, exist_ok=True)
     prepared = []
     for index, frame in enumerate(frames):
-        h, w = frame["depth"].shape
+        h, w = frame["rgb"].shape[:2]
         mask = np.zeros((h, w), bool)
         shown = []
         for target in targets:
@@ -312,6 +348,62 @@ def masked_request(rows, instruction):
     return request, uploads
 
 
+def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, context,
+                                source_digest, measurements, selected_frame_ids, check,
+                                prepared_binding, atlas_review=None):
+    from .website_image_completion import complete_background_images, verify_completed_background
+    from .website_image_repair_agent import image_repair_enabled, repair_rejected_views
+
+    wanted = set(selected_frame_ids or [row["frame_id"] for row in prepared])
+    chosen = [row for row in prepared if row["frame_id"] in wanted]
+    if len(chosen) != len(wanted) or not chosen:
+        raise ValueError("atlas_background_selected_frames_missing")
+    options = dict(task_digest=plan["task_context_sha256"], admission={}, token="",
+                   targets=plan["targets"], task_context=context, source_video_digest=source_digest,
+                   repair_instruction=automation["removal_instruction"],
+                   repair_reference_path=Path(anchor["image_path"]))
+    candidates = []
+    # A prior run may have edited a larger set. Read its exact completed batch
+    # without authority to buy a missing image, then review only the current set.
+    for offset in range(0, len(prepared), 32):
+        try:
+            candidates.extend(complete_background_images(
+                frames=prepared[offset:offset + 32], output_root=root / "fallback" / str(offset // 32),
+                require_cached=True, **options))
+        except ValueError as exc:
+            if str(exc) != "website_image_completion_cached_batch_missing":
+                raise
+    by_id = {row["frame_id"]: row for row in candidates}
+    missing = [row for row in chosen if row["frame_id"] not in by_id]
+    for offset in range(0, len(missing), 32):
+        check("automation_editor_cleanup")
+        edited = complete_background_images(frames=missing[offset:offset + 32],
+            output_root=root / "selected_editor" / str(offset // 32), **options)
+        by_id.update({row["frame_id"]: row for row in edited})
+    candidates = [by_id[row["frame_id"]] for row in chosen]
+    check("automation_editor_review")
+    review = verify_completed_background(frames=candidates, original_frames=chosen, plan=plan,
+        output_root=root / "selected_editor_review", task_context=context, source_video_digest=source_digest)
+    if review["status"] != "passed" and image_repair_enabled():
+        check("automation_targeted_repairs")
+        candidates, review = repair_rejected_views(
+            selected=candidates, object_removal_frames=[{
+                **row, "original_image_path": row["image_path"], "original_image_digest": row["image_digest"],
+            } for row in chosen], original_frames=chosen, plan=plan, failed_review=review,
+            output_root=root / "fallback_repairs", task_context=context,
+            source_video_digest=source_digest, max_repairs=len(chosen),
+            repair_reference_path=Path(anchor["image_path"]))
+    background = {"status": "fallback_prepared" if review["status"] == "passed" else "quality_rejected",
+                  "provider": "existing_image_editor", "frames": candidates, "review": review,
+                  "measurements": measurements, "retained_root": str(root),
+                  "ready_for_reconstruction": review["status"] == "passed"}
+    if atlas_review is not None:
+        background["atlas_review"] = atlas_review
+    if background["ready_for_reconstruction"]:
+        _prepared_background(root / "prepared_background.json", prepared_binding, background)
+    return background
+
+
 def run_background(
     *,
     frames,
@@ -328,6 +420,8 @@ def run_background(
     max_polls=2,
     configuration=None,
     checkpoint=None,
+    selected_frame_ids=None,
+    editor_first=True,
 ):
     from .website_image_completion import (
         complete_background_images,
@@ -348,9 +442,20 @@ def run_background(
     commit, blockers = release_blockers()
     if blockers:
         raise ValueError("atlas_automation_release_not_admitted:" + ",".join(blockers))
+    prepared_path = root / "prepared_background.json"
+    prepared_binding = {"source_video_digest": source_digest, "source_pose_digest": pose.get("digest"),
+                        "inputs_digest": inputs.get("digest"),
+                        "automation_digest": canonical_digest(automation),
+                        "task_context_digest": canonical_digest(dict(context)),
+                        "selected_frame_ids": selected_frame_ids,
+                        "editor_first": editor_first}
+    retained = _prepared_background(prepared_path, prepared_binding)
+    if retained is not None:
+        check("automation_reuse_prepared_background")
+        return retained
     # Complete deterministic geometry and cost checks before the first upload.
     object_evidence(frames=frames, objects=objects, inputs=inputs)
-    if any(o["disposition"] == "remove" for o in objects):
+    if not editor_first and any(o["disposition"] == "remove" for o in objects):
         centers = [f["extrinsics"]["position"] for f in frames]
         if not centers or max(math.dist(centers[0], p) for p in centers) < 1e-6:
             raise ValueError("atlas_background_depth_requires_translated_source_views")
@@ -406,7 +511,10 @@ def run_background(
         pose_digest=pose["digest"],
         tracks=selected,
         output=root / "object_measurements.json",
-    )
+    ) if all("depth" in frame for frame in frames) else {
+        "status": "unavailable", "reason": "pre_edit_observed_depth_not_requested",
+        "metric_measurement_proven": False, "physical_evidence": False,
+    }
     removed = [r for r in selected if r["disposition"] == "remove"]
     if not removed:
         return {
@@ -476,6 +584,11 @@ def run_background(
             "measurements": measurements,
             "retained_root": str(root),
         }
+    if editor_first:
+        return _reviewed_editor_background(
+            prepared=prepared, anchor=anchor, plan=plan, automation=automation, root=root,
+            context=context, source_digest=source_digest, measurements=measurements,
+            selected_frame_ids=selected_frame_ids, check=check, prepared_binding=prepared_binding)
     tiles = tile_views(frames=frames, prepared=prepared, anchor=anchor, root=root / "tiles")
     groups = batches(tiles)
     stage_roots = []
@@ -570,7 +683,22 @@ def run_background(
                 task_context=context,
                 source_video_digest=source_digest,
             )
-            return {
+            from .website_image_repair_agent import image_repair_enabled, repair_rejected_views
+
+            if fallback_review["status"] != "passed" and image_repair_enabled():
+                check("automation_targeted_repairs")
+                fallback, fallback_review = repair_rejected_views(
+                    selected=fallback,
+                    object_removal_frames=[{
+                        **row, "original_image_path": row["image_path"],
+                        "original_image_digest": row["image_digest"],
+                    } for row in prepared],
+                    original_frames=prepared, plan=plan, failed_review=fallback_review,
+                    output_root=root / "fallback_repairs", task_context=context,
+                    source_video_digest=source_digest, max_repairs=len(prepared),
+                    repair_reference_path=Path(anchor["image_path"]),
+                )
+            background = {
                 "status": "fallback_prepared"
                 if fallback_review["status"] == "passed"
                 else "quality_rejected",
@@ -582,6 +710,9 @@ def run_background(
                 "retained_root": str(root),
                 "ready_for_reconstruction": fallback_review["status"] == "passed",
             }
+            if background["ready_for_reconstruction"]:
+                _prepared_background(prepared_path, prepared_binding, background)
+            return background
     write_json(
         root / "tile_lineage.json",
         {"tiles": tiles, "batches": [[r["frame_id"] for r in g] for g in groups]},

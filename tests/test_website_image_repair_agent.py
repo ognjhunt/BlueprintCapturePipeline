@@ -126,6 +126,25 @@ def test_restart_reuses_the_retained_plan_without_buying_again(tmp_path, website
     assert len(invoker.calls) == 1 and len(website["reserve"]) == 1 and len(website["settle"]) == 1
 
 
+def test_atlas_repairs_use_scene_size_same_source_cap_and_fixed_clean_reference(tmp_path, website):
+    selected, sources = _views(tmp_path)
+    selected.append({**selected[-1], "frame_id": "f3"})
+    sources.append({**sources[-1], "frame_id": "f3"})
+    reference = Path(selected[2]["image_path"])
+    invoker = _Invoker({"repairs": [{"frame_id": f"f{i}", "instruction": "Keep the bay open"}
+                                    for i in range(4)], "summary": "four inconsistent views"})
+    frames, reviewed = repair.repair_rejected_views(
+        selected=selected, object_removal_frames=sources, original_frames=sources,
+        plan=PLAN, failed_review=FAILED, output_root=tmp_path / "repair",
+        task_context=CONTEXT, invoker=invoker, max_repairs=len(selected),
+        source_video_digest="sha256:video", repair_reference_path=reference)
+    assert len(frames) == 4 and reviewed["status"] == "passed"
+    assert website["reserve"][0]["source_video_digest"] == "sha256:video"
+    assert all(call["source_video_digest"] == "sha256:video" for call in website["edit"])
+    assert all(call["repair_reference_path"] == reference for call in website["edit"])
+    assert website["review"][0]["source_video_digest"] == "sha256:video"
+
+
 def test_uncertain_plan_is_never_bought_again(tmp_path, website):
     invoker = _Invoker({"repairs": [], "summary": ""})
     _run(tmp_path, invoker)

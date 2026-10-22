@@ -98,19 +98,25 @@ def _default_invoker():
 
 def plan_image_repairs(*, frames: Sequence[Mapping[str, Any]], originals: Mapping[str, Mapping[str, Any]],
                        failed_review: Mapping[str, Any], targets: Sequence[Mapping[str, Any]],
-                       task_context: Mapping[str, Any], output_root: Path, invoker: Any = None) -> dict[str, Any]:
+                       task_context: Mapping[str, Any], output_root: Path, invoker: Any = None,
+                       max_repairs: int = MAX_REPAIRS,
+                       source_video_digest: str | None = None) -> dict[str, Any]:
     """Buy at most one retained repair plan for one failed review; never an approval."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
 
+    if isinstance(max_repairs, bool) or not isinstance(max_repairs, int) or max_repairs < 1:
+        raise ValueError("website_image_repair_limit_invalid")
     binding = {"kind": "website_image_repair_plan", "revision": 1, "model": MODEL,
-               "max_output_tokens": MAX_OUTPUT_TOKENS, "max_repairs": MAX_REPAIRS,
-               "instructions": INSTRUCTIONS.format(limit=MAX_REPAIRS),
+               "max_output_tokens": MAX_OUTPUT_TOKENS, "max_repairs": max_repairs,
+               "instructions": INSTRUCTIONS.format(limit=max_repairs),
                "failed_review_digest": canonical_digest(dict(failed_review.get("review") or {})),
                "failed_review_request_digest": failed_review.get("request_digest"),
                "frames": [{"frame_id": frame["frame_id"], "image_digest": frame["image_digest"],
                            "original_image_digest": originals[frame["frame_id"]]["image_digest"]}
                           for frame in frames],
                "task_context_digest": task_context["context_digest"]}
+    if source_video_digest is not None:
+        binding["source_video_digest"] = source_video_digest
     digest = canonical_digest(binding)
     root = output_root / "repair_agent"
     root.mkdir(parents=True, exist_ok=True)
@@ -154,9 +160,10 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
               failed_review: Mapping[str, Any], targets: Sequence[Mapping[str, Any]],
               task_context: Mapping[str, Any], invoker: Any, reserve: Any) -> dict[str, Any]:
     input_value = _agent_input(frames=frames, originals=originals, review=failed_review, targets=targets)
+    source = {"source_video_digest": binding["source_video_digest"]} if "source_video_digest" in binding else {}
     admission, _grant = reserve(
         task_context=task_context, binding_digest=digest, maximum_cost_usd=MAX_COST_USD, request_count=1,
-        resource_class="openai_api_candidate", provider="openai")
+        resource_class="openai_api_candidate", provider="openai", **source)
     with path.open("x") as stream:
         json.dump({"status": "submitting", "binding_digest": digest, "binding": binding,
                    "admission": admission}, stream)
@@ -168,15 +175,21 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
     audit = InferenceReservationAudit(run_root=root, run_id=digest[7:23])
     selected_invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
         record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
+    output_type = RepairPlan
+    if binding["max_repairs"] != MAX_REPAIRS:
+        # A provider transaction limit is not a scene-wide image ceiling.
+        class SceneRepairPlan(RepairPlan):
+            repairs: list[RepairRequest] = Field(max_length=binding["max_repairs"])
+        output_type = SceneRepairPlan
     spec = AgentsSDKAgentSpec(run_id=digest[7:23], capability=CAPABILITY,
         name="Blueprint Website Image Repair Planner", instructions=binding["instructions"],
         model=MODEL, max_turns=1, max_output_tokens=MAX_OUTPUT_TOKENS, max_input_tokens=MAX_INPUT_TOKENS,
-        output_type=RepairPlan)
+        output_type=output_type)
     try:
         invocation = selected_invoker.invoke(spec, input_value)
     finally:
         audit.write_manifest()
-    plan = RepairPlan.model_validate(invocation.output).model_dump(mode="json")
+    plan = output_type.model_validate(invocation.output).model_dump(mode="json")
     frame_ids = [frame["frame_id"] for frame in frames]
     requested = [row["frame_id"] for row in plan["repairs"]]
     if len(set(requested)) != len(requested) or any(frame_id not in frame_ids for frame_id in requested):
@@ -195,8 +208,10 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
 def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_removal_frames: Sequence[Mapping[str, Any]],
                           original_frames: Sequence[Mapping[str, Any]], plan: Mapping[str, Any],
                           failed_review: Mapping[str, Any], output_root: Path, task_context: Mapping[str, Any],
-                          invoker: Any = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Plan, perform and independently re-review at most MAX_REPAIRS targeted re-edits."""
+                          invoker: Any = None, source_video_digest: str | None = None,
+                          max_repairs: int = MAX_REPAIRS,
+                          repair_reference_path: Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Plan bounded targeted re-edits; only the independent review approves them."""
     from .website_image_completion import complete_background_images, verify_completed_background
 
     sources = {frame["frame_id"]: frame for frame in object_removal_frames}
@@ -209,7 +224,8 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
                                         "image_digest": source["original_image_digest"]}
     receipt = plan_image_repairs(frames=selected, originals=originals, failed_review=failed_review,
                                  targets=plan["targets"], task_context=task_context,
-                                 output_root=output_root, invoker=invoker)
+                                 output_root=output_root, invoker=invoker,
+                                 max_repairs=max_repairs, source_video_digest=source_video_digest)
     repairs = receipt["plan"]["repairs"]
     if not repairs:
         return list(map(dict, selected)), {**failed_review, "repair_plan": receipt["plan"]}
@@ -227,9 +243,12 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
             frames=[source], task_digest=plan["task_context_sha256"], output_root=output_root / "repairs",
             admission={}, token=os.getenv("OPENAI_API_KEY", ""), targets=plan["targets"],
             task_context=task_context, repair_instruction=row["instruction"],
-            repair_reference_path=Path(anchor["image_path"]) if anchor is not None else None)[0]
+            repair_reference_path=(repair_reference_path if repair_reference_path is not None
+                                   else Path(anchor["image_path"]) if anchor is not None else None),
+            source_video_digest=source_video_digest)[0]
         result[index] = {**edited, "repair_instruction": row["instruction"]}
     review = verify_completed_background(frames=result, original_frames=original_frames, plan=plan,
-                                         output_root=output_root, task_context=task_context)
+                                         output_root=output_root, task_context=task_context,
+                                         source_video_digest=source_video_digest)
     return result, {**review, "prior_failed_review": failed_review, "repair_plan": receipt["plan"],
                     "repair_plan_digest": receipt["plan_digest"], "repaired_frame_ids": sorted(repaired_ids)}

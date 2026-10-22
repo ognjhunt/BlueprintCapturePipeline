@@ -236,7 +236,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                task_context: Mapping[str, Any] | None = None,
                                repair_instruction: str | None = None,
                                repair_reference_path: Path | None = None,
-                               source_video_digest: str | None = None) -> list[dict[str, Any]]:
+                               source_video_digest: str | None = None,
+                               require_cached: bool = False) -> list[dict[str, Any]]:
     if not any(frame["remaining_pixel_count"] for frame in frames):
         return [dict(frame) for frame in frames]
     fixed_reference = None
@@ -274,6 +275,10 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
         # A restart may read completed bytes without renewing spend authority.
         # Missing or uncertain receipts never authorize another purchase.
         reuse_only = all((root / f"{i}.json").is_file() for i in edited_indices)
+        if require_cached and not reuse_only:
+            if any((root / f"{i}.json").exists() for i in edited_indices):
+                raise ValueError("website_image_completion_cached_batch_incomplete")
+            raise ValueError("website_image_completion_cached_batch_missing")
         for index in edited_indices:
             receipt_path = root / f"{index}.json"
             if receipt_path.is_file():
