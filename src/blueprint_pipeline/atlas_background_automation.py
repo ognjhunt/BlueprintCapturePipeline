@@ -384,19 +384,31 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
     check("automation_editor_review")
     review = verify_completed_background(frames=candidates, original_frames=chosen, plan=plan,
         output_root=root / "selected_editor_review", task_context=context, source_video_digest=source_digest)
-    if review["status"] != "passed" and image_repair_enabled():
+    seen = {tuple(row["image_digest"] for row in candidates)}
+    repair_round = 0
+    while review["status"] != "passed" and image_repair_enabled():
         check("automation_targeted_repairs")
+        # Each round consumes only current source-bound grants. Completed plans,
+        # edits and reviews replay from receipts after a restart. A new defect
+        # named by the reviewer becomes the next repair, never an approval.
+        repair_root = root / ("fallback_repairs" if repair_round == 0 else
+                              f"fallback_repairs-{repair_round + 1:04d}")
         candidates, review = repair_rejected_views(
             selected=candidates, object_removal_frames=[{
                 **row, "original_image_path": row["image_path"], "original_image_digest": row["image_digest"],
             } for row in chosen], original_frames=chosen, plan=plan, failed_review=review,
-            output_root=root / "fallback_repairs", task_context=context,
+            output_root=repair_root, task_context=context,
             source_video_digest=source_digest, max_repairs=len(chosen),
             repair_reference_path=Path(anchor["image_path"]))
+        repair_round += 1
+        signature = tuple(row["image_digest"] for row in candidates)
+        if review["status"] != "passed" and signature in seen:
+            break
+        seen.add(signature)
     background = {"status": "fallback_prepared" if review["status"] == "passed" else "quality_rejected",
                   "provider": "existing_image_editor", "frames": candidates, "review": review,
                   "measurements": measurements, "retained_root": str(root),
-                  "ready_for_reconstruction": review["status"] == "passed"}
+                  "ready_for_reconstruction": review["status"] == "passed", "repair_rounds": repair_round}
     if atlas_review is not None:
         background["atlas_review"] = atlas_review
     if background["ready_for_reconstruction"]:

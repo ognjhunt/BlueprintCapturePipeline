@@ -557,3 +557,48 @@ def test_rejected_atlas_fallback_enters_existing_repair_and_retains_passed_set(t
     assert calls[0]["max_repairs"] == 2 and calls[0]["source_video_digest"] == "video"
     assert calls[0]["repair_reference_path"].is_file()
     assert edits.run_background(**args) == result and len(calls) == 1
+
+
+@pytest.mark.parametrize("makes_progress", [True, False])
+def test_editor_repairs_follow_latest_review_and_stop_when_pixels_do_not_change(tmp_path, monkeypatch, makes_progress):
+    from blueprint_pipeline import website_image_completion as image_edit, website_image_repair_agent as repair
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
+    prepared = edits.prepare_masked_frames(frames=frames, targets=[track(frames)], margin=.01,
+                                           root=tmp_path / "originals")
+    root = tmp_path / "run"
+    root.mkdir()
+    monkeypatch.setattr(image_edit, "complete_background_images", lambda **kw: kw["frames"])
+    monkeypatch.setattr(image_edit, "verify_completed_background", lambda **_: {"status": "blocked"})
+    monkeypatch.setattr(repair, "image_repair_enabled", lambda: True)
+    calls = []
+
+    def fix(**kw):
+        calls.append(kw)
+        selected = list(map(dict, kw["selected"]))
+        if makes_progress:
+            index = len(calls) - 1
+            path = tmp_path / f"repair-{index}.png"
+            Image.new("RGB", (80, 60), "red" if index == 0 else "blue").save(path)
+            selected[index].update(image_path=str(path), image_digest=_sha256_file(path))
+        binding = {"frames": [{"frame_id": row["frame_id"], "image_digest": row["image_digest"]}
+                              for row in selected]}
+        passed = makes_progress and len(calls) == 2
+        review = {"status": "passed" if passed else "blocked", "binding": binding,
+                  "request_digest": canonical_digest(binding), "review": {
+                      "consistent_background": passed, "task_objects_removed": True,
+                      "unrelated_objects_preserved": True}}
+        return selected, review
+
+    monkeypatch.setattr(repair, "repair_rejected_views", fix)
+    result = edits._reviewed_editor_background(prepared=prepared, anchor=prepared[0],
+        plan={"task_context_sha256": "task", "targets": []}, automation=plan(), root=root, context={},
+        source_digest="video", measurements={}, selected_frame_ids=None, check=lambda _: None, prepared_binding={})
+    assert len(calls) == (2 if makes_progress else 1)
+    assert result["status"] == ("fallback_prepared" if makes_progress else "quality_rejected")
+    if makes_progress:
+        assert calls[1]["failed_review"]["status"] == "blocked"
+        assert calls[1]["selected"][0]["image_path"].endswith("repair-0.png")
+        assert calls[1]["output_root"].name == "fallback_repairs-0002"
+    assert (root / "prepared_background.json").exists() is makes_progress
