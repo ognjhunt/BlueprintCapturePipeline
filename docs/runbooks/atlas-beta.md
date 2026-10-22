@@ -102,6 +102,26 @@ nobody in view, but the job must work when people keep working in it.
   (`website_task_masks.resting_views`). A still object seen from opposite sides
   stays whole: views count as one place within the object's own visible extent.
 
+## Trial: edit every selected view
+
+Owner decision (2026-10-22): the editor cleans only the planner's required and
+additional views by default; the other selected views only fix the source pose,
+and Atlas generates views where the cleaned set leaves gaps. To test whether a
+room built from more real footage is clearly better, run one capture with
+`--edit-scope all_selected_views` in a **new job root** beside its default job:
+
+    python -m blueprint_pipeline.website_atlas_pipeline --source-video VIDEO \
+      --output-root NEW_JOB_ROOT --request-id ID --capture-id ID --scene-id ID \
+      --edit-scope all_selected_views
+
+- The scope is fixed at the job's first run (`edit_scope.json`); a resume with a
+  different scope refuses (`atlas_edit_scope_changed`).
+- Each edit is capped at $0.30, so 64 views can cost about $19 in edits plus
+  review and repairs. The background preflight refuses before SAM when the
+  capture's allowance cannot cover its forecast (`preflight.json`).
+- Compare the two jobs' background splat and mesh. If the room is clearly
+  better, make `all_selected_views` the default in `EDIT_SCOPES`.
+
 ## Accuracy-first input selection
 
 Owner direction (2026-10-22): accuracy, not cost, decides the provider inputs.

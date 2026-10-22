@@ -702,3 +702,24 @@ def test_an_object_track_missing_a_view_refuses_but_an_absent_transient_is_empty
         frames=[a, b], targets=[{**partial, "task_effect": "transient"}], margin=0.01, root=tmp_path / "ok")
     assert prepared[0]["removed_transient_ids"] == ["obj"] and prepared[1]["remaining_pixel_count"] == 0
     assert "removed_transient_ids" not in prepared[1]
+
+
+@pytest.mark.parametrize("scope, edited", [("required_and_additional", ["a"]), ("all_selected_views", ["a", "b"])])
+def test_the_trial_scope_cleans_every_selected_view_and_the_default_only_the_reviewed_ones(
+        tmp_path, monkeypatch, scope, edited):
+    from blueprint_pipeline import atlas_scene_automation as worker
+
+    a, b = view(tmp_path), view(tmp_path, "b", 0.1)
+    inputs = {"frames": [{k: f[k] for k in ("frame_id", "image_path", "image_digest")} for f in (a, b)],
+              "binding": {"source_video_digest": "source"}, "digest": "inputs"}
+    observed = []
+    monkeypatch.setattr(edits, "run_background", lambda **kw: observed.append(kw) or {"status": "quality_rejected"})
+    args = dict(pose_root=None, inputs=inputs,
+                review={"automation": plan(), "coverage_requirements": [{"required_frame_ids": ["a"]}]},
+                output_root=tmp_path / "out", task_context={}, configuration={"policy": {}},
+                task_runner=None, pose_runner=None, release_blockers=None)
+    worker.run_automation(**args, edit_scope=scope)
+    assert observed[0]["selected_frame_ids"] == edited
+    assert [f["frame_id"] for f in observed[0]["frames"]] == edited
+    with pytest.raises(ValueError, match="edit_scope_invalid"):
+        worker.run_automation(**args, edit_scope="everything")
