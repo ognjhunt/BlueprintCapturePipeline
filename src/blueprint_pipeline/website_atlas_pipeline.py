@@ -86,8 +86,14 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     saved = output_root / "configuration.json"
     if saved.exists():
         config = json.loads(saved.read_text())
-        if config["authority"] != current["authority"] or config["policy"] != current["policy"]:
+        # A resumed job may gain a reviewed price for a stage it has not bought;
+        # any changed price or authority still refuses.
+        if (config["authority"] != current["authority"]
+                or any(current["policy"].get(key) != value for key, value in config["policy"].items())):
             raise ValueError("atlas_runtime_authority_or_policy_changed")
+        if config["policy"] != current["policy"]:
+            config = {**config, "policy": current["policy"]}
+            write_json(saved, config)
     else:
         config = current
         write_json(saved, config)

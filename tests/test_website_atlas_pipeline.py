@@ -154,3 +154,12 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     # No reviewed mesh price means no mesh purchase, never an implied mesh.
     assert result["blockers"] == ([] if mesh_price else ["atlas_mesh_export_price_unreviewed"]) + [
         "metric_scene_registration_unproven"]
+    if mesh_price is None:
+        # A price reviewed later resumes the job and buys only the mesh.
+        policy["mesh_export_cost_usd"] = .5
+        mesh_price = .5
+        resumed = pipeline.run_atlas_pipeline(**options)
+        assert resumed["mesh_available"] is True and calls["review"] == 2 and calls["splats2Mesh"] == 1
+        policy["pose_input_cost_usd"] = .02
+        with pytest.raises(ValueError, match="authority_or_policy_changed"):
+            pipeline.run_atlas_pipeline(**options)
