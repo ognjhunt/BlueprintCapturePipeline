@@ -193,6 +193,16 @@ def test_a_routed_upload_becomes_an_archived_preview_and_leaves_nothing_at_world
     assert len(world.runs) == 2 and len(world.pushed) == 2
 
 
+def test_rejected_background_without_download_waits_without_publishing_a_bundle(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "needs_input", "download": None,
+                                       "digest": "sha256:rejected"}])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert job["reason"] == "atlas_background_review_required" and job["archive"] is None
+    assert world.published == [] and world.pushed[-1]["bundle"] is None
+
+
 def test_a_withdrawal_stops_the_job_before_the_next_paid_stage_and_cleans_world_labs(monkeypatch, site):
     _enqueue(site)
 

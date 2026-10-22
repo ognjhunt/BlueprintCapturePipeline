@@ -225,6 +225,9 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
         if result["status"] == "processing":
             return _transition(job, current, "processing", None, stage=result["stage"], transient_failures=0,
                                next_attempt_at_epoch=current)
+        if not result.get("download"):
+            return _transition(job, current, "needs_input", "atlas_background_review_required",
+                               stage="background_review", result_digest=result.get("digest"))
         # The last paid-stage checkpoint is behind the final provider call, fusion and export.
         checkpoint("archive")
         archive = _archive(job, result)

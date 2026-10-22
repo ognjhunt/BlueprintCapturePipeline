@@ -406,7 +406,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
 
 
 def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original_frames: Sequence[Mapping[str, Any]],
-                                plan: Mapping[str, Any], output_root: Path, retain_result: bool = True, timeout_ms: int = 120_000) -> dict[str, Any]:
+                                plan: Mapping[str, Any], output_root: Path, retain_result: bool = True,
+                                timeout_ms: int = 120_000, max_output_tokens: int = 2048) -> dict[str, Any]:
     """Inspect generated candidates before allowing them into reconstruction."""
     originals = {f["frame_id"]: f for f in original_frames}
     for frame in frames:
@@ -438,9 +439,15 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
             timeout=timeout_ms, retry_options=types.HttpRetryOptions(attempts=1))) as client:
         response = client.models.generate_content(
             model=DEFAULT_MODEL, contents=contents,
-            config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=2048,
+            config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=max_output_tokens,
                                                media_resolution="MEDIA_RESOLUTION_HIGH"))
     if not response.candidates or response.candidates[0].finish_reason != "STOP":
+        # Keep the actual stop reason rather than reducing every refusal to an
+        # unexplained submitting intent. It never approves or refunds this call.
+        write_json(output_root / f"review-incomplete-{digest[7:]}-{max_output_tokens}.json", {
+            "status": "incomplete", "binding": binding, "request_digest": digest,
+            "finish_reason": str(response.candidates[0].finish_reason) if response.candidates else "no_candidates",
+            "max_output_tokens": max_output_tokens, "approves_views": False})
         raise ValueError("website_image_completion_review_incomplete")
     review = json.loads(response.text)
     remaining = review.get("remaining_task_object_frame_ids")
@@ -514,10 +521,10 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
     text_bytes += sum(len(str(frame["frame_id"]).encode()) * 2 + 32 for frame in frames)
     input_tokens = text_bytes + 1120 * len(inputs)
     quote = gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens, max_output_tokens=2048)
-    # Revision 1 allowed the client 120 s; a 14-image HIGH-resolution review
-    # outlived it and left an immutable submitting intent. Reuse a completed v1
-    # receipt; only an exact unresolved v1 intent permits one separately bounded
-    # v2 request, which allows 300 s. Never rewrite the old intent.
+    # Reuse completed v1/v2 receipts byte for byte. V1's short timeout and
+    # v2's 2048-token reasoning+answer budget have both produced incomplete
+    # reviews. One separately reserved v3 review allows 8192 output tokens;
+    # old charges/intents remain, and an uncertain v3 is never bought again.
     prior_binding = {**base_binding, "revision": 1}
     prior_request = {"binding": prior_binding, "task_context_digest": task_context["context_digest"],
                      "maximum_cost_usd": quote}
@@ -533,10 +540,26 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
         prior_status = prior_receipt.get("status")
         if prior_status not in {"completed", "submitting"}:
             raise ValueError("website_image_completion_prior_review_receipt_invalid")
+    second_binding = {**base_binding, "revision": 2, "timeout_seconds": 300,
+                      "supersedes_incomplete_request_digest": prior_digest if prior_status == "submitting" else None}
+    second_request = {**prior_request, "binding": second_binding}
+    second_digest = canonical_digest(second_request)
+    second_path = output_root / "gemini_reviews" / f"{second_digest[7:]}.json"
+    second_status = None
+    if prior_status != "completed" and second_path.is_file():
+        second = json.loads(second_path.read_text())
+        if second.get("request_digest") != second_digest or second.get("request") != second_request:
+            raise ValueError("website_image_completion_prior_review_receipt_changed")
+        second_status = second.get("status")
+        if second_status not in {"completed", "submitting"}:
+            raise ValueError("website_image_completion_prior_review_receipt_invalid")
     timeout_ms = 120_000 if prior_status == "completed" else 300_000
-    binding = (prior_binding if prior_status == "completed" else
-               {**base_binding, "revision": 2, "timeout_seconds": timeout_ms // 1000,
-                "supersedes_incomplete_request_digest": prior_digest if prior_status == "submitting" else None})
+    max_output_tokens = 2048 if "completed" in (prior_status, second_status) else 8192
+    binding = (prior_binding if prior_status == "completed" else second_binding if second_status == "completed" else
+               {**base_binding, "revision": 3, "timeout_seconds": 300, "max_output_tokens": max_output_tokens,
+                "supersedes_incomplete_request_digest": (second_digest if second_status == "submitting" else
+                                                        prior_digest if prior_status == "submitting" else None)})
+    quote = gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens, max_output_tokens=max_output_tokens)
 
     def preflight():
         if not _api_key()[0]:
@@ -547,7 +570,7 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
         task_context=task_context, maximum_cost_usd=quote,
         source_video_digest=source_video_digest, preflight=preflight, invoke=lambda: _verify_completed_background(frames=frames,
             original_frames=original_frames, plan=plan, output_root=output_root, retain_result=False,
-            timeout_ms=timeout_ms))
+            timeout_ms=timeout_ms, max_output_tokens=max_output_tokens))
 
 
 def diagnose_inconsistent_background(*, frames: Sequence[Mapping[str, Any]],

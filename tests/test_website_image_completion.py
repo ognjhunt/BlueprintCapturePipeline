@@ -412,9 +412,11 @@ def test_consistency_diagnosis_preserves_or_supersedes_exact_prior_receipt(
         assert seen[0]["binding"]["supersedes_incomplete_request_digest"] == prior_digest
 
 
-@pytest.mark.parametrize("prior_status,expected_revision", [("completed", 1), ("submitting", 2), (None, 2)])
+@pytest.mark.parametrize("prior_version,prior_status,expected_revision", [
+    (1, "completed", 1), (1, "submitting", 3), (1, None, 3),
+    (2, "completed", 2), (2, "submitting", 3)])
 def test_background_review_preserves_or_supersedes_exact_prior_receipt(
-        tmp_path, monkeypatch, prior_status, expected_revision):
+        tmp_path, monkeypatch, prior_version, prior_status, expected_revision):
     from hashlib import sha256
     from blueprint_pipeline import website_gemini_receipts as receipts
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -434,32 +436,72 @@ def test_background_review_preserves_or_supersedes_exact_prior_receipt(
         "maximum_cost_usd": receipts.gemini_quote(model=completion.DEFAULT_MODEL,
             input_tokens=text_bytes + 1120 * len(image_digests), max_output_tokens=2048)}
     prior_digest = canonical_digest(prior_request)
+    if prior_version == 2:
+        prior_binding = {**prior_binding, "revision": 2, "timeout_seconds": 300,
+                         "supersedes_incomplete_request_digest": None}
+        prior_request = {**prior_request, "binding": prior_binding}
+        prior_digest = canonical_digest(prior_request)
     if prior_status:
         review_dir = tmp_path / "review" / "gemini_reviews"
         review_dir.mkdir(parents=True)
         (review_dir / f"{prior_digest[7:]}.json").write_text(json.dumps({
             "status": prior_status, "request_digest": prior_digest, "request": prior_request}))
-    seen, timeouts = [], []
+    seen, timeouts, token_limits = [], [], []
     def retained(**kwargs):
         seen.append(kwargs)
         kwargs["invoke"]()
         return {"status": "passed", "binding": kwargs["binding"]}
     monkeypatch.setattr(receipts, "retained_gemini_call", retained)
-    monkeypatch.setattr(completion, "_verify_completed_background", lambda **kw: timeouts.append(kw["timeout_ms"]))
+    monkeypatch.setattr(completion, "_verify_completed_background", lambda **kw:
+                        (timeouts.append(kw["timeout_ms"]), token_limits.append(kw["max_output_tokens"])))
     completion.verify_completed_background(frames=frames, original_frames=frames, plan=plan,
                                            output_root=tmp_path / "review", task_context=task)
     binding = seen[0]["binding"]
     assert binding["revision"] == expected_revision
-    if expected_revision == 1:
-        # A completed v1 review is reused exactly, never bought again.
-        assert binding == prior_binding and timeouts == [120_000]
+    if expected_revision in {1, 2}:
+        # Completed reviews are reused exactly, including their old quote.
+        assert binding == prior_binding and timeouts == [120_000 if expected_revision == 1 else 300_000]
+        assert token_limits == [2048]
     else:
-        # An unresolved v1 intent is never rewritten; one separately bounded v2
-        # request with a longer client timeout supersedes it.
+        # One separately bounded v3 request preserves earlier incomplete calls.
         assert binding["timeout_seconds"] == 300 and timeouts == [300_000]
+        assert binding["max_output_tokens"] == 8192 and token_limits == [8192]
         assert binding["supersedes_incomplete_request_digest"] == (prior_digest if prior_status else None)
         assert not prior_status or json.loads(next((tmp_path / "review" / "gemini_reviews").glob("*.json"))
                                               .read_text())["status"] == prior_status
+
+
+def test_incomplete_review_retains_provider_stop_reason_and_never_approves(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import sys
+    frames, _ = _inputs(tmp_path)
+    monkeypatch.setattr(completion, "_api_key", lambda: ("non-secret", "test"))
+
+    class Client:
+        def __init__(self, **_):
+            self.models = self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def generate_content(self, **kwargs):
+            assert kwargs["config"].max_output_tokens == 8192
+            return SimpleNamespace(candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")])
+
+    types = SimpleNamespace(
+        Part=SimpleNamespace(from_bytes=lambda **_: "image"),
+        HttpOptions=lambda **kw: SimpleNamespace(**kw), HttpRetryOptions=lambda **kw: SimpleNamespace(**kw),
+        GenerateContentConfig=lambda **kw: SimpleNamespace(**kw))
+    monkeypatch.setitem(sys.modules, "google.genai", SimpleNamespace(Client=Client, types=types))
+    with pytest.raises(ValueError, match="review_incomplete"):
+        completion._verify_completed_background(frames=frames, original_frames=frames,
+            plan={"targets": [], "task_context_sha256": "task"}, output_root=tmp_path / "review",
+            retain_result=False, max_output_tokens=8192)
+    result = json.loads(next((tmp_path / "review").glob("review-incomplete-*.json")).read_text())
+    assert result["finish_reason"] == "MAX_TOKENS" and result["approves_views"] is False
 
 
 @pytest.mark.parametrize("source_digest", [None, "sha256:" + "f" * 64])
