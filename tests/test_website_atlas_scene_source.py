@@ -383,6 +383,7 @@ def test_tracks_that_cannot_name_the_geometry_frames_are_refused(tmp_path, chang
     ("mesh", "website_atlas_background_mesh_unavailable"),
     ("source_pose", "website_atlas_source_pose_unavailable"),
     ("scale", "website_atlas_scale_estimate_unavailable"),
+    ("references_disagree", "website_atlas_scale_references_disagree"),
 ])
 def test_an_unready_job_says_what_scene_preparation_waits_for(tmp_path, case, reason):
     job_dir = job_fixture(tmp_path)
@@ -392,8 +393,9 @@ def test_an_unready_job_says_what_scene_preparation_waits_for(tmp_path, case, re
         (job_dir / "preview_job.json").unlink()
     elif case in {"processing", "failed"}:
         write(job_dir / "preview_job.json", {**job, "state": case})
-    elif case == "scale":
-        write(job_dir / "pose" / "scene_measurements.json", digest({"status": "relative_sizes_only"}))
+    elif case in {"scale", "references_disagree"}:
+        agreement = {"reference_agreement": {"basis": "no_majority"}} if case == "references_disagree" else {}
+        write(job_dir / "pose" / "scene_measurements.json", digest({"status": "relative_sizes_only", **agreement}))
         result["source_pose"]["scene_measurements_digest"] = json.loads(
             (job_dir / "pose" / "scene_measurements.json").read_text())["digest"]
     else:
@@ -403,7 +405,7 @@ def test_an_unready_job_says_what_scene_preparation_waits_for(tmp_path, case, re
             result["automation"]["background"]["mesh_available"] = False
         else:
             result["source_pose"] = {"status": "needs_input", "reason": "atlas_runtime_price_review_expired"}
-    if case in {"scale", "background", "mesh", "source_pose"}:
+    if case in {"scale", "references_disagree", "background", "mesh", "source_pose"}:
         write(job_dir / "result.json", digest(result))
         write(job_dir / "preview_job.json", {**job, "result_digest": result["digest"]})
     value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")

@@ -175,7 +175,10 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
         raise ValueError("website_atlas_scene_measurements_changed")
     if (measurements.get("status") != "estimated" or isinstance(mpu, bool) or not isinstance(mpu, (int, float))
             or not math.isfinite(mpu) or mpu <= 0):
-        return {"status": "needs_input", "reason": "website_atlas_scale_estimate_unavailable"}
+        # Known-size references that disagree say the scale is unknown, not small.
+        disagree = (measurements.get("reference_agreement") or {}).get("basis") == "no_majority"
+        return {"status": "needs_input", "reason": "website_atlas_scale_references_disagree" if disagree
+                else "website_atlas_scale_estimate_unavailable"}
     scale = {"meters_per_unit": float(mpu), "basis": "reference_estimate", "evidence_digest": measurements["digest"],
              "evidence_reference": str(measurements_path.relative_to(capture_root.resolve()))}
     inputs = _read(_inside(pose_root / GEOMETRY_INPUTS_FILE, job_dir))
