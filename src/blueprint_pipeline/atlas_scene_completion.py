@@ -17,7 +17,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v13"
+COMPLETION_REVISION = "v14"
 
 
 def camera_candidates(frames):
@@ -125,7 +125,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     candidates = camera_candidates(frames)
     from .atlas_scene_preservation import observed_scene_bounds
     extent = observed_scene_bounds(frames)
-    from .atlas_scene_gaps import survey_gaps, select_gap_mask, target_gap_ids
+    from .atlas_scene_gaps import survey_gaps, select_gap_mask, target_gap_ids, context_supported_candidates
     geometry_frames = [*frames, *existing_geometry_frames]
     gaps = survey_gaps(frames=frames, geometry_frames=geometry_frames, candidates=candidates, root=root / 'gaps')
     from .atlas_completion_cameras import gap_target_candidates
@@ -133,11 +133,27 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     if aimed:
         targeted = survey_gaps(frames=frames, geometry_frames=geometry_frames,
                               candidates=aimed, root=root / 'gap-targets')
+        _, rejected_aims = context_supported_candidates(aimed, targeted)
+        rejected_ids = set(rejected_aims)
+        missing = {key for row in aimed if row['camera_id'] in rejected_ids for key in row['source_gap_ids']}
+        # Keep the same named holes. Try a wider, source-centred view when
+        # looking from farther away exposes the back of a known surface.
+        if missing:
+            retry_survey = {**gaps, 'views': [{**view, 'gaps': [gap for gap in view['gaps']
+                                                             if gap['gap_id'] in missing]}
+                                            for view in gaps['views']]}
+            fallback = gap_target_candidates(frames, candidates, retry_survey, source_centred=True)
+            if fallback:
+                fallback_gaps = survey_gaps(frames=frames, geometry_frames=geometry_frames,
+                    candidates=fallback, root=root / 'gap-target-context-fallback')
+                aimed.extend(fallback)
+                targeted = {**targeted, 'views': [*targeted['views'], *fallback_gaps['views']],
+                    'previews': [*targeted['previews'], *fallback_gaps['previews']],
+                    'binding_digest': canonical_digest({'initial': targeted['binding_digest'],
+                                                       'fallback': fallback_gaps['binding_digest']})}
         candidates.extend(aimed)
         gaps = {**gaps, 'views': [*gaps['views'], *targeted['views']],
-                # The source gap previews already show the missing regions.
-                # New cameras carry their source-gap lineage and full geometric
-                # survey; repeating every derived preview wastes review context.
+                'previews': [*gaps['previews'], *targeted['previews']],
                 'targeted_preview_count': len(targeted['previews']),
                 'binding_digest': canonical_digest({'base': gaps['binding_digest'],
                                                     'targeted': targeted['binding_digest']})}
@@ -153,6 +169,14 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'completion.json', report)
         return [], report
+    candidates, unsupported = context_supported_candidates(candidates, gaps)
+    usable = {row['camera_id'] for row in candidates}
+    with_gaps = {row['camera_id'] for row in gaps['views'] if row['gap_pixel_count']}
+    # Show the actual proposed camera views, including dedicated gap views.
+    # The source-camera overlay cannot reveal a bad new viewpoint.
+    previews = [row for row in gaps['previews'] if row['camera_id'] in usable & with_gaps]
+    if not usable & with_gaps:
+        raise ValueError('atlas_completion_no_context_supported_gap_camera')
     originals = {}
     survey_frames = []
     usage = pose["operation_receipt"]["input_usage"]["frames"]
@@ -179,7 +203,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                 "candidate_camera_ids": candidates,
                 "generation_extent": extent, "scope": "missing_surfaces_within_captured_scene",
                 "removal_instruction": review["automation"]["removal_instruction"],
-                "uncaptured_regions": review.get("uncaptured_regions", []), "previews": gaps['previews'],
+                "uncaptured_regions": review.get("uncaptured_regions", []), "previews": previews,
+                'unsupported_camera_ids': unsupported,
                 'gap_survey': {k: v for k, v in gaps.items() if k != 'previews'},
                 "input_basis": "generated_background_not_raw_capture", "claim_ceiling": "development_only"}
     baseline_path = root.parent / "background_splat/atlas_depth_splat_manifest.json"

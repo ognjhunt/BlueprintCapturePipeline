@@ -1,5 +1,6 @@
 """Model review cannot waive source/privacy/coverage, budget or durable intent."""
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from PIL import Image
@@ -173,6 +174,26 @@ def test_gap_pixels_are_labeled_derived_and_digest_checked(tmp_path):
     image.write_bytes(b"changed")
     with pytest.raises(ValueError, match="preview_changed"):
         planner._input(survey, {"description": "task"}, feedback)
+
+
+def test_completion_sheets_keep_every_camera_and_leave_source_images_unchanged(tmp_path):
+    _, survey, _, _ = fixture(tmp_path)
+    previews = []
+    for index in range(5):
+        path = tmp_path / f'camera-{index}.png'
+        Image.new('RGB', (1280, 720), (index * 40, 20, 50)).save(path)
+        previews.append({'path': str(path), 'sha256': _sha256_file(path),
+                         'source_frame_id': '1', 'camera_id': f'camera-{index}'})
+    feedback = {'scope': 'missing_surfaces_within_captured_scene', 'previews': previews}
+    content = planner._input(survey, {'description': 'task'}, feedback)[0]['content']
+    labels = [json.loads(row['text'])['derived_reconstruction_previews'] for row in content
+              if row['type'] == 'input_text' and 'derived_reconstruction_previews' in row['text']]
+    assert len(labels) == 2
+    assert [row['camera_id'] for sheet in labels for row in sheet] == [f'camera-{i}' for i in range(5)]
+    assert all(_sha256_file(Path(row['path'])) == row['sha256'] for row in previews)
+    Path(previews[-1]['path']).write_bytes(b'changed')
+    with pytest.raises(ValueError, match='preview_changed'):
+        planner._input(survey, {'description': 'task'}, feedback)
 
 
 def test_unselected_blurry_candidate_does_not_invalidate_sharp_static_inputs(tmp_path):

@@ -60,7 +60,8 @@ def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None)
 def survey_gaps(*, frames, geometry_frames, candidates, root):
     """Survey all known directions; the existing production agent chooses gaps."""
     from .atlas_scene_chisel import project_source_depth
-    from .atlas_scene_preservation import project_known_context, _save_image
+    from .atlas_scene_preservation import prepare_completion_views, _save_image
+    from PIL import Image
 
     root.mkdir(parents=True, exist_ok=True)
     binding = {'candidates': candidates, 'geometry_frames': [{
@@ -81,9 +82,14 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
             if Path(path).is_symlink() or _sha256_file(Path(path)) != digest:
                 raise ValueError('atlas_completion_gap_survey_changed')
         return report
+    # Use the very same supported patches/erosion as the generation handoff.
+    # Raw projected points can look like context while the usable patches are
+    # actually empty, especially when looking at the back of a surface.
+    prepared = prepare_completion_views(frames=frames, selected=candidates, root=root / 'context')
     rows, previews = [], []
-    for index, candidate in enumerate(candidates):
-        rgb, photographed = project_known_context(frames, candidate['camera'])
+    for index, (candidate, source) in enumerate(zip(candidates, prepared, strict=True)):
+        rgb = np.asarray(Image.open(source['image_path']).convert('RGB'))
+        photographed = np.asarray(Image.open(source['keep_mask_path']).convert('L')) == 255
         depth = project_source_depth(geometry_frames, candidate['camera'])
         outline = candidate.get('gap_domain') == 'projected_scene_outline_hypothesis'
         domain = None
@@ -100,6 +106,7 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
                      'gaps': [{**r, 'gap_id': candidate['camera_id'] + '-gap-' + str(r['label'])} for r in regions],
                      'gap_domain': ('projected_scene_outline_hypothesis' if outline else 'photographed_or_enclosed'),
                      'gap_pixel_count': int(np.count_nonzero(labels)),
+                     'known_context_pixel_count': int(photographed.sum()),
                      'total_pixel_count': int(labels.size)})
         if candidate['purpose'] in {'wide', 'translated', 'disocclusion', 'gap_target'}:
             preview = np.zeros_like(rgb)
@@ -119,6 +126,30 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
     report['digest'] = canonical_digest(report, digest_field='digest')
     write_json(root / 'survey.json', report)
     return report
+
+
+def context_supported_candidates(candidates, survey):
+    """Keep observed surroundings at least as large as the requested fill.
+
+    The requirement scales with each gap, rather than imposing a frame count
+    or a fixed scene-wide percentage. Unsupported directions remain in the
+    full topology survey, but cannot be purchased as grounded RGBD views.
+    """
+    views = {row['camera_id']: row for row in survey['views']}
+    accepted, rejected = [], []
+    for candidate in candidates:
+        row = views[candidate['camera_id']]
+        known, missing = row['known_context_pixel_count'], row['gap_pixel_count']
+        # A camera may cover several gaps; the agent can request a supported
+        # subset. The purchase boundary checks the exact selected mask area.
+        smallest = min((region['pixel_count'] for region in row.get('gaps', [])), default=missing)
+        if known <= 0 or known < smallest:
+            rejected.append(candidate['camera_id'])
+            continue
+        accepted.append({**candidate,
+                         'known_context_fraction': known / row['total_pixel_count'],
+                         'gap_fraction': missing / row['total_pixel_count']})
+    return accepted, rejected
 
 
 def target_gap_ids(view, candidate, requested):

@@ -67,6 +67,17 @@ def test_blank_exterior_and_absent_neighbour_depth_do_not_invent_a_target(tmp_pa
     assert gap_target_candidates(frames, pool, survey) == []
 
 
+def test_context_fallback_reaims_from_source_without_zooming_away_surroundings(tmp_path):
+    frames, pool, survey = scene(tmp_path)
+    target = gap_target_candidates(frames, pool, survey, source_centred=True)[0]
+    assert target['camera']['extrinsics']['position'] == [0., 0., 0.]
+    assert target['camera']['intrinsics']['fx'] == pool[0]['camera']['intrinsics']['fx']
+    assert target['target_framing'] == 'source_fov_reaimed_at_gap'
+    forward = -Rotation.from_quat(target['camera']['extrinsics']['quaternion']).as_matrix()[:, 2]
+    direction = np.array(target['target_world_estimate']) - frames[0]['position']
+    assert np.allclose(forward, direction / np.linalg.norm(direction))
+
+
 def test_changed_gap_mask_refuses_camera_planning(tmp_path):
     frames, pool, survey = scene(tmp_path)
     Image.fromarray(np.zeros((80, 100), np.uint16)).save(survey['views'][0]['label_path'])

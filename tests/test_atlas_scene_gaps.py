@@ -12,6 +12,21 @@ from blueprint_pipeline.atlas_depth_splat import posed_frame
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 
 
+def test_camera_context_scales_with_the_gap_and_rejects_retained_empty_views():
+    # The failed dishwasher plan had 0.01% and 0% usable known pixels.
+    counts = [('floor', 326720, 11513), ('bad-panel', 96, 16392),
+              ('bad-cabinet', 0, 108534), ('prior-success', 129834, 47879),
+              ('small-gap', 100, 20), ('large-gap', 100, 200)]
+    candidates = [{'camera_id': key} for key, _, _ in counts]
+    survey = {'views': [{'camera_id': key, 'known_context_pixel_count': known,
+                         'gap_pixel_count': missing, 'total_pixel_count': 921600}
+                        for key, known, missing in counts]}
+    accepted, rejected = gaps.context_supported_candidates(candidates, survey)
+    assert [row['camera_id'] for row in accepted] == ['floor', 'prior-success', 'small-gap']
+    assert rejected == ['bad-panel', 'bad-cabinet', 'large-gap']
+    assert accepted[0]['known_context_fraction'] > accepted[0]['gap_fraction']
+
+
 def test_blank_exterior_and_raster_pinholes_are_not_scene_completion_targets():
     depth = np.zeros((80, 100), np.float32)
     depth[10:70, 10:90] = 2

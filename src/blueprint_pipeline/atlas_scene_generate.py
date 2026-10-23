@@ -73,6 +73,13 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
             row.update({key: target[key] for key in ('completion_gap_mask_path', 'completion_gap_mask_digest',
                                                     'completion_gap_ids', 'completion_gap_pixel_count')})
     by_id = {row['frame_id']: row for row in rows}
+    # Refuse before reserving/uploading if a selected new view has effectively
+    # no photographed surroundings. All reference images still accompany every
+    # request; this checks overlap from the requested target camera itself.
+    for target in selected:
+        known = by_id[target['camera_id']]['protected_pixel_count']
+        if known <= 0 or known < target['completion_gap_pixel_count']:
+            raise ValueError('atlas_generate_target_context_insufficient')
     caption = scene_caption.strip() + '\n' + (
         'The exact photographed room with the same layout, materials, lighting, fixed fixtures '
         'and existing possessions in their photographed positions. Missing areas continue only '

@@ -112,6 +112,13 @@ poses and depth. Select exact candidate_camera_ids as selected_camera_ids.
 Camera pose_rub is [x,y,z,qx,qy,qz,qw] in the retained RUB world; aim is an
 estimated gap centre and vfov_deg is the requested vertical output field of view.
 All candidate cameras are planning estimates, never collision-qualified poses.
+known_context_fraction measures usable photographed patches in that target view;
+gap_fraction measures its candidate fill area. Prefer views with meaningful
+known surroundings, and inspect each proposed camera's own overlay. Unsupported
+camera IDs are unavailable: report their gaps as unresolved or choose a better
+overlapping view rather than imagining context behind a surface.
+For a view with several gaps, select a subset whose total fill area is no larger
+than its known context area; do not request every gap just because it is listed.
 Prefer gap_target cameras when they expose the missing surface: they aim directly
 at the detected gap with a surrounding context border. Their source_gap_ids link
 back to the originating gap overlays. Use other candidates when they show a gap
@@ -273,7 +280,34 @@ def _input(survey, context, feedback=None):
     if feedback is not None:
         content.append({"type": "input_text", "text": json.dumps({
             "reconstruction_feedback": {k: v for k, v in feedback.items() if k != "previews"}}, sort_keys=True)})
-        for row in feedback["previews"]:
+        previews = feedback['previews']
+        tiled = feedback.get('scope') == 'missing_surfaces_within_captured_scene'
+        if tiled:
+            from PIL import ImageDraw
+            # Reconnaissance only: retain every viewpoint and its identity,
+            # without buying a separate image budget for each derived overlay.
+            for start in range(0, len(previews), 4):
+                sheet = Image.new('RGB', (512, 352), (15, 15, 15))
+                labels = []
+                for index, row in enumerate(previews[start:start + 4]):
+                    path = Path(row['path'])
+                    if path.is_symlink() or _sha256_file(path) != row['sha256']:
+                        raise ValueError('atlas_refinement_preview_changed')
+                    with Image.open(path) as source:
+                        tile = source.convert('RGB')
+                        tile.thumbnail((256, 144))
+                    x, y = (index % 2) * 256, (index // 2) * 176
+                    sheet.paste(tile, (x, y + 24))
+                    ImageDraw.Draw(sheet).text((x + 4, y + 4), str(index + 1), fill='white')
+                    labels.append({'tile': index + 1, 'camera_id': row.get('camera_id'),
+                                   'source_frame_id': row['source_frame_id'], 'kind': row.get('kind')})
+                stream = BytesIO()
+                sheet.save(stream, format='PNG')
+                content += [{'type': 'input_text', 'text': json.dumps({
+                    'derived_reconstruction_previews': labels, 'not_source_observation': True})},
+                    {'type': 'input_image', 'image_url': 'data:image/png;base64,' +
+                     base64.b64encode(stream.getvalue()).decode(), 'detail': 'high'}]
+        for row in ([] if tiled else previews):
             source = Path(row["path"])
             if _sha256_file(source) != row["sha256"]:
                 raise ValueError("atlas_refinement_preview_changed")
@@ -310,7 +344,8 @@ def completion_summary(completion):
     for index, row in enumerate(value.get('candidate_camera_ids', [])):
         if isinstance(row, dict) and 'camera' in row:
             camera = row['camera']
-            compact = {key: row[key] for key in ('camera_id', 'source_frame_id', 'purpose', 'source_gap_ids') if key in row}
+            compact = {key: row[key] for key in ('camera_id', 'source_frame_id', 'purpose', 'source_gap_ids',
+                                                'known_context_fraction', 'gap_fraction') if key in row}
             compact['pose_rub'] = [round(v, 4) for v in [*camera['extrinsics']['position'],
                                                        *camera['extrinsics']['quaternion']]]
             if row.get('purpose') == 'gap_target':
@@ -335,7 +370,10 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     policy = configuration["policy"]
     maximum = policy["maximum_review_cost_usd"]
     extra = completion_summary(completion) if completion is not None else feedback
-    tokens = 24_000 + 3000 * (len(survey["frames"]) + len((extra or {}).get("previews", [])))
+    preview_count = len((extra or {}).get('previews', []))
+    if (extra or {}).get('scope') == 'missing_surfaces_within_captured_scene':
+        preview_count = math.ceil(preview_count / 4)
+    tokens = 24_000 + 3000 * (len(survey["frames"]) + preview_count)
     if completion is not None:
         # _input excludes preview paths/digests from its text; image costs and
         # their short labels are already covered above. Do not count them twice.

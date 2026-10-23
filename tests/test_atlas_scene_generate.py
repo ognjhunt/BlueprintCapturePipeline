@@ -99,3 +99,21 @@ def test_generate_refuses_unbounded_whole_image_admission(tmp_path):
     with pytest.raises(ValueError, match='named_gap_masks_required'):
         generate.generate_rgbd_completion(frames=frames, selected=pool, candidates=pool,
             root=tmp_path, pose={}, context={}, configuration={}, task_runner=lambda **_: pytest.fail('Purchased'), max_polls=1)
+
+
+def test_target_facing_away_from_known_photos_refuses_before_purchase(tmp_path):
+    frames = [source('a'), source('b', .2)]
+    candidates = [row for row in completion.camera_candidates(frames) if row['purpose'] == 'wide']
+    selected = [deepcopy(candidates[0])]
+    selected[0].update(camera_id='unsupported-gap-view', purpose='gap_target')
+    selected[0]['camera']['extrinsics']['position'] = [1000., 0., 0.]
+    path = tmp_path / 'gap.png'
+    mask = np.zeros((720, 1280), np.uint8)
+    mask[300:350, 500:550] = 255
+    Image.fromarray(mask).save(path)
+    selected[0].update(completion_gap_mask_path=str(path), completion_gap_mask_digest=_sha256_file(path),
+                       completion_gap_ids=['actual-gap'], completion_gap_pixel_count=2500)
+    with pytest.raises(ValueError, match='target_context_insufficient'):
+        generate.generate_rgbd_completion(frames=frames, selected=selected, candidates=candidates,
+            root=tmp_path / 'run', pose={}, context={}, configuration={},
+            task_runner=lambda **_: pytest.fail('Purchased an unsupported camera'), max_polls=1)
