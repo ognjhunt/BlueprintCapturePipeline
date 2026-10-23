@@ -92,6 +92,7 @@ class CompletionViewReason(BaseModel):
     model_config = ConfigDict(extra='forbid')
     camera_id: str = Field(min_length=1)
     reason: str = Field(min_length=1)
+    gap_ids: list[str] = Field(default_factory=list)
 
 
 class CompletionProposal(BaseModel):
@@ -114,7 +115,14 @@ Do not request whole-room sweeps, unseen rooms or extra space for completeness.
 The capture-derived generation_extent is a ceiling, not an area to fill: use the
 smallest task-relevant part of it, and do not invent metric dimensions.
 Every selected_camera_id needs an entry in view_gap_reasons, a list of objects
-with camera_id and nonempty reason explaining its specific gap and evidence.
+with camera_id, nonempty reason and gap_ids naming exact regions in gap_survey.
+Use the reconstruction geometry-gap overlays: magenta marks candidate missing
+surfaces; black exterior and tiny raster pinholes are not completion requests.
+Select only actual gaps that matter for the captured work area, never the whole
+image or room. Known geometry is immutable. A camera without a named eligible
+gap cannot be selected. The provider may return a full image, but only the named
+gap regions may contribute geometry. Do not infer a missing wall from black
+background alone. Source photos determine materials and existing objects.
 Avoid redundant cameras; do not choose a fixed
 count or spend the budget merely because it exists. Derived reconstruction
 previews, if supplied, are reconnaissance only. Name gaps that generation should
@@ -261,7 +269,8 @@ def _input(survey, context, feedback=None):
                 stream = BytesIO()
                 preview.save(stream, format="PNG")
             content += [{"type": "input_text", "text": json.dumps({
-                "derived_reconstruction_preview": row["source_frame_id"], "not_source_observation": True})},
+                "derived_reconstruction_preview": row["source_frame_id"], "not_source_observation": True,
+                "kind": row.get('kind'), "camera_id": row.get('camera_id')})},
                 {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(stream.getvalue()).decode(),
                  "detail": "high"}]
     return [{"role": "user", "content": content}]

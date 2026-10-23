@@ -298,21 +298,46 @@ def run_automation(
             completion = None
             if background["status"] == "fallback_prepared" and "rgbd_view_cost_usd" in policy:
                 from .atlas_scene_completion import complete_scene, COMPLETION_REVISION
+                from .atlas_scene_gaps import retained_completion
+
+                # Adopt the last passed completion in the same pose frame.
+                # Completed geometry stays in the base and cannot be regenerated.
+                original_frames = derived_frames
+                prior_frames, prior_reports = [], []
+                for prior in sorted(output_root.glob('scene_completion-v[0-9]*'),
+                                    key=lambda p: int(p.name.rsplit('v', 1)[1])):
+                    if (int(prior.name.rsplit('v', 1)[1]) >= int(COMPLETION_REVISION[1:])
+                            or not (prior / 'completion.json').is_file()):
+                        continue
+                    saved = json.loads((prior / 'completion.json').read_text())
+                    if saved.get('status') != 'passed' or not (prior / 'chisel-completion-plan.json').is_file():
+                        continue
+                    plan = json.loads((prior / 'chisel-completion-plan.json').read_text())
+                    if plan.get('source_pose_digest') != effective_pose['digest']:
+                        continue
+                    adopted, prior_report = retained_completion(root=prior, pose_digest=effective_pose['digest'])
+                    prior_frames.extend(adopted)
+                    prior_reports.append(prior_report)
+                    provenance = [*provenance, prior_report['generation_result_digest']]
+                    visual_digest = canonical_digest({'reviews': [visual_digest, prior_report['review']]})
+                    generated_roots.extend(Path(p) for p in prior_report['generated_roots'])
+                background['adopted_completion_digests'] = [p['digest'] for p in prior_reports]
 
                 generated, completion = complete_scene(
-                    pose_root=effective_root, pose=effective_pose, frames=derived_frames,
+                    pose_root=effective_root, pose=effective_pose, frames=original_frames,
                     review=review, root=output_root / f"scene_completion-{COMPLETION_REVISION}", context=task_context,
                     configuration=configuration, task_runner=task_runner, release_blockers=release_blockers,
-                    planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint)
+                    planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint,
+                    existing_geometry_frames=prior_frames)
                 if completion["status"] == "processing":
                     return completion
                 if generated is None:
                     raise ValueError(completion["reason"])
-                derived_frames = [*derived_frames, *generated]
+                derived_frames = [*original_frames, *prior_frames, *generated]
                 provenance = [*provenance, completion["generation_result_digest"]]
                 visual_digest = canonical_digest({"reviews": [visual_digest, completion["review"]]})
                 generated_roots.extend(Path(p) for p in completion.get("generated_roots", []) or
-                                       [completion["generated_root"]])
+                                       ([completion["generated_root"]] if completion.get('generated_root') else []))
                 background["completion"] = completion
                 background["reconstruction_frame_count"] = len(derived_frames)
                 background["generated_completion_frame_count"] = len(generated)
@@ -388,7 +413,9 @@ def run_automation(
                     output_root / "background_review.json",
                 ] + ([output_root / f"scene_completion-{COMPLETION_REVISION}" / name for name in
                       ("completion.json", "context-fov-audit.json")] +
-                     [Path(p) for p in completion.get("preservation_paths", [])] if completion else []),
+                     [Path(p) for p in completion.get("preservation_paths", [])] +
+                     [Path(p) for prior_report in prior_reports for p in prior_report.get('preservation_paths', [])]
+                     if completion else []),
             )
             background.update(
                 status="completed",

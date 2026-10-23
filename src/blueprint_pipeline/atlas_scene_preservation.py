@@ -258,6 +258,14 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
         if depth_known.shape != keep.shape:
             raise ValueError('atlas_completion_preservation_grid_changed')
     allowed = unobserved_geometry_mask(generated, references, extent_bounds=extent_bounds) & (~keep | ~depth_known)
+    if prepared.get('completion_gap_mask_path'):
+        gap_path = Path(prepared['completion_gap_mask_path'])
+        if _sha256_file(gap_path) != prepared['completion_gap_mask_digest']:
+            raise ValueError('atlas_completion_gap_mask_changed')
+        gap = np.asarray(Image.open(gap_path).convert('L')) == 255
+        if gap.shape != allowed.shape:
+            raise ValueError('atlas_completion_gap_mask_grid_changed')
+        allowed &= gap
     frame = {**generated, 'rgb': composite, 'confidence': generated['confidence'] * allowed}
     image, known_mask, geometry_mask = (output_root / n for n in ('image.png', 'known.png', 'generated-geometry.png'))
     _save_image(image, composite)
@@ -280,6 +288,9 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
               'depth_basis': 'unchanged_native_depth_with_generated_geometry_mask',
               'confidence_rule': 'native_confidence_times_generated_geometry_mask',
               'source_geometry_modified': False, 'native_outputs_modified': False,
+              **({key: prepared[key] for key in ('completion_gap_mask_digest', 'completion_gap_ids',
+                                                  'completion_gap_pixel_count')}
+                 if prepared.get('completion_gap_mask_path') else {}),
               **({'generation_extent': extent_bounds} if extent_bounds is not None else {}),
               'claim_ceiling': 'development_only', 'assets': assets}
     report['digest'] = canonical_digest(report, digest_field='digest')

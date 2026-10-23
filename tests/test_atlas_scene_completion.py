@@ -93,6 +93,8 @@ def test_generated_loader_binds_every_pixel_and_keeps_generated_camera(tmp_path,
 def test_completion_routes_all_planned_views_through_preservation_before_review(tmp_path, monkeypatch):
     from blueprint_pipeline import website_image_completion, atlas_scene_chisel
     frames = [frame(), frame("b", .2)]
+    for f in frames:
+        f['depth'][2:6, 2:5] = 0
     usage, returned = [], []
     for index, f in enumerate(frames):
         image, depth = tmp_path / f"{index}-image.bin", tmp_path / f"{index}-depth.bin"
@@ -138,13 +140,18 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     reviews = []
     monkeypatch.setattr(website_image_completion, "verify_completed_background",
                         lambda **kw: reviews.append(kw) or {"status": "passed"})
+    def planner(**kw):
+        views = {row['camera_id']: row for row in kw['completion']['gap_survey']['views']}
+        for entry in proposal['view_gap_reasons']:
+            entry['gap_ids'] = [views[entry['camera_id']]['gaps'][0]['gap_id']]
+        return {'proposal': proposal}
     args = dict(pose_root=tmp_path, pose=pose, frames=frames,
         review={"automation": {"objects": [], "removal_instruction": "The dishwasher bay is empty"}},
         root=tmp_path / "complete", context={"description": "test"},
         configuration={"remaining_cost_usd": 5, "policy": {"rgbd_view_cost_usd": .05,
             "rate_card_reference": "rates", "reviewed_on": "2026-10-22", "reviewed_by": "test"}},
         task_runner=lambda **kw: pytest.fail('Unconstrained generation bypassed preservation'),
-        planner_runner=lambda **_: {"proposal": proposal},
+        planner_runner=planner,
         release_blockers=lambda: ("commit", []), max_polls=1)
     output, report = completion.complete_scene(**args)
     feedback = json.loads((tmp_path / 'complete/plan-inputs.json').read_text())
@@ -155,7 +162,8 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert report['generation_result_digest'] == 'preserved-generation'
     assert report['generated_roots'] == [str(tmp_path / 'native')]
     assert reviews[0]["frames"][1]["original_image_path"] == str(tmp_path / "1-image.bin")
-    assert report['completion_extent'] == 'bounded_task_relevant_gaps'
+    assert report['completion_extent'] == 'identified_missing_geometry_only'
+    assert all(row['completion_gap_ids'] for row in calls[0]['selected'])
     assert report['generation_extent']['additional_space_beyond_observed_bounds'] is False
     assert calls[0]['scene_caption'] == proposal['scene_caption']
     proposal['view_gap_reasons'].pop()
