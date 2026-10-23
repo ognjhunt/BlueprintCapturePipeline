@@ -41,6 +41,11 @@ def test_full_surface_and_accurate_context_survive_a_tight_agent_polygon_and_cac
         if feedback["scope"] != "task_surface_masks":
             return {"proposal": proposal}
         rows = feedback["candidates"]
+        if not rows:
+            return {"proposal": {"status": "revise", "views": [{"frame_id": fid,
+                "task_mask_ids": [], "context_mask_ids": [], "corrections": [task, context],
+                "reason": "Only these portions agree with the source views"}],
+                "remaining_required_surfaces": []}}
         return {"proposal": {"status": "passed", "views": [{"frame_id": fid,
             "task_mask_ids": [r["mask_id"] for r in rows if r["concept"] == "assembly bench"],
             "context_mask_ids": [r["mask_id"] for r in rows if r["concept"] == "wall"],
@@ -82,14 +87,71 @@ def test_missing_visible_part_is_corrected_with_a_new_concept_before_admission(t
         return {"proposal": {"status": "passed" if corrected else "revise", "views": [{
             "frame_id": fid, "task_mask_ids": [r["mask_id"] for r in kw["recovery"]["candidates"]],
             "context_mask_ids": [], "reason": "A visible support was missed",
-            "corrections": [] if corrected else [region("support cabinet")]}],
+            "corrections": [] if corrected else [region("support cabinet" if prompts else "worktop")]}],
             "remaining_required_surfaces": []}}
     proposal = make_plan(tmp_path, reviewed, [region("worktop")])["proposal"]
     result = segment_and_review_surfaces(proposal=proposal, reviewed_views=reviewed,
         survey_path=tmp_path / "survey.json", context={}, configuration={"policy": {}},
         root=tmp_path / "masks", source_digest="video", planner_runner=reviewer, segmenter=sam)
     assert prompts == ["worktop", "support cabinet"]
-    assert result["review_rounds"] == 2 and result["review"]["proposal"]["status"] == "passed"
+    assert result["review_rounds"] == 3 and result["review"]["proposal"]["status"] == "passed"
+
+
+def test_useful_whole_view_needs_no_semantic_masks_or_sam_call(tmp_path):
+    source, _, reviewed = fixture()
+    fid = reviewed[0]["frame"]["frame_id"]
+    # The semantic plan prioritizes a tiny work area, but the rest of the view
+    # remains useful. Priority must not act as a pixel allowlist.
+    proposal = make_plan(tmp_path, reviewed, [region("work area", polygon=[
+        [.4, .4], [.6, .4], [.6, .6], [.4, .6]])])["proposal"]
+    def planner(**kw):
+        if kw["recovery"]["scope"] != "task_surface_masks":
+            return {"proposal": proposal}
+        assert kw["recovery"]["candidates"] == []
+        return {"proposal": {"status": "passed", "views": [{"frame_id": fid,
+            "retain_full_view": True, "excluded_mask_ids": [], "task_mask_ids": [],
+            "context_mask_ids": [], "corrections": [], "reason": "Useful full scene context"}],
+            "remaining_required_surfaces": []}}
+    plan = plan_task_regions(frames=[source], reviewed_views=reviewed,
+        pose={"digest": "pose", "binding": {"source_video_digest": "video"}},
+        context={"context_digest": "context"}, configuration={"policy": {}},
+        root=tmp_path / "plans", planner_runner=planner,
+        segmenter=lambda **_: pytest.fail("A useful full image does not require SAM"))
+    assert task_region_masks(plan, reviewed)[fid].all()
+    assert not plan["segmentation"]["receipts"]
+
+
+def test_specific_bad_object_is_excluded_without_discarding_undetected_background(tmp_path):
+    from blueprint_pipeline.atlas_scene_surface_masks import (
+        segment_and_review_surfaces, reviewed_surface_masks,
+    )
+    _, _, reviewed = fixture()
+    fid = reviewed[0]["frame"]["frame_id"]
+    bad = np.zeros((48, 64), bool)
+    bad[10:20, 25:35] = True
+    calls = []
+    def sam(**kw):
+        calls.append(kw["prompts"][0]["text"])
+        return {"binding_digest": "sam", "profile": {"model": "sam-3.1"}, "responses": [],
+                "tracks": [{"observations": [observation(kw["frame_registry"][0], bad)]}]}
+    def reviewer(**kw):
+        rows = kw["recovery"]["candidates"]
+        return {"proposal": {"status": "passed" if rows else "revise", "views": [{
+            "frame_id": fid, "retain_full_view": True, "task_mask_ids": [], "context_mask_ids": [],
+            "excluded_mask_ids": [r["mask_id"] for r in rows], "reason": "Remove only the invented box",
+            "corrections": [] if rows else [region("invented box", "exclude", "uncertain")]}],
+            "remaining_required_surfaces": []}}
+    result = segment_and_review_surfaces(
+        proposal=make_plan(tmp_path, reviewed, [region("work area")])["proposal"],
+        reviewed_views=reviewed, survey_path=tmp_path / "survey.json", context={},
+        configuration={"policy": {}}, root=tmp_path / "masks", source_digest="video",
+        planner_runner=reviewer, segmenter=sam)
+    mask = reviewed_surface_masks({"segmentation": result}, {fid: reviewed[0]["frame"]})[fid]
+    assert np.array_equal(mask, ~bad)
+    assert calls == ["invented box"]
+    result["review"]["proposal"]["views"][0]["excluded_mask_ids"] = ["not-this-frame"]
+    with pytest.raises(ValueError, match="review_mask_identity_invalid"):
+        reviewed_surface_masks({"segmentation": result}, {fid: reviewed[0]["frame"]})
 
 
 def test_actual_sdk_accepts_surface_review_schema():
