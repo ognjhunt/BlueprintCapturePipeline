@@ -9,7 +9,7 @@ import pytest
 
 from blueprint_pipeline import atlas_scene_measurements as sizes
 from blueprint_pipeline import atlas_background_automation as edits
-from blueprint_pipeline.atlas_automation_plan import AutomationPlan
+from blueprint_pipeline.atlas_automation_plan import AUTOMATION_INSTRUCTIONS, AutomationPlan
 from blueprint_pipeline.atlas_depth_splat import posed_frame
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 
@@ -778,3 +778,14 @@ def test_the_trial_scope_cleans_every_selected_view_and_the_default_only_the_rev
     assert [f["frame_id"] for f in observed[0]["frames"]] == edited
     with pytest.raises(ValueError, match="edit_scope_invalid"):
         worker.run_automation(**args, edit_scope="everything")
+
+
+def test_scale_guidance_serves_any_site_and_keeps_endpoints_on_the_object():
+    text = " ".join(AUTOMATION_INSTRUCTIONS.split())
+    # Examples come from building elements any site has, not from one kind of room.
+    for example in ("doorway", "stair riser", "ceiling tile", "work surface height", "standard pallet",
+                    "rack or shelving upright", "parking bay", "built-in appliance"):
+        assert example in text
+    assert "range or oven" not in text and "appliance model" not in text
+    # 2026-10-23: one endpoint sat on paper towels in front of the measured opening.
+    assert "Put both endpoints on the named object itself" in text and "face-on" in text
