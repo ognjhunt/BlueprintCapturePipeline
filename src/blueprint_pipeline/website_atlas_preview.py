@@ -327,8 +327,10 @@ def _clean_provider(job: dict[str, Any], *, job_dir: Path, now: Callable[[], flo
                     transport: Any = None) -> dict[str, Any]:
     """Delete every Atlas asset the job made, reconciling operations it never collected first."""
     current = int(now())
-    cleanup = job.get("provider_cleanup") or {"state": "pending", "attempts": 0, "deleted": [], "remaining": [],
-                                              "operations_running": [], "next_attempt_at_epoch": 0}
+    # A record missing a field, as an operator reset to "pending" leaves it,
+    # resumes from these defaults instead of failing every later tick.
+    cleanup = {"state": "pending", "attempts": 0, "deleted": [], "remaining": [], "operations_running": [],
+               "next_attempt_at_epoch": 0, **(job.get("provider_cleanup") or {})}
     if cleanup["state"] != "pending" or current < cleanup["next_attempt_at_epoch"]:
         return job
     operations = _pending_operations(job_dir)

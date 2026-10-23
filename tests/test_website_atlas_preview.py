@@ -449,6 +449,24 @@ def test_a_copy_published_while_the_withdrawal_landed_is_taken_back(monkeypatch,
     assert world.pushed[-1]["state"] == "withdrawn" and world.pushed[-1]["bundle"] is None
 
 
+def test_a_cleanup_reset_without_its_lists_still_deletes_and_delivers(monkeypatch, site):
+    """2026-10-23: a reset to pending without "deleted" raised KeyError on every tick."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed])
+    assert world.advance() == "ready"
+    job = _job(site)
+    job.update(provider_cleanup={"state": "pending", "attempts": 0, "next_attempt_at_epoch": 0},
+               revision=job["revision"] + 1)
+    site.job.write_text(json.dumps(job))
+    world.deleted.clear()
+    assert world.advance() == "ready"
+    job = _job(site)
+    assert job["provider_cleanup"]["state"] == "complete" and job["provider_cleanup"]["remaining"] == []
+    assert sorted(world.deleted) == ["gone1", "mesh1", "splat1", "upload1", "view1"]
+    # The revision the reset raised reaches the WebApp.
+    assert job["delivered_revision"] == job["revision"] and world.pushed[-1]["revision"] == job["revision"]
+
+
 def test_cleanup_waits_for_operations_it_never_collected_and_deletes_their_outputs(monkeypatch, site):
     _enqueue(site)
 
