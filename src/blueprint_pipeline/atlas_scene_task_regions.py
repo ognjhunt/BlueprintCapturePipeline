@@ -1,4 +1,4 @@
-"""Choose task-relevant parts of reviewed RGBD without importing a whole room."""
+"""Let the scene agent choose surfaces and SAM trace their actual extent."""
 from __future__ import annotations
 
 import numpy as np
@@ -16,6 +16,8 @@ class TaskSurfaceRegion(BaseModel):
     purpose: str = Field(pattern="^(work_surface|support|access|interaction_clearance|nearby_obstacle|visual_context|unrelated|uncertain)$")
     polygon_normalized: list[list[float]] = Field(min_length=3)
     reason: str = Field(min_length=1)
+    priority: str = Field(default="task", pattern="^(task|context)$")
+    segmentation_prompt: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class TaskSurfaceView(BaseModel):
@@ -43,26 +45,36 @@ or frame count. The task object has already been removed for separate insertion.
 Include relevant work/support surfaces, local architecture, robot approach space,
 object/robot motion clearance, nearby obstacles, and visual context needed to
 recognize the work area. Nearby obstacles matter even when they are not manipulated.
-A surface need not be touched to matter. Use the smallest coherent task environment,
-not just a tight object box. Do not expand to unrelated rooms or distant scenery
-merely because the provider returned them. If a task crosses areas, include the
+A surface need not be touched to matter. Prioritize complete task-related surfaces,
+not tight fragments of them: include their visible rear, sides, adjoining supports
+and relevant approach space. Accurate surrounding background is welcome as context;
+being unrelated to manipulation is NOT a reason to remove it. Use priority=task
+for task-related surfaces and priority=context for useful surrounding scenery.
+Preserve accurate context that is already available; spend new generation effort
+on missing task surfaces first. Exclude contradictory, invented or unusable
+surfaces, not background merely because it is background. Do not invent extra
+rooms or a new site boundary. If a task crosses areas, include the
 needed route and destination. If robot reach or a path is unspecified, infer a
 reasonable local working area and state unresolved requirements; do not invent
 an exact trajectory, metric clearance, collision qualification or site boundary.
 
 The feedback identifies source context and native generated frame IDs. Assess
 EVERY native frame exactly once; source context frames do not need output entries.
-A single image can contain both useful and unrelated regions. Mark their actual
-visible surfaces with polygons rather than accepting or rejecting the whole view.
+A single image can contain both useful and unrelated regions. Give each included
+surface a short segmentation_prompt naming a concrete visible object or material
+surface for SAM3.1 (for example, a floor, worktop, wall or storage unit).
+Name whole surfaces and separate concepts when necessary, not a long relational
+instruction. Polygons are rough location hints ONLY, never final cutout masks.
 Coordinates are normalized x,y in the entire displayed image, origin top left;
 do not rotate, crop, or use coordinates from another frame. Use broad, coherent
-surface regions, not tiny pixel-perfect contours. Excluded and unresolved polygons
-override included polygons. Unselected pixels will not be recovered. Do not mark
-an entire view included unless all of it serves this task environment.
+surface regions, not tiny pixel-perfect contours. SAM receives the entire image
+and may correctly trace the surface beyond your polygon. A later review chooses
+the resulting masks and checks for omitted parts, including behind foreground
+clutter. Do not exclude broad image areas that also contain wanted surfaces.
 
-Use include with a concrete task reason and one of work_surface, support, access,
+Use include with a concrete task or context reason and one of work_surface, support, access,
 interaction_clearance, nearby_obstacle or visual_context. Use exclude/unrelated
-for irrelevant scenery. Use unresolved/uncertain when relevance or surface identity
+for unwanted or inaccurate scenery. Use unresolved/uncertain when surface identity
 is unclear. Record required surfaces still absent or without usable depth under
 remaining_required_surfaces, so successful image generation cannot imply a complete
 simulation scene. A generated surface is a hypothesis, not a new observation.
@@ -93,6 +105,9 @@ def task_region_masks(plan, reviewed_views):
     views = proposal["views"]
     if len(views) != len(frames) or {row["frame_id"] for row in views} != set(frames):
         raise ValueError("atlas_task_region_view_selection_invalid")
+    if plan.get("schema_version") == "atlas_task_surface_plan.v2":
+        from .atlas_scene_surface_masks import reviewed_surface_masks
+        return reviewed_surface_masks(plan, frames)
     masks = {}
     for row in views:
         shape = frames[row["frame_id"]]["depth"].shape
@@ -118,7 +133,7 @@ def task_region_masks(plan, reviewed_views):
 
 
 def plan_task_regions(*, frames, reviewed_views, pose, context, configuration, root,
-                      planner_runner, checkpoint=None):
+                      planner_runner, checkpoint=None, segmenter=None):
     """Use the existing reserved/cached scene agent, with exact images and task."""
     from .atlas_scene_recovery import _frame_binding
     from .atlas_scene_preservation import _save_image
@@ -127,13 +142,27 @@ def plan_task_regions(*, frames, reviewed_views, pose, context, configuration, r
         return None
     if planner_runner is None:
         raise ValueError("atlas_task_region_canonical_planner_required")
-    binding = {"revision": "v1", "pose_digest": pose["digest"],
+    binding = {"revision": "v2-sam-surfaces", "pose_digest": pose["digest"],
                "task_context_digest": context["context_digest"],
                "sources": [_frame_binding(f) for f in frames],
                "native": [{**{k: v for k, v in row.items() if k != "frame"},
                            "frame": _frame_binding(row["frame"])} for row in reviewed_views]}
     root = root / canonical_digest(binding)[7:23]
     root.mkdir(parents=True, exist_ok=True)
+    saved = root / "task-regions.json"
+    if saved.is_file():
+        import json
+        plan = json.loads(saved.read_text())
+        if plan.get("binding_digest") != canonical_digest(binding):
+            raise ValueError("atlas_task_region_inputs_changed")
+        task_region_masks(plan, reviewed_views)
+        return plan
+    if segmenter is None:
+        import shutil
+        from .meta_sam31 import meta_api_key, _sam_parser_node
+        meta_api_key()
+        if not shutil.which("ffmpeg") or _sam_parser_node() is None:
+            raise ValueError("atlas_automation_segmentation_runtime_missing")
     survey_frames = []
     for index, frame in enumerate([*frames, *(row["frame"] for row in reviewed_views)]):
         path = root / f"view-{index:04d}.png"
@@ -157,11 +186,17 @@ def plan_task_regions(*, frames, reviewed_views, pose, context, configuration, r
     planned = planner_runner(survey_path=root / "survey.json", task_context=context,
                              configuration=configuration, output_root=root / "planner",
                              recovery=feedback)
-    plan = {"schema_version": "atlas_task_surface_plan.v1", "binding_digest": canonical_digest(binding),
+    plan = {"schema_version": "atlas_task_surface_plan.v2", "binding_digest": canonical_digest(binding),
             "proposal": planned["proposal"], "planner": planned, "claim_ceiling": "development_only",
             "native_bindings": {row["frame"]["frame_id"]: canonical_digest(_frame_binding(row["frame"]))
                                 for row in reviewed_views},
             "plan_path": str(root / "task-regions.json")}
+    from .atlas_scene_surface_masks import segment_and_review_surfaces
+    plan["segmentation"] = segment_and_review_surfaces(
+        proposal=planned["proposal"], reviewed_views=reviewed_views,
+        survey_path=root / "survey.json", context=context, configuration=configuration,
+        root=root / "segmentation", source_digest=pose["binding"]["source_video_digest"],
+        planner_runner=planner_runner, segmenter=segmenter, checkpoint=checkpoint)
     plan["digest"] = canonical_digest(plan, digest_field="digest")
     task_region_masks(plan, reviewed_views)
     write_json(root / "task-regions.json", plan)

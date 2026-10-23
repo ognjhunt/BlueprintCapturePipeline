@@ -28,7 +28,8 @@ def make_plan(root, reviewed, regions):
 def region(label="work area", decision="include", purpose="work_surface", polygon=None):
     return {"label": label, "decision": decision, "purpose": purpose,
             "polygon_normalized": polygon or [[0, 0], [1, 0], [1, 1], [0, 1]],
-            "reason": "Supports the stated task" if decision == "include" else "Outside the task area"}
+            "reason": "Supports the stated task" if decision == "include" else "Outside the task area",
+            "priority": "task", "segmentation_prompt": label}
 
 
 @pytest.mark.parametrize("label,purpose", [("packing bench", "work_surface"), ("laboratory rack", "support")])
@@ -113,13 +114,24 @@ def test_production_plan_receives_all_exact_views_and_the_current_task(tmp_path)
         assert [r["frame_id"] for r in survey["frames"]] == [source["frame_id"], reviewed[0]["frame"]["frame_id"]]
         assert kwargs["task_context"]["description"] == "Move packages from conveyor to packing bench"
         assert kwargs["recovery"]["native_frame_ids"] == [reviewed[0]["frame"]["frame_id"]]
-        proposal = make_plan(tmp_path, reviewed, [region("packing bench")])["proposal"]
+        if kwargs["recovery"]["scope"] == "task_surface_masks":
+            proposal = {"status": "passed", "views": [{"frame_id": reviewed[0]["frame"]["frame_id"],
+                "task_mask_ids": [r["mask_id"] for r in kwargs["recovery"]["candidates"]],
+                "context_mask_ids": [], "corrections": [], "reason": "Whole bench included"}],
+                "remaining_required_surfaces": []}
+        else:
+            proposal = make_plan(tmp_path, reviewed, [region("packing bench")])["proposal"]
         return {"proposal": proposal, "cost_usd": 0}
+    def segmenter(**kwargs):
+        assert len(kwargs["frame_registry"]) == 1
+        frame = kwargs["frame_registry"][0]
+        return {"binding_digest": "sam-binding", "profile": {"model": "sam-3.1"}, "responses": [],
+            "tracks": [{"observations": [{**frame, "runs": [{"start": 0, "length": 48 * 64}]}]}]}
     plan = plan_task_regions(frames=[source], reviewed_views=reviewed,
         pose={"digest": "pose", "binding": {"source_video_digest": "video"}},
         context={"description": "Move packages from conveyor to packing bench", "context_digest": "context"},
-        configuration={}, root=tmp_path / "plans", planner_runner=planner)
-    assert len(calls) == 1 and task_region_masks(plan, reviewed)
+        configuration={"policy": {}}, root=tmp_path / "plans", planner_runner=planner, segmenter=segmenter)
+    assert len(calls) == 2 and task_region_masks(plan, reviewed)
     assert json.loads(Path(plan["plan_path"]).read_text()) == plan
 
 
