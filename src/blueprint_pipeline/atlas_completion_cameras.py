@@ -138,8 +138,8 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False, e
         position = np.asarray(e['position'], float)
         expected_depth = None
         if expected_frames:
-            from .atlas_scene_chisel import project_source_depth
-            expected_depth = project_source_depth(expected_frames, camera)
+            from .atlas_scene_gaps import expected_depth_for_candidate
+            expected_depth = expected_depth_for_candidate(expected_frames, original)
         for gap in view['gaps']:
             mask = labels == gap['label']
             yy, xx = np.nonzero(mask)

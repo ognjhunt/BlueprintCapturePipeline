@@ -94,6 +94,17 @@ def project_exported_splat(splat, camera):
     return np.where(np.isfinite(depth), depth, 0).astype(np.float32)
 
 
+def expected_depth_for_candidate(frames, candidate):
+    """Keep the surface hypothesis paired with its reviewed reference view."""
+    from .atlas_scene_chisel import project_source_depth
+
+    identity = candidate.get('expected_frame_id')
+    chosen = [frame for frame in frames if frame['frame_id'] == identity] if identity else frames
+    if identity and len(chosen) != 1:
+        raise ValueError('atlas_completion_expected_reference_missing')
+    return project_source_depth(chosen, candidate['camera'])
+
+
 def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=(),
                 splat_root=None):
     """Survey all known directions; the existing production agent chooses gaps."""
@@ -148,7 +159,7 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
         photographed = np.asarray(Image.open(source['keep_mask_path']).convert('L')) == 255
         depth = (project_exported_splat(splat, candidate['camera']) if splat is not None
                  else project_source_depth(geometry_frames, candidate['camera']))
-        expected = (project_source_depth(expected_frames, candidate['camera'])
+        expected = (expected_depth_for_candidate(expected_frames, candidate)
                     if expected_frames else None)
         outline = candidate.get('gap_domain') == 'projected_scene_outline_hypothesis'
         domain = None

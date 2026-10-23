@@ -54,7 +54,7 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
     provenance = list(manifest.get('generated_result_digests', []))
     visual = manifest.get('visual_review_digest')
     while references:
-        binding = {'revision': 'v1', 'export_digest': manifest['digest'],
+        binding = {'revision': 'v2-paired-depth', 'export_digest': manifest['digest'],
                    'task_region_plan_digest': region_plan['digest'],
                    'task_context_digest': context['context_digest']}
         identity = canonical_digest(binding)

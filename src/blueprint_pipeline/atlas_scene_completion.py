@@ -135,8 +135,24 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
             target['source_frame_id'] = min(frames, key=lambda f: np.linalg.norm(
                 f['position'] - expected['position']))['frame_id']
             target['purpose'] = 'wide'
+            target['expected_frame_id'] = expected['frame_id']
             candidates.append(target)
             camera_pool.append(target)
+        # Every reference is surveyed in its own camera. Other candidate views
+        # use the nearest reviewed RGBD camera as their depth hypothesis instead
+        # of taking the minimum of contradictory estimates from all views.
+        # All approved photographs/depths still accompany the planner and Atlas.
+        from .atlas_depth_splat import _rotation_matrix
+        scales = [float(np.median(f['depth'][np.isfinite(f['depth']) & (f['depth'] > 0)
+                                            & (f['confidence'] > 0)])) for f in expected_frames]
+        scale = max(float(np.median(scales)), np.finfo(float).eps)
+        for target in camera_pool:
+            camera = target['camera']['extrinsics']
+            rotation = _rotation_matrix(camera['quaternion'])
+            closest = min(expected_frames, key=lambda f:
+                np.linalg.norm(f['position'] - camera['position']) / scale +
+                np.linalg.norm(f['rotation'] - rotation))
+            target.setdefault('expected_frame_id', closest['frame_id'])
     from .atlas_scene_preservation import observed_scene_bounds
     extent = observed_scene_bounds(frames)
     from .atlas_scene_gaps import survey_gaps, select_gap_mask, target_gap_ids, context_supported_candidates
