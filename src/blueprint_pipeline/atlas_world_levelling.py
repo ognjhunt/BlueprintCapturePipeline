@@ -42,6 +42,9 @@ MAX_BELOW_FLOOR_SHARE = 0.01
 BELOW_FLOOR_M = 0.05
 #: Counters and most tables are shallower; a floor seen across a room is wider both ways.
 MIN_FLOOR_EXTENT_M = 1.0
+#: A first fit slightly off the floor only keeps a band of it; refit on the
+#: band's plane until the whole floor is in (a degree is 3.5 cm at 2 m).
+FLOOR_REFITS = 4
 #: Every camera stands above the floor, and a handheld capture's typical
 #: camera this high above it (estimated metres); close-ups over a table do not.
 CAMERA_MIN_HEIGHT_M = 0.2
@@ -89,12 +92,17 @@ def _floor(points: np.ndarray, normal: np.ndarray) -> dict[str, Any] | None:
     dense = np.flatnonzero(counts[:-1] + counts[1:] >= MIN_FLOOR_SHARE * len(points))
     if not len(dense):
         return None
-    centre = float(edges[dense[0] + 1])
-    below = int(np.count_nonzero(heights < centre - BELOW_FLOOR_M))
+    floor_normal, height = normal, float(edges[dense[0] + 1])
+    for _ in range(FLOOR_REFITS):
+        refit = _plane(points[np.abs(points @ floor_normal - height) <= PLANE_TOLERANCE_M])
+        if refit[0] @ normal < math.cos(math.radians(MAX_TILT_DEGREES)):
+            return None
+        floor_normal, height = refit
+    heights = points @ floor_normal
+    below = int(np.count_nonzero(heights < height - BELOW_FLOOR_M))
     if below > MAX_BELOW_FLOOR_SHARE * len(points):
         return None
-    inliers = points[np.abs(heights - centre) <= PLANE_TOLERANCE_M]
-    floor_normal, height = _plane(inliers)
+    inliers = points[np.abs(heights - height) <= PLANE_TOLERANCE_M]
     flat = inliers - np.outer(inliers @ floor_normal, floor_normal)
     flat -= flat.mean(axis=0)
     spans = sorted(float(np.subtract(*np.percentile(flat @ axis, [98, 2])))
