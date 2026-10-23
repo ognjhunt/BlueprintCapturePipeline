@@ -41,6 +41,14 @@ def test_ga_requires_exact_experience_runtime_and_supplemental_closure(tmp_path)
         ga.verify_ga_launch(value)
 
 
+def test_ga_refuses_launch_without_observed_message_serialization_dependency(tmp_path):
+    value = provisioning(tmp_path)
+    value['runtime_import_probes'] = [row for row in value['runtime_import_probes'] if row['module'] != 'msgpack']
+    value['receipt_digest'] = canonical_digest(value, digest_field='receipt_digest')
+    with pytest.raises(NativeTaskIsaacLabLaunchError, match='dependency_identity_invalid:msgpack'):
+        ga.verify_ga_launch(value)
+
+
 @pytest.mark.parametrize("mutation", ["cuda", "image", "experience"])
 def test_ga_readback_cannot_be_promoted_after_drift(tmp_path, mutation):
     value = provisioning(tmp_path)

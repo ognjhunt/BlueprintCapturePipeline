@@ -31,6 +31,7 @@ PROBES = (
     {"module": "warp", "expected_version": "1.17.0"},
     {"module": "torch", "expected_version": "2.11.0+cu130", "cuda_required": True,
      "expected_cuda_version": "13.0"},
+    {"module": "msgpack", "expected_version": "1.1.0"},
 )
 
 

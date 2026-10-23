@@ -8,7 +8,7 @@ Neither Newton nor standalone rendering is included.
 The GA profile pins Isaac Lab `e3f7d9ff1f5d7f8280de3ece9000b7117f66bcf4`,
 Arena `b5708b72b21f37f74c8c66b1ee9cedff362a424b`, and the full NVIDIA Lab 3.0.0
 image by digest in `native_task_isaaclab_ga.py`. The source archive verifies each
-file, license and tree, plus twenty hashed Arena supplements from the released
+file, license and tree, plus twenty-one hashed Arena supplements from the released
 lock. The image supplies Torch 2.11/CUDA 13 and Warp 1.17. Provisioning checks
 actual versions and a CUDA operation before scene execution.
 
@@ -85,3 +85,19 @@ gates before allocation. The observation gate verifies the same retained prompt
 digest instead of regenerating a modern instruction. All 45 focused worker,
 lifecycle, import-closure and retained-input tests passed; native policy
 execution remains pending.
+
+The next allocated attempt (57404798) completed the pinned GA provisioning and
+native simulator startup, measured at 287.031 seconds including cold shader
+compilation. It stopped before environment construction: the complete native
+dependency matrix found `msgpack` absent. The image's source lock listed the
+package, but that did not establish installation in its environment. This was a
+preflight process defect. The source packet now carries the exact Arena-locked
+`msgpack` 1.1.0 wheel and verifies its import/version before Kit starts.
+
+The same run exposed two identical driver rows for one process/GPU memory
+sample. The reader now deduplicates identical rows and still refuses conflicting
+observations. The original measurement remains incomplete; no memory, stepping,
+camera, reset, contact, or episode qualification is claimed. Official charges
+were $0.169; teardown, provider absence and object cleanup were confirmed.
+All 80 focused source, launch, measurement, lifecycle and import tests passed
+after the repairs. The original task, source assets and controls remain frozen.

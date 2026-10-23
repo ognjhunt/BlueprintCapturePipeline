@@ -1309,13 +1309,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         from functools import partial
-        launch_function = (partial(runtime_measurement.timed, "startup", launch_native_task_isaaclab)
-                           if runtime_measurement is not None else launch_native_task_isaaclab)
-        simulation_app, launch_receipt = launch_function(
-            output_root / "native_task_runtime_source_provisioning.v1.json",
-            device=NATIVE_TASK_ARENA_DEVICE,
-            appearance_render_path=appearance_render_path_from_plan(plan),
-        )
+        def launch_retained_workcell():
+            return launch_native_task_isaaclab(
+                output_root / "native_task_runtime_source_provisioning.v1.json",
+                device=NATIVE_TASK_ARENA_DEVICE,
+                appearance_render_path=appearance_render_path_from_plan(plan),
+            )
+
+        simulation_app, launch_receipt = (
+            runtime_measurement.timed("startup", launch_retained_workcell)
+            if runtime_measurement is not None else launch_retained_workcell())
         result["isaaclab_launch"] = launch_receipt
         if runtime_measurement is not None:
             runtime_measurement.value["launch_receipt"] = launch_receipt

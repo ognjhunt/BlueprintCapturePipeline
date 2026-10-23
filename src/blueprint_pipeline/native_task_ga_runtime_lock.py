@@ -6,7 +6,15 @@ Source-built universal wheels bind their original locked sdist as well.
 
 ARENA_LOCK_SHA256 = 'sha256:001a3a186914be0d391bf680564a36342a5c1047411356a5e8aac72fad9fbff5'
 
-GA_SUPPLEMENTAL_WHEELS = ({'package': 'antlr4-python3-runtime',
+GA_SUPPLEMENTAL_WHEELS = ({'package': 'msgpack',
+  'version': '1.1.0',
+  'source': 'https://files.pythonhosted.org/packages/f1/54/65af8de681fa8255402c80eda2a501ba467921d5a7a028c9c22a2c2eedb5/msgpack-1.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl',
+  'filename': 'msgpack-1.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl',
+  'license_spdx': 'Apache-2.0',
+  'sha256': 'sha256:17fb65dd0bec285907f68b15734a993ad3fc94332b5bb21b0435846228de1f39',
+  'pure_python': False,
+  'wheel_tag': 'cp312-cp312-manylinux2014_x86_64'},
+ {'package': 'antlr4-python3-runtime',
   'version': '4.9.3',
   'source': 'https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz',
   'filename': 'antlr4_python3_runtime-4.9.3-py3-none-any.whl',
