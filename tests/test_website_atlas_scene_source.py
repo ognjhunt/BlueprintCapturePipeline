@@ -340,6 +340,55 @@ def test_a_background_without_retained_views_leaves_registration_to_scene_prepar
     assert value["alignment"] == "registration_search" and value["base_scene"]["anchor"] is None
 
 
+@pytest.mark.parametrize("invalid_prior", [None, "digest", "video"])
+def test_expanded_source_bridges_retained_same_video_depth_without_direct_overlap(tmp_path, invalid_prior):
+    import copy
+    import shutil
+
+    job = job_fixture(tmp_path, cameras=TURNING, views=True)
+    old_path = job / "pose/atlas_posed_rgbd_result.json"
+    prior = json.loads(old_path.read_text())
+    new_root = job / "pose/expanded"
+    shutil.copytree(job / "pose/atlas_pose", new_root / "atlas_pose")
+    expanded = copy.deepcopy(prior)
+    new_scale, new_rotation, new_translation = 1.4, yaw(-31.0), np.array([0.5, -0.2, 0.8])
+    expanded["operation"]["response"]["frames"] = expanded["operation"]["response"]["frames"][:2]
+    expanded["operation_receipt"]["input_usage"]["frames"] = expanded["operation_receipt"]["input_usage"]["frames"][:2]
+    for index, (frame, used) in enumerate(zip(expanded["operation"]["response"]["frames"],
+                                            expanded["operation_receipt"]["input_usage"]["frames"])):
+        rotation, position = TURNING[index]
+        frame["camera"] = camera_payload(new_rotation @ rotation,
+            new_scale * new_rotation @ position + new_translation, "rub")
+        row = next(row for row in used["outputs"] if row["role"] == "depth")
+        write_exr(new_root / row["path"], new_scale * plane_depth(rotation, position))
+        row["sha256"] = _sha256_file(new_root / row["path"])
+    digest(expanded)
+    bg_root = job / "automation/fallback_pose-v2"
+    background = json.loads((bg_root / "atlas_posed_rgbd_result.json").read_text())
+    background["operation"]["response"]["frames"] = background["operation"]["response"]["frames"][1:]
+    background["operation_receipt"]["input_usage"]["frames"] = background["operation_receipt"]["input_usage"]["frames"][1:]
+    digest(background)
+    options = dict(job_dir=job, source_root=new_root, source=expanded,
+                   background_root=bg_root, background=background, bundle_root=None, bundle=None)
+    assert source._shared_view_alignment(**options) is None  # Only one view overlaps directly.
+    if invalid_prior:
+        prior["binding"]["source_video_digest"] = "sha256:" + "e" * 64
+        if invalid_prior == "video":
+            digest(prior)
+        write(old_path, prior)
+    alignment = source._retained_pose_alignment(**options)
+    if invalid_prior:
+        assert alignment is None
+    else:
+        assert alignment["intermediate_pose_digest"] == prior["digest"]
+        assert [leg["agreeing_frame_count"] for leg in alignment["alignment_legs"]] == [2, 2]
+        assert alignment["scale"] == pytest.approx(BACKGROUND_SCALE / new_scale)
+        rotation = BACKGROUND_ROTATION @ new_rotation.T
+        np.testing.assert_allclose(alignment["rotation"], rotation, atol=1e-6)
+        np.testing.assert_allclose(alignment["translation"],
+            BACKGROUND_TRANSLATION - (BACKGROUND_SCALE / new_scale) * rotation @ new_translation, atol=1e-6)
+
+
 def test_the_source_views_become_scaled_geometry_on_the_atlas_grid(tmp_path):
     geometry = ready(tmp_path)["source_geometry"]
     assert geometry["unit"] == "estimated_meters" and geometry["scale_status"] == "reference_scaled"

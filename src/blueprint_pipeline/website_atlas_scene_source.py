@@ -139,6 +139,44 @@ def _survey_rotation(job_dir: Path, inputs: Mapping[str, Any]) -> float:
     return float(inputs["binding"].get("source_image_rotation_degrees", survey["display_rotation_degrees"]))
 
 
+def _retained_pose_alignment(*, job_dir: Path, source_root: Path, source: Mapping[str, Any],
+                             background_root: Path, background: Mapping[str, Any],
+                             bundle_root: Path | None, bundle: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Bridge one expanded source pose through a retained pose of the same video.
+
+    Adding object-state views can change Atlas's depth estimates enough that a
+    direct fit to cleaned views fails. An earlier source pose can still connect
+    both. Each leg must independently pass the existing shared-pixel depth fit;
+    no guessed transform, camera-only baseline or relaxed tolerance is used.
+    """
+    video = (source.get("binding") or {}).get("source_video_digest")
+    if not video:
+        return None
+    for path in sorted((job_dir / "pose").rglob("atlas_posed_rgbd_result.json")):
+        if path.is_symlink() or not path.resolve().is_relative_to(job_dir.resolve()):
+            continue
+        prior = _read(path)
+        if (prior.get("digest") in {source.get("digest"), background.get("digest")}
+                or prior.get("digest") != canonical_digest(prior, digest_field="digest")
+                or (prior.get("binding") or {}).get("source_video_digest") != video):
+            continue
+        first = _shared_view_alignment(job_dir=job_dir, source_root=source_root, source=source,
+            background_root=path.parent, background=prior, bundle_root=None, bundle=None)
+        if first is None:
+            continue
+        second = _shared_view_alignment(job_dir=job_dir, source_root=path.parent, source=prior,
+            background_root=background_root, background=background, bundle_root=bundle_root, bundle=bundle)
+        if second is None:
+            continue
+        return {"scale": second["scale"] * first["scale"],
+                "rotation": second["rotation"] @ first["rotation"],
+                "translation": second["scale"] * second["rotation"] @ first["translation"] + second["translation"],
+                "intermediate_pose_digest": prior["digest"],
+                "alignment_legs": [{key: value for key, value in leg.items()
+                                    if key not in ("rotation", "translation")} for leg in (first, second)]}
+    return None
+
+
 def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, Any]:
     """``ready`` with a base scene and source geometry, ``pending``, or ``needs_input`` with a reason."""
     from .atlas_source_geometry import atlas_posed_view_geometry
@@ -239,6 +277,10 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
                                            background_root=background_root, background=background_pose,
                                            bundle_root=bundle_root, bundle=bundle)
         basis = "shared_view_depth"
+    if alignment is None and background_pose is not source:
+        alignment = _retained_pose_alignment(job_dir=job_dir, source_root=pose_root, source=source,
+            background_root=background_root, background=background_pose, bundle_root=bundle_root, bundle=bundle)
+        basis = "retained_source_pose_shared_depth"
     anchor, runtime_mpu = None, float(mpu)
     if alignment is not None:
         # Source metres -> background units: (R x / mpu) * s + t. In the
