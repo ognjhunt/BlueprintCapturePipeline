@@ -91,7 +91,8 @@ def accuracy_survey(*, source_video: Path, base_root: Path, base_survey: Path, r
     return extended_path
 
 
-def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check, experimental, max_polls):
+def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check, experimental, max_polls,
+                 reference_inputs=None):
     """The selected original views' own Atlas pose and the scale its reviewed references give.
 
     Retained receipts make a resume free. A refused purchase leaves the
@@ -112,6 +113,12 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
         "target_resolutions": [[720, 1280], [1280, 720]], "request_options": request_options(),
         **{k: policy[k] for k in _REVIEW_RECORD}}
     try:
+        if reference_inputs is not None and (
+                reference_inputs.get('digest') != canonical_digest(reference_inputs, digest_field='digest')
+                or reference_inputs.get('heldout_pixels_included') is not False
+                or reference_inputs.get('binding', {}).get('source_video_digest') != inputs['binding']['source_video_digest']
+                or [r['frame_id'] for r in reference_inputs['frames']] != [r['frame_id'] for r in inputs['frames']]):
+            raise ValueError('atlas_source_reference_inputs_changed')
         os.environ[ATLAS_PRICE_REVIEW_ENV] = json.dumps(quote)
         if not (pose_root / "atlas_posed_rgbd_result.json").is_file():
             _require_current_price_review(policy)
@@ -122,12 +129,21 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
             return {"status": "processing", "stage": "source_pose", "operation_id": posed.get("operation_id")}
         pose, frames = load_views(pose_root, inputs)
         verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=pose_root)
+        measurement_path = pose_root / 'scene_measurements.json'
+        if reference_inputs is not None:
+            # Retained reviews may name pixels on an earlier provider crop.
+            # Register that exact grid to the full posed view; never reinterpret
+            # its normalized coordinates as coordinates on the wider source.
+            _, frames = load_views(pose_root, reference_inputs)
+            measurement_path = pose_root / ('scene_measurements_reference-' + reference_inputs['digest'][7:23] + '.json')
         measurements = estimate_sizes(frames=frames, automation=measurement_plan(review), pose_digest=pose["digest"],
-                                      output=pose_root / "scene_measurements.json")
+                                      output=measurement_path)
     except ValueError as exc:
         return {"status": "needs_input", "reason": str(exc)}
     return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],
             "pose_relative_path": str(pose_root.relative_to(parent_root.parent)),
+            **({'measurements_relative_path': measurement_path.name,
+                'measurement_reference_inputs_digest': reference_inputs['digest']} if reference_inputs is not None else {}),
             "submitted_frame_count": count, "scene_measurements_digest": measurements["digest"],
             "meters_per_unit_estimate": measurements.get("meters_per_unit_estimate"),
             "scale_status": measurements.get("scale_status")}
