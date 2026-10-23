@@ -136,7 +136,7 @@ def _survey_rotation(job_dir: Path, inputs: Mapping[str, Any]) -> float:
     if (survey.get("digest") != canonical_digest(survey, digest_field="digest")
             or survey.get("digest") != inputs["binding"].get("survey_digest")):
         raise ValueError("website_atlas_scene_survey_changed")
-    return float(survey["display_rotation_degrees"])
+    return float(inputs["binding"].get("source_image_rotation_degrees", survey["display_rotation_degrees"]))
 
 
 def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, Any]:
