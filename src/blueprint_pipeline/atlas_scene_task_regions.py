@@ -14,7 +14,7 @@ class TaskSurfaceRegion(BaseModel):
     label: str = Field(min_length=1)
     decision: str = Field(pattern="^(include|exclude|unresolved)$")
     purpose: str = Field(pattern="^(work_surface|support|access|interaction_clearance|nearby_obstacle|visual_context|unrelated|uncertain)$")
-    polygon_normalized: list[list[float]] = Field(min_length=3)
+    polygon_normalized: list[list[float]] = Field(default_factory=list)
     reason: str = Field(min_length=1)
     priority: str = Field(default="task", pattern="^(task|context)$")
     segmentation_prompt: str | None = Field(default=None, min_length=1, max_length=200)
@@ -64,11 +64,9 @@ A single image can contain both useful and unrelated regions. Give each included
 surface a short segmentation_prompt naming a concrete visible object or material
 surface for SAM3.1 (for example, a floor, worktop, wall or storage unit).
 Name whole surfaces and separate concepts when necessary, not a long relational
-instruction. Polygons are rough location hints ONLY, never final cutout masks.
-Coordinates are normalized x,y in the entire displayed image, origin top left;
-do not rotate, crop, or use coordinates from another frame. Use broad, coherent
-surface regions, not tiny pixel-perfect contours. SAM receives the entire image
-and may correctly trace the surface beyond your polygon. A later review chooses
+instruction. Leave polygon_normalized empty: this legacy field is not used in
+SAM surface selection. Do not spend output on drawing coordinates. Use broad,
+coherent surface concepts. SAM receives the entire image. A later review chooses
 the resulting masks and checks for omitted parts, including behind foreground
 clutter. Do not exclude broad image areas that also contain wanted surfaces.
 

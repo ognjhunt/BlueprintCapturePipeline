@@ -417,7 +417,10 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     if tokens > 1_000_000:
         raise ValueError("atlas_scene_planner_context_budget_exceeded")
     from .openai_prompt_cache import worst_case_reservation_usd
-    output_tokens = 8000 if recovery is not None else 4000
+    # Every native view needs a complete typed decision. A fixed 8k allowance
+    # truncated the live 13-view surface list before segmentation could start.
+    output_tokens = (max(8000, 2000 + 2000 * len(recovery.get("native_frame_ids", [])))
+                     if recovery is not None else 4000)
     ceiling = worst_case_reservation_usd(model=policy["model"], input_token_ceiling=tokens,
                                         max_output_tokens=output_tokens, cache_policy=None)
     search_calls = 0 if completion is not None or recovery is not None else 2

@@ -125,6 +125,30 @@ def test_unpriced_or_overbudget_model_refused_before_reservation(tmp_path):
         planner.review_survey(survey_path=path, task_context={}, configuration={"policy": policy}, output_root=tmp_path)
 
 
+def test_thirteen_view_surface_response_is_not_capped_at_eight_thousand_tokens(tmp_path, monkeypatch):
+    path, _, _, policy = fixture(tmp_path)
+    policy["maximum_review_cost_usd"] = 1
+    from blueprint_pipeline import website_task_context as control, paid_resource_admission as admission
+    monkeypatch.setattr(admission, "require_paid_resource_admission_grant", lambda *_, **__: None)
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", lambda **kw: ({}, object()))
+    monkeypatch.setattr(control, "website_webapp_request", lambda **kw: {"status": "settled"})
+    ids = [str(i) for i in range(13)]
+    class Invoker:
+        def configure_reservation_audit(self, **_):
+            pass
+        def invoke(self, spec, inputs):
+            assert spec.max_output_tokens > 8000, "The retained 13-view response was truncated at 8k"
+            return SimpleNamespace(output={"status": "proposed", "task_extent_summary": "Task and context",
+                "views": [{"frame_id": fid, "regions": [], "reason": "Reviewed"} for fid in ids],
+                "remaining_required_surfaces": [], "excluded_scene_regions": []}, cost_usd=.1,
+                usage={"input_tokens": 100, "output_tokens": 9000}, model=spec.model, sdk_version="test")
+    result = planner.review_survey(survey_path=path,
+        task_context={"description": "task", "context_digest": "c", "capture_id": "c", "scene_id": "s", "request_id": "r"},
+        configuration={"policy": policy}, output_root=tmp_path / "plans", invoker=Invoker(),
+        release_blockers=lambda: ("a" * 40, []), recovery={"native_frame_ids": ids, "previews": []})
+    assert [v["frame_id"] for v in result["proposal"]["views"]] == ids
+
+
 def test_completion_output_compiles_in_the_actual_strict_agents_sdk():
     from agents import AgentOutputSchema
 

@@ -50,7 +50,7 @@ Assess every native frame exactly once. Return task_mask_ids and context_mask_id
 without duplicates; select only IDs provided for that frame. If a significant part
 of a required visible surface is absent from ALL available masks, return revise
 and corrections for the affected frame: new short concrete segmentation_prompt
-concepts, priority, reason and rough polygon location hints. These prompts will
+concepts, priority and reason; leave the unused polygon_normalized field empty. These prompts will
 be sent to SAM on the FULL image. Do not repeat a tried concept. Consider separate
 visible components when a broad assembly noun found only one part. A correction
 is for segmentation, not generation. Small edge inaccuracies are acceptable.
