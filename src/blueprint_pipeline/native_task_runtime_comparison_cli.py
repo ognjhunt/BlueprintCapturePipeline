@@ -17,6 +17,19 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--packet-dir", required=True)
     prepare.add_argument("--variant", choices=("baseline", "isaaclab_3_ga"), required=True)
     prepare.add_argument("--output", required=True)
+    policy = sub.add_parser("prepare-policy")
+    policy.add_argument("--packet-dir", required=True)
+    policy.add_argument("--runtime-source-receipt", required=True)
+    policy.add_argument("--pi05-spec", required=True)
+    policy.add_argument("--groot-spec", required=True)
+    policy.add_argument("--readiness", required=True)
+    policy.add_argument("--construction", required=True)
+    policy.add_argument("--control", required=True)
+    policy.add_argument("--implementation-commit", required=True)
+    policy.add_argument("--variant", choices=("baseline", "isaaclab_3_ga"), required=True)
+    policy.add_argument("--confirmed-by", required=True)
+    policy.add_argument("--authorization-reference", required=True)
+    policy.add_argument("--output", required=True, help="New preparation directory")
     compare = sub.add_parser("compare")
     compare.add_argument("--baseline", required=True)
     compare.add_argument("--candidate", required=True)
@@ -25,6 +38,16 @@ def main(argv: list[str] | None = None) -> int:
     output = Path(args.output).resolve()
     if output.exists() or output.is_symlink():
         raise ValueError("runtime_comparison_output_exists")
+    if args.command == "prepare-policy":
+        from .native_task_runtime_policy_comparison_setup import prepare_retained_policy_comparison
+        result = prepare_retained_policy_comparison(packet_dir=args.packet_dir,
+            runtime_source_receipt=args.runtime_source_receipt,
+            retained_spec_paths={"pi05_droid": args.pi05_spec, "groot_n17_droid": args.groot_spec},
+            readiness_path=args.readiness, construction_path=args.construction, control_path=args.control,
+            implementation_commit=args.implementation_commit, variant=args.variant,
+            confirmed_by=args.confirmed_by, authorization_reference=args.authorization_reference, output_dir=output)
+        print(json.dumps(result))
+        return 0 if result["status"] == "passed" else 2
     if args.command == "prepare-construction":
         from .native_task_arena_bundle import verify_native_task_arena_packet
         from .native_task_construction_plan import materialize_native_task_construction_phase_plan

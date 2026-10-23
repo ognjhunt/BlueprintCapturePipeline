@@ -149,3 +149,36 @@ def test_embodiment_parity_records_failed_approach_without_blocking_valid_wiring
     )
     assert missing_native_geometry["status"] == "blocked"
     assert "droid_gripper_task_distance_unavailable" in missing_native_geometry["blockers"]
+
+
+def test_runtime_comparison_keeps_legacy_articulated_instruction():
+    prompt = 'Open the front-loading washer door and release it in the open target interval.'
+    plan = {'robot': {}, 'task_spec': {'task_kind': 'articulated_open_close', 'prompt': prompt}}
+    resolved = apply_droid_policy_canary_profile(plan, frozen_prompt=prompt)
+    assert resolved['task_spec']['prompt'] == prompt
+    assert resolved['policy_canary_embodiment_profile']['task_instruction_source'] == 'retained_runtime_comparison'
+    with pytest.raises(ValueError, match='frozen_prompt_changed'):
+        apply_droid_policy_canary_profile(plan, frozen_prompt='Close the door.')
+    # The ordinary configured-task path still requires concrete owner labels.
+    with pytest.raises(ValueError, match='articulated_instruction_invalid'):
+        apply_droid_policy_canary_profile(plan)
+
+
+def test_runtime_comparison_prompt_reopens_exact_base_task():
+    from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _scene_plan
+    plan = _scene_plan()
+    plan['task_spec']['prompt'] = 'Push the retained mug to the recorded target.'
+    plan['plan_digest'] = canonical_digest(plan, digest_field='plan_digest')
+    contract = {'contract_digest': 'sha256:' + 'a' * 64}
+    binding = {'base_plan_digest': plan['plan_digest'],
+               'task_digest': canonical_digest({'value': plan['task_spec']}),
+               'prompt': plan['task_spec']['prompt']}
+    cell = {'cell_id': 'canonical', 'seed': 1, 'resolved_scenario': {'parameters': {}},
+            'retained_runtime_comparison_prompt': binding}
+    result = resolved_scene_plan(plan, cell, task_success_contract=contract)
+    assert result['task_spec']['prompt'] == binding['prompt']
+    for key in binding:
+        altered = {**cell, 'retained_runtime_comparison_prompt': {**binding, key: 'changed'}}
+        with pytest.raises(RuntimeError, match='retained_prompt_binding_invalid'):
+            resolved_scene_plan(plan, altered, task_success_contract=contract)

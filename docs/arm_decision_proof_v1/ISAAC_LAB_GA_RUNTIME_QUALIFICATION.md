@@ -68,3 +68,18 @@ observed launch-contract mismatch; the original provider log did not establish
 that it caused the failure. Focused authority/CLI/launch tests passed (55), and
 provider liveness/log-poll tests passed (29). A fresh admitted native attempt is
 still required to qualify the runtime.
+
+`native_task_runtime_comparison_cli prepare-policy` prepares the existing paired
+Quick-10 harness from retained Pi0.5/GR00T execution specs, readiness, construction,
+and control receipts. It requires the caller to name the human authorization to
+reuse the frozen task. It verifies the retained model configuration against the
+current pinned adapters, preserves the exact instruction and query limits, and
+binds every cell to the original task digest. The prompt compatibility path is
+opt-in and rejects any instruction that differs from the sealed base task.
+
+Both variants bind the same task criteria, cells, models, and historical control
+receipt. Failed historical controls remain failed diagnostic evidence; preparation
+does not qualify a policy comparison, resume the paused controls stage, or create
+a Website activation. Static preflight reports unresolved scenario/observation
+gates before allocation. The 38 lifecycle/import/comparison tests and four
+retained-input preparation tests passed; native policy execution remains pending.

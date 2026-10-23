@@ -90,7 +90,9 @@ def concrete_droid_task_instruction(task_spec: Mapping[str, Any]) -> str:
     return f"{verb} the {subject} onto the {target}."
 
 
-def apply_droid_policy_canary_profile(plan: Mapping[str, Any]) -> dict[str, Any]:
+def apply_droid_policy_canary_profile(
+    plan: Mapping[str, Any], *, frozen_prompt: str | None = None
+) -> dict[str, Any]:
     """Bind one resolved scene plan to the official DROID policy interface."""
 
     value = deepcopy(dict(plan))
@@ -105,7 +107,14 @@ def apply_droid_policy_canary_profile(plan: Mapping[str, Any]) -> dict[str, Any]
         robot["joint_reset_positions_rad"] = dict(start_binding["joint_reset_positions_rad"])
     else:
         robot["joint_reset_positions_rad"] = dict(DROID_NATIVE_RESET_JOINTS_RAD)
-    task_spec["prompt"] = concrete_droid_task_instruction(task_spec)
+    if frozen_prompt is not None:
+        if not frozen_prompt.strip() or frozen_prompt != task_spec.get("prompt"):
+            raise ValueError("droid_policy_canary_frozen_prompt_changed")
+        # A runtime comparison replays the sealed instruction, including legacy
+        # task packets that predate the configured display-label schema.
+        task_spec["prompt"] = frozen_prompt
+    else:
+        task_spec["prompt"] = concrete_droid_task_instruction(task_spec)
     target_position = task_spec.get("target_position_world_m")
     marker = (
         {
@@ -151,6 +160,9 @@ def apply_droid_policy_canary_profile(plan: Mapping[str, Any]) -> dict[str, Any]
     if start_binding is not None:
         profile["task_camera_start_configuration_digest"] = start_binding["configuration_digest"]
         profile["reset_pose_source"] = "sealed_task_camera_start_configuration"
+    if frozen_prompt is not None:
+        profile["task_instruction_source"] = "retained_runtime_comparison"
+        profile["task_instruction_digest"] = canonical_digest({"prompt": frozen_prompt})
     profile["profile_digest"] = canonical_digest(
         profile, digest_field="profile_digest"
     )
