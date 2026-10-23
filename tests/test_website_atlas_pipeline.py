@@ -408,3 +408,19 @@ def test_every_first_run_densifies_the_still_interval_within_the_review_image_bu
     path.unlink()
     pipeline.accuracy_survey(review={"static_intervals_seconds": [[0, 40], [50, 70]]}, **options)
     assert calls[1]["step_seconds"] == 60 / pipeline.MAXIMUM_REVIEW_FRAMES == .2  # long stillness stays reviewable
+
+
+def test_a_job_keeps_the_edit_scope_it_started_with(tmp_path):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+
+    fresh = tmp_path / "default"
+    assert pipeline._job_edit_scope(fresh, None) == "required_and_additional"
+    assert pipeline._job_edit_scope(fresh, "required_and_additional") == "required_and_additional"
+    with pytest.raises(ValueError, match="edit_scope_changed"):
+        pipeline._job_edit_scope(fresh, "all_selected_views")
+    trial = tmp_path / "trial"
+    assert pipeline._job_edit_scope(trial, "all_selected_views") == "all_selected_views"
+    # A resume without the option keeps the trial's scope.
+    assert pipeline._job_edit_scope(trial, None) == "all_selected_views"
+    with pytest.raises(ValueError, match="edit_scope_invalid"):
+        pipeline._job_edit_scope(tmp_path / "bad", "everything")

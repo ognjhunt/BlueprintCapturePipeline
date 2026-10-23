@@ -1,6 +1,10 @@
 # Clean-Plate Frame-Editing Stage — Design (extract → Atlas)
 
 - **Status:** PROPOSED — pending owner confirmation before the consistency machinery is built.
+  **Superseded for website captures (2026-10-22):** website captures no longer
+  buy a Marble world, so the clean-plate stage edits no pixels. It stops at the
+  removal plan, source frames and task masks; the capture's Atlas job erases the
+  task objects and people from its own views (`docs/website-atlas-scene-source.md`).
 - **Date:** 2026-09-17 (dated snapshot; see `docs/DOCTRINE_PRECEDENCE.md`).
 - **Program:** `arm-decision-proof-v1`. **Backlog item (proposed):** `ADP-009B`
   (synthetic removal → inpainting → replacement), as the **own-capture,

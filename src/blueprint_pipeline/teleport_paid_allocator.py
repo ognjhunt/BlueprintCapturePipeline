@@ -44,12 +44,10 @@ def _utc_now() -> str:
 
 def add_teleport_provider_arguments(commands: Any, *, root: Path) -> None:
     provider = commands.add_parser("provider-reconstruction")
-    provider.add_argument("--provider", choices=("teleport", "world_labs"), default="teleport")
+    provider.add_argument("--provider", choices=("teleport",), default="teleport")
     provider.add_argument("--upload-packet")
     provider.add_argument("--execution-request")
     provider.add_argument("--candidate-observations")
-    provider.add_argument("--descriptor", help="World Labs prepared website capture descriptor")
-    provider.add_argument("--capture-root", help="World Labs local capture root")
     provider.add_argument("--sealed-evaluation-request")
     provider.add_argument("--output-dir", required=True)
     provider.add_argument(

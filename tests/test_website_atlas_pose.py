@@ -1081,20 +1081,6 @@ def test_the_default_transport_uses_the_audited_boundary(monkeypatch):
     assert KEY not in str(error.value) and error.value.__cause__ is None
 
 
-@pytest.mark.parametrize("model", ["atlas", "atlas-beta", "Atlas", "worldlabs-atlas", "wl_atlas_1"])
-def test_atlas_is_never_a_world_generation_profile(monkeypatch, model):
-    from blueprint_pipeline.website_reconstruction_profile import reconstruction_profile
-    profile = {"provider": "world_labs", "model": model, "max_input_images": 100}
-    monkeypatch.setenv("WORLDLABS_DEFAULT_MODEL", model)
-    monkeypatch.setenv("BLUEPRINT_WEBSITE_RECONSTRUCTION_PROFILE_JSON", json.dumps(profile))
-    with pytest.raises(ValueError, match="website_reconstruction_atlas_not_a_world_model"):
-        reconstruction_profile()
-    monkeypatch.delenv("WORLDLABS_DEFAULT_MODEL")
-    monkeypatch.delenv("BLUEPRINT_WEBSITE_RECONSTRUCTION_PROFILE_JSON")
-    with pytest.raises(ValueError, match="website_reconstruction_atlas_not_a_world_model"):
-        reconstruction_profile(profile)
-
-
 @pytest.mark.parametrize("model", ["atlas-beta", "worldlabs-atlas"])
 def test_the_marble_request_builder_never_names_another_model(monkeypatch, model):
     from blueprint_pipeline.provider_preview import WorldLabsPreviewProvider

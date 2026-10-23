@@ -167,6 +167,13 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
     return (result, frames, pose_root), state
 
 
+# Which source views the editor cleans before Atlas builds the background.
+# Owner decision 2026-10-22: the planner's required and additional views stay
+# the default; every selected view is a per-job trial until a real capture shows
+# a clearly better room.
+EDIT_SCOPES = ("required_and_additional", "all_selected_views")
+
+
 def measurement_plan(review):
     """The reviewed automation plan with the scene facts size estimates are bound to."""
     from .atlas_automation_plan import AutomationPlan
@@ -195,6 +202,7 @@ def run_automation(
     max_polls=2,
     execute=True,
     checkpoint=None,
+    edit_scope="required_and_additional",
 ):
     from .atlas_scene_measurements import load_views, estimate_sizes
     from .atlas_background_automation import run_background
@@ -221,10 +229,14 @@ def run_automation(
         }
     source = pose["binding"]["source_video_digest"]
     policy = configuration["policy"]
+    if edit_scope not in EDIT_SCOPES:
+        raise ValueError("atlas_edit_scope_invalid")
     requested = list(dict.fromkeys([
         key for group in review.get("coverage_requirements", [])
         for key in group["required_frame_ids"]
     ] + review.get("additional_input_frame_ids", [])))
+    if edit_scope == "all_selected_views":
+        requested = [row["frame_id"] for row in frames]
     selected_ids = [row["frame_id"] for row in frames if row["frame_id"] in requested] if requested else None
     if requested and set(selected_ids) != set(requested):
         raise ValueError("atlas_background_reviewed_selection_missing")
