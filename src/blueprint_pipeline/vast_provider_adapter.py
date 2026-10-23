@@ -4346,9 +4346,9 @@ def _isaac_smoke_shell_fragment() -> str:
         'import os; os._exit(0)'
     )
     return (
-        f'$ISAAC_PY -c {shlex.quote(_isaac_graphics_icd_python_source())}; irc=$?; '
+        f'PYTHONFAULTHANDLER=1 $ISAAC_PY -c {shlex.quote(_isaac_graphics_icd_python_source())}; irc=$?; '
         'if [ $irc -eq 0 ]; then '
-        f'$ISAAC_PY -c {shlex.quote(smoke)}; irc=$?; fi; '
+        f'PYTHONFAULTHANDLER=1 $ISAAC_PY -c {shlex.quote(smoke)}; irc=$?; fi; '
     )
 
 

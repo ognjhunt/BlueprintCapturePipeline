@@ -197,3 +197,9 @@ Ten focused tests passed, including a subprocess regression that rejects driver
 state leaking into Kit and verifies that an unavailable library prevents Kit
 startup. Changed-file lint and shell syntax checks passed. A native rerun is
 still required; no paired runtime or camera qualification is claimed.
+
+Both bootstrap interpreters enable Python's fatal-error handler so a native
+startup crash leaves its Python stack in the retained provider log. Eleven
+focused tests pass, including a controlled child-process segmentation fault
+with core dumps disabled that verifies the diagnostic reaches stderr. This
+adds diagnostic evidence without changing the workcell, actions or scoring.
