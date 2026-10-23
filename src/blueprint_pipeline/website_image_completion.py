@@ -157,6 +157,8 @@ def _review_prompt(targets: Sequence[Mapping[str, Any]], *, frames: Sequence[Map
         novel_prompt = (
             "Review Atlas-generated NOVEL CAMERA views of the same object-absent environment. "
             "Original images are appearance/context references, not same-camera pixel targets. "
+            "Some views have calibrated camera roll to retain portrait photographs on a landscape grid; "
+            "judge scene content, not whether the image is upright. "
             "Different framing and newly revealed surfaces are expected. Check that the room, "
             "floor, installation bay and surrounding fixtures remain coherent across views, "
             "with usable continuous surfaces. Do not require perfect rendering or photorealism: "

@@ -17,7 +17,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v6"
+COMPLETION_REVISION = "v9"
 
 
 def camera_candidates(frames):
@@ -25,10 +25,12 @@ def camera_candidates(frames):
 
     Target centres remain at actual captured camera positions. Rotations follow
     the source field of view; known RGB therefore needs no estimated-depth warp.
-    Wide target cameras preserve the input vertical field of view on Atlas's grid.
+    A calibrated pixel/camera quarter-turn fits portrait photos to the native
+    landscape grid without broadening the photographed horizontal field of view.
     These are generation hypotheses, not collision-cleared physical cameras.
     """
     from scipy.spatial.transform import Rotation
+    from .atlas_scene_chisel import oriented_photograph
 
     candidates = []
     for frame in frames:
@@ -36,44 +38,27 @@ def camera_candidates(frames):
         valid = np.isfinite(depth) & (depth > 0) & (frame["confidence"] > 0)
         if not np.any(valid):
             raise ValueError("atlas_completion_no_context_depth")
-        camera = {"intrinsics": deepcopy(frame["intrinsics"]), "extrinsics": deepcopy(frame["extrinsics"])}
+        _, camera, rotated = oriented_photograph(frame)
         k = camera["intrinsics"]
-        scale = 720 / k["height"]
-        k.update(width=1280, height=720, fx=k["fx"] * scale, fy=k["fy"] * scale, cx=640, cy=360)
-        yaw_step = .15 * 2 * math.atan(k['width'] / (2 * k['fx']))
-        pitch_step = .15 * 2 * math.atan(k['height'] / (2 * k['fy']))
+        scale = min(1280 / k['width'], 720 / k['height'])
+        k.update(fx=k['fx'] * scale, fy=k['fy'] * scale,
+                 cx=(k['cx'] - k['width'] / 2) * scale + 640,
+                 cy=(k['cy'] - k['height'] / 2) * scale + 360, width=1280, height=720)
+        source_k = frame['intrinsics']
+        yaw_step = .15 * 2 * math.atan(source_k['width'] / (2 * source_k['fx']))
+        pitch_step = .15 * 2 * math.atan(source_k['height'] / (2 * source_k['fy']))
+        roll = Rotation.from_euler('Z', 90, degrees=True).as_matrix() if rotated else np.eye(3)
         for name, angles in (("wide", (0, 0)), ("left", (yaw_step, 0)),
                              ("right", (-yaw_step, 0)), ("lower", (0, -pitch_step)),
                              ("higher", (0, pitch_step))):
             target = deepcopy(camera)
             if name != 'wide':
                 target['extrinsics']['quaternion'] = Rotation.from_matrix(
-                    frame['rotation'] @ Rotation.from_euler('YX', angles).as_matrix()).as_quat().tolist()
+                    frame['rotation'] @ Rotation.from_euler('YX', angles).as_matrix() @ roll).as_quat().tolist()
             candidates.append({"camera_id": frame["frame_id"] + "-" + name,
                                "source_frame_id": frame["frame_id"], "purpose": name,
                                "context_valid_depth_fraction": float(np.mean(valid)),
                                "rotation_radians": list(angles), "camera": target})
-    # Cover the environment around the observed free-space camera path, rather
-    # than only extrapolating the downward source views. Count follows angular
-    # coverage and overlap, not a fixed quota of source or generated images.
-    vfov = math.radians(75)
-    focal = 720 / (2 * math.tan(vfov / 2))
-    hfov = 2 * math.atan(1280 / (2 * focal))
-    overlap_stride = .65
-    yaw_count = math.ceil(2 * math.pi / (hfov * overlap_stride))
-    pitch_count = math.ceil((math.pi - vfov) / (vfov * overlap_stride)) + 1
-    positions = np.asarray([frame['position'] for frame in frames])
-    medoid = int(np.argmin(np.linalg.norm(positions[:, None] - positions[None, :], axis=-1).sum(axis=1)))
-    position = positions[medoid].tolist()
-    for yi in range(yaw_count):
-        yaw = 2 * math.pi * yi / yaw_count
-        for pi, pitch in enumerate(np.linspace(-math.pi / 2 + vfov / 2, math.pi / 2 - vfov / 2, pitch_count)):
-            candidates.append({"camera_id": f"room-{yi}-{pi}", "source_frame_id": frames[medoid]["frame_id"],
-                "purpose": "required_full_room_coverage", "inferred_surface_views": True,
-                "camera": {"intrinsics": {"width": 1280, "height": 720, "fx": focal, "fy": focal, "cx": 640, "cy": 360},
-                           "extrinsics": {"position": position,
-                               "quaternion": Rotation.from_euler("YX", [yaw, float(pitch)]).as_quat().tolist(),
-                               "coordinateSystem": "rub"}}})
     return candidates
 
 
@@ -122,6 +107,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     from .atlas_context_fov import verify_pose_context_fov
     fov = verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=root)
     candidates = camera_candidates(frames)
+    from .atlas_scene_preservation import observed_scene_bounds
+    extent = observed_scene_bounds(frames)
     originals = {}
     survey_frames = []
     usage = pose["operation_receipt"]["input_usage"]["frames"]
@@ -146,6 +133,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     feedback_path = root / "plan-inputs.json"
     feedback = {"pose_result_digest": pose["digest"], "context_fov_audit_digest": fov["digest"],
                 "candidate_camera_ids": candidates,
+                "generation_extent": extent, "scope": "nearby_task_relevant_surface_gaps_only",
                 "removal_instruction": review["automation"]["removal_instruction"],
                 "uncaptured_regions": review.get("uncaptured_regions", []), "previews": [],
                 "input_basis": "generated_background_not_raw_capture", "claim_ceiling": "development_only"}
@@ -191,17 +179,18 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     if len(ids) != len(set(ids)) or any(key not in by_id for key in ids):
         raise ValueError("atlas_completion_camera_selection_invalid")
     selected = [by_id[key] for key in ids]
-    required = {row["camera_id"] for row in candidates if row["purpose"] == "required_full_room_coverage"}
-    if not required <= set(ids):
-        raise ValueError("atlas_completion_full_room_camera_coverage_missing")
-    from .atlas_scene_preservation import generate_masked_completion
+    if (not proposal.get('scene_caption', '').strip() or
+            any(not proposal.get('view_gap_reasons', {}).get(key, '').strip() for key in ids)):
+        raise ValueError('atlas_completion_task_gap_plan_missing')
+    from .atlas_scene_chisel import generate_chisel_completion
     _, blockers = release_blockers()
     if blockers:
         raise ValueError("atlas_completion_release_not_admitted:" + ",".join(blockers))
-    completed, generation = generate_masked_completion(frames=frames, selected=selected, candidates=candidates,
+    completed, generation = generate_chisel_completion(frames=frames, selected=selected, candidates=candidates,
         root=root, pose=pose, context=context, configuration=configuration, task_runner=task_runner,
         max_polls=max_polls, removed_objects=[obj["label"] for obj in review["automation"]["objects"]
-            if obj["disposition"] == "remove"], checkpoint=checkpoint)
+            if obj["disposition"] == "remove"], checkpoint=checkpoint,
+        scene_caption=proposal['scene_caption'], view_gap_reasons=proposal['view_gap_reasons'])
     if completed is None:
         return None, generation
     generated, images = completed
@@ -227,7 +216,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "generated_frame_ids": [row["frame_id"] for row in generated], "review": visual,
               "selected_camera_ids": ids, "target_cameras": [row["camera"] for row in selected],
               "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": proposal["remaining_unknowns"],
-              "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "full_room_directional_views",
+              "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "bounded_task_relevant_gaps",
+              "generation_extent": extent, "scene_caption": proposal['scene_caption'],
+              "view_gap_reasons": proposal['view_gap_reasons'],
               "claim_ceiling": "development_only",
               "simulation_qualified": False, "metric_measurement_proven": False, "physical_evidence": False}
     if visual["status"] != "passed":

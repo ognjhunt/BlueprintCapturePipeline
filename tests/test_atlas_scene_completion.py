@@ -26,8 +26,8 @@ def test_completion_camera_pool_preserves_vertical_rays_and_observed_camera_cent
     for row in candidates:
         k = row["camera"]["intrinsics"]
         assert (k["width"], k["height"]) == (1280, 720)
-        if row["purpose"] != "required_full_room_coverage":
-            assert k["fy"] / k["height"] == pytest.approx(first["intrinsics"]["fy"] / 8)
+        assert row['purpose'] in {'wide', 'left', 'right', 'lower', 'higher'}
+        assert k['fx'] == k['fy'] == pytest.approx(600.)
     scaled = deepcopy(first)
     scaled["depth"] *= 10
     scaled["position"] *= 10
@@ -54,21 +54,19 @@ def test_room_center_is_an_actual_capture_position_instead_of_an_unobserved_coor
                for row in candidates)
 
 
-def test_full_room_camera_frusta_cover_every_direction():
-    from scipy.spatial.transform import Rotation
-    cameras = [row["camera"] for row in completion.camera_candidates([frame()])
-               if row["purpose"] == "required_full_room_coverage"]
-    directions = np.array([[np.cos(p) * np.sin(y), np.sin(p), np.cos(p) * np.cos(y)]
-                           for y in np.linspace(-np.pi, np.pi, 73)
-                           for p in np.linspace(-np.pi / 2, np.pi / 2, 37)])
-    covered = np.zeros(len(directions), bool)
-    for camera in cameras:
-        local = directions @ Rotation.from_quat(camera["extrinsics"]["quaternion"]).as_matrix()
-        k = camera["intrinsics"]
-        covered |= ((local[:, 2] < 0) &
-                    (np.abs(local[:, 0]) <= -local[:, 2] * k["width"] / (2 * k["fx"]) + 1e-9) &
-                    (np.abs(local[:, 1]) <= -local[:, 2] * k["height"] / (2 * k["fy"]) + 1e-9))
-    assert np.all(covered), "A room direction would never be generated"
+def test_portrait_target_preserves_original_rays_without_expanding_into_new_room_directions():
+    from blueprint_pipeline.atlas_scene_preservation import _world, _project
+    source = frame()
+    source['rgb'] = np.full((1280, 720, 3), 100, np.uint8)
+    source['depth'] = np.full((1280, 720), 2., np.float32)
+    source['confidence'] = np.ones((1280, 720), np.float32)
+    source['intrinsics'] = {'width': 720, 'height': 1280, 'fx': 600., 'fy': 600., 'cx': 360., 'cy': 640.}
+    rows = completion.camera_candidates([source])
+    assert len(rows) == 5 and not any(row['camera_id'].startswith('room-') for row in rows)
+    points, y, x = _world(source, np.ones((1280, 720), bool))
+    _, u, v, inside = _project(points, rows[0]['camera'])
+    assert inside.all()
+    assert np.allclose(u, 1280 - (y + .5)) and np.allclose(v, x + .5)
 
 
 def test_generated_loader_binds_every_pixel_and_keeps_generated_camera(tmp_path, monkeypatch):
@@ -93,7 +91,7 @@ def test_generated_loader_binds_every_pixel_and_keeps_generated_camera(tmp_path,
 
 
 def test_completion_routes_all_planned_views_through_preservation_before_review(tmp_path, monkeypatch):
-    from blueprint_pipeline import website_image_completion, atlas_scene_preservation
+    from blueprint_pipeline import website_image_completion, atlas_scene_chisel
     frames = [frame(), frame("b", .2)]
     usage, returned = [], []
     for index, f in enumerate(frames):
@@ -121,10 +119,10 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     pose = {"digest": "pose", "binding": {"source_video_digest": "source"},
             "operation": {"id": "pose", "done": True, "response": {"frames": returned}},
             "operation_receipt": {"input_usage": {"frames": usage}}}
-    required = [row["camera_id"] for row in completion.camera_candidates(frames)
-                if row["purpose"] == "required_full_room_coverage"]
-    proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"] + required,
-                "gap_assessment": ["Complete floor and empty bay"], "remaining_unknowns": ["Generated rear wall"]}
+    proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"],
+                "gap_assessment": ["Complete floor and empty bay"], "remaining_unknowns": ["Generated rear wall"],
+                'scene_caption': 'The photographed room with bare continuous floor in cleared space.',
+                'view_gap_reasons': {'a-wide': 'Retain the observed task-region anchor', 'b-lower': 'Fill its nearby floor gap'}}
     calls = []
     def generate(**kw):
         calls.append(kw)
@@ -135,7 +133,7 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
                   for f, r in zip(generated, kw['selected'], strict=True)]
         return (generated, images), {"digest": "preserved-generation", "generated_roots": [str(tmp_path / 'native')],
             "preservation_paths": [], "known_pixels_changed": 0}
-    monkeypatch.setattr(atlas_scene_preservation, 'generate_masked_completion', generate)
+    monkeypatch.setattr(atlas_scene_chisel, 'generate_chisel_completion', generate)
     reviews = []
     monkeypatch.setattr(website_image_completion, "verify_completed_background",
                         lambda **kw: reviews.append(kw) or {"status": "passed"})
@@ -156,8 +154,11 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert report['generation_result_digest'] == 'preserved-generation'
     assert report['generated_roots'] == [str(tmp_path / 'native')]
     assert reviews[0]["frames"][1]["original_image_path"] == str(tmp_path / "1-image.bin")
-    proposal["selected_camera_ids"] = ["a-wide", "b-lower"]
-    with pytest.raises(ValueError, match="full_room_camera_coverage_missing"):
+    assert report['completion_extent'] == 'bounded_task_relevant_gaps'
+    assert report['generation_extent']['additional_space_beyond_observed_bounds'] is False
+    assert calls[0]['scene_caption'] == proposal['scene_caption']
+    proposal['view_gap_reasons'].pop('b-lower')
+    with pytest.raises(ValueError, match="task_gap_plan_missing"):
         completion.complete_scene(**args)
     assert len(calls) == 1
     proposal["selected_camera_ids"] = ["invented-camera"]
