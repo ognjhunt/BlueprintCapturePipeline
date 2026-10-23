@@ -74,6 +74,37 @@ def test_every_masked_batch_keeps_all_source_photographs_without_limiting_total_
     assert all(group[:18] == larger for group in batches([*larger, *novel[:2]], fixed_context=larger))
 
 
+def test_full_source_context_overhead_is_priced_before_any_provider_call(tmp_path, monkeypatch):
+    candidates = [{'camera_id': f'source-{i}', 'source_frame_id': str(i), 'purpose': 'wide',
+                   'camera': camera(width=1280, height=720, x=.2 * i)} for i in range(6)]
+    selected = [{'camera_id': f'novel-{i}', 'source_frame_id': '0', 'purpose': 'room',
+                 'camera': candidates[0]['camera']} for i in range(21)]
+    def prepared(**kw):
+        return [{'frame_id': row['camera_id'], 'source_frame_id': row['source_frame_id'],
+                 'camera': row['camera'], 'image_path': 'unused.png', 'image_digest': 'unused',
+                 'keep_mask_path': 'unused-mask.png', 'keep_mask_digest': 'unused'} for row in kw['selected']]
+    monkeypatch.setattr(preservation, 'prepare_completion_views', prepared)
+    purchases = []
+    def task(**kw):
+        purchases.append(kw)
+        return {'status': 'processing'}
+    args = dict(frames=[], selected=selected, candidates=candidates, root=tmp_path,
+        pose={'digest': 'pose', 'binding': {'source_video_digest': 'video'}}, context={},
+        configuration={'remaining_cost_usd': 3., 'policy': {'rgbd_view_cost_usd': .05,
+            'rate_card_reference': 'test', 'reviewed_by': 'test', 'reviewed_on': '2026-10-23'}},
+        task_runner=task, max_polls=1)
+    with pytest.raises(ValueError, match='remaining_budget_insufficient'):
+        preservation.generate_masked_completion(**args)
+    assert not purchases
+    # Three native groups contain 16 + 16 + 9 paid views, including repeated
+    # source conditioning. All $4.10, plus the review reserve, must fit first.
+    args['configuration']['remaining_cost_usd'] = 5.101
+    preservation.generate_masked_completion(**args)
+    assert len(purchases) == 1
+    assert len(purchases[0]['request']['contextFrames']) == 16
+    assert purchases[0]['price_review']['maximum_cost_usd'] == 1.6
+
+
 def test_projection_keeps_nearer_surface_in_front_of_farther_surface():
     near, far = frame(colour=(255, 0, 0)), frame(depth=4, colour=(0, 0, 255))
     rgb, keep = preservation.project_known_context([near, far], camera(x=.01))
