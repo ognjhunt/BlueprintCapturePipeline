@@ -15,6 +15,8 @@ SCHEMA = "website_atlas_preview_job.v1"
 JOB_FILE = "preview_job.json"
 LOCK_FILE = "preview.lock"
 ARTIFACT_KIND = "atlas-scene-bundle"
+MAXIMUM_JOB_SECONDS = 7 * 86400
+TERMINAL = frozenset({"ready", "needs_input", "failed", "withdrawn"})
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 

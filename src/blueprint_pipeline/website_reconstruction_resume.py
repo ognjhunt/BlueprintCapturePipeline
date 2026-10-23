@@ -99,7 +99,7 @@ def claim_matches(ledger, expected, *, payload_sha256, producer_delivery_key) ->
 
 def _final(job) -> bool:
     """The worker's own notion of done: terminal and not waiting to re-check authority."""
-    from .website_atlas_preview import TERMINAL
+    from .website_atlas_preview_store import TERMINAL
     return job.get("state") in TERMINAL and not job.get("retry_at_epoch")
 
 
