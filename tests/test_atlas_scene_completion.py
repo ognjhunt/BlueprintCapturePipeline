@@ -90,6 +90,20 @@ def test_completion_reuploads_exact_reviewed_context_and_uses_planner_selection(
             {"role": role, "path": p.name, "sha256": _sha256_file(p)} for role, p in (("image", image), ("depth", depth))]})
         returned.append({"imageAsset": {"assetId": "expired-image"}, "depth": {"depthAsset": {"assetId": "expired-depth"}},
                          "camera": {"intrinsics": f["intrinsics"], "extrinsics": f["extrinsics"]}})
+    sources = []
+    for i, f in enumerate(frames):
+        source = tmp_path / f'{i}-source.png'
+        Image.fromarray(f['rgb']).save(source)
+        sources.append({'frame_id': f['frame_id'], 'image_path': str(source), 'image_digest': _sha256_file(source)})
+    inputs = {'schema_version': 'website_atlas_pose_inputs.v1', 'status': 'pending',
+              'endpoint': '/api/v2/tasks:images2PosedRGBD', 'heldout_pixels_included': False,
+              'claim_ceiling': 'development_only', 'metric_measurement_proven': False, 'frames': sources}
+    inputs['digest'] = canonical_digest(inputs, digest_field='digest')
+    (tmp_path / 'atlas_pose_inputs.json').write_text(json.dumps(inputs))
+    baseline = {'pose_result_digest': 'earlier-cropped-pose'}
+    baseline['digest'] = canonical_digest(baseline, digest_field='digest')
+    (tmp_path / 'background_splat').mkdir()
+    (tmp_path / 'background_splat/atlas_depth_splat_manifest.json').write_text(json.dumps(baseline))
     pose = {"digest": "pose", "binding": {"source_video_digest": "source"},
             "operation": {"id": "pose", "done": True, "response": {"frames": returned}},
             "operation_receipt": {"input_usage": {"frames": usage}}}
@@ -116,6 +130,8 @@ def test_completion_reuploads_exact_reviewed_context_and_uses_planner_selection(
         planner_runner=lambda **_: {"proposal": proposal},
         release_blockers=lambda: ("commit", []), max_polls=1)
     output, report = completion.complete_scene(**args)
+    feedback = json.loads((tmp_path / 'complete/plan-inputs.json').read_text())
+    assert feedback['baseline_geometry_comparable'] is False and 'baseline_geometry_gaps' not in feedback
     assert len(output) == len(proposal["selected_camera_ids"]) and report["generated_geometry_ready"] is True
     assert len(calls) == 1 and calls[0]["request"]["returnDepth"] is True
     assert calls[0]["price_review"]["maximum_cost_usd"] == len(output) * .05

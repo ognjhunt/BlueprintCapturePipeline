@@ -18,7 +18,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v2"
+COMPLETION_REVISION = "v3"
 
 
 def camera_candidates(frames):
@@ -115,6 +115,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     from .website_image_completion import verify_completed_background
 
     root.mkdir(parents=True, exist_ok=True)
+    from .atlas_context_fov import verify_pose_context_fov
+    fov = verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=root)
     upload_root = root / "context-uploads"
     upload_root.mkdir(exist_ok=True)
     policy = configuration["policy"]
@@ -160,20 +162,26 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         raise ValueError("atlas_completion_survey_changed")
     write_json(survey_path, survey)
     feedback_path = root / "plan-inputs.json"
-    feedback = {"pose_result_digest": pose["digest"], "candidate_camera_ids": candidates,
+    feedback = {"pose_result_digest": pose["digest"], "context_fov_audit_digest": fov["digest"],
+                "candidate_camera_ids": candidates,
                 "removal_instruction": review["automation"]["removal_instruction"],
                 "uncaptured_regions": review.get("uncaptured_regions", []), "previews": [],
                 "input_basis": "generated_background_not_raw_capture", "claim_ceiling": "development_only"}
     baseline_path = root.parent / "background_splat/atlas_depth_splat_manifest.json"
     if baseline_path.is_file():
         baseline = json.loads(baseline_path.read_text())
-        if (baseline.get("digest") != canonical_digest(baseline, digest_field="digest")
-                or baseline.get("pose_result_digest") != pose["digest"]):
+        if baseline.get("digest") != canonical_digest(baseline, digest_field="digest"):
             raise ValueError("atlas_completion_baseline_changed")
-        feedback["baseline_geometry_gaps"] = {key: baseline[key] for key in
-            ("digest", "frames", "cross_view_agreement", "gaussian_count")}
+        if baseline.get("pose_result_digest") == pose["digest"]:
+            feedback["baseline_geometry_gaps"] = {key: baseline[key] for key in
+                ("digest", "frames", "cross_view_agreement", "gaussian_count")}
+        else:
+            # A full-view re-pose has a new coordinate frame. Preserve the old
+            # cropped baseline, but do not present its holes as current geometry.
+            feedback["earlier_baseline_digest"] = baseline["digest"]
+            feedback["baseline_geometry_comparable"] = False
         registration_path = root.parent / "background_mesh/registered/atlas_mesh_registration.json"
-        if registration_path.is_file():
+        if "baseline_geometry_gaps" in feedback and registration_path.is_file():
             registration = json.loads(registration_path.read_text())
             if (registration.get("digest") != canonical_digest(registration, digest_field="digest")
                     or registration.get("splat_manifest_digest") != baseline["digest"]):
@@ -252,7 +260,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     visual = verify_completed_background(frames=images, original_frames=images, plan=plan,
         output_root=root / "review", task_context=context, source_video_digest=survey["source_video_digest"])
     report = {"status": "passed" if visual["status"] == "passed" else "needs_input",
-              "planner": planned, "generation_result_digest": result["digest"], "generated_root": str(generated_root),
+              "planner": planned, "context_fov_audit_digest": fov["digest"],
+              "generation_result_digest": result["digest"], "generated_root": str(generated_root),
               "generated_frame_ids": [row["frame_id"] for row in generated], "review": visual,
               "selected_camera_ids": ids, "target_cameras": request["targetCameras"],
               "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": proposal["remaining_unknowns"],
