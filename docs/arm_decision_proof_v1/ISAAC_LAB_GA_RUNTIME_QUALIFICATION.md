@@ -14,7 +14,7 @@ actual versions and a CUDA operation before scene execution.
 
 `native_task_runtime_comparison` instruments the existing worker without changing
 its actions, observations or scoring. It records startup/build/step/reset timing,
-process GPU memory, actual reset joints, camera gates and episode/contact/media
+device-wide GPU memory, actual reset joints, camera gates and episode/contact/media
 receipts. Timing synchronizes CUDA for steps and resets. Memory is a sampled peak
 lower bound. An exact GPU UUID is required for a causal timing comparison.
 
@@ -185,3 +185,15 @@ now loads the selected NVIDIA Vulkan ICD library before starting Kit or fetching
 the bundle. Missing libraries and software-only ICDs fail closed. Actual rendering
 still requires the native camera checks; loading a library is not rendering proof.
 Eight focused bootstrap/launch tests and changed-file lint passed for this repair.
+
+Attempt 57434567 loaded the graphics ICD, then Isaac's Python process segfaulted
+before Kit emitted diagnostics. No workcell was downloaded or executed. The
+allocator destroyed the instance; exact-object cleanup and provider absence were
+verified, and the official charge was $0.051. The same-process library preflight
+had changed Kit's native initialization conditions, so the probe now runs in a
+separate interpreter before the unchanged Kit/Warp smoke. This removes that
+interference; the retained log alone does not establish the segfault's cause.
+Ten focused tests passed, including a subprocess regression that rejects driver
+state leaking into Kit and verifies that an unavailable library prevents Kit
+startup. Changed-file lint and shell syntax checks passed. A native rerun is
+still required; no paired runtime or camera qualification is claimed.

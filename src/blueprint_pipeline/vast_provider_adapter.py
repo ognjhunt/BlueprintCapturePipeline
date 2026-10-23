@@ -4305,7 +4305,7 @@ def _create_payload(
     return payload
 
 
-def _isaac_smoke_python_source() -> str:
+def _isaac_graphics_icd_python_source() -> str:
     # CUDA can work while the container lacks the host's Vulkan libraries.
     # Check the selected NVIDIA ICD before starting Kit or downloading assets.
     # This is library admission only; the workcell still proves actual rendering.
@@ -4331,15 +4331,25 @@ for path in paths:
 if not loaded:
     raise RuntimeError("isaac_nvidia_vulkan_icd_missing")
 print("BLUEPRINT_VAST_ISAAC_GRAPHICS_ICD_OK:count=%d" % len(loaded), flush=True)
-from isaacsim import SimulationApp
-app = SimulationApp({"headless": True})
-import warp as wp
-wp.init()
-devices = [device for device in wp.get_devices() if device.is_cuda]
-assert devices, "isaac_warp_cuda_device_missing"
-print("BLUEPRINT_VAST_ISAAC_SMOKE_OK:cuda_devices=%d" % len(devices), flush=True)
-os._exit(0)
 '''
+
+
+def _isaac_smoke_shell_fragment() -> str:
+    # Load graphics libraries in their own process. Preloading the driver into
+    # Kit's interpreter changes native initialization and can crash before Kit
+    # has any diagnostics. Keep the previously used Kit/Warp smoke unchanged.
+    smoke = (
+        'from isaacsim import SimulationApp; app=SimulationApp({"headless": True}); '
+        'import warp as wp; wp.init(); devices=[device for device in wp.get_devices() if device.is_cuda]; '
+        'assert devices, "isaac_warp_cuda_device_missing"; '
+        'print("BLUEPRINT_VAST_ISAAC_SMOKE_OK:cuda_devices=%d" % len(devices), flush=True); '
+        'import os; os._exit(0)'
+    )
+    return (
+        f'$ISAAC_PY -c {shlex.quote(_isaac_graphics_icd_python_source())}; irc=$?; '
+        'if [ $irc -eq 0 ]; then '
+        f'$ISAAC_PY -c {shlex.quote(smoke)}; irc=$?; fi; '
+    )
 
 
 def _probe_shell_script(
@@ -4572,8 +4582,8 @@ def _probe_shell_script(
             "elif [ -x /isaac-sim/python ]; then ISAAC_PY=/isaac-sim/python; "
             "elif command -v python3 >/dev/null 2>&1; then ISAAC_PY=$(command -v python3); fi; "
             'if [ -n "$ISAAC_PY" ]; then '
-            f'$ISAAC_PY -c {shlex.quote(_isaac_smoke_python_source())}; irc=$?; '
-            "if [ $irc -eq 0 ]; then echo BLUEPRINT_VAST_ISAAC_SMOKE_COMPLETED; "
+            + _isaac_smoke_shell_fragment()
+            + "if [ $irc -eq 0 ]; then echo BLUEPRINT_VAST_ISAAC_SMOKE_COMPLETED; "
             + (
                 "cuda_runtime_rc=0; echo BLUEPRINT_VAST_CUDA_RUNTIME_OK:isaac_simulation_app_warp; "
                 if isaac_provider_bundle

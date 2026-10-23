@@ -15,7 +15,6 @@ import urllib.error
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -107,27 +106,14 @@ def test_isaac_smoke_rejects_missing_graphics_library_before_kit(
             raise OSError("host graphics library absent")
         return object()
 
-    def exit_process(code):
-        raise SystemExit(code)
-
     monkeypatch.setattr(ctypes, "CDLL", load_library)
-    monkeypatch.setattr(os, "_exit", exit_process)
-    monkeypatch.setitem(sys.modules, "isaacsim", SimpleNamespace(
-        SimulationApp=lambda config: events.append("kit_started"),
-    ))
-    monkeypatch.setitem(sys.modules, "warp", SimpleNamespace(
-        init=lambda: events.append("cuda_started"),
-        get_devices=lambda: [SimpleNamespace(is_cuda=True)],
-    ))
     if driver_available:
-        with pytest.raises(SystemExit) as stopped:
-            exec(vpa._isaac_smoke_python_source(), {})
-        assert stopped.value.code == 0
-        assert events == ["libGLX_nvidia.so.0", "kit_started", "cuda_started"]
-        assert "BLUEPRINT_VAST_ISAAC_SMOKE_OK" in capsys.readouterr().out
+        exec(vpa._isaac_graphics_icd_python_source(), {})
+        assert events == ["libGLX_nvidia.so.0"]
+        assert "BLUEPRINT_VAST_ISAAC_GRAPHICS_ICD_OK" in capsys.readouterr().out
     else:
         with pytest.raises(RuntimeError, match="isaac_nvidia_vulkan_icd_library_unavailable"):
-            exec(vpa._isaac_smoke_python_source(), {})
+            exec(vpa._isaac_graphics_icd_python_source(), {})
         assert events == ["libGLX_nvidia.so.0"]
         assert "BLUEPRINT_VAST_ISAAC_SMOKE_OK" not in capsys.readouterr().out
 
@@ -137,7 +123,46 @@ def test_isaac_smoke_rejects_non_nvidia_icd(tmp_path: Path, monkeypatch) -> None
     icd.write_text(json.dumps({"ICD": {"library_path": "libvulkan_lvp.so"}}))
     monkeypatch.setenv("VK_DRIVER_FILES", str(icd))
     with pytest.raises(RuntimeError, match="isaac_nvidia_vulkan_icd_missing"):
-        exec(vpa._isaac_smoke_python_source(), {})
+        exec(vpa._isaac_graphics_icd_python_source(), {})
+
+
+@pytest.mark.parametrize("driver_available", [False, True])
+def test_isaac_graphics_probe_cannot_preload_kit_process(
+    tmp_path: Path, driver_available: bool,
+) -> None:
+    icd = tmp_path / "nvidia_icd.json"
+    icd.write_text(json.dumps({"ICD": {"library_path": "libGLX_nvidia.so.0"}}))
+    (tmp_path / "ctypes.py").write_text(
+        'import os\n'
+        'def CDLL(name):\n'
+        '    os.environ["BLUEPRINT_TEST_GRAPHICS_PRELOADED"] = "1"\n'
+        '    if os.environ["BLUEPRINT_TEST_GRAPHICS_AVAILABLE"] == "0":\n'
+        '        raise OSError("host library absent")\n'
+        '    return object()\n'
+    )
+    (tmp_path / "isaacsim.py").write_text(
+        'import os\n'
+        'assert "BLUEPRINT_TEST_GRAPHICS_PRELOADED" not in os.environ, "driver polluted Kit process"\n'
+        'class SimulationApp:\n'
+        '    def __init__(self, config):\n'
+        '        with open(os.environ["BLUEPRINT_TEST_KIT_STARTED"], "w") as stream:\n'
+        '            stream.write("kit_started")\n'
+    )
+    (tmp_path / "warp.py").write_text(
+        'from types import SimpleNamespace\n'
+        'def init(): pass\n'
+        'def get_devices(): return [SimpleNamespace(is_cuda=True)]\n'
+    )
+    started = tmp_path / "kit-started"
+    script = (f"ISAAC_PY={shlex.quote(sys.executable)}; "
+              + vpa._isaac_smoke_shell_fragment() + 'exit "$irc"')
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(tmp_path), "VK_DRIVER_FILES": str(icd),
+             "BLUEPRINT_TEST_GRAPHICS_AVAILABLE": "1" if driver_available else "0",
+             "BLUEPRINT_TEST_KIT_STARTED": str(started)}, timeout=20)
+    assert (result.returncode == 0) is driver_available, result.stderr
+    assert started.exists() is driver_available
+    assert ("BLUEPRINT_VAST_ISAAC_SMOKE_OK" in result.stdout) is driver_available
 
 
 def test_isaac_graphics_probe_precedes_bundle_download() -> None:
