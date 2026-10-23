@@ -63,6 +63,10 @@ def test_both_variants_freeze_identical_inputs_and_keep_failed_controls(tmp_path
     assert results[0]['binding_digest'] == results[1]['binding_digest']
     for variant in ('baseline', 'isaaclab_3_ga'):
         prepared = json.loads((tmp_path / variant / 'runtime-inputs.json').read_text())
+        preflight = json.loads((tmp_path / variant / 'static-preflight.json').read_text())
+        observation_checks = [row for row in preflight['checks'] if row['check'].endswith('.observation_route')]
+        assert len(observation_checks) == 10
+        assert all(row['status'] == 'passed' for row in observation_checks)
         assert len(prepared['cells']) == 10
         assert all(c['control_diagnostic']['mode'] == 'nonblocking_diagnostic_bound' for c in prepared['cells'])
         assert json.loads(Path(prepared['cells'][0]['control_diagnostic']['receipt']['path']).read_text())['controls_qualified'] is False
@@ -72,6 +76,18 @@ def test_both_variants_freeze_identical_inputs_and_keep_failed_controls(tmp_path
             for field in ('prompt', 'policy_spec', 'max_policy_queries', 'open_loop_horizon'):
                 assert new[field] == old[field]
             assert new['qualification_permitted'] is False
+
+
+def test_observation_gate_rejects_changed_retained_prompt():
+    from blueprint_pipeline.droid_policy_canary_embodiment import apply_droid_policy_canary_profile
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import policy_observation_gate_mode
+    plan = _scene_plan()
+    plan['task_spec'] = {**_articulated_spec(), 'prompt': 'Open the retained washer door.'}
+    plan = apply_droid_policy_canary_profile(plan, frozen_prompt=plan['task_spec']['prompt'])
+    assert policy_observation_gate_mode({}, plan) == 'native_official_droid_camera'
+    plan['task_spec']['prompt'] = 'Close the retained washer door.'
+    with pytest.raises(RuntimeError, match='official_camera_profile_invalid'):
+        policy_observation_gate_mode({}, plan)
 
 
 @pytest.mark.parametrize('field,value', [('prompt', 'Different task'), ('policy_spec', {}), ('scene_plan_digest', 'sha256:' + 'f' * 64)])

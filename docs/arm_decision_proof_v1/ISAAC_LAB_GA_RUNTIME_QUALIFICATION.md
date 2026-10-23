@@ -81,5 +81,7 @@ Both variants bind the same task criteria, cells, models, and historical control
 receipt. Failed historical controls remain failed diagnostic evidence; preparation
 does not qualify a policy comparison, resume the paused controls stage, or create
 a Website activation. Static preflight reports unresolved scenario/observation
-gates before allocation. The 38 lifecycle/import/comparison tests and four
-retained-input preparation tests passed; native policy execution remains pending.
+gates before allocation. The observation gate verifies the same retained prompt
+digest instead of regenerating a modern instruction. All 45 focused worker,
+lifecycle, import-closure and retained-input tests passed; native policy
+execution remains pending.

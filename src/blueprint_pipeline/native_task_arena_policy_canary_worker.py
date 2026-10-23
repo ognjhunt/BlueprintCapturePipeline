@@ -414,7 +414,15 @@ def policy_observation_gate_mode(
         return "native_team_embodiment_camera"
     if profile is not None:
         from blueprint_pipeline.droid_policy_canary_embodiment import apply_droid_policy_canary_profile
-        expected = apply_droid_policy_canary_profile(resolved_plan)["policy_canary_embodiment_profile"]
+        frozen_prompt = None
+        if profile.get("task_instruction_source") == "retained_runtime_comparison":
+            frozen_prompt = (resolved_plan.get("task_spec") or {}).get("prompt")
+            if (not isinstance(frozen_prompt, str) or not frozen_prompt.strip()
+                    or profile.get("task_instruction_digest") != canonical_digest({"prompt": frozen_prompt})):
+                raise RuntimeError("policy_canary_official_camera_profile_invalid")
+        expected = apply_droid_policy_canary_profile(
+            resolved_plan, frozen_prompt=frozen_prompt
+        )["policy_canary_embodiment_profile"]
         if profile != expected:
             raise RuntimeError("policy_canary_official_camera_profile_invalid")
         return "native_official_droid_camera"
