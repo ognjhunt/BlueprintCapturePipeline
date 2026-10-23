@@ -118,7 +118,8 @@ _CONTENT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpe
 _OUTPUT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".exr"}
 _HELD_LOCKS = threading.local()
 
-Transport = Callable[[str, str, Mapping[str, str], "bytes | None"], "tuple[int, bytes]"]
+TransportResponse = tuple[int, bytes] | tuple[int, bytes, Mapping[str, str]]
+Transport = Callable[[str, str, Mapping[str, str], "bytes | None"], TransportResponse]
 
 
 class AtlasTransportError(RuntimeError):
@@ -151,7 +152,7 @@ def _safe_transport(base_url: str) -> Transport:
 
     api_policy = boundary.pinned_api_policy(base_url, max_response_bytes=API_MAX_RESPONSE_BYTES)
 
-    def send(method: str, url: str, headers: Mapping[str, str], data: bytes | None) -> tuple[int, bytes]:
+    def send(method: str, url: str, headers: Mapping[str, str], data: bytes | None) -> TransportResponse:
         api = url.startswith(base_url + "/")
         policy = api_policy if api else boundary.presigned_transfer_policy(
             url, max_response_bytes=MAX_MESH_OUTPUT_BYTES)
@@ -159,13 +160,15 @@ def _safe_transport(base_url: str) -> Transport:
             response = boundary.request(url, method=method, data=data, headers=headers,
                                         timeout_seconds=120 if api else 600, policy=policy)
         except urllib.error.HTTPError as exc:
+            # Preserve only the scheduling hint, never signed URLs or arbitrary headers.
+            retry_after = exc.headers.get("Retry-After", "") if exc.headers else ""
             try:
                 body = exc.read(4096)
             except (OSError, http.client.HTTPException, ValueError):
                 body = b""  # The status is the answer; a lost error body changes nothing.
             finally:
                 exc.close()
-            return exc.code, body
+            return exc.code, body, {"retry-after": retry_after}
         except boundary.SafeOutboundHttpError:
             raise
         except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
@@ -220,6 +223,16 @@ class AtlasClient:
     def __init__(self, *, base_url: str, api_key: str, transport: Transport | None = None) -> None:
         self._base, self._key = base_url.rstrip("/"), api_key
         self._transport = transport or _safe_transport(self._base)
+        self.retry_after: str | None = None
+
+    def _send_transport(self, method: str, url: str, headers: Mapping[str, str],
+                        data: bytes | None) -> tuple[int, bytes]:
+        self.retry_after = None
+        response = self._transport(method, url, headers, data)
+        if len(response) == 3:
+            self.retry_after = next((str(value) for key, value in response[2].items()
+                                     if key.lower() == "retry-after"), None)
+        return response[0], response[1]
 
     @property
     def base_url(self) -> str:
@@ -237,7 +250,7 @@ class AtlasClient:
         sent = {"WLT-Api-Key": self._key, "Accept": "application/json", **(headers or {})}
         if data is not None:
             sent["Content-Type"] = "application/json"
-        return self._transport(method, self._base + path, sent, data)
+        return self._send_transport(method, self._base + path, sent, data)
 
     def call(self, method: str, path: str, body: Mapping[str, Any] | None = None, *,
              headers: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -245,12 +258,12 @@ class AtlasClient:
 
     def send_bytes(self, url: Any, *, method: str, headers: Mapping[str, str], data: bytes) -> None:
         """Upload to a provider-issued URL. The API key never travels with it."""
-        status, payload = self._transport(method, _https(url), dict(headers), data)
+        status, payload = self._send_transport(method, _https(url), dict(headers), data)
         if not 200 <= status < 300:
             raise AtlasHttpError(status, payload.decode("utf-8", "replace"))
 
     def fetch_bytes(self, url: Any, *, max_bytes: int | None = None) -> bytes:
-        status, payload = self._transport("GET", _https(url), {}, None)
+        status, payload = self._send_transport("GET", _https(url), {}, None)
         if not 200 <= status < 300:
             raise AtlasHttpError(status, payload.decode("utf-8", "replace"))
         if len(payload) > (MAX_OUTPUT_BYTES if max_bytes is None else max_bytes):

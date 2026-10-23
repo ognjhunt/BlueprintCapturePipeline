@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import time
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -21,6 +23,46 @@ from .paid_resource_admission import require_paid_resource_admission_grant
 TASKS = frozenset({"atlasGenerate", "atlasMasked", "atlasChisel", "atlasTextToImage", "splats2Mesh"})
 MIMES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
          ".exr": "image/x-exr", ".ply": "application/octet-stream", ".spz": "application/octet-stream"}
+_CAPACITY_CODES = frozenset({"RATE_LIMIT_EXCEEDED", "CONCURRENCY_LIMIT_EXCEEDED", "TASK_UNAVAILABLE"})
+
+
+def _capacity_refusal(payload: bytes, retry_after: str | None, *, now: float,
+                      attempt: int) -> dict[str, Any] | None:
+    """A documented 429 proves no purchase; unknown replies still reconcile.
+
+    https://atlas-beta.worldlabs.ai/docs/rate-limits
+    Retain the deadline so a worker restart cannot shorten the provider's wait.
+    """
+    try:
+        body = json.loads(payload)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error", body)
+    if (not isinstance(error, dict) or not isinstance(error.get("code"), str)
+            or error["code"] not in _CAPACITY_CODES):
+        return None
+    wait = 0.0
+    if retry_after:
+        try:
+            wait = float(retry_after)
+        except ValueError:
+            try:
+                wait = parsedate_to_datetime(retry_after).timestamp() - now
+            except (ValueError, TypeError, OverflowError):
+                pass
+    if not math.isfinite(wait):
+        wait = 0.0
+    backoff = min(300, 60 * 2 ** min(attempt - 1, 3))
+    delay = max(wait, backoff) + random.uniform(0, 5)
+    return {"status": 429, "code": error["code"], "accepted": False,
+            "observed_at_epoch": now, "retry_not_before_epoch": now + delay}
+
+
+def _capacity_pending(state: Mapping[str, Any]) -> dict[str, Any]:
+    return {"status": "processing", "operation_id": None, "waiting_for": "provider_capacity",
+            "retry_not_before_epoch": state["capacity_refusal"]["retry_not_before_epoch"]}
 
 
 def validate_task_request(task: str, request: Mapping[str, Any]) -> None:
@@ -294,6 +336,16 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
             if state.get("api_base") != base:
                 raise ValueError("atlas_task_api_base_changed")
             state = _reconcile(client, state, state_path, task=task, now=now())
+        if state and state.get("status") == "capacity_wait":
+            if state.get("api_base") != base:
+                raise ValueError("atlas_task_api_base_changed")
+            deadline = state["capacity_refusal"]["retry_not_before_epoch"]
+            if not isinstance(deadline, (int, float)) or not math.isfinite(deadline):
+                raise ValueError("atlas_task_capacity_deadline_invalid")
+            if now() < deadline:
+                return _capacity_pending(state)
+            state["status"] = "resend"
+            pose._write_state(state_path, state)
         if state and state.get("status") == "rejected":
             raise ValueError("atlas_task_attempt_rejected")
         if state and state.get("status") == "failed" and not state.get("operation_id"):
@@ -343,6 +395,14 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
             status, payload = client.send_raw("POST", "/tasks:" + task, state["request_body"].encode(),
                                               headers={"Idempotency-Key": state["idempotency_key"]})
             state["submission_http_status"] = state["sends"][-1]["status"] = status
+            if status == 429:
+                count = state.get("capacity_refusals", 0) + 1
+                refusal = _capacity_refusal(payload, client.retry_after, now=now(), attempt=count)
+                if refusal is not None:
+                    state.update(status="capacity_wait", capacity_refusals=count, capacity_refusal=refusal)
+                    state["sends"][-1]["capacity_refusal"] = refusal
+                    pose._write_state(state_path, state)
+                    return _capacity_pending(state)
             if 400 <= status < 500 and status not in pose._UNCERTAIN_4XX and status != 402:
                 # Any earlier send was reconciled as bought nothing, so a definitive
                 # refusal of this one closes the task without a purchase.
