@@ -87,5 +87,21 @@ blocking failures and nine optional failures, with matching repeatability
 fingerprints. The install report retains transitive package hashes. The
 publisher's older failed grasp-and-lift test is separately preserved.
 
-These are static and external-validator observations. Native admission is
-pending; neither these results nor the successful bundle build establish it.
+The exact published intake commit `c084532b7196e279abfed36411e980100191e987`
+then passed the canonical paid native probe on RTX 4090 instance `57392781`.
+The probe verified import, GPU collision cooking, SDF resolution 256, and
+zero-gravity physics-step readback in the pinned Isaac Sim 6.0.1 image.
+`native-import-executed/catalog-native-import-execution.json` records
+`native_simulator_import_qualified: true` with execution digest
+`sha256:54128418d60197aa666376f84e894a57fe2570e3cdb40d8faed0e4e31b0c707a`.
+This is library asset import qualification; contact behavior, grasp success,
+task registration, task suitability, and physical equivalence remain unqualified.
+
+The official provider charge was **$0.082** ($0.074 compute and $0.008 disk).
+The attempt had a $2 cap and zero retries. The initial root-account invocation
+was refused before allocation by the authority-ledger ownership check; the
+canonical service account then consumed the same unused authorization once.
+`native-import-executed/catalog-import-provider-zero.json` confirms provider
+absence, stopped watchdog, and removal of every staged object. The native probe,
+package bytes, static receipt, billing source/charge, and teardown evidence are
+retained together under `native-import-executed/`.
