@@ -84,18 +84,38 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
     legacy = root / "fallback_pose/atlas_pose/submission.json"
     if legacy.exists():
         raise ValueError("atlas_fallback_legacy_pose_requires_reconciliation")
-    # V1 put RGB in a sibling directory, outside the canonical producer's
-    # capture boundary. Preserve that refused handoff; v2 owns its own inputs.
-    pose_root = root / "fallback_pose-v2"
+    # Keep v2's native receipts intact. Its unpadded portrait images lost
+    # context on the backend's native square raster, then cropped again at
+    # targetResolution. v3 pads first; the final portrait crop removes padding.
+    from .atlas_context_fov import square_pad, verify_pose_context_fov
+    from PIL import Image
+    import numpy as np
+
+    pose_root = root / "fallback_pose-v3"
     input_root = pose_root / "inputs"
     input_root.mkdir(parents=True, exist_ok=True)
-    rows = []
+    source_root = pose_root / "approved-inputs"
+    source_root.mkdir(exist_ok=True)
+    rows, sources = [], []
     for i, row in enumerate(background["frames"]):
         src = Path(row["image_path"])
         if _sha256_file(src) != row["image_digest"]:
             raise ValueError("atlas_fallback_rgb_changed")
         dst = input_root / f"{i:04d}.png"
-        shutil.copyfile(src, dst)
+        source = source_root / f"{i:04d}{src.suffix.lower()}"
+        if source.exists() and _sha256_file(source) != row["image_digest"]:
+            raise ValueError("atlas_fallback_rgb_changed")
+        shutil.copyfile(src, source)
+        with Image.open(source) as image:
+            padded, transform = square_pad(np.asarray(image.convert("RGB")))
+        if dst.exists():
+            with Image.open(dst) as image:
+                if not np.array_equal(np.asarray(image.convert("RGB")), padded):
+                    raise ValueError("atlas_context_padding_changed")
+        else:
+            Image.fromarray(padded).save(dst)
+        sources.append({"frame_id": row["frame_id"], "image_path": str(source),
+                        "image_digest": row["image_digest"], "padding": transform})
         rows.append(
             {
                 "frame_id": row["frame_id"],
@@ -110,6 +130,7 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
         "schema_version": INPUT_SCHEMA,
         "heldout_pixels_included": False,
         "frames": rows,
+        "full_view_sources": sources,
         "binding": {
             "source_video_digest": source_digest,
             "content_basis": "generated_background_after_independent_visual_review",
@@ -142,6 +163,7 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
     from .atlas_depth_splat import load_posed_rgbd
 
     result, frames = load_posed_rgbd(pose_root)
+    verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=pose_root)
     return (result, frames, pose_root), state
 
 
@@ -363,7 +385,8 @@ def run_automation(
                 analysis_paths=[
                     output_root / "scene_measurements.json",
                     output_root / "background_review.json",
-                ] + ([output_root / f"scene_completion-{COMPLETION_REVISION}/completion.json"] if completion else []),
+                ] + ([output_root / f"scene_completion-{COMPLETION_REVISION}" / name for name in
+                      ("completion.json", "context-fov-audit.json")] if completion else []),
             )
             background.update(
                 status="completed",

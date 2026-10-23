@@ -313,7 +313,10 @@ def atlas_pose_target_resolution(pose_inputs: Mapping[str, Any]) -> list[int]:
     from PIL import Image
 
     sizes = []
-    for row in pose_inputs["frames"]:
+    # Square padding protects sources through the backend's native square
+    # grid. Choose the final crop from original source aspects, so it removes
+    # the padding rather than another part of the scene.
+    for row in pose_inputs.get("full_view_sources", pose_inputs["frames"]):
         with Image.open(row["image_path"]) as image:
             sizes.append(image.size)
     best = max(TARGET_RESOLUTIONS, key=lambda grid: min(_kept_fraction(grid, size) for size in sizes))
@@ -409,6 +412,9 @@ def load_pending_atlas_pose_inputs(output_root: Path) -> dict[str, Any]:
             raise ValueError("website_atlas_pose_input_outside_capture")
         if not image.is_file() or _sha256_file(image) != row.get("image_digest"):
             raise ValueError("website_atlas_pose_input_changed")
+    if value.get("full_view_sources") is not None:
+        from .atlas_context_fov import full_view_sources
+        full_view_sources(value, output_root)
     return value
 
 

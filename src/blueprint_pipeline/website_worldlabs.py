@@ -40,6 +40,8 @@ def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
     if inputs.get("generated_content") is True:
         result["generated_input_content"] = True
         result["input_content_basis"] = inputs["binding"].get("content_basis")
+    if inputs.get("full_view_sources") is not None:
+        result["full_view_sources"] = deepcopy(inputs["full_view_sources"])
     result["digest"] = canonical_digest(result, digest_field="digest")
     path = output_root / "atlas_pose_inputs.json"
     if path.is_file():

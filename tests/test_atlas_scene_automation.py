@@ -516,7 +516,7 @@ def test_accepted_rgb_passes_real_pose_capture_boundary_before_any_paid_runner(t
     from blueprint_pipeline import atlas_scene_automation as worker, website_atlas_pose as atlas
 
     monkeypatch.setenv(atlas.ATLAS_PRICE_REVIEW_ENV, "")
-    frame, second = view(tmp_path), view(tmp_path, "b", .1)
+    frame, second = view(tmp_path, width=80, height=45), view(tmp_path, "b", .1, width=80, height=45)
     root = tmp_path / "job"
     legacy = root / "fallback_pose/atlas_pose_inputs.json"
     legacy.parent.mkdir(parents=True)
@@ -527,7 +527,12 @@ def test_accepted_rgb_passes_real_pose_capture_boundary_before_any_paid_runner(t
         inputs = atlas.load_pending_atlas_pose_inputs(kw["output_root"])
         assert inputs["generated_input_content"] is True
         assert Path(inputs["frames"][0]["image_path"]).is_relative_to(kw["output_root"])
-        assert inputs["frames"][0]["image_digest"] == frame["image_digest"]
+        assert inputs["full_view_sources"][0]["image_digest"] == frame["image_digest"]
+        from PIL import Image
+        from blueprint_pipeline.atlas_context_fov import full_view_sources
+        full_view_sources(inputs, kw["output_root"])
+        assert Image.open(inputs["frames"][0]["image_path"]).width == Image.open(inputs["frames"][0]["image_path"]).height
+        assert atlas.atlas_pose_target_resolution(inputs) == [1280, 720]
         called.append(kw)
         return {"status": "processing", "operation_id": "not-purchased"}
 
