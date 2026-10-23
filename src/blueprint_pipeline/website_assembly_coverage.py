@@ -720,7 +720,9 @@ def _front_plane(points: np.ndarray, toward: np.ndarray) -> tuple[np.ndarray, fl
     if best is None:
         raise ValueError("website_assembly_front_plane_degenerate")
     inliers = points[np.abs((points - best[0]) @ best[1]) <= FRONT_PLANE_TOLERANCE_M]
-    normal = np.linalg.svd(inliers - inliers.mean(axis=0))[2][-1]
+    # Only the three right singular vectors are needed. A full left matrix
+    # would be N x N (30 GiB for the retained 63k-pixel Atlas door front).
+    normal = np.linalg.svd(inliers - inliers.mean(axis=0), full_matrices=False)[2][-1]
     normal = normal if normal @ (toward - inliers.mean(axis=0)) >= 0 else -normal
     return normal, float(np.median(inliers @ normal))
 
