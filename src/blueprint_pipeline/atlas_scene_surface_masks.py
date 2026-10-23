@@ -246,7 +246,8 @@ def segment_and_review_surfaces(*, proposal, reviewed_views, survey_path, contex
         receipt = planner_runner(survey_path=survey_path, task_context=context,
             configuration=configuration, output_root=review_root / "planner", recovery=feedback)
         review = _choices(receipt["proposal"], candidates, frames)
-        result = {"provider": "meta_model_api", "model": "sam-3.1", "candidates": candidates,
+        result = {"provider": "meta_model_api" if receipts else None,
+                  "model": "sam-3.1" if receipts else None, "candidates": candidates,
                   "receipts": receipts, "review": receipt, "preview_images": previews,
                   "polygon_role": "semantic_location_hint_only", "review_rounds": attempt + 1,
                   "retention_policy": "whole_view_with_explicit_exclusions"}
