@@ -14,8 +14,11 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import stat
+import sys
 import tempfile
+import time
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -206,6 +209,35 @@ def _remove_tree(root: Path) -> None:
     shutil.rmtree(root)
 
 
+#: A provision killed before its cleanup ran (``systemctl stop`` or SIGKILL of
+#: a deploy) left about 11 GB of component staging in the temporary directory;
+#: three such runs filled the control plane's root disk on 2026-10-23 and the
+#: next deploy failed copying Blender. Deploys run one at a time, so staging
+#: this old belongs to a dead run.
+STALE_STAGING_SECONDS = 6 * 3600
+STAGING_PREFIXES = ("scene-configuration-components-", "blueprint-artisan-component-")
+
+
+def sweep_stale_staging(temp_root: Path | None = None, *, now: float | None = None) -> list[str]:
+    """Remove component staging a killed provision left behind; return the names removed."""
+    root = Path(temp_root or tempfile.gettempdir())
+    now = time.time() if now is None else now
+    removed = []
+    for path in sorted(root.iterdir()) if root.is_dir() else ():
+        info = path.lstat()
+        if (stat.S_ISDIR(info.st_mode) and path.name.startswith(STAGING_PREFIXES)
+                and info.st_uid == os.getuid() and now - info.st_mtime >= STALE_STAGING_SECONDS):
+            _remove_tree(path)
+            removed.append(path.name)
+    return removed
+
+
+def _terminated(signum: int, _frame: Any) -> None:
+    # systemctl stop sends SIGTERM. Leaving through SystemExit runs every
+    # finally block, so this run's staging is removed instead of leaked.
+    raise SystemExit(128 + signum)
+
+
 def provision_scene_configuration_release(
     *,
     repository_root: str | Path,
@@ -383,6 +415,10 @@ def main() -> int:
     parser.add_argument("--artisan-blender-root", default=os.getenv("BLUEPRINT_ARTISAN_BLENDER_ROOT"))
     parser.add_argument("--readback-user", required=True)
     args = parser.parse_args()
+    signal.signal(signal.SIGTERM, _terminated)
+    removed = sweep_stale_staging()
+    if removed:
+        print("removed stale provision staging: " + ", ".join(removed), file=sys.stderr, flush=True)
     readback = service_account_readback(args.readback_user)
     try:
         value = _provision_from_arguments(args, readback)
