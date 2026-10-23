@@ -309,6 +309,8 @@ def build_policy_canary_session_bundle(
     implementation_commit: str,
     hotfix_overlay_path: str | Path | None = None,
     generated_at: str | None = None,
+    container_image: str = NATIVE_TASK_ARENA_IMAGE,
+    runtime_comparison_request_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package both frozen policy servers and the warm 20-episode worker."""
 
@@ -358,6 +360,15 @@ def build_policy_canary_session_bundle(
             _read(groot_execution_spec_path), candidate="groot_n17_droid"
         ),
     }
+    comparison = None
+    if runtime_comparison_request_path is not None:
+        from .native_task_runtime_comparison import validate_comparison_request
+        comparison = validate_comparison_request(_read(runtime_comparison_request_path), inputs=inputs,
+            plan=_read(packet_receipt_path.parent / "native_task_arena_scene_plan.v1.json"), specs=specs)
+        if comparison["runtime_identity"]["container_image"] != container_image:
+            raise ValueError("runtime_comparison_image_mismatch")
+    if container_image != NATIVE_TASK_ARENA_IMAGE and comparison is None:
+        raise ValueError("alternate_runtime_requires_explicit_comparison")
     if set(specs) != set(inputs["candidate_ids"]) or set(specs) != set(authority["candidate_ids"]):
         raise ValueError("policy_canary_provider_candidate_interfaces_not_admitted")
     if any(
@@ -415,7 +426,7 @@ def build_policy_canary_session_bundle(
         implementation_commit=implementation_commit,
         execution_mode="construction_canary",
         expected_output_filename=PROVIDER_RESULT_FILENAME,
-        container_image=NATIVE_TASK_ARENA_IMAGE,
+        container_image=container_image,
         runtime_source_packet_receipt=runtime_source_packet_receipt,
         runtime_extra_files={f"blueprint_pipeline/{name}": package / name for name in CANARY_SHIPPED_PACKAGE_FILES},
         bound_runtime_inputs={
@@ -424,6 +435,8 @@ def build_policy_canary_session_bundle(
             "policy_execution_spec.pi05_droid.json": pi05_execution_spec_path,
             "policy_execution_spec.groot_n17_droid.json": groot_execution_spec_path,
             "native_task_arena_construction_result.v1.json": construction_result_path,
+            **({"native_task_runtime_comparison_request.v1.json": runtime_comparison_request_path}
+               if comparison is not None else {}),
         },
         generated_at=generated_at,
     )
@@ -452,7 +465,10 @@ def build_policy_canary_session_bundle(
             runtime / CHECKPOINT_INVENTORY_STAGED_NAME,
         )
         entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
-        entrypoint.write_text(_entrypoint(), encoding="utf-8")
+        script = _entrypoint()
+        if comparison is not None and comparison["variant"] == "isaaclab_3_ga":
+            script = script.replace("/isaac-sim/python.sh", "/workspace/isaaclab/isaaclab.sh -p")
+        entrypoint.write_text(script, encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         manifest_path = runtime / "adp_arena_provider_manifest.json"
         manifest = _read(manifest_path)
@@ -484,6 +500,9 @@ def build_policy_canary_session_bundle(
                 },
                 "contract_python_dependencies": [contract_dependency],
                 "static_startup_preflight": static_preflight,
+                **({"runtime_comparison": {"request_digest": comparison["request_digest"],
+                    "relative_path": "runtime_inputs/native_task_runtime_comparison_request.v1.json"}}
+                   if comparison is not None else {}),
                 "input_digest": "",
             }
         )
@@ -526,6 +545,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--hotfix-overlay")
     parser.add_argument("--generated-at")
+    parser.add_argument("--container-image", default=NATIVE_TASK_ARENA_IMAGE)
+    parser.add_argument("--runtime-comparison-request-path")
     args = parser.parse_args(argv)
     receipt = build_policy_canary_session_bundle(
         job_dir=args.job_dir,
@@ -539,6 +560,8 @@ def main(argv: list[str] | None = None) -> int:
         implementation_commit=args.implementation_commit,
         hotfix_overlay_path=args.hotfix_overlay,
         generated_at=args.generated_at,
+        container_image=args.container_image,
+        runtime_comparison_request_path=args.runtime_comparison_request_path,
     )
     print(json.dumps(receipt, sort_keys=True))
     return 0

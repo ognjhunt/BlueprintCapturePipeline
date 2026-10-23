@@ -1595,10 +1595,13 @@ def build_native_task_arena_environment(
         # FabricFrameView reads /physics/fabricEnabled and otherwise reads USD.
         # PhysX disables USD pose writes with Fabric enabled. Bind its legacy
         # reader before camera views are constructed, preserving live link poses.
-        from isaaclab.app.settings_manager import SettingsManager
+        from isaaclab.app import settings_manager
 
         cfg.sim.use_fabric = True
-        SettingsManager.instance().set("/physics/fabricEnabled", cfg.sim.use_fabric)
+        settings = (settings_manager.get_settings_manager()
+                    if hasattr(settings_manager, "get_settings_manager")
+                    else settings_manager.SettingsManager.instance())
+        settings.set("/physics/fabricEnabled", cfg.sim.use_fabric)
         cfg.sim.physics = PhysxCfg(
             solver_type=1,
             enable_enhanced_determinism=True,

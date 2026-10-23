@@ -1242,6 +1242,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "simulator_execution_is_not_physical_truth": True,
     }
     simulation_app = None
+    runtime_measurement = None
     try:
         _announce("packet_verification")
         manifest = _load_and_verify_manifest(runtime)
@@ -1273,6 +1274,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("native_task_construction_phase_plan_binding_mismatch")
         phase_plan = frozen_phase_plan
         result["construction_phase_plan"] = phase_plan
+        comparison_path = runtime / "runtime_inputs/native_task_runtime_comparison_request.v1.json"
+        if comparison_path.is_file():
+            from blueprint_pipeline.native_task_runtime_comparison import (
+                RuntimeMeasurement, validate_construction_comparison_request,
+            )
+            comparison = validate_construction_comparison_request(
+                json.loads(comparison_path.read_text()), plan=plan, phase_plan=phase_plan)
+            if comparison["runtime_identity"]["container_image"] != manifest["container_image"]:
+                raise RuntimeError("runtime_comparison_construction_image_mismatch")
+            runtime_measurement = RuntimeMeasurement(
+                output_path=output_root / "native_task_runtime_measurement.v1.json",
+                variant=comparison["variant"], runtime_identity=comparison["runtime_identity"],
+                binding=comparison["binding"])
+            runtime_measurement.value["measurement_scope"] = "retained_construction_replay"
+            runtime_measurement.value["candidate_policy_queried"] = False
         bootstrap = feedback_bootstrap_result(
             runtime=runtime, manifest=manifest, packet=packet
         )
@@ -1292,12 +1308,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             appearance_render_path_from_plan,
         )
 
-        simulation_app, launch_receipt = launch_native_task_isaaclab(
+        from functools import partial
+        launch_function = (partial(runtime_measurement.timed, "startup", launch_native_task_isaaclab)
+                           if runtime_measurement is not None else launch_native_task_isaaclab)
+        simulation_app, launch_receipt = launch_function(
             output_root / "native_task_runtime_source_provisioning.v1.json",
             device=NATIVE_TASK_ARENA_DEVICE,
             appearance_render_path=appearance_render_path_from_plan(plan),
         )
         result["isaaclab_launch"] = launch_receipt
+        if runtime_measurement is not None:
+            runtime_measurement.value["launch_receipt"] = launch_receipt
+            runtime_measurement.sample_memory("startup")
+            runtime_measurement.persist()
         _announce("simulation_app", "completed")
         _announce("dependency_matrix")
         dependency_matrix = preflight_native_dependency_matrix(
@@ -1344,12 +1367,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _announce("environment_build")
         try:
-            built = build_native_task_arena_environment(
+            build_function = (partial(runtime_measurement.timed, "build", build_native_task_arena_environment)
+                              if runtime_measurement is not None else build_native_task_arena_environment)
+            built = build_function(
                 plan,
                 device=NATIVE_TASK_ARENA_DEVICE,
                 bundle_root=packet,
                 preconstruction_receipt=preconstruction,
             )
+            if runtime_measurement is not None:
+                runtime_measurement.instrument_environment(built)
         except Exception as exc:
             # Articulation views are created here, inside sim.reset(). Attempts
             # r6-r10 all died in this call with a cuda/cpu mismatch naming a
@@ -1994,6 +2021,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         result["completed_at_unix_ns"] = time.time_ns()
         _persist(output, result)
+        if runtime_measurement is not None:
+            runtime_measurement.value["camera_gates"] = [result.get("camera_gates") or {}]
+            runtime_measurement.value["construction_result"] = result
+            runtime_measurement.value["episodes"] = [{"kind": "scripted_construction_replay",
+                "status": result["status"], "phase_results": result.get("phase_results"),
+                "reset_replay": result.get("reset_replay")}]
+            runtime_measurement.sample_memory("before_close")
+            runtime_measurement.persist("measured" if result.get("phase_reached") == "construction_gate_complete"
+                                        and not runtime_measurement.value["errors"] else "incomplete")
         if simulation_app is not None:
             try:
                 simulation_app.close()

@@ -1583,6 +1583,19 @@ def _run_selected_cell(
                 or spec.get("execution_spec_digest") != provider_manifest["execution_spec_digests"][candidate]
                 or spec.get("task_success_contract_digest") != inputs["task_success_contract_digest"]):
             raise RuntimeError("policy_canary_frozen_execution_spec_mismatch:" + candidate)
+    comparison_record = provider_manifest.get("runtime_comparison")
+    if comparison_record is not None:
+        from blueprint_pipeline.native_task_runtime_comparison import RuntimeMeasurement, validate_comparison_request
+        if comparison_record.get("relative_path") != "runtime_inputs/native_task_runtime_comparison_request.v1.json":
+            raise RuntimeError("runtime_comparison_request_path_invalid")
+        comparison = validate_comparison_request(_read(runtime / comparison_record["relative_path"]),
+            inputs=inputs, plan=base_scene_plan, specs=specs)
+        if (comparison["request_digest"] != comparison_record.get("request_digest")
+                or comparison["runtime_identity"]["container_image"] != provider_manifest.get("container_image")):
+            raise RuntimeError("runtime_comparison_manifest_binding_mismatch")
+        measurement = RuntimeMeasurement(output_path=output_root / "native_task_runtime_measurement.v1.json",
+            variant=comparison["variant"], runtime_identity=comparison["runtime_identity"], binding=comparison["binding"])
+        bound_runtime = measurement.wrap(bound_runtime)
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
     team_binding = _team_embodiment_binding(specs)

@@ -50,6 +50,9 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_rigid_friction_scenario.py",
     "native_task_direct_camera_aim.py",
     "native_task_isaaclab_launch.py",
+    "native_task_isaaclab_ga.py",
+    "native_task_ga_runtime_lock.py",
+    "native_task_runtime_comparison.py",
     "native_task_camera_observability.py",
     "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing
@@ -160,6 +163,9 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_rigid_friction_scenario.py",
     "native_task_direct_camera_aim.py",
     "native_task_isaaclab_launch.py",
+    "native_task_isaaclab_ga.py",
+    "native_task_ga_runtime_lock.py",
+    "native_task_runtime_comparison.py",
     "native_task_camera_observability.py",
     "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing

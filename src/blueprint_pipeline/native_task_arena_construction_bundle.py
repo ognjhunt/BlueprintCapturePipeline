@@ -61,6 +61,7 @@ def build_native_task_arena_construction_bundle(
     generated_at: str | None = None,
     construction_phase_plan_override: Mapping[str, Any] | None = None,
     terminal_feedback_adoption_path: str | Path | None = None,
+    runtime_comparison_request_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package one sealed task packet for the native Panda construction worker."""
 
@@ -116,6 +117,14 @@ def build_native_task_arena_construction_bundle(
             encoding="utf-8",
         )
         bound_runtime_inputs = {phase_path.name: phase_path}
+        if runtime_comparison_request_path is not None:
+            from .native_task_runtime_comparison import validate_construction_comparison_request
+            comparison_path = Path(runtime_comparison_request_path).resolve()
+            comparison = validate_construction_comparison_request(
+                json.loads(comparison_path.read_text()), plan=scene_plan, phase_plan=frozen)
+            if comparison["runtime_identity"]["container_image"] != container_image:
+                raise ValueError("runtime_comparison_construction_image_mismatch")
+            bound_runtime_inputs["native_task_runtime_comparison_request.v1.json"] = comparison_path
         if terminal_feedback_adoption_path is not None:
             adoption_path = Path(terminal_feedback_adoption_path).expanduser().resolve()
             adoption = validate_native_construction_terminal_feedback_adoption(
@@ -258,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--implementation-commit", dest="implementation_commit", required=True)
     parser.add_argument("--container-image", default=NATIVE_TASK_ARENA_IMAGE)
     parser.add_argument("--generated-at", dest="generated_at")
+    parser.add_argument("--runtime-comparison-request-path")
     parser.add_argument(
         "--construction-phase-plan-override",
         dest="construction_phase_plan_override",
@@ -289,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
             terminal_feedback_adoption_path=args.terminal_feedback_adoption_path,
+            runtime_comparison_request_path=args.runtime_comparison_request_path,
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(

@@ -259,14 +259,14 @@ def _persist(path: Path, result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _runtime_import_probe_source() -> str:
+def _runtime_import_probe_source(contracts: Sequence[dict[str, Any]] = RUNTIME_IMPORT_PROBES) -> str:
     """Import exact runtimes and execute one real CUDA tensor operation."""
 
     return f"""
 import importlib
 import json
 
-contracts = {list(RUNTIME_IMPORT_PROBES)!r}
+contracts = {list(contracts)!r}
 rows = []
 for contract in contracts:
     module = importlib.import_module(contract["module"])
@@ -394,6 +394,11 @@ def provision_native_task_runtime_sources(
         verified = verify_native_task_runtime_source_packet(
             receipt_path, packet_path_override=packet_path
         )
+        if verified.get("runtime_profile") == "isaaclab_3_ga":
+            from .native_task_isaaclab_ga import provision_ga_sources
+            return provision_ga_sources(verified=verified, packet_path=packet_path,
+                                        extraction_dir=destination, output_path=result_path,
+                                        run_command=run_command)
         result["source_receipt_digest"] = verified["receipt_digest"]
         result["runtime_profile"] = verified.get("runtime_profile")
         result["all_sources_verified_before_install"] = True
