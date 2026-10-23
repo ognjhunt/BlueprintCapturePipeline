@@ -36,6 +36,7 @@ SUPPORTED_LANES = frozenset(
         "gaussian_excision",
         "joint_agent",
         "native_task_arena",
+        "paired_target_native_import",
         "retained_scene_render",
         "semantic_teacher_image_edit_gpu_canary",
         "simready_isaac",
