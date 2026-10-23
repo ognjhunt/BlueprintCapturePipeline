@@ -87,10 +87,16 @@ boxes. Keep fixtures/supports; propose a separate object-absent background for
 manipulated task objects, including all their visible parts and contents. Raw
 capture and its reconstruction stay intact. A removal_instruction must describe
 only that removal and realistic revealed space; do not invent a plywood finish.
-Choose useful visible scale references (possibly several views of one object),
-with normalized endpoints spanning a recognizable dimension, an assumed length
-in metres, a plausible range, and the reason/assumption. These are approximate
-class/visual priors, never measurements. Do not guess an exact appliance model.
+Choose useful visible scale references with normalized endpoints spanning a
+recognizable dimension, an assumed length in metres, a plausible range, and the
+reason/assumption. When visible, give at least two independent references on
+different fixed objects that stay in the scene, preferring standardized
+fixtures (for example a range or oven width, a countertop height, a cabinet
+door) over the object being removed; several views of one object count as one,
+under one label. References are cross-checked: an object whose range excludes
+the others' consensus is set aside, and without a majority no scale is given.
+These are approximate class/visual priors, never measurements. Do not guess an
+exact appliance model.
 You have bounded web search. Search public manufacturer specifications or
 category dimensions when useful. Queries must contain only generic product or
 category terms, never private task text, people, addresses, serial numbers or

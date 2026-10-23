@@ -140,6 +140,56 @@ def test_missing_reference_depth_yields_relative_sizes_without_inventing_meters(
     assert result["scene"]["status"] == "unavailable"
 
 
+def reference(label, metres, spread=0.05):
+    """A prior on the test view, whose endpoints span 0.8 provider units: metres / 0.8 m per unit."""
+    return {"frame_id": "a", "label": label, "endpoints_normalized": [[0.25, 0.5], [0.75, 0.5]],
+            "assumed_distance_m": metres,
+            "plausible_distance_range_m": [metres * (1 - spread), metres * (1 + spread)],
+            "assumption": "class size assumption"}
+
+
+def scaled(tmp_path, *references):
+    return sizes.estimate_sizes(frames=[view(tmp_path)], automation={**plan(), "scale_references": list(references)},
+                                pose_digest="pose", output=tmp_path / "references.json")
+
+
+def test_one_reference_still_scales_but_says_it_stood_alone(tmp_path):
+    result = scaled(tmp_path, reference("range width", 0.8))
+    assert result["meters_per_unit_estimate"] == pytest.approx(1.0)
+    assert result["reference_agreement"] == {"basis": "single_object", "object_count": 1, "agreeing_object_count": 1}
+
+
+def test_independent_references_that_agree_set_the_scale_together(tmp_path):
+    result = scaled(tmp_path, reference("range width", 0.8), reference("countertop height", 0.82))
+    assert result["status"] == "estimated"
+    assert result["meters_per_unit_estimate"] == pytest.approx((1.0 + 1.025) / 2)
+    assert result["reference_agreement"]["basis"] == "agreeing_objects" and not result["reference_gaps"]
+
+
+def test_a_minority_reference_that_disagrees_is_set_aside(tmp_path):
+    result = scaled(tmp_path, reference("range width", 0.8), reference("countertop height", 0.82),
+                    reference("dishwasher opening", 1.2))
+    assert result["meters_per_unit_estimate"] == pytest.approx((1.0 + 1.025) / 2)
+    assert result["reference_agreement"] == {"basis": "majority_after_outliers", "object_count": 3,
+                                             "agreeing_object_count": 2}
+    assert [(gap["reference"]["label"], gap["reason"]) for gap in result["reference_gaps"]] == [
+        ("dishwasher opening", "atlas_reference_disagrees_with_consensus")]
+
+
+def test_two_priors_that_disagree_give_no_scale(tmp_path):
+    result = scaled(tmp_path, reference("range width", 0.8), reference("dishwasher opening", 1.2))
+    assert result["status"] == "relative_sizes_only" and result["meters_per_unit_estimate"] is None
+    assert result["reference_agreement"]["basis"] == "no_majority"
+    assert len(result["reference_gaps"]) == 2 and not result["scale_references"]
+
+
+def test_several_views_of_one_object_never_outvote_another_object(tmp_path):
+    result = scaled(tmp_path, reference("Dishwasher opening", 1.2), reference("dishwasher  opening", 1.2),
+                    reference("range width", 0.8))
+    assert result["reference_agreement"] == {"basis": "no_majority", "object_count": 2, "agreeing_object_count": 1}
+    assert result["meters_per_unit_estimate"] is None
+
+
 @pytest.mark.parametrize(
     "change",
     [

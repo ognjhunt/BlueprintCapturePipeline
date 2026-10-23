@@ -143,6 +143,48 @@ def frame_points(frame: dict, mask=None) -> np.ndarray:
     return unproject(frame, np.column_stack([x[::step], y[::step]]), depth[y[::step], x[::step]])
 
 
+def reference_agreement(references: list[dict]) -> tuple[list[dict], list[dict], dict]:
+    """The references that agree on one scale, the ones set aside, and how they were judged.
+
+    Several views of one labelled object count once. An object agrees when its
+    plausible range contains the consensus of the largest agreeing set; a
+    disagreeing minority is set aside, and without a strict majority of objects
+    none is kept: two priors that disagree say the scale is unknown.
+    """
+    groups: dict[str, list[dict]] = {}
+    for reference in references:
+        groups.setdefault(" ".join(reference["label"].lower().split()), []).append(reference)
+    objects = [
+        (
+            float(np.median([r["meters_per_unit"] for r in rows])),
+            min(r["meters_per_unit_range"][0] for r in rows),
+            max(r["meters_per_unit_range"][1] for r in rows),
+            rows,
+        )
+        for rows in groups.values()
+    ]
+    if not objects:
+        return [], [], {"basis": "no_reference", "object_count": 0, "agreeing_object_count": 0}
+
+    def agreeing_with(value):
+        return [row for row in objects if row[1] <= value <= row[2]]
+
+    largest = max((agreeing_with(row[0]) for row in objects), key=len)
+    agreeing = agreeing_with(float(np.median([row[0] for row in largest])))
+    record = {"object_count": len(objects), "agreeing_object_count": len(agreeing)}
+    if len(objects) > 1 and 2 * len(agreeing) <= len(objects):
+        return [], list(references), {**record, "basis": "no_majority"}
+    kept = [r for row in agreeing for r in row[3]]
+    basis = (
+        "single_object"
+        if len(objects) == 1
+        else "agreeing_objects"
+        if len(agreeing) == len(objects)
+        else "majority_after_outliers"
+    )
+    return kept, [r for r in references if r not in kept], {**record, "basis": basis}
+
+
 def estimate_sizes(
     *, frames: list[dict], automation: dict, pose_digest: str, output: Path, tracks: list[dict] = ()
 ) -> dict:
@@ -192,6 +234,10 @@ def estimate_sizes(
             )
         except (KeyError, ValueError) as exc:
             gaps.append({"reference": reference, "reason": str(exc)})
+    accepted, disagreeing, agreement = reference_agreement(accepted)
+    gaps.extend(
+        {"reference": r, "reason": "atlas_reference_disagrees_with_consensus"} for r in disagreeing
+    )
     scale = float(np.median([r["meters_per_unit"] for r in accepted])) if accepted else None
     scale_range = (
         [
@@ -244,6 +290,7 @@ def estimate_sizes(
         "meters_per_unit_estimate": scale,
         "meters_per_unit_range": scale_range,
         "scale_references": accepted,
+        "reference_agreement": agreement,
         "reference_gaps": gaps,
         "scene": bounds(points),
         "objects": objects,
