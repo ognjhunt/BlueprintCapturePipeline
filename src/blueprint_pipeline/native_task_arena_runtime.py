@@ -1286,13 +1286,15 @@ def build_native_task_arena_environment(
         asset_cfg: Any,
         reset_joints: bool,
     ) -> None:
-        mdp.reset_root_state_uniform(
-            env,
-            env_ids,
-            pose_range={},
-            velocity_range={},
-            asset_cfg=asset_cfg,
-        )
+        root_params = {"pose_range": {}, "velocity_range": {}, "asset_cfg": asset_cfg}
+        root_reset = mdp.reset_root_state_uniform
+        if isinstance(root_reset, type):
+            # GA made this reset a ManagerTermBase class. Its constructor takes
+            # (cfg, env); the unchanged reset arguments belong to __call__.
+            root_reset = root_reset(
+                EventTerm(func=root_reset, mode="reset", params=root_params), env
+            )
+        root_reset(env, env_ids, **root_params)
         if reset_joints:
             mdp.reset_joints_by_offset(
                 env,

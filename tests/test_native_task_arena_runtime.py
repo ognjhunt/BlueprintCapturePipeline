@@ -634,6 +634,54 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         assert camera_cfg.renderer_cfg.colorize_semantic_segmentation is False
 
 
+@pytest.mark.parametrize("manager_term_class", [False, True], ids=["baseline-function", "ga-class"])
+@pytest.mark.parametrize("reset_joints", [False, True], ids=["rigid-root", "articulated-root-and-joints"])
+def test_registered_asset_reset_executes_both_native_term_interfaces(
+    monkeypatch, manager_term_class, reset_joints
+) -> None:
+    _install_fake_native_runtime(monkeypatch)
+    mdp = sys.modules["isaaclab.envs.mdp"]
+    calls = []
+    native_env = SimpleNamespace()
+    env_ids = [0]
+
+    def reset_root(env, ids, *, pose_range, velocity_range, asset_cfg):
+        assert env is native_env and ids is env_ids
+        assert pose_range == {} and velocity_range == {}
+        calls.append(("root", asset_cfg))
+
+    class RootResetTerm:
+        # Exact GA constructor/call split: pose_range is not a constructor arg.
+        def __init__(self, cfg, env):
+            assert cfg.mode == "reset" and cfg.func is RootResetTerm
+            assert env is native_env
+            self.cfg = cfg
+
+        def __call__(self, env, ids, **params):
+            assert params == self.cfg.params
+            reset_root(env, ids, **params)
+
+    def reset_joint_state(env, ids, *, position_range, velocity_range, asset_cfg):
+        assert env is native_env and ids is env_ids
+        assert position_range == velocity_range == (0.0, 0.0)
+        calls.append(("joints", asset_cfg))
+
+    mdp.reset_root_state_uniform = RootResetTerm if manager_term_class else reset_root
+    mdp.reset_joints_by_offset = reset_joint_state
+    build_native_task_arena_environment(_sealed_scene_plan())
+    asset = next(asset for asset in _ArenaBuilder.last.arena_env.scene.assets
+                 if asset.name == "task_object")
+    event = asset.reset_event_cfg
+    event.func(native_env, env_ids, **{**event.params, "reset_joints": reset_joints})
+    expected = [("root", event.params["asset_cfg"])]
+    if reset_joints:
+        expected.append(("joints", event.params["asset_cfg"]))
+    assert calls == expected
+    # A second episode must rebind the same exact asset and zero offsets.
+    event.func(native_env, env_ids, **{**event.params, "reset_joints": reset_joints})
+    assert calls == expected * 2
+
+
 def test_builder_preserves_official_droid_policy_cameras_and_adds_target_marker(
     monkeypatch,
 ) -> None:
