@@ -13,15 +13,41 @@ from blueprint_pipeline.native_task_runtime_comparison import (
 )
 
 
-def test_gpu_memory_accepts_identical_driver_rows_only(monkeypatch):
+def test_gpu_memory_uses_device_total_despite_container_pid_mismatch(monkeypatch):
     monkeypatch.setattr('blueprint_pipeline.native_task_runtime_comparison.os.getpid', lambda: 3817)
-    raw = SimpleNamespace(stdout='3817, GPU-retained, 692\n3817, GPU-retained, 692\n')
-    monkeypatch.setattr('blueprint_pipeline.native_task_runtime_comparison.subprocess.run', lambda *a, **k: raw)
-    assert gpu_observation() == {'gpu_uuid': 'GPU-retained', 'used_mib': 692.0}
-    for conflicting in ('3817, GPU-retained, 693\n', '3817, GPU-other, 692\n'):
-        raw.stdout = '3817, GPU-retained, 692\n' + conflicting
-        with pytest.raises(ValueError, match='process_gpu_not_unique'):
+    monkeypatch.setattr('blueprint_pipeline.native_task_runtime_comparison.process_holds_nvidia_device',
+                        lambda pid: pid == 3817)
+    raw = SimpleNamespace(stdout='GPU-retained, 692\n')
+    calls = []
+    def query(argv, **kwargs):
+        calls.append(argv)
+        return raw
+    monkeypatch.setattr('blueprint_pipeline.native_task_runtime_comparison.subprocess.run', query)
+    assert gpu_observation() == {'gpu_uuid': 'GPU-retained', 'used_mib': 692.0,
+                                 'memory_scope': 'visible_gpu_device_total'}
+    assert '--query-gpu=uuid,memory.used' in calls[0]
+    for invalid in ('', 'GPU-retained, 692\nGPU-other, 693\n'):
+        raw.stdout = invalid
+        with pytest.raises(ValueError, match='visible_gpu_not_unique'):
             gpu_observation()
+
+
+@pytest.mark.parametrize('row', ['GPU-retained, nan', 'GPU-retained, -1', 'GPU-retained, inf',
+                                 'GPU-retained, 10, extra', 'unknown, 692'])
+def test_gpu_memory_rejects_invalid_device_observation(monkeypatch, row):
+    raw = SimpleNamespace(stdout=row)
+    monkeypatch.setattr('blueprint_pipeline.native_task_runtime_comparison.subprocess.run', lambda *a, **k: raw)
+    with pytest.raises(ValueError, match='gpu_memory_measurement_invalid'):
+        gpu_observation()
+
+
+def test_gpu_memory_requires_worker_device_handle(monkeypatch):
+    monkeypatch.setattr('blueprint_pipeline.native_task_runtime_comparison.subprocess.run',
+                        lambda *a, **k: SimpleNamespace(stdout='GPU-retained, 692\n'))
+    monkeypatch.setattr('blueprint_pipeline.native_task_runtime_comparison.process_holds_nvidia_device',
+                        lambda pid: False)
+    with pytest.raises(ValueError, match='worker_gpu_device_handle_missing'):
+        gpu_observation()
 
 
 @dataclass(frozen=True)
@@ -121,6 +147,16 @@ def test_comparison_requires_concrete_robot_configuration_parity(tmp_path):
         b["native_configuration_readback"] = config
         b["receipt_digest"] = canonical_digest(b, digest_field="receipt_digest")
         assert "retained_robot_configuration_missing_or_changed" in compare_runtime_measurements(a, b)["blockers"]
+
+
+@pytest.mark.parametrize('field,value', [('memory_method', 'sampled_process_only'),
+                                        ('memory_scope', None)])
+def test_comparison_refuses_different_memory_measurement_scope(tmp_path, field, value):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    a, b = measured(tmp_path, 'baseline'), measured(tmp_path, 'isaaclab_3_ga')
+    b[field] = value
+    b['receipt_digest'] = canonical_digest(b, digest_field='receipt_digest')
+    assert 'gpu_memory_measurement_scope_missing_or_changed' in compare_runtime_measurements(a, b)['blockers']
 
 
 def _cell_measurement(value, index, *, gpu=None):

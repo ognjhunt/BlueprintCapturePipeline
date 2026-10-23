@@ -17,6 +17,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from .decision_evidence_contracts import canonical_digest
+from .gpu_residency_attribution import process_holds_nvidia_device
 from .native_task_isaaclab_ga import IMAGE as GA_IMAGE, COMMIT as GA_COMMIT, ARENA_COMMIT as GA_ARENA_COMMIT
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE as BASE_IMAGE
 from .native_task_runtime_source_packet import ISAACLAB_COMMIT as BASE_COMMIT, ARENA_COMMIT as BASE_ARENA_COMMIT
@@ -91,24 +92,31 @@ def validate_comparison_request(value: Mapping[str, Any], *, inputs: Mapping[str
 
 
 def gpu_observation() -> dict[str, Any]:
-    """Read the process's real memory allocation, including renderer allocations."""
+    """Read device-wide memory on the worker's one visible, opened GPU.
+
+    NVIDIA reports host PIDs inside containers, where their translation can be
+    unavailable. Use the same explicitly device-wide metric for both runtimes;
+    it includes renderer allocations and any other processes on that device.
+    """
     result = subprocess.run(
-        ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid,used_gpu_memory", "--format=csv,noheader,nounits"],
+        ["nvidia-smi", "--query-gpu=uuid,memory.used", "--format=csv,noheader,nounits"],
         check=True, text=True, capture_output=True, timeout=10)
     rows = []
     for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
         fields = [s.strip() for s in line.split(",")]
-        if len(fields) == 3 and fields[0] == str(os.getpid()):
-            value = float(fields[2])
-            if not math.isfinite(value) or value < 0:
-                raise ValueError("gpu_memory_measurement_invalid")
-            row = {"gpu_uuid": fields[1], "used_mib": value}
-            # RTX can report the same process twice for one GPU. Identical
-            # observations are one sample; conflicting rows remain ambiguous.
-            if row not in rows:
-                rows.append(row)
+        if len(fields) != 2 or not fields[0].startswith("GPU-"):
+            raise ValueError("gpu_memory_measurement_invalid")
+        value = float(fields[1])
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("gpu_memory_measurement_invalid")
+        rows.append({"gpu_uuid": fields[0], "used_mib": value,
+                     "memory_scope": "visible_gpu_device_total"})
     if len(rows) != 1:
-        raise ValueError("runtime_comparison_process_gpu_not_unique")
+        raise ValueError("runtime_comparison_visible_gpu_not_unique")
+    if not process_holds_nvidia_device(os.getpid()):
+        raise ValueError("runtime_comparison_worker_gpu_device_handle_missing")
     return rows[0]
 
 
@@ -146,7 +154,8 @@ class RuntimeMeasurement:
             "resets": [], "episodes": [], "errors": [], "physical_evidence": False,
             "measurement_scope": "one_retained_workcell_runtime_diagnostic",
             "timing_method": "perf_counter_with_cuda_sync_at_step_boundaries",
-            "memory_method": "sampled_process_nvidia_smi_includes_renderer_lower_bound_peak",
+            "memory_method": "sampled_single_visible_gpu_device_total_lower_bound_peak",
+            "memory_scope": "visible_gpu_device_total_includes_other_processes",
             "standalone_renderer_tested": False, "newton_tested": False,
         }
 
@@ -269,6 +278,9 @@ def compare_runtime_measurements(baseline: Mapping[str, Any], candidate: Mapping
         blockers.append("runtime_comparison_scenario_mismatch")
     if baseline.get("binding") != candidate.get("binding"):
         blockers.append("fixed_workcell_inputs_changed")
+    if (not baseline.get("memory_method") or not baseline.get("memory_scope")
+            or any(baseline.get(key) != candidate.get(key) for key in ("memory_method", "memory_scope"))):
+        blockers.append("gpu_memory_measurement_scope_missing_or_changed")
     robot_configs = [(value.get("native_configuration_readback") or {}).get("retained_droid_configuration")
                      for value in (baseline, candidate)]
     if not all(robot_configs) or robot_configs[0] != robot_configs[1]:
@@ -290,7 +302,9 @@ def compare_runtime_measurements(baseline: Mapping[str, Any], candidate: Mapping
               "baseline_receipt_digest": baseline.get("receipt_digest"),
               "candidate_receipt_digest": candidate.get("receipt_digest"),
               "memory": {"baseline_peak_observed_mib": baseline.get("peak_observed_gpu_memory_mib"),
-                         "candidate_peak_observed_mib": candidate.get("peak_observed_gpu_memory_mib")},
+                         "candidate_peak_observed_mib": candidate.get("peak_observed_gpu_memory_mib"),
+                         "scope": baseline.get("memory_scope"),
+                         "method": baseline.get("memory_method")},
               "metrics": metrics, "blockers": blockers,
               "runtime_promotion_authorized": False, "improvement_qualified": False,
               "correctness_review_required": ["camera_pixels_and_calibration", "reset_state",

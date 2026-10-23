@@ -54,6 +54,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_isaaclab_ga.py",
     "native_task_ga_runtime_lock.py",
     "native_task_runtime_comparison.py",
+    "gpu_residency_attribution.py",
     "native_task_camera_observability.py",
     "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing
@@ -168,6 +169,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_isaaclab_ga.py",
     "native_task_ga_runtime_lock.py",
     "native_task_runtime_comparison.py",
+    "gpu_residency_attribution.py",
     "native_task_camera_observability.py",
     "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing
