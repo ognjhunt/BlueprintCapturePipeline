@@ -182,6 +182,9 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
     # inspection only. No masks or projected RGB canvases are sent to Chisel.
     rows = prepare_completion_views(frames=frames, selected=chosen, root=root / 'source-footprints')
     depth_context = prepare_depth_context(frames=frames, selected=chosen, root=root / 'depth-context')
+    for row in rows:
+        source_depth = depth_context[row['frame_id']]
+        row.update(source_depth_context_path=source_depth['path'], source_depth_context_digest=source_depth['sha256'])
     by_id = {row['frame_id']: row for row in rows}
     photo_uploads = {f'photo-{i}': {'path': row['image_path'], 'sha256': row['image_digest']} for i, row in enumerate(sources)}
     source_frames = [{'imageAsset': {'assetId': f'upload:photo-{i}'}, 'camera': row['camera']}
@@ -235,6 +238,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
               *[Path(row['path']) for row in depth_context.values()],
               *[Path(row[key]) for row in rows for key in ('image_path', 'keep_mask_path')]]
     generated, images, roots, digests, receipts, seen = [], [], [], [], [], set()
+    source_depth_hole_pixels = 0
     for index, (group, request, uploads, stage, quote) in enumerate(specs):
         if checkpoint:
             checkpoint('automation_completion_chisel_rgbd')
@@ -258,10 +262,12 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
             generated.append(fixed)
             images.append(image)
             receipts.append(receipt['digest'])
+            source_depth_hole_pixels += receipt['generated_source_depth_hole_pixel_count']
             assets.extend(paths)
     report = {'status': 'completed', 'native_result_digests': digests, 'generated_roots': roots,
               'preservation_receipt_digests': receipts, 'mask_plan_digest': binding['digest'],
               'generation_method': 'atlasChisel_posed_photographs_and_source_depth_no_keep_masks', 'known_pixels_changed': 0,
               'source_geometry_modified': False, 'preservation_paths': [str(p) for p in assets]}
+    report['generated_source_depth_hole_pixel_count'] = source_depth_hole_pixels
     report['digest'] = canonical_digest(report, digest_field='digest')
     return (generated, images), report

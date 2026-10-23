@@ -246,7 +246,18 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
         raise ValueError('atlas_completion_preservation_grid_changed')
     composite = generated['rgb'].copy()
     composite[keep] = rgb[keep]
-    allowed = unobserved_geometry_mask(generated, references, extent_bounds=extent_bounds) & ~keep
+    # Known RGB is not proof of known depth. It must not freeze a source-depth
+    # hole. Retain its actual photographed colour while permitting consistent
+    # new geometry there; existing source depth and observed free space still win.
+    depth_known = np.ones(keep.shape, bool)
+    if prepared.get('source_depth_context_path'):
+        depth_path = Path(prepared['source_depth_context_path'])
+        if _sha256_file(depth_path) != prepared['source_depth_context_digest']:
+            raise ValueError('atlas_completion_preservation_inputs_changed')
+        depth_known = np.asarray(Image.open(depth_path).convert('L')) > 0
+        if depth_known.shape != keep.shape:
+            raise ValueError('atlas_completion_preservation_grid_changed')
+    allowed = unobserved_geometry_mask(generated, references, extent_bounds=extent_bounds) & (~keep | ~depth_known)
     frame = {**generated, 'rgb': composite, 'confidence': generated['confidence'] * allowed}
     image, known_mask, geometry_mask = (output_root / n for n in ('image.png', 'known.png', 'generated-geometry.png'))
     _save_image(image, composite)
@@ -264,6 +275,7 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
                   float(np.abs(generated['rgb'].astype(float) - rgb.astype(float))[keep].mean()) if keep.any() else None),
               'known_pixels_changed': int(np.any(composite != rgb, axis=-1)[keep].sum()),
               'generated_geometry_pixel_count': int(allowed.sum()),
+              'generated_source_depth_hole_pixel_count': int((allowed & keep & ~depth_known).sum()),
               'native_valid_geometry_pixel_count': int(_valid(generated).sum()),
               'depth_basis': 'unchanged_native_depth_with_generated_geometry_mask',
               'confidence_rule': 'native_confidence_times_generated_geometry_mask',
