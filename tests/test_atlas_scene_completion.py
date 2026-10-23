@@ -187,9 +187,15 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
 
 
 @pytest.mark.parametrize("drop_generated", [False, True])
-def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_path, monkeypatch, drop_generated):
+@pytest.mark.parametrize("recovery_enabled", [False, True])
+def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_path, monkeypatch, drop_generated, recovery_enabled):
     from blueprint_pipeline import atlas_scene_automation as worker, atlas_background_automation
     from blueprint_pipeline import atlas_scene_measurements, atlas_depth_splat, atlas_result_bundle
+    from blueprint_pipeline import atlas_scene_recovery
+    monkeypatch.setattr(atlas_scene_recovery, "reviewed_completion_views", lambda _: [])
+    monkeypatch.setattr(atlas_scene_recovery, "recover_reviewed_geometry",
+                        lambda **_: ([frame("recovered")] if recovery_enabled else [],
+                                     {"preservation_paths": [], "digest": "sha256:recovery"}))
     source, novel = frame(), frame("novel", .1)
     pose = {"digest": "pose", "binding": {"source_video_digest": "source"}}
     monkeypatch.setattr(atlas_scene_measurements, "load_views", lambda *a: (pose, [source]))
@@ -201,9 +207,10 @@ def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_pa
         "status": "passed", "generation_result_digest": "generated", "review": {"status": "passed"},
         "generated_root": str(tmp_path / "generated")}))
     def build(**kw):
-        assert [f["frame_id"] for f in kw["frames"]] == ["a", "novel"]
-        assert kw["generated_result_digests"][-1] == "generated"
-        assert kw["output_root"].name == "background_completed_splat-" + completion.COMPLETION_REVISION
+        assert [f["frame_id"] for f in kw["frames"]] == ["a", "novel"] + (["recovered"] if recovery_enabled else [])
+        assert kw["generated_result_digests"][-1] == ("sha256:recovery" if recovery_enabled else "generated")
+        assert kw["output_root"].name == ("background_completed_splat-" + completion.COMPLETION_REVISION +
+                                           ("-recovered-recovery" if recovery_enabled else ""))
         return {"digest": "splat", "generated_result_digests": kw["generated_result_digests"],
                 "frames": [{"frame_id": f["frame_id"]} for f in (kw["frames"][:1] if drop_generated else kw["frames"])]}
     monkeypatch.setattr(atlas_depth_splat, "write_depth_splat", build)
@@ -217,5 +224,5 @@ def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_pa
         assert result["status"] == "needs_input" and "did_not_consume_generated_depth" in result["background"]["reason"]
         assert not exports
     else:
-        assert result["status"] == "completed" and result["background"]["reconstruction_frame_count"] == 2
+        assert result["status"] == "completed" and result["background"]["reconstruction_frame_count"] == (3 if recovery_enabled else 2)
         assert exports[0]["generated_roots"] == [tmp_path / "generated"]
