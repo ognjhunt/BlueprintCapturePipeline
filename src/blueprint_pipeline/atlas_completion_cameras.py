@@ -210,9 +210,21 @@ def gap_target_candidates(frames, candidates, survey):
             zz, uu, vv, _ = _project(boundary, target['camera'])
             if not np.isfinite(uu).all() or not np.isfinite(vv).all() or np.any(zz <= 0):
                 continue
+            # Frame the missing patch plus surrounding context, rather than
+            # asking for another whole-room image. This changes only the output
+            # camera; every source RGBD reference keeps its full field of view.
+            target_k = target['camera']['intrinsics']
+            zoom = max(1., min(.5 * k['width'] / max(float(np.ptp(uu)), 1.),
+                               .5 * k['height'] / max(float(np.ptp(vv)), 1.)))
+            target_k.update(fx=target_k['fx'] * zoom, fy=target_k['fy'] * zoom)
+            uu = (uu - target_k['cx']) * zoom + target_k['cx']
+            vv = (vv - target_k['cy']) * zoom + target_k['cy']
             target.update(gap_target_polygon_pixels=np.column_stack((uu, vv)).tolist(),
                           gap_domain='projected_scene_outline_hypothesis',
-                          target_extent_basis='source_gap_box_at_neighbouring_depth_estimate')
+                          target_extent_basis='source_gap_box_at_neighbouring_depth_estimate',
+                          target_framing='gap_plus_surrounding_context',
+                          target_vertical_fov_degrees=float(np.degrees(2 * np.arctan(
+                              target_k['height'] / (2 * target_k['fy'])))))
             result.append(target)
             targets.append((focus, radius))
     return result
