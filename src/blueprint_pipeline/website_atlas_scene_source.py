@@ -133,7 +133,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
         return {"status": "needs_input", "reason": "website_atlas_source_pose_unavailable",
                 "job_reason": source_pose.get("reason")}
 
-    pose_root = job_dir / "pose"
+    pose_root = _inside(job_dir / source_pose.get("pose_relative_path", "pose") / GEOMETRY_INPUTS_FILE, job_dir).parent
     measurements_path = _inside(pose_root / "scene_measurements.json", job_dir)
     measurements = _read(measurements_path)
     mpu = measurements.get("meters_per_unit_estimate")

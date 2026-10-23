@@ -101,7 +101,11 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
     from .atlas_scene_measurements import estimate_sizes, load_views
     from .paid_resource_allocator import run_sponsored_website_atlas_pose
     from .website_atlas_pose import ATLAS_PRICE_REVIEW_ENV, request_options
+    from .atlas_source_pose_inputs import prepare_source_pose
+    from .atlas_context_fov import verify_pose_context_fov
 
+    parent_root = pose_root
+    pose_root, inputs = prepare_source_pose(pose_root)
     count = len(inputs["frames"])
     quote = {"schema_version": "website_atlas_pose_price_review.v1", "endpoint": "/api/v2/tasks:images2PosedRGBD",
         "maximum_cost_usd": round(count * policy["pose_input_cost_usd"], 6), "max_input_images": count,
@@ -117,11 +121,13 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
         if posed["status"] != "completed":
             return {"status": "processing", "stage": "source_pose", "operation_id": posed.get("operation_id")}
         pose, frames = load_views(pose_root, inputs)
+        verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=pose_root)
         measurements = estimate_sizes(frames=frames, automation=measurement_plan(review), pose_digest=pose["digest"],
                                       output=pose_root / "scene_measurements.json")
     except ValueError as exc:
         return {"status": "needs_input", "reason": str(exc)}
     return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],
+            "pose_relative_path": str(pose_root.relative_to(parent_root.parent)),
             "submitted_frame_count": count, "scene_measurements_digest": measurements["digest"],
             "meters_per_unit_estimate": measurements.get("meters_per_unit_estimate"),
             "scale_status": measurements.get("scale_status")}
@@ -289,7 +295,6 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             **reuse_options)
         if automation["status"] == "processing":
             return automation
-        background = automation.get("background") or {}
         complete = automation["status"] == "completed"
         source_pose = None
         if complete:
@@ -299,23 +304,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                 task_context=task_context, check=check, experimental=experimental, max_polls=max_polls)
             if source_pose["status"] == "processing":
                 return source_pose
-        result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
-                  "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
-                  "automation": automation, "download": background.get("download"), "edit_scope": edit_scope,
-                  "task_and_surrounding_scene_covered": True, "model": receipt["model"],
-                  "blockers": (["metric_scene_registration_unproven"] if complete else
-                               [background.get("reason", "atlas_background_review_required")]),
-                  "splat_available": complete, "splat_kind": "depth_fused_draft" if complete else None,
-                  "splat_manifest_digest": background.get("splat_manifest_digest"),
-                  "mesh_available": background.get("mesh_available", False),
-                  "scene_measurements": automation.get("measurements"),
-                  "source_pose": source_pose,
-                  "simulation_qualified": False, "claim_ceiling": "development_only",
-                  "physical_evidence": False, "scale_status": "unscaled_provider_world_units",
-                  "billing_status": "provider_usage_unreported"}
-        result["digest"] = canonical_digest(result, digest_field="digest")
-        write_json(output_root / "result.json", result)
-        return result
+        return finalize_background_result(output_root=output_root, source_digest=source_digest,
+            task_context=task_context, automation=automation, source_pose=source_pose,
+            model=receipt["model"], edit_scope=edit_scope)
     count = len(inputs["frames"])
     target_count = len({key for group in review["coverage_requirements"] for key in group["required_frame_ids"]})
     planned_cost = round(count * policy["pose_input_cost_usd"] + target_count * policy["rgbd_view_cost_usd"], 6)
@@ -402,6 +393,29 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         result["refinement"] = {"parent_result_digest": feedback["parent_result_digest"],
             "feedback_digest": feedback["digest"], "gap_assessment": review["gap_assessment"],
             "prior_input_count": len(feedback["prior_selected_frame_ids"]), "new_input_count": count}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    write_json(output_root / "result.json", result)
+    return result
+
+
+def finalize_background_result(*, output_root, source_digest, task_context, automation, source_pose, model, edit_scope=None):
+    """The same durable handoff for a fresh job or a retained completed background."""
+    background = automation.get("background") or {}
+    complete = automation["status"] == "completed"
+    result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
+              "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
+              "automation": automation, "download": background.get("download"), "edit_scope": edit_scope,
+              "task_and_surrounding_scene_covered": True, "model": model,
+              "blockers": (["metric_scene_registration_unproven"] if complete else
+                           [background.get("reason", "atlas_background_review_required")]),
+              "splat_available": complete, "splat_kind": "depth_fused_draft" if complete else None,
+              "splat_manifest_digest": background.get("splat_manifest_digest"),
+              "mesh_available": background.get("mesh_available", False),
+              "scene_measurements": automation.get("measurements"),
+              "source_pose": source_pose,
+              "simulation_qualified": False, "claim_ceiling": "development_only",
+              "physical_evidence": False, "scale_status": "unscaled_provider_world_units",
+              "billing_status": "provider_usage_unreported"}
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result

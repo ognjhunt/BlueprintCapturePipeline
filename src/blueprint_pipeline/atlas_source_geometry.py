@@ -279,15 +279,18 @@ def atlas_posed_view_geometry(*, pose_root: Path, rotation: float, scale: Mappin
         raise ValueError("atlas_source_geometry_inputs_invalid")
     prepared = _bound_frames(inputs, pose_root, geometry=False)
     pose = _verified_pose(inputs=inputs, frames=prepared, pose_root=pose_root)
+    from .atlas_context_fov import full_view_sources
+    upright_sources = full_view_sources({**inputs, "frames": prepared}, pose_root)
     record = _scale_record(scale)
     if record is None:
         raise ValueError("atlas_source_geometry_scale_invalid")
     worker = output_root / "worker_inputs"
     views = []
-    for index, (row, returned) in enumerate(zip(prepared, pose["operation"]["response"]["frames"], strict=True)):
+    for index, (row, upright_source, returned) in enumerate(zip(
+            prepared, upright_sources, pose["operation"]["response"]["frames"], strict=True)):
         intrinsics = returned["camera"]["intrinsics"]
         grid = (int(intrinsics["width"]), int(intrinsics["height"]))
-        with Image.open(row["image_path"]) as upright, Image.open(row["source_image_path"]) as source:
+        with Image.open(upright_source["image_path"]) as upright, Image.open(row["source_image_path"]) as source:
             width, height = upright.size
             cover = max(grid[0] / width, grid[1] / height)
             size = (max(2, round(width * cover)), max(2, round(height * cover)))
