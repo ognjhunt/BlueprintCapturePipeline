@@ -88,6 +88,12 @@ class RefinementProposal(SceneProposal):
     additional_input_frame_ids: list[str]
 
 
+class CompletionViewReason(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    camera_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 class CompletionProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern="^(proposed|abstained)$")
@@ -95,7 +101,7 @@ class CompletionProposal(BaseModel):
     gap_assessment: list[str] = Field(min_length=1)
     remaining_unknowns: list[str]
     scene_caption: str = Field(default='')
-    view_gap_reasons: dict[str, str] = Field(default_factory=dict)
+    view_gap_reasons: list[CompletionViewReason] = Field(default_factory=list)
 
 
 COMPLETION_INSTRUCTIONS = """Plan Atlas novel-view completion of ONE reviewed
@@ -107,8 +113,9 @@ task-relevant gap in a support surface, approach/access space or cleared region.
 Do not request whole-room sweeps, unseen rooms or extra space for completeness.
 The capture-derived generation_extent is a ceiling, not an area to fill: use the
 smallest task-relevant part of it, and do not invent metric dimensions.
-Every selected_camera_id needs a nonempty entry in view_gap_reasons explaining
-its specific gap and evidence. Avoid redundant cameras; do not choose a fixed
+Every selected_camera_id needs an entry in view_gap_reasons, a list of objects
+with camera_id and nonempty reason explaining its specific gap and evidence.
+Avoid redundant cameras; do not choose a fixed
 count or spend the budget merely because it exists. Derived reconstruction
 previews, if supplied, are reconnaissance only. Name gaps that generation should
 complete and unseen regions that remain uncertain. Do not add rooms, appliances,
@@ -287,10 +294,15 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     instructions = (COMPLETION_INSTRUCTIONS if completion is not None else
                     INSTRUCTIONS + AUTOMATION_INSTRUCTIONS + (REFINEMENT_INSTRUCTIONS if feedback is not None else ""))
     schema = CompletionProposal if completion is not None else RefinementProposal if feedback is not None else SceneProposal
+    # Exercise the exact SDK boundary before reserving spend or recording an
+    # ambiguous submission. Plain JSON Schema validity is insufficient here.
+    from agents import AgentOutputSchema
+    AgentOutputSchema(schema)
     binding = {"survey_digest": survey["digest"], "task_context_digest": task_context["context_digest"],
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
                "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": 4000,
                "maximum_cost_usd": maximum, "web_search": {"maximum_calls": search_calls, "per_call_usd": search_fee, "context": "low"}}
+    binding['output_schema_digest'] = canonical_digest(schema.model_json_schema())
     if feedback is not None:
         binding["feedback_digest"] = feedback["digest"]
     if completion is not None:
