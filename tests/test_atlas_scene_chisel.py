@@ -52,9 +52,9 @@ def test_native_rollout_limit_batches_targets_not_total_scene_coverage():
     pool = candidates([source('a'), source('b', .2)])
     selected = [{**pool[0], 'camera_id': f'novel-{i}', 'purpose': 'room'} for i in range(70)]
     groups = chisel.target_batches(selected=selected, candidates=pool, source_count=30)
-    assert [len(group) for group in groups] == [32, 32, 12]
+    assert [len(group) for group in groups] == [17, 17, 17, 17, 12]
     assert [row for group in groups for row in group[2:]] == selected
-    assert all(len(group) + 30 <= 64 and group[:2] == pool for group in groups)
+    assert all(len(group) * 2 + 30 <= 64 and group[:2] == pool for group in groups)
     with pytest.raises(ValueError, match='rollout_capacity'):
         chisel.target_batches(selected=selected, candidates=pool, source_count=62)
     with pytest.raises(ValueError, match='observed_translation_missing'):
@@ -74,11 +74,13 @@ def test_chisel_uploads_only_clean_photos_and_prices_rgbd_once_before_purchase(t
         calls.append(kw)
         request = kw['request']
         assert kw['task'] == 'atlasChisel'
-        assert request['contextFrames'] == [] and len(request['sourceFrames']) == 10
+        assert len(request['contextFrames']) == 2 and len(request['sourceFrames']) == 10
+        assert all(set(row) == {'camera', 'depth'} and 'logDepthAsset' in row['depth']
+                   for row in request['contextFrames'])
         assert request['returnDepth'] is True and request['enhancePrompt'] is False
         assert kw['price_review']['maximum_cost_usd'] == .1
         assert all('maskAsset' not in f and 'depth' not in f for f in request['sourceFrames'])
-        assert set(kw['uploads']) == {f'photo-{i}' for i in range(10)}
+        assert set(kw['uploads']) == {f'photo-{i}' for i in range(10)} | {'depth-0', 'depth-1'}
         for row in kw['uploads'].values():
             assert Image.open(row['path']).size == (1280, 720)
         return {'status': 'processing'}
@@ -117,5 +119,29 @@ def test_chisel_uploads_only_clean_photos_and_prices_rgbd_once_before_purchase(t
     args['task_runner'] = lambda **kw: {'status': 'completed'}
     (generated, images), report = chisel.generate_chisel_completion(**args)
     assert len(generated) == len(images) == 2
-    assert report['generation_method'] == 'atlasChisel_posed_photographs_no_keep_masks'
+    assert report['generation_method'] == 'atlasChisel_posed_photographs_and_source_depth_no_keep_masks'
     assert report['source_geometry_modified'] is False and report['known_pixels_changed'] == 0
+
+
+def test_depth_projection_keeps_optical_z_and_marks_unseen_rays_empty(tmp_path):
+    from scipy.spatial.transform import Rotation
+    from blueprint_pipeline.atlas_depth_splat import _rotation_matrix
+
+    frame = source()
+    camera = candidates([frame])[0]['camera']
+    camera['extrinsics']['quaternion'] = Rotation.from_euler('Y', 15, degrees=True).as_quat().tolist()
+    depth = chisel.project_source_depth([frame], camera)
+    k = camera['intrinsics']
+    yy, xx = np.indices(depth.shape)
+    target_rays = np.stack(((xx + .5 - k['cx']) / k['fx'], (yy + .5 - k['cy']) / k['fy'], np.ones(depth.shape)), axis=-1)
+    c = np.diag([1., -1., -1.])
+    rotation = c @ _rotation_matrix(camera['extrinsics']['quaternion']).T @ frame['rotation'] @ c
+    expected_source_z = (target_rays @ rotation)[..., 2]
+    assert np.allclose((depth * expected_source_z)[depth > 0], 2., atol=1e-5)
+    assert (depth > 0).any() and (depth == 0).any()
+    frame['confidence'][:] = 0
+    assert not chisel.project_source_depth([frame], camera).any()
+    row = {'camera_id': 'empty', 'camera': camera}
+    record = chisel.prepare_depth_context(frames=[frame], selected=[row], root=tmp_path)['empty']
+    assert record['known_depth_pixel_count'] == 0 and Image.open(record['path']).mode == 'L'
+    assert not np.asarray(Image.open(record['path'])).any()

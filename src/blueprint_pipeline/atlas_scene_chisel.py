@@ -66,7 +66,8 @@ def prepare_source_photographs(*, frames, root):
 
 def target_batches(*, selected, candidates, source_count):
     """Respect the native rollout limit while retaining every photo per batch."""
-    capacity = min(32, 64 - source_count)
+    # One depth-context view accompanies each generated camera.
+    capacity = min(32, (64 - source_count) // 2)
     wide = [row for row in candidates if row['purpose'] == 'wide']
     if capacity < 2 or not wide:
         raise ValueError('atlas_chisel_source_rollout_capacity_insufficient')
@@ -84,6 +85,67 @@ def target_batches(*, selected, candidates, source_count):
     return groups or [anchors]
 
 
+def project_source_depth(frames, camera):
+    """Render retained estimated depth into the target; unknown pixels stay zero.
+
+    A same-centre inverse warp keeps continuous surfaces continuous without
+    forward-projection holes. Other observed centres contribute nearest depth.
+    This is soft geometric conditioning, never an RGB keep mask.
+    """
+    import cv2
+    from .atlas_scene_preservation import _same_center, _valid, _world, _project
+    from .atlas_depth_splat import _rotation_matrix
+
+    k = camera['intrinsics']
+    width, height = k['width'], k['height']
+    target_k = np.array([[k['fx'], 0, k['cx']], [0, k['fy'], k['cy']], [0, 0, 1.]])
+    target_rotation = _rotation_matrix(camera['extrinsics']['quaternion'])
+    zbuffer = np.full((height, width), np.inf, np.float32)
+    for frame in frames:
+        if not _same_center(frame, camera):
+            points, _, _ = _world(frame, _valid(frame))
+            z, u, v, inside = _project(points, camera)
+            pixels = np.floor(v[inside]).astype(int) * width + np.floor(u[inside]).astype(int)
+            np.minimum.at(zbuffer.reshape(-1), pixels, z[inside])
+            continue
+        source = frame['intrinsics']
+        source_k = np.array([[source['fx'], 0, source['cx']], [0, source['fy'], source['cy']], [0, 0, 1.]])
+        optical_to_rub = np.diag([1., -1., -1.])
+        rotation = optical_to_rub @ target_rotation.T @ frame['rotation'] @ optical_to_rub
+        to_center = np.array([[1, 0, .5], [0, 1, .5], [0, 0, 1.]])
+        mapping = np.linalg.inv(to_center) @ target_k @ rotation @ np.linalg.inv(source_k) @ to_center
+        source_depth = np.where(_valid(frame), frame['depth'], 0).astype(np.float32)
+        sampled = cv2.warpPerspective(source_depth, mapping, (width, height), flags=cv2.INTER_NEAREST)
+        yy, xx = np.indices((height, width))
+        ray = (rotation.T @ np.linalg.inv(target_k))[2]
+        source_z = ray[0] * (xx + .5) + ray[1] * (yy + .5) + ray[2]
+        valid = (sampled > 0) & (source_z > 0)
+        projected = np.full((height, width), np.inf, np.float32)
+        projected[valid] = sampled[valid] / source_z[valid]
+        np.minimum(zbuffer, projected, out=zbuffer)
+    return np.where(np.isfinite(zbuffer), zbuffer, 0).astype(np.float32)
+
+
+def prepare_depth_context(*, frames, selected, root):
+    from .atlas_scene_preservation import _save_image
+
+    root.mkdir(parents=True, exist_ok=True)
+    rows = {}
+    for index, row in enumerate(selected):
+        depth = project_source_depth(frames, row['camera'])
+        valid = depth > 0
+        zmin, zmax = ((float(depth[valid].min()), float(depth[valid].max())) if valid.any() else (1., 1.))
+        pixels = np.zeros(depth.shape, np.uint8)
+        pixels[valid] = (np.clip(np.round(255 * (1 - np.log(depth[valid] / zmin) / math.log(zmax / zmin))), 1, 255)
+                         .astype(np.uint8) if zmax > zmin else 255)
+        path = root / f'{index:04d}-depth.png'
+        _save_image(path, pixels)
+        rows[row['camera_id']] = {'path': str(path), 'sha256': _sha256_file(path),
+            'zMin': zmin, 'zMax': zmax, 'known_depth_pixel_count': int(valid.sum()),
+            'total_pixel_count': int(valid.size), 'basis': 'retained_source_estimated_planar_depth'}
+    return rows
+
+
 def generate_chisel_completion(*, frames, selected, candidates, root, pose, context, configuration,
                                task_runner, max_polls, removed_objects=(), checkpoint=None):
     """Use the existing admitted task lifecycle, then the existing RGBD fusion seam."""
@@ -98,18 +160,26 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
     # These footprints are derived locally for source-priority fusion and
     # inspection only. No masks or projected RGB canvases are sent to Chisel.
     rows = prepare_completion_views(frames=frames, selected=chosen, root=root / 'source-footprints')
+    depth_context = prepare_depth_context(frames=frames, selected=chosen, root=root / 'depth-context')
     by_id = {row['frame_id']: row for row in rows}
-    uploads = {f'photo-{i}': {'path': row['image_path'], 'sha256': row['image_digest']} for i, row in enumerate(sources)}
+    photo_uploads = {f'photo-{i}': {'path': row['image_path'], 'sha256': row['image_digest']} for i, row in enumerate(sources)}
     source_frames = [{'imageAsset': {'assetId': f'upload:photo-{i}'}, 'camera': row['camera']}
                      for i, row in enumerate(sources)]
     caption = ('The exact environment in the source photographs, preserving its architecture, materials, '
                'lighting, layout, fixtures and existing objects. Continue unseen surfaces naturally. '
-               'Do not add appliances, furniture, clutter or decorations. Empty installation openings remain empty. '
-               'Absent task objects: ' + json.dumps(list(removed_objects)) + '.')
+               'Cleared regions remain empty and expose the continuous background surfaces shown in the photographs. '
+               'Preserve that empty space and follow the supplied depth layout. '
+               'Continue existing surfaces without additional objects or fixtures.')
     policy = configuration['policy']
     specs, remaining = [], 0.
     for index, group in enumerate(groups):
-        request = {'sourceFrames': source_frames, 'contextFrames': [], 'targetCameras': [row['camera'] for row in group],
+        uploads, contexts = dict(photo_uploads), []
+        for i, target in enumerate(group):
+            depth = depth_context[target['camera_id']]
+            uploads[f'depth-{i}'] = {key: depth[key] for key in ('path', 'sha256')}
+            contexts.append({'camera': target['camera'], 'depth': {'logDepthAsset': {'assetId': f'upload:depth-{i}'},
+                'zMin': depth['zMin'], 'zMax': depth['zMax']}})
+        request = {'sourceFrames': source_frames, 'contextFrames': contexts, 'targetCameras': [row['camera'] for row in group],
                    'prompt': caption, 'enhancePrompt': False, 'returnDepth': True}
         validate_task_request('atlasChisel', request)
         stage = root / 'generated' / str(index)
@@ -122,23 +192,24 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
             _completed_task(stage, pose['binding']['source_video_digest'], 'generated')
         else:
             remaining += cost
-        specs.append((group, request, stage, quote))
+        specs.append((group, request, uploads, stage, quote))
     if remaining + policy.get('mesh_export_cost_usd', 0) + 1 > configuration['remaining_cost_usd']:
         raise ValueError('atlas_completion_remaining_budget_insufficient')
     binding = {'schema_version': 'atlas_chisel_completion_plan.v1', 'source_pose_digest': pose['digest'],
                'selected_camera_ids': [row['camera_id'] for row in selected], 'source_photographs': sources,
-               'prepared_views': rows, 'native_keep_masks_sent': False,
+               'prepared_views': rows, 'native_keep_masks_sent': False, 'depth_context': depth_context,
                'batches': [{'frame_ids': [row['camera_id'] for row in group], 'request_digest': canonical_digest(request),
-                            'maximum_cost_usd': quote['maximum_cost_usd']} for group, request, _, quote in specs]}
+                            'maximum_cost_usd': quote['maximum_cost_usd']} for group, request, _, _, quote in specs]}
     binding['digest'] = canonical_digest(binding, digest_field='digest')
     plan_path = root / 'chisel-completion-plan.json'
     if plan_path.exists() and json.loads(plan_path.read_text()) != binding:
         raise ValueError('atlas_completion_chisel_plan_changed')
     write_json(plan_path, binding)
     assets = [plan_path, *[Path(row['image_path']) for row in sources],
+              *[Path(row['path']) for row in depth_context.values()],
               *[Path(row[key]) for row in rows for key in ('image_path', 'keep_mask_path')]]
     generated, images, roots, digests, receipts, seen = [], [], [], [], [], set()
-    for index, (group, request, stage, quote) in enumerate(specs):
+    for index, (group, request, uploads, stage, quote) in enumerate(specs):
         if checkpoint:
             checkpoint('automation_completion_chisel_rgbd')
         state = task_runner(task='atlasChisel', request=request, uploads=uploads, output_root=stage,
@@ -164,7 +235,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
             assets.extend(paths)
     report = {'status': 'completed', 'native_result_digests': digests, 'generated_roots': roots,
               'preservation_receipt_digests': receipts, 'mask_plan_digest': binding['digest'],
-              'generation_method': 'atlasChisel_posed_photographs_no_keep_masks', 'known_pixels_changed': 0,
+              'generation_method': 'atlasChisel_posed_photographs_and_source_depth_no_keep_masks', 'known_pixels_changed': 0,
               'source_geometry_modified': False, 'preservation_paths': [str(p) for p in assets]}
     report['digest'] = canonical_digest(report, digest_field='digest')
     return (generated, images), report
