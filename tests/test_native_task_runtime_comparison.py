@@ -8,7 +8,19 @@ from blueprint_pipeline.native_task_runtime_comparison import (
     FIXED_FIELDS, GA_ARENA_COMMIT, GA_COMMIT, GA_IMAGE, RuntimeMeasurement,
     BASE_ARENA_COMMIT, BASE_COMMIT, BASE_IMAGE,
     compare_runtime_measurements, comparison_binding,
+    gpu_observation,
 )
+
+
+def test_gpu_memory_accepts_identical_driver_rows_only(monkeypatch):
+    monkeypatch.setattr('blueprint_pipeline.native_task_runtime_comparison.os.getpid', lambda: 3817)
+    raw = SimpleNamespace(stdout='3817, GPU-retained, 692\n3817, GPU-retained, 692\n')
+    monkeypatch.setattr('blueprint_pipeline.native_task_runtime_comparison.subprocess.run', lambda *a, **k: raw)
+    assert gpu_observation() == {'gpu_uuid': 'GPU-retained', 'used_mib': 692.0}
+    for conflicting in ('3817, GPU-retained, 693\n', '3817, GPU-other, 692\n'):
+        raw.stdout = '3817, GPU-retained, 692\n' + conflicting
+        with pytest.raises(ValueError, match='process_gpu_not_unique'):
+            gpu_observation()
 
 
 @dataclass(frozen=True)

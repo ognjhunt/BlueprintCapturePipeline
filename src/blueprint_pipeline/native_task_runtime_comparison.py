@@ -102,7 +102,11 @@ def gpu_observation() -> dict[str, Any]:
             value = float(fields[2])
             if not math.isfinite(value) or value < 0:
                 raise ValueError("gpu_memory_measurement_invalid")
-            rows.append({"gpu_uuid": fields[1], "used_mib": value})
+            row = {"gpu_uuid": fields[1], "used_mib": value}
+            # RTX can report the same process twice for one GPU. Identical
+            # observations are one sample; conflicting rows remain ambiguous.
+            if row not in rows:
+                rows.append(row)
     if len(rows) != 1:
         raise ValueError("runtime_comparison_process_gpu_not_unique")
     return rows[0]
