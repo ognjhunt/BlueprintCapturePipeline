@@ -57,6 +57,19 @@ def test_depth_hypotheses_do_not_reject_nearer_surfaces_or_small_distortions():
         gaps.gap_labels(depth, np.ones(depth.shape, bool), expected_depth=expected[:10])
 
 
+def test_expected_depth_stays_paired_with_its_own_reviewed_view(monkeypatch):
+    from blueprint_pipeline import atlas_scene_chisel
+    views = [{'frame_id': 'own-view'}, {'frame_id': 'other-view'}]
+    calls = []
+    monkeypatch.setattr(atlas_scene_chisel, 'project_source_depth',
+                        lambda frames, camera: calls.append((frames, camera)) or 'paired-depth')
+    candidate = {'camera': {'id': 'target-camera'}, 'expected_frame_id': 'own-view'}
+    assert gaps.expected_depth_for_candidate(views, candidate) == 'paired-depth'
+    assert calls == [([views[0]], candidate['camera'])]
+    with pytest.raises(ValueError, match='expected_reference_missing'):
+        gaps.expected_depth_for_candidate(views, {**candidate, 'expected_frame_id': 'missing'})
+
+
 def test_photographed_missing_depth_can_reach_image_edge_without_filling_unseen_canvas():
     depth = np.zeros((60, 80), np.float32)
     photo = np.zeros(depth.shape, bool)

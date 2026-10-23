@@ -399,7 +399,7 @@ def completion_summary(completion):
         if isinstance(row, dict) and 'camera' in row:
             camera = row['camera']
             compact = {key: row[key] for key in ('camera_id', 'source_frame_id', 'purpose', 'source_gap_ids',
-                                                'known_context_fraction', 'gap_fraction') if key in row}
+                                                'known_context_fraction', 'gap_fraction', 'expected_frame_id') if key in row}
             compact['pose_rub'] = [round(v, 4) for v in [*camera['extrinsics']['position'],
                                                        *camera['extrinsics']['quaternion']]]
             if row.get('purpose') == 'gap_target':
