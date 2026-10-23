@@ -39,7 +39,8 @@ def prepare_rgbd_context(*, frames, root):
 
 def generate_rgbd_completion(*, frames, selected, candidates, root, pose, context,
                              configuration, task_runner, max_polls, scene_caption='',
-                             checkpoint=None, geometry_frames=None, **_):
+                             checkpoint=None, geometry_frames=None, reference_frames=None,
+                             exported_gap_feedback=False, **_):
     """Generate native RGBD, then admit additions only in explicit missing regions."""
     from .atlas_result_bundle import _completed_task
     from .atlas_scene_chisel import prepare_depth_context, target_batches
@@ -52,12 +53,13 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
     if not selected or any(not row.get('completion_gap_mask_path') for row in selected):
         raise ValueError('atlas_generate_named_gap_masks_required')
     root.mkdir(parents=True, exist_ok=True)
-    contexts, uploads, photos = prepare_rgbd_context(frames=frames, root=root / 'rgbd-context')
+    context_frames = frames if reference_frames is None else reference_frames
+    contexts, uploads, photos = prepare_rgbd_context(frames=context_frames, root=root / 'rgbd-context')
     groups = target_batches(selected=selected, candidates=candidates, source_count=len(contexts))
     chosen = list({row['camera_id']: row for group in groups for row in group}.values())
     references = frames if geometry_frames is None else geometry_frames
     extent = observed_scene_bounds(frames)
-    rows = prepare_completion_views(frames=frames, selected=chosen, root=root / 'source-footprints')
+    rows = prepare_completion_views(frames=context_frames, selected=chosen, root=root / 'source-footprints')
     depths = prepare_depth_context(frames=references, selected=chosen, root=root / 'depth-context')
     selected_by_id = {row['camera_id']: row for row in selected}
     for row in rows:
@@ -72,6 +74,25 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
         else:
             row.update({key: target[key] for key in ('completion_gap_mask_path', 'completion_gap_mask_digest',
                                                     'completion_gap_ids', 'completion_gap_pixel_count')})
+            if exported_gap_feedback:
+                from PIL import Image
+
+                path = Path(target['completion_gap_mask_path'])
+                if _sha256_file(path) != target['completion_gap_mask_digest']:
+                    raise ValueError('atlas_completion_gap_mask_changed')
+                gap = np.asarray(Image.open(path).convert('L')) == 255
+                known = np.asarray(Image.open(depth['path']).convert('L')).copy()
+                if known.shape != gap.shape:
+                    raise ValueError('atlas_completion_gap_mask_grid_changed')
+                # A photograph can supply correct colour while its foreground
+                # geometry is absent from the export. Depth of a farther wall
+                # must not freeze that named foreground hole. Native context
+                # depth and source free-space rejection remain unchanged.
+                known[gap] = 0
+                output = root / 'depth-context' / (row['frame_id'] + '-export-coverage.png')
+                _save_image(output, known)
+                row.update(source_depth_context_path=str(output),
+                           source_depth_context_digest=_sha256_file(output))
     by_id = {row['frame_id']: row for row in rows}
     # Refuse before reserving/uploading if a selected new view has effectively
     # no photographed surroundings. All reference images still accompany every

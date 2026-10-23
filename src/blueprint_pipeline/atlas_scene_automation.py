@@ -303,6 +303,7 @@ def run_automation(
             generated_roots = [Path(p) for p in background.get("stage_roots", [])]
             completion = None
             recovery = None
+            coverage = None
             recovery_suffix = ""
             if background["status"] == "fallback_prepared" and "rgbd_view_cost_usd" in policy:
                 from .atlas_scene_completion import complete_scene, COMPLETION_REVISION
@@ -389,6 +390,23 @@ def run_automation(
                     or {row["frame_id"] for row in splat.get("frames", [])}
                     != {row["frame_id"] for row in derived_frames}):
                 raise ValueError("atlas_completion_splat_did_not_consume_generated_depth")
+            if recovery is not None and reviewed_views:
+                from .atlas_scene_coverage import refine_scene_coverage
+
+                refined, coverage = refine_scene_coverage(
+                    pose_root=effective_root, pose=effective_pose, frames=original_frames,
+                    geometry_frames=derived_frames, reviewed_views=reviewed_views,
+                    region_plan=region_plan, splat_root=splat_root, output_root=output_root,
+                    review=review, context=task_context, configuration=configuration,
+                    task_runner=task_runner, planner_runner=planner_runner,
+                    release_blockers=release_blockers, max_polls=max_polls, checkpoint=checkpoint)
+                if refined is None:
+                    return coverage
+                derived_frames, splat, splat_root = refined
+                generated_roots.extend(Path(p) for p in coverage['generated_roots'])
+                background['export_coverage'] = coverage
+                background['reconstruction_frame_count'] = len(derived_frames)
+                recovery_suffix += '-coverage-' + splat['digest'][7:23]
             mesh_root = None
             if "mesh_export_cost_usd" in policy:
                 spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
@@ -444,7 +462,8 @@ def run_automation(
                       ("completion.json", "context-fov-audit.json")] +
                      [Path(p) for p in completion.get("preservation_paths", [])] +
                      [Path(p) for prior_report in prior_reports for p in prior_report.get('preservation_paths', [])]
-                     if completion else []) + ([Path(p) for p in recovery["preservation_paths"]] if recovery else []),
+                     if completion else []) + ([Path(p) for p in recovery["preservation_paths"]] if recovery else []) +
+                    ([Path(p) for p in coverage['preservation_paths']] if coverage else []),
             )
             background.update(
                 status="completed",

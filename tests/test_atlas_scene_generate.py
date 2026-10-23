@@ -101,6 +101,42 @@ def test_generate_refuses_unbounded_whole_image_admission(tmp_path):
             root=tmp_path, pose={}, context={}, configuration={}, task_runner=lambda **_: pytest.fail('Purchased'), max_polls=1)
 
 
+def test_feedback_sends_all_reviewed_rgbd_and_does_not_freeze_a_photographed_export_gap(tmp_path):
+    frames = [source('a'), source('b', .2)]
+    reference = source('reviewed-reference', .1)
+    reference['depth'][400:850, 200:500] = 1.5
+    reference['confidence'][:] = 1
+    pool = [row for row in completion.camera_candidates(frames) if row['purpose'] == 'wide']
+    mask = np.zeros((720, 1280), np.uint8)
+    mask[300:330, 500:530] = 255
+    path = tmp_path / 'actual-export-gap.png'
+    Image.fromarray(mask).save(path)
+    target = {**pool[0], 'completion_gap_mask_path': str(path),
+        'completion_gap_mask_digest': _sha256_file(path), 'completion_gap_ids': ['foreground-gap'],
+        'completion_gap_pixel_count': int(np.count_nonzero(mask))}
+    calls = []
+    def task(**kw):
+        calls.append(kw)
+        assert len(kw['request']['contextFrames']) == 3
+        assert len(kw['uploads']) == 6
+        assert all('depth' in r for r in kw['request']['contextFrames'])
+        assert not any('maskAsset' in r for r in kw['request']['contextFrames'])
+        return {'status': 'processing', 'operation_id': 'targeted-view'}
+    root = tmp_path / 'run'
+    generate.generate_rgbd_completion(frames=frames, reference_frames=[*frames, reference],
+        geometry_frames=frames, exported_gap_feedback=True, selected=[target], candidates=pool,
+        root=root, pose={'digest': 'pose', 'binding': {'source_video_digest': 'source'}}, context={},
+        configuration={'remaining_cost_usd': 5, 'policy': {'rgbd_view_cost_usd': .05,
+            'mesh_export_cost_usd': .5, 'rate_card_reference': 'rates',
+            'reviewed_by': 'test', 'reviewed_on': '2026-10-23'}}, task_runner=task, max_polls=1)
+    import json
+    plan = json.loads((root / 'rgbd-completion-plan.json').read_text())
+    prepared = next(row for row in plan['prepared_views'] if row['frame_id'] == target['camera_id'])
+    known = np.asarray(Image.open(prepared['source_depth_context_path']))
+    assert not known[mask > 0].any(), 'A farther retained surface must not freeze the named foreground hole'
+    assert len(calls) == 1
+
+
 def test_target_facing_away_from_known_photos_refuses_before_purchase(tmp_path):
     frames = [source('a'), source('b', .2)]
     candidates = [row for row in completion.camera_candidates(frames) if row['purpose'] == 'wide']

@@ -69,6 +69,18 @@ The production Atlas controller runs the following for a new scene plan:
    its ZIP remain available. Native photometrically trained splat export remains
    subject to Atlas availability; this adapter produces a depth-fused draft.
 
+   Before purchasing the final mesh, the harness re-surveys the exported splat
+   from every source and approved generated view. Reviewed depth supplies a
+   foreground-surface hypothesis: a floor or wall behind a missing work surface
+   does not count as closing that hole. The same scene agent prioritizes material
+   task/support/access gaps, aims cameras at them, and uses the original and
+   approved generated RGBD together as Atlas references. Each accepted repair is
+   fused and checked again. Small distortions are acceptable; the agent can stop
+   when task coverage is sufficient. A repair that adds no exportable geometry
+   stops with an explicit unresolved gap. Completed images are reused, all calls
+   share the existing allowance, and this check does not qualify simulation or
+   physical fidelity.
+
 When a refinement adds source views, its parent prepared-background manifest
 can seed the expanded set. Source video, task context and original RGB pixels
 must match, and the accepted edits stay byte-identical. Only missing views are

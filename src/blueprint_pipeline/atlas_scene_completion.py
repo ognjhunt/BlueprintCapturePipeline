@@ -115,24 +115,43 @@ def load_generated_views(root: Path, frame_ids):
 
 def complete_scene(*, pose_root, pose, frames, review, root, context, configuration,
                    task_runner, planner_runner, release_blockers, max_polls, checkpoint=None,
-                   existing_geometry_frames=()):
+                   existing_geometry_frames=(), expected_frames=(), splat_root=None,
+                   reference_frames=None, coverage_feedback=None):
     """Plan -> generate RGBD -> independent review, all resumable under one cap."""
     from .website_image_completion import verify_completed_background
 
     root.mkdir(parents=True, exist_ok=True)
     from .atlas_context_fov import verify_pose_context_fov
     fov = verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=root)
-    candidates = camera_candidates(frames)
+    camera_pool = camera_candidates(frames)
+    # The initial pass already surveyed the full topology. A feedback pass
+    # checks every source/reviewed view, then aims at its remaining holes;
+    # re-surveying every old translated hypothesis would repeat finished work.
+    candidates = ([row for row in camera_pool if row['purpose'] == 'wide']
+                  if splat_root is not None else list(camera_pool))
+    if expected_frames:
+        for expected in expected_frames:
+            target = next(row for row in camera_candidates([expected]) if row['purpose'] == 'wide')
+            target['source_frame_id'] = min(frames, key=lambda f: np.linalg.norm(
+                f['position'] - expected['position']))['frame_id']
+            target['purpose'] = 'wide'
+            candidates.append(target)
+            camera_pool.append(target)
     from .atlas_scene_preservation import observed_scene_bounds
     extent = observed_scene_bounds(frames)
     from .atlas_scene_gaps import survey_gaps, select_gap_mask, target_gap_ids, context_supported_candidates
     geometry_frames = [*frames, *existing_geometry_frames]
-    gaps = survey_gaps(frames=frames, geometry_frames=geometry_frames, candidates=candidates, root=root / 'gaps')
+    survey_options = ({'expected_frames': expected_frames, 'splat_root': splat_root}
+                      if expected_frames or splat_root is not None else {})
+    context_frames = frames if reference_frames is None else reference_frames
+    gaps = survey_gaps(frames=context_frames, geometry_frames=geometry_frames, candidates=candidates,
+                       root=root / 'gaps', **survey_options)
     from .atlas_completion_cameras import gap_target_candidates
-    aimed = gap_target_candidates(frames, candidates, gaps)
+    aimed = gap_target_candidates(frames, camera_pool, gaps, **(
+        {'expected_frames': expected_frames} if expected_frames else {}))
     if aimed:
-        targeted = survey_gaps(frames=frames, geometry_frames=geometry_frames,
-                              candidates=aimed, root=root / 'gap-targets')
+        targeted = survey_gaps(frames=context_frames, geometry_frames=geometry_frames,
+                              candidates=aimed, root=root / 'gap-targets', **survey_options)
         _, rejected_aims = context_supported_candidates(aimed, targeted)
         rejected_ids = set(rejected_aims)
         missing = {key for row in aimed if row['camera_id'] in rejected_ids for key in row['source_gap_ids']}
@@ -142,10 +161,11 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
             retry_survey = {**gaps, 'views': [{**view, 'gaps': [gap for gap in view['gaps']
                                                              if gap['gap_id'] in missing]}
                                             for view in gaps['views']]}
-            fallback = gap_target_candidates(frames, candidates, retry_survey, source_centred=True)
+            fallback = gap_target_candidates(frames, camera_pool, retry_survey, source_centred=True,
+                **({'expected_frames': expected_frames} if expected_frames else {}))
             if fallback:
-                fallback_gaps = survey_gaps(frames=frames, geometry_frames=geometry_frames,
-                    candidates=fallback, root=root / 'gap-target-context-fallback')
+                fallback_gaps = survey_gaps(frames=context_frames, geometry_frames=geometry_frames,
+                    candidates=fallback, root=root / 'gap-target-context-fallback', **survey_options)
                 aimed.extend(fallback)
                 targeted = {**targeted, 'views': [*targeted['views'], *fallback_gaps['views']],
                     'previews': [*targeted['previews'], *fallback_gaps['previews']],
@@ -207,6 +227,14 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                 'unsupported_camera_ids': unsupported,
                 'gap_survey': {k: v for k, v in gaps.items() if k != 'previews'},
                 "input_basis": "generated_background_not_raw_capture", "claim_ceiling": "development_only"}
+    if coverage_feedback is not None:
+        feedback['post_export_coverage'] = coverage_feedback
+    if expected_frames:
+        from .atlas_scene_chisel import prepare_source_photographs
+        photos = prepare_source_photographs(frames=expected_frames, root=root / 'reviewed-references')
+        feedback['previews'].extend({'path': p['image_path'], 'sha256': p['image_digest'],
+            'source_frame_id': p['source_frame_id'], 'camera_id': p['source_frame_id'],
+            'kind': 'reviewed_rgbd_reference_depth_is_a_hypothesis'} for p in photos)
     baseline_path = root.parent / "background_splat/atlas_depth_splat_manifest.json"
     if baseline_path.is_file():
         baseline = json.loads(baseline_path.read_text())
@@ -242,11 +270,23 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     planned = planner_runner(survey_path=survey_path, task_context=context, configuration=configuration,
                              output_root=root / "planner", completion=feedback)
     proposal = planned["proposal"]
+    if proposal['status'] == 'sufficient' and not proposal['selected_camera_ids']:
+        report = {'status': 'passed', 'generation_result_digest': gaps['digest'],
+                  'generated_roots': [], 'generated_frame_ids': [], 'planner': planned,
+                  'preservation_paths': [str(root / 'gaps/survey.json'), str(survey_path), str(feedback_path)],
+                  'review': {'status': 'not_required', 'reason': 'agent_found_no_material_task_gap'},
+                  'gap_survey_digest': gaps['digest'], 'remaining_unknowns': proposal['remaining_unknowns'],
+                  'gap_assessment': proposal['gap_assessment'], 'whole_scene_complete': False,
+                  'coverage_basis': 'task_prioritized_review_of_surveyed_export',
+                  'generated_geometry_ready': True, 'claim_ceiling': 'development_only'}
+        report['digest'] = canonical_digest(report, digest_field='digest')
+        write_json(root / 'completion.json', report)
+        return [], report
     if proposal["status"] != "proposed":
         raise ValueError("atlas_completion_planner_abstained")
     by_id = {candidate["camera_id"]: candidate for candidate in candidates}
     ids = proposal["selected_camera_ids"]
-    if len(ids) != len(set(ids)) or any(key not in by_id for key in ids):
+    if not ids or len(ids) != len(set(ids)) or any(key not in by_id for key in ids):
         raise ValueError("atlas_completion_camera_selection_invalid")
     selected = [by_id[key] for key in ids]
     entries = proposal.get('view_gap_reasons', [])
@@ -269,7 +309,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         root=root, pose=pose, context=context, configuration=configuration, task_runner=task_runner,
         max_polls=max_polls, removed_objects=[obj["label"] for obj in review["automation"]["objects"]
             if obj["disposition"] == "remove"], checkpoint=checkpoint,
-        scene_caption=proposal['scene_caption'], view_gap_reasons=reasons, geometry_frames=geometry_frames)
+        scene_caption=proposal['scene_caption'], view_gap_reasons=reasons, geometry_frames=geometry_frames,
+        **({'reference_frames': reference_frames} if reference_frames is not None else {}),
+        **({'exported_gap_feedback': True} if splat_root is not None else {}))
     if completed is None:
         return None, generation
     generated, images = completed

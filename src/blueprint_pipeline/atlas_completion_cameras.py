@@ -87,7 +87,7 @@ def disocclusion_candidates(frames, wide):
     return result
 
 
-def gap_target_candidates(frames, candidates, survey, *, source_centred=False):
+def gap_target_candidates(frames, candidates, survey, *, source_centred=False, expected_frames=()):
     """Aim at actual gaps, estimating the aim point from neighbouring depth.
 
     Camera locations come from the captured trajectory or its already screened
@@ -136,6 +136,10 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False):
         rows, cols = np.floor(v[inside]).astype(int), np.floor(u[inside]).astype(int)
         rotation = Rotation.from_quat(e['quaternion']).as_matrix()
         position = np.asarray(e['position'], float)
+        expected_depth = None
+        if expected_frames:
+            from .atlas_scene_chisel import project_source_depth
+            expected_depth = project_source_depth(expected_frames, camera)
         for gap in view['gaps']:
             mask = labels == gap['label']
             yy, xx = np.nonzero(mask)
@@ -150,9 +154,11 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False):
             distance = distance_transform_edt(~mask)
             band = max(3., .1 * np.hypot(np.ptp(xx) + 1, np.ptp(yy) + 1))
             neighbours = indices[(distance[rows, cols] > 0) & (distance[rows, cols] <= band)]
-            if len(neighbours) < 3:
+            hypothesis = (expected_depth[mask] if expected_depth is not None else np.array([]))
+            hypothesis = hypothesis[np.isfinite(hypothesis) & (hypothesis > 0)]
+            if len(neighbours) < 3 and not len(hypothesis):
                 continue
-            depth = float(np.median(z[neighbours]))
+            depth = float(np.median(hypothesis) if len(hypothesis) else np.median(z[neighbours]))
             pixel = np.array([np.median(xx) + .5, np.median(yy) + .5])
             ray = np.array([(pixel[0] - k['cx']) / k['fx'],
                             -(pixel[1] - k['cy']) / k['fy'], -1.])
@@ -201,7 +207,8 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False):
             identity = canonical_digest(identity_data)
             target.update(camera_id='gap-target-' + identity[7:23], purpose='gap_target',
                           source_gap_ids=[gap['gap_id']], target_world_estimate=focus.tolist(),
-                          target_basis='gap_centroid_ray_at_neighbouring_source_depth',
+                          target_basis=('gap_centroid_ray_at_reviewed_depth_hypothesis' if len(hypothesis)
+                                        else 'gap_centroid_ray_at_neighbouring_source_depth'),
                           camera_location_observed_free=True, collision_qualified=False)
             target['camera']['extrinsics'].update(position=origin.tolist(), quaternion=Rotation.from_matrix(
                 np.column_stack((right, up, -forward))).as_quat().tolist())
