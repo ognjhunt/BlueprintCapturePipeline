@@ -134,7 +134,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
                 "job_reason": source_pose.get("reason")}
 
     pose_root = _inside(job_dir / source_pose.get("pose_relative_path", "pose") / GEOMETRY_INPUTS_FILE, job_dir).parent
-    measurements_path = _inside(pose_root / "scene_measurements.json", job_dir)
+    measurements_path = _inside(pose_root / source_pose.get('measurements_relative_path', 'scene_measurements.json'), job_dir)
     measurements = _read(measurements_path)
     mpu = measurements.get("meters_per_unit_estimate")
     if (measurements.get("digest") != canonical_digest(measurements, digest_field="digest")
