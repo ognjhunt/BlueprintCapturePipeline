@@ -18,6 +18,8 @@ EnvironmentFile=-/etc/blueprint/website-atlas-preview.env
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_WEBSITE_ATLAS_PREVIEW_STORAGE_ROOT=/var/lib/blueprint/pubsub-handoffs
+# Match numeric work to the worker's CPU quota; RGBD projections use small matrices.
+Environment=OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.website_atlas_preview tick --storage-root "$${BLUEPRINT_WEBSITE_ATLAS_PREVIEW_STORAGE_ROOT}"'
 NoNewPrivileges=true
 PrivateTmp=true
