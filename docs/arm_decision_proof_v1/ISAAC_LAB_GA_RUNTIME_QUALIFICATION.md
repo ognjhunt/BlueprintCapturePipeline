@@ -31,6 +31,10 @@ Pass each request to the existing construction bundle builder using
 `--runtime-comparison-request-path`, with its matching image and source packet.
 Allocation still uses only `paid_resource_allocator gpu-canary`, a sealed
 zero-retry authority, independent watchdog, hard budget/TTL and provider-zero.
+On a host configuring `BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT`, place
+`--adp-job-dir` beneath that physical directory so the shared guard can discover
+the live watchdog. Preflight and watchdog arming reject an outside path or a
+symlinked guard root. Keep bundles and source in their existing retained paths.
 A construction replay is a precursor; it does not qualify learned-policy
 performance. Policy comparisons bind both frozen specs and identical resolved
 scenario cells. Existing paused controls remain paused.
@@ -148,3 +152,14 @@ The later-cleanup receipt exposed a canonical-digest bug: a derived result had
 retained the original result digest. Recovery now validates the original digest
 and seals the derived result separately, preserving the original bytes, failure
 and costs. All 107 focused authority, CLI and spend-reconciliation tests passed.
+
+The shared guard journal later established the cause of that provisioning exit:
+it reaped instance 57418653 as unowned after its 480-second boot limit. The live
+allocator and watchdog were outside its configured evidence root. This was an
+ownership-discovery defect, not evidence of an Isaac or provider-host failure.
+For the already running replacement, an additional real watchdog was started
+under the configured root with the same exact instance, prefix and deadline;
+the deployed guard's ownership checker recognized it. No guard limit or service
+configuration was relaxed. The encoded path preflight passed 81 focused
+watchdog and native allocator tests, including dry-run refusal before artifacts
+or provider work and symlink-escape refusal. Future jobs use the registered root.

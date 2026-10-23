@@ -34,6 +34,21 @@ EVIDENCE_NAME = WATCHDOG_EVIDENCE_NAME
 WARM_SERVE_MARKER_NAME = "warm_serve_pod.json"
 CALLER_EXIT_SURVIVAL_ENV = "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL"
 SYSTEMD_KILL_MODE_PROCESS_SURVIVAL = "systemd_dispatcher_kill_mode_process"
+SPEND_GUARD_ROOT_ENV = "BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT"
+
+
+def validate_watchdog_discovery_path(job_dir: str | Path) -> None:
+    """Keep configured fleet reapers able to discover the real live watchdog."""
+    configured = str(os.environ.get(SPEND_GUARD_ROOT_ENV) or "").strip()
+    if not configured:
+        return
+    root = Path(configured).expanduser().absolute()
+    # The guard deliberately refuses symlinked evidence roots. Match that
+    # boundary instead of claiming protection through an unscanned alias.
+    if not root.is_dir() or any(path.is_symlink() for path in (root, *root.parents)):
+        raise ValueError("independent_vast_watchdog_spend_guard_root_invalid")
+    if not Path(job_dir).expanduser().resolve().is_relative_to(root.resolve()):
+        raise ValueError("independent_vast_watchdog_outside_spend_guard_root")
 
 
 @dataclass(frozen=True)
@@ -407,6 +422,7 @@ def arm_independent_vast_watchdog(
 ) -> tuple[dict[str, Any], VastWatchdogHandle | None]:
     """Start a detached name-bound watchdog and prove it is armed before create."""
 
+    validate_watchdog_discovery_path(job_dir)
     out_dir = job_dir / WATCHDOG_DIR_NAME
     prefix_base, exact_name = validate_independent_vast_watchdog_names(
         pod_name_prefix=pod_name_prefix, resource_name_exact=resource_name_exact

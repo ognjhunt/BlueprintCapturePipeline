@@ -16,6 +16,26 @@ from blueprint_pipeline import vast_independent_watchdog_control as control
 def _clear_ambient_systemd_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.delenv(control.CALLER_EXIT_SURVIVAL_ENV, raising=False)
+    monkeypatch.delenv(control.SPEND_GUARD_ROOT_ENV, raising=False)
+
+
+def test_watchdog_discovery_requires_registered_physical_root(tmp_path, monkeypatch):
+    root = tmp_path / "registered"
+    root.mkdir()
+    monkeypatch.setenv(control.SPEND_GUARD_ROOT_ENV, str(root))
+    control.validate_watchdog_discovery_path(root / "future/attempt")
+    with pytest.raises(ValueError, match="outside_spend_guard_root"):
+        control.validate_watchdog_discovery_path(tmp_path / "unregistered")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "escape").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="outside_spend_guard_root"):
+        control.validate_watchdog_discovery_path(root / "escape/attempt")
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    monkeypatch.setenv(control.SPEND_GUARD_ROOT_ENV, str(alias))
+    with pytest.raises(ValueError, match="spend_guard_root_invalid"):
+        control.validate_watchdog_discovery_path(root / "attempt")
 
 
 class _FakeProcess:

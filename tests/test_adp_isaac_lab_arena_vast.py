@@ -49,6 +49,23 @@ def _approval_path(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.mark.parametrize("execute", [False, True])
+def test_watchdog_path_refused_in_full_preflight_before_artifact_or_provider_work(
+    tmp_path, monkeypatch, execute,
+):
+    root = tmp_path / "registered"
+    root.mkdir()
+    monkeypatch.setenv("BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT", str(root))
+    job = tmp_path / "outside"
+    with pytest.raises(ValueError, match="outside_spend_guard_root"):
+        arena.run_arena_native_control_vast(
+            approval_path=tmp_path / "unused.json", job_dir=job,
+            paid_resource_admission_grant=None, execute=execute,
+            require_independent_watchdog=True,
+        )
+    assert not job.exists()
+
+
 def test_policy_query_blocker_does_not_invent_query_when_receipt_is_missing() -> None:
     assert (
         _candidate_policy_query_blocker({}, blocker_prefix="adp009d")
