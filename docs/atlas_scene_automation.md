@@ -53,6 +53,8 @@ The production Atlas controller runs the following for a new scene plan:
    boundaries; it is a planning hypothesis, not evidence of a wall. The agent
    selects supported continuations and leaves ambiguous voids unknown. Nothing
    outside the projected outline or capture-derived 3D bounds is added.
+   Model input uses a compact table of every camera and region; full precision
+   masks and survey receipts remain unchanged for selection and admission.
    `atlasGenerate` receives all approved cleaned photographs with aligned depth
    and cameras. Images/depth/cameras rotate and resize together; full photograph
    coverage survives. Returned RGBD passes independent review and source-priority

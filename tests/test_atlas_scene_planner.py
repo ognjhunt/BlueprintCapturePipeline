@@ -122,6 +122,25 @@ def test_completion_output_compiles_in_the_actual_strict_agents_sdk():
     assert value.view_gap_reasons[0].camera_id == 'a-lower'
 
 
+def test_compact_completion_keeps_every_exact_gap_and_source_survey_unchanged():
+    from copy import deepcopy
+
+    original = {'previews': [], 'candidate_camera_ids': [{'camera_id': 'c', 'source_frame_id': 's',
+        'camera': {'extrinsics': {'position': [1., 2., 3.], 'quaternion': [0., 0., 0., 1.]}}}],
+        'gap_survey': {'digest': 'bound-survey', 'views': [{'camera_id': 'c', 'source_frame_id': 's',
+            'label_path': '/retained/labels.png', 'label_sha256': 'hash', 'gaps': [
+                {'label': i, 'gap_id': 'c-gap-' + str(i), 'pixel_count': 100 + i,
+                 'box_xywh_normalized': [.1, .2, .3, .4]} for i in range(1, 501)]}]}}
+    before = deepcopy(original)
+    compact = planner.completion_summary(original)
+    assert original == before and compact['gap_survey']['digest'] == 'bound-survey'
+    view = compact['gap_survey']['views'][0]
+    assert [(view['camera_id'] + '-gap-' + str(r[0]), r[1]) for r in view['gaps']] == [
+        (r['gap_id'], r['pixel_count']) for r in original['gap_survey']['views'][0]['gaps']]
+    assert len(json.dumps(compact)) < len(json.dumps(original)) / 2
+    assert 'label_path' not in view and compact['candidate_camera_ids'][0]['position'] == [1., 2., 3.]
+
+
 def test_gap_review_preserves_state_quality_and_original_views(tmp_path):
     _, survey, proposal, policy = fixture(tmp_path)
     from copy import deepcopy

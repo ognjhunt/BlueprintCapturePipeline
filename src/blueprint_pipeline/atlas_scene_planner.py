@@ -115,6 +115,9 @@ Do not expand into unseen rooms or invent extra space or metric dimensions.
 The capture-derived generation_extent is a ceiling, not an area to fill.
 Every selected_camera_id needs an entry in view_gap_reasons, a list of objects
 with camera_id, nonempty reason and gap_ids naming exact regions in gap_survey.
+In the compact survey each gap is [label, pixel_count, normalized_box_xywh].
+Its exact gap_id is camera_id + "-gap-" + the integer label. All regions remain
+available; the compact form removes repeated paths and camera-id prefixes.
 Use the reconstruction geometry-gap overlays: magenta marks candidate missing
 surfaces; black exterior and tiny raster pinholes are not completion requests.
 Select actual missing surfaces throughout the captured scene, never request an
@@ -279,6 +282,30 @@ def _input(survey, context, feedback=None):
     return [{"role": "user", "content": content}]
 
 
+def completion_summary(completion):
+    """Keep every camera and gap without repeated storage paths or ID prefixes.
+
+    The full precision, digest-bound survey remains the geometry authority.
+    This is only the model's readable planning representation.
+    """
+    from copy import deepcopy
+
+    value = deepcopy(completion)
+    if 'gap_survey' in value:
+        full = value['gap_survey']
+        value['gap_survey'] = {k: full[k] for k in ('digest', 'basis', 'legend') if k in full}
+        value['gap_survey']['views'] = [{
+            **{k: row[k] for k in ('camera_id', 'source_frame_id', 'gap_domain', 'gap_pixel_count', 'total_pixel_count') if k in row},
+            'gaps': [[r['label'], r['pixel_count'], [round(v, 4) for v in r['box_xywh_normalized']]] for r in row['gaps']]
+        } for row in full['views']]
+    for row in value.get('candidate_camera_ids', []):
+        if isinstance(row, dict) and 'camera' in row:
+            camera = row.pop('camera')
+            row['position'] = [round(v, 6) for v in camera['extrinsics']['position']]
+            row['quaternion_xyzw'] = [round(v, 6) for v in camera['extrinsics']['quaternion']]
+    return value
+
+
 def review_survey(*, survey_path: Path, task_context, configuration, output_root: Path,
                   invoker=None, release_blockers=None, feedback=None, completion=None):
     """One idempotent proposal, reserved in the SAME source-bound test allowance."""
@@ -290,10 +317,10 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         raise ValueError("atlas_scene_planner_survey_invalid")
     policy = configuration["policy"]
     maximum = policy["maximum_review_cost_usd"]
-    extra = completion if completion is not None else feedback
+    extra = completion_summary(completion) if completion is not None else feedback
     tokens = 24_000 + 3000 * (len(survey["frames"]) + len((extra or {}).get("previews", [])))
     if completion is not None:
-        tokens += len(json.dumps(completion, sort_keys=True).encode())
+        tokens += len(json.dumps(extra, sort_keys=True).encode())
     if tokens > 1_000_000:
         raise ValueError("atlas_scene_planner_context_budget_exceeded")
     from .openai_prompt_cache import worst_case_reservation_usd
@@ -319,6 +346,7 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         binding["feedback_digest"] = feedback["digest"]
     if completion is not None:
         binding["completion_digest"] = canonical_digest(completion)
+        binding['completion_model_input_digest'] = canonical_digest(extra)
     digest = canonical_digest(binding)
     output_root.mkdir(parents=True, exist_ok=True)
     path = output_root / (digest[7:] + ".json")
