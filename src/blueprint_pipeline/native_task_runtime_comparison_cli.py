@@ -6,7 +6,7 @@ from .decision_evidence_contracts import canonical_digest
 from .native_task_runtime_comparison import (
     BASE_ARENA_COMMIT, BASE_COMMIT, BASE_IMAGE, GA_ARENA_COMMIT, GA_COMMIT, GA_IMAGE,
     construction_comparison_binding, validate_construction_comparison_request,
-    compare_runtime_measurements,
+    compare_runtime_measurements, compare_runtime_measurement_sets,
 )
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
     compare.add_argument("--baseline", required=True)
     compare.add_argument("--candidate", required=True)
     compare.add_argument("--output", required=True)
+    compare_set = sub.add_parser("compare-set")
+    compare_set.add_argument("--baseline-root", required=True)
+    compare_set.add_argument("--candidate-root", required=True)
+    compare_set.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     output = Path(args.output).resolve()
     if output.exists() or output.is_symlink():
@@ -48,7 +52,12 @@ def main(argv: list[str] | None = None) -> int:
             confirmed_by=args.confirmed_by, authorization_reference=args.authorization_reference, output_dir=output)
         print(json.dumps(result))
         return 0 if result["status"] == "passed" else 2
-    if args.command == "prepare-construction":
+    if args.command == "compare-set":
+        def measurements(root):
+            return [json.loads(path.read_text()) for path in sorted(
+                Path(root).rglob("native_task_runtime_measurement.v1.json"))]
+        value = compare_runtime_measurement_sets(measurements(args.baseline_root), measurements(args.candidate_root))
+    elif args.command == "prepare-construction":
         from .native_task_arena_bundle import verify_native_task_arena_packet
         from .native_task_construction_plan import materialize_native_task_construction_phase_plan
         root, receipt, _ = verify_native_task_arena_packet(args.packet_dir)

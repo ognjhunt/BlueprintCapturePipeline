@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from copy import deepcopy
 import json
 from types import SimpleNamespace
 
@@ -7,7 +8,7 @@ import pytest
 from blueprint_pipeline.native_task_runtime_comparison import (
     FIXED_FIELDS, GA_ARENA_COMMIT, GA_COMMIT, GA_IMAGE, RuntimeMeasurement,
     BASE_ARENA_COMMIT, BASE_COMMIT, BASE_IMAGE,
-    compare_runtime_measurements, comparison_binding,
+    compare_runtime_measurements, compare_runtime_measurement_sets, comparison_binding,
     gpu_observation,
 )
 
@@ -109,6 +110,56 @@ def test_different_task_or_gpu_cannot_be_called_runtime_comparison(tmp_path):
     b = measured(tmp_path, "isaaclab_3_ga", input_overrides={"assets": {"different": True}}, gpu="other")
     report = compare_runtime_measurements(a, b)
     assert set(report["blockers"]) == {"fixed_workcell_inputs_changed", "same_gpu_required"}
+
+
+def _cell_measurement(value, index, *, gpu=None):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    value = deepcopy(value)
+    cell = {'cell_id': f'cell-{index}', 'seed': 100 + index}
+    value.update(measurement_scope='retained_policy_diagnostic', selected_cell_index=index,
+                 expected_cell_count=2, selected_cell=cell,
+                 selected_cell_digest=canonical_digest({'value': cell}))
+    if gpu is not None:
+        for row in value['gpu_samples']:
+            row['gpu_uuid'] = gpu
+    value['receipt_digest'] = canonical_digest(value, digest_field='receipt_digest')
+    return value
+
+
+def test_policy_set_refuses_wrong_missing_duplicate_or_cross_gpu_scenarios(tmp_path):
+    a, b = measured(tmp_path, 'baseline'), measured(tmp_path, 'isaaclab_3_ga')
+    baseline = [_cell_measurement(a, i) for i in range(2)]
+    candidate = [_cell_measurement(b, i) for i in range(2)]
+    assert compare_runtime_measurement_sets(baseline, candidate)['blockers'] == []
+    assert 'runtime_comparison_scenario_mismatch' in compare_runtime_measurements(
+        baseline[0], candidate[1])['blockers']
+    assert 'candidate_scenario_set_incomplete' in compare_runtime_measurement_sets(
+        baseline, candidate[:1])['blockers']
+    assert 'candidate_scenario_identity_invalid_or_duplicated' in compare_runtime_measurement_sets(
+        baseline, [*candidate, candidate[0]])['blockers']
+    # Matching each pair independently cannot authorize different hardware
+    # for different cells in this one-workcell comparison.
+    baseline[1] = _cell_measurement(a, 1, gpu='GPU-other')
+    candidate[1] = _cell_measurement(b, 1, gpu='GPU-other')
+    assert 'same_gpu_required_across_scenarios' in compare_runtime_measurement_sets(
+        baseline, candidate)['blockers']
+
+
+def test_comparison_cli_reads_complete_policy_cell_directories(tmp_path):
+    from blueprint_pipeline.native_task_runtime_comparison_cli import main
+    for variant in ('baseline', 'isaaclab_3_ga'):
+        value = measured(tmp_path, variant)
+        for index in range(2):
+            folder = tmp_path / variant / str(index)
+            folder.mkdir(parents=True)
+            (folder / 'native_task_runtime_measurement.v1.json').write_text(
+                json.dumps(_cell_measurement(value, index)))
+    output = tmp_path / 'comparison.json'
+    assert main(['compare-set', '--baseline-root', str(tmp_path / 'baseline'),
+                 '--candidate-root', str(tmp_path / 'isaaclab_3_ga'), '--output', str(output)]) == 0
+    result = json.loads(output.read_text())
+    assert len(result['scenario_comparisons']) == 2
+    assert result['improvement_qualified'] is False
 
 
 @pytest.mark.parametrize("overrides", [{"renderer": "ovrtx"}, {"physics_backend": "newton"}])

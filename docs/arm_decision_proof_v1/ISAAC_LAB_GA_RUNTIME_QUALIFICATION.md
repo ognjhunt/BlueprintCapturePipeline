@@ -40,11 +40,18 @@ Compare retained measurement files with:
 ```bash
 python -m blueprint_pipeline.native_task_runtime_comparison_cli compare \
   --baseline BASELINE_MEASUREMENT --candidate GA_MEASUREMENT --output comparison.json
+python -m blueprint_pipeline.native_task_runtime_comparison_cli compare-set \
+  --baseline-root BASELINE_POLICY_OUTPUT --candidate-root GA_POLICY_OUTPUT \
+  --output policy-comparison.json
 ```
 
 The comparator refuses changed inputs, different GPUs, missing measurements or
 incomplete receipts. Numerical improvement alone does not authorize promotion:
 camera, reset, contact, scoring and complete policy-media evidence need review.
+Policy measurements retain the selected scenario and seed. Set comparison
+requires every expected scenario exactly once and one GPU across the entire set.
+The 39 focused comparison, retained-input, lifecycle and import-closure tests
+cover mismatched, missing and duplicated scenarios plus cross-scenario GPU drift.
 Actual GPU qualification results will be recorded here after execution.
 
 Focused validation covers release identity, dependency tamper refusal, lifecycle

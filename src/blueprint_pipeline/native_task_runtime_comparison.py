@@ -257,6 +257,15 @@ def compare_runtime_measurements(baseline: Mapping[str, Any], candidate: Mapping
         for field in ("camera_gates", "resets", "episodes", "gpu_samples"):
             if not value.get(field):
                 blockers.append(name + "_" + field + "_missing")
+        if value.get("measurement_scope") == "retained_policy_diagnostic":
+            index, count = value.get("selected_cell_index"), value.get("expected_cell_count")
+            if (type(index) is not int or type(count) is not int or not 0 <= index < count
+                    or not isinstance(value.get("selected_cell"), Mapping)
+                    or value.get("selected_cell_digest") != canonical_digest({"value": value.get("selected_cell")})):
+                blockers.append(name + "_selected_cell_binding_invalid")
+    if any(baseline.get(key) != candidate.get(key) for key in (
+            "measurement_scope", "selected_cell_index", "expected_cell_count", "selected_cell_digest")):
+        blockers.append("runtime_comparison_scenario_mismatch")
     if baseline.get("binding") != candidate.get("binding"):
         blockers.append("fixed_workcell_inputs_changed")
     gpu_sets = [{row["gpu_uuid"] for row in value.get("gpu_samples", [])} for value in (baseline, candidate)]
@@ -283,5 +292,49 @@ def compare_runtime_measurements(baseline: Mapping[str, Any], candidate: Mapping
                                              "contact_forces", "episode_scores", "complete_policy_media"]}
     report["receipt_digest"] = canonical_digest(report, digest_field="receipt_digest")
     return report
+
+
+def compare_runtime_measurement_sets(
+    baseline: list[Mapping[str, Any]], candidate: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Pair every isolated policy-cell process, refusing omissions or duplicates."""
+    blockers: list[str] = []
+    indexed: list[dict[int, Mapping[str, Any]]] = []
+    for name, values in (("baseline", baseline), ("candidate", candidate)):
+        rows: dict[int, Mapping[str, Any]] = {}
+        counts = {value.get("expected_cell_count") for value in values}
+        count = next(iter(counts)) if len(counts) == 1 else None
+        for value in values:
+            index = value.get("selected_cell_index")
+            if (value.get("measurement_scope") != "retained_policy_diagnostic"
+                    or type(index) is not int or index in rows):
+                blockers.append(name + "_scenario_identity_invalid_or_duplicated")
+                continue
+            rows[index] = value
+        if type(count) is not int or count <= 0 or set(rows) != set(range(count)):
+            blockers.append(name + "_scenario_set_incomplete")
+        indexed.append(rows)
+    if set(indexed[0]) != set(indexed[1]):
+        blockers.append("runtime_comparison_scenario_sets_differ")
+    pairs = []
+    for index in sorted(set(indexed[0]) & set(indexed[1])):
+        report = compare_runtime_measurements(indexed[0][index], indexed[1][index])
+        pairs.append({"selected_cell_index": index, "comparison": report})
+        blockers.extend(f"cell.{index}:{reason}" for reason in report["blockers"])
+    # A per-cell GPU match alone would permit a matrix spread over different
+    # devices. One retained physical GPU is required across the whole pair.
+    devices = {row.get("gpu_uuid") for value in [*baseline, *candidate]
+               for row in value.get("gpu_samples", [])}
+    bindings = {value.get("binding", {}).get("binding_digest") for value in [*baseline, *candidate]}
+    if len(devices) != 1 or None in devices:
+        blockers.append("same_gpu_required_across_scenarios")
+    if len(bindings) != 1 or None in bindings:
+        blockers.append("fixed_workcell_inputs_changed_across_scenarios")
+    result = {"schema_version": "native_task_runtime_comparison_set.v1",
+              "status": "blocked" if blockers else "measured_pending_correctness_review",
+              "scenario_comparisons": pairs, "blockers": sorted(set(blockers)),
+              "runtime_promotion_authorized": False, "improvement_qualified": False}
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    return result
 
 

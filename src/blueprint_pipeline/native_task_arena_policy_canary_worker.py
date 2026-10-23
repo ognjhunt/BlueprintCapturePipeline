@@ -1603,6 +1603,13 @@ def _run_selected_cell(
             raise RuntimeError("runtime_comparison_manifest_binding_mismatch")
         measurement = RuntimeMeasurement(output_path=output_root / "native_task_runtime_measurement.v1.json",
             variant=comparison["variant"], runtime_identity=comparison["runtime_identity"], binding=comparison["binding"])
+        measurement.value.update(
+            measurement_scope="retained_policy_diagnostic",
+            selected_cell_index=selected_cell_index,
+            expected_cell_count=len(inputs["cells"]),
+            selected_cell=inputs["cells"][selected_cell_index],
+            selected_cell_digest=canonical_digest({"value": inputs["cells"][selected_cell_index]}),
+        )
         bound_runtime = measurement.wrap(bound_runtime)
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
