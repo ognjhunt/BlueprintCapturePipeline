@@ -37,7 +37,7 @@ def _copy(source: Path, target: Path, expected: str) -> None:
 
 
 def retain_background(*, automation_root: Path, job_dir: Path, source_video_digest: str,
-                      task_context_digest: str) -> dict:
+                      task_context: dict) -> dict:
     """Validate the capture/context and retain the exact completed portable bundle."""
     original = _read(automation_root / "result.json")
     prepared = _read(automation_root / "background/prepared_background.json")
@@ -46,7 +46,7 @@ def retain_background(*, automation_root: Path, job_dir: Path, source_video_dige
     if (original.get("status") != "completed" or background.get("status") != "completed"
             or not background.get("mesh_available")
             or binding.get("source_video_digest") != source_video_digest
-            or binding.get("task_context_digest") != task_context_digest):
+            or binding.get("task_context_digest") != canonical_digest(dict(task_context))):
         raise ValueError("atlas_retained_handoff_capture_mismatch")
     download = background["download"]
     bundle_root = Path(download["directory"]).resolve()

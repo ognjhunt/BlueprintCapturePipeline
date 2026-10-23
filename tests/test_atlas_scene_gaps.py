@@ -45,6 +45,15 @@ def test_disocclusion_domain_can_bridge_open_scene_gaps_but_never_the_exterior()
     assert not novel[photo].any()
 
 
+def test_aiming_at_a_gap_does_not_make_the_rest_of_the_new_view_a_fill_target():
+    depth = np.zeros((80, 100), np.float32)
+    photographed = np.ones(depth.shape, bool)
+    domain = np.zeros(depth.shape, bool)
+    domain[20:40, 65:85] = True
+    labels, regions = gaps.gap_labels(depth, photographed, scene_outline=True, candidate_mask=domain)
+    assert len(regions) == 1 and np.array_equal(labels > 0, domain)
+
+
 def test_agent_must_name_real_regions_and_mask_bytes_cannot_change(tmp_path):
     labels = np.zeros((30, 40), np.uint16)
     labels[5:12, 5:12], labels[18:25, 25:32] = 1, 2

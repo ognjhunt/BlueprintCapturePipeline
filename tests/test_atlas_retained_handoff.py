@@ -7,6 +7,7 @@ import zipfile
 import pytest
 
 from blueprint_pipeline.atlas_retained_handoff import retain_background
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.website_atlas_scene_source import atlas_scene_source
 from tests.test_website_atlas_scene_source import job_fixture, digest, write, SHA
@@ -42,14 +43,14 @@ def completed(tmp_path):
         "zip_path": str(archive), "zip_sha256": _sha256_file(archive)}
     write(root / "result.json", digest(result["automation"]))
     write(root / "background/prepared_background.json", digest({
-        "binding": {"source_video_digest": SHA, "task_context_digest": "context"}}))
+        "binding": {"source_video_digest": SHA, "task_context_digest": canonical_digest({"context_digest": "context"})}}))
     return job, root, result
 
 
 def test_completed_background_adoption_is_idempotent_and_readable_by_object_preparation(tmp_path):
     job, root, result = completed(tmp_path)
     original = (root / "result.json").read_bytes()
-    options = dict(automation_root=root, job_dir=job, source_video_digest=SHA, task_context_digest="context")
+    options = dict(automation_root=root, job_dir=job, source_video_digest=SHA, task_context={"context_digest": "context"})
     adopted = retain_background(**options)
     assert retain_background(**options) == adopted
     assert (root / "result.json").read_bytes() == original
@@ -71,5 +72,5 @@ def test_changed_retained_inputs_refuse_before_adoption(tmp_path, changed):
         (root / "downloads/scene.zip").write_bytes(b"changed")
     with pytest.raises(ValueError, match="atlas_retained_handoff_"):
         retain_background(automation_root=root, job_dir=job, source_video_digest=SHA,
-                          task_context_digest="wrong" if changed == "context" else "context")
+                          task_context={"context_digest": "wrong" if changed == "context" else "context"})
     assert not (job / "automation/retained").exists()

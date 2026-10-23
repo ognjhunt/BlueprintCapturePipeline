@@ -17,7 +17,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v12"
+COMPLETION_REVISION = "v13"
 
 
 def camera_candidates(frames):
@@ -128,6 +128,18 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     from .atlas_scene_gaps import survey_gaps, select_gap_mask
     geometry_frames = [*frames, *existing_geometry_frames]
     gaps = survey_gaps(frames=frames, geometry_frames=geometry_frames, candidates=candidates, root=root / 'gaps')
+    from .atlas_completion_cameras import gap_target_candidates
+    aimed = gap_target_candidates(frames, candidates, gaps)
+    if aimed:
+        targeted = survey_gaps(frames=frames, geometry_frames=geometry_frames,
+                              candidates=aimed, root=root / 'gap-targets')
+        candidates.extend(aimed)
+        gaps = {**gaps, 'views': [*gaps['views'], *targeted['views']],
+                'previews': [*gaps['previews'], *targeted['previews']],
+                'binding_digest': canonical_digest({'base': gaps['binding_digest'],
+                                                    'targeted': targeted['binding_digest']})}
+        gaps['digest'] = canonical_digest(gaps, digest_field='digest')
+        write_json(root / 'gap-target-survey.json', gaps)
     if not any(row['gaps'] for row in gaps['views']):
         report = {'status': 'passed', 'generation_result_digest': gaps['digest'], 'generated_roots': [],
                   'generated_frame_ids': [], 'preservation_paths': [str(root / 'gaps/survey.json')],
