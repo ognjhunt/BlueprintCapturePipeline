@@ -8,7 +8,7 @@ import time
 def retain_references(proposal, root: Path, *, fetcher=None):
     from .website_object_spec_research import PageFetcher, _normalized_text, quoted_values
 
-    refs = (proposal.get("automation") or {}).get("scale_references", [])
+    refs = proposal.get("scale_references", (proposal.get("automation") or {}).get("scale_references", []))
     urls = list(dict.fromkeys(r.get("citation_url") for r in refs if r.get("citation_url")))
     reader = fetcher or PageFetcher(
         pages_root=root / "reference_pages", max_fetches=2, deadline=time.monotonic() + 45

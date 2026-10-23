@@ -287,7 +287,8 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
         {"digest": "sha256:pose", "operation": {"id": "source"}}, ["views"]))
     measured, segmented = [], []
     monkeypatch.setattr(measurements, "estimate_sizes", lambda **kw: measured.append(kw) or {
-        "digest": "sha256:sizes", "meters_per_unit_estimate": 0.8, "scale_status": "estimated_from_named_assumptions"})
+        "digest": "sha256:sizes", "status": "estimated", "binding": {"reference_masks_digest": "masks"},
+        "meters_per_unit_estimate": 0.8, "scale_status": "estimated_from_named_assumptions"})
     from blueprint_pipeline import atlas_reference_masks
     monkeypatch.setattr(atlas_reference_masks, "segment_scale_references",
                         lambda **kw: segmented.append(kw) or ["reference masks"])
@@ -306,6 +307,7 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
     result = pipeline.run_atlas_pipeline(**options)
     assert result["source_pose"] == {"status": "completed", "result_digest": "sha256:pose", "operation_id": "source",
         "pose_relative_path": "pose",
+        "measurements_relative_path": "scene_measurements.json",
         "submitted_frame_count": 2, "scene_measurements_digest": "sha256:sizes", "meters_per_unit_estimate": 0.8,
         "scale_status": "estimated_from_named_assumptions"}
     assert measured[0]["automation"] == {"plan": "reviewed"}
