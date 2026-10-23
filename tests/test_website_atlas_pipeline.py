@@ -285,9 +285,12 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
     monkeypatch.setattr(automation, "measurement_plan", lambda review: {"plan": "reviewed"})
     monkeypatch.setattr(measurements, "load_views", lambda root, value: (
         {"digest": "sha256:pose", "operation": {"id": "source"}}, ["views"]))
-    measured = []
+    measured, segmented = [], []
     monkeypatch.setattr(measurements, "estimate_sizes", lambda **kw: measured.append(kw) or {
         "digest": "sha256:sizes", "meters_per_unit_estimate": 0.8, "scale_status": "estimated_from_named_assumptions"})
+    from blueprint_pipeline import atlas_reference_masks
+    monkeypatch.setattr(atlas_reference_masks, "segment_scale_references",
+                        lambda **kw: segmented.append(kw) or ["reference masks"])
     stages = []
     options = {"source_video": video, "output_root": root, "checkpoint": stages.append,
                "task_context": {"capture_id": "c", "context_digest": "task"}}
@@ -307,6 +310,10 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
         "scale_status": "estimated_from_named_assumptions"}
     assert measured[0]["automation"] == {"plan": "reviewed"}
     assert measured[0]["output"] == root / "pose" / "scene_measurements.json"
+    # Each reference is checked against its named object's SAM mask on the posed views.
+    assert segmented[0]["frames"] == ["views"] and segmented[0]["references"] == []
+    assert segmented[0]["root"] == root / "pose" / "reference_masks"
+    assert measured[0]["reference_masks"] == ["reference masks"]
     assert [kw["output_root"] for kw in poses] == [root / "pose"] * 2
     # The retained pose resumes without another withdrawal check or quote.
     pipeline.run_atlas_pipeline(**options)

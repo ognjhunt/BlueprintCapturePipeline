@@ -185,14 +185,57 @@ def reference_agreement(references: list[dict]) -> tuple[list[dict], list[dict],
     return kept, [r for r in references if r not in kept], {**record, "basis": basis}
 
 
+#: A reference endpoint marks its object's edge; SAM's mask edge may sit a few
+#: pixels inside it. Farther than this from the mask, the endpoint is on something else.
+ENDPOINT_MASK_FRACTION = 0.005
+ENDPOINT_MASK_MIN_PX = 3
+
+
+def _on_named_object(row: dict | None, pixels: np.ndarray, frame: dict) -> None:
+    """Both endpoints lie on one SAM 3.1 instance of the object the reference names.
+
+    On 2026-10-23 one endpoint of the only reference sat on paper towels in front
+    of the dishwasher opening; its longer span made the whole scene small.
+    """
+    from .website_task_masks import decode_track_mask
+
+    if row is None:
+        raise ValueError("atlas_reference_object_unnamed")
+    height, width = frame["depth"].shape
+    radius = max(ENDPOINT_MASK_MIN_PX, round(ENDPOINT_MASK_FRACTION * math.hypot(width, height)))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    ends = np.rint(pixels).astype(int)
+    found = False
+    for observation in row["instances"]:
+        mask = decode_track_mask(observation)
+        if mask.shape != (height, width):
+            raise ValueError("atlas_reference_mask_grid_mismatch")
+        if not mask.any():
+            continue
+        found = True
+        near = cv2.dilate(mask.astype(np.uint8), kernel) > 0
+        if all(0 <= x < width and 0 <= y < height and near[y, x] for x, y in ends):
+            return
+    raise ValueError("atlas_reference_endpoint_off_object" if found else "atlas_reference_object_unsegmented")
+
+
 def estimate_sizes(
-    *, frames: list[dict], automation: dict, pose_digest: str, output: Path, tracks: list[dict] = ()
+    *, frames: list[dict], automation: dict, pose_digest: str, output: Path, tracks: list[dict] = (),
+    reference_masks: list[dict] | None = None,
 ) -> dict:
+    """Metres per unit from the agreeing references, and the sizes they give.
+
+    With ``reference_masks`` (``atlas_reference_masks``), a reference counts only
+    when its endpoints lie on the object it names; without, references are taken
+    as placed (retained plans that predate naming them).
+    """
     binding = {
         "pose_digest": pose_digest,
         "automation": automation,
         "tracks_digest": canonical_digest({"tracks": tracks}),
     }
+    if reference_masks is not None:
+        binding["reference_masks_digest"] = canonical_digest({"reference_masks": reference_masks})
     if output.is_file():
         value = json.loads(output.read_text())
         if value.get("binding") != binding or value.get("digest") != canonical_digest(
@@ -201,11 +244,14 @@ def estimate_sizes(
             raise ValueError("atlas_measurements_binding_changed")
         return value
     by_id = {f["frame_id"]: f for f in frames}
+    named = None if reference_masks is None else {row["reference_index"]: row for row in reference_masks}
     accepted, gaps = [], []
-    for reference in automation.get("scale_references", []):
+    for index, reference in enumerate(automation.get("scale_references", [])):
         try:
             f = by_id[reference["frame_id"]]
             pixels = mapped_pixels(f, reference["endpoints_normalized"])
+            if named is not None:
+                _on_named_object(named.get(index), pixels, f)
             points = np.array([reference_point(f, xy) for xy in pixels])
             distance = float(np.linalg.norm(points[1] - points[0]))
             if not math.isfinite(distance) or distance <= 1e-6:

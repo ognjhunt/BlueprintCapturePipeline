@@ -33,6 +33,9 @@ class ScaleReference(BaseModel):
     assumption: str = Field(min_length=1)
     citation_url: str | None = None
     citation_quote: str | None = Field(default=None, max_length=300)
+    #: What SAM 3.1 should find in this view: the measured object alone. Its
+    #: endpoints are checked against that mask. Retained plans predate it.
+    segmentation_prompt: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def check_reference(self):
@@ -98,7 +101,10 @@ doorway or door leaf, a stair riser, a ceiling tile, a work surface height
 parking bay, or a built-in appliance. Several views of one object count as one,
 under one label. Put both endpoints on the named object itself, never on
 anything in front of or beside it, in a view where the dimension is large and
-seen nearly face-on. References are cross-checked: an object whose range
+seen nearly face-on. Give each reference a short segmentation_prompt naming
+only that object as SAM 3.1 should find it in that view (for example
+"freestanding range" or "doorway"): a reference whose endpoints fall off that
+object's mask is set aside. References are cross-checked: an object whose range
 excludes the others' consensus is set aside, and without a majority no scale is
 given. These are approximate class/visual priors, never measurements. Do not
 guess an exact product model.
