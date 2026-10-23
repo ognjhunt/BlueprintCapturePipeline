@@ -32,7 +32,7 @@ from PIL import Image
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
-from .local_reconstruction_adapters import _sha256_file
+from .local_reconstruction_adapters import _probe_video, _sha256_file
 from .website_task_masks import decode_track_mask
 
 SCHEMA_VERSION = "website_assembly_coverage.v1"
@@ -208,9 +208,14 @@ def candidate_frames(*, source_track: Mapping[str, Any], registry: Sequence[Mapp
     return sorted(chosen.values(), key=lambda row: row["timestamp_seconds"])
 
 
-def decode_upright_frames(*, video: Path, video_digest: str, rotation: float,
+def decode_upright_frames(*, video: Path, video_digest: str, rotation: float | None,
                           frames: Sequence[Mapping[str, Any]], output_root: Path) -> dict[str, dict[str, Any]]:
     """Exact decoded indices, full resolution, rotated upright like every geometry input."""
+    if rotation is None:
+        # Atlas may pose already-upright images whose image-to-view rotation is
+        # zero. Re-decoding the original phone video must use its own display
+        # transform, not the transform of those derived images.
+        rotation = float(_probe_video(video, "ffprobe")["stream"].get("display_rotation_degrees") or 0)
     if not math.isfinite(rotation) or rotation % 90:
         raise ValueError("website_source_rotation_not_supported")
     indexes = sorted({int(row["decoded_index"]) for row in frames})
@@ -1138,12 +1143,9 @@ def assembly_coverage(*, target: Mapping[str, Any], assembly_label: str, task_pa
     frames = source_geometry["frames"]
     candidates = candidate_frames(source_track=source_track, registry=registry,
                                   geometry_frame_ids={frame["frame_id"] for frame in frames})
-    rotations = {float(frame["display_rotation_degrees"]) for frame in frames}
-    if len(rotations) != 1:
-        raise ValueError("website_source_rotation_not_supported")
     root = output_root / target["target_id"]
     upright = decode_upright_frames(video=source_video, video_digest=binding["source_video_digest"],
-                                    rotation=rotations.pop(), frames=candidates, output_root=root / "frames")
+                                    rotation=None, frames=candidates, output_root=root / "frames")
     for row in candidates:
         image = upright[row["frame_id"]]
         if (image["width"], image["height"]) != (row["mask_width"], row["mask_height"]):
