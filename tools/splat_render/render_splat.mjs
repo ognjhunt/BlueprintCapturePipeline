@@ -24,6 +24,9 @@ function arg(name, def = null) {
 }
 
 const splatArg = arg("splat", null);
+const meshArg = arg("mesh", null);
+const meshPath = meshArg ? path.resolve(meshArg) : null;
+const transparent = process.argv.includes("--transparent");
 const compositionArg = arg("composition", null);
 const splatPath = splatArg ? path.resolve(splatArg) : null;
 const outDir = path.resolve(arg("out"));
@@ -74,7 +77,7 @@ if (process.argv.includes("--print-graphics-args")) {
   process.exit(0);
 }
 
-if ((!splatPath && !compositionArg) || (splatPath && compositionArg) || !outDir) {
+if ([splatPath, meshPath, compositionArg].filter(Boolean).length !== 1 || !outDir) {
   console.error("usage: node render_splat.mjs (--splat <file> | --composition <json>) --out <dir> [--cameras <json>] [--width N --height N]");
   process.exit(2);
 }
@@ -183,6 +186,8 @@ async function main() {
     let file;
     if (urlPath === "/splat" && splatPath) {
       file = splatPath;
+    } else if (urlPath === "/surface" && meshPath) {
+      file = meshPath;
     } else if (urlPath === "/composite/background" && compositeBackgroundPath) {
       file = compositeBackgroundPath;
     } else if (urlPath.startsWith("/composite/object/")) {
@@ -252,6 +257,8 @@ async function main() {
     page_errors: pageErrors,
     composition: null,
     browser_version: browser.version(),
+    transparent_background: transparent,
+    input_kind: meshPath ? "triangle_mesh" : "gaussian_splat",
   };
   try {
     checkpoint("page_navigation_started");
@@ -292,11 +299,15 @@ async function main() {
       ) {
         blockers.push("composite_exactly_once_invariant_failed");
       }
+    } else if (meshPath) {
+      bounds = await withTimeout(page.evaluate(
+        async ({u,w,h,bgc,t}) => await window.BlueprintSplat.loadSurface(u,w,h,bgc,t),
+        {u:`${base}/surface`,w:width,h:height,bgc:bg,t:transparent}), loadTimeoutMs, "surface_load");
     } else {
       bounds = await withTimeout(
         page.evaluate(
-          async ({ u, w, h, bgc }) => await window.BlueprintSplat.load(u, w, h, bgc),
-          { u: `${base}/splat`, w: width, h: height, bgc: bg },
+          async ({ u, w, h, bgc, t }) => await window.BlueprintSplat.load(u, w, h, bgc, t),
+          { u: `${base}/splat`, w: width, h: height, bgc: bg, t:transparent },
         ),
         loadTimeoutMs,
         "splat_load",

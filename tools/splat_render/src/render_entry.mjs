@@ -2,6 +2,7 @@
 // Exposes window.BlueprintSplat.{load, renderView} so a Playwright driver can frame the splat
 // to its real bounding box and capture per-camera images of the actual captured scene.
 import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { SplatMesh, SparkRenderer } from "@sparkjsdev/spark";
 
 const CALIBRATED_NEAR_M = 0.01;
@@ -21,7 +22,7 @@ const state = {
   composition: null,
 };
 
-function setupRenderer(width, height, clearColor) {
+function setupRenderer(width, height, clearColor, transparent = false) {
   const canvas = document.getElementById("c");
   canvas.width = width;
   canvas.height = height;
@@ -29,11 +30,11 @@ function setupRenderer(width, height, clearColor) {
     canvas,
     antialias: true,
     preserveDrawingBuffer: true,
-    alpha: false,
+    alpha: transparent,
   });
   renderer.setPixelRatio(1);
   renderer.setSize(width, height, false);
-  renderer.setClearColor(clearColor == null ? 0x0b0b10 : clearColor, 1);
+  renderer.setClearColor(clearColor == null ? 0x0b0b10 : clearColor, transparent ? 0 : 1);
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(50, width / height, CALIBRATED_NEAR_M, CALIBRATED_FAR_M);
@@ -105,8 +106,8 @@ function finalizeSceneState({ canvas, renderer, scene, camera, meshes, backgroun
   return { ...state.bounds, _diag: state._diag };
 }
 
-async function load(url, width, height, clearColor) {
-  const initialized = setupRenderer(width, height, clearColor);
+async function load(url, width, height, clearColor, transparent = false) {
+  const initialized = setupRenderer(width, height, clearColor, transparent);
   const { scene } = initialized;
 
   const mesh = new SplatMesh({ url });
@@ -121,6 +122,21 @@ async function load(url, width, height, clearColor) {
     backgroundMesh: mesh,
     objectMeshes: new Map(),
   });
+}
+
+async function loadSurface(url, width, height, clearColor, transparent = false) {
+  const initialized = setupRenderer(width, height, clearColor, transparent);
+  const mesh = (await new GLTFLoader().loadAsync(url)).scene;
+  mesh.traverse(item => {
+    if (item.isMesh) item.material = new THREE.MeshBasicMaterial({vertexColors:true, side:THREE.DoubleSide});
+  });
+  initialized.scene.add(mesh);
+  const box = new THREE.Box3().setFromObject(mesh);
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  const bounds = {center:box.getCenter(new THREE.Vector3()).toArray(),
+    size:box.getSize(new THREE.Vector3()).toArray(), radius:sphere.radius};
+  Object.assign(state, initialized, {mesh, meshes:[mesh], bounds, composition:null});
+  return bounds;
 }
 
 async function loadComposite(backgroundUrl, objects, width, height, clearColor) {
@@ -283,5 +299,5 @@ async function renderView(spec, settleFrames = 10, settleMs = 110) {
   return image;
 }
 
-window.BlueprintSplat = { load, loadComposite, setOverlay, setCamera, warmup, renderView };
+window.BlueprintSplat = { load, loadSurface, loadComposite, setOverlay, setCamera, warmup, renderView };
 window.__sparkReady = true;
