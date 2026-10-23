@@ -72,6 +72,11 @@ a digest-bound post-cleanup result preserves its blockers and nonzero cost.
 This attempt provides no startup, memory, stepping, camera, reset, contact, or
 episode measurements.
 
+When later object cleanup completes, retain a derived closeout without rewriting
+the failed result with `python scripts/seal_native_task_arena_provider_zero.py
+--authority AUTHORITY --result ORIGINAL_RESULT --post-cleanup-output-dir NEW_DIR`.
+The command verifies the original failure, costs, cleanup, watchdog and teardown.
+
 Readback of the pinned NVIDIA image configuration confirmed `User=isaaclab`.
 The Vast SSH bootstrap requires root, so this exact image now requests
 `user=root`; other images and launch modes retain their previous behavior.

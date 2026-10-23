@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from blueprint_pipeline.native_task_arena_paid_authority import (
+    materialize_native_task_arena_post_cleanup_closeout,
     materialize_native_task_arena_provider_zero,
 )
 
@@ -21,18 +22,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--authority", required=True)
     parser.add_argument("--result", required=True)
-    parser.add_argument("--output", required=True)
+    output = parser.add_mutually_exclusive_group(required=True)
+    output.add_argument("--output")
+    output.add_argument("--post-cleanup-output-dir", help="Retain later verified cleanup in a new directory")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        receipt = materialize_native_task_arena_provider_zero(
-            authority_path=args.authority,
-            result_path=args.result,
-            output_path=args.output,
-        )
+        if args.post_cleanup_output_dir:
+            receipt = materialize_native_task_arena_post_cleanup_closeout(
+                authority_path=args.authority, result_path=args.result,
+                output_dir=args.post_cleanup_output_dir,
+            )
+        else:
+            receipt = materialize_native_task_arena_provider_zero(
+                authority_path=args.authority,
+                result_path=args.result,
+                output_path=args.output,
+            )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(
             json.dumps(
@@ -50,7 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "status": "completed",
                 "receipt_digest": receipt.get("receipt_digest"),
-                "output": str(Path(args.output).expanduser().resolve()),
+                "output": str(Path(args.post_cleanup_output_dir or args.output).expanduser().resolve()),
                 "provider_mutation_performed": False,
             },
             sort_keys=True,

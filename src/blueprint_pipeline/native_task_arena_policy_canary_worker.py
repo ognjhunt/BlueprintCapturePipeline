@@ -1583,34 +1583,10 @@ def _run_selected_cell(
         )
         for candidate in inputs["candidate_ids"]
     }
-    if set(provider_manifest.get("execution_spec_digests") or {}) != set(specs):
-        raise RuntimeError("policy_canary_execution_spec_bindings_missing")
-    for candidate, spec in specs.items():
-        if (spec.get("candidate_id") != candidate
-                or spec.get("execution_spec_digest") != canonical_digest(spec, digest_field="execution_spec_digest")
-                or spec.get("execution_spec_digest") != provider_manifest["execution_spec_digests"][candidate]
-                or spec.get("task_success_contract_digest") != inputs["task_success_contract_digest"]):
-            raise RuntimeError("policy_canary_frozen_execution_spec_mismatch:" + candidate)
-    comparison_record = provider_manifest.get("runtime_comparison")
-    if comparison_record is not None:
-        from blueprint_pipeline.native_task_runtime_comparison import RuntimeMeasurement, validate_comparison_request
-        if comparison_record.get("relative_path") != "runtime_inputs/native_task_runtime_comparison_request.v1.json":
-            raise RuntimeError("runtime_comparison_request_path_invalid")
-        comparison = validate_comparison_request(_read(runtime / comparison_record["relative_path"]),
-            inputs=inputs, plan=base_scene_plan, specs=specs)
-        if (comparison["request_digest"] != comparison_record.get("request_digest")
-                or comparison["runtime_identity"]["container_image"] != provider_manifest.get("container_image")):
-            raise RuntimeError("runtime_comparison_manifest_binding_mismatch")
-        measurement = RuntimeMeasurement(output_path=output_root / "native_task_runtime_measurement.v1.json",
-            variant=comparison["variant"], runtime_identity=comparison["runtime_identity"], binding=comparison["binding"])
-        measurement.value.update(
-            measurement_scope="retained_policy_diagnostic",
-            selected_cell_index=selected_cell_index,
-            expected_cell_count=len(inputs["cells"]),
-            selected_cell=inputs["cells"][selected_cell_index],
-            selected_cell_digest=canonical_digest({"value": inputs["cells"][selected_cell_index]}),
-        )
-        bound_runtime = measurement.wrap(bound_runtime)
+    from blueprint_pipeline.native_task_runtime_comparison import bind_policy_runtime_measurement
+    bound_runtime = bind_policy_runtime_measurement(runtime=runtime, output_root=output_root,
+        inputs=inputs, plan=base_scene_plan, specs=specs, provider_manifest=provider_manifest,
+        selected_cell_index=selected_cell_index, bound_runtime=bound_runtime)
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
     team_binding = _team_embodiment_binding(specs)
