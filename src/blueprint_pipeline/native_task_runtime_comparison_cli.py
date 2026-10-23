@@ -29,6 +29,8 @@ def main(argv: list[str] | None = None) -> int:
     policy.add_argument("--variant", choices=("baseline", "isaaclab_3_ga"), required=True)
     policy.add_argument("--confirmed-by", required=True)
     policy.add_argument("--authorization-reference", required=True)
+    policy.add_argument("--allowed-machine-id", action="append", type=int,
+                        help="Bind the sealed policy authority to this Vast machine; repeat for an admitted set")
     policy.add_argument("--output", required=True, help="New preparation directory")
     compare = sub.add_parser("compare")
     compare.add_argument("--baseline", required=True)
@@ -49,7 +51,8 @@ def main(argv: list[str] | None = None) -> int:
             retained_spec_paths={"pi05_droid": args.pi05_spec, "groot_n17_droid": args.groot_spec},
             readiness_path=args.readiness, construction_path=args.construction, control_path=args.control,
             implementation_commit=args.implementation_commit, variant=args.variant,
-            confirmed_by=args.confirmed_by, authorization_reference=args.authorization_reference, output_dir=output)
+            confirmed_by=args.confirmed_by, authorization_reference=args.authorization_reference, output_dir=output,
+            allowed_machine_ids=args.allowed_machine_id)
         print(json.dumps(result))
         return 0 if result["status"] == "passed" else 2
     if args.command == "compare-set":

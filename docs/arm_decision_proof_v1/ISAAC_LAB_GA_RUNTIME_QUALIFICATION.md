@@ -50,6 +50,11 @@ incomplete receipts. Numerical improvement alone does not authorize promotion:
 camera, reset, contact, scoring and complete policy-media evidence need review.
 Policy measurements retain the selected scenario and seed. Set comparison
 requires every expected scenario exactly once and one GPU across the entire set.
+After observing the GA policy machine, prepare the baseline with
+`prepare-policy --allowed-machine-id MACHINE_ID`. The sealed session authority
+constrains provider selection; invalid or altered constraints are refused. The
+actual GPU UUID still has to match, because a machine can contain several GPUs.
+Preparation creates and validates a unique watchdog-compatible resource name.
 The 39 focused comparison, retained-input, lifecycle and import-closure tests
 cover mismatched, missing and duplicated scenarios plus cross-scenario GPU drift.
 Actual GPU qualification results will be recorded here after execution.

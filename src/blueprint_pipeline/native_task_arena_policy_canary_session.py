@@ -371,6 +371,12 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
+    if "allowed_machine_ids" in payload:
+        machines = payload["allowed_machine_ids"]
+        if (payload.get("run_kind") != RUN_KIND or not isinstance(machines, list) or not machines
+                or any(type(machine) is not int or machine <= 0 for machine in machines)
+                or len(machines) != len(set(machines))):
+            raise PolicyCanarySessionError("policy_canary_session_machine_constraint_invalid")
     candidate_ids = _candidate_set(payload.get("candidate_ids"), payload.get("run_kind"))
     if (
         payload.get("schema_version") != AUTHORITY_SCHEMA_VERSION
@@ -505,6 +511,7 @@ def build_session_authority(
     hard_ttl_seconds: int,
     execution_release: Mapping[str, Any] | None = None,
     hard_deadline_epoch: float | None = None,
+    allowed_machine_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     inputs = validate_runtime_input_manifest(runtime_inputs)
     candidate_ids = _candidate_set(inputs["candidate_ids"], inputs["run_kind"])
@@ -542,6 +549,7 @@ def build_session_authority(
         "resource_name": resource_name,
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
+        **({"allowed_machine_ids": list(allowed_machine_ids)} if allowed_machine_ids is not None else {}),
         **({"hard_deadline_epoch": hard_deadline_epoch} if hard_deadline_epoch is not None else {}),
         "maximum_provider_allocations": 1,
         "retry_cap": 0,

@@ -5,6 +5,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 from typing import Any, Mapping
+from uuid import uuid4
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -20,6 +21,7 @@ def prepare_retained_policy_comparison(
     construction_path: str | Path, control_path: str | Path,
     implementation_commit: str, variant: str, confirmed_by: str,
     authorization_reference: str, output_dir: str | Path,
+    allowed_machine_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """Translate existing freezes; never create a Website activation or qualify controls.
 
@@ -147,7 +149,11 @@ def prepare_retained_policy_comparison(
     write_json(output / 'comparison-request.json', comparison)
     authority = build_session_authority(activation_manifest=activation, activation_record=_record(output / 'activation.json'),
         runtime_inputs=inputs, runtime_input_record=_record(output / 'runtime-inputs.json'),
-        resource_name='blueprint-native-task-policy-canary-runtime-' + variant, hard_cap_usd=2, hard_ttl_seconds=7200)
+        resource_name='blueprint-native-task-policy-canary-runtime-' + uuid4().hex, hard_cap_usd=2, hard_ttl_seconds=7200,
+        allowed_machine_ids=allowed_machine_ids)
+    from .vast_independent_watchdog_control import validate_independent_vast_watchdog_names
+    validate_independent_vast_watchdog_names(pod_name_prefix='blueprint-native-task-policy-canary-',
+                                           resource_name_exact=authority['resource_name'])
     write_json(output / 'session-authority.json', authority)
     from .native_task_arena_policy_canary_worker import preflight_policy_canary_static_inputs
     preflight = preflight_policy_canary_static_inputs(inputs=inputs, authority=authority, base_scene_plan=plan,

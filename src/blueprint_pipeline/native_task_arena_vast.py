@@ -667,6 +667,7 @@ def run_native_task_arena_policy_canary_session_vast(
             instance_label_prefix="blueprint-native-task-policy-canary-",
             instance_label_exact=str(authority["resource_name"]),
             blocker_prefix="native_task_arena_policy_canary_session",
+            allowed_machine_ids=tuple(authority.get("allowed_machine_ids", ())),
             min_gpu_ram_mb=46_000,
             min_compute_cap=POLICY_MIN_COMPUTE_CAP,
             allowed_active_instance_ids=tuple(

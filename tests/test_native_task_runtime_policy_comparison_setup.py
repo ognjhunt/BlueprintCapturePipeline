@@ -58,10 +58,17 @@ def inputs(tmp_path, monkeypatch):
 
 def test_both_variants_freeze_identical_inputs_and_keep_failed_controls(tmp_path, monkeypatch):
     kwargs = inputs(tmp_path, monkeypatch)
-    results = [prepare_retained_policy_comparison(**kwargs, variant=variant, output_dir=tmp_path / variant)
+    results = [prepare_retained_policy_comparison(**kwargs, variant=variant, output_dir=tmp_path / variant,
+                                                 allowed_machine_ids=[1234] if variant == 'baseline' else None)
                for variant in ('baseline', 'isaaclab_3_ga')]
     assert results[0]['binding_digest'] == results[1]['binding_digest']
+    assert json.loads((tmp_path / 'baseline/session-authority.json').read_text())['allowed_machine_ids'] == [1234]
+    assert 'allowed_machine_ids' not in json.loads((tmp_path / 'isaaclab_3_ga/session-authority.json').read_text())
     for variant in ('baseline', 'isaaclab_3_ga'):
+        from blueprint_pipeline.vast_independent_watchdog_control import validate_independent_vast_watchdog_names
+        authority = json.loads((tmp_path / variant / 'session-authority.json').read_text())
+        validate_independent_vast_watchdog_names(pod_name_prefix='blueprint-native-task-policy-canary-',
+                                               resource_name_exact=authority['resource_name'])
         prepared = json.loads((tmp_path / variant / 'runtime-inputs.json').read_text())
         preflight = json.loads((tmp_path / variant / 'static-preflight.json').read_text())
         observation_checks = [row for row in preflight['checks'] if row['check'].endswith('.observation_route')]

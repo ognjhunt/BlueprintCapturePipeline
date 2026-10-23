@@ -15,6 +15,7 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
     consume_session_authority_once,
     execute_paired_session,
     validate_runtime_input_manifest,
+    validate_session_authority,
     validate_session_result,
 )
 from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
@@ -115,7 +116,7 @@ def _runtime_inputs(tmp_path: Path, activation: dict[str, object]) -> dict[str, 
     return value
 
 
-def _authority(tmp_path: Path) -> tuple[dict[str, object], dict[str, object]]:
+def _authority(tmp_path: Path, **options) -> tuple[dict[str, object], dict[str, object]]:
     activation = _activation()
     activation_path = tmp_path / "activation.json"
     activation_path.write_text(json.dumps(activation) + "\n", encoding="utf-8")
@@ -130,8 +131,23 @@ def _authority(tmp_path: Path) -> tuple[dict[str, object], dict[str, object]]:
         resource_name="blueprint-native-task-policy-canary-839873-0123456789abcdef",
         hard_cap_usd=4.0,
         hard_ttl_seconds=14_400,
+        **options,
     )
     return authority, inputs
+
+
+def test_session_authority_seals_machine_constraint(tmp_path):
+    authority, _ = _authority(tmp_path, allowed_machine_ids=[1234])
+    assert validate_session_authority(authority)["allowed_machine_ids"] == [1234]
+    authority["allowed_machine_ids"] = [5678]
+    with pytest.raises(PolicyCanarySessionError, match="authority_digest_invalid"):
+        validate_session_authority(authority)
+
+
+@pytest.mark.parametrize("machines", [[], [0], [-1], [True], ["1234"], [1234, 1234]])
+def test_session_authority_refuses_invalid_machine_constraint(tmp_path, machines):
+    with pytest.raises(PolicyCanarySessionError, match="machine_constraint_invalid"):
+        _authority(tmp_path, allowed_machine_ids=machines)
 
 
 def test_session_authority_binds_one_allocation_and_typed_controls_gaps(
