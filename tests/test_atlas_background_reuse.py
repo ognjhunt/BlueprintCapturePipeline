@@ -77,8 +77,12 @@ def test_expanded_set_edits_only_new_view_and_reviews_both_without_rewriting_pri
     monkeypatch.setattr(website_image_repair_agent, 'image_repair_enabled', lambda: False)
     monkeypatch.setattr(background, '_provider_preflight', lambda: None)
     monkeypatch.setattr(background, 'object_evidence', lambda **_: {})
-    monkeypatch.setattr(background, 'segment_objects', lambda **_: [{'disposition': 'remove'}])
-    monkeypatch.setattr(background, 'prepare_masked_frames', lambda **_: prepared)
+    segmented = []
+    def segment(**kw):
+        segmented.append([f['frame_id'] for f in kw['frames']])
+        return [{'disposition': 'remove'}]
+    monkeypatch.setattr(background, 'segment_objects', segment)
+    monkeypatch.setattr(background, 'prepare_masked_frames', lambda **_: [prepared[1]])
     monkeypatch.setattr(editor, '_validated_backend', lambda *_a, **_kw:
                         ({}, {'pricing_binding': {'max_cost_per_request_usd': 1}}, 'backend'))
     root = tmp_path / 'expanded'
@@ -86,12 +90,14 @@ def test_expanded_set_edits_only_new_view_and_reviews_both_without_rewriting_pri
     frames = [{'frame_id': key, 'rgb': np.full((16, 20, 3), value, np.uint8),
                'intrinsics': {'width': 20, 'height': 16}} for key, value in [('old', 40), ('new', 60)]]
     actual = background.run_background(frames=frames,
-        objects=[{'target_id': 'dishwasher', 'label': 'Dishwasher', 'disposition': 'remove'}],
+        objects=[{'target_id': 'dishwasher', 'label': 'Dishwasher', 'disposition': 'remove',
+                  'regions': [{'frame_id': 'new', 'box_xywh_normalized': [.1, .1, .8, .8]}]}],
         automation={'removal_instruction': 'Remove dishwasher', 'mask_margin_fraction': .01, 'anchor_frame_id': 'old'},
         inputs={'digest': 'inputs'}, pose={'digest': 'pose'}, root=root, context=context,
         policy={'rgbd_view_cost_usd': .05}, source_digest='video', task_runner=lambda **_: pytest.fail('Atlas upload before review'),
         release_blockers=lambda: ('commit', []), selected_frame_ids=['old', 'new'], prior_background_path=prior)
     assert calls == [['new']]
+    assert segmented == [['new']]
     assert [r['frame_id'] for r in reviewed[0]] == ['old', 'new']
     assert actual['reused_prepared_frame_ids'] == ['old'] and actual['frames'][0] == old
     assert prior.read_bytes() == prior_bytes and Path(old['image_path']).read_bytes() == accepted_bytes

@@ -530,8 +530,13 @@ def run_background(
         return retained
     reused, prior_digest = reusable_background(prior_background_path, source_digest=source_digest,
         context=context, frames=frames, objects=objects)
+    reused_ids = {row['frame_id'] for row in reused}
+    edit_frames = [frame for frame in frames if frame['frame_id'] not in reused_ids]
+    edit_ids = {frame['frame_id'] for frame in edit_frames}
+    edit_objects = [{**obj, 'regions': [r for r in obj['regions'] if r['frame_id'] in edit_ids]}
+                    for obj in objects if any(r['frame_id'] in edit_ids for r in obj['regions'])]
     # Complete deterministic geometry and cost checks before the first upload.
-    object_evidence(frames=frames, objects=objects, inputs=inputs)
+    object_evidence(frames=edit_frames, objects=edit_objects, inputs=inputs)
     if not editor_first and any(o["disposition"] == "remove" for o in objects):
         centers = [f["extrinsics"]["position"] for f in frames]
         if not centers or max(math.dist(centers[0], p) for p in centers) < 1e-6:
@@ -575,14 +580,14 @@ def run_background(
     _provider_preflight()
     check("automation_segmentation")
     selected = segment_objects(
-        frames=frames,
-        objects=objects,
+        frames=edit_frames,
+        objects=edit_objects,
         inputs=inputs,
         task_context=context,
         source_digest=source_digest,
         root=root / "sam",
         **({"transients": transients} if transients else {}),
-    )
+    ) if edit_frames else []
     found = [r for r in selected if r.get("task_effect") == "transient"]
     selected = [r for r in selected if r.get("task_effect") != "transient"]
     measurements = estimate_sizes(
@@ -596,19 +601,23 @@ def run_background(
         "metric_measurement_proven": False, "physical_evidence": False,
     }
     removed = [r for r in selected if r["disposition"] == "remove"]
-    if not removed and not any(o["runs"] for r in found for o in r["track"]["observations"]):
+    if not removed and not reused and not any(o["runs"] for r in found for o in r["track"]["observations"]):
         return {
             "status": "not_requested",
             "measurements": measurements,
             "reason": "all_objects_kept",
         }
     prepared = prepare_masked_frames(
-        frames=frames,
+        frames=edit_frames,
         targets=[*selected, *found],
         margin=automation["mask_margin_fraction"],
         root=root / "originals",
     )
-    if not any(r["remaining_pixel_count"] for r in prepared):
+    prepared.extend({**row, 'image_path': row['original_image_path'], 'image_digest': row['original_image_digest']}
+                    for row in reused)
+    order = {frame['frame_id']: i for i, frame in enumerate(frames)}
+    prepared.sort(key=lambda row: order[row['frame_id']])
+    if not any(r["remaining_pixel_count"] for r in prepared) and not reused:
         raise ValueError("atlas_removal_masks_empty")
     prepared_by_id = {row['frame_id']: row for row in prepared}
     reused = [row for row in reused if set(prepared_by_id[row['frame_id']]['removed_task_object_ids'])
@@ -636,7 +645,7 @@ def run_background(
         (
             r
             for r in prepared
-            if r["frame_id"] == automation.get("anchor_frame_id") and r["remaining_pixel_count"]
+            if r["frame_id"] == automation.get("anchor_frame_id") and (r["remaining_pixel_count"] or r['frame_id'] in reused_ids)
         ),
         None,
     )

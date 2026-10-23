@@ -205,6 +205,11 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             raise ValueError("atlas_refinement_binding_changed")
         if not binding_path.exists():
             write_json(binding_path, binding)
+    reuse_options = {}
+    if feedback is not None:
+        parent_background = Path(feedback['parent_root']) / 'automation/background/prepared_background.json'
+        if parent_background.is_file():
+            reuse_options['prior_background_path'] = parent_background
     base_root = output_root / "survey"
     survey_path = base_root / "atlas_video_survey.json"
     if feedback is not None:
@@ -280,7 +285,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         automation = run_sponsored_website_atlas_automation(
             pose_root=None, inputs=inputs, review=review, output_root=output_root / "automation",
             task_context=task_context, configuration=load_configuration(task_context, source_digest),
-            experimental=experimental, max_polls=max_polls, checkpoint=checkpoint, edit_scope=edit_scope)
+            experimental=experimental, max_polls=max_polls, checkpoint=checkpoint, edit_scope=edit_scope,
+            **reuse_options)
         if automation["status"] == "processing":
             return automation
         background = automation.get("background") or {}
@@ -378,10 +384,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         automation = run_sponsored_website_atlas_automation(pose_root=pose_root, inputs=inputs, review=review,
             output_root=output_root / "automation", task_context=task_context,
             configuration=load_configuration(task_context, source_digest), experimental=experimental, max_polls=max_polls,
-            checkpoint=checkpoint, edit_scope=edit_scope,
-            **({'prior_background_path': Path(feedback['parent_root']) / 'automation/background/prepared_background.json'}
-               if feedback is not None and (Path(feedback['parent_root']) / 'automation/background/prepared_background.json').is_file()
-               else {}))
+            checkpoint=checkpoint, edit_scope=edit_scope, **reuse_options)
         result["automation"] = automation
         result["size_estimates"] = automation.get("measurements")
         if automation["status"] == "processing":
