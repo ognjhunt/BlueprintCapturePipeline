@@ -313,6 +313,8 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
     # Each reference is checked against its named object's SAM mask on the posed views.
     assert segmented[0]["frames"] == ["views"] and segmented[0]["references"] == []
     assert segmented[0]["root"] == root / "pose" / "reference_masks"
+    segmented[0]["checkpoint"]("reference_segmentation")  # the job's own withdrawal check
+    assert stages[-1] == "reference_segmentation"
     assert measured[0]["reference_masks"] == ["reference masks"]
     assert [kw["output_root"] for kw in poses] == [root / "pose"] * 2
     # The retained pose resumes without another withdrawal check or quote.

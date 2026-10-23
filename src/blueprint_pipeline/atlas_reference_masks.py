@@ -8,18 +8,20 @@ from the single captured video.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 PROMPT_PREFIX = "scale_reference_"
 
 
 def segment_scale_references(*, frames: Sequence[Mapping[str, Any]], references: Sequence[Mapping[str, Any]],
-                             root: Path, task_context: Mapping[str, Any],
-                             source_digest: str | None) -> list[dict[str, Any]] | None:
+                             root: Path, task_context: Mapping[str, Any], source_digest: str | None,
+                             checkpoint: Callable[[str], None]) -> list[dict[str, Any]] | None:
     """Per named reference, every SAM 3.1 instance of its object in its own view.
 
     None when no reference names its object (a retained plan from before the
-    names): those references are measured as placed.
+    names): those references are measured as placed. ``checkpoint`` (the job's
+    withdrawal check) runs before the views reach the provider: a capture
+    withdrawn while it was being posed discloses nothing more.
     """
     from .meta_sam31 import run_meta_sam31
 
@@ -30,6 +32,8 @@ def segment_scale_references(*, frames: Sequence[Mapping[str, Any]], references:
         raise ValueError("atlas_reference_source_video_digest_missing")
     by_id = {frame["frame_id"]: frame for frame in frames}
     views = sorted({row["frame_id"] for _, row in named if row["frame_id"] in by_id})
+    if views:
+        checkpoint("reference_segmentation")
     tracks = run_meta_sam31(
         frame_registry=[{"source_frame_id": frame_id, "width": int(by_id[frame_id]["rgb"].shape[1]),
                          "height": int(by_id[frame_id]["rgb"].shape[0])} for frame_id in views],

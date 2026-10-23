@@ -823,10 +823,11 @@ def test_reference_objects_are_segmented_once_on_their_own_views(tmp_path, monke
     from blueprint_pipeline import atlas_reference_masks, meta_sam31
 
     frames = [view(tmp_path, "a"), view(tmp_path, "b", position=1)]
-    calls = []
+    calls, events = [], []
 
     def run(**kwargs):
         calls.append(kwargs)
+        events.append("dispatch")
         return {"tracks": [
             {"label": "scale_reference_0", "observations": [box_mask(frames[0], 20, 61, 20, 41),
                                                              box_mask(frames[1], 0, 5, 0, 5)]},
@@ -837,9 +838,11 @@ def test_reference_objects_are_segmented_once_on_their_own_views(tmp_path, monke
                   reference("countertop height", 0.82),
                   {**reference("doorway", 2.0), "frame_id": "b", "segmentation_prompt": "doorway"}]
     options = {"frames": frames, "root": tmp_path / "masks", "task_context": {"context_digest": "c"},
-               "source_digest": "sha256:" + "a" * 64}
+               "source_digest": "sha256:" + "a" * 64, "checkpoint": events.append}
     masks = atlas_reference_masks.segment_scale_references(references=references, **options)
     (call,) = calls
+    # The withdrawal check runs before any view reaches the provider.
+    assert events == ["reference_segmentation", "dispatch"]
     assert [row["source_frame_id"] for row in call["frame_registry"]] == ["a", "b"]
     assert [row["path"] for row in call["frame_artifacts"]] == [f["image_path"] for f in frames]
     assert [prompt["text"] for prompt in call["prompts"]] == ["freestanding range", "doorway"]
@@ -849,6 +852,13 @@ def test_reference_objects_are_segmented_once_on_their_own_views(tmp_path, monke
     assert [o["source_frame_id"] for o in masks[1]["instances"]] == ["b"]
     # A retained plan whose references name no object is measured as before, with no call.
     assert atlas_reference_masks.segment_scale_references(references=[reference("x", 1.0)], **options) is None
+    assert len(calls) == 1
+
+    def withdrawn(stage):
+        raise ValueError("website_capture_withdrawn")
+    # A capture withdrawn while it was posed sends nothing more to the provider.
+    with pytest.raises(ValueError, match="website_capture_withdrawn"):
+        atlas_reference_masks.segment_scale_references(references=references, **{**options, "checkpoint": withdrawn})
     assert len(calls) == 1
 
 

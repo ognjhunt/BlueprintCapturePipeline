@@ -140,7 +140,7 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
         from .atlas_reference_masks import segment_scale_references
         reference_masks = segment_scale_references(frames=frames, references=plan.get("scale_references", []),
             root=pose_root / "reference_masks", task_context=task_context,
-            source_digest=(inputs.get("binding") or {}).get("source_video_digest"))
+            source_digest=(inputs.get("binding") or {}).get("source_video_digest"), checkpoint=check)
         measurements = estimate_sizes(frames=frames, automation=plan, pose_digest=pose["digest"],
                                       output=measurement_path, reference_masks=reference_masks)
     except ValueError as exc:
