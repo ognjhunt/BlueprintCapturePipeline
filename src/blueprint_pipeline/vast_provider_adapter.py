@@ -4305,6 +4305,43 @@ def _create_payload(
     return payload
 
 
+def _isaac_smoke_python_source() -> str:
+    # CUDA can work while the container lacks the host's Vulkan libraries.
+    # Check the selected NVIDIA ICD before starting Kit or downloading assets.
+    # This is library admission only; the workcell still proves actual rendering.
+    return '''import ctypes
+import json
+import os
+from pathlib import Path
+configured = os.environ.get("VK_DRIVER_FILES") or os.environ.get("VK_ICD_FILENAMES")
+paths = ([Path(value) for value in configured.split(":") if value] if configured else
+         [path for root in ("/etc/vulkan/icd.d", "/usr/share/vulkan/icd.d")
+          for path in Path(root).glob("*nvidia*.json")])
+loaded = []
+for path in paths:
+    library = json.loads(path.read_text())["ICD"]["library_path"]
+    if "nvidia" not in Path(library).name:
+        continue
+    if "/" in library and not Path(library).is_absolute():
+        library = str(path.parent / library)
+    try:
+        loaded.append(ctypes.CDLL(library))
+    except OSError as exc:
+        raise RuntimeError("isaac_nvidia_vulkan_icd_library_unavailable") from exc
+if not loaded:
+    raise RuntimeError("isaac_nvidia_vulkan_icd_missing")
+print("BLUEPRINT_VAST_ISAAC_GRAPHICS_ICD_OK:count=%d" % len(loaded), flush=True)
+from isaacsim import SimulationApp
+app = SimulationApp({"headless": True})
+import warp as wp
+wp.init()
+devices = [device for device in wp.get_devices() if device.is_cuda]
+assert devices, "isaac_warp_cuda_device_missing"
+print("BLUEPRINT_VAST_ISAAC_SMOKE_OK:cuda_devices=%d" % len(devices), flush=True)
+os._exit(0)
+'''
+
+
 def _probe_shell_script(
     heartbeat_url: str,
     *,
@@ -4535,7 +4572,7 @@ def _probe_shell_script(
             "elif [ -x /isaac-sim/python ]; then ISAAC_PY=/isaac-sim/python; "
             "elif command -v python3 >/dev/null 2>&1; then ISAAC_PY=$(command -v python3); fi; "
             'if [ -n "$ISAAC_PY" ]; then '
-            '$ISAAC_PY -c \'from isaacsim import SimulationApp; app=SimulationApp({"headless": True}); import warp as wp; wp.init(); devices=[device for device in wp.get_devices() if device.is_cuda]; assert devices, "isaac_warp_cuda_device_missing"; print("BLUEPRINT_VAST_ISAAC_SMOKE_OK:cuda_devices=%d" % len(devices), flush=True); import os; os._exit(0)\'; irc=$?; '
+            f'$ISAAC_PY -c {shlex.quote(_isaac_smoke_python_source())}; irc=$?; '
             "if [ $irc -eq 0 ]; then echo BLUEPRINT_VAST_ISAAC_SMOKE_COMPLETED; "
             + (
                 "cuda_runtime_rc=0; echo BLUEPRINT_VAST_CUDA_RUNTIME_OK:isaac_simulation_app_warp; "

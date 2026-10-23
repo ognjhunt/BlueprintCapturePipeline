@@ -163,3 +163,25 @@ the deployed guard's ownership checker recognized it. No guard limit or service
 configuration was relaxed. The encoded path preflight passed 81 focused
 watchdog and native allocator tests, including dry-run refusal before artifacts
 or provider work and symlink-escape refusal. Future jobs use the registered root.
+
+Attempt 57429691 passed all 78 dependency imports and measured simulator startup
+at 173.414 seconds. Camera attachment then stopped at GA's changed render-product
+interface. The compatibility reader now accepts GA's HydraTexture path while
+retaining exact camera prim binding and rejecting conflicting identities.
+Memory sampling also exposed host/container PID mismatch; both comparison sides
+now use one visible GPU's device memory and require the worker to hold an NVIDIA
+device. This includes renderer and other process allocations and is explicitly
+labeled device-wide. The original incomplete measurement is preserved. No
+stepping, reset, camera or episode result was completed; the official charge was
+$0.054 and provider absence was verified through the existing recovery boundary.
+
+Attempt 57432938 could enumerate CUDA devices but could not create a Vulkan
+instance (`ERROR_INCOMPATIBLE_DRIVER`). Direct loading confirmed that its NVIDIA
+graphics libraries, including the library named by its Vulkan ICD, were absent.
+The CUDA-only bootstrap incorrectly continued to download the bundle. The exact
+host was destroyed after retaining the diagnostics, before the workcell started.
+This is a bootstrap preflight defect, not an Isaac comparison result. The smoke
+now loads the selected NVIDIA Vulkan ICD library before starting Kit or fetching
+the bundle. Missing libraries and software-only ICDs fail closed. Actual rendering
+still requires the native camera checks; loading a library is not rendering proof.
+Eight focused bootstrap/launch tests and changed-file lint passed for this repair.
