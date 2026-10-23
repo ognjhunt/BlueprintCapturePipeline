@@ -60,11 +60,11 @@ def write(path: Path, value):
     return value
 
 
-def pose_root_fixture(pose_root: Path, survey_digest: str, *, padded=False):
+def pose_root_fixture(pose_root: Path, survey_digest: str, *, padded=False, cameras=CAMERAS):
     """The source pose as the preview leaves it: native upright views and an admitted run bound to them."""
     rng = np.random.default_rng(11)
     frames, outputs, sent, returned, sources = [], [], [], [], []
-    for index, ((rotation_cv, position), frame_id) in enumerate(zip(CAMERAS, FRAME_IDS)):
+    for index, ((rotation_cv, position), frame_id) in enumerate(zip(cameras, FRAME_IDS)):
         upright = Image.fromarray((rng.random((UPRIGHT[1], UPRIGHT[0], 3)) * 255).astype(np.uint8))
         upright_path = pose_root / "atlas_source_views" / f"{frame_id}.png"
         observation_path = pose_root / "atlas_observations" / f"{frame_id}.png"
@@ -131,12 +131,29 @@ def pose_root_fixture(pose_root: Path, survey_digest: str, *, padded=False):
     return inputs, result
 
 
-def job_fixture(capture_root: Path, *, same_pose=False, padded=False):
+def background_views(job_dir: Path, cameras):
+    """The edited views' returned RGBD in the background world: same pixels, depth in its units."""
+    outputs = []
+    for index, (rotation_cv, position) in enumerate(cameras):
+        source_out = job_dir / "pose" / "atlas_pose" / "outputs" / f"{index:06d}"
+        out = job_dir / "automation" / "fallback_pose-v2" / "atlas_pose" / "outputs" / f"{index:06d}"
+        out.mkdir(parents=True)
+        for name in ("image.png", "confidence.png"):
+            (out / name).write_bytes((source_out / name).read_bytes())
+        write_exr(out / "depth.exr", BACKGROUND_SCALE * plane_depth(rotation_cv, position))
+        outputs.append([{"role": role, "path": f"atlas_pose/outputs/{index:06d}/{name}",
+                         "sha256": _sha256_file(out / name)}
+                        for role, name in (("image", "image.png"), ("depth", "depth.exr"),
+                                           ("confidence", "confidence.png"))])
+    return outputs
+
+
+def job_fixture(capture_root: Path, *, same_pose=False, padded=False, cameras=CAMERAS, views=False):
     job_dir = capture_root / "pipeline" / "atlas"
     survey = write(job_dir / "survey" / "atlas_video_survey.json", digest({
         "schema_version": "atlas_video_survey.v1", "display_rotation_degrees": ROTATION, "frames": []}))
     write(job_dir / "selection_binding.json", {"survey_relative_path": "survey/atlas_video_survey.json"})
-    _, source_pose = pose_root_fixture(job_dir / "pose", survey["digest"], padded=padded)
+    _, source_pose = pose_root_fixture(job_dir / "pose", survey["digest"], padded=padded, cameras=cameras)
     measurements = write(job_dir / "pose" / "scene_measurements.json", digest({
         "schema_version": "atlas_scene_measurements.v1", "status": "estimated", "meters_per_unit_estimate": MPU,
         "scale_status": "estimated_from_named_assumptions", "metric_measurement_proven": False}))
@@ -146,11 +163,13 @@ def job_fixture(capture_root: Path, *, same_pose=False, padded=False):
         # The edited views posed again: the same cameras in another Atlas world.
         moved = [{"camera": camera_payload(BACKGROUND_ROTATION @ rotation_cv,
                                            BACKGROUND_SCALE * BACKGROUND_ROTATION @ position + BACKGROUND_TRANSLATION,
-                                           "rub")} for rotation_cv, position in CAMERAS]
+                                           "rub")} for rotation_cv, position in cameras]
+        outputs = background_views(job_dir, cameras) if views else [None] * len(FRAME_IDS)
         background_pose = write(job_dir / "automation" / "fallback_pose-v2" / "atlas_posed_rgbd_result.json", digest({
             "schema_version": "website_atlas_pose_result.v1", "operation": {"id": "op_background",
             "response": {"frames": moved}}, "operation_receipt": {"input_usage": {"frames": [
-                {"frame_id": frame_id} for frame_id in FRAME_IDS]}}}))
+                {"frame_id": frame_id, **({"outputs": rows} if rows else {})}
+                for frame_id, rows in zip(FRAME_IDS, outputs)]}}}))
     splat_root = job_dir / "automation" / "background_splat"
     splat_root.mkdir(parents=True)
     (splat_root / "atlas_depth_splat.ply").write_bytes(b"ply background")
@@ -210,10 +229,9 @@ def test_a_background_fused_on_the_source_pose_shares_its_world(tmp_path):
     assert np.allclose(anchor["source_world_to_provider_m"], np.eye(4), atol=1e-9)
 
 
-@pytest.mark.parametrize("tamper_bundle", [False, True])
-def test_scene_source_uses_the_final_completed_bundle_with_a_stale_baseline_present(tmp_path, tamper_bundle):
+def completed_bundle(job_dir: Path, *, retained_views=False):
+    """The final portable download; a retained handoff also moves the background pose's views into it."""
     import shutil
-    job_dir = job_fixture(tmp_path)
     final = job_dir / "automation/downloads/completed-scene"
     shutil.copytree(job_dir / "automation/background_splat", final / "splat")
     shutil.copytree(job_dir / "automation/background_mesh/registered", final / "mesh/registered")
@@ -229,15 +247,30 @@ def test_scene_source_uses_the_final_completed_bundle_with_a_stale_baseline_pres
     registration["splat_manifest_digest"] = splat["digest"]
     registration["outputs"][0]["sha256"] = _sha256_file(glb)
     write(reg_path, digest(registration))
+    assets = []
+    if retained_views:
+        # Only the pose result stays beside the pose; its outputs travel in the bundle.
+        for path in sorted((job_dir / "automation/fallback_pose-v2/atlas_pose/outputs").rglob("*.*")):
+            target = final / "views" / f"{path.parent.name}-{path.name}"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            path.replace(target)
+            assets.append({"path": str(target.relative_to(final)), "sha256": _sha256_file(target)})
     bundle = digest({"schema_version": "atlas_download_bundle.v1", "splat_available": True,
         "mesh_available": True, "splat_manifest_digest": splat["digest"],
-        "mesh_registration_digest": registration["digest"]})
+        "mesh_registration_digest": registration["digest"], "assets": assets})
     write(final / "manifest.json", bundle)
     result = json.loads((job_dir / "result.json").read_text())
     result["automation"]["background"].update(splat_manifest_digest=splat["digest"],
         download={"directory": str(final), "manifest_digest": bundle["digest"]})
     write(job_dir / "result.json", digest(result))
     write(job_dir / "preview_job.json", {"state": "ready", "result_digest": result["digest"]})
+    return final, bundle, ply, glb
+
+
+@pytest.mark.parametrize("tamper_bundle", [False, True])
+def test_scene_source_uses_the_final_completed_bundle_with_a_stale_baseline_present(tmp_path, tamper_bundle):
+    job_dir = job_fixture(tmp_path)
+    final, bundle, ply, glb = completed_bundle(job_dir)
     if tamper_bundle:
         bundle["mesh_available"] = False
         write(final / "manifest.json", bundle)
@@ -248,6 +281,30 @@ def test_scene_source_uses_the_final_completed_bundle_with_a_stale_baseline_pres
         assert value["status"] == "ready"
         assert Path(value["base_scene"]["splat_path"]) == ply
         assert Path(value["base_scene"]["collision_mesh_path"]) == glb
+
+
+# Turning in place leaves the shared cameras no baseline to fix a similarity.
+TURNING = [(rotation_cv, np.array([0.1, -0.05, 0.0])) for rotation_cv, _ in CAMERAS]
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_cameras_that_fix_no_similarity_defer_to_the_depth_of_the_shared_views(tmp_path, retained):
+    completed_bundle(job_fixture(tmp_path, cameras=TURNING, views=True), retained_views=retained)
+    value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    base = value["base_scene"]
+    anchor = base["anchor"]
+    assert value["alignment"] == "anchored" and anchor["basis"] == "shared_view_depth"
+    assert anchor["registered_frame_count"] == anchor["agreeing_frame_count"] == 3
+    assert base["meters_per_unit"] == pytest.approx(MPU / BACKGROUND_SCALE)
+    transform = np.asarray(anchor["source_world_to_provider_m"])
+    assert np.allclose(transform[:3, :3], BACKGROUND_ROTATION, atol=1e-6)
+    assert np.allclose(transform[:3, 3], BACKGROUND_TRANSLATION * base["meters_per_unit"], atol=1e-6)
+
+
+def test_a_background_without_retained_views_leaves_registration_to_scene_preparation(tmp_path):
+    completed_bundle(job_fixture(tmp_path, cameras=TURNING))
+    value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    assert value["alignment"] == "registration_search" and value["base_scene"]["anchor"] is None
 
 
 def test_the_source_views_become_scaled_geometry_on_the_atlas_grid(tmp_path):

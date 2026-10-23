@@ -24,7 +24,7 @@ import math
 import struct
 import zlib
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -174,6 +174,16 @@ def posed_frame(*, frame_id: str, rgb: np.ndarray, depth: np.ndarray, confidence
 def load_posed_rgbd(pose_root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Read a retained images2PosedRGBD result and its digest-bound downloads."""
     result = json.loads((pose_root / POSE_RESULT).read_text())
+    return result, posed_rgbd_frames(result, lambda output: pose_root / output["path"])
+
+
+def posed_rgbd_frames(result: Mapping[str, Any],
+                      locate: Callable[[Mapping[str, Any]], Path | None]) -> list[dict[str, Any]]:
+    """Decode a pose result's frames; ``locate`` names where each digest-bound output was kept.
+
+    A retained handoff may keep only the result beside its pose and the outputs in
+    the download bundle: the receipt's digests, not their paths, bind the bytes.
+    """
     if result.get("digest") != canonical_digest(result, digest_field="digest"):
         raise ValueError("atlas_depth_splat_pose_result_changed")
     returned = result["operation"]["response"]["frames"]
@@ -186,8 +196,8 @@ def load_posed_rgbd(pose_root: Path) -> tuple[dict[str, Any], list[dict[str, Any
     for frame, row in zip(returned, usage):
         paths = {}
         for output in row["outputs"]:
-            path = pose_root / output["path"]
-            if path.is_symlink() or not path.is_file() or _sha256_file(path) != output["sha256"]:
+            path = locate(output)
+            if path is None or path.is_symlink() or not path.is_file() or _sha256_file(path) != output["sha256"]:
                 raise ValueError("atlas_depth_splat_output_changed")
             paths[output["role"]] = path
         if not {"image", "depth", "confidence"} <= set(paths):
@@ -199,7 +209,7 @@ def load_posed_rgbd(pose_root: Path) -> tuple[dict[str, Any], list[dict[str, Any
             raise ValueError("atlas_depth_splat_output_undecodable")
         frames.append(posed_frame(frame_id=row["frame_id"], rgb=image[..., ::-1], depth=depth,
                                   confidence=confidence, camera=frame["camera"]))
-    return result, frames
+    return frames
 
 
 def surface_samples(frame: Mapping[str, Any]) -> dict[str, np.ndarray]:

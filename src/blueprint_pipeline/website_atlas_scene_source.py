@@ -8,7 +8,9 @@ retained:
 - the object-removed background splat and its supported mesh, as the scene;
 - the selected original views' own pose, as source geometry for lifting task
   masks, scaled by the job's reviewed reference estimate;
-- the cameras both poses share, which align the source to the scene exactly.
+- the cameras both poses share, which align the source to the scene exactly,
+  or, when views cleaned on an earlier crop moved those cameras, the depth both
+  poses returned for the views' unedited pixels.
 
 Every value stays an estimate: the scale comes from named reference
 assumptions, never a measurement, and nothing here qualifies a scene.
@@ -96,6 +98,37 @@ def world_alignment(source: Mapping[str, np.ndarray], target: Mapping[str, np.nd
             "max_rotation_residual_degrees": max(angles), "centre_residual_fraction": residual / extent}
 
 
+def _shared_view_alignment(*, job_dir: Path, source_root: Path, source: Mapping[str, Any],
+                           background_root: Path, background: Mapping[str, Any],
+                           bundle_root: Path | None, bundle: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The background world from the depth both poses returned for their shared views.
+
+    A retained background may keep its pose's outputs only in the download
+    bundle; each is found by its receipt digest. None when either pose's outputs
+    are unavailable or the views fix no similarity.
+    """
+    from .atlas_depth_splat import posed_rgbd_frames
+    from .atlas_shared_view_alignment import shared_view_alignment
+
+    kept = {row["sha256"]: bundle_root / row["path"] for row in (bundle or {}).get("assets") or []
+            if bundle_root is not None}
+
+    def locator(root: Path):
+        def locate(output: Mapping[str, Any]) -> Path | None:
+            for path in (root / output["path"], kept.get(output["sha256"])):
+                if (path is not None and not path.is_symlink() and path.is_file()
+                        and path.resolve().is_relative_to(job_dir.resolve())):
+                    return path
+            return None
+        return locate
+    try:
+        frames = (posed_rgbd_frames(source, locator(source_root)),
+                  posed_rgbd_frames(background, locator(background_root)))
+    except (ValueError, KeyError):
+        return None
+    return shared_view_alignment(*frames)
+
+
 def _survey_rotation(job_dir: Path, inputs: Mapping[str, Any]) -> float:
     selection = _read(job_dir / "selection_binding.json")
     survey = _read(_inside(job_dir / selection.get("survey_relative_path", "missing"), job_dir))
@@ -150,7 +183,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
                                          scale=scale, output_root=output_root / "source_geometry")
 
     automation_root = job_dir / "automation"
-    bundle = None
+    bundle = bundle_root = None
     download = background.get("download") or {}
     if download.get("directory"):
         bundle_path = _inside(Path(download["directory"]) / "manifest.json", job_dir)
@@ -163,7 +196,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
             raise ValueError("website_atlas_scene_download_changed")
         # The final portable bundle is stable across reconstruction revisions;
         # generated completion uses different working directories from baseline.
-        splat_root, registered_root = bundle_path.parent / "splat", bundle_path.parent / "mesh/registered"
+        bundle_root = bundle_path.parent
+        splat_root, registered_root = bundle_root / "splat", bundle_root / "mesh/registered"
     else:
         splat_root, registered_root = automation_root / "background_splat", automation_root / "background_mesh/registered"
     splat_manifest = _read(_inside(splat_root / "atlas_depth_splat_manifest.json", job_dir))
@@ -182,15 +216,25 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
     # The background was fused on whichever pose posed its views: the original
     # views' own, or a fresh pose of the reviewed edited views.
     source = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
+    background_root = pose_root
     if splat_manifest["pose_result_digest"] == source["digest"]:
         background_pose = source
     else:
-        candidates = [_read(path) for path in sorted(automation_root.glob("fallback_pose*/atlas_posed_rgbd_result.json"))]
-        background_pose = next((row for row in candidates if row.get("digest") == splat_manifest["pose_result_digest"]
-                                and row["digest"] == canonical_digest(row, digest_field="digest")), None)
+        candidates = [(path.parent, _read(path))
+                      for path in sorted(automation_root.glob("fallback_pose*/atlas_posed_rgbd_result.json"))]
+        background_root, background_pose = next(((root, row) for root, row in candidates
+                                                 if row.get("digest") == splat_manifest["pose_result_digest"]
+                                                 and row["digest"] == canonical_digest(row, digest_field="digest")),
+                                                (None, None))
         if background_pose is None:
             raise ValueError("website_atlas_scene_background_pose_missing")
     alignment = world_alignment(_cameras(source), _cameras(background_pose))
+    basis = "same_atlas_pose" if background_pose is source else "shared_atlas_cameras"
+    if alignment is None and background_pose is not source:
+        alignment = _shared_view_alignment(job_dir=job_dir, source_root=pose_root, source=source,
+                                           background_root=background_root, background=background_pose,
+                                           bundle_root=bundle_root, bundle=bundle)
+        basis = "shared_view_depth"
     anchor, runtime_mpu = None, float(mpu)
     if alignment is not None:
         # Source metres -> background units: (R x / mpu) * s + t. In the
@@ -200,9 +244,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
         transform = np.eye(4)
         transform[:3, :3], transform[:3, 3] = alignment["rotation"], alignment["translation"] * runtime_mpu
         anchor = {"kind": "source_world_alignment", "source_world_to_provider_m": transform.tolist(),
-                  "basis": "same_atlas_pose" if background_pose is source else "shared_atlas_cameras",
-                  **{key: alignment[key] for key in ("shared_frame_count", "max_rotation_residual_degrees",
-                                                     "centre_residual_fraction")}}
+                  "basis": basis, **{key: value for key, value in alignment.items()
+                                     if key not in ("scale", "rotation", "translation")}}
     base = {
         "splat_path": str(splat_path), "splat_digest": splat_digest,
         "splat_binding_id": "website-splat-" + splat_digest[7:39],
