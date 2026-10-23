@@ -260,9 +260,12 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
             <= {r["role"] for r in value["coverage_requirements"]}):
         raise ValueError("atlas_scene_planner_coverage_or_privacy_invalid")
     transient = set(value["transient_frame_ids"])
-    if not transient <= frames.keys() or transient & unsafe:
+    if not transient <= frames.keys():
         raise ValueError("atlas_scene_planner_transients_invalid")
-    transient &= selected
+    # Unsafe wins. A frame can show a person and another scene state at once
+    # (2026-10-23: 22 such frames failed a whole plan); it is never an input,
+    # so nothing in it is erased.
+    transient = (transient - unsafe) & selected
     kinds = []
     if transient:
         if not value.get("automation"):
