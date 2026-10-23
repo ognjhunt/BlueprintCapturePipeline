@@ -14,6 +14,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -221,8 +222,14 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
 
   const graphicsArgs = graphicsArguments(graphicsBackend);
+  // Service accounts can have a read-only home. Chromium's crash handler
+  // still needs an XDG config directory even with a temporary user profile.
+  const profileRoot = fs.mkdtempSync(path.join(os.tmpdir(), "blueprint-render-xdg-"));
+  const configRoot = path.join(profileRoot, "config"), cacheRoot = path.join(profileRoot, "cache");
+  fs.mkdirSync(configRoot, {mode:0o700}); fs.mkdirSync(cacheRoot, {mode:0o700});
   const launchOptions = {
     headless: true,
+    env: {...process.env, XDG_CONFIG_HOME:configRoot, XDG_CACHE_HOME:cacheRoot},
     args: [
       ...graphicsArgs,
       "--disable-dev-shm-usage",
@@ -230,7 +237,11 @@ async function main() {
   };
   if (browserExecutable) launchOptions.executablePath = browserExecutable;
   checkpoint("browser_launch_started");
-  const browser = await chromium.launch(launchOptions);
+  let browser;
+  try { browser = await chromium.launch(launchOptions); }
+  catch (error) {
+    fs.rmSync(profileRoot, {recursive:true, force:true}); server.close(); throw error;
+  }
   checkpoint("browser_launched");
   const page = await browser.newPage({ viewport: { width, height } });
   await page.exposeFunction("blueprintRenderCheckpoint", (event, detail) => checkpoint(event, detail));
@@ -380,6 +391,7 @@ async function main() {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     checkpoint("browser_close_started");
     await browser.close().catch(() => {});
+    fs.rmSync(profileRoot, {recursive:true, force:true});
     checkpoint("browser_closed");
     server.close();
   }
