@@ -54,7 +54,8 @@ def _frame_binding(frame):
                 for key in ("rgb", "depth", "confidence")}}
 
 
-def recover_reviewed_geometry(*, frames, geometry_frames, reviewed_views, root, checkpoint=None):
+def recover_reviewed_geometry(*, frames, geometry_frames, reviewed_views, root, checkpoint=None,
+                             region_plan=None):
     """Fill remaining bounded gaps from already reviewed full native views.
 
     Earlier masks selected where to request generation. They must not permanently
@@ -69,6 +70,10 @@ def recover_reviewed_geometry(*, frames, geometry_frames, reviewed_views, root, 
     )
     from .atlas_depth_splat import surface_samples
 
+    task_masks = None
+    if region_plan is not None:
+        from .atlas_scene_task_regions import task_region_masks
+        task_masks = task_region_masks(region_plan, reviewed_views)
     if any(not view.get("review_digest") for view in reviewed_views):
         raise ValueError("atlas_recovery_review_not_bound")
     binding = {"revision": RECOVERY_REVISION,
@@ -76,6 +81,8 @@ def recover_reviewed_geometry(*, frames, geometry_frames, reviewed_views, root, 
                "geometry": [_frame_binding(f) for f in geometry_frames],
                "native": [{**{k: v for k, v in row.items() if k != "frame"},
                            "frame": _frame_binding(row["frame"])} for row in reviewed_views]}
+    if region_plan is not None:
+        binding["task_region_plan_digest"] = region_plan["digest"]
     digest = canonical_digest(binding)
     root = root / digest[7:23]
     root.mkdir(parents=True, exist_ok=True)
@@ -110,7 +117,8 @@ def recover_reviewed_geometry(*, frames, geometry_frames, reviewed_views, root, 
                               "extrinsics": row["frame"]["extrinsics"]}}
                   for row in reviewed_views]
     prepared = prepare_completion_views(frames=frames, selected=candidates, root=root / "context")
-    recovered, rows, paths = [], [], []
+    recovered, rows = [], []
+    paths = [Path(region_plan["plan_path"])] if region_plan is not None else []
     geometry = list(geometry_frames)
     for index, (view, source) in enumerate(zip(reviewed_views, prepared, strict=True)):
         if checkpoint:
@@ -120,10 +128,20 @@ def recover_reviewed_geometry(*, frames, geometry_frames, reviewed_views, root, 
         stage.mkdir(exist_ok=True)
         covered = project_source_depth(geometry, source["camera"])
         known = np.asarray(Image.open(source["keep_mask_path"]).convert("L")) == 255
-        labels, regions = gap_labels(covered, known, scene_outline=True)
+        if task_masks is None:
+            labels, regions = gap_labels(covered, known, scene_outline=True)
+        else:
+            # A reviewed task surface can be outside the old 2D silhouette.
+            # Semantic selection defines the domain; existing depth/free-space
+            # and world bounds still control which 3D points may be added.
+            labels, regions = gap_labels(covered, task_masks[frame["frame_id"]],
+                                         candidate_mask=task_masks[frame["frame_id"]])
         # This is a bounded per-region continuation, not permission to fill
         # the entire new camera or extend the capture's world-space bounds.
-        eligible = [r for r in regions if r["pixel_count"] <= int(known.sum())]
+        # Context/fill ratio is a pre-generation heuristic, not grounds to
+        # discard an already reviewed, task-relevant large surface.
+        eligible = (regions if task_masks is not None
+                    else [r for r in regions if r["pixel_count"] <= int(known.sum())])
         row = {"frame_id": frame["frame_id"], "candidate_gap_pixels": int(np.count_nonzero(labels)),
                "eligible_gap_pixels": sum(r["pixel_count"] for r in eligible),
                "native_result_digest": view["native_result_digest"],
@@ -162,6 +180,8 @@ def recover_reviewed_geometry(*, frames, geometry_frames, reviewed_views, root, 
               "claim_ceiling": "development_only",
               "assets": [{"path": str(p), "sha256": _sha256_file(p)} for p in paths],
               "preservation_paths": [str(p) for p in paths] + [str(saved)]}
+    if region_plan is not None:
+        report["task_region_plan"] = region_plan
     report["digest"] = canonical_digest(report, digest_field="digest")
     write_json(saved, report)
     return recovered, report

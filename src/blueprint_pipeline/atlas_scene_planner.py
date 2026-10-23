@@ -390,7 +390,8 @@ def completion_summary(completion):
 
 
 def review_survey(*, survey_path: Path, task_context, configuration, output_root: Path,
-                  invoker=None, release_blockers=None, feedback=None, completion=None, scaling=None):
+                  invoker=None, release_blockers=None, feedback=None, completion=None, scaling=None,
+                  recovery=None):
     """One idempotent proposal, reserved in the SAME source-bound test allowance."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
@@ -400,36 +401,41 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         raise ValueError("atlas_scene_planner_survey_invalid")
     policy = configuration["policy"]
     maximum = policy["maximum_review_cost_usd"]
-    if sum(value is not None for value in (feedback, completion, scaling)) > 1:
+    if sum(value is not None for value in (feedback, completion, scaling, recovery)) > 1:
         raise ValueError("atlas_scene_planner_review_modes_conflict")
-    extra = scaling if scaling is not None else completion_summary(completion) if completion is not None else feedback
+    extra = (recovery if recovery is not None else scaling if scaling is not None
+             else completion_summary(completion) if completion is not None else feedback)
     preview_count = len((extra or {}).get('previews', []))
     if (extra or {}).get('scope') == 'missing_surfaces_within_captured_scene':
         preview_count = math.ceil(preview_count / 4)
     tokens = 24_000 + 3000 * (len(survey["frames"]) + preview_count)
-    if completion is not None or scaling is not None:
+    if completion is not None or scaling is not None or recovery is not None:
         # _input excludes preview paths/digests from its text; image costs and
         # their short labels are already covered above. Do not count them twice.
         tokens += len(json.dumps({k: v for k, v in extra.items() if k != 'previews'}, sort_keys=True).encode())
     if tokens > 1_000_000:
         raise ValueError("atlas_scene_planner_context_budget_exceeded")
     from .openai_prompt_cache import worst_case_reservation_usd
+    output_tokens = 8000 if recovery is not None else 4000
     ceiling = worst_case_reservation_usd(model=policy["model"], input_token_ceiling=tokens,
-                                        max_output_tokens=4000, cache_policy=None)
-    search_calls = 0 if completion is not None else 2
+                                        max_output_tokens=output_tokens, cache_policy=None)
+    search_calls = 0 if completion is not None or recovery is not None else 2
     search_fee = .01  # Official hosted web search: $10 / 1k calls, checked 2026-10-22.
     if ceiling is None or ceiling + search_calls * search_fee > maximum:
         raise ValueError("atlas_scene_planner_token_budget_exceeded")
     instructions = (SCALE_INSTRUCTIONS if scaling is not None else COMPLETION_INSTRUCTIONS if completion is not None else
                     INSTRUCTIONS + AUTOMATION_INSTRUCTIONS + (REFINEMENT_INSTRUCTIONS if feedback is not None else ""))
     schema = ScaleProposal if scaling is not None else CompletionProposal if completion is not None else RefinementProposal if feedback is not None else SceneProposal
+    if recovery is not None:
+        from .atlas_scene_task_regions import TASK_SURFACE_INSTRUCTIONS, TaskSurfaceProposal
+        instructions, schema = TASK_SURFACE_INSTRUCTIONS, TaskSurfaceProposal
     # Exercise the exact SDK boundary before reserving spend or recording an
     # ambiguous submission. Plain JSON Schema validity is insufficient here.
     from agents import AgentOutputSchema
     AgentOutputSchema(schema)
     binding = {"survey_digest": survey["digest"], "task_context_digest": task_context["context_digest"],
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
-               "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": 4000,
+               "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": output_tokens,
                "maximum_cost_usd": maximum, "web_search": {"maximum_calls": search_calls, "per_call_usd": search_fee, "context": "low"}}
     binding['output_schema_digest'] = canonical_digest(schema.model_json_schema())
     if feedback is not None:
@@ -439,6 +445,8 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         binding['completion_model_input_digest'] = canonical_digest(extra)
     if scaling is not None:
         binding['scale_review_digest'] = canonical_digest(scaling)
+    if recovery is not None:
+        binding['task_region_review_digest'] = canonical_digest(recovery)
     digest = canonical_digest(binding)
     output_root.mkdir(parents=True, exist_ok=True)
     path = output_root / (digest[7:] + ".json")
@@ -451,14 +459,15 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
             if receipt.get("binding_digest") != digest or receipt.get("proposal_digest") != canonical_digest(receipt["proposal"]):
                 raise ValueError("atlas_scene_planner_receipt_changed")
         else:
-            input_value = _input(survey, task_context, extra, preview_size=1280 if scaling is not None else 512)
+            input_value = _input(survey, task_context, extra,
+                                 preview_size=1280 if scaling is not None else 768 if recovery is not None else 512)
             if release_blockers is None:
                 raise ValueError("atlas_scene_planner_allocator_required")
             commit, blockers = release_blockers()
             if blockers:
                 raise ValueError("atlas_scene_planner_release_not_admitted:" + ",".join(blockers))
             selected = invoker or OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(model=policy["model"], max_turns=1,
-                max_output_tokens=4000, max_input_tokens=tokens, allow_live_invocation=True,
+                max_output_tokens=output_tokens, max_input_tokens=tokens, allow_live_invocation=True,
                 tracing_disabled=True, max_inference_cost_usd=maximum))
             admission, grant = reserve_website_preparation_spend(task_context=task_context, binding_digest=digest,
                 maximum_cost_usd=maximum, request_count=1, resource_class="openai_api_candidate", provider="openai",
@@ -477,7 +486,7 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
             try:
                 result = selected.invoke(AgentsSDKAgentSpec(run_id=digest[7:23], capability="atlas_scene_planner",
                     name="Blueprint Atlas Scene Planner", instructions=instructions, model=policy["model"], max_turns=1,
-                    max_output_tokens=4000, max_input_tokens=tokens,
+                    max_output_tokens=output_tokens, max_input_tokens=tokens,
                     hosted_tools=((WebSearchTool(search_context_size="low", external_web_access=True),)
                                   if search_calls else ()),
                     max_hosted_tool_calls_per_turn=search_calls, hosted_tool_call_usd=search_fee,

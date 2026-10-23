@@ -347,10 +347,17 @@ def run_automation(
                 generated_roots.extend(Path(p) for p in completion.get("generated_roots", []) or
                                        ([completion["generated_root"]] if completion.get('generated_root') else []))
                 from .atlas_scene_recovery import reviewed_completion_views, recover_reviewed_geometry
+                from .atlas_scene_task_regions import plan_task_regions
 
+                reviewed_views = reviewed_completion_views([*prior_reports, completion])
+                region_plan = plan_task_regions(
+                    frames=original_frames, reviewed_views=reviewed_views, pose=effective_pose,
+                    context=task_context, configuration=configuration,
+                    root=output_root / "completion_task_regions", planner_runner=planner_runner,
+                    checkpoint=checkpoint)
                 recovered, recovery = recover_reviewed_geometry(
                     frames=original_frames, geometry_frames=derived_frames,
-                    reviewed_views=reviewed_completion_views([*prior_reports, completion]),
+                    reviewed_views=reviewed_views, region_plan=region_plan,
                     root=output_root / "completion_geometry_recovery", checkpoint=checkpoint)
                 if recovered:
                     derived_frames.extend(recovered)
