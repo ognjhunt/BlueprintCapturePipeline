@@ -87,7 +87,7 @@ def disocclusion_candidates(frames, wide):
     return result
 
 
-def gap_target_candidates(frames, candidates, survey):
+def gap_target_candidates(frames, candidates, survey, *, source_centred=False):
     """Aim at actual gaps, estimating the aim point from neighbouring depth.
 
     Camera locations come from the captured trajectory or its already screened
@@ -183,7 +183,10 @@ def gap_target_candidates(frames, candidates, survey):
                     choices.append((float(1 - np.dot(direction / length, parent_direction)), origin))
             if not choices:
                 continue
-            origin = max(choices, key=lambda item: item[0])[1]
+            # If a translated hypothesis loses its photographed surroundings,
+            # re-aim from the source view instead. Other context/anchor cameras
+            # still supply the translation needed for joint output depth.
+            origin = position if source_centred else max(choices, key=lambda item: item[0])[1]
             forward = focus - origin
             forward /= np.linalg.norm(forward)
             right = np.cross(forward, [0., 1., 0.])
@@ -192,7 +195,10 @@ def gap_target_candidates(frames, candidates, survey):
             right /= np.linalg.norm(right)
             up = np.cross(right, forward)
             target = deepcopy(original)
-            identity = canonical_digest({'gap': gap['gap_id'], 'focus': focus.tolist(), 'origin': origin.tolist()})
+            identity_data = {'gap': gap['gap_id'], 'focus': focus.tolist(), 'origin': origin.tolist()}
+            if source_centred:
+                identity_data['framing'] = 'source_centred'
+            identity = canonical_digest(identity_data)
             target.update(camera_id='gap-target-' + identity[7:23], purpose='gap_target',
                           source_gap_ids=[gap['gap_id']], target_world_estimate=focus.tolist(),
                           target_basis='gap_centroid_ray_at_neighbouring_source_depth',
@@ -214,15 +220,15 @@ def gap_target_candidates(frames, candidates, survey):
             # asking for another whole-room image. This changes only the output
             # camera; every source RGBD reference keeps its full field of view.
             target_k = target['camera']['intrinsics']
-            zoom = max(1., min(.5 * k['width'] / max(float(np.ptp(uu)), 1.),
-                               .5 * k['height'] / max(float(np.ptp(vv)), 1.)))
+            zoom = (1. if source_centred else max(1., min(.5 * k['width'] / max(float(np.ptp(uu)), 1.),
+                                                        .5 * k['height'] / max(float(np.ptp(vv)), 1.))))
             target_k.update(fx=target_k['fx'] * zoom, fy=target_k['fy'] * zoom)
             uu = (uu - target_k['cx']) * zoom + target_k['cx']
             vv = (vv - target_k['cy']) * zoom + target_k['cy']
             target.update(gap_target_polygon_pixels=np.column_stack((uu, vv)).tolist(),
                           gap_domain='projected_scene_outline_hypothesis',
                           target_extent_basis='source_gap_box_at_neighbouring_depth_estimate',
-                          target_framing='gap_plus_surrounding_context',
+                          target_framing=('source_fov_reaimed_at_gap' if source_centred else 'gap_plus_surrounding_context'),
                           target_vertical_fov_degrees=float(np.degrees(2 * np.arctan(
                               target_k['height'] / (2 * target_k['fy'])))))
             result.append(target)
