@@ -65,8 +65,9 @@ def test_selection_budget_preserves_generated_coverage_before_buying_pose(tmp_pa
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=.11)
 
 
-@pytest.mark.parametrize("completion_mode", [False, True])
-def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_path, monkeypatch, completion_mode):
+@pytest.mark.parametrize("mode", ["scene", "completion", "scale"])
+def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_path, monkeypatch, mode):
+    completion_mode = mode == "completion"
     path, _, proposal, policy = fixture(tmp_path)
     from blueprint_pipeline import website_task_context as control
     from blueprint_pipeline import paid_resource_admission as admission
@@ -80,11 +81,13 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
                     'scene_caption': 'The same room with a continuous bare floor.',
                     'view_gap_reasons': [{'camera_id': 'a-wide', 'reason': 'Keep the task anchor'},
                                         {'camera_id': 'b-lower', 'reason': 'Complete nearby floor'}]}
+    elif mode == "scale":
+        proposal = {"status": "abstained", "scale_references": [], "summary": "No defensible visible reference"}
     class Invoker:
         def configure_reservation_audit(self, **_):
             pass
         def invoke(self, spec, input_value):
-            assert spec.model == policy["model"] and len(input_value[0]["content"]) == (8 if completion_mode else 7)
+            assert spec.model == policy["model"] and len(input_value[0]["content"]) == (7 if mode == "scene" else 8)
             assert len(spec.hosted_tools) == (0 if completion_mode else 1)
             assert spec.max_hosted_tool_calls_per_turn == (0 if completion_mode else 2) and spec.hosted_tool_call_usd == .01
             return SimpleNamespace(output=proposal, cost_usd=.03, usage={"input_tokens": 100},
@@ -94,6 +97,8 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
         output_root=tmp_path / "plans", invoker=Invoker(), release_blockers=lambda: ("c" * 40, []))
     if completion_mode:
         options["completion"] = {"previews": [], "candidate_camera_ids": ["a-wide", "b-lower"]}
+    elif mode == "scale":
+        options["scaling"] = {"previews": [], "previous_measurement_digest": "old"}
     result = planner.review_survey(**options)
     assert planner.review_survey(**options) == result
     assert len(calls) == 1 and calls[0]["provider"] == "openai" and calls[0]["source_video_digest"]
@@ -121,6 +126,11 @@ def test_completion_output_compiles_in_the_actual_strict_agents_sdk():
         'remaining_unknowns': [], 'scene_caption': 'Same room with bare continuous floor.',
         'view_gap_reasons': [{'camera_id': 'a-lower', 'reason': 'Continue the observed floor edge'}]})
     assert value.view_gap_reasons[0].camera_id == 'a-lower'
+
+
+def test_scale_output_compiles_in_the_actual_strict_agents_sdk():
+    from agents import AgentOutputSchema
+    assert AgentOutputSchema(planner.ScaleProposal).is_strict_json_schema()
 
 
 def test_compact_completion_keeps_every_exact_gap_and_source_survey_unchanged():

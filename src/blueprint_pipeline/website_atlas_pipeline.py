@@ -92,7 +92,7 @@ def accuracy_survey(*, source_video: Path, base_root: Path, base_survey: Path, r
 
 
 def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check, experimental, max_polls,
-                 reference_inputs=None):
+                 reference_inputs=None, configuration=None):
     """The selected original views' own Atlas pose and the scale its reviewed references give.
 
     Retained receipts make a resume free. A refused purchase leaves the
@@ -130,6 +130,7 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
         pose, frames = load_views(pose_root, inputs)
         verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=pose_root)
         measurement_path = pose_root / 'scene_measurements.json'
+        measurement_input_digest = reference_inputs['digest'] if reference_inputs is not None else None
         if reference_inputs is not None:
             # Retained reviews may name pixels on an earlier provider crop.
             # Register that exact grid to the full posed view; never reinterpret
@@ -152,12 +153,24 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
             source_digest=(inputs.get("binding") or {}).get("source_video_digest"), checkpoint=check)
         measurements = estimate_sizes(frames=frames, automation=plan, pose_digest=pose["digest"],
                                       output=measurement_path, reference_masks=reference_masks)
+        if configuration is not None:
+            from .atlas_scale_review import needs_scale_review, repair_source_scale
+            from .paid_resource_allocator import run_sponsored_website_atlas_plan
+            if needs_scale_review(measurements):
+                measurements, measurement_path = repair_source_scale(pose_root=pose_root,
+                    pose=pose, inputs=inputs, automation=plan, previous=measurements,
+                    task_context=task_context, configuration=configuration, check=check,
+                    planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw))
+                measurement_input_digest = inputs['digest']
+                if measurements.get("status") != "estimated":
+                    return {"status": "needs_input", "reason": "atlas_scale_review_unresolved",
+                            "scene_measurements_digest": measurements["digest"]}
     except ValueError as exc:
         return {"status": "needs_input", "reason": str(exc)}
     return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],
             "pose_relative_path": str(pose_root.relative_to(parent_root.parent)),
-            **({'measurements_relative_path': measurement_path.name,
-                'measurement_reference_inputs_digest': reference_inputs['digest']} if reference_inputs is not None else {}),
+            'measurements_relative_path': str(measurement_path.relative_to(pose_root)),
+            **({'measurement_reference_inputs_digest': measurement_input_digest} if measurement_input_digest else {}),
             "submitted_frame_count": count, "scene_measurements_digest": measurements["digest"],
             "meters_per_unit_estimate": measurements.get("meters_per_unit_estimate"),
             "scale_status": measurements.get("scale_status")}
@@ -331,7 +344,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             # Scene preparation lifts task masks onto observed depth and needs a
             # scale: the original views' own pose, bought once here and shared.
             source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
-                task_context=task_context, check=check, experimental=experimental, max_polls=max_polls)
+                task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
+                configuration=config)
             if source_pose["status"] == "processing":
                 return source_pose
         return finalize_background_result(output_root=output_root, source_digest=source_digest,
