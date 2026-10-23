@@ -25,7 +25,8 @@ def test_a_reference_on_an_earlier_crop_is_registered_to_the_full_image(tmp_path
     assert not np.allclose(pixels, np.array([[.1, .1], [.4, .7]]) * [288, 512], atol=1.)
 
 
-def test_retained_reference_inputs_select_a_distinct_measurement_receipt(tmp_path, monkeypatch):
+@pytest.mark.parametrize('additional_task_views', [False, True])
+def test_retained_reference_inputs_select_a_distinct_measurement_receipt(tmp_path, monkeypatch, additional_task_views):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_source_pose_inputs as preparation
     from blueprint_pipeline import atlas_scene_measurements as measurements, atlas_context_fov as fov
     from blueprint_pipeline import atlas_scene_automation as automation, paid_resource_allocator as allocator
@@ -37,12 +38,19 @@ def test_retained_reference_inputs_select_a_distinct_measurement_receipt(tmp_pat
     native = {'binding': {'source_video_digest': 'video'}, 'frames': [{'frame_id': 'a'}, {'frame_id': 'b'}]}
     references = {**native, 'heldout_pixels_included': False}
     references['digest'] = canonical_digest(references, digest_field='digest')
+    expected_references = references
+    if additional_task_views:
+        extra = {'frame_id': 'closed', 'image_path': 'full-closed.png'}
+        native = {**native, 'frames': [*native['frames'], {**extra, 'image_path': 'padded-closed.png'}]}
+        full_sources = [{**row, 'image_path': 'full-' + row['frame_id'] + '.png'} for row in native['frames']]
+        monkeypatch.setattr(fov, 'full_view_sources', lambda inputs, _: full_sources)
+        expected_references = {**references, 'frames': [*references['frames'], extra]}
     monkeypatch.setattr(preparation, 'prepare_source_pose', lambda _: (child, native))
     calls = []
     monkeypatch.setattr(allocator, 'run_sponsored_website_atlas_pose', lambda **_: {'status': 'completed'})
     def load(pose_root, inputs):
         calls.append(inputs)
-        return {'digest': 'pose', 'operation': {'id': 'source'}}, ['mapped' if inputs is references else 'full']
+        return {'digest': 'pose', 'operation': {'id': 'source'}}, ['mapped' if inputs == expected_references else 'full']
     monkeypatch.setattr(measurements, 'load_views', load)
     monkeypatch.setattr(fov, 'verify_pose_context_fov', lambda **kw: calls.append(kw['frames']))
     monkeypatch.setattr(automation, 'measurement_plan', lambda _: {})
@@ -55,7 +63,9 @@ def test_retained_reference_inputs_select_a_distinct_measurement_receipt(tmp_pat
         task_context={'capture_id': 'capture'}, check=lambda _: pytest.fail('Completed pose must be reused'),
         experimental=False, max_polls=1, reference_inputs=references)
     assert result['status'] == 'completed'
-    assert calls == [native, ['full'], references]
+    assert calls == [native, ['full'], expected_references]
+    if not additional_task_views:
+        assert calls[-1] is references
     assert outputs[0]['frames'] == ['mapped']
     assert outputs[0]['output'].name == result['measurements_relative_path']
     assert outputs[0]['output'].name != 'scene_measurements.json'

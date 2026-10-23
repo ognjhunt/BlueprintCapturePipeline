@@ -138,9 +138,11 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
             # Additional task-state views use their own full-view sources.
             from .atlas_context_fov import full_view_sources
             refs = {r['frame_id']: r for r in reference_inputs['frames']}
-            reference_views = {**reference_inputs, 'frames': [
-                refs.get(r['frame_id'], r) for r in full_view_sources(inputs, pose_root)]}
-            reference_views.pop('full_view_sources', None)
+            reference_views = reference_inputs
+            if {r['frame_id'] for r in inputs['frames']} - refs.keys():
+                reference_views = {**reference_inputs, 'frames': [
+                    refs.get(r['frame_id'], r) for r in full_view_sources(inputs, pose_root)]}
+                reference_views.pop('full_view_sources', None)
             _, frames = load_views(pose_root, reference_views)
             measurement_path = pose_root / ('scene_measurements_reference-' + reference_inputs['digest'][7:23] + '.json')
         plan = measurement_plan(review)
