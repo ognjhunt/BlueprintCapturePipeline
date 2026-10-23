@@ -107,7 +107,8 @@ def test_gap_survey_reuses_verified_projection_and_refuses_changed_geometry(tmp_
         gaps.survey_gaps(frames=[source], geometry_frames=[source], candidates=pool, root=tmp_path)
 
 
-def test_prior_completion_reuses_bound_composite_and_mask_without_regenerating(tmp_path, monkeypatch):
+@pytest.mark.parametrize('plan_name', ['chisel-completion-plan.json', 'rgbd-completion-plan.json'])
+def test_prior_completion_reuses_bound_composite_and_mask_without_regenerating(tmp_path, monkeypatch, plan_name):
     from blueprint_pipeline import atlas_scene_completion
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -126,7 +127,7 @@ def test_prior_completion_reuses_bound_composite_and_mask_without_regenerating(t
     report = {'status': 'passed', 'generated_roots': [str(tmp_path / 'native')],
               'generation': {'preservation_receipt_digests': [receipt['digest']]}}
     plan = {'source_pose_digest': 'pose', 'batches': [{'frame_ids': ['floor']}]} 
-    for name, value in [('completion.json', report), ('chisel-completion-plan.json', plan)]:
+    for name, value in [('completion.json', report), (plan_name, plan)]:
         value['digest'] = canonical_digest(value, digest_field='digest')
         (tmp_path / name).write_text(json.dumps(value))
     native = {'frame_id': 'temporary', 'rgb': np.zeros((8, 8, 3), np.uint8), 'confidence': np.ones((8, 8))}

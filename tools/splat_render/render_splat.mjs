@@ -14,6 +14,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +25,9 @@ function arg(name, def = null) {
 }
 
 const splatArg = arg("splat", null);
+const meshArg = arg("mesh", null);
+const meshPath = meshArg ? path.resolve(meshArg) : null;
+const transparent = process.argv.includes("--transparent");
 const compositionArg = arg("composition", null);
 const splatPath = splatArg ? path.resolve(splatArg) : null;
 const outDir = path.resolve(arg("out"));
@@ -74,8 +78,12 @@ if (process.argv.includes("--print-graphics-args")) {
   process.exit(0);
 }
 
-if ((!splatPath && !compositionArg) || (splatPath && compositionArg) || !outDir) {
+if ([splatPath, meshPath, compositionArg].filter(Boolean).length !== 1 || !outDir) {
   console.error("usage: node render_splat.mjs (--splat <file> | --composition <json>) --out <dir> [--cameras <json>] [--width N --height N]");
+  process.exit(2);
+}
+if (transparent && !meshPath) {
+  console.error("--transparent requires --mesh; Spark splat alpha coverage is not supported");
   process.exit(2);
 }
 fs.mkdirSync(outDir, { recursive: true });
@@ -183,6 +191,8 @@ async function main() {
     let file;
     if (urlPath === "/splat" && splatPath) {
       file = splatPath;
+    } else if (urlPath === "/surface" && meshPath) {
+      file = meshPath;
     } else if (urlPath === "/composite/background" && compositeBackgroundPath) {
       file = compositeBackgroundPath;
     } else if (urlPath.startsWith("/composite/object/")) {
@@ -216,8 +226,14 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
 
   const graphicsArgs = graphicsArguments(graphicsBackend);
+  // Service accounts can have a read-only home. Chromium's crash handler
+  // still needs an XDG config directory even with a temporary user profile.
+  const profileRoot = fs.mkdtempSync(path.join(os.tmpdir(), "blueprint-render-xdg-"));
+  const configRoot = path.join(profileRoot, "config"), cacheRoot = path.join(profileRoot, "cache");
+  fs.mkdirSync(configRoot, {mode:0o700}); fs.mkdirSync(cacheRoot, {mode:0o700});
   const launchOptions = {
     headless: true,
+    env: {...process.env, XDG_CONFIG_HOME:configRoot, XDG_CACHE_HOME:cacheRoot},
     args: [
       ...graphicsArgs,
       "--disable-dev-shm-usage",
@@ -225,7 +241,11 @@ async function main() {
   };
   if (browserExecutable) launchOptions.executablePath = browserExecutable;
   checkpoint("browser_launch_started");
-  const browser = await chromium.launch(launchOptions);
+  let browser;
+  try { browser = await chromium.launch(launchOptions); }
+  catch (error) {
+    fs.rmSync(profileRoot, {recursive:true, force:true}); server.close(); throw error;
+  }
   checkpoint("browser_launched");
   const page = await browser.newPage({ viewport: { width, height } });
   await page.exposeFunction("blueprintRenderCheckpoint", (event, detail) => checkpoint(event, detail));
@@ -252,6 +272,8 @@ async function main() {
     page_errors: pageErrors,
     composition: null,
     browser_version: browser.version(),
+    transparent_background: transparent,
+    input_kind: meshPath ? "triangle_mesh" : "gaussian_splat",
   };
   try {
     checkpoint("page_navigation_started");
@@ -292,11 +314,15 @@ async function main() {
       ) {
         blockers.push("composite_exactly_once_invariant_failed");
       }
+    } else if (meshPath) {
+      bounds = await withTimeout(page.evaluate(
+        async ({u,w,h,bgc,t}) => await window.BlueprintSplat.loadSurface(u,w,h,bgc,t),
+        {u:`${base}/surface`,w:width,h:height,bgc:bg,t:transparent}), loadTimeoutMs, "surface_load");
     } else {
       bounds = await withTimeout(
         page.evaluate(
-          async ({ u, w, h, bgc }) => await window.BlueprintSplat.load(u, w, h, bgc),
-          { u: `${base}/splat`, w: width, h: height, bgc: bg },
+          async ({ u, w, h, bgc, t }) => await window.BlueprintSplat.load(u, w, h, bgc, t),
+          { u: `${base}/splat`, w: width, h: height, bgc: bg, t:transparent },
         ),
         loadTimeoutMs,
         "splat_load",
@@ -369,6 +395,7 @@ async function main() {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     checkpoint("browser_close_started");
     await browser.close().catch(() => {});
+    fs.rmSync(profileRoot, {recursive:true, force:true});
     checkpoint("browser_closed");
     server.close();
   }

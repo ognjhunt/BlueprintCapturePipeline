@@ -80,7 +80,7 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
                      'gaps': [{**r, 'gap_id': candidate['camera_id'] + '-gap-' + str(r['label'])} for r in regions],
                      'gap_pixel_count': int(np.count_nonzero(labels)),
                      'total_pixel_count': int(labels.size)})
-        if candidate['purpose'] == 'wide':
+        if candidate['purpose'] in {'wide', 'translated'}:
             preview = np.zeros_like(rgb)
             covered = depth > 0
             preview[covered] = rgb[covered]
@@ -118,13 +118,22 @@ def select_gap_mask(view, gap_ids, output):
             'completion_gap_ids': list(gap_ids), 'completion_gap_pixel_count': int(mask.sum())}
 
 
+def completion_plan_path(root):
+    """New RGBD generation and retained Chisel runs keep their own receipts."""
+    paths = [root / name for name in ('rgbd-completion-plan.json', 'chisel-completion-plan.json')]
+    found = [path for path in paths if path.is_file()]
+    if len(found) != 1 or found[0].is_symlink():
+        raise ValueError('atlas_completion_prior_plan_missing_or_ambiguous')
+    return found[0]
+
+
 def retained_completion(*, root, pose_digest):
     """Adopt a passed prefix's exact fused pixels; never repurchase it."""
     from PIL import Image
     from .atlas_scene_completion import load_generated_views
 
     report = json.loads((root / 'completion.json').read_text())
-    plan = json.loads((root / 'chisel-completion-plan.json').read_text())
+    plan = json.loads(completion_plan_path(root).read_text())
     for value in (report, plan):
         if value.get('digest') != canonical_digest(value, digest_field='digest'):
             raise ValueError('atlas_completion_prior_changed')

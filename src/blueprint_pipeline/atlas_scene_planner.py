@@ -109,17 +109,16 @@ COMPLETION_INSTRUCTIONS = """Plan Atlas novel-view completion of ONE reviewed
 object-absent environment. The supplied RGB views are already edited candidates,
 not raw capture truth. The camera candidate table is computed from their actual
 poses and depth. Select exact candidate_camera_ids as selected_camera_ids.
-Survey the observed room and select only nearby views that resolve a specific
-task-relevant gap in a support surface, approach/access space or cleared region.
-Do not request whole-room sweeps, unseen rooms or extra space for completeness.
-The capture-derived generation_extent is a ceiling, not an area to fill: use the
-smallest task-relevant part of it, and do not invent metric dimensions.
+Survey the entire captured scene and select views that resolve specific missing
+surfaces, including surrounding floor, walls and counters, not just the task bay.
+Do not expand into unseen rooms or invent extra space or metric dimensions.
+The capture-derived generation_extent is a ceiling, not an area to fill.
 Every selected_camera_id needs an entry in view_gap_reasons, a list of objects
 with camera_id, nonempty reason and gap_ids naming exact regions in gap_survey.
 Use the reconstruction geometry-gap overlays: magenta marks candidate missing
 surfaces; black exterior and tiny raster pinholes are not completion requests.
-Select only actual gaps that matter for the captured work area, never the whole
-image or room. Known geometry is immutable. A camera without a named eligible
+Select actual missing surfaces throughout the captured scene, never request an
+unmasked room regeneration. Known geometry is immutable. A camera without a named eligible
 gap cannot be selected. The provider may return a full image, but only the named
 gap regions may contribute geometry. Do not infer a missing wall from black
 background alone. Source photos determine materials and existing objects.

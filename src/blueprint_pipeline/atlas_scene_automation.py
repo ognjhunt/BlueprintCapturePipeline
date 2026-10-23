@@ -298,7 +298,7 @@ def run_automation(
             completion = None
             if background["status"] == "fallback_prepared" and "rgbd_view_cost_usd" in policy:
                 from .atlas_scene_completion import complete_scene, COMPLETION_REVISION
-                from .atlas_scene_gaps import retained_completion
+                from .atlas_scene_gaps import retained_completion, completion_plan_path
 
                 # Adopt the last passed completion in the same pose frame.
                 # Completed geometry stays in the base and cannot be regenerated.
@@ -310,9 +310,9 @@ def run_automation(
                             or not (prior / 'completion.json').is_file()):
                         continue
                     saved = json.loads((prior / 'completion.json').read_text())
-                    if saved.get('status') != 'passed' or not (prior / 'chisel-completion-plan.json').is_file():
+                    if saved.get('status') != 'passed':
                         continue
-                    plan = json.loads((prior / 'chisel-completion-plan.json').read_text())
+                    plan = json.loads(completion_plan_path(prior).read_text())
                     if plan.get('source_pose_digest') != effective_pose['digest']:
                         continue
                     adopted, prior_report = retained_completion(root=prior, pose_digest=effective_pose['digest'])

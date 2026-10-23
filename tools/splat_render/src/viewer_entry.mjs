@@ -64,12 +64,25 @@ try {
             // vertex-colour inspection has no reflection environment.
             material.metalness = 0;
             material.roughness = 1;
+            if (material.emissiveMap) {
+              // Atlas supplies baked appearance. Ambient light must not light it twice.
+              material.color.setRGB(0, 0, 0);
+              material.emissive.setRGB(1, 1, 1);
+              material.emissiveIntensity = 1;
+            }
           }
         });
       }
       status.textContent = `${splat.numSplats.toLocaleString()} draft Gaussians`;
     } catch (error) { status.textContent = error.message; }
   };
+  const query = new URLSearchParams(location.search);
+  if (query.get('meshLabel')) document.querySelector('#mode option[value="mesh"]').textContent = query.get('meshLabel');
+  if (['mesh', 'wire'].includes(query.get('mode'))) {
+    const select = document.querySelector('#mode');
+    select.value = query.get('mode');
+    select.dispatchEvent(new Event('change'));
+  }
   status.textContent = `${splat.numSplats.toLocaleString()} draft Gaussians`;
   window.BlueprintSceneInspection = {splat, get mesh(){return mesh;}, camera, controls, renderer};
   renderer.setAnimationLoop(() => {controls.update(); renderer.render(scene,camera);});

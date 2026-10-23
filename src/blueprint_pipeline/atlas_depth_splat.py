@@ -124,6 +124,35 @@ def read_exr_depth(path: Path) -> np.ndarray:
     return np.concatenate(rows).astype(np.float32)
 
 
+def write_exr_depth(path: Path, depth: np.ndarray) -> Path:
+    """Top-left planar FLOAT scanlines; no codec or row-order reinterpretation."""
+    pixels = np.ascontiguousarray(depth, dtype='<f4')
+    if pixels.ndim != 2 or not all(pixels.shape):
+        raise ValueError('atlas_depth_exr_grid_invalid')
+    height, width = pixels.shape
+
+    def attribute(name, kind, value):
+        return name.encode() + b'\0' + kind.encode() + b'\0' + struct.pack('<I', len(value)) + value
+
+    window = struct.pack('<iiii', 0, 0, width - 1, height - 1)
+    header = b''.join([EXR_MAGIC, struct.pack('<I', 2),
+        attribute('channels', 'chlist', b'Y\0' + struct.pack('<iB3xii', 2, 0, 1, 1) + b'\0'),
+        attribute('compression', 'compression', b'\0'),
+        attribute('dataWindow', 'box2i', window), attribute('displayWindow', 'box2i', window),
+        attribute('lineOrder', 'lineOrder', b'\0'), attribute('pixelAspectRatio', 'float', struct.pack('<f', 1)),
+        attribute('screenWindowCenter', 'v2f', struct.pack('<ff', 0, 0)),
+        attribute('screenWindowWidth', 'float', struct.pack('<f', 1)), b'\0'])
+    row_size = 8 + width * 4
+    offsets = [len(header) + height * 8 + y * row_size for y in range(height)]
+    data = header + struct.pack(f'<{height}Q', *offsets) + b''.join(
+        struct.pack('<ii', y, width * 4) + pixels[y].tobytes() for y in range(height))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or (path.exists() and path.read_bytes() != data):
+        raise ValueError('atlas_depth_exr_output_changed')
+    path.write_bytes(data)
+    return path
+
+
 def posed_frame(*, frame_id: str, rgb: np.ndarray, depth: np.ndarray, confidence: np.ndarray,
                 camera: Mapping[str, Any]) -> dict[str, Any]:
     """Bind one returned image/depth/confidence bundle to the camera Atlas returned with it."""
