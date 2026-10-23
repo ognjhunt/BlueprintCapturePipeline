@@ -294,6 +294,56 @@ def _state(case):
     return json.loads((case.root / "atlas_pose" / "submission.json").read_text())
 
 
+def test_portable_export_indexes_preserved_views_separately_from_native_outputs(atlas_case, tmp_path):
+    """Synthetic metadata fixture: portable links and provenance, no model/geometry claim."""
+    import zipfile
+    from blueprint_pipeline.atlas_result_bundle import export_pose_bundle
+
+    atlas_case.run(FakeAtlas(atlas_case.events))
+    native = tmp_path / 'fake-generated'
+    native.mkdir()
+    image = native / 'native.png'
+    Image.new('RGB', (4, 4), 'magenta').save(image)
+    source_video = _result(atlas_case)['binding']['source_video_digest']
+    value = {'status': 'completed', 'binding': {'source_video_digest': source_video},
+             'operation': {'id': 'fake-generation'}, 'outputs': [{'role': 'frames-0-imageAsset',
+                'path': image.name, 'sha256': geometry._sha256_file(image), 'bytes': image.stat().st_size}]}
+    value['digest'] = canonical_digest(value, digest_field='digest')
+    (native / 'result.json').write_text(json.dumps(value))
+    (native / 'atlas_pose').mkdir()
+    (native / 'atlas_pose/submission.json').write_text(json.dumps({'status': 'completed', 'result_digest': value['digest']}))
+    context, fixed, known, allowed = [tmp_path / name for name in ('context.png', 'fixed.png', 'known.png', 'allowed.png')]
+    Image.new('RGB', (4, 4), 'green').save(context)
+    Image.new('RGB', (4, 4), 'green').save(fixed)
+    Image.new('L', (4, 4), 255).save(known)
+    Image.new('L', (4, 4), 0).save(allowed)
+    record = {'schema_version': 'atlas_scene_preservation.v1', 'frame_id': 'completion-a',
+              'native_result_digest': value['digest'], 'native_frame_index': 0, 'known_pixels_changed': 0,
+              'source_geometry_modified': False, 'native_outputs_modified': False,
+              'context_image_digest': geometry._sha256_file(context),
+              'assets': [{'role': role, 'sha256': geometry._sha256_file(path)} for role, path in
+                         (('composite_rgb', fixed), ('known_pixels', known), ('generated_geometry_mask', allowed))]}
+    receipt = tmp_path / 'preservation.json'
+    record['digest'] = canonical_digest(record, digest_field='digest')
+    receipt.write_text(json.dumps(record))
+    args = dict(pose_root=atlas_case.root, output_root=tmp_path / 'export', generated_roots=[native],
+                analysis_paths=[context, fixed, known, allowed, receipt])
+    exported = export_pose_bundle(**args)
+    with zipfile.ZipFile(exported['zip_path']) as bundle:
+        manifest = json.loads(bundle.read('manifest.json'))
+        view = manifest['scene_views'][0]
+        assert bundle.read(view['image_path']) == fixed.read_bytes()
+        assert bundle.read(view['known_mask_path']) == known.read_bytes()
+        assert bundle.read(view['generated_geometry_mask_path']) == allowed.read_bytes()
+        assert manifest['approved_context_pixels_preserved'] is True
+        assert bundle.read('generated/0/native.png') == image.read_bytes()
+    record['native_result_digest'] = 'not-this-operation'
+    record['digest'] = canonical_digest(record, digest_field='digest')
+    receipt.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match='preservation_receipt_invalid'):
+        export_pose_bundle(**args)
+
+
 def test_portable_export_is_verified_deterministic_and_excludes_unlisted_files(atlas_case, tmp_path):
     import zipfile
     from blueprint_pipeline.atlas_result_bundle import export_pose_bundle

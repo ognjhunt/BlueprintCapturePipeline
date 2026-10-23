@@ -1,0 +1,175 @@
+"""A generated appliance must not replace known countertop pixels or geometry."""
+from copy import deepcopy
+
+import numpy as np
+from PIL import Image
+import pytest
+
+from blueprint_pipeline.atlas_depth_splat import posed_frame
+from blueprint_pipeline import atlas_scene_preservation as preservation
+
+
+def camera(width=6, height=6, x=0):
+    return {'intrinsics': {'width': width, 'height': height, 'fx': 6., 'fy': 6.,
+                            'cx': width / 2, 'cy': height / 2},
+            'extrinsics': {'position': [x, 0, 0], 'quaternion': [0, 0, 0, 1], 'coordinateSystem': 'rub'}}
+
+
+def frame(key='source', depth=2., colour=(0, 150, 20), cam=None):
+    cam = cam or camera()
+    k = cam['intrinsics']
+    return posed_frame(frame_id=key, rgb=np.full((k['height'], k['width'], 3), colour, np.uint8),
+        depth=np.full((k['height'], k['width']), depth, np.float32),
+        confidence=np.ones((k['height'], k['width']), np.float32), camera=cam)
+
+
+def test_same_camera_keeps_every_rgb_pixel_even_when_depth_is_missing():
+    source = frame()
+    source['depth'][:] = np.nan
+    source['confidence'][:] = 0
+    source['rgb'][0, 0] = (255, 0, 0)
+    rgb, keep = preservation.project_known_context([source], camera())
+    assert keep.all() and np.array_equal(rgb, source['rgb'])
+
+
+def test_wider_output_preserves_source_rays_without_stretching():
+    source = frame()
+    source['rgb'][:, 0] = (255, 0, 0)
+    rgb, keep = preservation.project_known_context([source], camera(width=12))
+    assert keep[:, 3:9].all() and not keep[:, :3].any() and not keep[:, 9:].any()
+    assert np.array_equal(rgb[:, 3:9], source['rgb'])
+
+
+def test_projection_keeps_nearer_surface_in_front_of_farther_surface():
+    near, far = frame(colour=(255, 0, 0)), frame(depth=4, colour=(0, 0, 255))
+    rgb, keep = preservation.project_known_context([near, far], camera(x=.01))
+    assert keep.all() and np.all(rgb == np.array([255, 0, 0]))
+
+
+@pytest.mark.parametrize('depth,allowed', [(1., False), (2., False), (4., True)])
+def test_generated_geometry_cannot_fill_observed_free_space_or_replace_known_surface(depth, allowed):
+    reference = frame()
+    generated = frame('generated', depth=depth)
+    mask = preservation.unobserved_geometry_mask(generated, [reference])
+    assert bool(mask.all()) is allowed and bool(mask.any()) is allowed
+
+
+def test_generated_geometry_is_allowed_where_reference_depth_is_unknown_or_outside_capture():
+    reference = frame()
+    reference['depth'][:] = np.nan
+    assert preservation.unobserved_geometry_mask(frame('generated'), [reference]).all()
+    reference = frame()
+    assert preservation.unobserved_geometry_mask(frame('generated', cam=camera(x=20)), [reference]).all()
+
+
+def test_hallucinated_countertop_is_copied_back_and_excluded_from_generated_geometry(tmp_path):
+    source = frame()
+    original = deepcopy(source)
+    target = camera(width=12)
+    rows = preservation.prepare_completion_views(frames=[source], selected=[{
+        'camera_id': 'wide', 'source_frame_id': 'source', 'camera': target}], root=tmp_path / 'input')
+    assert Image.open(rows[0]['keep_mask_path']).mode == 'L'
+    hallucinated = frame('generated', colour=(255, 0, 255), cam=target)
+    native_rgb = hallucinated['rgb'].copy()
+    fixed, image, receipt, paths = preservation.preserve_generated_view(
+        generated=hallucinated, prepared=rows[0], references=[source], output_root=tmp_path / 'derived',
+        native_result_digest='native-operation', native_frame_index=0)
+    assert np.array_equal(fixed['rgb'][:, 3:9], source['rgb'])
+    assert np.array_equal(fixed['rgb'][:, :3], native_rgb[:, :3])
+    assert not fixed['confidence'][:, 3:9].any() and fixed['confidence'][:, :3].all()
+    assert receipt['known_pixels_changed'] == 0 and receipt['native_outputs_modified'] is False
+    assert receipt['source_geometry_modified'] is False
+    for key in ('rgb', 'depth', 'confidence'):
+        assert np.array_equal(source[key], original[key])
+    assert np.array_equal(hallucinated['rgb'], native_rgb)
+    assert len(paths) == 4 and image['novel_view'] is True
+    assert np.array_equal(np.asarray(Image.open(image['image_path'])), fixed['rgb'])
+
+
+def test_changed_preservation_inputs_are_refused(tmp_path):
+    source = frame()
+    rows = preservation.prepare_completion_views(frames=[source], selected=[{
+        'camera_id': 'wide', 'source_frame_id': 'source', 'camera': camera()}], root=tmp_path)
+    Image.new('RGB', (6, 6), 'black').save(rows[0]['image_path'])
+    with pytest.raises(ValueError, match='preservation_inputs_changed'):
+        preservation.preserve_generated_view(generated=source, prepared=rows[0], references=[source],
+            output_root=tmp_path / 'out', native_result_digest='native', native_frame_index=0)
+
+
+def test_masked_completion_uses_paired_keep_masks_and_reuses_completed_operation(tmp_path, monkeypatch):
+    import json
+    from blueprint_pipeline import atlas_depth_splat
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    from blueprint_pipeline.website_atlas_tasks import validate_task_request
+
+    references = [frame('a'), frame('b', cam=camera(x=.2))]
+    candidates = []
+    for f in references:
+        target = camera(width=1280, height=720, x=float(f['position'][0]))
+        target['intrinsics'].update(fx=720., fy=720.)
+        candidates.append({'camera_id': f['frame_id'] + '-wide', 'source_frame_id': f['frame_id'],
+                           'purpose': 'wide', 'camera': target})
+    monkeypatch.setattr(atlas_depth_splat, 'read_exr_depth', lambda _: np.full((720, 1280), 2., np.float32))
+    purchases = []
+
+    def task(**kw):
+        validate_task_request(kw['task'], kw['request'])
+        assert kw['task'] == 'atlasMasked' and kw['request']['enhancePrompt'] is False
+        assert kw['request']['returnDepth'] is True
+        assert kw['price_review']['maximum_cost_usd'] == .2
+        for i, context in enumerate(kw['request']['contextFrames']):
+            assert context['camera'] == kw['request']['targetCameras'][i]
+            image = Image.open(kw['uploads'][f'image-{i}']['path'])
+            mask = Image.open(kw['uploads'][f'mask-{i}']['path'])
+            assert image.size == mask.size == (1280, 720) and mask.mode == 'L'
+        root = kw['output_root']
+        if (root / 'result.json').exists():
+            return {'status': 'completed'}
+        purchases.append(kw)
+        root.mkdir(parents=True)
+        outputs, returned = [], []
+        for i, target in enumerate(kw['request']['targetCameras']):
+            image, depth = root / f'{i}.png', root / f'{i}.exr'
+            Image.new('RGB', (1280, 720), (255, 0, 255)).save(image)
+            depth.write_bytes(b'fake-native-depth')
+            outputs += [{'role': role, 'path': path.name, 'sha256': _sha256_file(path), 'bytes': path.stat().st_size}
+                        for role, path in ((f'frames-{i}-imageAsset', image), (f'frames-{i}-depth-depthAsset', depth))]
+            returned.append({'camera': target})
+        result = {'status': 'completed', 'binding': {'source_video_digest': 'source'}, 'outputs': outputs,
+                  'operation': {'id': 'fake-masked', 'done': True, 'response': {'frames': returned}}}
+        result['digest'] = canonical_digest(result, digest_field='digest')
+        (root / 'result.json').write_text(json.dumps(result))
+        (root / 'atlas_pose').mkdir()
+        (root / 'atlas_pose/submission.json').write_text(json.dumps({'status': 'completed', 'result_digest': result['digest']}))
+        return {'status': 'completed'}
+
+    args = dict(frames=references, selected=candidates, candidates=candidates, root=tmp_path / 'complete',
+        pose={'digest': 'pose', 'binding': {'source_video_digest': 'source'}}, context={},
+        configuration={'remaining_cost_usd': 5, 'policy': {'rgbd_view_cost_usd': .05,
+            'rate_card_reference': 'fake rate', 'reviewed_by': 'test', 'reviewed_on': '2026-10-23'}},
+        task_runner=task, max_polls=1, removed_objects=['dishwasher'])
+    (generated, images), report = preservation.generate_masked_completion(**args)
+    assert len(generated) == len(images) == 2 and len(purchases) == 1
+    assert report['known_pixels_changed'] == 0 and report['source_geometry_modified'] is False
+    assert len(report['generated_roots']) == len(report['native_result_digests']) == 1
+    assert 'dishwasher' in purchases[0]['request']['prompt']
+    for f in generated:
+        assert np.all(f['rgb'][:, 300:980] == (0, 150, 20))
+        assert not f['confidence'][:, 300:980].any()
+    # An already paid prefix is not included in the remaining-spend preflight.
+    args['configuration']['remaining_cost_usd'] = 1.01
+    _, resumed = preservation.generate_masked_completion(**args)
+    assert len(purchases) == 1 and resumed['digest'] == report['digest']
+    args['configuration']['remaining_cost_usd'] = .5
+    with pytest.raises(ValueError, match='remaining_budget_insufficient'):
+        preservation.generate_masked_completion(**args)
+    assert len(purchases) == 1
+
+
+def test_novel_view_review_rejects_invented_objects_on_known_surfaces():
+    from blueprint_pipeline.website_image_completion import _review_prompt
+
+    prompt = _review_prompt([], frames=[{'novel_view': True}])
+    assert 'invented, substituted or duplicated' in prompt
+    assert 'consistent_background false' in prompt
