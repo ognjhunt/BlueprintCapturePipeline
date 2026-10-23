@@ -79,6 +79,15 @@ def test_a_world_with_no_level_surface_is_refused(tmp_path):
     assert value["outputs"] == []
 
 
+def test_a_warehouse_floor_seen_from_a_mezzanine_is_declared(tmp_path):
+    # Not only kitchens: rack levels are parallel level layers, and the cameras stand 5 m up.
+    mezzanine = [(0.0, 4.6, 0.0), (0.8, 5.0, -0.4), (-0.6, 5.2, 0.3)]
+    value, _ = level(tmp_path, counter=False, shelves=True, cameras=mezzanine)
+    assert value["status"] == "levelled" and value["up_basis"] == "observed_floor"
+    assert value["tilt_degrees"] == pytest.approx(18.0, abs=0.3)
+    assert value["floor"]["camera_heights_m"] == pytest.approx([4.6, 5.0, 5.2], abs=0.03)
+
+
 def test_a_table_seen_alone_levels_the_world_but_is_not_declared_a_floor(tmp_path):
     close_up = [(0.0, 1.1, 0.0), (0.2, 1.15, 0.1), (-0.2, 1.05, 0.0)]
     value, _ = level(tmp_path, floor=False, counter=False, walls=False, table=True, cameras=close_up)

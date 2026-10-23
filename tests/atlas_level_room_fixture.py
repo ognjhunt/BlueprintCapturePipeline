@@ -34,7 +34,7 @@ def _grid(origin, u, v, nu, nv):
     return vertices, np.concatenate([np.c_[k, k + nv, k + 1], np.c_[k + 1, k + nv, k + nv + 1]])
 
 
-def room_parts(*, floor=True, counter=True, table=False, walls=True):
+def room_parts(*, floor=True, counter=True, table=False, shelves=False, walls=True):
     parts = {}
     if floor:
         parts["floor"] = _grid((-2.0, 0.0, -1.5), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 81, 61)
@@ -42,6 +42,10 @@ def room_parts(*, floor=True, counter=True, table=False, walls=True):
         parts["counter"] = _grid((-2.0, 0.9, -1.5), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 41, 13)
     if table:
         parts["table"] = _grid((-0.5, 0.75, -0.3), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 21, 13)
+    if shelves:
+        # Warehouse rack levels: parallel to the floor, above it.
+        for height in (1.5, 3.0):
+            parts[f"shelf_{height}"] = _grid((-2.0, height, -1.5), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 41, 21)
     if walls:
         parts["back_wall"] = _grid((-2.0, 0.0, -1.55), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0), 81, 51)
         parts["side_wall"] = _grid((2.05, 0.0, -1.5), (0.0, 0.0, 0.05), (0.0, 0.05, 0.0), 61, 51)

@@ -5,9 +5,10 @@ came back with its floor 18 degrees off +Y: no collider face under the subject
 was level, the support search found nothing, and a placed object would have
 stood on a slope. Compile, its support search and the simulator frame all take
 +Y as gravity, so the scene source levels the background first. The dominant
-level surface (a floor, counter or table: they are parallel) gives the up
-direction. The lowest such layer, with almost nothing below it and every
-camera standing above it, is the floor, declared at y = 0.
+level surface of any built space (a floor, slab, deck, counter, bench or
+table: they are parallel) gives the up direction. The lowest such layer, with
+almost nothing below it and every camera standing above it, is the floor,
+declared at y = 0. A scene with no level surface (open terrain) waits for input.
 
 The retained Atlas outputs stay unchanged; the base scene points at levelled
 copies in the provider's own units. Every value is an estimate.
@@ -27,8 +28,9 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 REVISION = "atlas_world_levelling.v1"
-#: Surfaces tilted further than this from the provider's +Y are not taken for gravity.
-MAX_TILT_DEGREES = 35.0
+#: Surfaces tilted further than this from the provider's +Y are not taken for
+#: gravity: compile's ground search bound, and walls stand at 90 degrees.
+MAX_TILT_DEGREES = 45.0
 PLANE_TOLERANCE_M = 0.02
 SAMPLE_CAP = 200_000
 RANSAC_PROBE = 20_000
@@ -40,15 +42,17 @@ MIN_LEVEL_SHARE = 0.04
 MIN_FLOOR_SHARE = 0.01
 MAX_BELOW_FLOOR_SHARE = 0.01
 BELOW_FLOOR_M = 0.05
-#: Counters and most tables are shallower; a floor seen across a room is wider both ways.
+#: Counters, benches and most tables are shallower; a floor or slab seen across
+#: a space is wider both ways. A narrower one levels the scene but is not declared.
 MIN_FLOOR_EXTENT_M = 1.0
 #: A first fit slightly off the floor only keeps a band of it; refit on the
 #: band's plane until the whole floor is in (a degree is 3.5 cm at 2 m).
 FLOOR_REFITS = 4
-#: Every camera stands above the floor, and a handheld capture's typical
-#: camera this high above it (estimated metres); close-ups over a table do not.
+#: Every camera stands above the floor, and the typical camera this high above
+#: it (estimated metres): handheld, pole or mezzanine views of any space, but
+#: not close-ups over a table or bench.
 CAMERA_MIN_HEIGHT_M = 0.2
-CAMERA_MEDIAN_HEIGHT_BOUNDS_M = (0.5, 3.0)
+CAMERA_MEDIAN_HEIGHT_BOUNDS_M = (0.5, 10.0)
 SPLAT_NAME, MESH_NAME = "atlas_depth_splat_levelled.ply", "atlas_mesh_levelled.glb"
 
 

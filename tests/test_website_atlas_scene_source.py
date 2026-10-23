@@ -311,7 +311,8 @@ def test_scene_source_uses_the_final_completed_bundle_with_a_stale_baseline_pres
         value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
         assert value["status"] == "ready"
         levelling = value["base_scene"]["levelling"]
-        assert levelling["provider_splat_digest"] == _sha256_file(ply)
+        assert Path(levelling["provider_splat_path"]) == ply and levelling["provider_splat_digest"] == _sha256_file(ply)
+        assert Path(levelling["provider_collision_mesh_path"]) == glb
         assert levelling["provider_collision_mesh_digest"] == _sha256_file(glb)
 
 

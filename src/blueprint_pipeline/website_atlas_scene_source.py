@@ -265,8 +265,9 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
         lift_m = lift.copy()
         lift_m[:3, 3] *= runtime_mpu
         anchor["source_world_to_provider_m"] = (lift_m @ np.asarray(anchor["source_world_to_provider_m"])).tolist()
-    splat_record, (splat_path, splat_digest) = splat_digest, levelled["splat_ply"]
-    mesh_record, (mesh_path, mesh_digest) = mesh_digest, levelled["supported_mesh_glb"]
+    provider = {"provider_splat_path": str(splat_path), "provider_splat_digest": splat_digest,
+                "provider_collision_mesh_path": str(mesh_path), "provider_collision_mesh_digest": mesh_digest}
+    (splat_path, splat_digest), (mesh_path, mesh_digest) = levelled["splat_ply"], levelled["supported_mesh_glb"]
     base = {
         "splat_path": str(splat_path), "splat_digest": splat_digest,
         "splat_binding_id": "website-splat-" + splat_digest[7:39],
@@ -275,8 +276,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
         "up_axis": "Y", "meters_per_unit": runtime_mpu, "provider": PROVIDER, "scale_authority": SCALE_AUTHORITY,
         "ground_plane_offset_m": level["ground_plane_offset_m"], "anchor": anchor,
         "levelling": {"digest": level["digest"], "up_basis": level["up_basis"], "tilt_degrees": level["tilt_degrees"],
-                      "provider_to_levelled": level["provider_to_levelled"],
-                      "provider_splat_digest": splat_record, "provider_collision_mesh_digest": mesh_record},
+                      "provider_to_levelled": level["provider_to_levelled"], **provider},
         "operation_id": background_pose["operation"]["id"], "atlas_result_digest": result["digest"],
     }
     return {"status": "ready", "base_scene": base, "source_geometry": geometry,
