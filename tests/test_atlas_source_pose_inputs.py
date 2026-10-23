@@ -103,7 +103,7 @@ def test_object_pose_adds_full_video_states_without_changing_background_inputs(t
         prepare_source_pose(pose)
 
 
-@pytest.mark.parametrize('broken', ['video', 'holdout'])
+@pytest.mark.parametrize('broken', ['video', 'candidate_video', 'holdout'])
 def test_extra_task_views_require_the_same_video_and_admitted_candidate_split(tmp_path, broken):
     pose, _, worker, candidate, manifest = task_state_fixture(tmp_path)
     record = json.loads(manifest.read_text())
@@ -111,6 +111,13 @@ def test_extra_task_views_require_the_same_video_and_admitted_candidate_split(tm
         record['source_frames']['binding']['source_video_digest'] = 'sha256:' + 'b' * 64
         record['source_frames']['digest'] = canonical_digest(record['source_frames'], digest_field='digest')
         manifest.write_text(json.dumps(record))
+    elif broken == 'candidate_video':
+        candidate['binding']['source_video_digest'] = 'sha256:' + 'b' * 64
+        candidate['digest'] = canonical_digest(candidate, digest_field='digest')
+        record['source_frames']['geometry_input_digest'] = candidate['digest']
+        record['source_frames']['digest'] = canonical_digest(record['source_frames'], digest_field='digest')
+        manifest.write_text(json.dumps(record))
+        (worker / 'geometry_inputs.json').write_text(json.dumps(candidate))
     else:
         candidate['heldout_pixels_included'] = True
         (worker / 'geometry_inputs.json').write_text(json.dumps(candidate))

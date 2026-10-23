@@ -43,6 +43,7 @@ def task_source_inputs(pose_root: Path, original: dict) -> tuple[Path, dict]:
     source_root = clean_root / "source_geometry/worker_inputs"
     candidate = json.loads((source_root / "geometry_inputs.json").read_text())
     if (candidate.get("digest") != sources.get("geometry_input_digest")
+            or candidate.get("binding") != sources["binding"]
             or candidate.get("heldout_pixels_included") is not False):
         raise ValueError("atlas_task_source_candidate_split_invalid")
     source_frames = _bound_frames(candidate, source_root, geometry=False)
