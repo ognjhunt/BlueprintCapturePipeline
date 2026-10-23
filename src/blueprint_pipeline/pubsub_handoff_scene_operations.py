@@ -89,7 +89,7 @@ def __synthesize_pipeline_handoff_body(_listener, /, handoff, *, capture_root):
     return destination
 
 
-def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None):
+def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None):
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
@@ -225,16 +225,18 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             retired_ended_producer_delivery_keys=(prior_retired['producer_delivery_keys']
                 if producer_delivery_key is not None and prior_retired is not None else ()),
             **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}),
-            **({'expected_assessment_resume': expected_assessment_resume} if expected_assessment_resume is not None else {}))
+            **({'expected_assessment_resume': expected_assessment_resume} if expected_assessment_resume is not None else {}),
+            **({'expected_reconstruction_resume': expected_reconstruction_resume}
+               if expected_reconstruction_resume is not None else {}))
     except _listener.HandoffCaptureRetired:
         return retired_terminal() or {'schema_version': 'v1', 'status': 'capture_retired_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'blockers': ['handoff_capture_retired_while_claiming']}
     if claim_status == 'prior_delivery_effects_unresolved':
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'blockers': ['selected_handoff_existing_state_requires_reconciliation']}
-    if claim_status == 'assessment_resume_changed':
-        return {'schema_version': 'v1', 'status': 'assessment_resume_changed', 'queue_disposition': 'retryable',
+    if claim_status in {'assessment_resume_changed', 'reconstruction_resume_changed'}:
+        return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
-                'blockers': ['website_assessment_resume_changed']}
+                'blockers': ['website_' + claim_status]}
     if claim_status == 'terminal':
         _listener._repair_terminal_receipt(capture_root, handoff=handoff)
         _listener.logger.info('pubsub_handoff.skipped_terminal_authority_ended', extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'terminal_code': ledger.get('terminal_code')})
@@ -311,7 +313,15 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         resume_record = exc.resume_record if isinstance(exc, AssessmentPreparationPending) else None
         if resume_record is not None:
             failure_record['assessment_resume'] = resume_record
-        _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'failed_retryable', 'updated_at': failed_at, 'last_failed_at': failed_at, 'last_error_type': type(exc).__name__, 'last_error': str(exc), 'attempt_history': [*previous_history, failure_record], **({'assessment_resume': resume_record} if resume_record else {})})
+        # A run that only waits on the capture's own Atlas job is replayed
+        # when that job ends, not burnt through Pub/Sub's delivery limit.
+        from .website_reconstruction_resume import FIELD as RECONSTRUCTION_FIELD, resume_record as waiting_record
+        reconstruction = waiting_record(_listener, exc=exc, payload=payload, payload_digest=digest,
+            producer_delivery_key=producer_delivery_key, capture_root=capture_root, attempt_count=attempt_count,
+            previous_history=previous_history, recovered_expired_lease=ledger.get('recovered_expired_lease'))
+        if reconstruction is not None:
+            failure_record[RECONSTRUCTION_FIELD] = reconstruction
+        _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'failed_retryable', 'updated_at': failed_at, 'last_failed_at': failed_at, 'last_error_type': type(exc).__name__, 'last_error': str(exc), 'attempt_history': [*previous_history, failure_record], **({'assessment_resume': resume_record} if resume_record else {}), **({RECONSTRUCTION_FIELD: reconstruction} if reconstruction else {})})
         raise
     completed_at = _listener.utc_now_iso()
     control_plane_staging_status = str(control_plane_staging.get('status') or '') or None if control_plane_staging else None
@@ -338,11 +348,17 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
     except Exception:
         _listener.logger.debug("pubsub_handoff.preparation_delivery_retry_unavailable")
     from .website_assessment_resume import reconcile_waiting_assessments
-    reconcile_waiting_assessments(_listener, storage_root=storage_root, limit=1, process_args={
+    from .website_reconstruction_resume import reconcile_waiting_reconstructions
+    process_args = {
         'provider': provider, 'run_evaluation_prep': run_evaluation_prep, 'run_e2e_enabled': run_e2e_enabled,
         'stage_control_plane': stage_control_plane, 'control_plane_manifest_path': control_plane_manifest_path,
         'control_plane_work_dir': control_plane_work_dir, 'control_plane_staged_inputs_path': control_plane_staged_inputs_path,
-        'overwrite_control_plane_input': overwrite_control_plane_input})
+        'overwrite_control_plane_input': overwrite_control_plane_input}
+    reconcile_waiting_assessments(_listener, storage_root=storage_root, limit=1, process_args=process_args)
+    try:
+        reconcile_waiting_reconstructions(_listener, storage_root=storage_root, limit=1, process_args=process_args)
+    except Exception:
+        _listener.logger.debug("pubsub_handoff.reconstruction_resume_unavailable")
     from google.cloud import pubsub_v1
     from .pubsub_retry_deferrals import clear_deferral, record_deferral, wake_older_release_deferrals
     subscriber = pubsub_v1.SubscriberClient()
