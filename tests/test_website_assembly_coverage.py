@@ -135,6 +135,9 @@ def model(monkeypatch):
     monkeypatch.setattr(receipts, "retained_gemini_call", retained)
 
     def decode(*, video, video_digest, rotation, frames, output_root):
+        # Original-video decoding must resolve its own orientation, even when
+        # Atlas geometry was constructed from already-upright source images.
+        assert rotation is None
         output_root.mkdir(parents=True, exist_ok=True)
         result = {}
         for row in frames:
@@ -545,7 +548,8 @@ def test_uncaptured_target_is_held_by_the_preparation_gate(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
-def test_decoder_returns_exact_indices_rotated_upright(tmp_path):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_decoder_returns_exact_indices_rotated_upright(tmp_path, automatic):
     colors = [(40 * i, 255 - 40 * i, 7 * i) for i in range(6)]
     for i, color in enumerate(colors):
         image = Image.new("RGB", (32, 16), color)
@@ -554,8 +558,15 @@ def test_decoder_returns_exact_indices_rotated_upright(tmp_path):
     video = tmp_path / "clip.mov"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-framerate", "10", "-i", str(tmp_path / "in-%02d.png"),
                     "-c:v", "png", str(video)], check=True, capture_output=True, timeout=60)
+    if automatic:
+        rotated = tmp_path / "phone.mov"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-display_rotation", "-90", "-i", str(video),
+                        "-c", "copy", str(rotated)],
+                       check=True, capture_output=True, timeout=60)
+        video = rotated
     frames = [{"frame_id": f"decoded-{i:09d}", "decoded_index": i} for i in (4, 1)]
-    result = coverage.decode_upright_frames(video=video, video_digest=_sha256_file(video), rotation=-90,
+    result = coverage.decode_upright_frames(video=video, video_digest=_sha256_file(video),
+                                            rotation=None if automatic else -90,
                                             frames=frames, output_root=tmp_path / "out")
     for i in (1, 4):
         row = result[f"decoded-{i:09d}"]
@@ -564,7 +575,8 @@ def test_decoder_returns_exact_indices_rotated_upright(tmp_path):
             assert image.getpixel((8, 16)) == colors[i]
             assert image.getpixel((15, 0)) == (255, 255, 255)  # Stored top-left, turned clockwise.
     assert json.loads((next((tmp_path / "out").glob("*/upright_frames.json"))).read_text())["frames"] == result
-    assert coverage.decode_upright_frames(video=video, video_digest=_sha256_file(video), rotation=-90,
+    assert coverage.decode_upright_frames(video=video, video_digest=_sha256_file(video),
+                                          rotation=None if automatic else -90,
                                           frames=frames, output_root=tmp_path / "out") == result
 
 
