@@ -40,6 +40,40 @@ def test_wider_output_preserves_source_rays_without_stretching():
     assert np.array_equal(rgb[:, 3:9], source['rgb'])
 
 
+def test_rotation_at_observed_center_keeps_photographed_rays_without_depth_or_rear_wraparound():
+    from scipy.spatial.transform import Rotation
+
+    cam = camera(width=64, height=64)
+    cam['intrinsics'].update(fx=60., fy=60.)
+    source = frame(cam=cam)
+    source['rgb'][30:34, 30:34] = (255, 0, 0)
+    source['depth'][:] = np.nan
+    source['confidence'][:] = 0
+    target = deepcopy(cam)
+    target['extrinsics']['quaternion'] = Rotation.from_euler('Y', 15, degrees=True).as_quat().tolist()
+    rgb, keep = preservation.project_known_context([source], target)
+    landmark = (rgb[..., 0] > 180) & (rgb[..., 1] < 50) & keep
+    yy, xx = np.nonzero(landmark)
+    assert len(xx) and 46 < xx.mean() < 50 and 30 < yy.mean() < 33
+    target['extrinsics']['quaternion'] = Rotation.from_euler('Y', 180, degrees=True).as_quat().tolist()
+    _, rear = preservation.project_known_context([source], target)
+    assert not rear.any(), 'A photograph behind the target camera must never wrap into its keep mask'
+
+
+def test_every_masked_batch_keeps_all_source_photographs_without_limiting_total_views():
+    from blueprint_pipeline.atlas_background_automation import batches
+
+    anchors = [{'frame_id': f'source-{i}'} for i in range(6)]
+    novel = [{'frame_id': f'novel-{i}'} for i in range(29)]
+    groups = batches([*anchors, *novel], fixed_context=anchors)
+    assert [len(group) for group in groups] == [16, 16, 15]
+    assert all(group[:6] == anchors for group in groups)
+    assert [row for group in groups for row in group[6:]] == novel
+    # The vendor recommendation is not an input-frame ceiling.
+    larger = [{'frame_id': f'source-{i}'} for i in range(18)]
+    assert all(group[:18] == larger for group in batches([*larger, *novel[:2]], fixed_context=larger))
+
+
 def test_projection_keeps_nearer_surface_in_front_of_farther_surface():
     near, far = frame(colour=(255, 0, 0)), frame(depth=4, colour=(0, 0, 255))
     rgb, keep = preservation.project_known_context([near, far], camera(x=.01))
@@ -76,7 +110,7 @@ def test_novel_context_drops_thin_projection_noise_and_neutralizes_fillable_pixe
     assert rows[0]['projection_basis'] == 'cross_view_supported_rgbd_dense_patches'
     assert np.asarray(Image.open(rows[1]['keep_mask_path'])).all()
     assert np.array_equal(np.asarray(Image.open(rows[1]['image_path'])), a['rgb'])
-    assert rows[1]['projection_basis'] == 'source_camera_rgb'
+    assert rows[1]['projection_basis'] == 'source_center_rgb_homography'
 
 
 @pytest.mark.parametrize('depth,allowed', [(1., False), (2., False), (4., True)])
@@ -206,3 +240,6 @@ def test_novel_view_review_rejects_invented_objects_on_known_surfaces():
     prompt = _review_prompt([], frames=[{'novel_view': True}])
     assert 'invented, substituted or duplicated' in prompt
     assert 'consistent_background false' in prompt
+    assert 'minor blur, seams, speckling' in prompt
+    assert 'clear task obstruction' in prompt
+    assert 'generic cabinet door' in prompt

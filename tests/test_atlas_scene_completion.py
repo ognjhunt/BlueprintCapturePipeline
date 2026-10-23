@@ -19,7 +19,7 @@ def frame(key="a", x=0):
                 "extrinsics": {"position": [x, 0, 0], "quaternion": [0, 0, 0, 1], "coordinateSystem": "rub"}})
 
 
-def test_completion_camera_pool_preserves_vertical_rays_and_uses_scene_relative_motion():
+def test_completion_camera_pool_preserves_vertical_rays_and_observed_camera_centers():
     first = frame()
     candidates = completion.camera_candidates([first])
     assert len({r["camera_id"] for r in candidates}) == len(candidates)
@@ -38,6 +38,20 @@ def test_completion_camera_pool_preserves_vertical_rays_and_uses_scene_relative_
     first["depth"][:] = np.nan
     with pytest.raises(ValueError, match="no_context_depth"):
         completion.camera_candidates([first])
+
+
+def test_room_center_is_an_actual_capture_position_instead_of_an_unobserved_coordinate_median():
+    frames = [frame(str(i)) for i in range(4)]
+    for f, position in zip(frames, ([0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0]), strict=True):
+        f['position'] = np.array(position, dtype=float)
+        f['extrinsics']['position'] = list(position)
+    allowed = {tuple(f['position']) for f in frames}
+    candidates = completion.camera_candidates(frames)
+    assert all(tuple(row['camera']['extrinsics']['position']) in allowed for row in candidates)
+    assert all(tuple(row['camera']['extrinsics']['position']) != (1., 1., 0.) for row in candidates)
+    by_id = {f['frame_id']: f for f in frames}
+    assert all(np.array_equal(row['camera']['extrinsics']['position'], by_id[row['source_frame_id']]['position'])
+               for row in candidates)
 
 
 def test_full_room_camera_frusta_cover_every_direction():

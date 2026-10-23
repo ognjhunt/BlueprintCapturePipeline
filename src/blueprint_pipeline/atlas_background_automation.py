@@ -309,8 +309,15 @@ def tile_views(*, frames, prepared, anchor, root):
     return tiles
 
 
-def batches(tiles):
+def batches(tiles, *, fixed_context=()):
     # Sixteen is the vendor's practical context per request, not a scene/frame ceiling.
+    if fixed_context:
+        context_ids = {row['frame_id'] for row in fixed_context}
+        others = [row for row in tiles if row['frame_id'] not in context_ids]
+        # Keep all source context when a larger scene exceeds that practical
+        # batch size. Actual request prices still pass the same total cap.
+        stride = max(1, 16 - len(fixed_context))
+        return [[*fixed_context, *others[i:i + stride]] for i in range(0, len(others), stride)] or [list(fixed_context)]
     anchor = max((r for r in tiles if r["clean_anchor"]), key=lambda r: r["edit_pixels"])
     others = [r for r in tiles if r is not anchor]
     result = []
