@@ -344,7 +344,8 @@ def _input(survey, context, feedback=None, *, preview_size=512):
                 raise ValueError("atlas_refinement_preview_changed")
             with Image.open(source) as image:
                 preview = image.convert("RGB")
-                preview.thumbnail((512, 512))
+                size = 768 if feedback.get('scope') == 'task_surface_masks' else 512
+                preview.thumbnail((size, size))
                 stream = BytesIO()
                 preview.save(stream, format="PNG")
             content += [{"type": "input_text", "text": json.dumps({
@@ -429,6 +430,9 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     if recovery is not None:
         from .atlas_scene_task_regions import TASK_SURFACE_INSTRUCTIONS, TaskSurfaceProposal
         instructions, schema = TASK_SURFACE_INSTRUCTIONS, TaskSurfaceProposal
+        if recovery.get("scope") == "task_surface_masks":
+            from .atlas_scene_surface_masks import SURFACE_MASK_REVIEW_INSTRUCTIONS, SurfaceMaskReview
+            instructions, schema = SURFACE_MASK_REVIEW_INSTRUCTIONS, SurfaceMaskReview
     # Exercise the exact SDK boundary before reserving spend or recording an
     # ambiguous submission. Plain JSON Schema validity is insufficient here.
     from agents import AgentOutputSchema
