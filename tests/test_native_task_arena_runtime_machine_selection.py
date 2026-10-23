@@ -28,3 +28,21 @@ def test_construction_machine_restriction_reaches_shared_provider_transport(monk
 def test_invalid_host_identity_cannot_reach_provider(mode, value):
     with pytest.raises(ValueError, match="machine_id_invalid"):
         native_task_arena_machine_selection_kwargs(mode, [value])
+
+
+def test_ga_image_uses_root_for_vast_ssh_bootstrap():
+    from blueprint_pipeline.native_task_isaaclab_ga import IMAGE
+    from blueprint_pipeline.vast_provider_adapter import _create_payload
+    args = dict(label='test', launch_mode='ssh_direct', probe_script='true', disk_gb=200)
+    assert _create_payload(image=IMAGE, **args)['user'] == 'root'
+    assert 'user' not in _create_payload(image='nvcr.io/nvidia/isaac-sim:6.0.1', **args)
+    assert 'user' not in _create_payload(image='nvcr.io/nvidia/isaac-lab:3.0.0@sha256:unknown', **args)
+    assert 'user' not in _create_payload(image=IMAGE, **{**args, 'launch_mode': 'args'})
+
+
+def test_provider_startup_status_message_is_retained():
+    from blueprint_pipeline.vast_provider_adapter import _instance_liveness_from_payload
+    observed = _instance_liveness_from_payload(
+        {'instances': {'id': 123, 'actual_status': 'stopped', 'status_msg': 'bootstrap permission denied'}},
+        instance_id=123)
+    assert observed['status_message'] == 'bootstrap permission denied'

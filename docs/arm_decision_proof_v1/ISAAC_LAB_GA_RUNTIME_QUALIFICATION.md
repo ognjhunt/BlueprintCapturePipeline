@@ -51,3 +51,20 @@ Focused validation covers release identity, dependency tamper refusal, lifecycle
 close semantics, unchanged runner values, exact frozen inputs and the sealed
 provider import closure. Existing worker/bundle/lifecycle tests protect the
 unchanged production path. No test result by itself establishes runtime uplift.
+
+The first allocated GA attempt on 2026-10-23 (Vast instance 57403653)
+terminated as `stopped_before_start`, before any simulator observation. The
+provider posted $0.006 of disk cost and $0 of GPU cost. Teardown and later
+exact-object cleanup confirmed absence. The original failed result is retained;
+a digest-bound post-cleanup result preserves its blockers and nonzero cost.
+This attempt provides no startup, memory, stepping, camera, reset, contact, or
+episode measurements.
+
+Readback of the pinned NVIDIA image configuration confirmed `User=isaaclab`.
+The Vast SSH bootstrap requires root, so this exact image now requests
+`user=root`; other images and launch modes retain their previous behavior.
+Provider polling also retains redacted startup status text. This repairs an
+observed launch-contract mismatch; the original provider log did not establish
+that it caused the failure. Focused authority/CLI/launch tests passed (55), and
+provider liveness/log-poll tests passed (29). A fresh admitted native attempt is
+still required to qualify the runtime.

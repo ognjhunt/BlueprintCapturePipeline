@@ -718,6 +718,7 @@ def validate_terminal_spend_chain(
     authority = _read(authority_file, "native_task_arena_predecessor_authority_invalid")
     result = _read(result_file, "native_task_arena_predecessor_result_invalid")
     zero = _read(zero_file, "native_task_arena_predecessor_provider_zero_invalid")
+    _validate_post_cleanup_recovery(result)
     schema = authority.get("schema_version")
     if schema == "paired_target_native_import_paid_attempt_authority.v1":
         authority_digest_field = "authorization_digest"
@@ -2145,6 +2146,66 @@ def materialize_native_task_arena_preallocation_closeout(
     }
 
 
+def _validate_post_cleanup_recovery(result: Mapping[str, Any]) -> None:
+    recovery = result.get("post_cleanup_recovery")
+    if recovery is None:
+        return
+    if not isinstance(recovery, Mapping):
+        raise ValueError("native_task_arena_post_cleanup_recovery_invalid")
+    original_path, _ = _bound_record(
+        recovery.get("original_result"), "native_task_arena_original_result_unbound"
+    )
+    cleanup_path, cleanup_record = _bound_record(
+        recovery.get("cleanup"), "native_task_arena_recovered_cleanup_unbound"
+    )
+    original = _read(original_path, "native_task_arena_original_result_invalid")
+    cleanup = _read(cleanup_path, "native_task_arena_recovered_cleanup_invalid")
+    expected = {**original, "all_staged_objects_absent": True,
+                "post_cleanup_recovery": dict(recovery)}
+    if (dict(result) != expected
+            or original.get("schema_version") != "native_task_arena_vast_run.v1"
+            or original.get("status") != "blocked"
+            or "post_cleanup_recovery" in original
+            or original.get("continuing_spend_from_this_run") is not False
+            or cleanup_path != Path(str(original.get("object_store_cleanup_path") or "")).resolve()
+            or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+            or cleanup.get("status") != "completed"
+            or cleanup.get("all_objects_absent") is not True
+            or cleanup.get("signed_url_files_removed") is not True
+            or _aware_time(cleanup.get("generated_at"), "cleanup_time_invalid")
+            < _aware_time(original.get("generated_at"), "result_time_invalid")
+            or cleanup_record != _record(cleanup_path)):
+        raise ValueError("native_task_arena_post_cleanup_recovery_invalid")
+
+
+def materialize_native_task_arena_post_cleanup_closeout(
+    *, authority_path: str | Path, result_path: str | Path, output_dir: str | Path
+) -> dict[str, Any]:
+    """Bind later exact-object cleanup without rewriting the failed attempt.
+
+    All scientific outcomes, blockers and nonzero costs stay byte-equivalent in
+    the derived result. Ordinary provider-zero validation still checks teardown,
+    watchdog, provider inventory and the consumed single-use authority.
+    """
+    original_path = Path(result_path).resolve()
+    original = _read(original_path, "native_task_arena_original_result_invalid")
+    cleanup_path = Path(str(original.get("object_store_cleanup_path") or "")).resolve()
+    result = {**original, "all_staged_objects_absent": True,
+              "post_cleanup_recovery": {
+                  "original_result": _record(original_path),
+                  "cleanup": _record(cleanup_path),
+              }}
+    _validate_post_cleanup_recovery(result)
+    output = Path(output_dir).resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    result_file = output / "native_task_arena_post_cleanup_result.json"
+    write_json(result_file, result)
+    return materialize_native_task_arena_provider_zero(
+        authority_path=authority_path, result_path=result_file,
+        output_path=output / "native_task_arena_provider_zero.json",
+    )
+
+
 def materialize_native_task_arena_provider_zero(
     *, authority_path: str | Path, result_path: str | Path, output_path: str | Path
 ) -> dict[str, Any]:
@@ -2154,6 +2215,7 @@ def materialize_native_task_arena_provider_zero(
     result_file = Path(result_path).expanduser().resolve()
     authority = _read(authority_file, "native_task_arena_authority_unreadable")
     result = _read(result_file, "native_task_arena_result_unreadable")
+    _validate_post_cleanup_recovery(result)
     watchdog_path = Path(str(result.get("watchdog_receipt_path") or "")).resolve()
     cleanup_path = Path(str(result.get("object_store_cleanup_path") or "")).resolve()
     adapter_path = Path(str(result.get("adapter_result_path") or "")).resolve()

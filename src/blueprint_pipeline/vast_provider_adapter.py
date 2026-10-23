@@ -4249,6 +4249,13 @@ def _create_payload(
         payload["vm"] = True
     if image:
         payload["image"] = image
+    if image and image.startswith("nvcr.io/nvidia/isaac-lab:3.0.0@"):
+        from .native_task_isaaclab_ga import IMAGE as ga_image
+
+        if image == ga_image and launch_mode == "ssh_direct":
+            # NVIDIA's GA image ends with USER isaaclab. The existing Vast
+            # SSH/bootstrap installer needs root before running the workload.
+            payload["user"] = "root"
     if _string(template_hash_id):
         payload["template_hash_id"] = _string(template_hash_id)
     private_startup_script = _private_startup_environment_script(
@@ -5718,6 +5725,7 @@ def _create_request_summary(
         "label": payload.get("label"),
         "disk_gb": payload.get("disk"),
         "runtype": payload.get("runtype"),
+        "container_user": payload.get("user"),
         "virtual_machine": payload.get("vm") is True,
         "target_state": payload.get("target_state"),
         "cancel_unavail": payload.get("cancel_unavail"),
@@ -5895,6 +5903,7 @@ def _instance_liveness_from_payload(
                 "ssh_port": connection["ssh_port"],
             }
             terminal_startup_error = _terminal_startup_error(row)
+            result["status_message"] = _string(row.get("status_msg"))[:4096]
             if terminal_startup_error:
                 # Retain a stable classification, never the provider's raw
                 # daemon text.  The latter can be long, host-specific, and is
@@ -6582,6 +6591,9 @@ def _request_logs_and_fetch(
                 "container_missing_marker_observed": container_missing,
                 "container_missing_observed_count": container_missing_count,
                 "instance_status": last_instance_liveness.get("status"),
+                "instance_status_message": _redact_text(
+                    _string(last_instance_liveness.get("status_message")), secret_values
+                ),
                 "terminal_startup_error": last_instance_liveness.get(
                     "terminal_startup_error"
                 ),
