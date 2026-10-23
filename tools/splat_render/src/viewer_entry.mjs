@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
 import {SplatMesh, SparkRenderer} from '@sparkjsdev/spark';
 
 const renderer = new THREE.WebGLRenderer({antialias:true});
@@ -77,6 +78,24 @@ try {
     } catch (error) { status.textContent = error.message; }
   };
   const query = new URLSearchParams(location.search);
+  let taskObject = null;
+  if (query.get('object') === '1') {
+    // PBR metal needs reflections to be visible; the captured splat is unlit.
+    const environment = new RoomEnvironment();
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(environment).texture;
+    environment.dispose();
+    pmrem.dispose();
+    taskObject = (await new GLTFLoader().loadAsync('/object')).scene;
+    scene.add(taskObject);
+    const toggle = document.createElement('button');
+    toggle.textContent = 'Hide task object';
+    toggle.onclick = () => {
+      taskObject.visible = !taskObject.visible;
+      toggle.textContent = taskObject.visible ? 'Hide task object' : 'Show task object';
+    };
+    document.querySelector('#controls').append(toggle);
+  }
   if (query.get('meshLabel')) document.querySelector('#mode option[value="mesh"]').textContent = query.get('meshLabel');
   if (['mesh', 'wire'].includes(query.get('mode'))) {
     const select = document.querySelector('#mode');
@@ -84,7 +103,7 @@ try {
     select.dispatchEvent(new Event('change'));
   }
   status.textContent = `${splat.numSplats.toLocaleString()} draft Gaussians`;
-  window.BlueprintSceneInspection = {splat, get mesh(){return mesh;}, camera, controls, renderer};
+  window.BlueprintSceneInspection = {splat, get mesh(){return mesh;}, taskObject, camera, controls, renderer};
   renderer.setAnimationLoop(() => {controls.update(); renderer.render(scene,camera);});
 } catch (error) {status.textContent = `Unable to load scene: ${error.message}`;}
 addEventListener('resize', () => {
