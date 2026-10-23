@@ -71,6 +71,27 @@ def test_agent_must_name_real_regions_and_mask_bytes_cannot_change(tmp_path):
         gaps.select_gap_mask(view, ['left'], tmp_path / 'other.png')
 
 
+def test_gap_target_lineage_does_not_become_a_target_camera_mask(tmp_path):
+    # Retained production response: the model cited the originating source gap
+    # together with two target-camera labels. Keep its decision and target masks.
+    ids = ['gap-target-dfc1a8e078f06ba4-gap-1', 'gap-target-dfc1a8e078f06ba4-gap-3']
+    labels = np.zeros((20, 30), np.uint16)
+    labels[2:8, 3:10], labels[12:18, 19:27] = 1, 3
+    path = tmp_path / 'labels.png'
+    Image.fromarray(labels).save(path)
+    view = {'label_path': str(path), 'label_sha256': _sha256_file(path),
+            'gaps': [{'gap_id': key, 'label': label} for key, label in zip(ids, [1, 3])]}
+    source = 'decoded-000000098-wide-gap-1'
+    candidate = {'source_gap_ids': [source]}
+    selected = gaps.target_gap_ids(view, candidate, [source, *ids])
+    assert selected == ids
+    actual = gaps.select_gap_mask(view, selected, tmp_path / 'selected.png')
+    assert np.array_equal(np.array(Image.open(actual['completion_gap_mask_path'])) > 0, labels > 0)
+    for bad in [[source], [source, 'some-other-camera-gap-1'], [ids[0], ids[0]]]:
+        with pytest.raises(ValueError, match='named_gaps_required'):
+            gaps.target_gap_ids(view, candidate, bad)
+
+
 def test_native_full_image_contributes_only_selected_gap_and_keeps_known_rgb(tmp_path):
     cam = {'intrinsics': {'width': 20, 'height': 16, 'fx': 20., 'fy': 20., 'cx': 10., 'cy': 8.},
            'extrinsics': {'position': [0, 0, 0], 'quaternion': [0, 0, 0, 1], 'coordinateSystem': 'rub'}}
