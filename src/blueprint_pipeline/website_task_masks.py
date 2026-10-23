@@ -883,7 +883,10 @@ def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometr
         source_track = target["source_track"]
         track = track_at_geometry_resolution({**source_track, "observations": [row for row in source_track["observations"]
                                             if row["source_frame_id"] in ids]}, frames)
-        targets.append({**target, "track": track, "estimated_visible_bounds": estimate_target_bounds(track, frames)})
+        # A removed person is masked out of the views, never rebuilt or placed,
+        # and geometry views are chosen without people: no bounds are needed.
+        bounds = None if is_person_removal(target) else estimate_target_bounds(track, frames)
+        targets.append({**target, "track": track, "estimated_visible_bounds": bounds})
     value = {**task_masks, "targets": targets, "source_geometry_digest": source_geometry["digest"],
              "binding": {**task_masks["binding"], "geometry_digest": source_geometry["digest"]}}
     value["digest"] = canonical_digest(value, digest_field="digest")

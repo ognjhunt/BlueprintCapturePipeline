@@ -358,6 +358,29 @@ def test_tracks_on_the_source_timeline_lift_onto_atlas_geometry_by_frame_identit
     assert target["estimated_visible_bounds"]["unit"] == "estimated_meters"
 
 
+def off_geometry(target, **fields):
+    """The target seen only on a source frame the geometry views do not include."""
+    observation = {**target["source_track"]["observations"][0], "source_frame_id": "decoded-000000099"}
+    return {**target, **fields, "source_track": {"observations": [observation]}}
+
+
+def test_a_removed_person_needs_no_geometry_but_a_task_object_does(tmp_path):
+    geometry = ready(tmp_path)["source_geometry"]
+    masks = continuous_masks()
+    # Geometry views are chosen without people, so the operator is never on them.
+    masks["targets"].append(off_geometry(masks["targets"][0], target_id="person_operator", target_class="person",
+                                         target_role="person", task_effect="privacy", disposition="remove"))
+    bound = bind_task_masks_to_geometry(task_masks=digest(masks), source_geometry=geometry)
+    by_id = {target["target_id"]: target for target in bound["targets"]}
+    assert by_id["person_operator"]["estimated_visible_bounds"] is None
+    assert not by_id["person_operator"]["track"]["observations"]
+    assert by_id["object"]["estimated_visible_bounds"]["unit"] == "estimated_meters"
+    masks = continuous_masks()
+    masks["targets"][0] = off_geometry(masks["targets"][0])
+    with pytest.raises(ValueError, match="task_target_has_no_estimated_geometry"):
+        bind_task_masks_to_geometry(task_masks=digest(masks), source_geometry=geometry)
+
+
 @pytest.mark.parametrize("change", ["time", "size", "sampled"])
 def test_tracks_that_cannot_name_the_geometry_frames_are_refused(tmp_path, change):
     geometry = ready(tmp_path)["source_geometry"]
