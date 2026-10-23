@@ -17,51 +17,58 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v5"
+COMPLETION_REVISION = "v6"
 
 
 def camera_candidates(frames):
     """A scene-relative candidate pool; the planner chooses count and viewpoints.
 
-    Translation follows actual scene depth, never an assumed metre scale. Wide
-    target cameras preserve the input vertical field of view on Atlas's grid.
+    Target centres remain at actual captured camera positions. Rotations follow
+    the source field of view; known RGB therefore needs no estimated-depth warp.
+    Wide target cameras preserve the input vertical field of view on Atlas's grid.
     These are generation hypotheses, not collision-cleared physical cameras.
     """
+    from scipy.spatial.transform import Rotation
+
     candidates = []
     for frame in frames:
         depth = frame["depth"]
         valid = np.isfinite(depth) & (depth > 0) & (frame["confidence"] > 0)
         if not np.any(valid):
             raise ValueError("atlas_completion_no_context_depth")
-        distance = float(np.median(depth[valid]))
         camera = {"intrinsics": deepcopy(frame["intrinsics"]), "extrinsics": deepcopy(frame["extrinsics"])}
         k = camera["intrinsics"]
         scale = 720 / k["height"]
         k.update(width=1280, height=720, fx=k["fx"] * scale, fy=k["fy"] * scale, cx=640, cy=360)
-        for name, delta in (("wide", (0, 0, 0)), ("left", (-.08, 0, 0)),
-                            ("right", (.08, 0, 0)), ("lower", (0, -.08, 0)), ("higher", (0, .08, 0))):
+        yaw_step = .15 * 2 * math.atan(k['width'] / (2 * k['fx']))
+        pitch_step = .15 * 2 * math.atan(k['height'] / (2 * k['fy']))
+        for name, angles in (("wide", (0, 0)), ("left", (yaw_step, 0)),
+                             ("right", (-yaw_step, 0)), ("lower", (0, -pitch_step)),
+                             ("higher", (0, pitch_step))):
             target = deepcopy(camera)
-            position = frame["position"] + frame["rotation"] @ (np.array(delta) * distance)
-            target["extrinsics"]["position"] = position.tolist()
+            if name != 'wide':
+                target['extrinsics']['quaternion'] = Rotation.from_matrix(
+                    frame['rotation'] @ Rotation.from_euler('YX', angles).as_matrix()).as_quat().tolist()
             candidates.append({"camera_id": frame["frame_id"] + "-" + name,
                                "source_frame_id": frame["frame_id"], "purpose": name,
                                "context_valid_depth_fraction": float(np.mean(valid)),
-                               "translation_fraction_of_visible_depth": list(delta), "camera": target})
+                               "rotation_radians": list(angles), "camera": target})
     # Cover the environment around the observed free-space camera path, rather
     # than only extrapolating the downward source views. Count follows angular
     # coverage and overlap, not a fixed quota of source or generated images.
-    from scipy.spatial.transform import Rotation
     vfov = math.radians(75)
     focal = 720 / (2 * math.tan(vfov / 2))
     hfov = 2 * math.atan(1280 / (2 * focal))
     overlap_stride = .65
     yaw_count = math.ceil(2 * math.pi / (hfov * overlap_stride))
     pitch_count = math.ceil((math.pi - vfov) / (vfov * overlap_stride)) + 1
-    position = np.median([frame["position"] for frame in frames], axis=0).tolist()
+    positions = np.asarray([frame['position'] for frame in frames])
+    medoid = int(np.argmin(np.linalg.norm(positions[:, None] - positions[None, :], axis=-1).sum(axis=1)))
+    position = positions[medoid].tolist()
     for yi in range(yaw_count):
         yaw = 2 * math.pi * yi / yaw_count
         for pi, pitch in enumerate(np.linspace(-math.pi / 2 + vfov / 2, math.pi / 2 - vfov / 2, pitch_count)):
-            candidates.append({"camera_id": f"room-{yi}-{pi}", "source_frame_id": frames[0]["frame_id"],
+            candidates.append({"camera_id": f"room-{yi}-{pi}", "source_frame_id": frames[medoid]["frame_id"],
                 "purpose": "required_full_room_coverage", "inferred_surface_views": True,
                 "camera": {"intrinsics": {"width": 1280, "height": 720, "fx": focal, "fy": focal, "cx": 640, "cy": 360},
                            "extrinsics": {"position": position,

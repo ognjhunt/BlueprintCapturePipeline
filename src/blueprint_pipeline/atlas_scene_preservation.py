@@ -42,10 +42,8 @@ def _valid(frame):
             np.isfinite(frame['confidence']) & (frame['confidence'] > 0))
 
 
-def _same_camera(frame, camera):
-    return (np.allclose(frame['position'], camera['extrinsics']['position'], atol=1e-8, rtol=0)
-            and np.allclose(frame['rotation'], _rotation_matrix(camera['extrinsics']['quaternion']),
-                            atol=1e-8, rtol=0))
+def _same_center(frame, camera):
+    return np.allclose(frame['position'], camera['extrinsics']['position'], atol=1e-8, rtol=0)
 
 
 def supported_projection_frames(frames):
@@ -102,11 +100,11 @@ def _save_image(path, pixels):
 
 
 def project_known_context(frames, camera):
-    """Nearest-surface RGB projection; an exact source camera also keeps all RGB.
+    """Use exact rotational RGB homographies at observed camera centres.
 
     The latter is independent of missing depth: no depth is necessary to know
-    what an already photographed pixel looks like at the same camera centre
-    and orientation. Intrinsics alone define that resampling, with no crop.
+    what an already photographed ray looks like at the same camera centre.
+    Intrinsics and rotation define that resampling without estimated depth.
     """
     import cv2
 
@@ -115,8 +113,9 @@ def project_known_context(frames, camera):
     rgb = np.full((height, width, 3), 127, np.uint8)
     zbuffer = np.full(height * width, np.inf)
     keep = np.zeros(height * width, bool)
-    same = [frame for frame in frames if _same_camera(frame, camera)]
-    # An actual source viewpoint needs no estimated-depth warp. Keep its
+    target_rotation = _rotation_matrix(camera['extrinsics']['quaternion'])
+    same = [frame for frame in frames if _same_center(frame, camera)]
+    # An actual source camera centre needs no estimated-depth warp. Keep its
     # authoritative RGB footprint clean; the other paired views provide
     # cross-view context to the inpainting model instead of noisy edge splats.
     for frame in ([] if same else frames):
@@ -135,15 +134,24 @@ def project_known_context(frames, camera):
         zbuffer[pixels] = z[chosen]
         keep[pixels] = True
     keep = keep.reshape(height, width)
-    for frame in same[:1]:
+    # At a shared centre, combine photographed directions; the closest
+    # orientation wins any overlap (an exact source view wins last).
+    for frame in sorted(same, key=lambda f: np.linalg.norm(f['rotation'] - target_rotation), reverse=True):
         source = frame['intrinsics']
         source_k = np.array([[source['fx'], 0, source['cx']], [0, source['fy'], source['cy']], [0, 0, 1.]])
         target_k = np.array([[k['fx'], 0, k['cx']], [0, k['fy'], k['cy']], [0, 0, 1.]])
         # Camera matrices use pixel centres; OpenCV uses integer pixel indices.
         to_center = np.array([[1, 0, .5], [0, 1, .5], [0, 0, 1.]])
-        mapping = np.linalg.inv(to_center) @ target_k @ np.linalg.inv(source_k) @ to_center
+        # Optical pixels are right/down/forward; the Atlas cameras are RUB.
+        optical_to_rub = np.diag([1., -1., -1.])
+        rotation = (np.eye(3) if np.allclose(target_rotation, frame['rotation'], atol=1e-8, rtol=0) else
+                    optical_to_rub @ target_rotation.T @ frame['rotation'] @ optical_to_rub)
+        mapping = np.linalg.inv(to_center) @ target_k @ rotation @ np.linalg.inv(source_k) @ to_center
         known = cv2.warpPerspective(np.ones(frame['rgb'].shape[:2], np.uint8), mapping, (width, height),
                                     flags=cv2.INTER_NEAREST).astype(bool)
+        yy, xx = np.indices((height, width))
+        source_z = (rotation.T @ np.linalg.inv(target_k))[2]
+        known &= (source_z[0] * (xx + .5) + source_z[1] * (yy + .5) + source_z[2]) > 0
         sampled = cv2.warpPerspective(frame['rgb'], mapping, (width, height),
                                       flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
         rgb[known], keep[known] = sampled[known], True
@@ -178,10 +186,11 @@ def prepare_completion_views(*, frames, selected, root):
     import cv2
 
     root.mkdir(parents=True, exist_ok=True)
-    supported = supported_projection_frames(frames)
+    supported = (frames if all(any(_same_center(frame, row['camera']) for frame in frames) for row in selected)
+                 else supported_projection_frames(frames))
     rows = []
     for index, view in enumerate(selected):
-        same = any(_same_camera(frame, view['camera']) for frame in frames)
+        same = any(_same_center(frame, view['camera']) for frame in frames)
         rgb, keep = project_known_context(supported, view['camera'])
         if not same:
             # Isolated forward-projected pixels and narrow jagged edges are
@@ -196,7 +205,7 @@ def prepare_completion_views(*, frames, selected, root):
         rows.append({'frame_id': view['camera_id'], 'source_frame_id': view['source_frame_id'],
                      'camera': view['camera'], 'image_path': str(image), 'image_digest': _sha256_file(image),
                      'keep_mask_path': str(mask), 'keep_mask_digest': _sha256_file(mask),
-                     'projection_basis': ('source_camera_rgb' if same else 'cross_view_supported_rgbd_dense_patches'),
+                     'projection_basis': ('source_center_rgb_homography' if same else 'cross_view_supported_rgbd_dense_patches'),
                      'protected_pixel_count': int(keep.sum()), 'total_pixel_count': int(keep.size),
                      'clean_anchor': view.get('preservation_anchor', False),
                      'edit_pixels': int(keep.sum())})
@@ -257,26 +266,21 @@ def generate_masked_completion(*, frames, selected, candidates, root, pose, cont
     from .atlas_result_bundle import _completed_task
     from .atlas_scene_completion import load_generated_views
 
-    # An observed camera anchors every batch. It is a conditioning view, not
-    # an input-frame ceiling; all planner-selected cameras remain in the plan.
-    anchor = next(row for row in candidates if row['purpose'] == 'wide')
-    anchor = {**anchor, 'preservation_anchor': True}
-    chosen = [anchor, *[row for row in selected if row['camera_id'] != anchor['camera_id']]]
-    center = np.asarray(anchor['camera']['extrinsics']['position'])
-    if all(np.linalg.norm(np.asarray(row['camera']['extrinsics']['position']) - center) < 1e-6 for row in chosen):
-        translated = next((row for row in candidates if
-            np.linalg.norm(np.asarray(row['camera']['extrinsics']['position']) - center) >= 1e-6), None)
-        if translated is None:
-            raise ValueError('atlas_completion_depth_requires_translation')
-        chosen.append(translated)
+    # Every native request sees every approved source photograph, including
+    # the empty task-object opening. Projected fragments cannot substitute
+    # for that context. They remain conditioning views, not a frame ceiling.
+    anchors = [{**row, 'preservation_anchor': True} for row in candidates if row['purpose'] == 'wide']
+    anchor_ids = {row['camera_id'] for row in anchors}
+    chosen = [*anchors, *[row for row in selected if row['camera_id'] not in anchor_ids]]
     rows = prepare_completion_views(frames=frames, selected=chosen, root=root / 'masked-context')
-    groups = batches(rows)
+    groups = batches(rows, fixed_context=rows[:len(anchors)])
     policy = configuration['policy']
     specs = []
     caption = ('The exact environment shown in the context photographs, with the same architecture, materials, '
                'lighting, layout, fixtures and existing objects. Observed surfaces and objects retain their '
                'original appearance and positions. Previously unseen space continues the existing surfaces '
                'naturally, without additional objects, appliances, furniture, clutter or decorations. '
+               'Existing empty installation openings remain empty. '
                'The following task objects are absent: ' + json.dumps(list(removed_objects)) + '.')
     remaining = 0.
     for index, group in enumerate(groups):
@@ -300,7 +304,7 @@ def generate_masked_completion(*, frames, selected, candidates, root, pose, cont
         raise ValueError('atlas_completion_remaining_budget_insufficient')
     binding = {'schema_version': 'atlas_masked_completion_plan.v1', 'source_pose_digest': pose['digest'],
                'selected_camera_ids': [row['camera_id'] for row in selected],
-               'anchor_camera_id': anchor['camera_id'], 'prepared_views': rows,
+               'anchor_camera_ids': [row['camera_id'] for row in anchors], 'prepared_views': rows,
                'additional_conditioning_camera_ids': [row['camera_id'] for row in chosen if
                    row['camera_id'] not in {view['camera_id'] for view in selected}],
                'batches': [{'frame_ids': [row['frame_id'] for row in group], 'request_digest': canonical_digest(request),
