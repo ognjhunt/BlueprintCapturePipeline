@@ -117,7 +117,7 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
                 reference_inputs.get('digest') != canonical_digest(reference_inputs, digest_field='digest')
                 or reference_inputs.get('heldout_pixels_included') is not False
                 or reference_inputs.get('binding', {}).get('source_video_digest') != inputs['binding']['source_video_digest']
-                or [r['frame_id'] for r in reference_inputs['frames']] != [r['frame_id'] for r in inputs['frames']]):
+                or not {r['frame_id'] for r in reference_inputs['frames']} <= {r['frame_id'] for r in inputs['frames']}):
             raise ValueError('atlas_source_reference_inputs_changed')
         os.environ[ATLAS_PRICE_REVIEW_ENV] = json.dumps(quote)
         if not (pose_root / "atlas_posed_rgbd_result.json").is_file():
@@ -134,7 +134,16 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
             # Retained reviews may name pixels on an earlier provider crop.
             # Register that exact grid to the full posed view; never reinterpret
             # its normalized coordinates as coordinates on the wider source.
-            _, frames = load_views(pose_root, reference_inputs)
+            # The reference coordinates still name their original images.
+            # Additional task-state views use their own full-view sources.
+            from .atlas_context_fov import full_view_sources
+            refs = {r['frame_id']: r for r in reference_inputs['frames']}
+            reference_views = reference_inputs
+            if {r['frame_id'] for r in inputs['frames']} - refs.keys():
+                reference_views = {**reference_inputs, 'frames': [
+                    refs.get(r['frame_id'], r) for r in full_view_sources(inputs, pose_root)]}
+                reference_views.pop('full_view_sources', None)
+            _, frames = load_views(pose_root, reference_views)
             measurement_path = pose_root / ('scene_measurements_reference-' + reference_inputs['digest'][7:23] + '.json')
         plan = measurement_plan(review)
         from .atlas_reference_masks import segment_scale_references
