@@ -179,6 +179,10 @@ def measurement_plan(review):
     from .atlas_automation_plan import AutomationPlan
 
     automation = AutomationPlan.model_validate(review["automation"]).model_dump(mode="json")
+    # Retained plans predate reference names; keep their measurement bindings unchanged.
+    for reference in automation["scale_references"]:
+        if reference.get("segmentation_prompt") is None:
+            reference.pop("segmentation_prompt", None)
     return {
         **automation,
         "uncaptured_regions": review.get("uncaptured_regions", []),

@@ -136,8 +136,13 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
             # its normalized coordinates as coordinates on the wider source.
             _, frames = load_views(pose_root, reference_inputs)
             measurement_path = pose_root / ('scene_measurements_reference-' + reference_inputs['digest'][7:23] + '.json')
-        measurements = estimate_sizes(frames=frames, automation=measurement_plan(review), pose_digest=pose["digest"],
-                                      output=measurement_path)
+        plan = measurement_plan(review)
+        from .atlas_reference_masks import segment_scale_references
+        reference_masks = segment_scale_references(frames=frames, references=plan.get("scale_references", []),
+            root=pose_root / "reference_masks", task_context=task_context,
+            source_digest=(inputs.get("binding") or {}).get("source_video_digest"), checkpoint=check)
+        measurements = estimate_sizes(frames=frames, automation=plan, pose_digest=pose["digest"],
+                                      output=measurement_path, reference_masks=reference_masks)
     except ValueError as exc:
         return {"status": "needs_input", "reason": str(exc)}
     return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],

@@ -789,3 +789,82 @@ def test_scale_guidance_serves_any_site_and_keeps_endpoints_on_the_object():
     assert "range or oven" not in text and "appliance model" not in text
     # 2026-10-23: one endpoint sat on paper towels in front of the measured opening.
     assert "Put both endpoints on the named object itself" in text and "face-on" in text
+
+
+def box_mask(frame, x0, x1, y0, y1):
+    h, w = frame["depth"].shape
+    return {"source_frame_id": frame["frame_id"], "width": w, "height": h,
+            "runs": [{"start": int(y * w + x0), "length": int(x1 - x0)} for y in range(y0, y1)]}
+
+
+def test_a_reference_counts_only_when_both_ends_lie_on_the_object_it_names(tmp_path):
+    frame = view(tmp_path)  # the reference spans x = 20..60 at y = 30 on this 80 x 60 view
+
+    def measured(name, instances, masks=None):
+        rows = [{"reference_index": 0, "frame_id": "a", "instances": instances}] if masks is None else masks
+        return sizes.estimate_sizes(frames=[frame], automation={**plan(), "scale_references": [reference("range width", 0.8)]},
+                                    pose_digest="pose", output=tmp_path / f"{name}.json", reference_masks=rows)
+
+    def reasons(result):
+        return [gap["reason"] for gap in result["reference_gaps"]]
+
+    assert measured("on", [box_mask(frame, 20, 61, 20, 41)])["meters_per_unit_estimate"] == pytest.approx(1.0)
+    # 2026-10-23: one end sat on paper towels in front of the measured object.
+    off = measured("off", [box_mask(frame, 30, 61, 20, 41)])
+    assert off["status"] == "relative_sizes_only" and reasons(off) == ["atlas_reference_endpoint_off_object"]
+    # One end on each of two instances spans the gap between objects, not one object.
+    split = measured("split", [box_mask(frame, 18, 30, 20, 41), box_mask(frame, 50, 62, 20, 41)])
+    assert reasons(split) == ["atlas_reference_endpoint_off_object"]
+    assert reasons(measured("unseen", [box_mask(frame, 0, 0, 0, 0)])) == ["atlas_reference_object_unsegmented"]
+    assert reasons(measured("unnamed", [], masks=[])) == ["atlas_reference_object_unnamed"]
+
+
+def test_reference_objects_are_segmented_once_on_their_own_views(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_reference_masks, meta_sam31
+
+    frames = [view(tmp_path, "a"), view(tmp_path, "b", position=1)]
+    calls, events = [], []
+
+    def run(**kwargs):
+        calls.append(kwargs)
+        events.append("dispatch")
+        return {"tracks": [
+            {"label": "scale_reference_0", "observations": [box_mask(frames[0], 20, 61, 20, 41),
+                                                             box_mask(frames[1], 0, 5, 0, 5)]},
+            {"label": "scale_reference_0", "observations": [box_mask(frames[0], 0, 5, 0, 5)]},
+            {"label": "scale_reference_2", "observations": [box_mask(frames[1], 10, 20, 10, 20)]}]}
+    monkeypatch.setattr(meta_sam31, "run_meta_sam31", run)
+    references = [{**reference("range width", 0.8), "segmentation_prompt": " freestanding range "},
+                  reference("countertop height", 0.82),
+                  {**reference("doorway", 2.0), "frame_id": "b", "segmentation_prompt": "doorway"}]
+    options = {"frames": frames, "root": tmp_path / "masks", "task_context": {"context_digest": "c"},
+               "source_digest": "sha256:" + "a" * 64, "checkpoint": events.append}
+    masks = atlas_reference_masks.segment_scale_references(references=references, **options)
+    (call,) = calls
+    # The withdrawal check runs before any view reaches the provider.
+    assert events == ["reference_segmentation", "dispatch"]
+    assert [row["source_frame_id"] for row in call["frame_registry"]] == ["a", "b"]
+    assert [row["path"] for row in call["frame_artifacts"]] == [f["image_path"] for f in frames]
+    assert [prompt["text"] for prompt in call["prompts"]] == ["freestanding range", "doorway"]
+    assert call["task_context"] == {"context_digest": "c"} and call["source_video_digest"] == options["source_digest"]
+    assert [row["reference_index"] for row in masks] == [0, 2]
+    assert [o["source_frame_id"] for o in masks[0]["instances"]] == ["a", "a"]
+    assert [o["source_frame_id"] for o in masks[1]["instances"]] == ["b"]
+    # A retained plan whose references name no object is measured as before, with no call.
+    assert atlas_reference_masks.segment_scale_references(references=[reference("x", 1.0)], **options) is None
+    assert len(calls) == 1
+
+    def withdrawn(stage):
+        raise ValueError("website_capture_withdrawn")
+    # A capture withdrawn while it was posed sends nothing more to the provider.
+    with pytest.raises(ValueError, match="website_capture_withdrawn"):
+        atlas_reference_masks.segment_scale_references(references=references, **{**options, "checkpoint": withdrawn})
+    assert len(calls) == 1
+
+
+def test_a_retained_plan_without_reference_names_keeps_its_measurement_binding():
+    from blueprint_pipeline.atlas_scene_automation import measurement_plan
+
+    assert "segmentation_prompt" not in measurement_plan({"automation": plan()})["scale_references"][0]
+    named = {**plan(), "scale_references": [{**plan()["scale_references"][0], "segmentation_prompt": "range"}]}
+    assert measurement_plan({"automation": named})["scale_references"][0]["segmentation_prompt"] == "range"
