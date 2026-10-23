@@ -251,6 +251,76 @@ def test_polling_resumes_without_new_reservation(case):
     assert fake.posts == fake.reservations == 1
 
 
+@pytest.mark.parametrize("code", sorted(tasks._CAPACITY_CODES))
+@pytest.mark.parametrize("retry_after", ["1800", "Fri, 23 Oct 2026 16:30:00 GMT"])
+def test_capacity_refusal_resumes_same_purchase_after_durable_deadline(case, tmp_path, code, retry_after):
+    fake, _, _, run = case
+    original = fake.transport
+    sent = []
+    received = datetime(2026, 10, 23, 16, tzinfo=timezone.utc).timestamp()
+
+    def limited(method, url, headers, data):
+        if url.endswith("/tasks:atlasGenerate"):
+            sent.append((headers["Idempotency-Key"], data))
+            if len(sent) == 1:
+                fake.posts += 1
+                return 429, json.dumps({"code": code}).encode(), {"Retry-After": retry_after}
+        assert "/operations?" not in url, "A definitive refusal does not need purchase reconciliation"
+        return original(method, url, headers, data)
+
+    fake.transport = limited
+    first = run(now=lambda: received)
+    assert first["status"] == "processing" and first["waiting_for"] == "provider_capacity"
+    deadline = first["retry_not_before_epoch"]
+    assert received + 1800 <= deadline <= received + 1805
+    state = json.loads((tmp_path / "atlas_pose/submission.json").read_text())
+    assert state["status"] == "capacity_wait" and not state.get("operation_id")
+    assert state["sends"][0]["capacity_refusal"]["accepted"] is False
+    # Each run constructs a fresh client; a restart neither shortens the wait nor resends early.
+    assert run(now=lambda: deadline - .01) == first
+    assert fake.posts == fake.reservations == 1
+    assert run(now=lambda: deadline)["status"] == "completed"
+    assert sent[0] == sent[1] and fake.posts == 2 and fake.reservations == 1
+    assert run()["status"] == "completed" and fake.posts == 2
+
+
+@pytest.mark.parametrize("header", [None, "not a date", "nan", "inf", "-10"])
+def test_capacity_retry_without_valid_hint_uses_bounded_backoff(header):
+    for attempt, expected in [(1, 60), (2, 120), (20, 300)]:
+        result = tasks._capacity_refusal(b'{"code":"TASK_UNAVAILABLE"}', header,
+                                          now=1000, attempt=attempt)
+        assert 1000 + expected <= result["retry_not_before_epoch"] <= 1005 + expected
+
+
+def test_unknown_or_legacy_429_still_requires_reconciliation(case, tmp_path):
+    fake, _, _, run = case
+    fake.outcome = 429
+    with pytest.raises(pose.AtlasHttpError):
+        run()
+    assert json.loads((tmp_path / "atlas_pose/submission.json").read_text())["status"] == "submitting"
+    with pytest.raises(pose.AtlasReconciliationPending):
+        run()
+    assert fake.posts == fake.reservations == 1
+
+
+def test_capacity_retry_rechecks_release_before_resubmission(case, monkeypatch):
+    fake, _, _, run = case
+    original = fake.transport
+
+    def limited(method, url, headers, data):
+        if url.endswith("/tasks:atlasGenerate"):
+            fake.posts += 1
+            return 429, b'{"code":"CONCURRENCY_LIMIT_EXCEEDED"}'
+        return original(method, url, headers, data)
+
+    fake.transport = limited
+    pending = run()
+    monkeypatch.setattr(allocator, "_source_checkout_blockers", lambda *_a, **_kw: (["release_changed"], "a" * 40))
+    with pytest.raises(ValueError, match="release_not_admitted"):
+        run(now=lambda: pending["retry_not_before_epoch"])
+    assert fake.posts == fake.reservations == 1
+
+
 def _later(seconds):
     return lambda: time.time() + seconds
 

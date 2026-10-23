@@ -8,6 +8,7 @@ the reviewed price is a test value.
 from __future__ import annotations
 
 import json
+import io
 import re
 import time
 import urllib.error
@@ -1129,6 +1130,22 @@ def test_the_default_transport_uses_the_audited_boundary(monkeypatch):
     with pytest.raises(atlas.AtlasTransportError) as error:
         client.call("GET", "/broken-header")
     assert KEY not in str(error.value) and error.value.__cause__ is None
+
+
+def test_retry_after_survives_audited_error_transport_without_retaining_other_headers(monkeypatch):
+    def request(url, **kwargs):
+        if url.endswith("/tasks:atlasGenerate"):
+            raise urllib.error.HTTPError(url, 429, "Busy", {"Retry-After": "120", "Set-Cookie": "private"},
+                                         io.BytesIO(b'{"code":"CONCURRENCY_LIMIT_EXCEEDED"}'))
+        return safe_outbound_http.SafeHttpResponse(status=200, body=b"{}", url=url, final_url=url)
+
+    monkeypatch.setattr(safe_outbound_http, "request", request)
+    client = atlas.AtlasClient(base_url=BASE, api_key=KEY)
+    assert client.send("POST", "/tasks:atlasGenerate", {})[0] == 429
+    assert client.retry_after == "120"
+    assert "private" not in repr(vars(client))
+    client.call("GET", "/operations/op_1")
+    assert client.retry_after is None
 
 
 @pytest.mark.parametrize("model", ["atlas-beta", "worldlabs-atlas"])
