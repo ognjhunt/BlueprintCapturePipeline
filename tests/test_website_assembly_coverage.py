@@ -31,6 +31,26 @@ def _runs(mask):
     return [{"start": int(a), "length": int(b - a)} for a, b in zip(edges[::2], edges[1::2])]
 
 
+def test_dense_closed_front_fits_inside_a_bounded_factorization_workspace(monkeypatch):
+    # Model a constrained CPU worker rather than allocating the rejected N x N
+    # matrix. The real reduced factorization must still recover this tilted plane.
+    svd = np.linalg.svd
+    def budgeted_svd(a, *args, **kwargs):
+        rows, columns = a.shape
+        left_columns = rows if kwargs.get("full_matrices", True) else min(rows, columns)
+        if rows * left_columns * a.itemsize > 1024 * 1024:
+            raise MemoryError("factorization workspace exceeds the CPU replay budget")
+        return svd(a, *args, **kwargs)
+    monkeypatch.setattr(np.linalg, "svd", budgeted_svd)
+    xy = np.random.default_rng(901).uniform(-0.5, 0.5, (4000, 2))
+    points = np.column_stack([xy, 1.2 + 0.2 * xy[:, 0] - 0.1 * xy[:, 1]])
+    expected = np.array([-0.2, 0.1, 1.0])
+    expected /= np.linalg.norm(expected)
+    normal, offset = coverage._front_plane(points, np.array([0.0, 0.0, 3.0]))
+    np.testing.assert_allclose(normal, expected, atol=1e-8)
+    np.testing.assert_allclose(points @ normal, offset, atol=1e-8)
+
+
 def _box(rows, cols):
     mask = np.zeros((HEIGHT, WIDTH), dtype=bool)
     mask[rows[0]:rows[1], cols[0]:cols[1]] = True
