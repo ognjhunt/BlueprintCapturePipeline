@@ -138,7 +138,7 @@ def test_compact_completion_keeps_every_exact_gap_and_source_survey_unchanged():
     assert [(view['camera_id'] + '-gap-' + str(r[0]), r[1]) for r in view['gaps']] == [
         (r['gap_id'], r['pixel_count']) for r in original['gap_survey']['views'][0]['gaps']]
     assert len(json.dumps(compact)) < len(json.dumps(original)) / 2
-    assert 'label_path' not in view and compact['candidate_camera_ids'][0]['position'] == [1., 2., 3.]
+    assert 'label_path' not in view and compact['candidate_camera_ids'][0]['pose_rub'] == [1., 2., 3., 0., 0., 0., 1.]
 
 
 def test_gap_review_preserves_state_quality_and_original_views(tmp_path):

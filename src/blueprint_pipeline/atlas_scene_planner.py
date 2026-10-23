@@ -109,6 +109,9 @@ COMPLETION_INSTRUCTIONS = """Plan Atlas novel-view completion of ONE reviewed
 object-absent environment. The supplied RGB views are already edited candidates,
 not raw capture truth. The camera candidate table is computed from their actual
 poses and depth. Select exact candidate_camera_ids as selected_camera_ids.
+Camera pose_rub is [x,y,z,qx,qy,qz,qw] in the retained RUB world; aim is an
+estimated gap centre and vfov_deg is the requested vertical output field of view.
+All candidate cameras are planning estimates, never collision-qualified poses.
 Survey the entire captured scene and select views that resolve specific missing
 surfaces, including surrounding floor, walls and counters, not just the task bay.
 Do not expand into unseen rooms or invent extra space or metric dimensions.
@@ -116,6 +119,7 @@ The capture-derived generation_extent is a ceiling, not an area to fill.
 Every selected_camera_id needs an entry in view_gap_reasons, a list of objects
 with camera_id, nonempty reason and gap_ids naming exact regions in gap_survey.
 In the compact survey each gap is [label, pixel_count, normalized_box_xywh].
+outline=true marks projected scene-outline hypotheses, not observed walls.
 Its exact gap_id is camera_id + "-gap-" + the integer label. All regions remain
 available; the compact form removes repeated paths and camera-id prefixes.
 Use the reconstruction geometry-gap overlays: magenta marks candidate missing
@@ -295,19 +299,23 @@ def completion_summary(completion):
         full = value['gap_survey']
         value['gap_survey'] = {k: full[k] for k in ('digest', 'basis', 'legend') if k in full}
         value['gap_survey']['views'] = [{
-            **{k: row[k] for k in ('camera_id', 'source_frame_id', 'gap_domain', 'gap_pixel_count', 'total_pixel_count') if k in row},
+            'camera_id': row['camera_id'],
+            **({'outline': True} if row.get('gap_domain') == 'projected_scene_outline_hypothesis' else {}),
             'gaps': [[r['label'], r['pixel_count'], [round(v, 4) for v in r['box_xywh_normalized']]] for r in row['gaps']]
         } for row in full['views']]
-    for row in value.get('candidate_camera_ids', []):
+    for index, row in enumerate(value.get('candidate_camera_ids', [])):
         if isinstance(row, dict) and 'camera' in row:
-            camera = row.pop('camera')
-            row['position'] = [round(v, 6) for v in camera['extrinsics']['position']]
-            row['quaternion_xyzw'] = [round(v, 6) for v in camera['extrinsics']['quaternion']]
+            camera = row['camera']
+            compact = {key: row[key] for key in ('camera_id', 'source_frame_id', 'purpose', 'source_gap_ids') if key in row}
+            compact['pose_rub'] = [round(v, 4) for v in [*camera['extrinsics']['position'],
+                                                       *camera['extrinsics']['quaternion']]]
             if row.get('purpose') == 'gap_target':
                 # The retained precise polygon controls the downstream mask.
                 # Planning needs the aim, source gap, position and orientation.
-                row.pop('gap_target_polygon_pixels', None)
-                row['target_world_estimate'] = [round(v, 6) for v in row['target_world_estimate']]
+                compact['aim'] = [round(v, 4) for v in row['target_world_estimate']]
+                if 'target_vertical_fov_degrees' in row:
+                    compact['vfov_deg'] = round(row['target_vertical_fov_degrees'], 3)
+            value['candidate_camera_ids'][index] = compact
     return value
 
 
@@ -325,7 +333,9 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     extra = completion_summary(completion) if completion is not None else feedback
     tokens = 24_000 + 3000 * (len(survey["frames"]) + len((extra or {}).get("previews", [])))
     if completion is not None:
-        tokens += len(json.dumps(extra, sort_keys=True).encode())
+        # _input excludes preview paths/digests from its text; image costs and
+        # their short labels are already covered above. Do not count them twice.
+        tokens += len(json.dumps({k: v for k, v in extra.items() if k != 'previews'}, sort_keys=True).encode())
     if tokens > 1_000_000:
         raise ValueError("atlas_scene_planner_context_budget_exceeded")
     from .openai_prompt_cache import worst_case_reservation_usd
