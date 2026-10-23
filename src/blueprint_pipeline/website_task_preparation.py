@@ -713,7 +713,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     ground = registration.get("ground_plane") or {}
     if (support is None and articulated and body is not None and not independent_object
             and anchor is not None and ground.get("checked") is True):
-        floor = float(ground["observed_floor_offset_m"]) / mpu
+        # A levelled Atlas world declares its collider's own floor; the
+        # footage's lowest band only checks it, a few centimetres low with
+        # depth noise (7 cm on the 2026-10-23 dishwasher).
+        floor = float(ground["declared_offset_m" if anchor.get("kind") == "source_world_alignment"
+                             else "observed_floor_offset_m"]) / mpu
         grounding = ground_on_observed_floor(collider, subject_min, subject_max, up=up, meters_per_unit=mpu,
                                              floor_height=floor if base_scene["up_axis"] == "-Y" else -floor,
                                              up_sign=up_sign)

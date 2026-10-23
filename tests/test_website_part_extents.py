@@ -612,6 +612,31 @@ def test_a_body_grounded_on_the_floor_raises_each_measured_part_by_the_same_gap(
     assert {plan["part_dimension_bases"][name]["basis"] for name in SHELVES} == {OBSERVED_ESTIMATE_BASIS}
 
 
+@pytest.mark.parametrize("kind, expected_floor_m", [("source_world_alignment", 0.0), ("test", -0.07)])
+def test_a_levelled_atlas_body_grounds_on_its_declared_floor_not_the_noisy_footage(compiled, monkeypatch,
+                                                                                    kind, expected_floor_m):
+    """A levelled Atlas collider's floor is declared at y = 0; the footage's lowest band sits low."""
+    from blueprint_pipeline import website_task_preparation as preparation
+
+    args, _ = compiled
+    floors = []
+
+    def register(**kwargs):
+        return {**_fixture_registration(**kwargs), "ground_plane": {
+            "checked": True, "declared_offset_m": 0.0, "observed_floor_offset_m": 0.07}}
+
+    def ground(mesh, lower, upper, *, up, meters_per_unit, floor_height, up_sign=1):
+        floors.append(floor_height * meters_per_unit)
+        return None
+    monkeypatch.setattr(preparation, "register_source_to_runtime", register)
+    monkeypatch.setattr(preparation, "support_under", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preparation, "ground_on_observed_floor", ground)
+    preparation.compile_website_scene_preparation(**{
+        **args, "output_root": args["output_root"].parent / f"floor-{kind}",
+        "base_scene": {**args["base_scene"], "anchor": {"frame_id": "frame-0", "kind": kind}}})
+    assert floors == [pytest.approx(expected_floor_m if args["base_scene"]["up_axis"] != "-Y" else -expected_floor_m)]
+
+
 def test_a_measured_extent_cites_only_frames_the_provider_budget_keeps(tmp_path, monkeypatch):
     from blueprint_pipeline import authoring_frame_budget as budget
 
