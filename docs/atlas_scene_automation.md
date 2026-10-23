@@ -28,7 +28,7 @@ The production Atlas controller runs the following for a new scene plan:
    a new capture does not need an original-scene Atlas pose to start editing.
    Older completed editor batches can supply exact candidate bytes without
    buying their images again. Superseded views do not silently become inputs.
-   New edits additionally receive a SAM overlay as the last visual reference,
+   New edits additionally receive a target-guide overlay as the last visual reference,
    aligned to the first image's canvas. This identifies the target without
    using an API mask or pasting the fill through its silhouette; shadows,
    reflections and contents can extend beyond the highlighted region. The
@@ -74,6 +74,10 @@ can seed the expanded set. Source video, task context and original RGB pixels
 must match, and the accepted edits stay byte-identical. Only missing views are
 edited; the complete expanded set receives a fresh independent review. The
 parent manifest and assets remain retained, and reuse is recorded in the result.
+If SAM returns no unambiguous instance, the image editor may use the agent's
+validated source region as a location guide. Its receipt explicitly distinguishes
+that region from segmentation. It is never a measurement/geometry mask, never
+clips the generated image, and still requires the same independent image review.
 
 All provider stages retain existing durable intents/receipts and reserve against
 the same source-video allowance. Meta segmentation and Google review additionally

@@ -102,8 +102,34 @@ def object_evidence(*, frames, objects, inputs):
     return result
 
 
+def grounded_region_guide(*, target, frames):
+    """Source-grounded location hint for image editing, never a segmentation mask."""
+    evidence = list(zip(target['regions'], target['spatial_evidence'], strict=True))
+    observations = []
+    for frame in frames:
+        h, w = frame['rgb'].shape[:2]
+        mask = np.zeros((h, w), bool)
+        for region, row in evidence:
+            if region['frame_id'] != frame['frame_id']:
+                continue
+            x, y, width, height = row['box_xywh_normalized']
+            left, top = math.floor(x * w), math.floor(y * h)
+            right, bottom = math.ceil((x + width) * w), math.ceil((y + height) * h)
+            mask[max(0, top):min(h, bottom), max(0, left):min(w, right)] = True
+        edges = np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1)))
+        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        observations.append({'source_frame_id': frame['frame_id'], 'width': w, 'height': h,
+            'runs': [{'start': int(start), 'length': int(end - start)} for start, end in zip(starts, ends, strict=True)]})
+    if not any(row['runs'] for row in observations):
+        raise ValueError('atlas_grounded_image_guide_empty')
+    return {'track_id': target['target_id'] + '-grounded-region-guide', 'label': target['target_id'],
+        'observations': observations, 'guide_only': True, 'physical_evidence': False,
+        'selection_basis': 'agent_grounded_region_not_segmentation',
+        'spatial_evidence_digest': canonical_digest(target['spatial_evidence'])}
+
+
 def segment_objects(*, frames, objects, inputs, task_context, source_digest, root, transients=()):
-    """Exact masks for each reviewed object and every instance of each transient.
+    """Segment reviewed objects; region fallbacks remain image-edit hints only.
 
     A transient (people, carried items, moving equipment) is never a single
     chosen instance: every one the concept finds is merged per view and erased.
@@ -151,7 +177,14 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
     selected = []
     for obj in objects:
         target = {**obj, "spatial_evidence": spatial[obj["target_id"]]}
-        track = select_task_track(target=target, tracks=tracks, frames=identity_frames)
+        try:
+            track = select_task_track(target=target, tracks=tracks, frames=identity_frames)
+        except ValueError as exc:
+            if str(exc) != f"task_target_track_ambiguous:{obj['target_id']}":
+                raise
+            # The image editor needs a location hint, not a single physical
+            # instance. Keep strict track selection unchanged for geometry.
+            track = grounded_region_guide(target=target, frames=frames)
         # A track must explicitly report every selected view, even an empty mask.
         if {o["source_frame_id"] for o in track["observations"]} != set(by_id):
             raise ValueError("atlas_object_mask_view_coverage_incomplete")
@@ -213,6 +246,11 @@ def prepare_masked_frames(*, frames, targets, margin, root):
                 "removed_task_object_ids": shown,
                 **({"removed_transient_ids": transients} if transients else {}),
                 "generated_pixels_present": False,
+                **({'mask_guide_basis': 'agent_grounded_region',
+                    'mask_guide_evidence_digest': canonical_digest([
+                        {'target_id': target['target_id'], 'track_digest': canonical_digest(target['track'])}
+                        for target in targets if target['disposition'] == 'remove' and target['track'].get('guide_only')])}
+                   if any(target['disposition'] == 'remove' and target['track'].get('guide_only') for target in targets) else {}),
             }
         )
     return prepared
@@ -596,8 +634,9 @@ def run_background(
         pose_digest=pose["digest"],
         tracks=selected,
         output=root / "object_measurements.json",
-    ) if all("depth" in frame for frame in frames) else {
-        "status": "unavailable", "reason": "pre_edit_observed_depth_not_requested",
+    ) if all("depth" in frame for frame in frames) and not any(r['track'].get('guide_only') for r in selected) else {
+        "status": "unavailable", "reason": ("image_guides_are_not_measurement_masks"
+            if any(r['track'].get('guide_only') for r in selected) else "pre_edit_observed_depth_not_requested"),
         "metric_measurement_proven": False, "physical_evidence": False,
     }
     removed = [r for r in selected if r["disposition"] == "remove"]

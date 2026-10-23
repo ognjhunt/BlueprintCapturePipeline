@@ -80,7 +80,7 @@ def test_expanded_set_edits_only_new_view_and_reviews_both_without_rewriting_pri
     segmented = []
     def segment(**kw):
         segmented.append([f['frame_id'] for f in kw['frames']])
-        return [{'disposition': 'remove'}]
+        return [{'disposition': 'remove', 'track': {}}]
     monkeypatch.setattr(background, 'segment_objects', segment)
     monkeypatch.setattr(background, 'prepare_masked_frames', lambda **_: [prepared[1]])
     monkeypatch.setattr(editor, '_validated_backend', lambda *_a, **_kw:
@@ -104,3 +104,30 @@ def test_expanded_set_edits_only_new_view_and_reviews_both_without_rewriting_pri
     import json
     new_binding = json.loads((root / 'prepared_background.json').read_text())['binding']
     assert background._prepared_background(root / 'prepared_background.json', new_binding) == actual
+
+
+def test_no_sam_detection_uses_explicit_region_guide_without_claiming_segmentation(tmp_path, monkeypatch):
+    from blueprint_pipeline import meta_sam31, website_task_masks, website_image_completion
+    from blueprint_pipeline.atlas_scene_automation import _unposed_source_views
+
+    path, digest = image(tmp_path / 'raw.png', 40)
+    inputs = {'digest': 'inputs', 'binding': {}, 'frames': [
+        {'frame_id': 'new', 'image_path': path, 'image_digest': digest, 'timestamp_seconds': 1.}]}
+    _, frames = _unposed_source_views(inputs)
+    obj = {'target_id': 'dishwasher', 'label': 'Dishwasher', 'disposition': 'remove',
+           'segmentation_prompt': 'dishwasher', 'regions': [
+               {'frame_id': 'new', 'box_xywh_normalized': [.1, .2, .5, .5]}]}
+    calls = []
+    monkeypatch.setattr(meta_sam31, 'run_meta_sam31', lambda **kw: calls.append(kw) or {'tracks': []})
+    targets = background.segment_objects(frames=frames, objects=[obj], inputs=inputs,
+        task_context={}, source_digest='video', root=tmp_path / 'sam')
+    assert len(calls) == 1 and targets[0]['track']['guide_only'] is True
+    mask = website_task_masks.decode_track_mask(targets[0]['track']['observations'][0])
+    expected = np.zeros((16, 20), bool)
+    expected[3:12, 2:12] = True
+    assert np.array_equal(mask, expected)
+    prepared = background.prepare_masked_frames(frames=frames, targets=targets, margin=0, root=tmp_path / 'prepared')
+    binding = website_image_completion.completion_binding(prepared, task_digest='task', backend_digest='backend', mask_guidance=True)
+    assert binding['target_guidance'] == 'source_grounded_region_overlay_v1'
+    assert 'source-grounded region target-guide' in binding['prompt'] and 'a SAM' not in binding['prompt']
+    assert binding['guide_evidence'][0]['mask_guide_basis'] == 'agent_grounded_region'
