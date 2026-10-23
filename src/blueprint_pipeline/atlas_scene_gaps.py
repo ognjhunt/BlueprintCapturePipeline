@@ -121,6 +121,24 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
     return report
 
 
+def target_gap_ids(view, candidate, requested):
+    """Separate a new camera's actual fill regions from declared source lineage.
+
+    A planner may cite both the originating gap and its projection into the
+    new camera. Only the latter indexes this camera's mask. Unknown references,
+    duplicates, or a plan with no actual target regions still refuse.
+    """
+    regions = {row['gap_id'] for row in view['gaps']}
+    lineage = set(candidate.get('source_gap_ids', []))
+    if (not requested or len(requested) != len(set(requested))
+            or not set(requested) <= regions | lineage):
+        raise ValueError('atlas_completion_named_gaps_required')
+    targets = [key for key in requested if key in regions]
+    if not targets:
+        raise ValueError('atlas_completion_named_gaps_required')
+    return targets
+
+
 def select_gap_mask(view, gap_ids, output):
     """Bind the agent's named regions to an exact downstream geometry mask."""
     from PIL import Image

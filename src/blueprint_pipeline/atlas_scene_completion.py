@@ -125,7 +125,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     candidates = camera_candidates(frames)
     from .atlas_scene_preservation import observed_scene_bounds
     extent = observed_scene_bounds(frames)
-    from .atlas_scene_gaps import survey_gaps, select_gap_mask
+    from .atlas_scene_gaps import survey_gaps, select_gap_mask, target_gap_ids
     geometry_frames = [*frames, *existing_geometry_frames]
     gaps = survey_gaps(frames=frames, geometry_frames=geometry_frames, candidates=candidates, root=root / 'gaps')
     from .atlas_completion_cameras import gap_target_candidates
@@ -232,7 +232,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     gap_views = {row['camera_id']: row for row in gaps['views']}
     entries_by_id = {row['camera_id']: row for row in entries}
     for index, view in enumerate(selected):
-        view.update(select_gap_mask(gap_views[view['camera_id']], entries_by_id[view['camera_id']].get('gap_ids', []),
+        target_view = gap_views[view['camera_id']]
+        requested = entries_by_id[view['camera_id']].get('gap_ids', [])
+        view.update(select_gap_mask(target_view, target_gap_ids(target_view, view, requested),
                                    root / 'gaps' / f'selected-{index:04d}.png'))
     from .atlas_scene_generate import generate_rgbd_completion
     _, blockers = release_blockers()
