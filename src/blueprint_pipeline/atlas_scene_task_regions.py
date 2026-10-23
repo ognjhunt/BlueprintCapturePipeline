@@ -66,9 +66,11 @@ surface for SAM3.1 (for example, a floor, worktop, wall or storage unit).
 Name whole surfaces and separate concepts when necessary, not a long relational
 instruction. Leave polygon_normalized empty: this legacy field is not used in
 SAM surface selection. Do not spend output on drawing coordinates. Use broad,
-coherent surface concepts. SAM receives the entire image. A later review chooses
-the resulting masks and checks for omitted parts, including behind foreground
-clutter. Do not exclude broad image areas that also contain wanted surfaces.
+coherent surface concepts. A later review can retain a whole useful image. SAM
+receives the entire image only when that review needs masks for specific defects
+or trustworthy portions of an otherwise inconsistent view. A missed SAM detection
+must not discard a useful surface. Do not exclude broad image areas that also
+contain wanted surfaces.
 
 Use include with a concrete task or context reason and one of work_surface, support, access,
 interaction_clearance, nearby_obstacle or visual_context. Use exclude/unrelated
@@ -103,7 +105,7 @@ def task_region_masks(plan, reviewed_views):
     views = proposal["views"]
     if len(views) != len(frames) or {row["frame_id"] for row in views} != set(frames):
         raise ValueError("atlas_task_region_view_selection_invalid")
-    if plan.get("schema_version") == "atlas_task_surface_plan.v2":
+    if plan.get("schema_version") in {"atlas_task_surface_plan.v2", "atlas_task_surface_plan.v3"}:
         from .atlas_scene_surface_masks import reviewed_surface_masks
         return reviewed_surface_masks(plan, frames)
     masks = {}
@@ -140,7 +142,7 @@ def plan_task_regions(*, frames, reviewed_views, pose, context, configuration, r
         return None
     if planner_runner is None:
         raise ValueError("atlas_task_region_canonical_planner_required")
-    binding = {"revision": "v2-sam-surfaces", "pose_digest": pose["digest"],
+    binding = {"revision": "v3-full-view-retention", "pose_digest": pose["digest"],
                "task_context_digest": context["context_digest"],
                "sources": [_frame_binding(f) for f in frames],
                "native": [{**{k: v for k, v in row.items() if k != "frame"},
@@ -184,7 +186,7 @@ def plan_task_regions(*, frames, reviewed_views, pose, context, configuration, r
     planned = planner_runner(survey_path=root / "survey.json", task_context=context,
                              configuration=configuration, output_root=root / "planner",
                              recovery=feedback)
-    plan = {"schema_version": "atlas_task_surface_plan.v2", "binding_digest": canonical_digest(binding),
+    plan = {"schema_version": "atlas_task_surface_plan.v3", "binding_digest": canonical_digest(binding),
             "proposal": planned["proposal"], "planner": planned, "claim_ceiling": "development_only",
             "native_bindings": {row["frame"]["frame_id"]: canonical_digest(_frame_binding(row["frame"]))
                                 for row in reviewed_views},

@@ -116,6 +116,7 @@ def test_production_plan_receives_all_exact_views_and_the_current_task(tmp_path)
         assert kwargs["recovery"]["native_frame_ids"] == [reviewed[0]["frame"]["frame_id"]]
         if kwargs["recovery"]["scope"] == "task_surface_masks":
             proposal = {"status": "passed", "views": [{"frame_id": reviewed[0]["frame"]["frame_id"],
+                "retain_full_view": True, "excluded_mask_ids": [],
                 "task_mask_ids": [r["mask_id"] for r in kwargs["recovery"]["candidates"]],
                 "context_mask_ids": [], "corrections": [], "reason": "Whole bench included"}],
                 "remaining_required_surfaces": []}
