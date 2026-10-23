@@ -135,7 +135,10 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                               candidates=aimed, root=root / 'gap-targets')
         candidates.extend(aimed)
         gaps = {**gaps, 'views': [*gaps['views'], *targeted['views']],
-                'previews': [*gaps['previews'], *targeted['previews']],
+                # The source gap previews already show the missing regions.
+                # New cameras carry their source-gap lineage and full geometric
+                # survey; repeating every derived preview wastes review context.
+                'targeted_preview_count': len(targeted['previews']),
                 'binding_digest': canonical_digest({'base': gaps['binding_digest'],
                                                     'targeted': targeted['binding_digest']})}
         gaps['digest'] = canonical_digest(gaps, digest_field='digest')

@@ -141,6 +141,12 @@ def gap_target_candidates(frames, candidates, survey):
             yy, xx = np.nonzero(mask)
             if not len(xx):
                 continue
+            # Tiny holes already have the original candidate views. A dedicated
+            # new angle must cover more than the accepted depth-uncertainty
+            # footprint; otherwise a noisy surface produces hundreds of cameras.
+            uncertainty_pixels = MAX_MEDIAN_CROSS_VIEW_RESIDUAL ** 2 * k['fx'] * k['fy']
+            if len(xx) < uncertainty_pixels:
+                continue
             distance = distance_transform_edt(~mask)
             band = max(3., .1 * np.hypot(np.ptp(xx) + 1, np.ptp(yy) + 1))
             neighbours = indices[(distance[rows, cols] > 0) & (distance[rows, cols] <= band)]

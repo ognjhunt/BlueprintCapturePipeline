@@ -303,6 +303,11 @@ def completion_summary(completion):
             camera = row.pop('camera')
             row['position'] = [round(v, 6) for v in camera['extrinsics']['position']]
             row['quaternion_xyzw'] = [round(v, 6) for v in camera['extrinsics']['quaternion']]
+            if row.get('purpose') == 'gap_target':
+                # The retained precise polygon controls the downstream mask.
+                # Planning needs the aim, source gap, position and orientation.
+                row.pop('gap_target_polygon_pixels', None)
+                row['target_world_estimate'] = [round(v, 6) for v in row['target_world_estimate']]
     return value
 
 
