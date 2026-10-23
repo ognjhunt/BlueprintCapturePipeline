@@ -31,7 +31,7 @@ from .external_scene_frame_registration import _axis_rotations, _sample, _trimme
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
-from .website_support_geometry import ground_on_observed_floor, support_under
+from .website_support_geometry import ground_on_observed_floor, same_support_surface, support_under
 
 
 class RegistrationRefusal(ValueError):
@@ -786,7 +786,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                 meters_per_unit=mpu, up_sign=up_sign)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
-            elif destination_support["face_indices"] != support["face_indices"]:
+            elif not same_support_surface(destination_support, support):
                 blockers.append("task_distinct_destination_surface_binding_required")
             else:
                 position[up] = destination_support["top_runtime_units"]

@@ -539,6 +539,25 @@ def test_destination_outside_reconstructed_surface_cannot_reach_intake(tmp_path)
     assert result["destination"]["basis"] == "registered_estimated_visible_bounds"
 
 
+@pytest.mark.parametrize("shift, bound", [(5, True), (50, False)])
+def test_a_destination_on_the_same_bumpy_fitted_surface_is_bound(tmp_path, monkeypatch, shift, bound):
+    # Two fits of one bumpy counter converge on nearly the same faces; another surface does not.
+    args = _arguments(tmp_path)
+    calls = []
+
+    def fitted(mesh, lower, upper, *, up, meters_per_unit, up_sign=1):
+        start = 0 if not calls else shift
+        calls.append(start)
+        return {"top_runtime_units": float(lower[up]), "aabb_min": list(lower), "aabb_max": list(upper),
+                "face_indices": list(range(start, start + 100)), "basis": "fitted_surface_under_footprint",
+                "physical_measurement": False}
+    monkeypatch.setattr(preparation, "support_under", fitted)
+    result = preparation.compile_website_scene_preparation(**args)
+    assert len(calls) == 2
+    assert ("task_distinct_destination_surface_binding_required" not in result["blockers"]) is bound
+    assert (result["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact") is bound
+
+
 def test_source_far_above_support_is_not_snapped_down_to_floor(tmp_path):
     args = _arguments(tmp_path)
     frame = args["source_geometry"]["frames"][0]

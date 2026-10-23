@@ -100,3 +100,75 @@ def test_minus_y_up_worlds_ground_in_the_source_frame():
                                      floor_height=0.0, up_sign=-1)
     assert value["top_runtime_units"] == pytest.approx(0)
     assert value["extended_runtime_units"] == pytest.approx(.2)
+
+
+def bumpy_plate(x0=-.3, x1=.3, y0=-.3, y1=.3, height=.7, *, noise=.006, slope=0.0, seed=0):
+    """A reconstructed counter: a dense 1 cm grid whose vertices wander millimetres, as Atlas meshes do."""
+    rng = np.random.default_rng(seed)
+    xs, ys = np.arange(x0, x1 + 1e-9, .01), np.arange(y0, y1 + 1e-9, .01)
+    gx, gy = np.meshgrid(xs, ys, indexing="ij")
+    gz = height + slope * gx + rng.normal(0.0, noise, gx.shape)
+    k = (np.arange(len(xs) - 1)[:, None] * len(ys) + np.arange(len(ys) - 1)[None, :]).reshape(-1)
+    faces = np.concatenate([np.c_[k, k + len(ys), k + 1], np.c_[k + 1, k + len(ys), k + len(ys) + 1]])
+    return trimesh.Trimesh(vertices=np.c_[gx.ravel(), gy.ravel(), gz.ravel()], faces=faces, process=False)
+
+
+BOX = ([-.05, -.05, .71], [.05, .05, .85])
+
+
+def test_a_bumpy_reconstructed_counter_is_fitted_when_no_face_is_level(monkeypatch):
+    from blueprint_pipeline import website_support_geometry as geometry
+
+    mesh = bumpy_plate()
+    value = support_under(mesh, *BOX, up=2, meters_per_unit=1)
+    assert value["basis"] == "fitted_surface_under_footprint" and value["physical_measurement"] is False
+    assert value["top_runtime_units"] == pytest.approx(.7, abs=.003)
+    # Face centres average three vertices: 6 mm of vertex noise fits as about 6 / sqrt(3) mm.
+    assert value["fit_tilt_degrees"] < 1 and value["fit_rms_m"] == pytest.approx(.006 / 3 ** .5, abs=.001)
+    assert len(value["face_indices"]) > .75 * len(mesh.faces)  # minus the few faces noise tips past 60 degrees
+    assert value["aabb_min"][:2] == pytest.approx([-.3, -.3]) and value["aabb_max"][:2] == pytest.approx([.3, .3])
+    # The exact level-face search alone finds nothing on this surface.
+    monkeypatch.setattr(geometry, "_fitted_support", lambda *args, **kwargs: None)
+    assert support_under(mesh, *BOX, up=2, meters_per_unit=1) is None
+
+
+@pytest.mark.parametrize("case", ["edge", "gap", "slope", "rough", "islands", "remote"])
+def test_a_fitted_surface_keeps_every_refusal(case):
+    mesh, lower, upper = bumpy_plate(), *BOX
+    if case == "edge":
+        lower, upper = [.25, -.05, .71], [.35, .05, .85]
+    elif case == "gap":
+        mesh = trimesh.util.concatenate([bumpy_plate(x1=-.03), bumpy_plate(x0=.03, seed=1)])
+    elif case == "slope":
+        mesh = bumpy_plate(slope=np.tan(np.radians(8)))
+    elif case == "rough":
+        mesh = bumpy_plate(noise=.06)
+    elif case == "islands":
+        # Two counters side by side, touching only across a hairline that shares no edge.
+        mesh = trimesh.util.concatenate([bumpy_plate(x1=-.005), bumpy_plate(x0=.005, seed=1)])
+    else:
+        lower, upper = [-.05, -.05, 1.0], [.05, .05, 1.1]
+    assert support_under(mesh, lower, upper, up=2, meters_per_unit=1) is None
+
+
+def test_two_fits_on_one_bumpy_counter_name_the_same_surface():
+    from blueprint_pipeline.website_support_geometry import same_support_surface
+
+    counter = bumpy_plate(-.6, .6)
+    start = support_under(counter, [-.45, -.05, .71], [-.35, .05, .85], up=2, meters_per_unit=1)
+    place = support_under(counter, [.35, -.05, .71], [.45, .05, .85], up=2, meters_per_unit=1)
+    assert same_support_surface(start, place)
+    mesh = trimesh.util.concatenate([counter, bumpy_plate(1.0, 1.6, seed=2)])
+    start = support_under(mesh, [-.45, -.05, .71], [-.35, .05, .85], up=2, meters_per_unit=1)
+    elsewhere = support_under(mesh, [1.25, -.05, .71], [1.35, .05, .85], up=2, meters_per_unit=1)
+    assert elsewhere is not None and not same_support_surface(start, elsewhere)
+    exact = support_under(plate(), [-.03, -.03, .71], [.03, .03, .8], up=2, meters_per_unit=1)
+    assert same_support_surface(exact, exact) and not same_support_surface(exact, start)
+
+
+def test_a_y_up_bumpy_counter_in_estimated_units_is_fitted():
+    mesh = bumpy_plate()
+    mesh.vertices = np.asarray(mesh.vertices)[:, [0, 2, 1]] * 10
+    value = support_under(mesh, [-.5, 7.1, -.5], [.5, 8.5, .5], up=1, meters_per_unit=.1)
+    assert value["basis"] == "fitted_surface_under_footprint"
+    assert value["top_runtime_units"] == pytest.approx(7, abs=.03)
