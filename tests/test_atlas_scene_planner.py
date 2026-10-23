@@ -65,10 +65,12 @@ def test_selection_budget_preserves_generated_coverage_before_buying_pose(tmp_pa
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=.11)
 
 
-@pytest.mark.parametrize("mode", ["scene", "completion", "scale"])
+@pytest.mark.parametrize("mode", ["scene", "completion", "scale", "recovery"])
 def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_path, monkeypatch, mode):
     completion_mode = mode == "completion"
     path, _, proposal, policy = fixture(tmp_path)
+    if mode == "recovery":
+        policy["maximum_review_cost_usd"] = 2
     from blueprint_pipeline import website_task_context as control
     from blueprint_pipeline import paid_resource_admission as admission
     monkeypatch.setattr(admission, "require_paid_resource_admission_grant", lambda *_, **__: None)
@@ -83,13 +85,18 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
                                         {'camera_id': 'b-lower', 'reason': 'Complete nearby floor'}]}
     elif mode == "scale":
         proposal = {"status": "abstained", "scale_references": [], "summary": "No defensible visible reference"}
+    elif mode == "recovery":
+        proposal = {"status": "proposed", "task_extent_summary": "Local working area",
+                    "views": [{"frame_id": "0", "regions": [], "reason": "No missing task surface"}],
+                    "remaining_required_surfaces": [], "excluded_scene_regions": ["distant scenery"]}
     class Invoker:
         def configure_reservation_audit(self, **_):
             pass
         def invoke(self, spec, input_value):
             assert spec.model == policy["model"] and len(input_value[0]["content"]) == (7 if mode == "scene" else 8)
-            assert len(spec.hosted_tools) == (0 if completion_mode else 1)
-            assert spec.max_hosted_tool_calls_per_turn == (0 if completion_mode else 2) and spec.hosted_tool_call_usd == .01
+            no_search = completion_mode or mode == "recovery"
+            assert len(spec.hosted_tools) == (0 if no_search else 1)
+            assert spec.max_hosted_tool_calls_per_turn == (0 if no_search else 2) and spec.hosted_tool_call_usd == .01
             return SimpleNamespace(output=proposal, cost_usd=.03, usage={"input_tokens": 100},
                                    model=spec.model, sdk_version="test")
     options = dict(survey_path=path, task_context={"description": "test task", "context_digest": "sha256:" + "b" * 64,
@@ -99,6 +106,8 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
         options["completion"] = {"previews": [], "candidate_camera_ids": ["a-wide", "b-lower"]}
     elif mode == "scale":
         options["scaling"] = {"previews": [], "previous_measurement_digest": "old"}
+    elif mode == "recovery":
+        options["recovery"] = {"previews": [], "native_frame_ids": ["0"]}
     result = planner.review_survey(**options)
     assert planner.review_survey(**options) == result
     assert len(calls) == 1 and calls[0]["provider"] == "openai" and calls[0]["source_video_digest"]
