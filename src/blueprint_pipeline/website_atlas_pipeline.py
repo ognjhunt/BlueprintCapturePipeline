@@ -378,7 +378,10 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         automation = run_sponsored_website_atlas_automation(pose_root=pose_root, inputs=inputs, review=review,
             output_root=output_root / "automation", task_context=task_context,
             configuration=load_configuration(task_context, source_digest), experimental=experimental, max_polls=max_polls,
-            checkpoint=checkpoint, edit_scope=edit_scope)
+            checkpoint=checkpoint, edit_scope=edit_scope,
+            **({'prior_background_path': Path(feedback['parent_root']) / 'automation/background/prepared_background.json'}
+               if feedback is not None and (Path(feedback['parent_root']) / 'automation/background/prepared_background.json').is_file()
+               else {}))
         result["automation"] = automation
         result["size_estimates"] = automation.get("measurements")
         if automation["status"] == "processing":

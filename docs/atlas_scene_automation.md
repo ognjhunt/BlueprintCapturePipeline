@@ -69,6 +69,12 @@ The production Atlas controller runs the following for a new scene plan:
    its ZIP remain available. Native photometrically trained splat export remains
    subject to Atlas availability; this adapter produces a depth-fused draft.
 
+When a refinement adds source views, its parent prepared-background manifest
+can seed the expanded set. Source video, task context and original RGB pixels
+must match, and the accepted edits stay byte-identical. Only missing views are
+edited; the complete expanded set receives a fresh independent review. The
+parent manifest and assets remain retained, and reuse is recorded in the result.
+
 All provider stages retain existing durable intents/receipts and reserve against
 the same source-video allowance. Meta segmentation and Google review additionally
 need their own accepted provider terms; Atlas consent cannot grant another
