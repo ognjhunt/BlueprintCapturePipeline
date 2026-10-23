@@ -131,6 +131,72 @@ def test_solid_collider_cannot_claim_a_hollow_interior(tmp_path):
                   annotations_path=annotations(tmp_path, request))
 
 
+def test_fixed_door_handle_has_assembly_mass_and_grasp_point_in_door_frame(tmp_path):
+    request = construction_request(articulated=True)
+    request["configuration"]["required_output"].update(mass_kg_bounds=[1.9, 2.1], task_part_mass_kg_bounds=[2.25, 2.35])
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    source = usd_fixture(tmp_path, articulated=True)
+    stage = Usd.Stage.Open(str(source))
+    child = UsdGeom.Xform.Define(stage, "/UpstreamObject/door/handle_component").GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(child)
+    mass = UsdPhysics.MassAPI.Apply(child)
+    mass.CreateMassAttr(.3)
+    mass.CreateCenterOfMassAttr(Gf.Vec3f(.46, 0, .7))
+    mass.CreateDiagonalInertiaAttr(Gf.Vec3f(.001, .001, .001))
+    mass.CreatePrincipalAxesAttr(Gf.Quatf(1))
+    for name in ("vis_handle", "col_handle"):
+        editor = Usd.NamespaceEditor(stage)
+        assert editor.MovePrimAtPath("/UpstreamObject/door/" + name, str(child.GetPath()) + "/" + name)
+        assert editor.ApplyEdits()
+    joint = UsdPhysics.FixedJoint.Define(stage, "/UpstreamObject/door/joint_handle_mount")
+    joint.CreateBody0Rel().SetTargets(["/UpstreamObject/door"])
+    joint.CreateBody1Rel().SetTargets([child.GetPath()])
+    stage.GetRootLayer().Save()
+    final = tmp_path / "final.usdz"
+    result = adapt_usd(source, final, request, annotations_path=annotations(tmp_path, request))["final_readback"]
+    assert result["mass_group_readback"]["door"]["mass_kg"] == pytest.approx(2.3)
+    assert set(result["mass_group_readback"]["door"]["link_ids"]) == {"door", "handle_component"}
+    assert result["handle_grasp_point_link_m"] == pytest.approx([.46, 0, .7])
+    changed = deepcopy(request)
+    changed["configuration"]["required_output"]["task_part_mass_kg_bounds"] = [1.9, 2.1]
+    with pytest.raises(AuthoringContractError, match="artisan_mass_outside_admitted_bounds"):
+        validate_final_usd(final, changed)
+
+
+def test_fixed_interior_mass_keeps_its_own_admission():
+    from blueprint_pipeline.task_object_artisan_exports import _mass_groups
+    links = {"body": {"mass_kg": 20}, "rack": {"mass_kg": 2}, "rack_grip": {"mass_kg": .2}}
+    joints = [{"parent_link_id": "body", "child_link_id": "rack", "joint_type": "fixed"},
+              {"parent_link_id": "rack", "child_link_id": "rack_grip", "joint_type": "fixed"}]
+    config = {"required_parts": [{"part_id": "rack", "role": "fixed_interior"}],
+              "required_output": {"mass_kg_bounds": [19, 21], "fixed_part_mass_kg_bounds": [2.1, 2.3]}}
+    groups = _mass_groups(links, joints, config, None)
+    assert groups["body"]["mass_kg"] == 20
+    assert groups["rack"]["mass_kg"] == pytest.approx(2.2)
+    config["required_output"]["fixed_part_mass_kg_bounds"] = [2.4, 3]
+    with pytest.raises(AuthoringContractError, match="artisan_mass_outside_admitted_bounds"):
+        _mass_groups(links, joints, config, None)
+
+
+@pytest.mark.parametrize("center,passes", [([.1, .4, .2], True), ([.1, 0, .5], False)])
+def test_analytic_hinge_cylinder_can_be_excluded_only_outside_cavity_rays(tmp_path, center, passes):
+    request = construction_request(articulated=True)
+    source = usd_fixture(tmp_path, articulated=True)
+    stage = Usd.Stage.Open(str(source))
+    cylinder = UsdGeom.Cylinder.Define(stage, "/UpstreamObject/body/hinge")
+    cylinder.CreateRadiusAttr(.02)
+    cylinder.CreateHeightAttr(.03)
+    cylinder.AddTranslateOp().Set(Gf.Vec3d(*center))
+    UsdPhysics.CollisionAPI.Apply(cylinder.GetPrim())
+    stage.GetRootLayer().Save()
+    if passes:
+        assert adapt_usd(source, tmp_path / "final.usdz", request,
+                         annotations_path=annotations(tmp_path, request))["final_readback"]["interior_cavity_readback"]
+    else:
+        with pytest.raises(AuthoringContractError, match="analytic_Cylinder"):
+            adapt_usd(source, tmp_path / "final.usdz", request, annotations_path=annotations(tmp_path, request))
+
+
 def test_imported_composition_rechecks_materials_and_physical_joint_frame(tmp_path):
     from blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver import _articulated_structure_observation, _IMPORTED_ROOT
     request = construction_request(articulated=True)

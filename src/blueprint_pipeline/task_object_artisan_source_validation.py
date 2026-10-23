@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 from .task_object_authoring_contracts import require
 from .task_object_cavity_validation import collision_cavity_findings
 
@@ -26,6 +27,19 @@ def collision_piece(collider, link, transforms):
             faces.extend(i for index in range(1, count - 1) for i in (face[0], face[index], face[index + 1]))
             offset += count
         approximation = str(UsdPhysics.MeshCollisionAPI(collider).GetApproximationAttr().Get())
+    elif collider.IsA(UsdGeom.Cylinder):
+        # Retain a conservative box only to prove that a hinge primitive is
+        # outside all cavity probe rays. It cannot prove a back wall or cavity.
+        cylinder = UsdGeom.Cylinder(collider)
+        radius, height = float(cylinder.GetRadiusAttr().Get()), float(cylinder.GetHeightAttr().Get())
+        require(all(math.isfinite(v) and v > 0 for v in (radius, height)), "artisan_cylinder_geometry_invalid")
+        half = [radius] * 3
+        half[{"X": 0, "Y": 1, "Z": 2}[str(cylinder.GetAxisAttr().Get())]] = height / 2
+        points = list(itertools.product(*[(-v, v) for v in half]))
+        world = [list(matrix.Transform(Gf.Vec3d(*p))) for p in points]
+        return {"approximation": "analytic_Cylinder", "vertices": [], "faces": [],
+                "conservative_bounds": {"minimum": [min(p[i] for p in world) for i in range(3)],
+                                        "maximum": [max(p[i] for p in world) for i in range(3)]}}
     else:
         return {"approximation": "analytic_" + collider.GetTypeName(), "vertices": [], "faces": []}
     return {"approximation": approximation, "vertices": [list(matrix.Transform(Gf.Vec3d(*p))) for p in points], "faces": faces}
