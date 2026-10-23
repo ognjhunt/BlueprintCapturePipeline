@@ -197,6 +197,7 @@ from .native_task_arena_runtime_preflight_bundle import (
 )
 from .native_task_arena_allocator_dispatch import (
     native_task_arena_probe_mode,
+    native_task_arena_machine_selection_kwargs,
     native_task_arena_verified_bundle_loader,
 )
 from .native_task_arena_vast import (
@@ -5662,11 +5663,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         print(json.dumps({"success": False}, sort_keys=True))
                         return 2
                     run_kwargs["retain_warm_instance"] = True
-                if controlled_requested:
-                    allowed_machines = tuple(sorted(set(args.adp_allowed_vast_machine_id)))
-                    if any(machine_id <= 0 for machine_id in allowed_machines):
-                        raise ValueError("controlled_native_allowed_vast_machine_id_invalid")
-                    run_kwargs["allowed_machine_ids"] = allowed_machines
+                run_kwargs.update(native_task_arena_machine_selection_kwargs(
+                    probe_mode, args.adp_allowed_vast_machine_id))
                 result = run_native(**run_kwargs)
                 result = continue_retained_feedback_if_requested(
                     execute=args.execute,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from .controlled_native_policy_bundle import (
@@ -72,6 +72,17 @@ _RUNNER_BY_PROBE_KIND: dict[str, Callable[..., dict[str, Any]]] = {
 }
 
 
+def native_task_arena_machine_selection_kwargs(
+    probe_mode: str, machine_ids: Sequence[int]
+) -> dict[str, tuple[int, ...]]:
+    """Preserve an explicit machine restriction for retained-runtime comparisons."""
+    if probe_mode not in {"controlled_policy", "construction_canary"}:
+        return {}
+    if any(type(value) is not int or value <= 0 for value in machine_ids):
+        raise ValueError("native_task_arena_allowed_vast_machine_id_invalid")
+    return {"allowed_machine_ids": tuple(sorted(set(machine_ids)))}
+
+
 def native_task_arena_probe_mode(probe_kind: str) -> str:
     return _MODE_BY_PROBE_KIND[probe_kind]
 
@@ -90,6 +101,7 @@ __all__ = [
     "NATIVE_TASK_ARENA_PROBE_KINDS",
     "POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES",
     "native_task_arena_probe_mode",
+    "native_task_arena_machine_selection_kwargs",
     "native_task_arena_vast_runner",
     "native_task_arena_verified_bundle_loader",
 ]
