@@ -75,8 +75,9 @@ def source_to_posed(source: Path, rgb: np.ndarray) -> dict:
 
 
 def load_views(pose_root: Path, inputs: dict) -> tuple[dict, list[dict]]:
+    from .atlas_context_fov import full_view_sources
     result, frames = load_posed_rgbd(pose_root)
-    by_id = {r["frame_id"]: r for r in inputs["frames"]}
+    by_id = {r["frame_id"]: r for r in full_view_sources(inputs, pose_root)}
     usage = result["operation_receipt"]["input_usage"]["frames"]
     for frame, row in zip(frames, usage, strict=True):
         source = by_id[frame["frame_id"]]

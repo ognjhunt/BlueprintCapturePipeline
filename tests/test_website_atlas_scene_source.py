@@ -60,10 +60,10 @@ def write(path: Path, value):
     return value
 
 
-def pose_root_fixture(pose_root: Path, survey_digest: str):
+def pose_root_fixture(pose_root: Path, survey_digest: str, *, padded=False):
     """The source pose as the preview leaves it: native upright views and an admitted run bound to them."""
     rng = np.random.default_rng(11)
-    frames, outputs, sent, returned = [], [], [], []
+    frames, outputs, sent, returned, sources = [], [], [], [], []
     for index, ((rotation_cv, position), frame_id) in enumerate(zip(CAMERAS, FRAME_IDS)):
         upright = Image.fromarray((rng.random((UPRIGHT[1], UPRIGHT[0], 3)) * 255).astype(np.uint8))
         upright_path = pose_root / "atlas_source_views" / f"{frame_id}.png"
@@ -77,6 +77,15 @@ def pose_root_fixture(pose_root: Path, survey_digest: str):
                        "source_image_digest": _sha256_file(observation_path), "width": UPRIGHT[0],
                        "height": UPRIGHT[1], "image_path": str(upright_path.resolve()),
                        "image_digest": _sha256_file(upright_path)})
+        if padded:
+            from blueprint_pipeline.atlas_context_fov import square_pad
+            pixels, transform = square_pad(np.asarray(upright))
+            padded_path = pose_root / "padded" / f"{frame_id}.png"
+            padded_path.parent.mkdir(exist_ok=True)
+            Image.fromarray(pixels).save(padded_path)
+            sources.append({"frame_id": frame_id, "image_path": str(upright_path.resolve()),
+                            "image_digest": _sha256_file(upright_path), "padding": transform})
+            frames[-1].update(image_path=str(padded_path.resolve()), image_digest=_sha256_file(padded_path))
         # Atlas's reframed RGB: the upright view covered at 1.5x and centre-cropped.
         atlas_rgb = np.asarray(upright.resize(VIEW, Image.Resampling.LANCZOS))[3:39]
         out = pose_root / "atlas_pose" / "outputs" / f"{index:06d}"
@@ -96,6 +105,9 @@ def pose_root_fixture(pose_root: Path, survey_digest: str):
     inputs = digest({"schema_version": INPUT_SCHEMA, "binding": {
         "source_video_digest": SHA, "maximum_frames": 3, "adapter_version": 3, "survey_digest": survey_digest},
         "frames": frames, "source_sample_count": 9, "heldout_frame_count": 1, "heldout_pixels_included": False})
+    if padded:
+        inputs["full_view_sources"] = sources
+        digest(inputs)
     write(pose_root / "atlas_geometry_inputs.json", inputs)
     binding = {"source_video_digest": SHA, "geometry_input_digest": inputs["digest"]}
     identities = [{"frame_id": row["frame_id"], "image_digest": row["image_digest"]} for row in frames]
@@ -119,12 +131,12 @@ def pose_root_fixture(pose_root: Path, survey_digest: str):
     return inputs, result
 
 
-def job_fixture(capture_root: Path, *, same_pose=False):
+def job_fixture(capture_root: Path, *, same_pose=False, padded=False):
     job_dir = capture_root / "pipeline" / "atlas"
     survey = write(job_dir / "survey" / "atlas_video_survey.json", digest({
         "schema_version": "atlas_video_survey.v1", "display_rotation_degrees": ROTATION, "frames": []}))
     write(job_dir / "selection_binding.json", {"survey_relative_path": "survey/atlas_video_survey.json"})
-    _, source_pose = pose_root_fixture(job_dir / "pose", survey["digest"])
+    _, source_pose = pose_root_fixture(job_dir / "pose", survey["digest"], padded=padded)
     measurements = write(job_dir / "pose" / "scene_measurements.json", digest({
         "schema_version": "atlas_scene_measurements.v1", "status": "estimated", "meters_per_unit_estimate": MPU,
         "scale_status": "estimated_from_named_assumptions", "metric_measurement_proven": False}))

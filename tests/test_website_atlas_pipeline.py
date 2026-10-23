@@ -247,6 +247,10 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
     from blueprint_pipeline import atlas_scene_measurements as measurements, atlas_scene_automation as automation
+    from blueprint_pipeline import atlas_source_pose_inputs, atlas_context_fov
+    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda root: (
+        root, {"frames": [{"frame_id": "a"}, {"frame_id": "b"}]}))
+    monkeypatch.setattr(atlas_context_fov, "verify_pose_context_fov", lambda **_: None)
 
     root = tmp_path / "job"
     (root / "survey").mkdir(parents=True)
@@ -298,6 +302,7 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
     assert first == {"status": "processing", "stage": "source_pose", "operation_id": "source"}
     result = pipeline.run_atlas_pipeline(**options)
     assert result["source_pose"] == {"status": "completed", "result_digest": "sha256:pose", "operation_id": "source",
+        "pose_relative_path": "pose",
         "submitted_frame_count": 2, "scene_measurements_digest": "sha256:sizes", "meters_per_unit_estimate": 0.8,
         "scale_status": "estimated_from_named_assumptions"}
     assert measured[0]["automation"] == {"plan": "reviewed"}

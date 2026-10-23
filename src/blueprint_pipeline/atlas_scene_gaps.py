@@ -17,7 +17,7 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 
-def gap_labels(depth, photographed, *, scene_outline=False):
+def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None):
     """Connected missing surfaces inside photographed or enclosed coverage.
 
     A mask never turns the exterior black canvas into a whole-room request.
@@ -39,6 +39,8 @@ def gap_labels(depth, photographed, *, scene_outline=False):
             outline = np.zeros(depth.shape, np.uint8)
             cv2.fillConvexPoly(outline, hull, 1)
             inside |= outline.astype(bool)
+    if candidate_mask is not None:
+        inside &= candidate_mask
     missing = (~covered & inside).astype(np.uint8)
     missing = cv2.morphologyEx(missing, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     count, labels, stats, _ = cv2.connectedComponentsWithStats(missing, connectivity=8)
@@ -84,7 +86,13 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
         rgb, photographed = project_known_context(frames, candidate['camera'])
         depth = project_source_depth(geometry_frames, candidate['camera'])
         outline = candidate.get('gap_domain') == 'projected_scene_outline_hypothesis'
-        labels, regions = gap_labels(depth, photographed, scene_outline=outline)
+        domain = None
+        if candidate.get('gap_target_polygon_pixels') is not None:
+            import cv2
+            domain = np.zeros(depth.shape, np.uint8)
+            cv2.fillConvexPoly(domain, np.rint(candidate['gap_target_polygon_pixels']).astype(np.int32), 1)
+        labels, regions = gap_labels(depth, photographed, scene_outline=outline,
+                                     candidate_mask=None if domain is None else domain.astype(bool))
         path = root / f'{index:04d}-gaps.png'
         _save_image(path, labels)
         rows.append({'camera_id': candidate['camera_id'], 'source_frame_id': candidate['source_frame_id'],
@@ -93,7 +101,7 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
                      'gap_domain': ('projected_scene_outline_hypothesis' if outline else 'photographed_or_enclosed'),
                      'gap_pixel_count': int(np.count_nonzero(labels)),
                      'total_pixel_count': int(labels.size)})
-        if candidate['purpose'] in {'wide', 'translated', 'disocclusion'}:
+        if candidate['purpose'] in {'wide', 'translated', 'disocclusion', 'gap_target'}:
             preview = np.zeros_like(rgb)
             covered = depth > 0
             preview[covered] = rgb[covered]
