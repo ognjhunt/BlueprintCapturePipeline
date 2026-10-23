@@ -93,7 +93,7 @@ def test_generated_loader_binds_every_pixel_and_keeps_generated_camera(tmp_path,
 
 
 def test_completion_routes_all_planned_views_through_preservation_before_review(tmp_path, monkeypatch):
-    from blueprint_pipeline import website_image_completion, atlas_scene_preservation
+    from blueprint_pipeline import website_image_completion, atlas_scene_chisel
     frames = [frame(), frame("b", .2)]
     usage, returned = [], []
     for index, f in enumerate(frames):
@@ -135,7 +135,7 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
                   for f, r in zip(generated, kw['selected'], strict=True)]
         return (generated, images), {"digest": "preserved-generation", "generated_roots": [str(tmp_path / 'native')],
             "preservation_paths": [], "known_pixels_changed": 0}
-    monkeypatch.setattr(atlas_scene_preservation, 'generate_masked_completion', generate)
+    monkeypatch.setattr(atlas_scene_chisel, 'generate_chisel_completion', generate)
     reviews = []
     monkeypatch.setattr(website_image_completion, "verify_completed_background",
                         lambda **kw: reviews.append(kw) or {"status": "passed"})

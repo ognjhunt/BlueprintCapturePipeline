@@ -17,7 +17,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v6"
+COMPLETION_REVISION = "v7"
 
 
 def camera_candidates(frames):
@@ -194,11 +194,11 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     required = {row["camera_id"] for row in candidates if row["purpose"] == "required_full_room_coverage"}
     if not required <= set(ids):
         raise ValueError("atlas_completion_full_room_camera_coverage_missing")
-    from .atlas_scene_preservation import generate_masked_completion
+    from .atlas_scene_chisel import generate_chisel_completion
     _, blockers = release_blockers()
     if blockers:
         raise ValueError("atlas_completion_release_not_admitted:" + ",".join(blockers))
-    completed, generation = generate_masked_completion(frames=frames, selected=selected, candidates=candidates,
+    completed, generation = generate_chisel_completion(frames=frames, selected=selected, candidates=candidates,
         root=root, pose=pose, context=context, configuration=configuration, task_runner=task_runner,
         max_polls=max_polls, removed_objects=[obj["label"] for obj in review["automation"]["objects"]
             if obj["disposition"] == "remove"], checkpoint=checkpoint)
