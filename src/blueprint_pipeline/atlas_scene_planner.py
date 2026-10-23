@@ -112,6 +112,10 @@ poses and depth. Select exact candidate_camera_ids as selected_camera_ids.
 Camera pose_rub is [x,y,z,qx,qy,qz,qw] in the retained RUB world; aim is an
 estimated gap centre and vfov_deg is the requested vertical output field of view.
 All candidate cameras are planning estimates, never collision-qualified poses.
+Prefer gap_target cameras when they expose the missing surface: they aim directly
+at the detected gap with a surrounding context border. Their source_gap_ids link
+back to the originating gap overlays. Use other candidates when they show a gap
+better or the estimated gap target is unsupported; do not request redundant views.
 Survey the entire captured scene and select views that resolve specific missing
 surfaces, including surrounding floor, walls and counters, not just the task bay.
 Do not expand into unseen rooms or invent extra space or metric dimensions.
