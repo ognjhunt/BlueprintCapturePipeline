@@ -60,7 +60,10 @@ def test_completed_background_adoption_is_idempotent_and_readable_by_object_prep
     write(job / "preview_job.json", {"state": "ready", "result_digest": result["digest"]})
     ready = atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
     assert ready["status"] == "ready" and ready["alignment"] == "anchored"
-    assert Path(ready["base_scene"]["splat_path"]).is_relative_to(job / "automation/retained")
+    # The scene is a levelled copy of the adopted background, never the baseline.
+    levelling = ready["base_scene"]["levelling"]
+    for key in ("provider_splat_path", "provider_collision_mesh_path"):
+        assert Path(levelling[key]).is_relative_to(job / "automation/retained")
 
 
 @pytest.mark.parametrize("changed", ["context", "asset", "archive"])

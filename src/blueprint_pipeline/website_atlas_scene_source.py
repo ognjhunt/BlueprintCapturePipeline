@@ -5,7 +5,8 @@ Beta journey step: concurrent scene preparation. The capture's Atlas job
 reconstruction lane. Scene preparation buys nothing; it reads what that job
 retained:
 
-- the object-removed background splat and its supported mesh, as the scene;
+- the object-removed background splat and its supported mesh, as the scene,
+  copied level on the floor (or counters) they observed;
 - the selected original views' own pose, as source geometry for lifting task
   masks, scaled by the job's reviewed reference estimate;
 - the cameras both poses share, which align the source to the scene exactly,
@@ -249,14 +250,33 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
         anchor = {"kind": "source_world_alignment", "source_world_to_provider_m": transform.tolist(),
                   "basis": basis, **{key: value for key, value in alignment.items()
                                      if key not in ("scale", "rotation", "translation")}}
+    # Atlas worlds are right-up-back, but their +Y is only roughly up. Compile
+    # takes +Y for gravity, so the scene is a copy levelled on what it observed.
+    from .atlas_world_levelling import level_atlas_world
+    level = level_atlas_world(splat_path=splat_path, splat_digest=splat_digest, mesh_path=mesh_path,
+                              mesh_digest=mesh_digest, meters_per_unit=runtime_mpu,
+                              camera_centres=np.array([row[:3, 3] for row in _cameras(background_pose).values()]),
+                              output_root=output_root / "level")
+    if level["status"] != "levelled":
+        return {"status": "needs_input", "reason": level["reason"]}
+    levelled = {row["role"]: (Path(row["path"]), row["sha256"]) for row in level["outputs"]}
+    lift = np.asarray(level["provider_to_levelled"], dtype=np.float64)
+    if anchor is not None:
+        lift_m = lift.copy()
+        lift_m[:3, 3] *= runtime_mpu
+        anchor["source_world_to_provider_m"] = (lift_m @ np.asarray(anchor["source_world_to_provider_m"])).tolist()
+    provider = {"provider_splat_path": str(splat_path), "provider_splat_digest": splat_digest,
+                "provider_collision_mesh_path": str(mesh_path), "provider_collision_mesh_digest": mesh_digest}
+    (splat_path, splat_digest), (mesh_path, mesh_digest) = levelled["splat_ply"], levelled["supported_mesh_glb"]
     base = {
         "splat_path": str(splat_path), "splat_digest": splat_digest,
         "splat_binding_id": "website-splat-" + splat_digest[7:39],
         "collision_mesh_path": str(mesh_path), "collision_mesh_digest": mesh_digest,
         "collision_binding_id": "website-collider-" + mesh_digest[7:39],
-        # Atlas worlds are right-up-back with +Y up (atlas_world_rub_y_up).
         "up_axis": "Y", "meters_per_unit": runtime_mpu, "provider": PROVIDER, "scale_authority": SCALE_AUTHORITY,
-        "ground_plane_offset_m": None, "anchor": anchor,
+        "ground_plane_offset_m": level["ground_plane_offset_m"], "anchor": anchor,
+        "levelling": {"digest": level["digest"], "up_basis": level["up_basis"], "tilt_degrees": level["tilt_degrees"],
+                      "provider_to_levelled": level["provider_to_levelled"], **provider},
         "operation_id": background_pose["operation"]["id"], "atlas_result_digest": result["digest"],
     }
     return {"status": "ready", "base_scene": base, "source_geometry": geometry,

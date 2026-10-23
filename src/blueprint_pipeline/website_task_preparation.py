@@ -297,7 +297,10 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         mpu, camera_from_world = anchor_pose
         up = _UP_INDEX[anchor["up_axis"]]
         offset = anchor.get("ground_plane_offset_m")
-        floor = (None if offset is None else
+        # An Atlas world arrives levelled on its own floor at y = 0
+        # (atlas_world_levelling) and the alignment already carries the source
+        # into it; only a world anchored at its first camera is levelled here.
+        floor = (None if offset is None or anchor.get("kind") == "source_world_alignment" else
                  _observed_declared_ground(source, np.linalg.inv(camera_from_world), float(offset)))
         if floor is None:
             # No observed floor at the declared height: the camera frame is the only prior.
@@ -710,7 +713,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     ground = registration.get("ground_plane") or {}
     if (support is None and articulated and body is not None and not independent_object
             and anchor is not None and ground.get("checked") is True):
-        floor = float(ground["observed_floor_offset_m"]) / mpu
+        # A levelled Atlas world declares its collider's own floor; the
+        # footage's lowest band only checks it, a few centimetres low with
+        # depth noise (7 cm on the 2026-10-23 dishwasher).
+        floor = float(ground["declared_offset_m" if anchor.get("kind") == "source_world_alignment"
+                             else "observed_floor_offset_m"]) / mpu
         grounding = ground_on_observed_floor(collider, subject_min, subject_max, up=up, meters_per_unit=mpu,
                                              floor_height=floor if base_scene["up_axis"] == "-Y" else -floor,
                                              up_sign=up_sign)

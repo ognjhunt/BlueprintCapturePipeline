@@ -23,6 +23,7 @@ from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.website_scene_geometry import INPUT_SCHEMA
 from blueprint_pipeline.website_task_masks import bind_task_masks_to_geometry, masked_source_points
 from scipy.spatial.transform import Rotation
+from tests.atlas_level_room_fixture import room_parts, tilt, write_room
 from tests.test_atlas_source_geometry import CAMERAS, GRID, K, PLANE_NORMAL, PLANE_OFFSET, SHA, plane_depth, write_exr
 
 UPRIGHT = (40, 28)  # Atlas covers 60x36 at 1.5x: a 60x42 view with three rows cropped top and bottom.
@@ -148,7 +149,8 @@ def background_views(job_dir: Path, cameras):
     return outputs
 
 
-def job_fixture(capture_root: Path, *, same_pose=False, padded=False, cameras=CAMERAS, views=False):
+def job_fixture(capture_root: Path, *, same_pose=False, padded=False, cameras=CAMERAS, views=False,
+                room_rotation=np.eye(3), room=None):
     job_dir = capture_root / "pipeline" / "atlas"
     survey = write(job_dir / "survey" / "atlas_video_survey.json", digest({
         "schema_version": "atlas_video_survey.v1", "display_rotation_degrees": ROTATION, "frames": []}))
@@ -171,15 +173,15 @@ def job_fixture(capture_root: Path, *, same_pose=False, padded=False, cameras=CA
                 {"frame_id": frame_id, **({"outputs": rows} if rows else {})}
                 for frame_id, rows in zip(FRAME_IDS, outputs)]}}}))
     splat_root = job_dir / "automation" / "background_splat"
-    splat_root.mkdir(parents=True)
-    (splat_root / "atlas_depth_splat.ply").write_bytes(b"ply background")
+    mesh_root = job_dir / "automation" / "background_mesh" / "registered"
+    # A room in the background world, its floor through the origin below the cameras.
+    write_room(splat_root / "atlas_depth_splat.ply", mesh_root / "atlas_mesh_supported.glb",
+               rotation=room_rotation, meters_per_unit=MPU if same_pose else MPU / BACKGROUND_SCALE,
+               noise_m=0.0, **(room or {}))
     splat = write(splat_root / "atlas_depth_splat_manifest.json", digest({
         "pose_result_digest": background_pose["digest"], "world_frame": "atlas_world_rub_y_up",
         "outputs": [{"role": "splat_ply", "path": "atlas_depth_splat.ply",
                      "sha256": _sha256_file(splat_root / "atlas_depth_splat.ply")}]}))
-    mesh_root = job_dir / "automation" / "background_mesh" / "registered"
-    mesh_root.mkdir(parents=True)
-    (mesh_root / "atlas_mesh_supported.glb").write_bytes(b"glb background")
     write(mesh_root / "atlas_mesh_registration.json", digest({
         "splat_manifest_digest": splat["digest"], "outputs": [{"role": "supported_mesh_glb",
         "path": "atlas_mesh_supported.glb", "sha256": _sha256_file(mesh_root / "atlas_mesh_supported.glb")}]}))
@@ -204,10 +206,16 @@ def test_the_background_is_the_scene_aligned_to_the_scaled_source_pose_by_shared
     value = ready(tmp_path)
     base = value["base_scene"]
     assert base["provider"] == "world_labs_atlas" and base["up_axis"] == "Y"
-    assert base["scale_authority"] == "atlas_reference_estimate" and base["ground_plane_offset_m"] is None
+    # The background is already level: its copy keeps the frame, and the floor is declared.
+    assert base["scale_authority"] == "atlas_reference_estimate" and base["ground_plane_offset_m"] == 0.0
+    assert base["levelling"]["up_basis"] == "observed_floor" and base["levelling"]["tilt_degrees"] < 1e-6
     assert base["splat_digest"] == _sha256_file(Path(base["splat_path"]))
     assert base["splat_binding_id"] == "website-splat-" + base["splat_digest"][7:39]
-    assert base["collision_mesh_path"].endswith("atlas_mesh_supported.glb")
+    assert base["collision_mesh_path"].endswith("atlas_mesh_levelled.glb")
+    retained = tmp_path / "pipeline/atlas/automation"
+    assert base["levelling"]["provider_splat_digest"] == _sha256_file(retained / "background_splat/atlas_depth_splat.ply")
+    assert base["levelling"]["provider_collision_mesh_digest"] == _sha256_file(
+        retained / "background_mesh/registered/atlas_mesh_supported.glb")
     # Metres per background unit: the source scale divided by the worlds' relative scale.
     assert base["meters_per_unit"] == pytest.approx(MPU / BACKGROUND_SCALE)
     anchor = base["anchor"]
@@ -229,6 +237,29 @@ def test_a_background_fused_on_the_source_pose_shares_its_world(tmp_path):
     assert np.allclose(anchor["source_world_to_provider_m"], np.eye(4), atol=1e-9)
 
 
+def test_a_tilted_background_is_levelled_and_the_source_still_lands_in_it(tmp_path):
+    base = ready(tmp_path, room_rotation=tilt(15.0))["base_scene"]
+    assert base["levelling"]["tilt_degrees"] == pytest.approx(15.0, abs=1e-3)
+    assert base["levelling"]["up_basis"] == "observed_floor" and base["ground_plane_offset_m"] == 0.0
+    # A source point in metres lands where the levelled copy put the background point.
+    lift = np.asarray(base["levelling"]["provider_to_levelled"])
+    transform = np.asarray(base["anchor"]["source_world_to_provider_m"])
+    point_units = np.array([0.2, -0.1, 4.0])
+    runtime = (transform[:3, :3] @ (point_units * MPU) + transform[:3, 3]) / base["meters_per_unit"]
+    background = BACKGROUND_SCALE * BACKGROUND_ROTATION @ point_units + BACKGROUND_TRANSLATION
+    assert np.allclose(runtime, lift[:3, :3] @ background + lift[:3, 3])
+    import trimesh
+    vertices = trimesh.load(base["collision_mesh_path"], force="mesh", process=False).vertices
+    floor_count = len(room_parts()["floor"][0])
+    assert np.abs(vertices[:floor_count, 1]).max() < 1e-4
+
+
+def test_a_background_with_no_level_surface_waits_for_input(tmp_path):
+    job_fixture(tmp_path, room={"floor": False, "counter": False})
+    value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    assert value == {"status": "needs_input", "reason": "website_atlas_scene_level_unobserved"}
+
+
 def completed_bundle(job_dir: Path, *, retained_views=False):
     """The final portable download; a retained handoff also moves the background pose's views into it."""
     import shutil
@@ -236,8 +267,8 @@ def completed_bundle(job_dir: Path, *, retained_views=False):
     shutil.copytree(job_dir / "automation/background_splat", final / "splat")
     shutil.copytree(job_dir / "automation/background_mesh/registered", final / "mesh/registered")
     ply, glb = final / "splat/atlas_depth_splat.ply", final / "mesh/registered/atlas_mesh_supported.glb"
-    ply.write_bytes(b"ply with completed generated geometry")
-    glb.write_bytes(b"glb with completed generated geometry")
+    # Completed generated geometry: the room with a table the baseline lacked.
+    write_room(ply, glb, meters_per_unit=MPU / BACKGROUND_SCALE, noise_m=0.0, table=True)
     splat_path = final / "splat/atlas_depth_splat_manifest.json"
     splat = json.loads(splat_path.read_text())
     splat["outputs"][0]["sha256"] = _sha256_file(ply)
@@ -279,8 +310,10 @@ def test_scene_source_uses_the_final_completed_bundle_with_a_stale_baseline_pres
     else:
         value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
         assert value["status"] == "ready"
-        assert Path(value["base_scene"]["splat_path"]) == ply
-        assert Path(value["base_scene"]["collision_mesh_path"]) == glb
+        levelling = value["base_scene"]["levelling"]
+        assert Path(levelling["provider_splat_path"]) == ply and levelling["provider_splat_digest"] == _sha256_file(ply)
+        assert Path(levelling["provider_collision_mesh_path"]) == glb
+        assert levelling["provider_collision_mesh_digest"] == _sha256_file(glb)
 
 
 # Turning in place leaves the shared cameras no baseline to fix a similarity.

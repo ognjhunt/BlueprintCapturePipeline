@@ -763,6 +763,40 @@ def test_a_shared_camera_alignment_anchors_registration_in_any_orientation(tmp_p
     assert value["ground_plane"] is None
 
 
+def test_a_levelled_atlas_world_checks_its_floor_through_the_alignment_alone(tmp_path, monkeypatch):
+    # atlas_world_levelling leaves an Atlas world Y-up with its floor at y = 0;
+    # the source reaches it through the shared-view alignment, so nothing
+    # here may level it again as if it were anchored at a first camera.
+    rng = np.random.default_rng(1)
+    floor = np.c_[rng.uniform(-2.0, 2.0, 3000), np.zeros(3000), rng.uniform(-1.5, 1.5, 3000)]
+    walls = [np.c_[np.full(750, side * 2.0), rng.uniform(0.0, 2.5, 750), rng.uniform(-1.5, 1.5, 750)]
+             for side in (-1, 1)]
+    walls += [np.c_[rng.uniform(-2.0, 2.0, 750), rng.uniform(0.0, 2.5, 750), np.full(750, side * 1.5)]
+              for side in (-1, 1)]
+    counter = np.c_[rng.uniform(0.5, 2.0, 750), np.full(750, 0.9), rng.uniform(0.9, 1.5, 750)]
+    world = np.concatenate([floor, *walls, counter])
+    rotation, translation = _yaw(35.0), np.array([0.4, -1.2, 0.3])
+    monkeypatch.setattr(preparation, "_source_points", lambda _geometry: (world - translation) @ rotation)
+
+    def first_camera_levelling(*_args):
+        raise AssertionError("an Atlas world is levelled by its scene source")
+    monkeypatch.setattr(preparation, "_observed_declared_ground", first_camera_levelling)
+    mpu = 0.8
+    mesh_path = tmp_path / "levelled-atlas.glb"
+    vertices = world / mpu
+    faces = np.c_[np.arange(len(vertices) - 2), np.arange(1, len(vertices) - 1), np.arange(2, len(vertices))]
+    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(mesh_path)
+    transform = np.eye(4)
+    transform[:3, :3], transform[:3, 3] = rotation, translation
+    anchor = {"kind": "source_world_alignment", "source_world_to_provider_m": transform.tolist(),
+              "meters_per_unit": mpu, "up_axis": "Y", "ground_plane_offset_m": 0.0}
+    value = preparation.register_source_to_runtime(source_geometry={"frames": [], "digest": "sha256:" + "0" * 64},
+                                                   collision_mesh_path=mesh_path, anchor=anchor)
+    assert value["anchor"]["rotation_deviation_degrees"] < 1 and value["trimmed_rmse_m"] < 0.01
+    ground = value["ground_plane"]
+    assert ground["checked"] is True and ground["declared_offset_m"] == 0.0 and ground["residual_m"] < 0.02
+
+
 @pytest.mark.parametrize("transform", [np.diag([1.0, 1.0, -1.0, 1.0]), np.diag([2.0, 2.0, 2.0, 1.0]),
                                        np.full((4, 4), np.nan)])
 def test_an_alignment_that_is_not_a_proper_rigid_motion_is_refused(tmp_path, transform):
