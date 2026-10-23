@@ -179,8 +179,10 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     if len(ids) != len(set(ids)) or any(key not in by_id for key in ids):
         raise ValueError("atlas_completion_camera_selection_invalid")
     selected = [by_id[key] for key in ids]
-    if (not proposal.get('scene_caption', '').strip() or
-            any(not proposal.get('view_gap_reasons', {}).get(key, '').strip() for key in ids)):
+    entries = proposal.get('view_gap_reasons', [])
+    reasons = {row['camera_id']: row['reason'] for row in entries}
+    if (not proposal.get('scene_caption', '').strip() or len(reasons) != len(entries)
+            or set(reasons) != set(ids) or any(not value.strip() for value in reasons.values())):
         raise ValueError('atlas_completion_task_gap_plan_missing')
     from .atlas_scene_chisel import generate_chisel_completion
     _, blockers = release_blockers()
@@ -190,7 +192,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         root=root, pose=pose, context=context, configuration=configuration, task_runner=task_runner,
         max_polls=max_polls, removed_objects=[obj["label"] for obj in review["automation"]["objects"]
             if obj["disposition"] == "remove"], checkpoint=checkpoint,
-        scene_caption=proposal['scene_caption'], view_gap_reasons=proposal['view_gap_reasons'])
+        scene_caption=proposal['scene_caption'], view_gap_reasons=reasons)
     if completed is None:
         return None, generation
     generated, images = completed
@@ -218,7 +220,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": proposal["remaining_unknowns"],
               "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "bounded_task_relevant_gaps",
               "generation_extent": extent, "scene_caption": proposal['scene_caption'],
-              "view_gap_reasons": proposal['view_gap_reasons'],
+              "view_gap_reasons": reasons,
               "claim_ceiling": "development_only",
               "simulation_qualified": False, "metric_measurement_proven": False, "physical_evidence": False}
     if visual["status"] != "passed":

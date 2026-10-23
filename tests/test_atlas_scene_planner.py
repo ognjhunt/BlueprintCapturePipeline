@@ -77,7 +77,8 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
         proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"],
                     "gap_assessment": ["Complete floor"], "remaining_unknowns": ["Hidden wall"],
                     'scene_caption': 'The same room with a continuous bare floor.',
-                    'view_gap_reasons': {'a-wide': 'Keep the task anchor', 'b-lower': 'Complete nearby floor'}}
+                    'view_gap_reasons': [{'camera_id': 'a-wide', 'reason': 'Keep the task anchor'},
+                                        {'camera_id': 'b-lower', 'reason': 'Complete nearby floor'}]}
     class Invoker:
         def configure_reservation_audit(self, **_):
             pass
@@ -107,6 +108,18 @@ def test_unpriced_or_overbudget_model_refused_before_reservation(tmp_path):
     policy["maximum_review_cost_usd"] = .00001
     with pytest.raises(ValueError, match="token_budget_exceeded"):
         planner.review_survey(survey_path=path, task_context={}, configuration={"policy": policy}, output_root=tmp_path)
+
+
+def test_completion_output_compiles_in_the_actual_strict_agents_sdk():
+    from agents import AgentOutputSchema
+
+    compiled = AgentOutputSchema(planner.CompletionProposal)
+    assert compiled.is_strict_json_schema()
+    value = planner.CompletionProposal.model_validate({
+        'status': 'proposed', 'selected_camera_ids': ['a-lower'], 'gap_assessment': ['Floor gap'],
+        'remaining_unknowns': [], 'scene_caption': 'Same room with bare continuous floor.',
+        'view_gap_reasons': [{'camera_id': 'a-lower', 'reason': 'Continue the observed floor edge'}]})
+    assert value.view_gap_reasons[0].camera_id == 'a-lower'
 
 
 def test_gap_review_preserves_state_quality_and_original_views(tmp_path):

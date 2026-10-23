@@ -202,6 +202,27 @@ def test_changed_preservation_inputs_are_refused(tmp_path):
             output_root=tmp_path / 'out', native_result_digest='native', native_frame_index=0)
 
 
+def test_protected_photo_pixels_do_not_freeze_missing_source_depth(tmp_path):
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+
+    source = frame()
+    source['depth'][2:4, 2:4] = np.nan
+    source['confidence'][2:4, 2:4] = 0
+    row = preservation.prepare_completion_views(frames=[source], selected=[{
+        'camera_id': 'hole', 'source_frame_id': 'source', 'camera': camera()}], root=tmp_path / 'input')[0]
+    path = tmp_path / 'source-depth.png'
+    Image.fromarray(np.where(np.isfinite(source['depth']), 255, 0).astype(np.uint8)).save(path)
+    row.update(source_depth_context_path=str(path), source_depth_context_digest=_sha256_file(path))
+    fixed, _, receipt, _ = preservation.preserve_generated_view(
+        generated=frame('generated', colour=(255, 0, 255)), prepared=row, references=[source],
+        output_root=tmp_path / 'out', native_result_digest='native', native_frame_index=0,
+        extent_bounds=preservation.observed_scene_bounds([source]))
+    assert np.array_equal(fixed['rgb'], source['rgb']), 'All photographed colour stays fixed'
+    assert fixed['confidence'][2:4, 2:4].all(), 'Missing depth can receive new candidate geometry'
+    assert not fixed['confidence'][:2].any(), 'Known geometry stays unchanged'
+    assert receipt['generated_source_depth_hole_pixel_count'] == 4
+
+
 def test_masked_completion_uses_paired_keep_masks_and_reuses_completed_operation(tmp_path, monkeypatch):
     import json
     from blueprint_pipeline import atlas_depth_splat

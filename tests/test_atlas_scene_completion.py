@@ -122,7 +122,8 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"],
                 "gap_assessment": ["Complete floor and empty bay"], "remaining_unknowns": ["Generated rear wall"],
                 'scene_caption': 'The photographed room with bare continuous floor in cleared space.',
-                'view_gap_reasons': {'a-wide': 'Retain the observed task-region anchor', 'b-lower': 'Fill its nearby floor gap'}}
+                'view_gap_reasons': [{'camera_id': 'a-wide', 'reason': 'Retain the observed task-region anchor'},
+                                     {'camera_id': 'b-lower', 'reason': 'Fill its nearby floor gap'}]}
     calls = []
     def generate(**kw):
         calls.append(kw)
@@ -157,7 +158,7 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert report['completion_extent'] == 'bounded_task_relevant_gaps'
     assert report['generation_extent']['additional_space_beyond_observed_bounds'] is False
     assert calls[0]['scene_caption'] == proposal['scene_caption']
-    proposal['view_gap_reasons'].pop('b-lower')
+    proposal['view_gap_reasons'].pop()
     with pytest.raises(ValueError, match="task_gap_plan_missing"):
         completion.complete_scene(**args)
     assert len(calls) == 1
