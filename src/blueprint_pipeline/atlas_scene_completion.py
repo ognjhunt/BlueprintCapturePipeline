@@ -10,7 +10,6 @@ import hashlib
 import json
 import math
 from pathlib import Path
-import shutil
 
 import numpy as np
 
@@ -18,7 +17,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v3"
+COMPLETION_REVISION = "v4"
 
 
 def camera_candidates(frames):
@@ -110,44 +109,20 @@ def load_generated_views(root: Path, frame_ids):
 def complete_scene(*, pose_root, pose, frames, review, root, context, configuration,
                    task_runner, planner_runner, release_blockers, max_polls, checkpoint=None):
     """Plan -> generate RGBD -> independent review, all resumable under one cap."""
-    from .website_worldlabs import _atlas_posed_context
-    from .website_atlas_tasks import validate_task_request
     from .website_image_completion import verify_completed_background
 
     root.mkdir(parents=True, exist_ok=True)
     from .atlas_context_fov import verify_pose_context_fov
     fov = verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=root)
-    upload_root = root / "context-uploads"
-    upload_root.mkdir(exist_ok=True)
-    policy = configuration["policy"]
     candidates = camera_candidates(frames)
     originals = {}
-    uploads = {}
     survey_frames = []
     usage = pose["operation_receipt"]["input_usage"]["frames"]
     for index, row in enumerate(usage):
-        for asset in row["outputs"]:
-            if asset["role"] in {"image", "depth", "confidence"}:
-                path = pose_root / asset["path"]
-                if (path.is_symlink() or not path.resolve().is_relative_to(pose_root.resolve())
-                        or _sha256_file(path) != asset["sha256"]):
-                    raise ValueError("atlas_completion_context_changed")
-                # Pose downloads can have opaque .bin names. Preserve those
-                # files, but give the uploader an exact-byte, format-identified
-                # copy rather than inferring MIME from the opaque suffix.
-                from .atlas_result_bundle import _suffix
-                with path.open("rb") as stream:
-                    suffix = _suffix(stream.read(16))
-                if asset["role"] == "depth" and suffix != ".exr":
-                    raise ValueError("atlas_completion_context_depth_format_invalid")
-                target = upload_root / f"{index}-{asset['role']}{suffix}"
-                shutil.copyfile(path, target)
-                if _sha256_file(target) != asset["sha256"]:
-                    raise ValueError("atlas_completion_context_changed")
-                uploads[f"context-{index}-{asset['role']}"] = {"path": str(target), "sha256": asset["sha256"]}
         asset = next(value for value in row["outputs"] if value["role"] == "image")
         path = pose_root / asset["path"]
-        if _sha256_file(path) != asset["sha256"]:
+        if (path.is_symlink() or not path.resolve().is_relative_to(pose_root.resolve())
+                or _sha256_file(path) != asset["sha256"]):
             raise ValueError("atlas_completion_context_changed")
         originals[row["frame_id"]] = {"image_path": str(path), "image_digest": asset["sha256"]}
         survey_frames.append({"frame_id": row["frame_id"], "timestamp_seconds": index,
@@ -212,40 +187,19 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     required = {row["camera_id"] for row in candidates if row["purpose"] == "required_full_room_coverage"}
     if not required <= set(ids):
         raise ValueError("atlas_completion_full_room_camera_coverage_missing")
-    context_frames = _atlas_posed_context(operation=pose["operation"], expected_frame_count=len(frames))
-    for index, frame in enumerate(context_frames):
-        # Re-upload retained exact bytes for a new operation. Transient provider
-        # assets may have expired when a later session reuses the image archive.
-        frame["imageAsset"] = {"assetId": f"upload:context-{index}-image"}
-        frame["depth"]["depthAsset"] = {"assetId": f"upload:context-{index}-depth"}
-        if "confidenceAsset" in frame["depth"]:
-            frame["depth"]["confidenceAsset"] = {"assetId": f"upload:context-{index}-confidence"}
-    request = {"contextFrames": context_frames,
-               "targetCameras": [row["camera"] for row in selected], "returnDepth": True,
-               "enhancePrompt": True,
-               "prompt": ("Complete the SAME bounded object-absent kitchen/work environment in all directions. "
-                          "Continuous floor, walls and ceiling, existing cabinets, realistic newly revealed surfaces, "
-                          "no holes, missing patches, floating surfaces or added objects. Preserve the "
-                          "surrounding scene and every unrelated appliance. The requested finished scene: "
-                          + review["automation"]["removal_instruction"])}
-    validate_task_request("atlasGenerate", request)
-    maximum = round(len(ids) * policy["rgbd_view_cost_usd"], 6)
-    if maximum + policy.get("mesh_export_cost_usd", 0) + 1 > configuration["remaining_cost_usd"]:
-        raise ValueError("atlas_completion_remaining_budget_insufficient")
-    quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "atlasGenerate",
-             "request_digest": canonical_digest(request), "maximum_cost_usd": maximum,
-             **{key: policy[key] for key in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
-    generated_root = root / "generated"
-    if checkpoint:
-        checkpoint("automation_completion_rgbd")
-    state = task_runner(task="atlasGenerate", request=request, uploads=uploads, output_root=generated_root,
-                        source_video_digest=survey["source_video_digest"], task_context=context,
-                        price_review=quote, max_polls=max_polls)
-    if state["status"] != "completed":
-        return None, {"status": "processing", "stage": "scene_completion", "operation_id": state.get("operation_id")}
-    result, generated, images = load_generated_views(generated_root, ["completion-" + key for key in ids])
-    for image, camera in zip(images, selected, strict=True):
-        source = originals[camera["source_frame_id"]]
+    from .atlas_scene_preservation import generate_masked_completion
+    _, blockers = release_blockers()
+    if blockers:
+        raise ValueError("atlas_completion_release_not_admitted:" + ",".join(blockers))
+    completed, generation = generate_masked_completion(frames=frames, selected=selected, candidates=candidates,
+        root=root, pose=pose, context=context, configuration=configuration, task_runner=task_runner,
+        max_polls=max_polls, removed_objects=[obj["label"] for obj in review["automation"]["objects"]
+            if obj["disposition"] == "remove"], checkpoint=checkpoint)
+    if completed is None:
+        return None, generation
+    generated, images = completed
+    for image in images:
+        source = originals[image["source_frame_id"]]
         image.update(original_image_path=source["image_path"], original_image_digest=source["image_digest"])
     targets = [{"target_id": obj["target_id"], "semantic_label": obj["label"],
                 "task_effect": "manipulated" if obj["disposition"] == "remove" else "support",
@@ -261,9 +215,10 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         output_root=root / "review", task_context=context, source_video_digest=survey["source_video_digest"])
     report = {"status": "passed" if visual["status"] == "passed" else "needs_input",
               "planner": planned, "context_fov_audit_digest": fov["digest"],
-              "generation_result_digest": result["digest"], "generated_root": str(generated_root),
+              "generation_result_digest": generation["digest"], "generated_roots": generation["generated_roots"],
+              "generation": generation, "preservation_paths": generation["preservation_paths"],
               "generated_frame_ids": [row["frame_id"] for row in generated], "review": visual,
-              "selected_camera_ids": ids, "target_cameras": request["targetCameras"],
+              "selected_camera_ids": ids, "target_cameras": [row["camera"] for row in selected],
               "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": proposal["remaining_unknowns"],
               "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "full_room_directional_views",
               "claim_ceiling": "development_only",

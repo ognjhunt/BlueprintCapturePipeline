@@ -311,7 +311,8 @@ def run_automation(
                 derived_frames = [*derived_frames, *generated]
                 provenance = [*provenance, completion["generation_result_digest"]]
                 visual_digest = canonical_digest({"reviews": [visual_digest, completion["review"]]})
-                generated_roots.append(Path(completion["generated_root"]))
+                generated_roots.extend(Path(p) for p in completion.get("generated_roots", []) or
+                                       [completion["generated_root"]])
                 background["completion"] = completion
                 background["reconstruction_frame_count"] = len(derived_frames)
                 background["generated_completion_frame_count"] = len(generated)
@@ -386,7 +387,8 @@ def run_automation(
                     output_root / "scene_measurements.json",
                     output_root / "background_review.json",
                 ] + ([output_root / f"scene_completion-{COMPLETION_REVISION}" / name for name in
-                      ("completion.json", "context-fov-audit.json")] if completion else []),
+                      ("completion.json", "context-fov-audit.json")] +
+                     [Path(p) for p in completion.get("preservation_paths", [])] if completion else []),
             )
             background.update(
                 status="completed",

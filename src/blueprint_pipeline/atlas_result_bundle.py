@@ -147,6 +147,30 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
         copy(pose_root / "atlas_view_selection.json", Path("evidence/atlas_view_selection.json"))
     for index, source in enumerate(analysis_paths):
         copy(source, Path("analysis") / f"{index:03d}-{source.name}")
+    preserved_views = []
+    by_digest = {row["sha256"]: row["path"] for row in manifest["assets"]}
+    for source in analysis_paths:
+        if source.name != "preservation.json":
+            continue
+        value = json.loads(source.read_text())
+        if (value.get("schema_version") != "atlas_scene_preservation.v1"
+                or value.get("digest") != canonical_digest(value, digest_field="digest")
+                or value.get("known_pixels_changed") != 0 or value.get("source_geometry_modified") is not False
+                or value.get("native_outputs_modified") is not False
+                or value.get("native_result_digest") not in manifest["generated_result_digests"]):
+            raise ValueError("atlas_bundle_preservation_receipt_invalid")
+        try:
+            roles = {row["role"]: by_digest[row["sha256"]] for row in value["assets"]}
+            preserved_views.append({"frame_id": value["frame_id"],
+                "image_path": roles["composite_rgb"], "known_mask_path": roles["known_pixels"],
+                "generated_geometry_mask_path": roles["generated_geometry_mask"],
+                "context_image_path": by_digest[value["context_image_digest"]],
+                "native_result_digest": value["native_result_digest"], "native_frame_index": value["native_frame_index"]})
+        except KeyError:
+            raise ValueError("atlas_bundle_preservation_asset_missing") from None
+    if preserved_views:
+        manifest.update(scene_views=preserved_views, approved_context_pixels_preserved=True,
+                        generated_geometry_region="unobserved_only")
     if splat is not None and splat.get("generated_content"):
         manifest["generated_background_splat"] = True
         manifest["visual_review_digest"] = splat.get("visual_review_digest")

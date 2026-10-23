@@ -78,8 +78,8 @@ def test_generated_loader_binds_every_pixel_and_keeps_generated_camera(tmp_path,
         completion.load_generated_views(tmp_path, ["novel-a"])
 
 
-def test_completion_reuploads_exact_reviewed_context_and_uses_planner_selection(tmp_path, monkeypatch):
-    from blueprint_pipeline import website_image_completion
+def test_completion_routes_all_planned_views_through_preservation_before_review(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_image_completion, atlas_scene_preservation
     frames = [frame(), frame("b", .2)]
     usage, returned = [], []
     for index, f in enumerate(frames):
@@ -111,36 +111,36 @@ def test_completion_reuploads_exact_reviewed_context_and_uses_planner_selection(
                 if row["purpose"] == "required_full_room_coverage"]
     proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"] + required,
                 "gap_assessment": ["Complete floor and empty bay"], "remaining_unknowns": ["Generated rear wall"]}
-    def generated_views(root, ids):
-        generated = [frame(key) for key in ids]
-        images = [{"frame_id": key, "image_path": str(tmp_path / "0-image.bin"),
-                   "image_digest": _sha256_file(tmp_path / "0-image.bin"), "novel_view": True} for key in ids]
-        return {"digest": "generated-depth"}, generated, images
-    monkeypatch.setattr(completion, "load_generated_views", generated_views)
+    calls = []
+    def generate(**kw):
+        calls.append(kw)
+        generated = [frame('completion-' + r['camera_id']) for r in kw['selected']]
+        images = [{"frame_id": f['frame_id'], "source_frame_id": r['source_frame_id'],
+                   "image_path": str(tmp_path / "0-image.bin"),
+                   "image_digest": _sha256_file(tmp_path / "0-image.bin"), "novel_view": True}
+                  for f, r in zip(generated, kw['selected'], strict=True)]
+        return (generated, images), {"digest": "preserved-generation", "generated_roots": [str(tmp_path / 'native')],
+            "preservation_paths": [], "known_pixels_changed": 0}
+    monkeypatch.setattr(atlas_scene_preservation, 'generate_masked_completion', generate)
     reviews = []
     monkeypatch.setattr(website_image_completion, "verify_completed_background",
                         lambda **kw: reviews.append(kw) or {"status": "passed"})
-    calls = []
     args = dict(pose_root=tmp_path, pose=pose, frames=frames,
         review={"automation": {"objects": [], "removal_instruction": "The dishwasher bay is empty"}},
         root=tmp_path / "complete", context={"description": "test"},
         configuration={"remaining_cost_usd": 5, "policy": {"rgbd_view_cost_usd": .05,
             "rate_card_reference": "rates", "reviewed_on": "2026-10-22", "reviewed_by": "test"}},
-        task_runner=lambda **kw: calls.append(kw) or {"status": "completed"},
+        task_runner=lambda **kw: pytest.fail('Unconstrained generation bypassed preservation'),
         planner_runner=lambda **_: {"proposal": proposal},
         release_blockers=lambda: ("commit", []), max_polls=1)
     output, report = completion.complete_scene(**args)
     feedback = json.loads((tmp_path / 'complete/plan-inputs.json').read_text())
     assert feedback['baseline_geometry_comparable'] is False and 'baseline_geometry_gaps' not in feedback
     assert len(output) == len(proposal["selected_camera_ids"]) and report["generated_geometry_ready"] is True
-    assert len(calls) == 1 and calls[0]["request"]["returnDepth"] is True
-    assert calls[0]["price_review"]["maximum_cost_usd"] == len(output) * .05
-    assert len(calls[0]["request"]["targetCameras"]) == len(output)
-    assert calls[0]["request"]["contextFrames"][0]["imageAsset"]["assetId"] == "upload:context-0-image"
-    assert calls[0]["uploads"]["context-0-image"]["sha256"] == usage[0]["outputs"][0]["sha256"]
-    from pathlib import Path
-    assert Path(calls[0]["uploads"]["context-0-image"]["path"]).suffix == ".png"
-    assert Path(calls[0]["uploads"]["context-0-depth"]["path"]).suffix == ".exr"
+    assert len(calls) == 1 and [row['camera_id'] for row in calls[0]['selected']] == proposal['selected_camera_ids']
+    assert report['generation']['known_pixels_changed'] == 0
+    assert report['generation_result_digest'] == 'preserved-generation'
+    assert report['generated_roots'] == [str(tmp_path / 'native')]
     assert reviews[0]["frames"][1]["original_image_path"] == str(tmp_path / "1-image.bin")
     proposal["selected_camera_ids"] = ["a-wide", "b-lower"]
     with pytest.raises(ValueError, match="full_room_camera_coverage_missing"):
