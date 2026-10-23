@@ -361,12 +361,15 @@ def build_policy_canary_session_bundle(
         ),
     }
     comparison = None
+    comparison_assets = {}
     if runtime_comparison_request_path is not None:
         from .native_task_runtime_comparison import validate_comparison_request
         comparison = validate_comparison_request(_read(runtime_comparison_request_path), inputs=inputs,
             plan=_read(packet_receipt_path.parent / "native_task_arena_scene_plan.v1.json"), specs=specs)
         if comparison["runtime_identity"]["container_image"] != container_image:
             raise ValueError("runtime_comparison_image_mismatch")
+        from .native_task_droid_runtime_compat import comparison_robot_asset_inputs
+        comparison_assets = comparison_robot_asset_inputs(runtime_comparison_request_path)
     if container_image != NATIVE_TASK_ARENA_IMAGE and comparison is None:
         raise ValueError("alternate_runtime_requires_explicit_comparison")
     if set(specs) != set(inputs["candidate_ids"]) or set(specs) != set(authority["candidate_ids"]):
@@ -430,6 +433,7 @@ def build_policy_canary_session_bundle(
         runtime_source_packet_receipt=runtime_source_packet_receipt,
         runtime_extra_files={f"blueprint_pipeline/{name}": package / name for name in CANARY_SHIPPED_PACKAGE_FILES},
         bound_runtime_inputs={
+            **comparison_assets,
             "policy_canary_runtime_inputs.json": runtime_input_manifest_path,
             "policy_canary_session_authority.json": session_authority_path,
             "policy_execution_spec.pi05_droid.json": pi05_execution_spec_path,

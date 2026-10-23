@@ -1309,6 +1309,8 @@ def build_native_task_arena_environment(
     robot = _resolve_portable_robot(plan, bundle_root=bundle_root)
     robot_pose = robot["base_pose_world"]
     embodiment = build_native_robot_embodiment(robot, enable_cameras=enable_cameras, pose_class=Pose)
+    from .native_task_droid_runtime_compat import freeze_comparison_droid
+    droid_comparison = freeze_comparison_droid(embodiment, bundle_root=bundle_root, robot_id=str(robot["robot_id"]))
     exact_robot_reset = dict(robot["joint_reset_positions_rad"])
     embodiment.initial_pose = None
     # Beta2's AssetBaseCfg.InitialStateCfg.rot, articulation root/body pose
@@ -1711,6 +1713,7 @@ def build_native_task_arena_environment(
         camera_scene_names=camera_names,
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
+            "retained_droid_configuration": droid_comparison,
             "cameras": camera_configuration_readback,
             "direct_wrist_camera_aim": direct_camera_aim,
             "native_wrist_camera_attachment": native_camera_attachment,

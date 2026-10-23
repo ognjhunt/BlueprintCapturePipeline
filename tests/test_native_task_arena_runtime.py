@@ -21,6 +21,33 @@ from blueprint_pipeline.native_task_arena_runtime import (
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
+def test_builder_accepts_ga_reset_api_without_changing_retained_reset(monkeypatch):
+    _install_fake_native_runtime(monkeypatch)
+
+    class GAEmbodiment(_Embodiment):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            del self.event_config.init_franka_arm_pose
+
+        def set_initial_joint_pose(self, value):
+            self.initial_joint_pose = value
+
+    monkeypatch.setattr(sys.modules["isaaclab_arena.embodiments.droid.droid"],
+                        "DroidAbsoluteJointPositionEmbodiment", GAEmbodiment)
+    config = types.ModuleType("isaaclab.utils.configclass")
+    config.configclass = lambda cls: cls
+    monkeypatch.setitem(sys.modules, config.__name__, config)
+    franka = types.ModuleType("isaaclab_arena.embodiments.franka.franka")
+    franka.franka_stack_events = SimpleNamespace(set_default_joint_pose=object())
+    monkeypatch.setitem(sys.modules, franka.__name__, franka)
+    plan = _sealed_scene_plan()
+    plan["robot"]["joint_reset_positions_rad"] = {f"joint-{i}": i / 10 for i in range(13)}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    built = build_native_task_arena_environment(plan)
+    assert built.env == "native-env"
+    assert built.native_configuration_readback["retained_droid_configuration"] is None
+
+
 def test_legacy_prismatic_joint_gets_readback_verified_passive_friction_only_on_derived_asset(tmp_path):
     from pxr import Usd, UsdGeom, UsdPhysics
     from blueprint_pipeline.native_task_arena_runtime import (

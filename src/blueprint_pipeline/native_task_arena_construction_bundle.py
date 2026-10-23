@@ -125,6 +125,8 @@ def build_native_task_arena_construction_bundle(
             if comparison["runtime_identity"]["container_image"] != container_image:
                 raise ValueError("runtime_comparison_construction_image_mismatch")
             bound_runtime_inputs["native_task_runtime_comparison_request.v1.json"] = comparison_path
+            from .native_task_droid_runtime_compat import comparison_robot_asset_inputs
+            bound_runtime_inputs.update(comparison_robot_asset_inputs(comparison_path))
         if terminal_feedback_adoption_path is not None:
             adoption_path = Path(terminal_feedback_adoption_path).expanduser().resolve()
             adoption = validate_native_construction_terminal_feedback_adoption(

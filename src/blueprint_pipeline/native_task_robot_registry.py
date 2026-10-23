@@ -87,9 +87,8 @@ def build_droid_embodiment(
         ),
         initial_joint_pose=list(reset.values()),
     )
-    embodiment.event_config.init_franka_arm_pose.params["default_pose"] = list(reset.values())
-    embodiment.event_config.randomize_franka_joint_state.params["mean"] = 0.0
-    embodiment.event_config.randomize_franka_joint_state.params["std"] = 0.0
+    from .native_task_droid_runtime_compat import configure_droid_reset
+    configure_droid_reset(embodiment, reset)
     embodiment.get_scene_cfg()
     embodiment.scene_config.stand = None
     return embodiment

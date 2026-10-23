@@ -180,6 +180,7 @@ class RuntimeMeasurement:
 
     def instrument_environment(self, built: Any) -> Any:
         self.sample_memory("build")
+        self.value["native_configuration_readback"] = dict(getattr(built, "native_configuration_readback", {}))
         original_step, original_reset = built.env.step, built.env.reset
 
         def step(*args: Any, **kwargs: Any) -> Any:
@@ -268,6 +269,10 @@ def compare_runtime_measurements(baseline: Mapping[str, Any], candidate: Mapping
         blockers.append("runtime_comparison_scenario_mismatch")
     if baseline.get("binding") != candidate.get("binding"):
         blockers.append("fixed_workcell_inputs_changed")
+    robot_configs = [(value.get("native_configuration_readback") or {}).get("retained_droid_configuration")
+                     for value in (baseline, candidate)]
+    if not all(robot_configs) or robot_configs[0] != robot_configs[1]:
+        blockers.append("retained_robot_configuration_missing_or_changed")
     gpu_sets = [{row["gpu_uuid"] for row in value.get("gpu_samples", [])} for value in (baseline, candidate)]
     if len(gpu_sets[0]) != 1 or gpu_sets[0] != gpu_sets[1]:
         blockers.append("same_gpu_required")
@@ -289,7 +294,8 @@ def compare_runtime_measurements(baseline: Mapping[str, Any], candidate: Mapping
               "metrics": metrics, "blockers": blockers,
               "runtime_promotion_authorized": False, "improvement_qualified": False,
               "correctness_review_required": ["camera_pixels_and_calibration", "reset_state",
-                                             "contact_forces", "episode_scores", "complete_policy_media"]}
+                                             "contact_forces", "episode_scores", "complete_policy_media",
+                                             "retained_robot_material_gap_visibility"]}
     report["receipt_digest"] = canonical_digest(report, digest_field="receipt_digest")
     return report
 

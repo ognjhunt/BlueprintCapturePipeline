@@ -78,7 +78,8 @@ def measured(tmp_path, variant, *, identity_overrides=None, input_overrides=None
     episode = {"episode_id": "fixture", "score": {"success": False},
                "contact_force_evidence": {"measured": True},
                "candidate_exact_policy_input_manifest_digest": "sha256:" + "a"*64}
-    runtime = Runtime(lambda: (App(), {"launched": True}), lambda: SimpleNamespace(env=Env()),
+    runtime = Runtime(lambda: (App(), {"launched": True}), lambda: SimpleNamespace(env=Env(),
+                      native_configuration_readback={"retained_droid_configuration": {"fixture": "fixed"}}),
                       lambda: {"passed": True}, lambda: episode)
     wrapped = measurement.wrap(runtime)
     app, _ = wrapped.launch_isaac()
@@ -110,6 +111,16 @@ def test_different_task_or_gpu_cannot_be_called_runtime_comparison(tmp_path):
     b = measured(tmp_path, "isaaclab_3_ga", input_overrides={"assets": {"different": True}}, gpu="other")
     report = compare_runtime_measurements(a, b)
     assert set(report["blockers"]) == {"fixed_workcell_inputs_changed", "same_gpu_required"}
+
+
+def test_comparison_requires_concrete_robot_configuration_parity(tmp_path):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    a = measured(tmp_path, "baseline")
+    b = measured(tmp_path, "isaaclab_3_ga")
+    for config in ({}, {"retained_droid_configuration": {"gripper_velocity": 5.0}}):
+        b["native_configuration_readback"] = config
+        b["receipt_digest"] = canonical_digest(b, digest_field="receipt_digest")
+        assert "retained_robot_configuration_missing_or_changed" in compare_runtime_measurements(a, b)["blockers"]
 
 
 def _cell_measurement(value, index, *, gpu=None):

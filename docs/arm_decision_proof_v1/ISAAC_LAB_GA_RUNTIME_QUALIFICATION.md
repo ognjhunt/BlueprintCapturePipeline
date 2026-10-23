@@ -118,3 +118,25 @@ camera, reset, contact, or episode qualification is claimed. Official charges
 were $0.169; teardown, provider absence and object cleanup were confirmed.
 All 80 focused source, launch, measurement, lifecycle and import tests passed
 after the repairs. The original task, source assets and controls remain frozen.
+
+Attempt 57412520 passed all 78 native dependency imports and completed simulator
+startup in 500.973 seconds, including 450 seconds of cold shader compilation.
+Environment construction then exposed Arena GA's removed
+`init_franka_arm_pose` event. No stepping, camera, reset, contact or episode result
+was produced. Provider absence, watchdog completion and object cleanup were
+verified; the official charge was $0.113.
+
+The compatibility repair preserves the retained reset event and ordering. Source
+comparison also found changed robot asset roots (6.0 to 6.2), an embedded stand,
+end-effector frames, camera parents and gripper velocity. Comparison bundles now
+carry the same original 6.0 robot USD and two texture files (28,091,506 bytes),
+verify their hashes before allocation and use the retained configuration on both
+runtimes. Normal runtime defaults remain unchanged. The measurement records the
+concrete robot configuration and refuses a pair with missing or unequal readback.
+
+The original USD references a missing `Rubber_Textured.mdl` (HTTP 404); this gap
+is retained on both sides. `OmniPBR.mdl` remains supplied by the pinned renderer.
+Camera review must establish whether the missing material affects task views;
+there is no complete-appearance or runtime-improvement qualification yet. Asset
+files belong beside each comparison request under `retained_droid_assets/`, with
+the original relative layout. Bundling does not fetch or replace them.
