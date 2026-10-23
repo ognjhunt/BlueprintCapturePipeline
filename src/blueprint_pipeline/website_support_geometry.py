@@ -116,6 +116,13 @@ FITTED_MAX_FACE_TILT_DEGREES = 60.0
 FITTED_ITERATIONS = 8
 #: Two fits of one bumpy surface converge on nearly, not always exactly, the same faces.
 SAME_FITTED_SURFACE_MIN_OVERLAP = 0.9
+#: The triangles themselves, not only their fitted plane, must meet the object:
+#: a corrugated mesh fits a smooth plane while its ridges stand centimetres
+#: proud of it. Near each probe the median actual height must sit near the
+#: plane: the real 2026-10-23 counter undulated up to 1.6 cm, a 0.66/0.74 m
+#: corrugation sits 4 cm off. The object rests on the highest of them.
+FITTED_MAX_CONTACT_DEVIATION_M = 0.025
+FITTED_CONTACT_RADIUS_M = 0.01
 
 
 def _plane(points: np.ndarray, up: int) -> tuple[np.ndarray, np.ndarray, float]:
@@ -162,26 +169,41 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
     tilt = float(np.degrees(np.arccos(min(1.0, float(normal[up])))))
     if tilt > FITTED_MAX_TILT_DEGREES or rms * meters_per_unit > FITTED_MAX_RMS_M:
         return None
-    centre = (lower + upper) / 2
-    top = float(middle[up] - sum(normal[axis] * (centre[axis] - middle[axis]) for axis in horizontal) / normal[up])
-    if abs(top - lower[up]) > tolerance:
-        return None
-    # A real triangle of this surface lies under every probe: no gap, no edge.
-    local = faces[np.all([(centres[faces, axis] >= lower[axis] - tolerance)
-                          & (centres[faces, axis] <= upper[axis] + tolerance) for axis in horizontal], axis=0)]
+    # A real triangle of this surface lies under every probe (no gap, no edge),
+    # and the triangles around it stand near the plane there; the object rests on the highest.
+    pad = FITTED_CONTACT_RADIUS_M / meters_per_unit
+    extent = triangles[faces][:, :, horizontal]
+    local = faces[np.all((extent.max(axis=1) >= lower[horizontal] - pad)
+                         & (extent.min(axis=1) <= upper[horizontal] + pad), axis=1)]
     a, b, c = (triangles[local][:, corner][:, horizontal] for corner in range(3))
+    za, zb, zc = (triangles[local][:, corner, up] for corner in range(3))
     e1, e2 = b - a, c - a
     determinant = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
     safe = np.abs(determinant) > 1e-12
+    spread = np.linspace(-1.0, 1.0, 5) * FITTED_CONTACT_RADIUS_M / meters_per_unit
+    contacts = []
     for x in np.linspace(lower[horizontal[0]], upper[horizontal[0]], 3):
         for y in np.linspace(lower[horizontal[1]], upper[horizontal[1]], 3):
-            offset = np.array([x, y]) - a
-            u = np.divide(offset[:, 0] * e2[:, 1] - offset[:, 1] * e2[:, 0], determinant,
-                          out=np.full_like(determinant, -1.0), where=safe)
-            v = np.divide(e1[:, 0] * offset[:, 1] - e1[:, 1] * offset[:, 0], determinant,
-                          out=np.full_like(determinant, -1.0), where=safe)
-            if not np.any(safe & (u >= -1e-7) & (v >= -1e-7) & (u + v <= 1 + 1e-7)):
+            heights = []
+            for dx in spread:
+                for dy in spread:
+                    offset = np.array([x + dx, y + dy]) - a
+                    u = np.divide(offset[:, 0] * e2[:, 1] - offset[:, 1] * e2[:, 0], determinant,
+                                  out=np.full_like(determinant, -1.0), where=safe)
+                    v = np.divide(e1[:, 0] * offset[:, 1] - e1[:, 1] * offset[:, 0], determinant,
+                                  out=np.full_like(determinant, -1.0), where=safe)
+                    inside = safe & (u >= -1e-7) & (v >= -1e-7) & (u + v <= 1 + 1e-7)
+                    if dx == 0 and dy == 0 and not inside.any():
+                        return None
+                    heights.extend((za + u * (zb - za) + v * (zc - za))[inside])
+            plane = middle[up] - (normal[horizontal[0]] * (x - middle[horizontal[0]])
+                                  + normal[horizontal[1]] * (y - middle[horizontal[1]])) / normal[up]
+            contacts.append(float(np.median(heights)))
+            if abs(contacts[-1] - plane) * meters_per_unit > FITTED_MAX_CONTACT_DEVIATION_M:
                 return None
+    top = max(contacts)
+    if abs(top - lower[up]) > tolerance:
+        return None
     points = triangles[faces].reshape(-1, 3)
     return {"top_runtime_units": top, "aabb_min": points.min(axis=0).tolist(),
             "aabb_max": points.max(axis=0).tolist(), "face_indices": faces.tolist(),

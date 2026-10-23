@@ -172,3 +172,16 @@ def test_a_y_up_bumpy_counter_in_estimated_units_is_fitted():
     value = support_under(mesh, [-.5, 7.1, -.5], [.5, 8.5, .5], up=1, meters_per_unit=.1)
     assert value["basis"] == "fitted_surface_under_footprint"
     assert value["top_runtime_units"] == pytest.approx(7, abs=.03)
+
+
+def test_a_corrugated_surface_whose_ridges_would_cut_the_object_is_refused():
+    # Codex review on #2805: a 10 cm grid alternating 0.66/0.74 m fits a smooth plane at
+    # 0.70 m with ~1.3 cm centroid RMS, yet the contacts sit 4 cm off the object's bottom.
+    xs = np.arange(-.5, .5 + 1e-9, .1)
+    gx, gy = np.meshgrid(xs, xs, indexing="ij")
+    gz = .7 + .04 * (-1.0) ** (np.rint(gx / .1) + np.rint(gy / .1))
+    n = len(xs)
+    k = (np.arange(n - 1)[:, None] * n + np.arange(n - 1)[None, :]).reshape(-1)
+    faces = np.concatenate([np.c_[k, k + n, k + 1], np.c_[k + 1, k + n, k + n + 1]])
+    mesh = trimesh.Trimesh(vertices=np.c_[gx.ravel(), gy.ravel(), gz.ravel()], faces=faces, process=False)
+    assert support_under(mesh, [-.11, -.11, .70], [.11, .11, .85], up=2, meters_per_unit=1) is None
