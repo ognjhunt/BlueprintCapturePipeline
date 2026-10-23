@@ -47,6 +47,14 @@ The production Atlas controller runs the following for a new scene plan:
    review of the complete set decides whether reconstruction can proceed.
 6. The agent surveys missing surfaces across the captured scene and chooses
    named gaps and candidate cameras, including modest translated viewpoints.
+   Additional scene-depth-relative viewpoints stay inside source-observed free
+   space and survey both nearby surfaces and the upper surrounding scene.
+   Their projected scene outline can expose open disocclusions between known
+   boundaries; it is a planning hypothesis, not evidence of a wall. The agent
+   selects supported continuations and leaves ambiguous voids unknown. Nothing
+   outside the projected outline or capture-derived 3D bounds is added.
+   Model input uses a compact table of every camera and region; full precision
+   masks and survey receipts remain unchanged for selection and admission.
    `atlasGenerate` receives all approved cleaned photographs with aligned depth
    and cameras. Images/depth/cameras rotate and resize together; full photograph
    coverage survives. Returned RGBD passes independent review and source-priority

@@ -47,7 +47,7 @@ def test_translated_hypotheses_follow_adjacent_baselines_instead_of_arbitrary_ro
         f['extrinsics']['position'] = list(position)
     allowed = {tuple(f['position']) for f in frames}
     candidates = completion.camera_candidates(frames)
-    observed = [row for row in candidates if row['purpose'] != 'translated']
+    observed = [row for row in candidates if row['purpose'] not in {'translated', 'disocclusion'}]
     assert all(tuple(row['camera']['extrinsics']['position']) in allowed for row in observed)
     assert all(tuple(row['camera']['extrinsics']['position']) != (1., 1., 0.) for row in candidates)
     by_id = {f['frame_id']: f for f in frames}

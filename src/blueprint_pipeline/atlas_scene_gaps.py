@@ -17,7 +17,7 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 
-def gap_labels(depth, photographed):
+def gap_labels(depth, photographed, *, scene_outline=False):
     """Connected missing surfaces inside photographed or enclosed coverage.
 
     A mask never turns the exterior black canvas into a whole-room request.
@@ -28,6 +28,17 @@ def gap_labels(depth, photographed):
 
     covered = np.isfinite(depth) & (depth > 0)
     inside = photographed | binary_fill_holes(covered)
+    if scene_outline:
+        # Only a candidate planning domain: source free-space/extent rejection
+        # and native RGBD review still decide whether generated depth is usable.
+        # It bridges open disocclusions between projected scene surfaces, without
+        # making the exterior canvas an instruction to invent an entire room.
+        y, x = np.nonzero(covered)
+        if len(x) >= 3:
+            hull = cv2.convexHull(np.column_stack((x, y)).astype(np.int32))
+            outline = np.zeros(depth.shape, np.uint8)
+            cv2.fillConvexPoly(outline, hull, 1)
+            inside |= outline.astype(bool)
     missing = (~covered & inside).astype(np.uint8)
     missing = cv2.morphologyEx(missing, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     count, labels, stats, _ = cv2.connectedComponentsWithStats(missing, connectivity=8)
@@ -72,15 +83,17 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
     for index, candidate in enumerate(candidates):
         rgb, photographed = project_known_context(frames, candidate['camera'])
         depth = project_source_depth(geometry_frames, candidate['camera'])
-        labels, regions = gap_labels(depth, photographed)
+        outline = candidate.get('gap_domain') == 'projected_scene_outline_hypothesis'
+        labels, regions = gap_labels(depth, photographed, scene_outline=outline)
         path = root / f'{index:04d}-gaps.png'
         _save_image(path, labels)
         rows.append({'camera_id': candidate['camera_id'], 'source_frame_id': candidate['source_frame_id'],
                      'label_path': str(path), 'label_sha256': _sha256_file(path),
                      'gaps': [{**r, 'gap_id': candidate['camera_id'] + '-gap-' + str(r['label'])} for r in regions],
+                     'gap_domain': ('projected_scene_outline_hypothesis' if outline else 'photographed_or_enclosed'),
                      'gap_pixel_count': int(np.count_nonzero(labels)),
                      'total_pixel_count': int(labels.size)})
-        if candidate['purpose'] in {'wide', 'translated'}:
+        if candidate['purpose'] in {'wide', 'translated', 'disocclusion'}:
             preview = np.zeros_like(rgb)
             covered = depth > 0
             preview[covered] = rgb[covered]

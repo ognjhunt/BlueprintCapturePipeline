@@ -17,7 +17,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v11"
+COMPLETION_REVISION = "v12"
 
 
 def camera_candidates(frames):
@@ -72,6 +72,8 @@ def camera_candidates(frames):
                       translation_basis='quarter_of_adjacent_recorded_camera_baseline')
         target['camera']['extrinsics']['position'] = (start + .25 * (end - start)).tolist()
         candidates.append(target)
+    from .atlas_completion_cameras import disocclusion_candidates
+    candidates.extend(disocclusion_candidates(frames, wide))
     return candidates
 
 

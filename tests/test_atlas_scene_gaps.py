@@ -31,6 +31,20 @@ def test_photographed_missing_depth_can_reach_image_edge_without_filling_unseen_
     assert len(regions) == 1 and labels[:, :40].all() and not labels[:, 40:].any()
 
 
+def test_disocclusion_domain_can_bridge_open_scene_gaps_but_never_the_exterior():
+    depth = np.zeros((100, 100), np.float32)
+    depth[10:90, 10:25] = 2
+    depth[10:90, 75:90] = 2
+    depth[75:90, 10:90] = 2  # U-shaped known floor/wall outline, open at the top.
+    photo = depth > 0
+    ordinary, _ = gaps.gap_labels(depth, photo)
+    novel, regions = gaps.gap_labels(depth, photo, scene_outline=True)
+    assert not ordinary.any() and len(regions) == 1
+    assert novel[30:70, 30:70].all()
+    assert not novel[:10].any() and not novel[:, :10].any() and not novel[90:].any()
+    assert not novel[photo].any()
+
+
 def test_agent_must_name_real_regions_and_mask_bytes_cannot_change(tmp_path):
     labels = np.zeros((30, 40), np.uint16)
     labels[5:12, 5:12], labels[18:25, 25:32] = 1, 2
