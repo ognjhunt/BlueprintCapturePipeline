@@ -53,9 +53,12 @@ def _inputs(tmp_path):
     return frames, admission
 
 
-@pytest.mark.parametrize("mask_guidance", [False, True])
-def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and_reuses_paid_outputs(tmp_path, monkeypatch, mask_guidance):
+@pytest.mark.parametrize("mask_guidance,region_guide", [(False, False), (True, False), (True, True)])
+def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and_reuses_paid_outputs(tmp_path, monkeypatch, mask_guidance, region_guide):
     frames, admission = _inputs(tmp_path)
+    if region_guide:
+        for frame in frames:
+            frame.update(mask_guide_basis='agent_grounded_region', mask_guide_evidence_digest='retained-evidence')
     if mask_guidance:
         backend = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)[2]
         admission["allocation_binding_digest"] = canonical_digest(completion.completion_binding(
@@ -77,11 +80,11 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
     assert calls[1]["reference_images"][0] == Path(outputs[0]["image_path"]).read_bytes()
     assert all(len(call["reference_images"]) == (2 if mask_guidance else 1) for call in calls)
     if mask_guidance:
-        assert "SAM target-guide overlay" in calls[0]["prompt"]
+        assert ("source-grounded region target-guide" if region_guide else "SAM target-guide overlay") in calls[0]["prompt"]
         assert calls[0]["reference_images"][-1] == completion._sam_guide(
             Image.open(frames[0]["image_path"]).convert("RGB"), Image.open(frames[0]["remaining_mask_path"]).convert("L"))
         receipt = json.loads(Path(outputs[0]["completion_receipt"]).read_text())
-        assert receipt["target_guidance"] == "sam_overlay_v1"
+        assert receipt["target_guidance"] == ("source_grounded_region_overlay_v1" if region_guide else "sam_overlay_v1")
         assert _sha256_file(Path(receipt["guide_image_path"])) == receipt["guide_image_digest"]
     # The first image is plain; SAM guidance is a separate reference. The API
     # mask field and silhouette paste-back remain unused.

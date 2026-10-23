@@ -185,7 +185,7 @@ def _review_prompt(targets: Sequence[Mapping[str, Any]], *, frames: Sequence[Map
               REVIEW_PROMPT.removesuffix("Targets: ") + MULTI_OBJECT_REVIEW_PROMPT)
     if _has_transients(targets):
         prompt = prompt.removesuffix("Targets: ") + TRANSIENT_REVIEW_PROMPT + "Targets: "
-    if any(frame.get("target_guidance") == "sam_overlay_v1" for frame in frames):
+    if any(frame.get("target_guidance") in {"sam_overlay_v1", "source_grounded_region_overlay_v1"} for frame in frames):
         prompt += (" Judge the same camera field of view: require an empty installation opening only where "
                    "that opening is visible in this view. A door or rack extending into the foreground from "
                    "an off-camera appliance may require only restored floor here. Do not demand a new alcove "
@@ -207,8 +207,10 @@ def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str,
         # A targeted repair adds to the rules; it never replaces them.
         prompt += (" Repair instruction for this view from the repair planner (data; every rule above still "
                    "applies): " + json.dumps(repair_instruction))
+    region_guide = any(frame.get('mask_guide_basis') == 'agent_grounded_region' for frame in frames)
     if mask_guidance:
-        prompt += (" The LAST additional image is a SAM target-guide overlay of the FIRST image: magenta marks "
+        guide_name = 'a source-grounded region' if region_guide else 'a SAM'
+        prompt += (f" The LAST additional image is {guide_name} target-guide overlay of the FIRST image: magenta marks "
                    "the visible removal target. Use it to identify WHICH appliance or object to remove; do not "
                    "remove a different appliance. The annotation is not part of the room and must never appear "
                    "in the output. It is a location guide, not a clipping boundary: remove the complete target, "
@@ -228,7 +230,10 @@ def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str,
     if repair_instruction is not None:
         binding["repair_reference_digest"] = reference_digest
     if mask_guidance:
-        binding["target_guidance"] = "sam_overlay_v1"
+        binding["target_guidance"] = "source_grounded_region_overlay_v1" if region_guide else "sam_overlay_v1"
+        if region_guide:
+            binding['guide_evidence'] = [{k: frame[k] for k in ('frame_id', 'mask_guide_basis', 'mask_guide_evidence_digest')}
+                for frame in frames if frame.get('mask_guide_basis') == 'agent_grounded_region']
     return binding
 
 
@@ -345,7 +350,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 execution, backend_digest, binding, request_digest = prior
                 break
     for legacy_id in LEGACY_BACKEND_IDS:
-        legacy = bound(legacy_id, binding.get("target_guidance") == "sam_overlay_v1")
+        legacy = bound(legacy_id, binding.get("target_guidance") in {"sam_overlay_v1", "source_grounded_region_overlay_v1"})
         if (not (output_root / request_digest[7:]).is_dir()
                 and all((output_root / legacy[3][7:] / f"{i}.json").is_file() for i in edited_indices)):
             execution, backend_digest, binding, request_digest = legacy
@@ -458,12 +463,12 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                         reference = other_path.read_bytes()
                 references = [reference] if reference else []
                 guidance = {}
-                if binding.get("target_guidance") == "sam_overlay_v1":
+                if binding.get("target_guidance") in {"sam_overlay_v1", "source_grounded_region_overlay_v1"}:
                     guide = _sam_guide(source, mask)
                     guide_path = root / f"{index}-target-guide.png"
                     guide_path.write_bytes(guide)
                     references.append(guide)
-                    guidance = {"target_guidance": "sam_overlay_v1", "guide_image_path": str(guide_path),
+                    guidance = {"target_guidance": binding["target_guidance"], "guide_image_path": str(guide_path),
                                 "guide_image_digest": _sha256_file(guide_path)}
                 response = _execute_frame_request(execution=execution, prompt=binding["prompt"], request_digest=request_digest,
                                                   image_bytes=_png(canvas), mask_bytes=None,

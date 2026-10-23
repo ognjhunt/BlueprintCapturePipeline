@@ -102,8 +102,34 @@ def object_evidence(*, frames, objects, inputs):
     return result
 
 
+def grounded_region_guide(*, target, frames):
+    """Source-grounded location hint for image editing, never a segmentation mask."""
+    evidence = list(zip(target['regions'], target['spatial_evidence'], strict=True))
+    observations = []
+    for frame in frames:
+        h, w = frame['rgb'].shape[:2]
+        mask = np.zeros((h, w), bool)
+        for region, row in evidence:
+            if region['frame_id'] != frame['frame_id']:
+                continue
+            x, y, width, height = row['box_xywh_normalized']
+            left, top = math.floor(x * w), math.floor(y * h)
+            right, bottom = math.ceil((x + width) * w), math.ceil((y + height) * h)
+            mask[max(0, top):min(h, bottom), max(0, left):min(w, right)] = True
+        edges = np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1)))
+        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        observations.append({'source_frame_id': frame['frame_id'], 'width': w, 'height': h,
+            'runs': [{'start': int(start), 'length': int(end - start)} for start, end in zip(starts, ends, strict=True)]})
+    if not any(row['runs'] for row in observations):
+        raise ValueError('atlas_grounded_image_guide_empty')
+    return {'track_id': target['target_id'] + '-grounded-region-guide', 'label': target['target_id'],
+        'observations': observations, 'guide_only': True, 'physical_evidence': False,
+        'selection_basis': 'agent_grounded_region_not_segmentation',
+        'spatial_evidence_digest': canonical_digest(target['spatial_evidence'])}
+
+
 def segment_objects(*, frames, objects, inputs, task_context, source_digest, root, transients=()):
-    """Exact masks for each reviewed object and every instance of each transient.
+    """Segment reviewed objects; region fallbacks remain image-edit hints only.
 
     A transient (people, carried items, moving equipment) is never a single
     chosen instance: every one the concept finds is merged per view and erased.
@@ -151,7 +177,14 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
     selected = []
     for obj in objects:
         target = {**obj, "spatial_evidence": spatial[obj["target_id"]]}
-        track = select_task_track(target=target, tracks=tracks, frames=identity_frames)
+        try:
+            track = select_task_track(target=target, tracks=tracks, frames=identity_frames)
+        except ValueError as exc:
+            if str(exc) != f"task_target_track_ambiguous:{obj['target_id']}":
+                raise
+            # The image editor needs a location hint, not a single physical
+            # instance. Keep strict track selection unchanged for geometry.
+            track = grounded_region_guide(target=target, frames=frames)
         # A track must explicitly report every selected view, even an empty mask.
         if {o["source_frame_id"] for o in track["observations"]} != set(by_id):
             raise ValueError("atlas_object_mask_view_coverage_incomplete")
@@ -213,6 +246,11 @@ def prepare_masked_frames(*, frames, targets, margin, root):
                 "removed_task_object_ids": shown,
                 **({"removed_transient_ids": transients} if transients else {}),
                 "generated_pixels_present": False,
+                **({'mask_guide_basis': 'agent_grounded_region',
+                    'mask_guide_evidence_digest': canonical_digest([
+                        {'target_id': target['target_id'], 'track_digest': canonical_digest(target['track'])}
+                        for target in targets if target['disposition'] == 'remove' and target['track'].get('guide_only')])}
+                   if any(target['disposition'] == 'remove' and target['track'].get('guide_only') for target in targets) else {}),
             }
         )
     return prepared
@@ -370,9 +408,40 @@ def masked_request(rows, instruction):
     return request, uploads
 
 
+def reusable_background(path, *, source_digest, context, frames, objects):
+    """Adopt reviewed RGB only for identical source pixels and removal targets.
+
+    Selection may grow and poses may change. The old manifest and its image
+    bytes stay untouched, and the expanded set still receives a fresh review.
+    """
+    if path is None:
+        return [], None
+    path = Path(path)
+    saved = json.loads(path.read_text())
+    binding = saved['binding']
+    if (binding['source_video_digest'] != source_digest
+            or binding['task_context_digest'] != canonical_digest(dict(context))):
+        raise ValueError('atlas_prior_background_source_or_context_changed')
+    prior = _prepared_background(path, binding)
+    by_id = {f['frame_id']: f for f in frames}
+    removed = {obj['target_id'] for obj in objects if obj['disposition'] == 'remove'}
+    result = []
+    for row in prior['frames']:
+        if row['frame_id'] not in by_id:
+            continue
+        with Image.open(row['original_image_path']) as image:
+            matches = np.array_equal(np.asarray(image.convert('RGB')), by_id[row['frame_id']]['rgb'])
+        if not matches:
+            raise ValueError('atlas_prior_background_source_pixels_changed')
+        if not set(row.get('removed_task_object_ids', [])) <= removed:
+            raise ValueError('atlas_prior_background_removal_changed')
+        result.append(row)
+    return result, saved['digest']
+
+
 def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, context,
                                 source_digest, measurements, selected_frame_ids, check,
-                                prepared_binding, atlas_review=None):
+                                prepared_binding, atlas_review=None, reused_frames=(), prior_digest=None):
     from .website_image_completion import complete_background_images, verify_completed_background
     from .website_image_repair_agent import image_repair_enabled, repair_rejected_views
 
@@ -396,6 +465,7 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
             if str(exc) != "website_image_completion_cached_batch_missing":
                 raise
     by_id = {row["frame_id"]: row for row in candidates}
+    by_id.update({row['frame_id']: row for row in reused_frames})
     missing = [row for row in chosen if row["frame_id"] not in by_id]
     for offset in range(0, len(missing), 32):
         check("automation_editor_cleanup")
@@ -431,6 +501,11 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
                   "provider": "existing_image_editor", "frames": candidates, "review": review,
                   "measurements": measurements, "retained_root": str(root),
                   "ready_for_reconstruction": review["status"] == "passed", "repair_rounds": repair_round}
+    if prior_digest:
+        background.update(prior_prepared_background_digest=prior_digest,
+                          reused_prepared_frame_ids=[row['frame_id'] for row in reused_frames
+                              if any(final['frame_id'] == row['frame_id'] and final['image_digest'] == row['image_digest']
+                                     for final in candidates)])
     if atlas_review is not None:
         background["atlas_review"] = atlas_review
     if background["ready_for_reconstruction"]:
@@ -457,6 +532,7 @@ def run_background(
     selected_frame_ids=None,
     editor_first=True,
     transients=(),
+    prior_background_path=None,
 ):
     from .website_image_completion import (
         complete_background_images,
@@ -490,8 +566,15 @@ def run_background(
     if retained is not None:
         check("automation_reuse_prepared_background")
         return retained
+    reused, prior_digest = reusable_background(prior_background_path, source_digest=source_digest,
+        context=context, frames=frames, objects=objects)
+    reused_ids = {row['frame_id'] for row in reused}
+    edit_frames = [frame for frame in frames if frame['frame_id'] not in reused_ids]
+    edit_ids = {frame['frame_id'] for frame in edit_frames}
+    edit_objects = [{**obj, 'regions': [r for r in obj['regions'] if r['frame_id'] in edit_ids]}
+                    for obj in objects if any(r['frame_id'] in edit_ids for r in obj['regions'])]
     # Complete deterministic geometry and cost checks before the first upload.
-    object_evidence(frames=frames, objects=objects, inputs=inputs)
+    object_evidence(frames=edit_frames, objects=edit_objects, inputs=inputs)
     if not editor_first and any(o["disposition"] == "remove" for o in objects):
         centers = [f["extrinsics"]["position"] for f in frames]
         if not centers or max(math.dist(centers[0], p) for p in centers) < 1e-6:
@@ -535,14 +618,14 @@ def run_background(
     _provider_preflight()
     check("automation_segmentation")
     selected = segment_objects(
-        frames=frames,
-        objects=objects,
+        frames=edit_frames,
+        objects=edit_objects,
         inputs=inputs,
         task_context=context,
         source_digest=source_digest,
         root=root / "sam",
         **({"transients": transients} if transients else {}),
-    )
+    ) if edit_frames else []
     found = [r for r in selected if r.get("task_effect") == "transient"]
     selected = [r for r in selected if r.get("task_effect") != "transient"]
     measurements = estimate_sizes(
@@ -551,25 +634,33 @@ def run_background(
         pose_digest=pose["digest"],
         tracks=selected,
         output=root / "object_measurements.json",
-    ) if all("depth" in frame for frame in frames) else {
-        "status": "unavailable", "reason": "pre_edit_observed_depth_not_requested",
+    ) if all("depth" in frame for frame in frames) and not any(r['track'].get('guide_only') for r in selected) else {
+        "status": "unavailable", "reason": ("image_guides_are_not_measurement_masks"
+            if any(r['track'].get('guide_only') for r in selected) else "pre_edit_observed_depth_not_requested"),
         "metric_measurement_proven": False, "physical_evidence": False,
     }
     removed = [r for r in selected if r["disposition"] == "remove"]
-    if not removed and not any(o["runs"] for r in found for o in r["track"]["observations"]):
+    if not removed and not reused and not any(o["runs"] for r in found for o in r["track"]["observations"]):
         return {
             "status": "not_requested",
             "measurements": measurements,
             "reason": "all_objects_kept",
         }
     prepared = prepare_masked_frames(
-        frames=frames,
+        frames=edit_frames,
         targets=[*selected, *found],
         margin=automation["mask_margin_fraction"],
         root=root / "originals",
     )
-    if not any(r["remaining_pixel_count"] for r in prepared):
+    prepared.extend({**row, 'image_path': row['original_image_path'], 'image_digest': row['original_image_digest']}
+                    for row in reused)
+    order = {frame['frame_id']: i for i, frame in enumerate(frames)}
+    prepared.sort(key=lambda row: order[row['frame_id']])
+    if not any(r["remaining_pixel_count"] for r in prepared) and not reused:
         raise ValueError("atlas_removal_masks_empty")
+    prepared_by_id = {row['frame_id']: row for row in prepared}
+    reused = [row for row in reused if set(prepared_by_id[row['frame_id']]['removed_task_object_ids'])
+              <= set(row.get('removed_task_object_ids', []))]
     targets = [
         {
             **r,
@@ -593,34 +684,40 @@ def run_background(
         (
             r
             for r in prepared
-            if r["frame_id"] == automation.get("anchor_frame_id") and r["remaining_pixel_count"]
+            if r["frame_id"] == automation.get("anchor_frame_id") and (r["remaining_pixel_count"] or r['frame_id'] in reused_ids)
         ),
         None,
     )
     if preferred is not None:
         anchor_source = preferred
     check("automation_anchor")
-    anchor = complete_background_images(
-        frames=[anchor_source],
-        task_digest=task_digest,
-        output_root=root / "anchor",
-        admission={},
-        token="",
-        targets=targets,
-        task_context=context,
-        source_video_digest=source_digest,
-        repair_instruction=automation["removal_instruction"],
-        mask_guidance=True,
-    )[0]
+    anchor = next((row for row in reused if row['frame_id'] == anchor_source['frame_id']), None)
+    reused_anchor = anchor is not None
+    if not reused_anchor:
+        anchor = complete_background_images(
+            frames=[anchor_source],
+            task_digest=task_digest,
+            output_root=root / "anchor",
+            admission={},
+            token="",
+            targets=targets,
+            task_context=context,
+            source_video_digest=source_digest,
+            repair_instruction=automation["removal_instruction"],
+            mask_guidance=True,
+        )[0]
     check("automation_anchor_review")
-    anchor_review = verify_completed_background(
-        frames=[anchor],
-        original_frames=[anchor_source],
-        plan=plan,
-        output_root=root / "anchor_review",
-        task_context=context,
-        source_video_digest=source_digest,
-    )
+    if reused_anchor:
+        anchor_review = {'status': 'passed', 'basis': 'prior_reviewed_background', 'prior_digest': prior_digest}
+    else:
+        anchor_review = verify_completed_background(
+            frames=[anchor],
+            original_frames=[anchor_source],
+            plan=plan,
+            output_root=root / "anchor_review",
+            task_context=context,
+            source_video_digest=source_digest,
+        )
     if anchor_review["status"] != "passed":
         return {
             "status": "quality_rejected",
@@ -633,7 +730,8 @@ def run_background(
         return _reviewed_editor_background(
             prepared=prepared, anchor=anchor, plan=plan, automation=automation, root=root,
             context=context, source_digest=source_digest, measurements=measurements,
-            selected_frame_ids=selected_frame_ids, check=check, prepared_binding=prepared_binding)
+            selected_frame_ids=selected_frame_ids, check=check, prepared_binding=prepared_binding,
+            reused_frames=reused, prior_digest=prior_digest)
     tiles = tile_views(frames=frames, prepared=prepared, anchor=anchor, root=root / "tiles")
     groups = batches(tiles)
     stage_roots = []

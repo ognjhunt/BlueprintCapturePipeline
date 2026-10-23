@@ -203,6 +203,7 @@ def run_automation(
     execute=True,
     checkpoint=None,
     edit_scope="required_and_additional",
+    prior_background_path=None,
 ):
     from .atlas_scene_measurements import load_views, estimate_sizes
     from .atlas_background_automation import run_background
@@ -260,6 +261,7 @@ def run_automation(
             checkpoint=checkpoint,
             selected_frame_ids=selected_ids,
             transients=review.get("transients", []),
+            **({'prior_background_path': prior_background_path} if prior_background_path is not None else {}),
         )
         if background["status"] == "processing":
             return background
