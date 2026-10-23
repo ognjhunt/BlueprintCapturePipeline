@@ -45,7 +45,17 @@ The production Atlas controller runs the following for a new scene plan:
    as many repairs as this scene needs, using the passed anchor as its fixed
    reference; every call stays on the same source allowance. A fresh independent
    review of the complete set decides whether reconstruction can proceed.
-6. Passed generated RGBD uses the shared depth-splat writer and existing
+6. The agent surveys missing surfaces across the captured scene and chooses
+   named gaps and candidate cameras, including modest translated viewpoints.
+   `atlasGenerate` receives all approved cleaned photographs with aligned depth
+   and cameras. Images/depth/cameras rotate and resize together; full photograph
+   coverage survives. Returned RGBD passes independent review and source-priority
+   admission before final splat construction. Known geometry and observed free
+   space take precedence; native outputs remain retained. Prior passed Chisel
+   outputs are adopted without buying their generation again. Generation is an
+   estimate and neither a sparse preview nor a successful mesh export proves
+   complete scene coverage.
+7. Passed generated RGBD uses the shared depth-splat writer and existing
    `splats2Mesh` / registration / download paths. Generated backgrounds get a
    separate ZIP and explicit result/review lineage. Original reconstruction and
    its ZIP remain available. Native photometrically trained splat export remains

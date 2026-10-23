@@ -117,7 +117,7 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
             price_review=quote, max_polls=max_polls)
         if state['status'] != 'completed':
             return None, {'status': 'processing', 'stage': 'scene_completion', 'operation_id': state.get('operation_id')}
-        native, returned, _ = load_generated_views(stage, ['completion-' + root.name + '-' + row['camera_id'] for row in group])
+        native, returned, native_images = load_generated_views(stage, ['completion-' + root.name + '-' + row['camera_id'] for row in group])
         roots.append(str(stage))
         digests.append(native['digest'])
         for native_index, (frame, target) in enumerate(zip(returned, group, strict=True)):
@@ -129,7 +129,9 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
                 output_root=root / 'preserved' / f'{batch_index:04d}-{native_index:04d}',
                 native_result_digest=native['digest'], native_frame_index=native_index, extent_bounds=extent)
             generated.append(fixed)
-            images.append({**image, 'source_frame_id': target['source_frame_id']})
+            images.append({**image, 'source_frame_id': target['source_frame_id'],
+                           'native_image_path': native_images[native_index]['image_path'],
+                           'native_image_digest': native_images[native_index]['image_digest']})
             receipts.append(receipt['digest'])
             assets.extend(paths)
     report = {'status': 'completed', 'generation_method': 'atlasGenerate_posed_rgbd_photographs',

@@ -40,18 +40,23 @@ def test_completion_camera_pool_preserves_vertical_rays_and_observed_camera_cent
         completion.camera_candidates([first])
 
 
-def test_room_center_is_an_actual_capture_position_instead_of_an_unobserved_coordinate_median():
+def test_translated_hypotheses_follow_adjacent_baselines_instead_of_arbitrary_room_center():
     frames = [frame(str(i)) for i in range(4)]
     for f, position in zip(frames, ([0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0]), strict=True):
         f['position'] = np.array(position, dtype=float)
         f['extrinsics']['position'] = list(position)
     allowed = {tuple(f['position']) for f in frames}
     candidates = completion.camera_candidates(frames)
-    assert all(tuple(row['camera']['extrinsics']['position']) in allowed for row in candidates)
+    observed = [row for row in candidates if row['purpose'] != 'translated']
+    assert all(tuple(row['camera']['extrinsics']['position']) in allowed for row in observed)
     assert all(tuple(row['camera']['extrinsics']['position']) != (1., 1., 0.) for row in candidates)
     by_id = {f['frame_id']: f for f in frames}
     assert all(np.array_equal(row['camera']['extrinsics']['position'], by_id[row['source_frame_id']]['position'])
-               for row in candidates)
+               for row in observed)
+    translated = [row for row in candidates if row['purpose'] == 'translated']
+    assert len(translated) == 3
+    for row, first, second in zip(translated, frames[:-1], frames[1:], strict=True):
+        assert np.allclose(row['camera']['extrinsics']['position'], first['position'] + .25 * (second['position'] - first['position']))
 
 
 def test_portrait_target_preserves_original_rays_without_expanding_into_new_room_directions():
@@ -91,7 +96,7 @@ def test_generated_loader_binds_every_pixel_and_keeps_generated_camera(tmp_path,
 
 
 def test_completion_routes_all_planned_views_through_preservation_before_review(tmp_path, monkeypatch):
-    from blueprint_pipeline import website_image_completion, atlas_scene_chisel
+    from blueprint_pipeline import website_image_completion, atlas_scene_generate
     frames = [frame(), frame("b", .2)]
     for f in frames:
         f['depth'][2:6, 2:5] = 0
@@ -134,9 +139,13 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
                    "image_path": str(tmp_path / "0-image.bin"),
                    "image_digest": _sha256_file(tmp_path / "0-image.bin"), "novel_view": True}
                   for f, r in zip(generated, kw['selected'], strict=True)]
+        for index, image in enumerate(images):
+            native = tmp_path / f'native-{index}.png'
+            Image.fromarray(np.full((8, 6, 3), 150, np.uint8)).save(native)
+            image.update(native_image_path=str(native), native_image_digest=_sha256_file(native))
         return (generated, images), {"digest": "preserved-generation", "generated_roots": [str(tmp_path / 'native')],
             "preservation_paths": [], "known_pixels_changed": 0}
-    monkeypatch.setattr(atlas_scene_chisel, 'generate_chisel_completion', generate)
+    monkeypatch.setattr(atlas_scene_generate, 'generate_rgbd_completion', generate)
     reviews = []
     monkeypatch.setattr(website_image_completion, "verify_completed_background",
                         lambda **kw: reviews.append(kw) or {"status": "passed"})
@@ -162,6 +171,7 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert report['generation_result_digest'] == 'preserved-generation'
     assert report['generated_roots'] == [str(tmp_path / 'native')]
     assert reviews[0]["frames"][1]["original_image_path"] == str(tmp_path / "1-image.bin")
+    assert reviews[0]['frames'][1]['image_path'] == str(tmp_path / 'native-1.png')
     assert report['completion_extent'] == 'identified_missing_geometry_only'
     assert all(row['completion_gap_ids'] for row in calls[0]['selected'])
     assert report['generation_extent']['additional_space_beyond_observed_bounds'] is False

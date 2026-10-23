@@ -79,12 +79,15 @@ def test_generation_is_priced_validated_and_gap_limited_before_purchase(tmp_path
         depth = np.rot90(np.where(frame['depth'] > 0, frame['depth'], 1.5), -1).copy()
         returned.append(posed_frame(frame_id='native-' + frame['frame_id'], rgb=pixels,
             depth=depth, confidence=np.ones(depth.shape), camera=target['camera']))
-    monkeypatch.setattr(completion, 'load_generated_views', lambda *_: ({'digest': 'native'}, returned, []))
+    native_images = [{'image_path': 'native-' + str(index), 'image_digest': 'digest-' + str(index)}
+                     for index in range(len(returned))]
+    monkeypatch.setattr(completion, 'load_generated_views', lambda *_: ({'digest': 'native'}, returned, native_images))
     args['task_runner'] = lambda **kw: {'status': 'completed'}
     (generated, images), result = generate.generate_rgbd_completion(**args)
     assert result['generation_method'] == 'atlasGenerate_posed_rgbd_photographs'
     assert result['known_pixels_changed'] == 0 and result['generated_geometry_pixel_count'] > 0
     assert len(generated) == len(images) == 2
+    assert images[0]['native_image_path'] == 'native-0'
     for row, original in zip(generated, frames, strict=True):
         assert np.array_equal(row['rgb'], np.rot90(original['rgb'], -1))
         assert not np.any((row['confidence'] > 0) & np.rot90(original['confidence'] > 0, -1))

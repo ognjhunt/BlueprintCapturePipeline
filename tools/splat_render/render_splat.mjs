@@ -82,6 +82,10 @@ if ([splatPath, meshPath, compositionArg].filter(Boolean).length !== 1 || !outDi
   console.error("usage: node render_splat.mjs (--splat <file> | --composition <json>) --out <dir> [--cameras <json>] [--width N --height N]");
   process.exit(2);
 }
+if (transparent && !meshPath) {
+  console.error("--transparent requires --mesh; Spark splat alpha coverage is not supported");
+  process.exit(2);
+}
 fs.mkdirSync(outDir, { recursive: true });
 
 // Operational checkpoints survive a parent watchdog kill. They do not qualify

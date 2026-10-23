@@ -17,14 +17,16 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v10"
+COMPLETION_REVISION = "v11"
 
 
 def camera_candidates(frames):
     """A scene-relative candidate pool; the planner chooses count and viewpoints.
 
-    Target centres remain at actual captured camera positions. Rotations follow
-    the source field of view; known RGB therefore needs no estimated-depth warp.
+    Original-centre rotations follow the source field of view and need no
+    estimated-depth RGB warp. Additional, modest translated hypotheses reveal
+    disocclusions between neighbouring captured positions; they are not claimed
+    to be observed or collision-cleared camera locations.
     A calibrated pixel/camera quarter-turn fits portrait photos to the native
     landscape grid without broadening the photographed horizontal field of view.
     These are generation hypotheses, not collision-cleared physical cameras.
@@ -59,6 +61,17 @@ def camera_candidates(frames):
                                "source_frame_id": frame["frame_id"], "purpose": name,
                                "context_valid_depth_fraction": float(np.mean(valid)),
                                "rotation_radians": list(angles), "camera": target})
+    wide = [row for row in candidates if row['purpose'] == 'wide']
+    for first, second in zip(wide, wide[1:]):
+        start = np.asarray(first['camera']['extrinsics']['position'])
+        end = np.asarray(second['camera']['extrinsics']['position'])
+        if np.linalg.norm(end - start) < 1e-6:
+            continue
+        target = deepcopy(first)
+        target.update(camera_id=first['camera_id'] + '-translated', purpose='translated',
+                      translation_basis='quarter_of_adjacent_recorded_camera_baseline')
+        target['camera']['extrinsics']['position'] = (start + .25 * (end - start)).tolist()
+        candidates.append(target)
     return candidates
 
 
@@ -119,6 +132,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                   'review': {'status': 'not_required', 'reason': 'no_eligible_geometry_gaps'},
                   'gap_survey_digest': gaps['digest'], 'completion_extent': 'identified_missing_geometry_only',
                   'generation_extent': extent, 'generated_geometry_ready': True, 'claim_ceiling': 'development_only'}
+        report.update(whole_scene_complete=False, coverage_basis='surveyed_camera_gaps_only')
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'completion.json', report)
         return [], report
@@ -146,7 +160,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     feedback_path = root / "plan-inputs.json"
     feedback = {"pose_result_digest": pose["digest"], "context_fov_audit_digest": fov["digest"],
                 "candidate_camera_ids": candidates,
-                "generation_extent": extent, "scope": "nearby_task_relevant_surface_gaps_only",
+                "generation_extent": extent, "scope": "missing_surfaces_within_captured_scene",
                 "removal_instruction": review["automation"]["removal_instruction"],
                 "uncaptured_regions": review.get("uncaptured_regions", []), "previews": gaps['previews'],
                 'gap_survey': {k: v for k, v in gaps.items() if k != 'previews'},
@@ -203,11 +217,11 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     for index, view in enumerate(selected):
         view.update(select_gap_mask(gap_views[view['camera_id']], entries_by_id[view['camera_id']].get('gap_ids', []),
                                    root / 'gaps' / f'selected-{index:04d}.png'))
-    from .atlas_scene_chisel import generate_chisel_completion
+    from .atlas_scene_generate import generate_rgbd_completion
     _, blockers = release_blockers()
     if blockers:
         raise ValueError("atlas_completion_release_not_admitted:" + ",".join(blockers))
-    completed, generation = generate_chisel_completion(frames=frames, selected=selected, candidates=candidates,
+    completed, generation = generate_rgbd_completion(frames=frames, selected=selected, candidates=candidates,
         root=root, pose=pose, context=context, configuration=configuration, task_runner=task_runner,
         max_polls=max_polls, removed_objects=[obj["label"] for obj in review["automation"]["objects"]
             if obj["disposition"] == "remove"], checkpoint=checkpoint,
@@ -228,7 +242,11 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         raise ValueError("atlas_completion_review_release_not_admitted:" + ",".join(blockers))
     if checkpoint:
         checkpoint("automation_completion_review")
-    visual = verify_completed_background(frames=images, original_frames=images, plan=plan,
+    # Inspect the provider output before source-priority compositing can hide a
+    # changed fixture or invented possession in its known-photo footprint.
+    review_images = [{**image, 'image_path': image.get('native_image_path', image['image_path']),
+                      'image_digest': image.get('native_image_digest', image['image_digest'])} for image in images]
+    visual = verify_completed_background(frames=review_images, original_frames=review_images, plan=plan,
         output_root=root / "review", task_context=context, source_video_digest=survey["source_video_digest"])
     report = {"status": "passed" if visual["status"] == "passed" else "needs_input",
               "planner": planned, "context_fov_audit_digest": fov["digest"],
@@ -242,6 +260,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "generation_extent": extent, "scene_caption": proposal['scene_caption'],
               "view_gap_reasons": reasons,
               "claim_ceiling": "development_only",
+              "whole_scene_complete": False, "coverage_basis": "surveyed_camera_gaps_only",
               "simulation_qualified": False, "metric_measurement_proven": False, "physical_evidence": False}
     if visual["status"] != "passed":
         report["reason"] = "atlas_completion_visual_review_required"
