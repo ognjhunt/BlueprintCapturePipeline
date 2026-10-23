@@ -42,6 +42,53 @@ def _valid(frame):
             np.isfinite(frame['confidence']) & (frame['confidence'] > 0))
 
 
+def _same_camera(frame, camera):
+    return (np.allclose(frame['position'], camera['extrinsics']['position'], atol=1e-8, rtol=0)
+            and np.allclose(frame['rotation'], _rotation_matrix(camera['extrinsics']['quaternion']),
+                            atol=1e-8, rtol=0))
+
+
+def supported_projection_frames(frames):
+    """Conservative RGBD projection candidates, never a modification of source.
+
+    A valid depth alone is insufficient to lock a colour into a new viewpoint.
+    Drop depth boundaries and require another view to agree in depth and RGB.
+    The RGB tolerance is a projection heuristic, not calibrated confidence.
+    Actual source viewpoints still preserve every source RGB pixel.
+    """
+    from .atlas_depth_splat import EDGE_RELATIVE_JUMP
+
+    filtered = []
+    for source in frames:
+        valid = _valid(source)
+        depth = source['depth']
+        center = depth[1:-1, 1:-1]
+        interior = valid[1:-1, 1:-1].copy()
+        for neighbour in (depth[1:-1, 2:], depth[1:-1, :-2], depth[2:, 1:-1], depth[:-2, 1:-1]):
+            interior &= np.isfinite(neighbour) & (np.abs(neighbour - center) <= EDGE_RELATIVE_JUMP * center)
+        valid = np.zeros(valid.shape, bool)
+        valid[1:-1, 1:-1] = interior
+        points, y, x = _world(source, valid)
+        supported = np.zeros(len(points), bool)
+        colors = source['rgb'][y, x].astype(np.int16)
+        for other in frames:
+            if other is source:
+                continue
+            camera = {'intrinsics': other['intrinsics'], 'extrinsics': other['extrinsics']}
+            z, u, v, inside = _project(points, camera)
+            ids = np.flatnonzero(inside)
+            rows, cols = np.floor(v[inside]).astype(int), np.floor(u[inside]).astype(int)
+            observed = other['depth'][rows, cols]
+            agrees = (_valid(other)[rows, cols]
+                      & (np.abs(z[inside] - observed) <= EDGE_RELATIVE_JUMP * observed)
+                      & (np.max(np.abs(colors[ids] - other['rgb'][rows, cols].astype(np.int16)), axis=-1) <= 32))
+            supported[ids[agrees]] = True
+        keep = np.zeros(valid.shape, bool)
+        keep[y[supported], x[supported]] = True
+        filtered.append({**source, 'confidence': source['confidence'] * keep})
+    return filtered
+
+
 def _save_image(path, pixels):
     from PIL import Image
 
@@ -68,10 +115,7 @@ def project_known_context(frames, camera):
     rgb = np.full((height, width, 3), 127, np.uint8)
     zbuffer = np.full(height * width, np.inf)
     keep = np.zeros(height * width, bool)
-    target_rotation = _rotation_matrix(camera['extrinsics']['quaternion'])
-    same = [frame for frame in frames if (
-        np.allclose(frame['position'], camera['extrinsics']['position'], atol=1e-8, rtol=0)
-        and np.allclose(frame['rotation'], target_rotation, atol=1e-8, rtol=0))]
+    same = [frame for frame in frames if _same_camera(frame, camera)]
     # An actual source viewpoint needs no estimated-depth warp. Keep its
     # authoritative RGB footprint clean; the other paired views provide
     # cross-view context to the inpainting model instead of noisy edge splats.
@@ -131,16 +175,28 @@ def unobserved_geometry_mask(generated, references):
 
 def prepare_completion_views(*, frames, selected, root):
     """Prepare camera-paired grayscale keep masks without a provider call."""
+    import cv2
+
     root.mkdir(parents=True, exist_ok=True)
+    supported = supported_projection_frames(frames)
     rows = []
     for index, view in enumerate(selected):
-        rgb, keep = project_known_context(frames, view['camera'])
+        same = any(_same_camera(frame, view['camera']) for frame in frames)
+        rgb, keep = project_known_context(supported, view['camera'])
+        if not same:
+            # Isolated forward-projected pixels and narrow jagged edges are
+            # not stable image patches. Leave them fillable and neutral; a
+            # speckled keep mask otherwise forces Atlas to reproduce noise.
+            keep = cv2.erode(keep.astype(np.uint8), np.ones((3, 3), np.uint8),
+                             borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool)
+            rgb[~keep] = 127
         image, mask = root / f'{index:04d}-context.png', root / f'{index:04d}-keep.png'
         _save_image(image, rgb)
         _save_image(mask, keep.astype(np.uint8) * 255)
         rows.append({'frame_id': view['camera_id'], 'source_frame_id': view['source_frame_id'],
                      'camera': view['camera'], 'image_path': str(image), 'image_digest': _sha256_file(image),
                      'keep_mask_path': str(mask), 'keep_mask_digest': _sha256_file(mask),
+                     'projection_basis': ('source_camera_rgb' if same else 'cross_view_supported_rgbd_dense_patches'),
                      'protected_pixel_count': int(keep.sum()), 'total_pixel_count': int(keep.size),
                      'clean_anchor': view.get('preservation_anchor', False),
                      'edit_pixels': int(keep.sum())})
@@ -174,6 +230,7 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
               'native_result_digest': native_result_digest, 'native_frame_index': native_frame_index,
               'camera': prepared['camera'], 'context_image_digest': prepared['image_digest'],
               'keep_mask_digest': prepared['keep_mask_digest'], 'protected_pixel_count': int(keep.sum()),
+              'projection_basis': prepared.get('projection_basis'),
               'native_changed_protected_pixel_count': int(np.any(generated['rgb'] != rgb, axis=-1)[keep].sum()),
               'native_protected_mean_absolute_difference': (
                   float(np.abs(generated['rgb'].astype(float) - rgb.astype(float))[keep].mean()) if keep.any() else None),
