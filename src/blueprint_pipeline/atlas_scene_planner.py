@@ -122,6 +122,10 @@ unmasked room regeneration. Known geometry is immutable. A camera without a name
 gap cannot be selected. The provider may return a full image, but only the named
 gap regions may contribute geometry. Do not infer a missing wall from black
 background alone. Source photos determine materials and existing objects.
+Disocclusion cameras remain inside source-observed free space. Their projected
+scene-outline masks include estimated occluded surfaces between known boundaries;
+the outline itself is not wall evidence. Choose only plausible continuations
+supported by those boundaries and the source photos; leave ambiguous voids unknown.
 Avoid redundant cameras; do not choose a fixed
 count or spend the budget merely because it exists. Derived reconstruction
 previews, if supplied, are reconnaissance only. Name gaps that generation should
