@@ -2649,12 +2649,17 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     reserve_calls: list[dict] = []
     observed_bytes: list[int] = []
 
+    released: list[str] = []
+
     class Reservation:
         def receipt(self):
             return {"reservation_token": "deploy-test"}
 
         def observe(self, _bytes):
             observed_bytes.append(_bytes)
+
+        def release(self, *, outcome="completed"):
+            released.append(outcome)
 
         def __enter__(self):
             return self
@@ -2787,6 +2792,13 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert receipt["disk_reservation_estimate"]["basis"] == "declared_default"
     assert reserve_calls[0]["expected_bytes"] == receipt["disk_reservation_estimate"]["bytes"]
     assert reserve_calls[0]["workload"] == "control_plane_release"
+    # No toolchain is published for this commit, so its rebuild under the
+    # temporary directory is admitted too, and freed once provisioning ends.
+    staging = receipt["disk_reservation_estimate"]["scene_configuration_staging"]
+    assert staging["basis"] == "declared_default"
+    assert reserve_calls[1]["workload"] == "scene_configuration_staging"
+    assert reserve_calls[1]["expected_bytes"] == deploy.SCENE_CONFIGURATION_STAGING_DECLARED_BYTES
+    assert released == ["completed"]
     assert len(observed_bytes) == 1 and observed_bytes[0] > 0
     assert receipt["storage_pins_runtime"] == storage_pins_receipt
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
@@ -3072,6 +3084,78 @@ def test_release_estimate_falls_back_to_the_role_footprint_without_a_git_tree(
     assert estimate["basis"] == "declared_default"
     assert estimate["bytes"] == 2 * 1024**3
     assert estimate["tree_bytes"] is None and estimate["file_count"] is None
+
+
+def _published_toolchain(runtimes: Path, commit: str, sizes: list[int], *, mtime: float) -> None:
+    root = runtimes / "scene-configuration" / commit
+    root.mkdir(parents=True)
+    manifest = root / deploy.SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST
+    manifest.write_text(json.dumps({"files": [{"size_bytes": size} for size in sizes]}))
+    os.utime(manifest, (mtime, mtime))
+
+
+def test_staging_estimate_is_the_newest_published_toolchain(tmp_path: Path) -> None:
+    import math
+    import tempfile
+
+    runtimes = tmp_path / "system-runtimes"
+    _published_toolchain(runtimes, "a" * 40, [1, 2], mtime=1_000)
+    _published_toolchain(runtimes, "b" * 40, [6_000, 4_000], mtime=2_000)
+    estimate = deploy._scene_configuration_staging_estimate(runtimes, "c" * 40)
+    assert estimate == {
+        "bytes": math.ceil(10_000 * deploy.SCENE_CONFIGURATION_STAGING_HEADROOM) + 2 * 4096,
+        "basis": "published_toolchain:" + "b" * 40,
+        "file_count": 2,
+        "target_root": tempfile.gettempdir(),
+    }
+    # A published commit's toolchain is reused, so nothing is staged for it.
+    assert deploy._scene_configuration_staging_estimate(runtimes, "b" * 40) is None
+
+
+def test_staging_estimate_declares_a_full_build_without_a_toolchain(tmp_path: Path) -> None:
+    estimate = deploy._scene_configuration_staging_estimate(tmp_path / "absent", "c" * 40)
+    assert estimate["basis"] == "declared_default"
+    assert estimate["bytes"] == deploy.SCENE_CONFIGURATION_STAGING_DECLARED_BYTES
+
+
+def test_deploy_refuses_before_staging_a_toolchain_the_disk_cannot_hold(tmp_path, monkeypatch) -> None:
+    """2026-10-23: a 10.4 GB provision copy started with 11.7 GB free on root."""
+
+    commit = "d" * 40
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    arguments["disk_reservation_root"] = tmp_path / "disk-reservations"
+    _published_toolchain(arguments["scene_configuration_runtime_root"], "a" * 40, [10_000], mtime=1_000)
+    monkeypatch.setattr(deploy, "_install_disk_reservation_runtime_prerequisites", lambda _root: {})
+    monkeypatch.setattr(deploy, "_release_footprint_estimate", lambda *_args, **_kwargs: {
+        "bytes": 4096, "basis": "test_estimate",
+    })
+    monkeypatch.setattr(deploy, "_provision_scene_configuration_from_release",
+                        lambda **_kwargs: pytest.fail("staged without admission"))
+    calls: list[tuple[str, int]] = []
+    released: list[tuple[str, str]] = []
+
+    class Reservation:
+        def __init__(self, workload: str) -> None:
+            self.workload = workload
+
+        def release(self, *, outcome="completed"):
+            released.append((self.workload, outcome))
+
+    def reserve(role, **kwargs):
+        assert role == "control_plane_deploy"
+        calls.append((kwargs["workload"], kwargs["expected_bytes"]))
+        if kwargs["workload"] == "scene_configuration_staging":
+            raise deploy.ControlPlaneDiskBudgetError("insufficient_headroom")
+        return Reservation(kwargs["workload"])
+
+    monkeypatch.setattr(deploy, "reserve_control_plane_disk", reserve)
+    with pytest.raises(deploy.ControlPlaneDeployError,
+                       match="deploy_disk_budget_exceeded:insufficient_headroom"):
+        deploy.deploy_control_plane_commit(**arguments)
+    staged = deploy._scene_configuration_staging_estimate(arguments["scene_configuration_runtime_root"], commit)
+    assert calls == [("control_plane_release", 4096), ("scene_configuration_staging", staged["bytes"])]
+    # The release's own reservation does not outlive the refusal.
+    assert released == [("control_plane_release", "blocked")]
 
 
 def test_storage_pins_runtime_repairs_root_owned_directory_and_reports_receipt(

@@ -2614,6 +2614,56 @@ def _release_footprint_estimate(
     }
 
 
+SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST = "task_evaluation_scene_configuration_toolchain.v1.json"
+SCENE_CONFIGURATION_STAGING_HEADROOM = 1.05
+#: A full ARTISAN-era build when no toolchain has been published to measure.
+SCENE_CONFIGURATION_STAGING_DECLARED_BYTES = 12 * 1024**3
+
+
+def _scene_configuration_staging_estimate(runtime_root: str | Path, commit: str) -> dict[str, Any] | None:
+    """What the provision step stages under the temporary directory for ``commit``.
+
+    A commit without a published toolchain has every component rebuilt there
+    in full (ARTISAN's Blender and site-packages, ArtiFixer) before publication
+    links unchanged bytes to earlier toolchains. On 2026-10-23 those 10.4 GB
+    were outside admission, and a deploy took the root disk to 6 GB free
+    mid-provision. The newest published toolchain's own file list is the
+    estimate. None when the commit's toolchain exists: the step reuses it.
+    """
+
+    root = Path(runtime_root).expanduser() / "scene-configuration"
+    if (root / commit).exists():
+        return None
+    target = tempfile.gettempdir()
+    try:
+        manifests = sorted(
+            (path for path in root.glob(f"*/{SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST}")
+             if re.fullmatch(r"[0-9a-f]{40}", path.parent.name)),
+            key=lambda path: path.stat().st_mtime, reverse=True,
+        )
+    except OSError:
+        manifests = []
+    for manifest in manifests:
+        try:
+            files = json.loads(manifest.read_text(encoding="utf-8"))["files"]
+            size = sum(int(row["size_bytes"]) for row in files)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        return {
+            "bytes": math.ceil(size * SCENE_CONFIGURATION_STAGING_HEADROOM)
+            + RELEASE_ESTIMATE_BLOCK_BYTES * len(files),
+            "basis": "published_toolchain:" + manifest.parent.name,
+            "file_count": len(files),
+            "target_root": target,
+        }
+    return {
+        "bytes": SCENE_CONFIGURATION_STAGING_DECLARED_BYTES,
+        "basis": "declared_default",
+        "file_count": None,
+        "target_root": target,
+    }
+
+
 def _release_runtime_trees(runtime_root: Path, commit: str) -> set[Path]:
     """The per-release runtime trees, ``<runtime_root>/<component>/<commit>``, present now."""
 
@@ -4755,6 +4805,7 @@ def deploy_control_plane_commit(
         provenance_receipt.setdefault("promotion_eligible", True)
 
     disk_reservation = None
+    staging_reservation = None
     disk_reservation_runtime = None
     disk_reservation_estimate = None
     if disk_reservation_root is not None:
@@ -4774,7 +4825,24 @@ def deploy_control_plane_commit(
                 reservation_root=disk_reservation_root,
                 workload="control_plane_release",
             )
+            # The provision step's scratch copy is admitted on the filesystem
+            # it lands on, before any copy starts, and freed when the step ends.
+            staging_estimate = _scene_configuration_staging_estimate(
+                scene_configuration_runtime_root, source_commit
+            )
+            if staging_estimate is not None:
+                disk_reservation_estimate["scene_configuration_staging"] = staging_estimate
+                staging_reservation = reserve_control_plane_disk(
+                    "control_plane_deploy",
+                    target_root=staging_estimate["target_root"],
+                    expected_bytes=staging_estimate["bytes"],
+                    reservation_root=disk_reservation_root,
+                    workload="scene_configuration_staging",
+                )
+                staging_estimate["reservation"] = staging_reservation.receipt()
         except ControlPlaneDiskBudgetError as exc:
+            if disk_reservation is not None:
+                disk_reservation.release(outcome="blocked")
             raise ControlPlaneDeployError(
                 f"deploy_disk_budget_exceeded:{exc}"
             ) from exc
@@ -4802,6 +4870,7 @@ def deploy_control_plane_commit(
     # any later deploy step fails.
     with (
         disk_reservation or contextlib.nullcontext(),
+        staging_reservation or contextlib.nullcontext(),
         _holding_deploy_lock(state),
         # Before the gate and the full quiesce: only the drained services'
         # triggers stop while their in-flight runs finish.
@@ -4893,6 +4962,8 @@ def deploy_control_plane_commit(
             raise ControlPlaneDeployError(
                 f"deploy_scene_configuration_runtime_invalid:{exc}"
             ) from exc
+        if staging_reservation is not None:
+            staging_reservation.release()  # the step removed its scratch copy
         scene_configuration_environment = _install_scene_configuration_environment(
             Path(scene_configuration_environment_file).expanduser(),
             environment=scene_configuration_runtime["environment"],
