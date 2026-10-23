@@ -160,6 +160,14 @@ def test_generated_geometry_is_allowed_where_reference_depth_is_unknown_or_outsi
     assert preservation.unobserved_geometry_mask(frame('generated', cam=camera(x=20)), [reference]).all()
 
 
+def test_generated_space_cannot_expand_beyond_observed_scene_bounds():
+    references = [frame('near'), frame('distant', depth=4., cam=camera(x=20))]
+    bounds = preservation.observed_scene_bounds(references)
+    assert bounds['additional_space_beyond_observed_bounds'] is False
+    assert preservation.unobserved_geometry_mask(frame('inside', depth=3.), references, extent_bounds=bounds).any()
+    assert not preservation.unobserved_geometry_mask(frame('outside', depth=10.), references, extent_bounds=bounds).any()
+
+
 def test_hallucinated_countertop_is_copied_back_and_excluded_from_generated_geometry(tmp_path):
     source = frame()
     original = deepcopy(source)

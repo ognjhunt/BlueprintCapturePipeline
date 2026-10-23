@@ -18,6 +18,22 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 
+def oriented_photograph(frame):
+    """Rotate portrait pixels and camera together; preserve every captured ray."""
+    from scipy.spatial.transform import Rotation
+
+    camera = deepcopy({'intrinsics': frame['intrinsics'], 'extrinsics': frame['extrinsics']})
+    rgb, k = frame['rgb'], camera['intrinsics']
+    rotated = k['height'] > k['width']
+    if rotated:
+        width, height, fx, fy, cx, cy = (k[key] for key in ('width', 'height', 'fx', 'fy', 'cx', 'cy'))
+        rgb = np.rot90(rgb, -1)
+        k.update(width=height, height=width, fx=fy, fy=fx, cx=height - cy, cy=cx)
+        camera['extrinsics']['quaternion'] = Rotation.from_matrix(
+            frame['rotation'] @ Rotation.from_euler('Z', 90, degrees=True).as_matrix()).as_quat().tolist()
+    return rgb, camera, rotated
+
+
 def prepare_source_photographs(*, frames, root):
     """Cover every source pixel with overlapping 16:9 photographs, without padding.
 
@@ -31,9 +47,10 @@ def prepare_source_photographs(*, frames, root):
     root.mkdir(parents=True, exist_ok=True)
     rows = []
     for index, frame in enumerate(frames):
-        k = frame['intrinsics']
+        rgb, oriented_camera, rotated = oriented_photograph(frame)
+        k = oriented_camera['intrinsics']
         width, height = k['width'], k['height']
-        if frame['rgb'].shape != (height, width, 3):
+        if rgb.shape != (height, width, 3):
             raise ValueError('atlas_chisel_source_grid_changed')
         crop_width = min(width, height * 1280 / 720)
         crop_height = crop_width * 720 / 1280
@@ -47,19 +64,21 @@ def prepare_source_photographs(*, frames, root):
             centered = (x, y, x + crop_width, y + crop_height)
             if not any(np.allclose(centered, box, atol=1e-8, rtol=0) for box in boxes):
                 boxes.append(centered)
-        image = Image.fromarray(frame['rgb'])
+        image = Image.fromarray(rgb)
         for tile, (left, top, right, bottom) in enumerate(boxes):
             pixels = np.asarray(image.resize((1280, 720), Image.Resampling.LANCZOS,
                                              box=(left, top, right, bottom)))
             path = root / f'{index:04d}-{tile:04d}.png'
             _save_image(path, pixels)
             scale = 1280 / (right - left)
-            camera = deepcopy({'intrinsics': k, 'extrinsics': frame['extrinsics']})
+            camera = deepcopy(oriented_camera)
             camera['intrinsics'].update(width=1280, height=720, fx=k['fx'] * scale,
                 fy=k['fy'] * scale, cx=(k['cx'] - left) * scale, cy=(k['cy'] - top) * scale)
             rows.append({'frame_id': f'{frame["frame_id"]}-photo-{tile}', 'source_frame_id': frame['frame_id'],
                 'image_path': str(path), 'image_digest': _sha256_file(path), 'camera': camera,
-                'source_grid': [width, height], 'source_rectangle': [left, top, right, bottom],
+                'source_grid': [frame['intrinsics']['width'], frame['intrinsics']['height']],
+                'oriented_grid': [width, height], 'source_rectangle': [left, top, right, bottom],
+                'clockwise_quarter_turn_with_camera': rotated,
                 'pixel_scale': scale, 'input_basis': 'approved_cleaned_photograph'})
     return rows
 
@@ -147,14 +166,16 @@ def prepare_depth_context(*, frames, selected, root):
 
 
 def generate_chisel_completion(*, frames, selected, candidates, root, pose, context, configuration,
-                               task_runner, max_polls, removed_objects=(), checkpoint=None):
+                               task_runner, max_polls, removed_objects=(), checkpoint=None,
+                               scene_caption='', view_gap_reasons=None):
     """Use the existing admitted task lifecycle, then the existing RGBD fusion seam."""
     from .atlas_result_bundle import _completed_task
     from .atlas_scene_completion import load_generated_views
-    from .atlas_scene_preservation import prepare_completion_views, preserve_generated_view
+    from .atlas_scene_preservation import prepare_completion_views, preserve_generated_view, observed_scene_bounds
     from .website_atlas_tasks import validate_task_request
 
     sources = prepare_source_photographs(frames=frames, root=root / 'source-photographs')
+    extent = observed_scene_bounds(frames)
     groups = target_batches(selected=selected, candidates=candidates, source_count=len(sources))
     chosen = list({row['camera_id']: row for group in groups for row in group}.values())
     # These footprints are derived locally for source-priority fusion and
@@ -165,11 +186,13 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
     photo_uploads = {f'photo-{i}': {'path': row['image_path'], 'sha256': row['image_digest']} for i, row in enumerate(sources)}
     source_frames = [{'imageAsset': {'assetId': f'upload:photo-{i}'}, 'camera': row['camera']}
                      for i, row in enumerate(sources)]
-    caption = ('The exact environment in the source photographs, preserving its architecture, materials, '
-               'lighting, layout, fixtures and existing objects. Continue unseen surfaces naturally. '
-               'Cleared regions remain empty and expose the continuous background surfaces shown in the photographs. '
-               'Preserve that empty space and follow the supplied depth layout. '
-               'Continue existing surfaces without additional objects or fixtures.')
+    caption = (scene_caption.strip() + '\n' if scene_caption.strip() else '') + (
+        'Photorealistic continuation of this exact captured room. Existing geometry, materials, lighting, '
+        'fixtures and visible objects remain in their photographed positions. '
+        'Newly revealed gaps contain only bare continuous architectural and support surfaces matching '
+        'their visible edges: floor, walls, ceiling and empty counter or shelf surfaces where applicable. '
+        'Cleared openings remain open, unobstructed space. Newly revealed areas are empty of movable objects. '
+        'The scene stays inside the captured room, without additional rooms, objects or fixtures.')
     policy = configuration['policy']
     specs, remaining = [], 0.
     for index, group in enumerate(groups):
@@ -198,6 +221,9 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
     binding = {'schema_version': 'atlas_chisel_completion_plan.v1', 'source_pose_digest': pose['digest'],
                'selected_camera_ids': [row['camera_id'] for row in selected], 'source_photographs': sources,
                'prepared_views': rows, 'native_keep_masks_sent': False, 'depth_context': depth_context,
+               'generation_extent': extent, 'view_gap_reasons': view_gap_reasons or {},
+               'additional_conditioning_camera_ids': {row['camera_id']: 'observed_pose_baseline_for_depth'
+                   for row in chosen if row['camera_id'] not in {view['camera_id'] for view in selected}},
                'batches': [{'frame_ids': [row['camera_id'] for row in group], 'request_digest': canonical_digest(request),
                             'maximum_cost_usd': quote['maximum_cost_usd']} for group, request, _, _, quote in specs]}
     binding['digest'] = canonical_digest(binding, digest_field='digest')
@@ -227,7 +253,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
             row = by_id[target['camera_id']]
             fixed, image, receipt, paths = preserve_generated_view(generated=frame, prepared=row, references=frames,
                 output_root=root / 'preserved' / f'{index:04d}-{native_index:04d}',
-                native_result_digest=result['digest'], native_frame_index=native_index)
+                native_result_digest=result['digest'], native_frame_index=native_index, extent_bounds=extent)
             image['source_frame_id'] = row['source_frame_id']
             generated.append(fixed)
             images.append(image)

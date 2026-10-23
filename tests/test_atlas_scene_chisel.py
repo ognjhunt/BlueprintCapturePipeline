@@ -28,9 +28,9 @@ def test_source_tiles_retain_entire_photo_with_calibrated_rays_and_centered_anch
     frame = source()
     original = deepcopy(frame)
     photos = chisel.prepare_source_photographs(frames=[frame], root=tmp_path)
-    assert len(photos) == 5
-    yy, xx = np.indices((1280, 720))
-    covered = np.zeros((1280, 720), bool)
+    assert len(photos) == 1
+    yy, xx = np.indices((720, 1280))
+    covered = np.zeros((720, 1280), bool)
     for row in photos:
         left, top, right, bottom = row['source_rectangle']
         covered |= (xx + .5 >= left) & (xx + .5 < right) & (yy + .5 >= top) & (yy + .5 < bottom)
@@ -38,9 +38,17 @@ def test_source_tiles_retain_entire_photo_with_calibrated_rays_and_centered_anch
         k = row['camera']['intrinsics']
         sx, sy = 100.5, top + 120.5
         tx, ty = (sx - left) * row['pixel_scale'], (sy - top) * row['pixel_scale']
-        assert (tx - k['cx']) / k['fx'] == pytest.approx((sx - 360) / 600)
-        assert (ty - k['cy']) / k['fy'] == pytest.approx((sy - 640) / 600)
-        assert row['camera']['extrinsics'] == frame['extrinsics']
+        assert (tx - k['cx']) / k['fx'] == pytest.approx((sx - 640) / 600)
+        assert (ty - k['cy']) / k['fy'] == pytest.approx((sy - 360) / 600)
+        assert row['clockwise_quarter_turn_with_camera'] is True
+        assert np.array_equal(np.asarray(Image.open(row['image_path'])), np.rot90(frame['rgb'], -1))
+        from blueprint_pipeline.atlas_depth_splat import _rotation_matrix
+        for u, v in ((.5, .5), (719.5, 1279.5), (360.5, 640.5)):
+            original_ray = np.array([(u - 360) / 600, -(v - 640) / 600, -1.]) @ frame['rotation'].T
+            ru, rv = 1280 - v, u
+            rotated_ray = np.array([(ru - k['cx']) / k['fx'], -(rv - k['cy']) / k['fy'], -1.])
+            rotated_ray = rotated_ray @ _rotation_matrix(row['camera']['extrinsics']['quaternion']).T
+            assert np.allclose(original_ray, rotated_ray), 'Pixel rotation must not change its physical ray'
     assert covered.all(), 'Native cropping must not discard source-image context'
     assert any(row['camera']['intrinsics']['cx'] == pytest.approx(640)
                and row['camera']['intrinsics']['cy'] == pytest.approx(360) for row in photos)
@@ -74,13 +82,14 @@ def test_chisel_uploads_only_clean_photos_and_prices_rgbd_once_before_purchase(t
         calls.append(kw)
         request = kw['request']
         assert kw['task'] == 'atlasChisel'
-        assert len(request['contextFrames']) == 2 and len(request['sourceFrames']) == 10
+        assert len(request['contextFrames']) == 2 and len(request['sourceFrames']) == 2
         assert all(set(row) == {'camera', 'depth'} and 'logDepthAsset' in row['depth']
                    for row in request['contextFrames'])
         assert request['returnDepth'] is True and request['enhancePrompt'] is False
         assert kw['price_review']['maximum_cost_usd'] == .1
         assert all('maskAsset' not in f and 'depth' not in f for f in request['sourceFrames'])
-        assert set(kw['uploads']) == {f'photo-{i}' for i in range(10)} | {'depth-0', 'depth-1'}
+        assert set(kw['uploads']) == {'photo-0', 'photo-1', 'depth-0', 'depth-1'}
+        assert 'bare continuous architectural' in request['prompt'] and 'newly revealed' in request['prompt'].lower()
         for row in kw['uploads'].values():
             assert Image.open(row['path']).size == (1280, 720)
         return {'status': 'processing'}

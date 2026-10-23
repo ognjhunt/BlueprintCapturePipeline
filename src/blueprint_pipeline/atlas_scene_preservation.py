@@ -158,7 +158,23 @@ def project_known_context(frames, camera):
     return rgb, keep
 
 
-def unobserved_geometry_mask(generated, references):
+def observed_scene_bounds(frames):
+    """Capture-derived ceiling on expansion, in the retained estimated gauge."""
+    low, high = np.full(3, np.inf), np.full(3, -np.inf)
+    for frame in frames:
+        points, _, _ = _world(frame, _valid(frame))
+        if len(points):
+            low = np.minimum(low, points.min(axis=0))
+            high = np.maximum(high, points.max(axis=0))
+        low, high = np.minimum(low, frame['position']), np.maximum(high, frame['position'])
+    if not np.isfinite(low).all() or not np.isfinite(high).all():
+        raise ValueError('atlas_completion_observed_extent_missing')
+    return {'minimum': low.tolist(), 'maximum': high.tolist(),
+            'basis': 'retained_source_estimated_depth_and_camera_bounds', 'metric_measurement_proven': False,
+            'additional_space_beyond_observed_bounds': False}
+
+
+def unobserved_geometry_mask(generated, references, *, extent_bounds=None):
     """Reject generated surfaces in known geometry or observed free space.
 
     A point behind an observed surface may be unseen/occluded; a point in
@@ -167,6 +183,9 @@ def unobserved_geometry_mask(generated, references):
     valid = _valid(generated)
     points, y, x = _world(generated, valid)
     allowed = np.ones(len(points), bool)
+    if extent_bounds is not None:
+        allowed &= np.all((points >= np.asarray(extent_bounds['minimum'])) &
+                          (points <= np.asarray(extent_bounds['maximum'])), axis=1)
     for reference in references:
         camera = {'intrinsics': reference['intrinsics'], 'extrinsics': reference['extrinsics']}
         z, u, v, inside = _project(points, camera)
@@ -213,7 +232,7 @@ def prepare_completion_views(*, frames, selected, root):
 
 
 def preserve_generated_view(*, generated, prepared, references, output_root, native_result_digest,
-                            native_frame_index):
+                            native_frame_index, extent_bounds=None):
     """Keep source-derived RGB exactly; exclude known regions from new geometry."""
     from PIL import Image
 
@@ -227,7 +246,7 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
         raise ValueError('atlas_completion_preservation_grid_changed')
     composite = generated['rgb'].copy()
     composite[keep] = rgb[keep]
-    allowed = unobserved_geometry_mask(generated, references) & ~keep
+    allowed = unobserved_geometry_mask(generated, references, extent_bounds=extent_bounds) & ~keep
     frame = {**generated, 'rgb': composite, 'confidence': generated['confidence'] * allowed}
     image, known_mask, geometry_mask = (output_root / n for n in ('image.png', 'known.png', 'generated-geometry.png'))
     _save_image(image, composite)
@@ -249,6 +268,7 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
               'depth_basis': 'unchanged_native_depth_with_generated_geometry_mask',
               'confidence_rule': 'native_confidence_times_generated_geometry_mask',
               'source_geometry_modified': False, 'native_outputs_modified': False,
+              **({'generation_extent': extent_bounds} if extent_bounds is not None else {}),
               'claim_ceiling': 'development_only', 'assets': assets}
     report['digest'] = canonical_digest(report, digest_field='digest')
     receipt = output_root / 'preservation.json'

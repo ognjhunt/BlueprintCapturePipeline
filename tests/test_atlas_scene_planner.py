@@ -75,7 +75,9 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
     monkeypatch.setattr(control, "website_webapp_request", lambda **kwargs: {"status": "settled"})
     if completion_mode:
         proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"],
-                    "gap_assessment": ["Complete floor"], "remaining_unknowns": ["Hidden wall"]}
+                    "gap_assessment": ["Complete floor"], "remaining_unknowns": ["Hidden wall"],
+                    'scene_caption': 'The same room with a continuous bare floor.',
+                    'view_gap_reasons': {'a-wide': 'Keep the task anchor', 'b-lower': 'Complete nearby floor'}}
     class Invoker:
         def configure_reservation_audit(self, **_):
             pass
