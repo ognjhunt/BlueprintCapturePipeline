@@ -17,7 +17,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v4"
+COMPLETION_REVISION = "v5"
 
 
 def camera_candidates(frames):

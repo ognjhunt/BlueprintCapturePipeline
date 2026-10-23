@@ -46,6 +46,39 @@ def test_projection_keeps_nearer_surface_in_front_of_farther_surface():
     assert keep.all() and np.all(rgb == np.array([255, 0, 0]))
 
 
+def test_novel_projection_requires_cross_view_depth_and_colour_support_without_changing_source():
+    a, b = frame('a'), frame('b')
+    a['rgb'][2, 2] = (0, 0, 0)
+    before = deepcopy(a)
+    projected = preservation.supported_projection_frames([a, b])
+    assert projected[0]['confidence'][1, 1] > 0
+    assert projected[0]['confidence'][2, 2] == 0
+    assert projected[1]['confidence'][2, 2] == 0
+    assert not projected[0]['confidence'][0].any()
+    for key in ('rgb', 'depth', 'confidence'):
+        assert np.array_equal(a[key], before[key])
+    # Depth disagreement and a single unsupported observation cannot become
+    # locked new-camera pixels, even with positive native confidence.
+    assert not preservation.supported_projection_frames([a, frame(depth=4.)])[0]['confidence'].any()
+    assert not preservation.supported_projection_frames([a])[0]['confidence'].any()
+
+
+def test_novel_context_drops_thin_projection_noise_and_neutralizes_fillable_pixels(tmp_path):
+    a, b = frame('a'), frame('b')
+    a['confidence'][:] = 0
+    b['confidence'][:] = 0
+    a['confidence'][2:4, 2:4] = b['confidence'][2:4, 2:4] = 1
+    selected = [{'camera_id': 'novel', 'source_frame_id': 'a', 'camera': camera(x=.01)},
+                {'camera_id': 'original', 'source_frame_id': 'a', 'camera': camera()}]
+    rows = preservation.prepare_completion_views(frames=[a, b], selected=selected, root=tmp_path)
+    assert not np.asarray(Image.open(rows[0]['keep_mask_path'])).any()
+    assert np.all(np.asarray(Image.open(rows[0]['image_path'])) == 127)
+    assert rows[0]['projection_basis'] == 'cross_view_supported_rgbd_dense_patches'
+    assert np.asarray(Image.open(rows[1]['keep_mask_path'])).all()
+    assert np.array_equal(np.asarray(Image.open(rows[1]['image_path'])), a['rgb'])
+    assert rows[1]['projection_basis'] == 'source_camera_rgb'
+
+
 @pytest.mark.parametrize('depth,allowed', [(1., False), (2., False), (4., True)])
 def test_generated_geometry_cannot_fill_observed_free_space_or_replace_known_surface(depth, allowed):
     reference = frame()
