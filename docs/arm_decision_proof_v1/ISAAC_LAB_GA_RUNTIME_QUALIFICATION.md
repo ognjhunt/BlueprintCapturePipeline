@@ -140,3 +140,11 @@ Camera review must establish whether the missing material affects task views;
 there is no complete-appearance or runtime-improvement qualification yet. Asset
 files belong beside each comparison request under `retained_droid_assets/`, with
 the original relative layout. Bundling does not fetch or replace them.
+
+Attempt 57418653 ended during provider container provisioning, before the
+Blueprint worker started. Its official charge was $0.016 for disk and zero for
+GPU execution. The instance and exact staged objects were confirmed absent.
+The later-cleanup receipt exposed a canonical-digest bug: a derived result had
+retained the original result digest. Recovery now validates the original digest
+and seals the derived result separately, preserving the original bytes, failure
+and costs. All 107 focused authority, CLI and spend-reconciliation tests passed.

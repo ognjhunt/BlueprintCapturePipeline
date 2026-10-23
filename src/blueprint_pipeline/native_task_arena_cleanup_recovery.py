@@ -4,7 +4,18 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from .common import write_json
+from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_paid_authority_io import read as _read, record as _record
+
+
+def _recovered_result(original: Mapping[str, Any], recovery: Mapping[str, Any]) -> dict[str, Any]:
+    result = {**original, "all_staged_objects_absent": True,
+              "post_cleanup_recovery": dict(recovery)}
+    if "result_digest" in original:
+        if original["result_digest"] != canonical_digest(original, digest_field="result_digest"):
+            raise ValueError("native_task_arena_original_result_digest_invalid")
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
 
 
 def _validate_post_cleanup_recovery(result: Mapping[str, Any]) -> None:
@@ -23,8 +34,7 @@ def _validate_post_cleanup_recovery(result: Mapping[str, Any]) -> None:
     )
     original = _read(original_path, "native_task_arena_original_result_invalid")
     cleanup = _read(cleanup_path, "native_task_arena_recovered_cleanup_invalid")
-    expected = {**original, "all_staged_objects_absent": True,
-                "post_cleanup_recovery": dict(recovery)}
+    expected = _recovered_result(original, recovery)
     if (dict(result) != expected
             or original.get("schema_version") != "native_task_arena_vast_run.v1"
             or original.get("status") != "blocked"
@@ -55,11 +65,10 @@ def materialize_native_task_arena_post_cleanup_closeout(
     original_path = Path(result_path).resolve()
     original = _read(original_path, "native_task_arena_original_result_invalid")
     cleanup_path = Path(str(original.get("object_store_cleanup_path") or "")).resolve()
-    result = {**original, "all_staged_objects_absent": True,
-              "post_cleanup_recovery": {
+    result = _recovered_result(original, {
                   "original_result": _record(original_path),
                   "cleanup": _record(cleanup_path),
-              }}
+              })
     _validate_post_cleanup_recovery(result)
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)

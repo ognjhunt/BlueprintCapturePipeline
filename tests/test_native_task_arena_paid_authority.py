@@ -2053,7 +2053,8 @@ def test_the_no_allocation_seal_demands_proof_that_nothing_was_allocated(
         )
 
 
-def test_later_cleanup_preserves_failed_attempt_and_cost(tmp_path):
+@pytest.mark.parametrize("sealed", [False, True])
+def test_later_cleanup_preserves_failed_attempt_and_cost(tmp_path, sealed):
     authority = {"schema_version": paid.AUTHORITY_SCHEMA_VERSION, "authorization_digest": ""}
     authority["authorization_digest"] = canonical_digest(authority, digest_field="authorization_digest")
     write_json(tmp_path / "authority.json", authority)
@@ -2078,6 +2079,8 @@ def test_later_cleanup_preserves_failed_attempt_and_cost(tmp_path):
             ("object_store_cleanup_path", "cleanup.json"), ("adapter_result_path", "adapter.json"),
             ("teardown_manifest_path", "teardown.json"), ("watchdog_receipt_path", "watchdog.json"))},
     }
+    if sealed:
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     source = tmp_path / "result.json"
     write_json(source, result)
     original = source.read_bytes()
@@ -2088,6 +2091,11 @@ def test_later_cleanup_preserves_failed_attempt_and_cost(tmp_path):
     derived = json.loads((tmp_path / "closeout/native_task_arena_post_cleanup_result.json").read_text())
     assert derived["status"] == "blocked" and derived["blockers"] == result["blockers"]
     assert derived["estimated_cost_usd"] == 0.030486
+    if sealed:
+        from blueprint_pipeline.same_goal_spend_reconciliation import _source
+        assert derived["result_digest"] != result["result_digest"]
+        assert _source("terminal_result", tmp_path / "closeout/native_task_arena_post_cleanup_result.json",
+                       derived)["record"]["receipt_digest"] == derived["result_digest"]
     derived["estimated_cost_usd"] = 0
     with pytest.raises(ValueError, match="post_cleanup_recovery_invalid"):
         paid._validate_post_cleanup_recovery(derived)
