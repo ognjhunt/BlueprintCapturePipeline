@@ -302,6 +302,8 @@ def run_automation(
                 visual_digest = background["visual_review_digest"]
             generated_roots = [Path(p) for p in background.get("stage_roots", [])]
             completion = None
+            recovery = None
+            recovery_suffix = ""
             if background["status"] == "fallback_prepared" and "rgbd_view_cost_usd" in policy:
                 from .atlas_scene_completion import complete_scene, COMPLETION_REVISION
                 from .atlas_scene_gaps import retained_completion, completion_plan_path
@@ -344,12 +346,25 @@ def run_automation(
                 visual_digest = canonical_digest({"reviews": [visual_digest, completion["review"]]})
                 generated_roots.extend(Path(p) for p in completion.get("generated_roots", []) or
                                        ([completion["generated_root"]] if completion.get('generated_root') else []))
+                from .atlas_scene_recovery import reviewed_completion_views, recover_reviewed_geometry
+
+                recovered, recovery = recover_reviewed_geometry(
+                    frames=original_frames, geometry_frames=derived_frames,
+                    reviewed_views=reviewed_completion_views([*prior_reports, completion]),
+                    root=output_root / "completion_geometry_recovery", checkpoint=checkpoint)
+                if recovered:
+                    derived_frames.extend(recovered)
+                    provenance.append(recovery["digest"])
+                    recovery_suffix = "-recovered-" + recovery["digest"][7:23]
+                background["geometry_recovery"] = recovery
+                background["recovered_completion_frame_count"] = len(recovered)
                 background["completion"] = completion
                 background["reconstruction_frame_count"] = len(derived_frames)
                 background["generated_completion_frame_count"] = len(generated)
             # Retain the earlier baseline rather than letting its existing
             # manifest silently bypass the newly generated geometry.
-            splat_root = output_root / (f"background_completed_splat-{COMPLETION_REVISION}" if completion else "background_splat")
+            splat_root = output_root / ((f"background_completed_splat-{COMPLETION_REVISION}" + recovery_suffix)
+                                        if completion else "background_splat")
             manifest_path = splat_root / "atlas_depth_splat_manifest.json"
             splat = (
                 json.loads(manifest_path.read_text())
@@ -370,7 +385,8 @@ def run_automation(
             mesh_root = None
             if "mesh_export_cost_usd" in policy:
                 spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
-                mesh_root = output_root / (f"background_completed_mesh-{COMPLETION_REVISION}" if completion else "background_mesh")
+                mesh_root = output_root / ((f"background_completed_mesh-{COMPLETION_REVISION}" + recovery_suffix)
+                                          if completion else "background_mesh")
                 quote = {
                     "schema_version": "website_atlas_task_price_review.v1",
                     "task": "splats2Mesh",
@@ -421,7 +437,7 @@ def run_automation(
                       ("completion.json", "context-fov-audit.json")] +
                      [Path(p) for p in completion.get("preservation_paths", [])] +
                      [Path(p) for prior_report in prior_reports for p in prior_report.get('preservation_paths', [])]
-                     if completion else []),
+                     if completion else []) + ([Path(p) for p in recovery["preservation_paths"]] if recovery else []),
             )
             background.update(
                 status="completed",
