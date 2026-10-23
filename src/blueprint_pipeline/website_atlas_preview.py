@@ -33,7 +33,7 @@ from typing import Any
 from .common import write_json
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .website_atlas_preview_store import (
-    _ID, ARTIFACT_KIND, JOB_FILE, LOCK_FILE, SCHEMA, bundle_filename, capture_withdrawn as _withdrawn,
+    _ID, ARTIFACT_KIND, JOB_FILE, LOCK_FILE, MAXIMUM_JOB_SECONDS, SCHEMA, TERMINAL, bundle_filename, capture_withdrawn as _withdrawn,
     read_job as _read)
 
 logger = logging.getLogger(__name__)
@@ -42,8 +42,6 @@ ROUTING_ENV = "BLUEPRINT_WEBSITE_ATLAS_ROUTING"
 ALLOWLIST_ENV = "BLUEPRINT_WEBSITE_ATLAS_CAPTURE_IDS_JSON"
 ROUTING_MODES = ("off", "allowlist", "consented")
 PREVIEW_SCHEMA = "website_atlas_preview.v1"
-TERMINAL = frozenset({"ready", "needs_input", "failed", "withdrawn"})
-MAXIMUM_JOB_SECONDS = 7 * 86400
 MAXIMUM_TRANSIENT_FAILURES = 8
 MAXIMUM_CLEANUP_ATTEMPTS = 12
 AUTHORITY_RECHECK_SECONDS = 1800

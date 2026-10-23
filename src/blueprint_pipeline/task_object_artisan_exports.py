@@ -97,6 +97,46 @@ def _measured(configuration, name):
     return float(row["value"])
 
 
+def _fixed_descendants(root, joints):
+    members = {root}
+    while True:
+        added = {row["child_link_id"] for row in joints
+                 if row["joint_type"] == "fixed" and row["parent_link_id"] in members} - members
+        if not added:
+            return members
+        members.update(added)
+
+
+def _mass_groups(links, joints, configuration, task):
+    """A split door's fixed features share its mass range, not the carcass range.
+
+    Required fixed interior parts remain separate mass admissions even though
+    they are connected to the carcass. Every link contributes exactly once.
+    """
+    parents = {row["child_link_id"]: row for row in joints}
+    interior = {row["part_id"] for row in configuration.get("required_parts") or []
+                if row.get("role") == "fixed_interior"}
+    groups = {}
+    for name, link in links.items():
+        anchor = name
+        while anchor in parents and anchor not in interior:
+            edge = parents[anchor]
+            if edge["joint_type"] != "fixed":
+                break
+            anchor = edge["parent_link_id"]
+        group = groups.setdefault(anchor, {"link_ids": [], "mass_kg": 0.0})
+        group["link_ids"].append(name)
+        group["mass_kg"] += link["mass_kg"]
+    for anchor, group in groups.items():
+        key = "task_part_mass_kg_bounds" if task and anchor == task["child_link_id"] else "mass_kg_bounds"
+        if anchor in interior and "fixed_part_mass_kg_bounds" in configuration["required_output"]:
+            key = "fixed_part_mass_kg_bounds"
+        interval = configuration["required_output"][key]
+        require(float(interval[0]) <= group["mass_kg"] <= float(interval[1]), "artisan_mass_outside_admitted_bounds")
+        group.update(bounds_key=key, admitted_bounds_kg=list(interval))
+    return groups
+
+
 def _material_overlay(stage, configuration, *, colliders):
     from pxr import UsdPhysics, UsdShade
     required = configuration["required_output"]
@@ -342,12 +382,6 @@ def validate_final_usd(path: Path, request: dict) -> dict:
                 and _finite(principal_axes) and math.isclose(sum(v*v for v in principal_axes), 1, abs_tol=1e-5)
                 and UsdPhysics.RigidBodyAPI(body).GetKinematicEnabledAttr().Get() is not True
                 and UsdPhysics.RigidBodyAPI(body).GetRigidBodyEnabledAttr().Get() is not False, "artisan_physics_properties_invalid")
-        mass_key = "task_part_mass_kg_bounds" if task and name == task["child_link_id"] else "mass_kg_bounds"
-        part = next((row for row in configuration.get("required_parts") or [] if row["part_id"] == name), None)
-        if part and part.get("role") == "fixed_interior":
-            mass_key = "fixed_part_mass_kg_bounds" if "fixed_part_mass_kg_bounds" in configuration["required_output"] else mass_key
-        interval = configuration["required_output"][mass_key]
-        require(float(interval[0]) <= mass <= float(interval[1]), "artisan_mass_outside_admitted_bounds")
         measured_mass = _measured(configuration, "mass_kg") if not articulated else None
         require(measured_mass is None or math.isclose(mass, measured_mass, rel_tol=1e-6), "artisan_measured_mass_changed")
         local_bounds = _bounds(owned, cache=cache, frame=transforms.GetLocalToWorldTransform(body).GetInverse())
@@ -373,15 +407,17 @@ def validate_final_usd(path: Path, request: dict) -> dict:
             "collision_prim_paths": sorted(str(p.GetPath()) for p in owned),
             "physics_materials": list({row["path"]: row for row in materials}.values()),
             "collision_bounds_link_frame_m": local_bounds}
+    mass_groups = _mass_groups(link_rows, graph_joints, configuration, task)
     handles = []
     whole_mass = sum(row["mass_kg"] for row in link_rows.values())
     measured_assembly_mass = _measured(configuration, "mass_kg") if articulated else None
     require(measured_assembly_mass is None or math.isclose(whole_mass, measured_assembly_mass, rel_tol=1e-6),
             "artisan_measured_assembly_mass_changed")
     if articulated:
+        moving_links = _fixed_descendants(task["child_link_id"], graph_joints)
         handle_uids = {p.GetCustomDataByKey("blueprint:visualUid") for p in visuals if p.GetCustomDataByKey("blueprint:visualName") == "task_handle"}
         handles = [p for p in colliders if p.GetCustomDataByKey("blueprint:sourceVisualUid") in handle_uids
-                   and _owner(p, UsdPhysics).GetName() == task["child_link_id"]]
+                   and _owner(p, UsdPhysics).GetName() in moving_links]
         require(handle_uids and handles, "artisan_useful_task_handle_missing")
     required_parts = configuration.get("required_part_ids") or [row["part_id"] for row in configuration.get("required_parts") or []]
     names = set(link_rows) | {p.GetCustomDataByKey("blueprint:visualName") for p in visuals}
@@ -401,6 +437,7 @@ def validate_final_usd(path: Path, request: dict) -> dict:
         "source_uncertainty_m": request["dimension_uncertainty_m"], "construction_tolerance_m": tolerance,
         "links": link_rows, "articulation_graph": graph, "task_joint": task,
         "whole_assembly_mass_kg": whole_mass,
+        "mass_group_readback": mass_groups,
         "joint_prim_paths": joint_paths, "handle_prim_paths": sorted(str(p.GetPath()) for p in handles),
         "handle_grasp_point_link_m": handle_point,
         "interior_cavity_readback": cavity_readback,
