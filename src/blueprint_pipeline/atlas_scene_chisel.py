@@ -167,7 +167,7 @@ def prepare_depth_context(*, frames, selected, root):
 
 def generate_chisel_completion(*, frames, selected, candidates, root, pose, context, configuration,
                                task_runner, max_polls, removed_objects=(), checkpoint=None,
-                               scene_caption='', view_gap_reasons=None):
+                               scene_caption='', view_gap_reasons=None, geometry_frames=None):
     """Use the existing admitted task lifecycle, then the existing RGBD fusion seam."""
     from .atlas_result_bundle import _completed_task
     from .atlas_scene_completion import load_generated_views
@@ -175,16 +175,30 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
     from .website_atlas_tasks import validate_task_request
 
     sources = prepare_source_photographs(frames=frames, root=root / 'source-photographs')
+    references = frames if geometry_frames is None else geometry_frames
     extent = observed_scene_bounds(frames)
     groups = target_batches(selected=selected, candidates=candidates, source_count=len(sources))
     chosen = list({row['camera_id']: row for group in groups for row in group}.values())
     # These footprints are derived locally for source-priority fusion and
     # inspection only. No masks or projected RGB canvases are sent to Chisel.
     rows = prepare_completion_views(frames=frames, selected=chosen, root=root / 'source-footprints')
-    depth_context = prepare_depth_context(frames=frames, selected=chosen, root=root / 'depth-context')
+    depth_context = prepare_depth_context(frames=references, selected=chosen, root=root / 'depth-context')
+    selected_by_id = {row['camera_id']: row for row in selected}
     for row in rows:
         source_depth = depth_context[row['frame_id']]
         row.update(source_depth_context_path=source_depth['path'], source_depth_context_digest=source_depth['sha256'])
+        if any(view.get('completion_gap_mask_path') for view in selected):
+            target = selected_by_id.get(row['frame_id'])
+            if target is None:
+                # Extra translated anchors condition depth; they are not fill requests.
+                from .atlas_scene_preservation import _save_image
+                path = root / 'source-footprints' / (row['frame_id'] + '-no-fill.png')
+                _save_image(path, np.zeros((720, 1280), np.uint8))
+                row.update(completion_gap_mask_path=str(path), completion_gap_mask_digest=_sha256_file(path),
+                           completion_gap_ids=[], completion_gap_pixel_count=0)
+            else:
+                row.update({key: target[key] for key in ('completion_gap_mask_path', 'completion_gap_mask_digest',
+                                                        'completion_gap_ids', 'completion_gap_pixel_count')})
     by_id = {row['frame_id']: row for row in rows}
     photo_uploads = {f'photo-{i}': {'path': row['image_path'], 'sha256': row['image_digest']} for i, row in enumerate(sources)}
     source_frames = [{'imageAsset': {'assetId': f'upload:photo-{i}'}, 'camera': row['camera']}
@@ -236,7 +250,8 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
     write_json(plan_path, binding)
     assets = [plan_path, *[Path(row['image_path']) for row in sources],
               *[Path(row['path']) for row in depth_context.values()],
-              *[Path(row[key]) for row in rows for key in ('image_path', 'keep_mask_path')]]
+              *[Path(row[key]) for row in rows for key in ('image_path', 'keep_mask_path')],
+              *[Path(row['completion_gap_mask_path']) for row in rows if row.get('completion_gap_mask_path')]]
     generated, images, roots, digests, receipts, seen = [], [], [], [], [], set()
     source_depth_hole_pixels = 0
     for index, (group, request, uploads, stage, quote) in enumerate(specs):
@@ -247,7 +262,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
             price_review=quote, max_polls=max_polls)
         if state['status'] != 'completed':
             return None, {'status': 'processing', 'stage': 'scene_completion', 'operation_id': state.get('operation_id')}
-        result, returned, _ = load_generated_views(stage, ['completion-' + row['camera_id'] for row in group])
+        result, returned, _ = load_generated_views(stage, ['completion-' + root.name + '-' + row['camera_id'] for row in group])
         roots.append(str(stage))
         digests.append(result['digest'])
         for native_index, (frame, target) in enumerate(zip(returned, group, strict=True)):
@@ -255,7 +270,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
                 continue
             seen.add(target['camera_id'])
             row = by_id[target['camera_id']]
-            fixed, image, receipt, paths = preserve_generated_view(generated=frame, prepared=row, references=frames,
+            fixed, image, receipt, paths = preserve_generated_view(generated=frame, prepared=row, references=references,
                 output_root=root / 'preserved' / f'{index:04d}-{native_index:04d}',
                 native_result_digest=result['digest'], native_frame_index=native_index, extent_bounds=extent)
             image['source_frame_id'] = row['source_frame_id']

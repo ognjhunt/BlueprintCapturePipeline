@@ -17,7 +17,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-COMPLETION_REVISION = "v9"
+COMPLETION_REVISION = "v10"
 
 
 def camera_candidates(frames):
@@ -99,7 +99,8 @@ def load_generated_views(root: Path, frame_ids):
 
 
 def complete_scene(*, pose_root, pose, frames, review, root, context, configuration,
-                   task_runner, planner_runner, release_blockers, max_polls, checkpoint=None):
+                   task_runner, planner_runner, release_blockers, max_polls, checkpoint=None,
+                   existing_geometry_frames=()):
     """Plan -> generate RGBD -> independent review, all resumable under one cap."""
     from .website_image_completion import verify_completed_background
 
@@ -109,6 +110,18 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     candidates = camera_candidates(frames)
     from .atlas_scene_preservation import observed_scene_bounds
     extent = observed_scene_bounds(frames)
+    from .atlas_scene_gaps import survey_gaps, select_gap_mask
+    geometry_frames = [*frames, *existing_geometry_frames]
+    gaps = survey_gaps(frames=frames, geometry_frames=geometry_frames, candidates=candidates, root=root / 'gaps')
+    if not any(row['gaps'] for row in gaps['views']):
+        report = {'status': 'passed', 'generation_result_digest': gaps['digest'], 'generated_roots': [],
+                  'generated_frame_ids': [], 'preservation_paths': [str(root / 'gaps/survey.json')],
+                  'review': {'status': 'not_required', 'reason': 'no_eligible_geometry_gaps'},
+                  'gap_survey_digest': gaps['digest'], 'completion_extent': 'identified_missing_geometry_only',
+                  'generation_extent': extent, 'generated_geometry_ready': True, 'claim_ceiling': 'development_only'}
+        report['digest'] = canonical_digest(report, digest_field='digest')
+        write_json(root / 'completion.json', report)
+        return [], report
     originals = {}
     survey_frames = []
     usage = pose["operation_receipt"]["input_usage"]["frames"]
@@ -135,7 +148,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                 "candidate_camera_ids": candidates,
                 "generation_extent": extent, "scope": "nearby_task_relevant_surface_gaps_only",
                 "removal_instruction": review["automation"]["removal_instruction"],
-                "uncaptured_regions": review.get("uncaptured_regions", []), "previews": [],
+                "uncaptured_regions": review.get("uncaptured_regions", []), "previews": gaps['previews'],
+                'gap_survey': {k: v for k, v in gaps.items() if k != 'previews'},
                 "input_basis": "generated_background_not_raw_capture", "claim_ceiling": "development_only"}
     baseline_path = root.parent / "background_splat/atlas_depth_splat_manifest.json"
     if baseline_path.is_file():
@@ -184,6 +198,11 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     if (not proposal.get('scene_caption', '').strip() or len(reasons) != len(entries)
             or set(reasons) != set(ids) or any(not value.strip() for value in reasons.values())):
         raise ValueError('atlas_completion_task_gap_plan_missing')
+    gap_views = {row['camera_id']: row for row in gaps['views']}
+    entries_by_id = {row['camera_id']: row for row in entries}
+    for index, view in enumerate(selected):
+        view.update(select_gap_mask(gap_views[view['camera_id']], entries_by_id[view['camera_id']].get('gap_ids', []),
+                                   root / 'gaps' / f'selected-{index:04d}.png'))
     from .atlas_scene_chisel import generate_chisel_completion
     _, blockers = release_blockers()
     if blockers:
@@ -192,7 +211,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         root=root, pose=pose, context=context, configuration=configuration, task_runner=task_runner,
         max_polls=max_polls, removed_objects=[obj["label"] for obj in review["automation"]["objects"]
             if obj["disposition"] == "remove"], checkpoint=checkpoint,
-        scene_caption=proposal['scene_caption'], view_gap_reasons=reasons)
+        scene_caption=proposal['scene_caption'], view_gap_reasons=reasons, geometry_frames=geometry_frames)
     if completed is None:
         return None, generation
     generated, images = completed
@@ -218,7 +237,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "generated_frame_ids": [row["frame_id"] for row in generated], "review": visual,
               "selected_camera_ids": ids, "target_cameras": [row["camera"] for row in selected],
               "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": proposal["remaining_unknowns"],
-              "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "bounded_task_relevant_gaps",
+              "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "identified_missing_geometry_only",
+              'gap_survey_digest': gaps['digest'],
               "generation_extent": extent, "scene_caption": proposal['scene_caption'],
               "view_gap_reasons": reasons,
               "claim_ceiling": "development_only",
