@@ -17,7 +17,8 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 
-def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None):
+def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None,
+               expected_depth=None):
     """Connected missing surfaces inside photographed or enclosed coverage.
 
     A mask never turns the exterior black canvas into a whole-room request.
@@ -27,6 +28,19 @@ def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None)
     from scipy.ndimage import binary_fill_holes
 
     covered = np.isfinite(depth) & (depth > 0)
+    if expected_depth is not None:
+        from .atlas_depth_splat import MAX_MEDIAN_CROSS_VIEW_RESIDUAL
+
+        expected = np.asarray(expected_depth)
+        if expected.shape != depth.shape:
+            raise ValueError('atlas_completion_expected_depth_grid_changed')
+        expected_valid = np.isfinite(expected) & (expected > 0)
+        # A wall/floor behind a missing foreground surface does not close its
+        # hole. Reviewed generated depth is a planning hypothesis, never an
+        # authority to overwrite a nearer retained surface or source free space.
+        covered &= ~(expected_valid &
+                     (depth > expected * (1 + MAX_MEDIAN_CROSS_VIEW_RESIDUAL)))
+        photographed = photographed | expected_valid
     inside = photographed | binary_fill_holes(covered)
     if scene_outline:
         # Only a candidate planning domain: source free-space/extent rejection
@@ -57,7 +71,31 @@ def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None)
     return result, regions
 
 
-def survey_gaps(*, frames, geometry_frames, candidates, root):
+def project_exported_splat(splat, camera):
+    """CPU coverage diagnostic of retained export centers, not a beauty render.
+
+    A one-pixel support border suppresses point-raster pinholes. Large missing
+    patches remain visible; no triangle or room surface is invented here.
+    """
+    import cv2
+    from .atlas_scene_preservation import _project
+    from .splat_scene_analysis import DEFAULT_VISIBLE_OPACITY
+
+    k = camera['intrinsics']
+    shape = (int(k['height']), int(k['width']))
+    points = splat.xyz[np.isfinite(splat.xyz).all(axis=1) &
+                       (splat.opacity_sigmoid >= DEFAULT_VISIBLE_OPACITY)]
+    z, u, v, inside = _project(points, camera)
+    pixels = np.floor(v[inside]).astype(int) * shape[1] + np.floor(u[inside]).astype(int)
+    depth = np.full(shape, np.inf, np.float32)
+    np.minimum.at(depth.reshape(-1), pixels, z[inside])
+    depth = cv2.erode(depth, np.ones((3, 3), np.uint8),
+                      borderType=cv2.BORDER_CONSTANT, borderValue=float('inf'))
+    return np.where(np.isfinite(depth), depth, 0).astype(np.float32)
+
+
+def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=(),
+                splat_root=None):
     """Survey all known directions; the existing production agent chooses gaps."""
     from .atlas_scene_chisel import project_source_depth
     from .atlas_scene_preservation import prepare_completion_views, _save_image
@@ -69,6 +107,24 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
         **{key: hashlib.sha256(np.ascontiguousarray(f[key]).tobytes()).hexdigest()
            for key in ('rgb', 'depth', 'confidence')}} for f in geometry_frames],
         'photograph_frame_ids': [f['frame_id'] for f in frames]}
+    if expected_frames:
+        binding['expected_frames'] = [{
+            'frame_id': f['frame_id'], 'intrinsics': f['intrinsics'], 'extrinsics': f['extrinsics'],
+            **{key: hashlib.sha256(np.ascontiguousarray(f[key]).tobytes()).hexdigest()
+               for key in ('rgb', 'depth', 'confidence')}} for f in expected_frames]
+    splat = None
+    if splat_root is not None:
+        from .atlas_depth_splat import decode_spz
+
+        manifest = json.loads((splat_root / 'atlas_depth_splat_manifest.json').read_text())
+        if manifest.get('digest') != canonical_digest(manifest, digest_field='digest'):
+            raise ValueError('atlas_completion_export_changed')
+        asset = next(r for r in manifest['outputs'] if r['role'] == 'splat_spz')
+        path = splat_root / asset['path']
+        if path.is_symlink() or not path.resolve().is_relative_to(splat_root.resolve()) or _sha256_file(path) != asset['sha256']:
+            raise ValueError('atlas_completion_export_changed')
+        binding['export_manifest_digest'] = manifest['digest']
+        splat = decode_spz(path.read_bytes())
     binding_digest = canonical_digest(binding)
     saved = root / 'survey.json'
     if saved.is_file():
@@ -90,7 +146,10 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
     for index, (candidate, source) in enumerate(zip(candidates, prepared, strict=True)):
         rgb = np.asarray(Image.open(source['image_path']).convert('RGB'))
         photographed = np.asarray(Image.open(source['keep_mask_path']).convert('L')) == 255
-        depth = project_source_depth(geometry_frames, candidate['camera'])
+        depth = (project_exported_splat(splat, candidate['camera']) if splat is not None
+                 else project_source_depth(geometry_frames, candidate['camera']))
+        expected = (project_source_depth(expected_frames, candidate['camera'])
+                    if expected_frames else None)
         outline = candidate.get('gap_domain') == 'projected_scene_outline_hypothesis'
         domain = None
         if candidate.get('gap_target_polygon_pixels') is not None:
@@ -98,7 +157,8 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
             domain = np.zeros(depth.shape, np.uint8)
             cv2.fillConvexPoly(domain, np.rint(candidate['gap_target_polygon_pixels']).astype(np.int32), 1)
         labels, regions = gap_labels(depth, photographed, scene_outline=outline,
-                                     candidate_mask=None if domain is None else domain.astype(bool))
+                                     candidate_mask=None if domain is None else domain.astype(bool),
+                                     expected_depth=expected)
         path = root / f'{index:04d}-gaps.png'
         _save_image(path, labels)
         rows.append({'camera_id': candidate['camera_id'], 'source_frame_id': candidate['source_frame_id'],
@@ -120,9 +180,12 @@ def survey_gaps(*, frames, geometry_frames, candidates, root):
                              'camera_id': candidate['camera_id'], 'kind': 'geometry_gap_survey'})
     report = {'schema_version': 'atlas_geometry_gap_survey.v1', 'views': rows, 'previews': previews,
               'binding_digest': binding_digest,
-              'basis': 'retained_rgbd_geometry_coverage_not_splat_alpha',
+              'basis': ('exported_splat_centers_and_reviewed_depth_hypotheses' if splat is not None
+                        else 'retained_rgbd_geometry_coverage_not_splat_alpha'),
               'legend': 'Magenta identifies candidate missing geometry; black exterior is not a fill target.',
-              'renderer': 'atlas_planar_depth_projection.v1', 'claim_ceiling': 'development_only'}
+              'renderer': ('atlas_exported_center_projection.v1' if splat is not None
+                           else 'atlas_planar_depth_projection.v1'),
+              'claim_ceiling': 'development_only'}
     report['digest'] = canonical_digest(report, digest_field='digest')
     write_json(root / 'survey.json', report)
     return report

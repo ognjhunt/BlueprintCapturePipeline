@@ -38,6 +38,25 @@ def test_blank_exterior_and_raster_pinholes_are_not_scene_completion_targets():
     assert labels[50, 50] == 0
 
 
+def test_background_seen_through_missing_foreground_is_still_a_surface_gap():
+    depth = np.full((60, 80), 2., np.float32)
+    expected = depth.copy()
+    depth[15:40, 25:55] = 5.  # The back wall is present, the required nearer surface is absent.
+    labels, regions = gaps.gap_labels(depth, np.ones(depth.shape, bool), expected_depth=expected)
+    assert len(regions) == 1 and labels[20:35, 30:50].all()
+    assert not labels[:15].any()
+
+
+def test_depth_hypotheses_do_not_reject_nearer_surfaces_or_small_distortions():
+    depth = np.full((60, 80), 2.04, np.float32)
+    expected = np.full_like(depth, 2.)
+    depth[15:40, 25:55] = 1.  # A retained occluder is authoritative.
+    labels, regions = gaps.gap_labels(depth, np.ones(depth.shape, bool), expected_depth=expected)
+    assert not regions and not labels.any()
+    with pytest.raises(ValueError, match='expected_depth_grid_changed'):
+        gaps.gap_labels(depth, np.ones(depth.shape, bool), expected_depth=expected[:10])
+
+
 def test_photographed_missing_depth_can_reach_image_edge_without_filling_unseen_canvas():
     depth = np.zeros((60, 80), np.float32)
     photo = np.zeros(depth.shape, bool)

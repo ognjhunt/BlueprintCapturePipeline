@@ -188,11 +188,14 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
 
 @pytest.mark.parametrize("drop_generated", [False, True])
 @pytest.mark.parametrize("recovery_enabled", [False, True])
-def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_path, monkeypatch, drop_generated, recovery_enabled):
+@pytest.mark.parametrize("coverage_enabled", [False, True])
+def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_path, monkeypatch, drop_generated, recovery_enabled, coverage_enabled):
     from blueprint_pipeline import atlas_scene_automation as worker, atlas_background_automation
     from blueprint_pipeline import atlas_scene_measurements, atlas_depth_splat, atlas_result_bundle
-    from blueprint_pipeline import atlas_scene_recovery
-    monkeypatch.setattr(atlas_scene_recovery, "reviewed_completion_views", lambda _: [])
+    from blueprint_pipeline import atlas_scene_recovery, atlas_scene_task_regions, atlas_scene_coverage
+    monkeypatch.setattr(atlas_scene_recovery, "reviewed_completion_views",
+                        lambda _: [{'frame': frame('reviewed-native')}] if coverage_enabled else [])
+    monkeypatch.setattr(atlas_scene_task_regions, 'plan_task_regions', lambda **_: {'digest': 'task-plan'})
     monkeypatch.setattr(atlas_scene_recovery, "recover_reviewed_geometry",
                         lambda **_: ([frame("recovered")] if recovery_enabled else [],
                                      {"preservation_paths": [], "digest": "sha256:recovery"}))
@@ -214,6 +217,15 @@ def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_pa
         return {"digest": "splat", "generated_result_digests": kw["generated_result_digests"],
                 "frames": [{"frame_id": f["frame_id"]} for f in (kw["frames"][:1] if drop_generated else kw["frames"])]}
     monkeypatch.setattr(atlas_depth_splat, "write_depth_splat", build)
+    coverage_calls = []
+    def cover(**kw):
+        coverage_calls.append(kw)
+        assert kw['region_plan']['digest'] == 'task-plan'
+        assert kw['geometry_frames'][-1]['frame_id'] == ('recovered' if recovery_enabled else 'novel')
+        manifest = {'digest': 'coverage-splat'}
+        return (kw['geometry_frames'], manifest, tmp_path / 'refined-splat'), {
+            'generated_roots': [], 'preservation_paths': [], 'task_coverage_sufficient': True}
+    monkeypatch.setattr(atlas_scene_coverage, 'refine_scene_coverage', cover)
     exports = []
     monkeypatch.setattr(atlas_result_bundle, "export_pose_bundle", lambda **kw: exports.append(kw) or {"zip_path": "scene.zip"})
     result = worker.run_automation(pose_root=tmp_path, inputs={},
@@ -223,6 +235,11 @@ def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_pa
     if drop_generated:
         assert result["status"] == "needs_input" and "did_not_consume_generated_depth" in result["background"]["reason"]
         assert not exports
+        assert not coverage_calls
     else:
         assert result["status"] == "completed" and result["background"]["reconstruction_frame_count"] == (3 if recovery_enabled else 2)
         assert exports[0]["generated_roots"] == [tmp_path / "generated"]
+        assert len(coverage_calls) == int(coverage_enabled)
+        if coverage_enabled:
+            assert exports[0]['splat_root'] == tmp_path / 'refined-splat'
+            assert result['background']['export_coverage']['task_coverage_sufficient'] is True
