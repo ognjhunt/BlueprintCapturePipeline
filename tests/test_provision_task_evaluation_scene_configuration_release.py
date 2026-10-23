@@ -209,3 +209,31 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
     with pytest.raises(deployment.ControlPlaneDeployError, match="environment_invalid"):
         deployment._install_scene_configuration_environment(
             installed, environment={**result["environment"], "UNEXPECTED_SETTING": "value"})
+
+
+def test_staging_a_killed_provision_left_behind_is_swept_before_the_next_one(tmp_path):
+    # 2026-10-23: three stopped deploys each left ~11 GB of staging and filled the root disk.
+    now = 1_800_000_000.0
+    old = now - subject.STALE_STAGING_SECONDS - 60
+    stale = [tmp_path / "scene-configuration-components-dead1", tmp_path / "blueprint-artisan-component-dead2"]
+    fresh = tmp_path / "scene-configuration-components-live"
+    other = tmp_path / "unrelated-tool-cache"
+    for path in [*stale, fresh, other]:
+        (path / "nested").mkdir(parents=True)
+        (path / "nested" / "weights.bin").write_bytes(b"x")
+        (path / "nested").chmod(0o500)  # read-only staging still goes
+    for path in [*stale, other]:
+        os.utime(path, (old, old))
+    os.utime(fresh, (now - 60, now - 60))
+    assert subject.sweep_stale_staging(tmp_path, now=now) == sorted(path.name for path in stale)
+    assert not any(path.exists() for path in stale)
+    assert fresh.is_dir() and other.is_dir()  # a running provision and other tools are untouched
+    for path in (fresh, other):
+        (path / "nested").chmod(0o700)
+
+
+def test_a_stopped_provision_exits_through_its_cleanup():
+    import signal
+    with pytest.raises(SystemExit) as stopped:
+        subject._terminated(signal.SIGTERM, None)
+    assert stopped.value.code == 128 + signal.SIGTERM
