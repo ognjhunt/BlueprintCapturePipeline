@@ -502,6 +502,21 @@ def test_a_failed_job_resumes_once_an_operator_retries_it_after_a_fix(monkeypatc
         preview.retry_failed_job(site.job, now=world.now)
 
 
+def test_a_job_stopped_for_background_review_resumes_but_one_needing_a_new_capture_does_not(monkeypatch, site):
+    """2026-10-24: a cleanup stopped at needs_input could not resume once its cause was fixed."""
+    _enqueue(site)
+    stopped = {"status": "needs_input", "reason": "atlas_object_mask_view_coverage_incomplete"}
+    world = World(monkeypatch, site, [stopped, _completed])
+    assert world.advance() == "needs_input"
+    assert world.advance() == "needs_input" and len(world.runs) == 1  # stopped until resumed
+    job = preview.retry_failed_job(site.job, now=world.now)
+    assert job["state"] == "processing" and job["retries"][0]["reason"] == "atlas_background_review_required"
+    assert world.advance() == "ready" and len(world.runs) == 2
+    site.job.write_text(json.dumps({**_job(site), "state": "needs_input", "reason": "atlas_scene_planner_abstained"}))
+    with pytest.raises(ValueError, match="requires_recoverable_failure"):
+        preview.retry_failed_job(site.job, now=world.now)
+
+
 def test_a_retry_refuses_an_expired_or_withdrawn_job(monkeypatch, site):
     _enqueue(site)
     job = _job(site)
