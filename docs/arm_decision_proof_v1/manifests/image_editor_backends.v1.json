@@ -1,24 +1,24 @@
 {
- "schema_version": "image_editor_backend_registry.v1",
- "note": "Adding a newly released image editor is a row here, not a code change. Every row records the terms the model may be used under, because these artifacts reach customers. An entry without recorded terms is refused rather than defaulted.",
- "backends": [
-  {
+  "schema_version": "image_editor_backend_registry.v1",
+  "note": "Adding a newly released image editor is a row here, not a code change. Every row records the terms the model may be used under, because these artifacts reach customers. An entry without recorded terms is refused rather than defaulted.",
+  "backends": [
+    {
       "backend_id": "artifixer",
       "capability": "artifixer_direct",
-   "model_identity": "ArtiFixer3D paired appearance repair",
-   "license": "see upstream ArtiFixer3D THIRD-PARTY-NOTICES",
-   "license_url": "https://github.com/artifixer/artifixer3d",
-   "commercial_use_permitted": false,
-   "recorded_on": "2026-08-13",
-   "notes": "Upstream bundles several components; treat as non-commercial until each is cleared individually."
-  },
+      "model_identity": "ArtiFixer3D paired appearance repair",
+      "license": "see upstream ArtiFixer3D THIRD-PARTY-NOTICES",
+      "license_url": "https://github.com/artifixer/artifixer3d",
+      "commercial_use_permitted": false,
+      "recorded_on": "2026-08-13",
+      "notes": "Upstream bundles several components; treat as non-commercial until each is cleared individually."
+    },
     {
       "backend_id": "vibe_image_edit",
       "capability": "artifixer_direct",
-   "model_identity": "VIBE-Image-Edit (iitolstykh/VIBE-Image-Edit)",
-   "license": "Apache-2.0",
-   "license_url": "https://github.com/ai-forever/VIBE",
-   "commercial_use_permitted": true,
+      "model_identity": "VIBE-Image-Edit (iitolstykh/VIBE-Image-Edit)",
+      "license": "Apache-2.0",
+      "license_url": "https://github.com/ai-forever/VIBE",
+      "commercial_use_permitted": true,
       "recorded_on": "2026-08-13",
       "notes": "Locally hosted open weights from ai-forever/VIBE, pinned by repository, revision and license in the bundle module. NOT a hosted API -- an earlier version of this row said 'provider terms of service' and linked OpenAI's terms, which was wrong. For an API editor run against our own captures, add a row whose terms are the provider's and record the model per run in editor_identity."
     },
@@ -210,6 +210,83 @@
         "source_url": "https://developers.openai.com/api/docs/guides/your-data"
       },
       "notes": "Website task-object removal only (website_image_completion). The same dated Sunburst release as the semantic-teacher row, with xhigh quality (owner decision 2026-09-24); the semantic-teacher row stays at high so its rights attestations keep binding. Quality tiers low/medium/high/xhigh/max/auto: https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst. Pricing is per token at the same rates; the $0.30 request cap remains a spending limit, not a provider price guarantee. Each request needs fresh website preparation spend authority."
+    },
+    {
+      "backend_id": "openai_gpt_image_2_5_sunburst_2026_09_08_website_full_frame",
+      "capability": "semantic_teacher_image_edit",
+      "model_identity": "GPT Image 2.5 Sunburst snapshot gpt-image-2.5-sunburst-2026-09-08",
+      "license": "OpenAI Services Agreement and Usage Policies",
+      "license_url": "https://openai.com/policies/services-agreement/",
+      "commercial_use_permitted": true,
+      "recorded_on": "2026-10-24",
+      "execution": {
+        "transport_kind": "hosted_image_edit",
+        "adapter_id": "openai_images_edits_v1",
+        "provider_id": "openai_api",
+        "endpoint": "https://api.openai.com/v1/images/edits",
+        "endpoint_identity": "api.openai.com:443",
+        "model_snapshot": "gpt-image-2.5-sunburst-2026-09-08",
+        "runtime_image_identity": "nvcr.io/nvidia/pytorch@sha256:0981807f1a51a156563e28b59dc2e7a9b5c1c7d85d1169d4965c5fd91fa38bcb",
+        "masked_image_edit_supported": true,
+        "high_fidelity_input_supported": true,
+        "input_fidelity_parameter_supported": false,
+        "output_formats": [
+          "png"
+        ],
+        "supported_output_sizes": [
+          "1024x1024",
+          "1280x1280",
+          "1536x1024",
+          "1024x1536",
+          "864x1536",
+          "1536x864",
+          "768x1536",
+          "1536x768"
+        ],
+        "mask_encoding": "rgba_alpha_zero_edit_region_png",
+        "external_disclosure_required": true,
+        "default_options": {
+          "output_format": "png",
+          "quality": "xhigh"
+        },
+        "pricing_binding": {
+          "kind": "immutable_registry_rate",
+          "billing_unit": "per_request",
+          "currency": "USD",
+          "recorded_on": "2026-09-08",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst",
+          "pricing_identity": "openai_api_pricing_gpt_image_2_5_sunburst_2026_09_08",
+          "usage_required": true,
+          "usd_per_million_tokens": {
+            "input_tokens": 0.0,
+            "output_tokens": 0.0,
+            "total_tokens": 0.0,
+            "input_text_tokens": 5.0,
+            "input_image_tokens": 8.0,
+            "output_text_tokens": 0.0,
+            "output_image_tokens": 30.0
+          },
+          "max_cost_per_request_usd": 0.3
+        },
+        "website_canvas_policy": "native_aspect_v1",
+        "custom_output_size_constraints": {
+          "width_and_height_multiple": 16,
+          "minimum_total_pixels": 655360,
+          "maximum_total_pixels": 8294400,
+          "maximum_edge_pixels": 3840,
+          "minimum_aspect_ratio": 0.3333333333333333,
+          "maximum_aspect_ratio": 3,
+          "source_url": "https://developers.openai.com/api/docs/guides/image-generation#size-and-quality-options"
+        }
+      },
+      "provider_terms": {
+        "data_used_for_training_by_default": false,
+        "training_opt_in_required": true,
+        "abuse_monitoring_retention_max_days": 30,
+        "zero_data_retention_eligible": true,
+        "source_url": "https://developers.openai.com/api/docs/guides/your-data"
+      },
+      "notes": "Website task-object removal at xhigh using custom dimensions that preserve the complete source aspect ratio, rounded to 16 pixels without padding. The resolution fits the previous portrait/landscape size budget. Provider size constraints were verified on 2026-10-24 at https://developers.openai.com/api/docs/guides/image-generation#size-and-quality-options. The model, token rates, $0.30 per-request limit and provider terms are unchanged; older immutable rows remain available for exact completed-image reuse."
     }
   ]
 }

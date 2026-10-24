@@ -63,7 +63,8 @@ def case(tmp_path, edited, mask=None):
     (lambda original, mask: repaint(reframe(original, 1.1), mask), "moved"),
     (lambda original, mask: repaint(Image.fromarray(np.roll(np.asarray(original), 40, axis=1)), mask), "moved"),
     # The editor copied the reference view's composition (frames 161 and 223).
-    (lambda original, mask: repaint(scene(2), mask), "moved"),
+    # No shared geometry: the independent model must judge a copied reference.
+    (lambda original, mask: repaint(scene(2), mask), "unverifiable"),
 ])
 def test_edits_keep_or_leave_the_source_camera(tmp_path, edit, expected):
     paths = case(tmp_path, edit(scene(1), removal_mask()))
@@ -133,7 +134,35 @@ def test_audit_flags_an_approved_background_view_that_left_its_camera(tmp_path, 
     retained.write_text(json.dumps({"background": {"frames": rows}}))
     assert audit_main([str(retained)]) == 2
     status = {row["frame_id"]: row["status"] for row in json.loads(capsys.readouterr().out)}
-    assert status == {"kept": "kept", "copied": "moved", "unedited": "not_edited"}
+    assert status == {"kept": "kept", "copied": "unverifiable", "unedited": "not_edited"}
+
+
+@pytest.mark.parametrize("localized", [False, True])
+def test_repainted_texture_is_not_camera_movement(tmp_path, localized):
+    original, edited = scene(1), scene(2)
+    boxes = ([(0, 0, 180, 180)] if localized else
+             [(x, y, x + 96, y + 96) for x in (0, 272, 544) for y in (0, 384)])
+    for box in boxes:
+        edited.paste(original.crop(box), box)
+    paths = case(tmp_path, repaint(edited, removal_mask()))
+    result = edited_view_camera(paths["original"], paths["edited"], paths["mask"])
+    assert result["kept_fraction"] < 0.25, result
+    assert result["status"] in {"kept", "unverifiable"}, result
+    if localized:
+        assert result["status"] == "unverifiable", result
+
+
+def test_unknown_texture_or_copied_view_requires_independent_review(tmp_path, monkeypatch):
+    called = []
+    def review(**kwargs):
+        called.append(kwargs)
+        return {"status": "blocked", "review": {"camera_changed_frame_ids": ["view"]}}
+    monkeypatch.setattr(completion, "_verify_completed_background", review)
+    edited, originals = frames(case(tmp_path, repaint(scene(2), removal_mask())))
+    result = completion.verify_completed_background(frames=edited, original_frames=originals,
+        plan={"targets": []}, output_root=tmp_path / "review")
+    assert called and result["status"] == "blocked"
+    assert result["review"]["camera_changed_frame_ids"] == ["view"]
 
 
 def test_reused_view_whose_mask_left_with_its_run_goes_to_the_model_review(tmp_path, monkeypatch):

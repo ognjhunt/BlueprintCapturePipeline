@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import paid_resource_admission as admission_gate
 from blueprint_pipeline import website_atlas_pose as pose
 from blueprint_pipeline import website_atlas_tasks as tasks
 from blueprint_pipeline import website_task_context as control
@@ -114,6 +115,45 @@ def test_retains_all_outputs_and_returns_replayed_result_without_another_purchas
     assert result["metric_measurement_proven"] is False and result["generated_content"] is True
     assert result["billing"]["status"] == "unreported"
     assert run() == result
+    assert fake.posts == fake.reservations == 1
+
+
+def test_known_budget_refusal_does_not_reserve_or_touch_atlas(case, monkeypatch, tmp_path):
+    fake, _, _, run = case
+    monkeypatch.setattr(admission_gate, "_monthly_budget_blockers",
+                        lambda _: ["gcp_monthly_budget_admission_blocked"])
+    with pytest.raises(admission_gate.PaidResourceAdmissionBlocked, match="gcp_monthly_budget"):
+        run()
+    assert fake.reservations == fake.posts == 0
+    assert not (tmp_path / "controller_admission.json").exists()
+    assert not (tmp_path / "atlas_pose/submission.json").exists()
+
+
+def test_budget_expiring_during_reservation_retains_receipt_and_resumes_once(case, monkeypatch, tmp_path):
+    fake, _, _, run = case
+    stale = False
+
+    def reserve(**kwargs):
+        nonlocal stale
+        first = fake.admission is None
+        result = fake.reserve(**kwargs)
+        if first:
+            stale = True
+        return result
+
+    monkeypatch.setattr(control, "website_webapp_request", reserve)
+    monkeypatch.setattr(admission_gate, "_monthly_budget_blockers",
+                        lambda _: ["gcp_monthly_budget_admission_blocked"] if stale else [])
+    with pytest.raises(admission_gate.PaidResourceAdmissionBlocked, match="gcp_monthly_budget"):
+        run()
+    retained = json.loads((tmp_path / "controller_admission.json").read_text())
+    assert retained == {**fake.admission, "source_commit": "a" * 40}
+    assert (tmp_path / "controller_admission.json").stat().st_mode & 0o777 == 0o600
+    assert fake.reservations == 1 and fake.posts == 0
+    assert not (tmp_path / "atlas_pose/submission.json").exists()
+    stale = False  # The real monitor supplies a fresh report on the next tick.
+    assert run()["status"] == "completed"
+    assert run()["status"] == "completed"
     assert fake.posts == fake.reservations == 1
 
 

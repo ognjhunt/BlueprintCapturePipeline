@@ -1,14 +1,9 @@
-"""Deterministic check that an edited view kept its source camera.
+"""Detect a coherent camera shift outside an object's removal mask.
 
-The image editor receives a letterboxed frame plus a reference view and is told
-to keep the original camera. It sometimes reframes the scene to fill the canvas
-or copies the reference view's composition. The model review passed three such
-views of six in the 2026-10-22 dishwasher concept run. A copied camera makes
-Atlas pose an invented viewpoint as if it were the recorded one.
-
-An edit may repaint the removal mask and, for shadows and reflections, a margin
-around it. Everything else must stay where the original camera put it, so most
-of the original's keypoints there must reappear within a few pixels.
+Missing texture matches alone do not establish camera movement: an editor may
+repaint wood grain while retaining cabinet edges. A distributed, robust feature
+transform supplies positive movement evidence. Inconclusive views still need
+the independent visual review, including rejection of a copied reference view.
 """
 from __future__ import annotations
 
@@ -22,17 +17,20 @@ import numpy as np
 
 from .local_reconstruction_adapters import _sha256_file
 
-CHECK_REVISION = "edited_view_camera_v1"
+CHECK_REVISION = "edited_view_camera_v2"
 # Excludes the shadows and reflections an edit may change next to the object.
 MASK_MARGIN_FRACTION = 0.02  # of the image diagonal
 MATCH_TOLERANCE_PIXELS = 3.0
 MAX_LONG_SIDE = 1600
 # Too few features outside the mask to judge: leave the view to the model review.
 MIN_VERIFIABLE_KEYPOINTS = 25
-# Kept fraction of the original's outside-mask keypoints. Measured 2026-10-24 on
-# the archived dishwasher edits (720x1280): faithful edits kept 0.61-0.67 with
-# SIFT and 0.58-0.61 with ORB; reframed or copied views kept 0.000-0.012.
+# Enough unchanged texture can establish a retained camera directly. Too little
+# cannot establish movement without a coherent, spatially distributed transform.
 MIN_KEPT_FRACTION = 0.25
+MIN_TRANSFORM_INLIERS = 12
+MIN_INLIER_FRACTION = 0.5
+MIN_FEATURE_SPAN_FRACTION = 0.25
+MAX_CAMERA_SHIFT_FRACTION = 0.025  # image diagonal; small local distortions may pass review
 
 
 def _detector():
@@ -68,15 +66,51 @@ def edited_view_camera(original_path: Path, edited_path: Path, mask_path: Path) 
     if len(original_points) < MIN_VERIFIABLE_KEYPOINTS:
         return {**result, "status": "unverifiable", "reason": "too_few_features_outside_mask"}
     edited_points, edited_descriptors = detector.detectAndCompute(edited, keep)
-    kept = 0
+    matches = []
     if edited_descriptors is not None and len(edited_points) >= 2:
         for pair in cv2.BFMatcher(norm).knnMatch(original_descriptors, edited_descriptors, k=2):
             if len(pair) == 2 and pair[0].distance < 0.75 * pair[1].distance:
-                a, b = original_points[pair[0].queryIdx].pt, edited_points[pair[0].trainIdx].pt
-                kept += math.hypot(a[0] - b[0], a[1] - b[1]) < MATCH_TOLERANCE_PIXELS
+                matches.append(pair[0])
+    # Repeated grain and multiple SIFT orientations must not multiply one
+    # correspondence into several independent pieces of geometric evidence.
+    unique = []
+    seen_original, seen_edited = set(), set()
+    for match in sorted(matches, key=lambda item: item.distance):
+        a, b = original_points[match.queryIdx].pt, edited_points[match.trainIdx].pt
+        a_key, b_key = tuple(round(v) for v in a), tuple(round(v) for v in b)
+        if a_key not in seen_original and b_key not in seen_edited:
+            unique.append((a, b))
+            seen_original.add(a_key)
+            seen_edited.add(b_key)
+    kept = sum(math.dist(a, b) < MATCH_TOLERANCE_PIXELS for a, b in unique)
     fraction = kept / len(original_points)
-    return {**result, "status": "kept" if fraction >= MIN_KEPT_FRACTION else "moved",
-            "kept_matches": kept, "kept_fraction": round(fraction, 4)}
+    result.update(kept_matches=kept, kept_fraction=round(fraction, 4), matched_features=len(unique))
+    if fraction >= MIN_KEPT_FRACTION:
+        return {**result, "status": "kept", "reason": "unchanged_features"}
+    if len(unique) < MIN_TRANSFORM_INLIERS:
+        return {**result, "status": "unverifiable", "reason": "too_few_shared_features"}
+    source, destination = (np.asarray(points, dtype=np.float32) for points in zip(*unique))
+    transform, inlier_mask = cv2.estimateAffinePartial2D(
+        source, destination, method=cv2.RANSAC, ransacReprojThreshold=MATCH_TOLERANCE_PIXELS)
+    if transform is None or inlier_mask is None or not np.isfinite(transform).all():
+        return {**result, "status": "unverifiable", "reason": "no_coherent_transform"}
+    inliers = source[inlier_mask.ravel().astype(bool)]
+    result["transform_inliers"] = len(inliers)
+    if len(inliers) < MIN_TRANSFORM_INLIERS or len(inliers) / len(unique) < MIN_INLIER_FRACTION:
+        return {**result, "status": "unverifiable", "reason": "insufficient_transform_inliers"}
+    height, width = original.shape
+    span = np.ptp(inliers, axis=0) / np.asarray([width, height])
+    result["feature_span_fraction"] = [round(float(value), 4) for value in span]
+    if float(span.min()) < MIN_FEATURE_SPAN_FRACTION:
+        return {**result, "status": "unverifiable", "reason": "localized_shared_features"}
+    grid = np.asarray([(x, y) for x in (0, width / 2, width - 1)
+                       for y in (0, height / 2, height - 1)], dtype=np.float64)
+    shifted = grid @ transform[:, :2].T + transform[:, 2]
+    displacement = float(np.median(np.linalg.norm(shifted - grid, axis=1))) / math.hypot(height, width)
+    result["camera_shift_fraction"] = round(displacement, 4)
+    moved = displacement > MAX_CAMERA_SHIFT_FRACTION
+    return {**result, "status": "moved" if moved else "kept",
+            "reason": "coherent_camera_shift" if moved else "aligned_shared_features"}
 
 
 def audit_prepared_background(path: Path) -> list[dict[str, Any]]:
@@ -102,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("prepared_background", type=Path, help="prepared_background.json")
     rows = audit_prepared_background(parser.parse_args(argv).prepared_background)
     print(json.dumps(rows, indent=2, sort_keys=True))
-    return 2 if any(row["status"] == "moved" for row in rows) else 0
+    return 2 if any(row["status"] in {"moved", "unverifiable"} for row in rows) else 0
 
 
 if __name__ == "__main__":

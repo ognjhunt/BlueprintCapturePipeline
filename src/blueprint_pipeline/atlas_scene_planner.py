@@ -362,7 +362,10 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
 
 
 def _input(survey, context, feedback=None, *, preview_size=512):
-    content = [{"type": "input_text", "text": json.dumps({"task": context["description"],
+    layout = (feedback or {}).get('planning_preview_layout', {})
+    def dump(value, *, sort_keys=False):
+        return json.dumps(value, sort_keys=bool(layout) or sort_keys, separators=(',', ':') if layout else None)
+    content = [{"type": "input_text", "text": dump({"task": context["description"],
         "task_items": context.get("task_items"), "frame_count": len(survey["frames"]),
         "hidden_pixels_included": False}, sort_keys=True)}]
     for row in survey["frames"]:
@@ -374,18 +377,19 @@ def _input(survey, context, feedback=None, *, preview_size=512):
             preview.thumbnail((preview_size, preview_size))
             stream = BytesIO()
             preview.save(stream, format="PNG")
-        content += [{"type": "input_text", "text": json.dumps({k: row[k] for k in (
+        content += [{"type": "input_text", "text": dump({k: row[k] for k in (
             "frame_id", "timestamp_seconds", "sharpness", "clipped_fraction") if k in row})},
             {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(stream.getvalue()).decode(),
              "detail": "high"}]
     if feedback is not None:
-        content.append({"type": "input_text", "text": json.dumps({
+        content.append({"type": "input_text", "text": dump({
             "reconstruction_feedback": {k: v for k, v in feedback.items() if k != "previews"}}, sort_keys=True)})
         previews = feedback['previews']
         originals = [row for row in previews if row.get('kind') == 'original_capture_source_check_only']
         previews = [row for row in previews if row.get('kind') != 'original_capture_source_check_only']
         post_export = 'post_export_coverage' in feedback
-        tiled = feedback.get('scope') == 'missing_surfaces_within_captured_scene' and not post_export
+        tiled = layout.get('derived_contact_sheets') or (
+            feedback.get('scope') == 'missing_surfaces_within_captured_scene' and not post_export)
         if tiled:
             from PIL import ImageDraw
             # Reconnaissance only: retain every viewpoint and its identity,
@@ -407,7 +411,7 @@ def _input(survey, context, feedback=None, *, preview_size=512):
                                    'source_frame_id': row['source_frame_id'], 'kind': row.get('kind')})
                 stream = BytesIO()
                 sheet.save(stream, format='PNG')
-                content += [{'type': 'input_text', 'text': json.dumps({
+                content += [{'type': 'input_text', 'text': dump({
                     'derived_reconstruction_previews': labels, 'not_source_observation': True})},
                     {'type': 'input_image', 'image_url': 'data:image/png;base64,' +
                      base64.b64encode(stream.getvalue()).decode(), 'detail': 'high'}]
@@ -418,7 +422,8 @@ def _input(survey, context, feedback=None, *, preview_size=512):
             with Image.open(source) as image:
                 preview = image.convert("RGB")
                 original = row.get('kind') == 'original_capture_source_check_only'
-                size = 1024 if original or post_export else 768 if feedback.get('scope') == 'task_surface_masks' else 512
+                size = (layout.get('original_long_side', 1024) if original else
+                        1024 if post_export else 768 if feedback.get('scope') == 'task_surface_masks' else 512)
                 preview.thumbnail((size, size))
                 stream = BytesIO()
                 preview.save(stream, format="PNG")
@@ -426,7 +431,7 @@ def _input(survey, context, feedback=None, *, preview_size=512):
                       'timestamp_seconds': row['timestamp_seconds'], 'not_atlas_generation_input': True}
                      if original else {'derived_reconstruction_preview': row['source_frame_id'],
                                        'not_source_observation': True, 'camera_id': row.get('camera_id')})
-            content += [{"type": "input_text", "text": json.dumps({**label, 'kind': row.get('kind')})},
+            content += [{"type": "input_text", "text": dump({**label, 'kind': row.get('kind')})},
                 {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(stream.getvalue()).decode(),
                  "detail": "high"}]
     return [{"role": "user", "content": content}]
@@ -466,7 +471,7 @@ def completion_summary(completion):
     return value
 
 
-def _export_image_token_ceiling(survey, previews):
+def _export_image_token_ceiling(survey, previews, layout=None):
     """Bound the actual resized canvases instead of pricing every image as 2k².
 
     Vision's 32px patch calculation is documented at
@@ -475,8 +480,15 @@ def _export_image_token_ceiling(survey, previews):
     multipliers (1.2--2.46). No crop, frame omission or enlargement is involved.
     """
     ceiling = 0
-    for path, size in [*((row['source_image_path'], 512) for row in survey['frames']),
-                       *((row['path'], 1024) for row in previews)]:
+    layout = layout or {}
+    originals = [row for row in previews if row.get('kind') == 'original_capture_source_check_only']
+    tiled = layout.get('derived_contact_sheets')
+    images = [*((row['source_image_path'], 512) for row in survey['frames']),
+              *((row['path'], layout.get('original_long_side', 1024)) for row in originals),
+              *((row['path'], 1024) for row in previews if row not in originals and not tiled)]
+    if tiled:
+        ceiling += math.ceil((len(previews) - len(originals)) / 4) * (3 * 16 * 11 + 256)
+    for path, size in images:
         with Image.open(path) as source:
             width, height = source.size
         scale = min(1., size / max(width, height))
@@ -488,6 +500,58 @@ def _export_image_token_ceiling(survey, previews):
 
 MAX_TRUNCATION_RETRIES = 2
 SDK_MAX_OUTPUT_TOKENS = 32_000  # OpenAIAgentsSDKConfig's accepted ceiling.
+
+
+def _fit_export_review(survey, context, extra, *, model, maximum, output_tokens, instructions, schema,
+                       minimum_output_tokens=4000):
+    """Fit a large survey without dropping a camera, source view or gap."""
+    from copy import deepcopy
+    from .openai_prompt_cache import worst_case_reservation_usd
+
+    minimum_quote = worst_case_reservation_usd(model=model, input_token_ceiling=0,
+        max_output_tokens=minimum_output_tokens, cache_policy=None)
+    if minimum_quote is None or minimum_quote > maximum:
+        raise ValueError('atlas_scene_planner_token_budget_exceeded')
+    compact = deepcopy(extra)
+    for key, column_key in (('candidate_camera_ids', 'candidate_camera_columns'),):
+        rows = [{'camera_id': row} if isinstance(row, str) else row for row in compact.get(key, [])]
+        columns = list(dict.fromkeys(k for row in rows for k in row))
+        compact[column_key] = columns
+        compact[key] = [[row.get(k) for k in columns] for row in rows]
+    gaps = compact.get('gap_survey', {})
+    rows = gaps.get('views', [])
+    gaps['view_columns'] = ['camera_id', 'outline', 'gaps']
+    gaps['views'] = [[row['camera_id'], row.get('outline', False), row['gaps']] for row in rows]
+    instructions += ('\nBudget-fitted planning uses candidate_camera_columns for candidate_camera_ids rows '
+                     'and gap_survey.view_columns for its views rows. Every camera and gap is retained. '
+                     'Contact-sheet tiles have their exact camera identities; answer with the original full IDs.\n')
+    system_bytes = len(instructions.encode()) + len(json.dumps(schema.model_json_schema()).encode()) + 4096
+    choices = []
+    for size in (1024, 768, 512):
+        value = {**compact, 'planning_preview_layout': {
+            'revision': 'all_views_budget_fitted_v1', 'derived_contact_sheets': True, 'original_long_side': size}}
+        payload = _input(survey, context, value)
+        tokens = system_bytes + sum(len(part['text'].encode()) for message in payload
+                                   for part in message['content'] if part['type'] == 'input_text')
+        tokens += _export_image_token_ceiling(survey, value['previews'], value['planning_preview_layout'])
+        if tokens > 1_000_000:
+            continue
+        low, high, affordable = minimum_output_tokens, min(output_tokens, SDK_MAX_OUTPUT_TOKENS), None
+        while low <= high:
+            middle = (low + high) // 2
+            quote = worst_case_reservation_usd(model=model, input_token_ceiling=tokens,
+                                               max_output_tokens=middle, cache_policy=None)
+            if quote is not None and quote <= maximum:
+                affordable, low = middle, middle + 1
+            else:
+                high = middle - 1
+        if affordable is not None:
+            choices.append((value, payload, tokens, affordable, instructions))
+            if affordable >= min(8000, output_tokens):
+                return choices[-1]
+    if choices:
+        return choices[0]
+    raise ValueError('atlas_scene_planner_token_budget_exceeded')
 
 
 def _truncated_attempt(recorded, allowance):
@@ -555,7 +619,8 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
         # _input excludes preview paths/digests from its text; image costs and
         # their short labels are already covered above. Do not count them twice.
         tokens += len(json.dumps({k: v for k, v in extra.items() if k != 'previews'}, sort_keys=True).encode())
-    if tokens > 1_000_000:
+    post_export = completion is not None and 'post_export_coverage' in completion
+    if tokens > 1_000_000 and not post_export:
         raise ValueError("atlas_scene_planner_context_budget_exceeded")
     from .openai_prompt_cache import worst_case_reservation_usd
     # Every native view needs a complete typed decision. A fixed 8k allowance
@@ -569,11 +634,13 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
         output_tokens = max(8000, 2000 + 250 * len(completion.get('candidate_camera_ids', [])))
     if truncation_retry is not None:
         output_tokens = truncation_retry["max_output_tokens"]
+    output_tokens = min(output_tokens, SDK_MAX_OUTPUT_TOKENS)
     ceiling = worst_case_reservation_usd(model=policy["model"], input_token_ceiling=tokens,
                                         max_output_tokens=output_tokens, cache_policy=None)
     search_calls = 0 if completion is not None or recovery is not None else 2
     search_fee = .01  # Official hosted web search: $10 / 1k calls, checked 2026-10-22.
-    if ceiling is None or ceiling + search_calls * search_fee > maximum:
+    fit_needed = tokens > 1_000_000 or ceiling is None or ceiling + search_calls * search_fee > maximum
+    if fit_needed and not post_export:
         raise ValueError("atlas_scene_planner_token_budget_exceeded")
     instructions = (SCALE_INSTRUCTIONS if scaling is not None else COMPLETION_INSTRUCTIONS if completion is not None else
                     INSTRUCTIONS + AUTOMATION_INSTRUCTIONS + (REFINEMENT_INSTRUCTIONS if feedback is not None else ""))
@@ -600,6 +667,12 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
     # ambiguous submission. Plain JSON Schema validity is insufficient here.
     from agents import AgentOutputSchema
     AgentOutputSchema(schema)
+    input_value = None
+    if fit_needed:
+        extra, input_value, tokens, output_tokens, instructions = _fit_export_review(
+            survey, task_context, extra, model=policy['model'], maximum=maximum,
+            output_tokens=output_tokens, instructions=instructions, schema=schema,
+            minimum_output_tokens=output_tokens if truncation_retry is not None else 4000)
     binding = {"survey_digest": survey["digest"], "task_context_digest": task_context["context_digest"],
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
                "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": output_tokens,
@@ -613,7 +686,9 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
         if 'original_capture_gallery' in completion:
             binding['source_gallery_input_revision'] = 'separate_full_frame_previews_v1'
         if 'post_export_coverage' in completion:
-            binding['export_coverage_input_revision'] = 'full_frame_component_surface_review_v2_canvas_budget'
+            binding['export_coverage_input_revision'] = (
+                'all_views_budget_fitted_v3' if extra.get('planning_preview_layout') else
+                'full_frame_component_surface_review_v2_canvas_budget')
     if scaling is not None:
         binding['scale_review_digest'] = canonical_digest(scaling)
     if recovery is not None:
@@ -631,8 +706,9 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                     and receipt.get("proposal_digest") != canonical_digest(receipt["proposal"])):
                 raise ValueError("atlas_scene_planner_receipt_changed")
         else:
-            input_value = _input(survey, task_context, extra,
-                                 preview_size=1280 if scaling is not None else 768 if recovery is not None else 512)
+            if input_value is None:
+                input_value = _input(survey, task_context, extra,
+                                     preview_size=1280 if scaling is not None else 768 if recovery is not None else 512)
             if release_blockers is None:
                 raise ValueError("atlas_scene_planner_allocator_required")
             commit, blockers = release_blockers()

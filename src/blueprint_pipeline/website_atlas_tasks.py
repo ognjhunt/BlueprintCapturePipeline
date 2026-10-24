@@ -358,7 +358,8 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
             retained = json.loads(admission_path.read_text()) if admission_path.is_file() else None
             admission, grant = reserve_website_preparation_spend(task_context=task_context, binding_digest=request_digest,
                 maximum_cost_usd=cost, request_count=1, resource_class=pose.RESOURCE_CLASS,
-                provider=pose.PROVIDER, source_video_digest=source_video_digest, retained_admission=retained)
+                provider=pose.PROVIDER, source_video_digest=source_video_digest, retained_admission=retained,
+                retain_admission=lambda value: pose._write_state(admission_path, {**value, "source_commit": commit}))
             pose._require_admission(admission, request_digest=request_digest, binding=binding, now=now())
             require_paid_resource_admission_grant(grant, resource_class=pose.RESOURCE_CLASS,
                 allocation_binding_digest=request_digest, require_allocation_binding=True)

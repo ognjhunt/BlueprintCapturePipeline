@@ -347,7 +347,8 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
             repair_reference_path=(None if row["frame_id"] in camera_changed
                                    else repair_reference_path if repair_reference_path is not None
                                    else Path(anchor["image_path"]) if anchor is not None else None),
-            source_video_digest=source_video_digest, mask_guidance=True)[0]
+            source_video_digest=source_video_digest, mask_guidance=True,
+            require_original_camera=row["frame_id"] in camera_changed)[0]
         result[index] = {**edited, "repair_instruction": row["instruction"]}
     same_images = all((before["frame_id"], before["image_digest"]) == (after["frame_id"], after["image_digest"])
                       for before, after in zip(selected, result, strict=True))

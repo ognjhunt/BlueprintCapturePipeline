@@ -1075,7 +1075,8 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
                     task_context=task_context, binding_digest=canonical_digest(binding),
                     maximum_cost_usd=spend["maximum_cost_usd"], request_count=1,
                     resource_class=RESOURCE_CLASS, provider=PROVIDER, retained_admission=retained,
-                    source_video_digest=pose_inputs["binding"]["source_video_digest"])
+                    source_video_digest=pose_inputs["binding"]["source_video_digest"],
+                    retain_admission=lambda value: _write_state(retained_path, {**value, "source_commit": commit}))
                 if admission.get("provider_retention", retention) != retention:
                     raise ValueError("website_atlas_provider_retention_admission_mismatch")
                 admission = {**admission, "source_commit": commit}
