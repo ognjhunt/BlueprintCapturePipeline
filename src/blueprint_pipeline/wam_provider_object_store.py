@@ -750,6 +750,7 @@ def cleanup_staged_wam_provider_objects(
     region: str = "",
     region_file: str | Path | None = None,
     expiration_seconds: int = 12 * 60 * 60,
+    require_outputs_absent: bool = False,
 ) -> dict[str, Any]:
     """Delete and absence-prove only the exact objects in a staging manifest.
 
@@ -761,9 +762,15 @@ def cleanup_staged_wam_provider_objects(
     ``absence_confirmed: false`` (so ``all_objects_absent`` is false), and the
     reason is a blocker. The bundle key is cleaned as before. Without the flag
     nothing here changes.
+
+    ``require_outputs_absent`` first HEADs the output and paired witness.
+    A present or unknown result retains every object and recovery reference;
+    only confirmed absence allows cleanup after a worker failed to start.
     """
 
     del expiration_seconds
+    if type(require_outputs_absent) is not bool:
+        raise ValueError("object_store_cleanup_absence_option_invalid")
     resolved_job_dir = Path(job_dir).expanduser().resolve()
     manifest_path = resolved_job_dir / "wam_provider_object_store_staging_manifest.json"
     manifest = (
@@ -866,6 +873,32 @@ def cleanup_staged_wam_provider_objects(
 
     cleanup_rows: list[dict[str, Any]] = []
     cleanup_attempts = 0
+    output_checks: list[dict[str, Any]] = []
+    if require_outputs_absent:
+        # A terminal worker that never booted has no local archive. Establish
+        # that no remote result or witness needs collecting before deleting
+        # even its input bundle or recovery references.
+        if not blockers:
+            try:
+                client = _s3_client(access_key=access_key, secret_key=secret_key,
+                                    endpoint=endpoint, region=region_value)
+                output_checks = [{"key_sha256": hashlib.sha256(key.encode()).hexdigest(),
+                                  "absence": _s3_absence_confirmed(client, bucket=bucket_value, key=key)}
+                                 for key in cleanup_keys if key != bundle_key]
+            except Exception as exc:  # noqa: BLE001 - unknown outcomes retain every object
+                output_checks = [{"absence": {"absence_confirmed": False,
+                                               **_safe_transfer_exception(exc)}}]
+        if blockers or not output_checks or any(
+                row["absence"].get("absence_confirmed") is not True for row in output_checks):
+            result = {"schema_version": OBJECT_CLEANUP_SCHEMA_VERSION, "generated_at": utc_now_iso(),
+                      "status": "blocked", "blockers": sorted(set([
+                          *blockers, "provider_output_uncollected_objects_retained"])),
+                      "all_objects_absent": False, "all_ephemeral_objects_absent": False,
+                      "output_absence_precheck": output_checks, "cleanup_attempts": 0,
+                      "remote_objects_retained_for_recovery": True, "signed_url_files_preserved": True,
+                      "raw_secret_values_recorded": False}
+            write_json(resolved_job_dir / "wam_provider_object_store_cleanup.json", result)
+            return result
     receipt = (
         load_promotion_receipt(
             resolved_job_dir,
@@ -957,6 +990,7 @@ def cleanup_staged_wam_provider_objects(
         "exact_object_count": len(cleanup_keys) if all(cleanup_keys) else 0,
         "objects": cleanup_rows,
         "cleanup_attempts": cleanup_attempts,
+        **({"output_absence_precheck": output_checks} if require_outputs_absent else {}),
         "all_objects_absent": bool(cleanup_rows)
         and all(row["absence"].get("absence_confirmed") is True for row in cleanup_rows),
         "all_ephemeral_objects_absent": bool(cleanup_rows)
