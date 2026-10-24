@@ -294,25 +294,58 @@ def _voxel_keys(points: np.ndarray, voxel: float) -> np.ndarray:
     return (cells[:, 0] << (2 * _KEY_BITS)) | (cells[:, 1] << _KEY_BITS) | cells[:, 2]
 
 
+def _sum_by_key(keys: np.ndarray, columns: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Sum each row of ``columns`` (one row per quantity) over equal keys."""
+    unique, inverse = np.unique(keys, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    sums = np.empty((len(columns), len(unique)))
+    for row in range(len(columns)):
+        sums[row] = np.bincount(inverse, weights=columns[row], minlength=len(unique))
+    return unique, sums
+
+
 class VoxelSums:
-    """Running confidence-weighted sums per voxel, so memory follows voxels rather than pixels."""
+    """Running confidence-weighted sums per voxel, so memory follows voxels rather than pixels.
+
+    Each frame is reduced to its own voxels first. Reduced frames merge into the
+    table once they reach half its size, so the table is not re-sorted per frame.
+    """
+
+    MIN_MERGE_ROWS = 1_000_000
 
     def __init__(self, voxel: float):
         self.voxel = voxel
-        self.keys = np.empty(0, np.int64)
-        self.sums = np.empty((0, 11))  # weight, weighted xyz, rgb and normal, sample count
+        self._keys = np.empty(0, np.int64)
+        self._columns = np.empty((11, 0))  # weight, weighted xyz, rgb and normal, sample count
+        self._pending: list[tuple[np.ndarray, np.ndarray]] = []
+        self._pending_rows = 0
 
     def add(self, sample: Mapping[str, np.ndarray]) -> None:
-        weights = sample["weights"][:, None]
-        values = np.concatenate([self.sums, np.concatenate([
-            weights, sample["points"] * weights, sample["colors"] * weights, sample["normals"] * weights,
-            np.ones_like(weights)], axis=1)])
-        keys, inverse = np.unique(np.concatenate([self.keys, _voxel_keys(sample["points"], self.voxel)]),
-                                  return_inverse=True)
-        inverse = inverse.reshape(-1)
-        self.sums = np.stack([np.bincount(inverse, weights=values[:, column], minlength=len(keys))
-                              for column in range(values.shape[1])], axis=1)
-        self.keys = keys
+        weights = sample["weights"]
+        columns = np.concatenate([weights[None], (sample["points"] * weights[:, None]).T,
+                                  (sample["colors"] * weights[:, None]).T, (sample["normals"] * weights[:, None]).T,
+                                  np.ones_like(weights)[None]])
+        self._pending.append(_sum_by_key(_voxel_keys(sample["points"], self.voxel), columns))
+        self._pending_rows += len(self._pending[-1][0])
+        if self._pending_rows >= max(self.MIN_MERGE_ROWS, len(self._keys) // 2):
+            self._merge()
+
+    def _merge(self) -> None:
+        if self._pending:
+            self._keys, self._columns = _sum_by_key(
+                np.concatenate([self._keys, *(keys for keys, _ in self._pending)]),
+                np.concatenate([self._columns, *(columns for _, columns in self._pending)], axis=1))
+            self._pending, self._pending_rows = [], 0
+
+    @property
+    def keys(self) -> np.ndarray:
+        self._merge()
+        return self._keys
+
+    @property
+    def sums(self) -> np.ndarray:
+        self._merge()
+        return self._columns.T
 
     def fused(self) -> dict[str, np.ndarray]:
         total = self.sums[:, :1]

@@ -335,6 +335,23 @@ def test_discs_of_crossing_surfaces_merge_into_a_round_gaussian():
     normals = np.where((np.arange(200) % 2 == 0)[:, None], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
     merged, _ = depth_splat.splats2mesh_input(disc_splat(xyz, normals), 0.01, limit=100)
     assert merged.count == 1 and np.allclose(merged.scales[0], merged.scales[0, 0])
+@pytest.mark.parametrize("merge_rows", [1, 10**9])
+def test_batched_voxel_merges_equal_a_direct_sum(monkeypatch, merge_rows):
+    rng = np.random.default_rng(3)
+    samples = [{"points": rng.uniform(-1, 1, (500, 3)), "colors": rng.uniform(0, 1, (500, 3)),
+                "normals": rng.normal(size=(500, 3)), "weights": rng.uniform(0.1, 1, 500)} for _ in range(6)]
+    monkeypatch.setattr(depth_splat.VoxelSums, "MIN_MERGE_ROWS", merge_rows)
+    sums = depth_splat.VoxelSums(0.2)
+    for sample in samples:
+        sums.add(sample)
+    every = {key: np.concatenate([sample[key] for sample in samples]) for key in samples[0]}
+    keys, inverse = np.unique(depth_splat._voxel_keys(every["points"], 0.2), return_inverse=True)
+    weights = every["weights"][:, None]
+    values = np.concatenate([weights, every["points"] * weights, every["colors"] * weights,
+                             every["normals"] * weights, np.ones_like(weights)], axis=1)
+    expected = np.stack([np.bincount(inverse.reshape(-1), weights=values[:, column], minlength=len(keys))
+                         for column in range(values.shape[1])], axis=1)
+    assert np.array_equal(sums.keys, keys) and np.allclose(sums.sums, expected)
 
 
 def write_attempt(root, state, result=False):
