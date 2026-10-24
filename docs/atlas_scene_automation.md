@@ -81,6 +81,20 @@ The production Atlas controller runs the following for a new scene plan:
    share the existing allowance, and this check does not qualify simulation or
    physical fidelity.
 
+   Before another novel-view purchase, the agent also checks the original
+   capture candidate gallery, including recorded views omitted from the current
+   reconstruction. Each selected gap cites its source frames and distinguishes
+   an observed surface, an occluded surface, an unresolved area, and a physical
+   opening. Original views are individual full-frame previews; they remain
+   decision evidence and never bypass cleaning into Atlas generation inputs.
+   A useful unconditioned recorded view returns `source_recovery_required`
+   before generation, while ambiguous visibility returns `source_review_required`.
+   Physical openings are excluded from fill masks. Candidate sampling alone
+   never proves absence from every video frame. Subsequent reviews also receive
+   per-view requested pixels, available native depth, and admitted depth, so an
+   attractive RGB fill cannot hide a failed 3D repair. Passed native generations
+   and their verified fused pixels are adopted without another purchase.
+
 When a refinement adds source views, its parent prepared-background manifest
 can seed the expanded set. Source video, task context and original RGB pixels
 must match, and the accepted edits stay byte-identical. Only missing views are
