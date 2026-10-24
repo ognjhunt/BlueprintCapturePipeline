@@ -582,21 +582,24 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     and retried, at most twice, with a larger allowance that still fits the
     review cap. A restart follows the retained receipts and buys nothing again.
     """
-    retry = None
+    retry, carried = None, 0.0
     while True:
         receipt = _review_attempt(survey_path=survey_path, task_context=task_context, configuration=configuration,
                                   output_root=output_root, invoker=invoker, release_blockers=release_blockers,
                                   feedback=feedback, completion=completion, scaling=scaling, recovery=recovery,
-                                  truncation_retry=retry)
+                                  truncation_retry=retry,
+                                  carried_reserved_usd=carried if invoker is not None else 0.0)
         if receipt["status"] != "truncated":
             return receipt
         if receipt["truncation_retry"] is None:
             raise ValueError("atlas_scene_planner_output_truncated_retry_unavailable")
-        retry = receipt["truncation_retry"]
+        # A supplied invoker is reused: its balance keeps each cut-off call's charge.
+        retry, carried = receipt["truncation_retry"], carried + receipt["cost_usd"]
 
 
 def _review_attempt(*, survey_path: Path, task_context, configuration, output_root: Path, invoker,
-                    release_blockers, feedback, completion, scaling, recovery, truncation_retry):
+                    release_blockers, feedback, completion, scaling, recovery, truncation_retry,
+                    carried_reserved_usd=0.0):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
@@ -722,6 +725,19 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
             selected = invoker or OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(model=policy["model"], max_turns=1,
                 max_output_tokens=output_tokens, max_input_tokens=tokens, allow_live_invocation=True,
                 tracing_disabled=True, max_inference_cost_usd=maximum))
+            # The invoker accepts or refuses this call before any spend is held or
+            # a submitting receipt can strand it.
+            budget = getattr(getattr(selected, "config", None), "max_inference_cost_usd", None)
+            if budget is not None and carried_reserved_usd + ceiling + search_calls * search_fee > budget:
+                raise ValueError("atlas_scene_planner_invoker_budget_exhausted")
+            audit = InferenceReservationAudit(run_root=output_root / digest[7:], run_id=digest[7:23])
+            recorded = []
+
+            def record_completion(value):
+                audit.record_completion(value)
+                recorded.append(value)
+            selected.configure_reservation_audit(record_reservation=audit.record_reservation,
+                record_completion=record_completion, restored_reserved_cost_usd=carried_reserved_usd)
             admission, grant = reserve_website_preparation_spend(task_context=task_context, binding_digest=digest,
                 maximum_cost_usd=maximum, request_count=1, resource_class="openai_api_candidate", provider="openai",
                 source_video_digest=survey["source_video_digest"])
@@ -732,14 +748,6 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                 json.dump({"status": "submitting", "binding_digest": digest, "binding": binding, "admission": admission}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
-            audit = InferenceReservationAudit(run_root=output_root / digest[7:], run_id=digest[7:23])
-            recorded = []
-
-            def record_completion(value):
-                audit.record_completion(value)
-                recorded.append(value)
-            selected.configure_reservation_audit(record_reservation=audit.record_reservation,
-                record_completion=record_completion, restored_reserved_cost_usd=0.0)
             from agents import WebSearchTool
             from agents.exceptions import ModelBehaviorError
             from pydantic import ValidationError
