@@ -8,6 +8,7 @@ import json
 from typing import Any, Callable, Literal, Mapping
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 
@@ -51,7 +52,12 @@ def _plain_json(value: Any) -> bool:
 def _check_output_schema(schema: dict[str, Any]) -> None:
     identity = digest(schema) if _plain_json(schema) else None
     if identity is None or identity not in _CHECKED_OUTPUT_SCHEMAS:
-        Draft202012Validator.check_schema(schema)
+        try:
+            Draft202012Validator.check_schema(schema)
+        except SchemaError:
+            # A stable refusal, not a schema-quoting upstream message. As a
+            # ValueError it also stays a per-record refusal for the worker.
+            raise ValueError("agent_output_schema_malformed") from None
         if identity is not None:
             if len(_CHECKED_OUTPUT_SCHEMAS) >= _MAX_CHECKED_OUTPUT_SCHEMAS:
                 _CHECKED_OUTPUT_SCHEMAS.clear()
