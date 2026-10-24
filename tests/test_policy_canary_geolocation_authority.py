@@ -15,23 +15,23 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 from tests.test_native_task_arena_policy_canary_session import _authority
 
 
-def _grant(digest):
+def _grant(digest, country="GB"):
     return {
         "schema_version": "policy_canary_geolocation_authority.v1",
-        "country_codes": ["GB"],
+        "country_codes": [country],
         "runtime_inputs_digest": digest,
         "authorized_by": "fixture operator",
-        "authorization_reference": "Fixture: same admitted inputs; bounded private UK compute",
+        "authorization_reference": f"Fixture: same admitted inputs; bounded private {country} compute",
         "disclosure_scope": "same_admitted_private_vast_inputs",
     }
 
 
-def _uk(tmp_path):
+def _pinned(tmp_path, country="GB"):
     authority, inputs = _authority(tmp_path)
     return _authority(
         tmp_path,
-        allowed_machine_ids=[49863],
-        geolocation_authority=_grant(inputs["runtime_inputs_digest"]),
+        allowed_machine_ids=[49863 if country == "GB" else 40508],
+        geolocation_authority=_grant(inputs["runtime_inputs_digest"], country),
     )[0]
 
 
@@ -39,11 +39,12 @@ def _reseal(authority):
     authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
 
 
-def test_default_country_and_explicit_input_bound_exception(tmp_path):
+@pytest.mark.parametrize("country", ["GB", "EE"])
+def test_default_country_and_explicit_input_bound_exception(tmp_path, country):
     default, _ = _authority(tmp_path)
     assert session_geolocation_country_codes(default) == ("US",)
-    authority = _uk(tmp_path)
-    assert session_geolocation_country_codes(validate_session_authority(authority)) == ("GB",)
+    authority = _pinned(tmp_path, country)
+    assert session_geolocation_country_codes(validate_session_authority(authority)) == (country,)
     authority["geolocation_authority"]["authorization_reference"] += " changed"
     with pytest.raises(PolicyCanarySessionError, match="authority_digest_invalid"):
         validate_session_authority(authority)
@@ -64,8 +65,9 @@ def test_default_country_and_explicit_input_bound_exception(tmp_path):
         "null",
     ],
 )
-def test_invalid_or_widened_country_authority_is_refused(tmp_path, change):
-    authority = _uk(tmp_path)
+@pytest.mark.parametrize("country", ["GB", "EE"])
+def test_invalid_or_widened_country_authority_is_refused(tmp_path, change, country):
+    authority = _pinned(tmp_path, country)
     grant = authority["geolocation_authority"]
     if change == "country":
         grant["country_codes"] = ["US", "GB"]
@@ -93,10 +95,11 @@ def test_invalid_or_widened_country_authority_is_refused(tmp_path, change):
         validate_session_authority(authority)
 
 
-def test_invalid_exception_cannot_consume_authority_or_reach_provider(tmp_path, monkeypatch):
+@pytest.mark.parametrize("country", ["GB", "EE"])
+def test_invalid_exception_cannot_consume_authority_or_reach_provider(tmp_path, monkeypatch, country):
     from blueprint_pipeline import native_task_arena_vast as vast
 
-    authority = _uk(tmp_path)
+    authority = _pinned(tmp_path, country)
     authority["geolocation_authority"]["runtime_inputs_digest"] = "sha256:" + "0" * 64
     _reseal(authority)
 
@@ -115,15 +118,24 @@ def test_invalid_exception_cannot_consume_authority_or_reach_provider(tmp_path, 
         )
 
 
-@pytest.mark.parametrize("uk", [False, True])
+@pytest.mark.parametrize("countries", [["US"], ["FI"], ["GB", "EE"], ["EE", "GB"], [], ["EE", "EE"]])
+def test_country_grant_cannot_expand_to_other_or_multiple_locations(tmp_path, countries):
+    authority = _pinned(tmp_path, "EE")
+    authority["geolocation_authority"]["country_codes"] = countries
+    _reseal(authority)
+    with pytest.raises(PolicyCanarySessionError, match="geolocation_authority_invalid"):
+        validate_session_authority(authority)
+
+
+@pytest.mark.parametrize("country", [None, "GB", "EE"])
 def test_canonical_transport_receives_country_without_weakening_other_bounds(
-    tmp_path, monkeypatch, uk
+    tmp_path, monkeypatch, country
 ):
     from blueprint_pipeline import native_task_arena_vast as vast
     from blueprint_pipeline import native_task_arena_paired_witness_staging as witness
     from blueprint_pipeline import policy_canary_output_members as members
 
-    authority = _uk(tmp_path) if uk else _authority(tmp_path)[0]
+    authority = _pinned(tmp_path, country) if country else _authority(tmp_path)[0]
     captured = {}
     monkeypatch.setattr(vast, "validate_policy_canary_provider_bundle", lambda *a, **kw: None)
     monkeypatch.setattr(
@@ -151,7 +163,7 @@ def test_canonical_transport_receives_country_without_weakening_other_bounds(
         hard_cap_usd=authority["hard_cap_usd"],
         hard_ttl_seconds=authority["hard_ttl_seconds"],
     )
-    assert captured["allowed_geolocation_country_codes"] == (("GB",) if uk else ("US",))
+    assert captured["allowed_geolocation_country_codes"] == (country or "US",)
     assert captured["require_independent_watchdog"] is True
     assert captured["stale_offer_create_retry_limit"] == 0
     assert captured["min_gpu_ram_mb"] == 46000
@@ -160,5 +172,5 @@ def test_canonical_transport_receives_country_without_weakening_other_bounds(
     assert captured["expected_provider_upload_bytes"] > 0
     assert captured["hard_cap_usd"] == authority["hard_cap_usd"]
     assert captured["hard_ttl_seconds"] == authority["hard_ttl_seconds"]
-    if uk:
-        assert captured["allowed_machine_ids"] == (49863,)
+    if country:
+        assert captured["allowed_machine_ids"] == ((49863,) if country == "GB" else (40508,))

@@ -152,6 +152,25 @@ architecture, RT, VRAM, requested disk, total transfer cost, watchdog, output
 admission and zero-retry gates remain mandatory. Source checks alone do not
 establish transfer performance; the first observed UK attempt is recorded below.
 
+At 2026-10-24 08:30 UTC, the repaired US preparation passed the complete
+canonical billing, output-disk and allocator preflight. Its immediate dispatch
+readback then found no offer on machine `117959`; dispatch stopped before
+allocation or authority consumption. The 08:33 retained US capacity response
+had no eligible US offer, and the prepared UK host was unavailable at 08:34.
+Unsupported 595-series driver offers remain excluded.
+
+That same response listed a 48 GB RTX 6000 Ada on machine `40508` in Estonia,
+driver 580.178.04, at a quoted $0.8119/hour including 200 GB of disk. This is
+provider metadata, not an observed GPU or a charge. The owner's approval for
+the same retained comparison supports one pinned private Estonia preparation
+under the unchanged $8 cap, $1/hour limit, 7200-second TTL and zero automatic
+retries. The opt-in authority now accepts one country, either `GB` or `EE`,
+with the same input digest, named authority, private Vast disclosure scope and
+machine constraint. US remains the default; mixed and other countries remain
+refused. Inputs, controls, scoring and publisher/provider restrictions do not
+change. Fresh capacity, complete preflight, actual native execution and the
+same observed GPU UUID for baseline are still required.
+
 A baseline session authority can additionally require the GA session's observed
 physical GPU UUID. Provider input preflight checks it before checkpoint
 provisioning; the parent worker and each isolated cell recheck the one visible

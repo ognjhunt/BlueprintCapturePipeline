@@ -370,7 +370,7 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def session_geolocation_country_codes(authority: Mapping[str, Any]) -> tuple[str, ...]:
-    """Keep US admission unless a pinned internal canary has explicit UK authority.
+    """Keep US admission unless a pinned canary has explicit UK or Estonia authority.
 
     This changes the private compute location only. It grants no new input
     disclosure, publishing, training, production evaluation or automatic retry.
@@ -384,7 +384,7 @@ def session_geolocation_country_codes(authority: Mapping[str, Any]) -> tuple[str
             or set(grant) != {"schema_version", "country_codes", "runtime_inputs_digest",
                               "authorized_by", "authorization_reference", "disclosure_scope"}
             or grant.get("schema_version") != "policy_canary_geolocation_authority.v1"
-            or grant.get("country_codes") != ["GB"]
+            or grant.get("country_codes") not in (["GB"], ["EE"])
             or authority.get("run_kind") != RUN_KIND
             or not isinstance(machines, list) or not machines
             or any(type(machine) is not int or machine <= 0 for machine in machines)
@@ -394,7 +394,7 @@ def session_geolocation_country_codes(authority: Mapping[str, Any]) -> tuple[str
                    for field in ("authorized_by", "authorization_reference"))
             or grant.get("disclosure_scope") != "same_admitted_private_vast_inputs"):
         raise PolicyCanarySessionError("policy_canary_session_geolocation_authority_invalid")
-    return ("GB",)
+    return tuple(grant["country_codes"])
 
 
 def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
