@@ -45,6 +45,12 @@ The production Atlas controller runs the following for a new scene plan:
    as many repairs as this scene needs, using the passed anchor as its fixed
    reference; every call stays on the same source allowance. A fresh independent
    review of the complete set decides whether reconstruction can proceed.
+   Repairs restore the original source mask's pixel count rather than copying
+   the completed edit's zero-remaining marker. Original image/mask digests,
+   binary mask values and grid alignment are checked before buying a repair
+   plan. Completed correction receipts remain reusable on restart; the original
+   source cannot silently substitute for a requested correction. An unchanged
+   correction retains the failed verdict without buying the same review again.
 6. The agent surveys missing surfaces across the captured scene and chooses
    named gaps and candidate cameras, including modest translated viewpoints.
    Additional scene-depth-relative viewpoints stay inside source-observed free
