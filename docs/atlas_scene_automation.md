@@ -113,7 +113,9 @@ The production Atlas controller runs the following for a new scene plan:
    Above `SPLATS2MESH_MAX_GAUSSIANS` (2M; splats2Mesh meshed 2.45M and failed at
    3.6M, with no documented limit) `splats2mesh_attempt` merges a copy on the
    finest coarser grid that fits and meshes it in its own `-merged-v1` root. The
-   retained export, its manifest and any root already attempted stay unchanged.
+   retained export and its manifest stay unchanged. A root already attempted keeps
+   its input unless every operation there, retries included, ended in a confirmed
+   provider failure; then the merged input is meshed in its own root.
 
    Before purchasing the final mesh, the harness re-surveys the exported splat
    from every source and approved generated view. Reviewed depth supplies a

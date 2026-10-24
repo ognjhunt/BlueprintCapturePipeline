@@ -516,16 +516,35 @@ def splats2mesh_task_spec(*, frames: Sequence[Mapping[str, Any]], spz: Path,
             "uploads": {"splat": {"path": str(spz.resolve()), "sha256": _sha256_file(spz)}}}
 
 
+def _failed_attempt(root: Path) -> bool:
+    """Whether every operation in a task attempt ended in a confirmed provider failure.
+
+    Only then can nothing more be bought there. A completed, pending, rejected
+    or unreconciled attempt is not failed; nor is one whose retry is still open.
+    """
+    state_path = root / "atlas_pose" / "submission.json"
+    if (root / "result.json").exists() or not state_path.is_file():
+        return False
+    state = json.loads(state_path.read_text())
+    operation = state.get("terminal_operation")
+    if (state.get("status") != "failed" or not isinstance(operation, dict) or operation.get("done") is not True
+            or operation.get("error") is None or operation.get("id") != state.get("operation_id")):
+        return False
+    return not (root / "retry").exists() or _failed_attempt(root / "retry")
+
+
 def splats2mesh_attempt(splat_root: Path, mesh_root: Path) -> tuple[dict[str, Any], Path]:
     """The splats2Mesh spec and attempt root, with an oversized draft merged for meshing only.
 
     The retained export is never rewritten: its manifest digest binds coverage and
     bundle state. A root already attempted keeps its input, so a pending or
-    completed mesh is never bought twice; a merged input gets its own attempt root.
+    completed mesh is never bought twice, unless every operation there failed;
+    a merged input gets its own attempt root.
     """
     spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
     manifest = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
-    if manifest.get("gaussian_count", 0) <= SPLATS2MESH_MAX_GAUSSIANS or mesh_root.exists():
+    if (manifest.get("gaussian_count", 0) <= SPLATS2MESH_MAX_GAUSSIANS
+            or (mesh_root.exists() and not _failed_attempt(mesh_root))):
         return spec, mesh_root
     source = spec["uploads"]["splat"]
     if _sha256_file(Path(source["path"])) != source["sha256"]:
