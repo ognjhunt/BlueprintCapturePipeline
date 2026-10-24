@@ -1,9 +1,4 @@
-"""Read-only monthly GCP budget admission for every paid resource.
-
-Paid-resource admission runs in the CPU control plane, so it reads only the
-policy and the report that ``gcp_monthly_budget_guard`` writes. The guard itself
-lists provider VMs and stays outside the control plane's import graph.
-"""
+"""Read-only GCP monthly admission; no inventory, billing or provider imports."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -17,9 +12,10 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 SCHEMA = "blueprint.gcp_monthly_budget_guard.v1"
-CONFIG_ENV = "BLUEPRINT_GCP_BUDGET_GUARD_CONFIG"
-REPORT_ENV = "BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT"
 
+CONFIG_ENV = "BLUEPRINT_GCP_BUDGET_GUARD_CONFIG"
+
+REPORT_ENV = "BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT"
 
 def _time(value: str) -> datetime:
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -27,10 +23,8 @@ def _time(value: str) -> datetime:
         raise ValueError("timestamp_timezone_missing")
     return result
 
-
 def _period(now: datetime) -> str:
     return now.astimezone(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m")
-
 
 def _money(value: Any) -> Decimal:
     result = Decimal(str(value))
@@ -38,11 +32,9 @@ def _money(value: Any) -> Decimal:
         raise ValueError("cost_invalid")
     return result
 
-
 def effective_limit(policy: Mapping[str, Any], now: datetime) -> Decimal:
     """A dated owner exception never changes the recurring monthly amount."""
     return _money(policy.get("monthly_limit_overrides", {}).get(_period(now), policy["limit_usd"]))
-
 
 def _read(path: Path) -> dict:
     if path.is_symlink() or path.stat().st_size > 1_000_000:
@@ -51,7 +43,6 @@ def _read(path: Path) -> dict:
     if not isinstance(result, dict):
         raise ValueError("budget_file_invalid")
     return result
-
 
 def load_policy(path: Path) -> dict:
     policy = _read(path)
@@ -80,7 +71,6 @@ def load_policy(path: Path) -> dict:
             raise ValueError("budget_policy_path_invalid")
     policy["policy_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     return policy
-
 
 def admission_blockers(*, report_path: str | None = None, project_id: str | None = None,
                        now: datetime | None = None) -> list[str]:
@@ -111,6 +101,30 @@ def admission_blockers(*, report_path: str | None = None, project_id: str | None
         return ["gcp_monthly_budget_report_missing_or_invalid"]
     return []
 
+def stale_report_wait(*, now: datetime | None = None) -> dict | None:
+    """Recognize an otherwise admitted report awaiting its next monitor cycle.
+
+    This grants no authority and never rewrites the report. A controller can
+    wait for the real monitor; the paid boundary still requires a fresh report.
+    Exhaustion, changed policy, missing evidence and month rollover stay blocked.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        configured = os.getenv(CONFIG_ENV, "").strip()
+        if not configured:
+            return None
+        policy = load_policy(Path(configured))
+        path = os.getenv(REPORT_ENV, "").strip() or policy["report_path"]
+        report = _read(Path(path))
+        generated = _time(report["generated_at"])
+        if (_period(generated) != _period(now) or now - generated <= timedelta(minutes=5)
+                or admission_blockers(report_path=path, now=generated)):
+            return None
+        return {"waiting_for": "gcp_budget_monitor", "reason": "gcp_monthly_budget_report_stale",
+                "report_generated_at": report["generated_at"],
+                "retry_not_before_epoch": now.timestamp() + 60}
+    except Exception:
+        return None
 
 def project_admission_blockers(project_id: str) -> list[str]:
     configured = os.getenv(CONFIG_ENV, "").strip()
@@ -123,3 +137,4 @@ def project_admission_blockers(project_id: str) -> list[str]:
         return admission_blockers(report_path=policy["report_path"], project_id=project_id)
     except Exception:
         return ["gcp_monthly_budget_policy_invalid"]
+

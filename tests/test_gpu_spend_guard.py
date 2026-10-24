@@ -27,15 +27,18 @@ UTC = timezone.utc
 
 
 @pytest.mark.parametrize("prefix", ["blueprint-task-evaluation-scene-config-fixture-",
-                                  "blueprint-native-task-policy-canary-"])
+                                  "blueprint-native-task-policy-canary-",
+                                  "blueprint-native-task-policy-canary-runtime-cdeae8e82d16498eb07369fc4d300a11"])
 @pytest.mark.parametrize("fault", [None, "expired", "dead_owner", "wrong_deadline", "cancelled", "terminal",
-    "missing_deadline", "boolean_deadline", "string_deadline", "invalid_deadline", "unrecognized_prefix"])
+    "missing_deadline", "boolean_deadline", "string_deadline", "invalid_deadline", "unrecognized_prefix", "malformed_policy_name"])
 def test_task_evaluation_watchdog_protects_only_its_live_bounded_owner(tmp_path, fault, prefix):
     root = tmp_path / "task-evaluation-launch-runs/run/allocator/scene-configuration-job/independent_vast_watchdog"
     root.mkdir(parents=True)
     deadline = 4600.0
     if fault == "unrecognized_prefix":
-        prefix = "blueprint-native-task-policy-unapproved-"
+        prefix = "blueprint-unrelated-policy-runtime-cdeae8e82d16498eb07369fc4d300a11"
+    elif fault == "malformed_policy_name":
+        prefix = "blueprint-native-task-policy-canary-runtime-not-a-nonce"
     record = {
         "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
         "status": "armed", "provider": "vast", "independent_process": True,

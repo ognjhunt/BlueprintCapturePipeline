@@ -171,11 +171,21 @@ def test_offline_replay_reuses_accepted_edits_and_preserves_old_world(tmp_path, 
         new['frame_id'] = 'later'
         new['rgb'][:] = 80
         result = {'digest': 'new-pose'}
-        return (result, [*deepcopy(args['frames']), new], root / 'fallback_pose-v3'), {'status': 'completed'}
+        shared = deepcopy(args['frames'])
+        shared[0]['rgb'][:] = 140
+        return (result, [*shared, new], root / 'fallback_pose-v3'), {'status': 'completed'}
     monkeypatch.setattr(atlas_scene_automation, '_fallback_pose', pose)
+    from blueprint_pipeline import atlas_shared_view_alignment
+    monkeypatch.setattr(atlas_shared_view_alignment, 'shared_view_alignment', lambda *_: {
+        'scale': 1., 'rotation': np.eye(3), 'translation': np.zeros(3)})
     recovered, report = recovery.recover_recorded_sources(**args)
     assert edits == [['later']] and len(reviews) == 1
-    assert [f['frame_id'] for f in recovered] == ['later']
+    assert [f['frame_id'] for f in recovered] == ['anchor-a', 'anchor-b', 'later']
+    assert report['recovered_frame_ids'] == ['later']
+    assert report['refreshed_frame_ids'] == ['anchor-a', 'anchor-b']
+    assert np.all(recovered[0]['rgb'] == 140)
+    assert report['context_pose_root'].endswith('fallback_pose-v3')
+    assert (args['root'] / 'result-v2.json').is_file()
     assert report['target_pose_digest'] == 'original-pose' and report['pose_result_digest'] == 'new-pose'
     assert report['original_pose_unchanged'] and report['task_state_selection_unchanged']
     assert args['background_path'].read_bytes() == old_manifest

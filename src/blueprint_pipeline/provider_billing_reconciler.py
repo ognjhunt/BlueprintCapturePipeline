@@ -32,10 +32,10 @@ from blueprint_pipeline.provider_billing_audit_retention import (
     audit_root_lock,
     retain_billing_response,
 )
-from blueprint_pipeline.provider_billing_source import (
-    BILLING_SOURCE_SCHEMA_VERSION,
-    MAX_RESPONSE_BYTES,
-    VAST_CHARGES_URL,
+from .vast_official_billing_serialization import (
+    BILLING_SOURCE_SCHEMA_VERSION as BILLING_SOURCE_SCHEMA_VERSION,
+    VAST_CHARGES_URL as VAST_CHARGES_URL,
+    MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES,
 )
 
 BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"

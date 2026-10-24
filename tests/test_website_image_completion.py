@@ -90,8 +90,7 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
     # mask field and silhouette paste-back remain unused.
     assert all(call["mask_bytes"] is None for call in calls)
     sent = np.asarray(Image.open(BytesIO(calls[0]["image_bytes"])).convert("RGB"))
-    assert sent.shape == (1536, 1024, 3) and not np.any(np.all(sent == [255, 255, 255], axis=-1))
-    assert np.all(sent[:, 256:768][sent[:, 256:768].any(axis=-1)] == [255, 0, 0])
+    assert sent.shape == (1536, 768, 3) and np.all(sent == [255, 0, 0])
     assert "shadows" in calls[0]["prompt"] and "Change nothing else" in calls[0]["prompt"]
     # Contents of a removed object must go with it rather than float in mid-air.
     assert "anything inside them or resting on them" in calls[0]["prompt"]
@@ -136,9 +135,11 @@ def _blue_edit(calls):
 
 def test_website_edits_use_xhigh_and_a_finished_high_batch_is_reused_without_spending(tmp_path, monkeypatch):
     frames, _ = _inputs(tmp_path)
-    (legacy_id,) = completion.LEGACY_BACKEND_IDS
+    legacy_id = completion.LEGACY_BACKEND_IDS[-1]
+    current_id = completion.BACKEND_ID
     registry = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)[1]
     assert registry["default_options"] == {"output_format": "png", "quality": "xhigh"}
+    assert registry["website_canvas_policy"] == "native_aspect_v1"
     assert registry["model_snapshot"] == "gpt-image-2.5-sunburst-2026-09-08"
     calls = []
     monkeypatch.setattr(completion, "_execute_frame_request", _blue_edit(calls))
@@ -162,12 +163,77 @@ def test_website_edits_use_xhigh_and_a_finished_high_batch_is_reused_without_spe
                                           admission=legacy_admission, admission_grant=_grant(legacy_admission),
                                           token="test")
     next(other.glob("*/1.json")).unlink()
-    monkeypatch.setattr(completion, "BACKEND_ID", "openai_gpt_image_2_5_sunburst_2026_09_08_website_xhigh")
+    monkeypatch.setattr(completion, "BACKEND_ID", current_id)
     calls.clear()
     admission = _admission_for(frames, completion.BACKEND_ID)
     completion.complete_background_images(frames=frames, task_digest="task", output_root=other,
                                           admission=admission, admission_grant=_grant(admission), token="test")
     assert [call["execution"]["default_options"]["quality"] for call in calls] == ["xhigh", "xhigh"]
+
+
+@pytest.mark.parametrize("size,expected", [
+    ((720, 1280), (864, 1536)), ((1080, 1920), (864, 1536)),
+    ((1280, 720), (1536, 864)), ((640, 480), (1360, 1024)), ((900, 900), (1024, 1024)),
+])
+def test_custom_canvas_keeps_all_source_corners_without_a_letterbox(size, expected):
+    source = Image.new("RGB", size, "gray")
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+    for (x, y), color in zip([(0, 0), (size[0] - 50, 0), (0, size[1] - 50),
+                              (size[0] - 50, size[1] - 50)], colors):
+        source.paste(color, (x, y, x + 50, y + 50))
+    canvas, box = completion._canvas(source)
+    assert canvas.size == expected and box == (0, 0, *expected)
+    assert all(value % 16 == 0 for value in expected)
+    assert 655_360 <= canvas.width * canvas.height <= 8_294_400
+    assert canvas.width / canvas.height == pytest.approx(size[0] / size[1], rel=.01)
+    assert [canvas.getpixel(p) for p in [(0, 0), (canvas.width - 1, 0),
+        (0, canvas.height - 1), (canvas.width - 1, canvas.height - 1)]] == colors
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_camera_repair_uses_current_canvas_but_never_bypasses_uncertain_legacy_edit(tmp_path, monkeypatch, uncertain):
+    frames, _ = _inputs(tmp_path)
+    current_id = completion.BACKEND_ID
+    legacy_id = completion.LEGACY_BACKEND_IDS[0]
+    calls = []
+    monkeypatch.setattr(completion, "_execute_frame_request", _blue_edit(calls))
+    monkeypatch.setattr(completion, "BACKEND_ID", legacy_id)
+    old_admission = _admission_for(frames, legacy_id)
+    kwargs = dict(frames=frames, task_digest="task", output_root=tmp_path / "out", token="test")
+    old = completion.complete_background_images(**kwargs, admission=old_admission, admission_grant=_grant(old_admission))
+    assert [call["expected_size"] for call in calls] == [(1024, 1536)] * 2
+    monkeypatch.setattr(completion, "BACKEND_ID", current_id)
+    if uncertain:
+        path = Path(old[0]["completion_receipt"])
+        receipt = json.loads(path.read_text())
+        receipt["status"] = "submitting"
+        path.write_text(json.dumps(receipt))
+        with pytest.raises(ValueError, match="requires_reconciliation"):
+            completion.complete_background_images(**kwargs, admission={}, require_original_camera=True)
+        assert len(calls) == 2
+    else:
+        # Ordinary adoption retains the exact old bytes. A framing correction
+        # explicitly requires the new canvas rather than reusing its failed one.
+        assert completion.complete_background_images(**kwargs, admission={}) == old
+        admission = _admission_for(frames, current_id)
+        new = completion.complete_background_images(**kwargs, admission=admission,
+            admission_grant=_grant(admission), require_original_camera=True)
+        assert len(calls) == 4 and [c["expected_size"] for c in calls[2:]] == [(768, 1536)] * 2
+        assert new[0]["completion_receipt"] != old[0]["completion_receipt"]
+        assert completion.complete_background_images(**kwargs, admission={}, require_original_camera=True) == new
+        assert len(calls) == 4
+
+
+def test_unsupported_source_aspect_refuses_before_provider_request(tmp_path, monkeypatch):
+    frames, _ = _inputs(tmp_path)
+    frame = frames[0]
+    Image.new("RGB", (1600, 100), "red").save(frame["image_path"])
+    frame["image_digest"] = _sha256_file(Path(frame["image_path"]))
+    admission = _admission_for(frames, completion.BACKEND_ID)
+    monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("invalid canvas reached provider"))
+    with pytest.raises(ValueError, match="source_aspect_unsupported"):
+        completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "out",
+            admission=admission, admission_grant=_grant(admission), token="test")
 
 
 def test_largest_removal_view_is_the_edited_anchor_for_every_other_view(tmp_path, monkeypatch):
@@ -331,6 +397,68 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
         assert reservations[0]["provider"] == "google"
     assert completion.verify_completed_background(**args)["status"] == "passed"
     assert state["calls"] == 1
+
+
+@pytest.mark.parametrize("camera_ids,novel,expected", [
+    ([], False, "passed"), (None, False, "blocked"), (["0"], False, "blocked"),
+    (["missing"], False, "blocked"), (["0", "0"], False, "blocked"), ([1], False, "blocked"),
+    (None, True, "passed"),
+])
+def test_visual_review_must_resolve_source_camera_changes_and_retains_invalid_answers(
+        tmp_path, monkeypatch, camera_ids, novel, expected):
+    import sys
+    from types import SimpleNamespace as NS
+
+    response = {"consistent_background": True, "task_objects_removed": True,
+                "unrelated_objects_preserved": True, "remaining_task_object_frame_ids": [],
+                "unrelated_object_loss_frame_ids": [], "camera_changed_frame_ids": camera_ids}
+    calls = []
+    class Client:
+        def __init__(self, **_):
+            self.models = self
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            return NS(candidates=[NS(finish_reason="STOP")], text=json.dumps(response))
+    types = NS(Part=NS(from_bytes=lambda **kw: kw), GenerateContentConfig=NS,
+               HttpOptions=NS, HttpRetryOptions=NS)
+    monkeypatch.setitem(sys.modules, "google.genai", NS(Client=Client, types=types))
+    monkeypatch.setattr(completion, "_api_key", lambda: ("fixture-key", "fixture"))
+    frames, _ = _inputs(tmp_path)
+    edited = [{**frame, "generated_pixels_present": True, "novel_view": novel} for frame in frames]
+    args = dict(frames=edited, original_frames=frames,
+                plan={"task_context_sha256": "task", "targets": []}, output_root=tmp_path / "review")
+    first = completion.verify_completed_background(**args)
+    assert first["status"] == expected
+    assert first["review"] == response
+    assert (completion.CAMERA_REVIEW_PROMPT in first["binding"]["review_prompt"]) is not novel
+    assert completion.verify_completed_background(**args) == first
+    assert len(calls) == 1  # A blocked/invalid answer remains a completed paid review.
+
+
+def test_http_failure_retains_sanitized_provider_evidence_and_never_retries(tmp_path, monkeypatch):
+    frames, admission = _inputs(tmp_path)
+    calls = []
+    failure = {"http_status": 429, "provider_error_code": "rate_limit_exceeded",
+               "provider_request_id": "req_fixture", "raw_provider_body_recorded": False}
+    def request(**_):
+        calls.append(True)
+        return {"succeeded": False, "blocker": "semantic_teacher_provider_http_error",
+                "provider_failure": failure}
+    monkeypatch.setattr(completion, "_execute_frame_request", request)
+    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits",
+                admission=admission, admission_grant=_grant(admission), token="fixture-key")
+    with pytest.raises(ValueError, match="semantic_teacher_provider_http_error"):
+        completion.complete_background_images(**args)
+    receipt = json.loads(next((tmp_path / "edits").glob("*/0.json")).read_text())
+    assert receipt["provider_failure"] == failure
+    assert receipt["status"] == "submitting" and receipt["requires_reconciliation"] is True
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        completion.complete_background_images(**args)
+    assert calls == [True]
 
 
 @pytest.mark.parametrize("diagnosed_ids", [["0"], [], ["0", "1"], ["missing"]])

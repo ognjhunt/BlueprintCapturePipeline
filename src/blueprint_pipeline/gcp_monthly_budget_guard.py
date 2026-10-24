@@ -17,9 +17,10 @@ import tempfile
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
-from .gcp_monthly_budget_admission import (  # noqa: F401  (re-exported for callers)
-    CONFIG_ENV, REPORT_ENV, SCHEMA, _money, _period, _read, _time, admission_blockers,
-    effective_limit, load_policy, project_admission_blockers,
+from .gcp_monthly_budget_admission import (
+    SCHEMA, CONFIG_ENV, REPORT_ENV as REPORT_ENV, _time, _period, _money, _read,
+    effective_limit, load_policy, admission_blockers as admission_blockers,
+    stale_report_wait as stale_report_wait, project_admission_blockers as project_admission_blockers,
 )
 
 
@@ -35,7 +36,6 @@ def _write(path: Path, value: Mapping[str, Any]) -> None:
         os.fsync(stream.fileno())
     os.chmod(temporary, 0o640)
     os.replace(temporary, path)
-
 
 
 def validate_budget(policy: Mapping[str, Any], budget: Mapping[str, Any]) -> None:
@@ -237,7 +237,6 @@ def run_configured_guard() -> dict | None:
     if not configured:
         return None
     return run_guard(load_policy(Path(configured)))
-
 
 
 if __name__ == "__main__":

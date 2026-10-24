@@ -19,6 +19,30 @@ def frame(key="a", x=0):
                 "extrinsics": {"position": [x, 0, 0], "quaternion": [0, 0, 0, 1], "coordinateSystem": "rub"}})
 
 
+@pytest.mark.parametrize('invalid', [None, 'capture', 'frames', 'digest', 'wrong-version'])
+def test_refreshed_context_uses_its_own_pixels_and_refuses_mixed_capture_identity(tmp_path, monkeypatch, invalid):
+    from blueprint_pipeline import atlas_context_fov
+    fresh = tmp_path / 'fresh'
+    fresh.mkdir()
+    pose = {'binding': {'source_video_digest': 'capture'}}
+    pixels = {'binding': {'source_video_digest': 'other' if invalid == 'capture' else 'capture'},
+              'operation_receipt': {'input_usage': {'frames': [{'frame_id': 'b' if invalid == 'frames' else 'a'}]}}}
+    pixels['digest'] = canonical_digest(pixels, digest_field='digest')
+    if invalid == 'digest':
+        pixels['digest'] = 'tampered'
+    (fresh / 'atlas_posed_rgbd_result.json').write_text(json.dumps(pixels))
+    def verify(**kw):
+        assert kw['pose_root'] == fresh and [f['frame_id'] for f in kw['frames']] == ['a']
+        raise RuntimeError('fresh_context_pixel_verification_reached')
+    monkeypatch.setattr(atlas_context_fov, 'verify_pose_context_fov', verify)
+    expected = 'refreshed_context' if invalid else 'fresh_context_pixel_verification_reached'
+    with pytest.raises((ValueError, RuntimeError), match=expected):
+        completion.complete_scene(pose_root=tmp_path / 'old', pose=pose, frames=[frame()], review={},
+            root=tmp_path / 'completion', context={}, configuration={}, task_runner=None,
+            release_blockers=None, planner_runner=None, max_polls=1, context_pose_root=fresh,
+            context_pose_digest='old-version' if invalid == 'wrong-version' else pixels['digest'])
+
+
 def test_completion_camera_pool_preserves_vertical_rays_and_observed_camera_centers():
     first = frame()
     candidates = completion.camera_candidates([first])
@@ -299,14 +323,14 @@ def test_initial_construction_automatically_recovers_recorded_views_and_exports_
         completed.append(kw)
         if len(completed) == 1:
             return None, {'status': 'source_recovery_required', 'digest': 'sha256:source-action'}
-        assert [f['frame_id'] for f in kw['recorded_frames']] == ['recorded-later']
-        assert kw['pose'] is pose and [f['frame_id'] for f in kw['frames']] == ['a']
+        assert kw['pose'] is pose and [f['frame_id'] for f in kw['frames']] == ['a', 'recorded-later']
         return [novel], {'status': 'passed', 'generation_result_digest': 'native-result',
                          'review': {'status': 'passed'}, 'generated_root': str(tmp_path / 'generated')}
     def recover(**kw):
         recovered.append(kw)
         assert kw['pose'] is pose and kw['background_path'].name == 'prepared_background.json'
         return [extra], {'status': 'completed', 'digest': 'sha256:recovered',
+                        'recovered_frame_ids': ['recorded-later'],
                         'background_path': str(tmp_path / 'recovered-background.json'),
                         'expanded_automation': kw['automation'], 'preservation_paths': []}
     monkeypatch.setattr(completion, 'complete_scene', complete)
