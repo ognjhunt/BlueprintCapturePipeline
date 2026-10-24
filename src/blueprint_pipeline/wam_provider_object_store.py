@@ -875,30 +875,16 @@ def cleanup_staged_wam_provider_objects(
     cleanup_attempts = 0
     output_checks: list[dict[str, Any]] = []
     if require_outputs_absent:
-        # A terminal worker that never booted has no local archive. Establish
-        # that no remote result or witness needs collecting before deleting
-        # even its input bundle or recovery references.
-        if not blockers:
-            try:
-                client = _s3_client(access_key=access_key, secret_key=secret_key,
-                                    endpoint=endpoint, region=region_value)
-                output_checks = [{"key_sha256": hashlib.sha256(key.encode()).hexdigest(),
-                                  "absence": _s3_absence_confirmed(client, bucket=bucket_value, key=key)}
-                                 for key in cleanup_keys if key != bundle_key]
-            except Exception as exc:  # noqa: BLE001 - unknown outcomes retain every object
-                output_checks = [{"absence": {"absence_confirmed": False,
-                                               **_safe_transfer_exception(exc)}}]
-        if blockers or not output_checks or any(
-                row["absence"].get("absence_confirmed") is not True for row in output_checks):
-            result = {"schema_version": OBJECT_CLEANUP_SCHEMA_VERSION, "generated_at": utc_now_iso(),
-                      "status": "blocked", "blockers": sorted(set([
-                          *blockers, "provider_output_uncollected_objects_retained"])),
-                      "all_objects_absent": False, "all_ephemeral_objects_absent": False,
-                      "output_absence_precheck": output_checks, "cleanup_attempts": 0,
-                      "remote_objects_retained_for_recovery": True, "signed_url_files_preserved": True,
-                      "raw_secret_values_recorded": False}
-            write_json(resolved_job_dir / "wam_provider_object_store_cleanup.json", result)
-            return result
+        from .provider_output_absence_precheck import output_absence_precheck
+        precheck = output_absence_precheck(keys=[key for key in cleanup_keys if key != bundle_key], blockers=blockers,
+            make_client=lambda: _s3_client(access_key=access_key, secret_key=secret_key, endpoint=endpoint, region=region_value),
+            inspect_absence=lambda client, key: _s3_absence_confirmed(client, bucket=bucket_value, key=key),
+            transfer_error=_safe_transfer_exception, schema_version=OBJECT_CLEANUP_SCHEMA_VERSION,
+            generated_at=utc_now_iso())
+        output_checks = precheck["output_absence_precheck"]
+        if precheck["status"] == "blocked":
+            write_json(resolved_job_dir / "wam_provider_object_store_cleanup.json", precheck)
+            return precheck
     receipt = (
         load_promotion_receipt(
             resolved_job_dir,
@@ -968,16 +954,9 @@ def cleanup_staged_wam_provider_objects(
             blockers.extend(attempt_blockers)
             break
 
-    signed_url_files = [
-        resolved_job_dir / name
-        for name in (
-            "provider_bundle_url.txt",
-            "provider_output_put_url.txt",
-            "provider_output_get_url.txt",
-            "paired_witness_put_url.txt", "paired_witness_get_url.txt",
-            "paired_witness_authority.json",
-        )
-    ]
+    signed_url_files = [resolved_job_dir / name for name in (
+        *SIGNED_URL_FILENAMES, "paired_witness_put_url.txt", "paired_witness_get_url.txt",
+        "paired_witness_authority.json")]
     for path in signed_url_files:
         path.unlink(missing_ok=True)
     result = {
