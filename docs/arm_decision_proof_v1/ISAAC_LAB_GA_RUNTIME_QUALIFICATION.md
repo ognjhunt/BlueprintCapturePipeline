@@ -508,3 +508,44 @@ and action packets with the frozen NumPy 1.26 policy-side codec. These are
 wire-compatibility fixtures, not model queries, simulator episodes or task
 outcomes. The actual GPU pair must still record its installed environments
 and complete policy-input media.
+
+## Weighted-server startup and funding refusal, 2026-10-24
+
+Vast `57512236` ran source
+`cb14592575d6ce8f532db541ea4359bf8c2c94ed` on RTX 5880 Ada UUID
+`GPU-1925818e-d48f-b7e1-8211-cef77c827d10`, driver `580.159.03`,
+with 49,140 MiB total memory. Native bootstrap completed in 39.163 seconds.
+The full frozen OpenPI install, staged SDK wire client, verified checkpoint
+fetch, and both weighted OpenPI and GR00T server readiness checks completed.
+Isaac's NumPy 2.3.1 stayed unchanged; the wire client used the exact MessagePack
+fallback and the SDK's existing typing_extensions. No policy query or learned
+episode is proven. The first cell started Kit but produced no retained first
+observation before the provider exited. There is no terminal runtime archive or
+worker exit code; the typed before-first-observation media gap remains explicit.
+
+The original allocator result SHA-256 is
+`f751a100ef809b754076b0cc7951e42078977ce2e66b63b83700b425e53553df`.
+The 55-file host closeout manifest is
+`4c9c3a036794ca867c1186fe6f1fca9607ac5a01a7d42cfaf4c7f2885cba9991`;
+the earlier 17-file weighted-server snapshot manifest is
+`6ae1b2b778d22d50a716031ebf24aab1db62558f0f9dd6253805b7cd384d884f`.
+Both sets were copied and hash-verified locally. Allocator and independent
+watchdog exit, instance absence, staged-object absence, and global Vast zero
+were verified. The retained official charge for this allocation was $1.633 at
+closeout; later provider postings may change reconciliation totals.
+
+The subsequent read-only account observation returned HTTP 200 and zero usable
+credit; the billing console also showed a negative balance. Funding exhaustion
+is a plausible explanation for the exit, but the provider's actual termination
+reason was not retained. The scheduled spend guard recognized the instance as
+protected and selected no reap candidate; its independent deadline had not
+expired. Do not label this an observed OOM, runtime timeout, or policy failure.
+
+The existing credit admission seam is now mandatory for policy canary sessions,
+even when the optional legacy credit setting is disabled. The full nonallocating
+preflight checks funding before consuming one-shot session authority, and the
+adapter repeats the check under its paid-launch lock before offer search.
+Insufficient, stale, malformed, or unverifiable credit refuses allocation.
+The receipt remains a balance snapshot, not a reservation or spend authority.
+No task, model, input, scoring, runtime-worker, or allocation limit changes are
+part of this funding repair. The paired policy comparison remains incomplete.

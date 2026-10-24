@@ -40,7 +40,7 @@ class Client:
 
 
 @pytest.fixture
-def context(tmp_path, monkeypatch):
+def context(tmp_path, monkeypatch, funded_vast_credit):
     client = Client()
     monkeypatch.setenv("HF_TOKEN_FILE", str(tmp_path / "absent-hf-token"))
     monkeypatch.setitem(sys.modules, 'boto3', SimpleNamespace(client=lambda *a, **kw: client))

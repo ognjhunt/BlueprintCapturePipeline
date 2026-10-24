@@ -130,7 +130,7 @@ def test_country_grant_cannot_expand_to_other_or_multiple_locations(tmp_path, co
 
 @pytest.mark.parametrize("country", [None, "GB", "EE", "JP"])
 def test_canonical_transport_receives_country_without_weakening_other_bounds(
-    tmp_path, monkeypatch, country
+    tmp_path, monkeypatch, funded_vast_credit, country
 ):
     from blueprint_pipeline import native_task_arena_vast as vast
     from blueprint_pipeline import native_task_arena_paired_witness_staging as witness

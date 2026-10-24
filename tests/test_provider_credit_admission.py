@@ -52,6 +52,32 @@ def test_production_guard_is_fail_closed_on_bad_config(monkeypatch):
     assert "provider_credit_requirement_invalid" in result["blockers"]
 
 
+@pytest.mark.parametrize("setting", [None, "false", "0", "true"])
+@pytest.mark.parametrize("available,admitted", [(0.0, False), (8.99, False), (9.0, True)])
+def test_required_canary_funding_cannot_be_disabled(
+    tmp_path, monkeypatch, funded_vast_credit, setting, available, admitted,
+):
+    if setting is None:
+        monkeypatch.delenv(credit.ENABLED_ENV, raising=False)
+    else:
+        monkeypatch.setenv(credit.ENABLED_ENV, setting)
+    monkeypatch.delenv(credit.RESERVE_ENV, raising=False)
+    funded_vast_credit["credit"] = available
+    result = credit.record_vast_credit_admission(tmp_path, "test-vast-key", 8, required=True)
+    assert (result["status"] == "admitted") is admitted
+    assert result["required_before_policy_canary"] is True
+    assert result["credit_reserved"] is False
+    assert result["blockers"] == ([] if admitted else ["provider_credit_insufficient"])
+    assert json.loads((tmp_path / "provider_credit_admission.json").read_text()) == result
+
+
+def test_optional_legacy_funding_setting_is_preserved(monkeypatch):
+    monkeypatch.setenv(credit.ENABLED_ENV, "false")
+    assert credit.configured_vast_credit_admission(api_key="k", required_usd=8) == {
+        "status": "not_configured", "blockers": [],
+    }
+
+
 def test_capacity_reports_low_credit_without_disk_pressure(tmp_path):
     from collections import namedtuple
     usage = namedtuple("Usage", "total used free")(100 * 1024**3, 10 * 1024**3, 90 * 1024**3)
@@ -128,3 +154,52 @@ def test_low_credit_stops_real_render_launcher_before_create(tmp_path, monkeypat
     assert result["blockers"] == ["provider_credit_insufficient"]
     assert result["allocation_created"] is False
     assert calls == [("GET", "/users/current/")]
+
+
+def test_required_canary_credit_stops_locked_adapter_before_offer_search(tmp_path, monkeypatch):
+    from blueprint_pipeline import vast_provider_adapter as adapter
+    from blueprint_pipeline import vast_api_transport as transport
+    from blueprint_pipeline.paid_resource_admission import (
+        build_paid_lane_admission, require_paid_resource_admission, PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+
+    key = tmp_path / "vast_api_key"
+    key.write_text("test-key\n")
+    key.chmod(0o600)
+    monkeypatch.setenv(adapter.VAST_API_KEY_FILE_ENV, str(key))
+    monkeypatch.setenv(adapter.VAST_API_GATE_ENV, "true")
+    monkeypatch.setenv(adapter.VAST_INSTANCE_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(adapter.VAST_LAUNCH_LOCK_FILE_ENV, str(tmp_path / "launch.lock"))
+    monkeypatch.setenv(credit.ENABLED_ENV, "false")
+    calls = []
+
+    def api(**kwargs):
+        call = (kwargs["method"], kwargs["path"])
+        calls.append(call)
+        if call == ("GET", "/instances/"):
+            return 200, {"instances": []}
+        assert call == ("GET", "/users/current/")
+        return 200, {"credit": 0.0}
+
+    monkeypatch.setattr(adapter, "_api_json", api)
+    monkeypatch.setattr(transport, "_api_json", api)
+    grant = require_paid_resource_admission(
+        build_paid_lane_admission(resource_class="vast_provider_adapter"),
+        resource_class="vast_provider_adapter", expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+    result = adapter.run_vast_provider_adapter(
+        job_dir=tmp_path / "job", mode="live-startup-probe",
+        paid_resource_admission_grant=grant, allow_vast_api_call=True, allow_instance_launch=True,
+        provider_bundle_kind="native_task_arena_policy_canary_session", hard_cap_usd=8,
+    )
+
+    assert result["blockers"] == ["provider_credit_insufficient"]
+    assert result["vast_instance_ids"] == []
+    assert result["vast_side_effects_may_have_occurred"] is False
+    assert result["vast_launch_lock_acquired"] is True
+    assert result["vast_launch_lock_manifest"]["status"] == "released"
+    assert calls == [("GET", "/instances/"), ("GET", "/users/current/")]
+    offer = json.loads((tmp_path / "job" / "vast_offer_selection_manifest.json").read_text())
+    assert offer["offer_search_performed"] is False
+    receipt = json.loads((tmp_path / "job" / "provider_credit_admission.json").read_text())
+    assert receipt["required_before_policy_canary"] is True

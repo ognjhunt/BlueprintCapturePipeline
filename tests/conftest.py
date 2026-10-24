@@ -28,6 +28,21 @@ for candidate in (REPO_ROOT, SRC_DIR, contract_src_dir):
             sys.path.insert(0, candidate_str)
 
 
+@pytest.fixture
+def funded_vast_credit(monkeypatch):
+    """An explicit prepaid account for tests that reach live canary admission."""
+    from blueprint_pipeline import provider_credit_admission as credit
+    from blueprint_pipeline.gpu_render_providers import VastRenderProvider
+
+    state = {"credit": 20.0}
+    observe = credit.observe_vast_credit
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda self: "test-vast-key")
+    monkeypatch.setattr(credit, "observe_vast_credit", lambda **kwargs: observe(
+        api_key="test-vast-key", request=lambda **request: (200, dict(state)),
+    ))
+    return state
+
+
 @pytest.fixture(autouse=True)
 def _isolated_pending_teardown_registry(tmp_path_factory, monkeypatch):
     """Paid lanes persist pending_teardown.v1 records; keep tests out of ~/."""

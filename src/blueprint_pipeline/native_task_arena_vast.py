@@ -618,6 +618,20 @@ def run_native_task_arena_policy_canary_session_vast(
                         **recorded}
     outcome = "failed"
     try:
+        # A spend ceiling does not fund a prepaid account. Check in the live
+        # nonallocating preflight as well as execution, before consuming the
+        # one-shot authority; the adapter repeats this under its launch lock.
+        from .gpu_render_providers import VastRenderProvider
+        from .provider_credit_admission import record_vast_credit_admission
+        funding = record_vast_credit_admission(
+            Path(job_dir), VastRenderProvider()._key(), hard_cap_usd, required=True,
+        )
+        if funding["blockers"]:
+            outcome = "blocked"
+            return {
+                **_unconsumed_policy_canary_refusal(list(funding["blockers"])),
+                "provider_credit_admission": funding, **recorded,
+            }
         consumption = (
             consume_session_authority_once(
                 authority,

@@ -87,11 +87,13 @@ def credit_admission(
             "observation": dict(observation), "credit_reserved": False}
 
 
-def configured_vast_credit_admission(*, api_key: str, required_usd: float) -> dict[str, Any]:
+def configured_vast_credit_admission(
+    *, api_key: str, required_usd: float, required: bool = False,
+) -> dict[str, Any]:
     enabled = os.getenv(ENABLED_ENV, "false").strip().lower()
-    if enabled in {"false", "0", ""}:
+    if enabled in {"false", "0", ""} and not required:
         return {"status": "not_configured", "blockers": []}
-    if enabled not in {"true", "1"}:
+    if enabled not in {"true", "1", "false", "0", ""}:
         return {"status": "blocked", "blockers": ["provider_credit_guard_config_invalid"]}
     try:
         reserve = float(os.getenv(RESERVE_ENV, "1"))
@@ -101,11 +103,17 @@ def configured_vast_credit_admission(*, api_key: str, required_usd: float) -> di
                             reserve_usd=reserve)
 
 
-def record_vast_credit_admission(job_dir: Path, api_key: str, required_usd: float) -> dict[str, Any]:
+def record_vast_credit_admission(
+    job_dir: Path, api_key: str, required_usd: float, *, required: bool = False,
+) -> dict[str, Any]:
     """Called under the adapter's launch lock, before its no-allocation failure path."""
     from .common import write_json
 
-    result = configured_vast_credit_admission(api_key=api_key, required_usd=required_usd)
+    result = configured_vast_credit_admission(
+        api_key=api_key, required_usd=required_usd, required=required,
+    )
+    if required:
+        result["required_before_policy_canary"] = True
     write_json(job_dir / "provider_credit_admission.json", result)
     return result
 

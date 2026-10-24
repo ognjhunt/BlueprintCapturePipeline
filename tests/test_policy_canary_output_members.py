@@ -129,6 +129,27 @@ def _forbidden(*_args, **_kwargs):
     raise AssertionError("the session authority was consumed or the lane ran before the mode was resolved")
 
 
+@pytest.mark.parametrize("execute", [False, True])
+def test_unfunded_session_refuses_before_authority_or_lane(
+    context, tmp_path, monkeypatch, funded_vast_credit, execute,
+):
+    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
+    monkeypatch.setenv("BLUEPRINT_VAST_CREDIT_GUARD_ENABLED", "false")
+    funded_vast_credit["credit"] = 0.0
+    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
+
+    result = _run_session(context, tmp_path, monkeypatch, execute=execute, lane=_forbidden)
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["provider_credit_insufficient"]
+    assert proves_no_provider_allocation(result)
+    assert result["provider_mutations_performed"] == 0
+    assert not (tmp_path / "allocator" / "policy_canary_session_consumption.json").exists()
+    receipt = json.loads((tmp_path / "allocator" / "provider_credit_admission.json").read_text())
+    assert receipt == result["provider_credit_admission"]
+    assert receipt["required_before_policy_canary"] is True
+
+
 @pytest.mark.parametrize("machines", [None, [1234]])
 def test_machine_constraint_reaches_provider_selection(context, tmp_path, monkeypatch, machines):
     _set_delivery(monkeypatch, tmp_path, "download", configured=False)
