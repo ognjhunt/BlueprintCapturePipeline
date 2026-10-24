@@ -316,6 +316,52 @@ def test_scene_source_uses_the_final_completed_bundle_with_a_stale_baseline_pres
         assert levelling["provider_collision_mesh_digest"] == _sha256_file(glb)
 
 
+@pytest.mark.parametrize("change", [None, "video", "context", "source_pose", "digest", "outside",
+                                    "missing_path", "missing_digest", "tamper"])
+def test_retained_revision_reuses_only_the_same_capture_observations(tmp_path, change):
+    job_dir = job_fixture(tmp_path)
+    original = json.loads((job_dir / "result.json").read_text())
+    original.update(source_video_digest=SHA, task_context_digest="sha256:" + "b" * 64)
+    write(job_dir / "result.json", digest(original))
+    write(job_dir / "preview_job.json", {"state": "ready", "result_digest": original["digest"]})
+    original_job = (job_dir / "preview_job.json").read_bytes()
+    original_result = (job_dir / "result.json").read_bytes()
+    _, _, ply, glb = completed_bundle(job_dir)
+    retained = json.loads((job_dir / "result.json").read_text())
+    (job_dir / "result.json").write_bytes(original_result)
+    (job_dir / "preview_job.json").write_bytes(original_job)
+    if change == "video":
+        retained["source_video_digest"] = "sha256:" + "c" * 64
+    elif change == "context":
+        retained["task_context_digest"] = "sha256:" + "c" * 64
+    elif change == "source_pose":
+        retained["source_pose"]["scene_measurements_digest"] = "sha256:" + "c" * 64
+    digest(retained)
+    path = (tmp_path if change == "outside" else job_dir / "retained-results") / "revision.json"
+    write(path, retained)
+    expected = "sha256:" + "0" * 64 if change == "digest" else retained["digest"]
+    args = dict(capture_root=tmp_path, output_root=tmp_path / "replay",
+                retained_result_path=path, retained_result_digest=expected)
+    if change == "missing_path":
+        args["retained_result_path"] = None
+    elif change == "missing_digest":
+        args["retained_result_digest"] = None
+    elif change == "tamper":
+        retained["status"] = "changed_after_sealing"
+        write(path, retained)
+    if change is not None:
+        with pytest.raises(ValueError, match="website_atlas_scene_(retained_result_changed|retained_selection_incomplete|artifact_missing)"):
+            source.atlas_scene_source(**args)
+    else:
+        value = source.atlas_scene_source(**args)
+        assert value["status"] == "ready"
+        assert value["base_scene"]["levelling"]["provider_splat_path"] == str(ply)
+        assert value["base_scene"]["levelling"]["provider_collision_mesh_path"] == str(glb)
+        assert value["base_scene"]["atlas_result_digest"] == retained["digest"]
+    assert (job_dir / "preview_job.json").read_bytes() == original_job
+    assert (job_dir / "result.json").read_bytes() == original_result
+
+
 # Turning in place leaves the shared cameras no baseline to fix a similarity.
 TURNING = [(rotation_cv, np.array([0.1, -0.05, 0.0])) for rotation_cv, _ in CAMERAS]
 
