@@ -40,6 +40,13 @@ from blueprint_pipeline.vast_provider_adapter import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_supervisor_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The CI runner's service is not the mocked provider launcher's supervisor.
+    # Watchdog contract tests set their own systemd context explicitly.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+
 def _approval_path(tmp_path: Path) -> Path:
     receipt = build_founder_approval_receipt(
         statement=expected_founder_approval_statement(),
