@@ -502,9 +502,11 @@ def run_automation(
                 recovery_suffix += '-coverage-' + splat['digest'][7:23]
             mesh_root = None
             if "mesh_export_cost_usd" in policy:
-                spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
-                mesh_root = output_root / ((f"background_completed_mesh-{COMPLETION_REVISION}" + recovery_suffix)
-                                          if completion else "background_mesh")
+                from .atlas_depth_splat import splats2mesh_attempt
+
+                spec, mesh_root = splats2mesh_attempt(splat_root, output_root / (
+                    (f"background_completed_mesh-{COMPLETION_REVISION}" + recovery_suffix)
+                    if completion else "background_mesh"))
                 quote = {
                     "schema_version": "website_atlas_task_price_review.v1",
                     "task": "splats2Mesh",

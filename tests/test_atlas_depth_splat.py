@@ -3,6 +3,7 @@ import json
 import math
 import struct
 import zlib
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -291,22 +292,42 @@ def test_wall_discs_facing_either_way_still_merge_into_thin_discs():
     assert np.all(merged.scales[:, 2] < merged.scales[:, 0])
 
 
-def test_writer_meshes_a_merged_copy_only_above_the_meshing_limit(tmp_path, monkeypatch):
-    result, frames = depth_splat.load_posed_rgbd(retained_pose_root(tmp_path / "pose"))
-    small = depth_splat.write_depth_splat(frames=frames, result=result, output_root=tmp_path / "small")
-    assert "mesh_input" not in small and [row["role"] for row in small["outputs"]] == ["splat_ply", "splat_spz"]
-    spec = json.loads((tmp_path / "small" / "splats2mesh_task_spec.json").read_text())
-    assert spec["uploads"]["splat"]["sha256"] == small["outputs"][1]["sha256"]
-    monkeypatch.setattr(depth_splat, "SPLATS2MESH_MAX_GAUSSIANS", small["gaussian_count"] // 3)
-    large = depth_splat.write_depth_splat(frames=frames, result=result, output_root=tmp_path / "large")
-    assert large["gaussian_count"] == small["gaussian_count"]
-    assert large["outputs"][:2] == small["outputs"], "the viewing splat is unchanged"
-    mesh = large["mesh_input"]
-    assert mesh["gaussian_count"] <= small["gaussian_count"] // 3 and mesh["voxel_size"] > large["voxel_size"]
-    row = next(row for row in large["outputs"] if row["role"] == "mesh_input_spz")
-    assert depth_splat.decode_spz((tmp_path / "large" / row["path"]).read_bytes()).count == mesh["gaussian_count"]
-    spec = json.loads((tmp_path / "large" / "splats2mesh_task_spec.json").read_text())
-    assert spec["uploads"]["splat"]["sha256"] == row["sha256"]
+def test_mesh_attempt_merges_an_unattempted_oversized_export_without_rewriting_it(tmp_path, monkeypatch):
+    splat_root = tmp_path / "splat"
+    manifest = depth_splat.build_depth_splat(retained_pose_root(tmp_path / "pose"), splat_root)
+    retained = {path.name: path.read_bytes() for path in splat_root.iterdir()}
+    original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    assert depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh") == (original, tmp_path / "mesh")
+    monkeypatch.setattr(depth_splat, "SPLATS2MESH_MAX_GAUSSIANS", manifest["gaussian_count"] // 3)
+    spec, mesh_root = depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh")
+    assert mesh_root == tmp_path / "mesh-merged-v1" and not mesh_root.exists()
+    assert spec["request"] == original["request"], "the priced request is unchanged"
+    receipt = json.loads((tmp_path / "mesh-input-merged-v1" / "mesh_input.json").read_text())
+    assert spec["uploads"]["splat"] == {"path": receipt["path"], "sha256": receipt["sha256"]}
+    assert receipt["source_sha256"] == original["uploads"]["splat"]["sha256"]
+    assert receipt["gaussian_count"] <= manifest["gaussian_count"] // 3 < manifest["gaussian_count"]
+    assert receipt["voxel_size"] > manifest["voxel_size"]
+    assert depth_splat.decode_spz(Path(receipt["path"]).read_bytes()).count == receipt["gaussian_count"]
+    assert {path.name: path.read_bytes() for path in splat_root.iterdir()} == retained
+    # A restart reuses the same merged input and attempt root.
+    assert depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh") == (spec, mesh_root)
+
+
+def test_mesh_attempt_keeps_an_already_attempted_root_and_refuses_a_changed_input(tmp_path, monkeypatch):
+    splat_root = tmp_path / "splat"
+    manifest = depth_splat.build_depth_splat(retained_pose_root(tmp_path / "pose"), splat_root)
+    original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    monkeypatch.setattr(depth_splat, "SPLATS2MESH_MAX_GAUSSIANS", manifest["gaussian_count"] // 3)
+    (tmp_path / "mesh" / "atlas_pose").mkdir(parents=True)
+    assert depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh") == (original, tmp_path / "mesh")
+    depth_splat.splats2mesh_attempt(splat_root, tmp_path / "other")
+    merged = tmp_path / "other-input-merged-v1" / "atlas_depth_splat_mesh_input.spz"
+    merged.write_bytes(merged.read_bytes() + b"\0")
+    with pytest.raises(ValueError, match="mesh_input_changed"):
+        depth_splat.splats2mesh_attempt(splat_root, tmp_path / "other")
+    (splat_root / "atlas_depth_splat.spz").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="mesh_source_changed"):
+        depth_splat.splats2mesh_attempt(splat_root, tmp_path / "third")
 
 
 def test_discs_of_crossing_surfaces_merge_into_a_round_gaussian():

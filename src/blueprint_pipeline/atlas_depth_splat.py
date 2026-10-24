@@ -52,6 +52,7 @@ SPLATS2MESH_MAX_CAMERAS = 512
 # (2026-10-23) and failed with EXECUTION_FAILED on a 3.6M one (2026-10-24).
 SPLATS2MESH_MAX_GAUSSIANS = 2_000_000
 _MESH_INPUT_GRID_MULTIPLES = (1.5, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0)
+MESH_INPUT_REVISION = "merged-v1"
 EXR_MAGIC = b"\x76\x2f\x31\x01"
 _EXR_LINES_PER_BLOCK = {0: 1, 2: 1, 3: 16}  # none, ZIPS, ZIP
 _EXR_PIXEL_TYPES = {1: "<f2", 2: "<f4"}
@@ -482,6 +483,41 @@ def splats2mesh_task_spec(*, frames: Sequence[Mapping[str, Any]], spz: Path,
             "uploads": {"splat": {"path": str(spz.resolve()), "sha256": _sha256_file(spz)}}}
 
 
+def splats2mesh_attempt(splat_root: Path, mesh_root: Path) -> tuple[dict[str, Any], Path]:
+    """The splats2Mesh spec and attempt root, with an oversized draft merged for meshing only.
+
+    The retained export is never rewritten: its manifest digest binds coverage and
+    bundle state. A root already attempted keeps its input, so a pending or
+    completed mesh is never bought twice; a merged input gets its own attempt root.
+    """
+    spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    manifest = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
+    if manifest.get("gaussian_count", 0) <= SPLATS2MESH_MAX_GAUSSIANS or mesh_root.exists():
+        return spec, mesh_root
+    source = spec["uploads"]["splat"]
+    if _sha256_file(Path(source["path"])) != source["sha256"]:
+        raise ValueError("atlas_depth_splat_mesh_source_changed")
+    input_root = mesh_root.with_name(f"{mesh_root.name}-input-{MESH_INPUT_REVISION}")
+    receipt_path = input_root / "mesh_input.json"
+    if not receipt_path.is_file():
+        merged, voxel = splats2mesh_input(decode_spz(Path(source["path"]).read_bytes()), manifest["voxel_size"])
+        input_root.mkdir(parents=True, exist_ok=True)
+        output = input_root / "atlas_depth_splat_mesh_input.spz"
+        output.write_bytes(encode_spz(merged))
+        write_receipt = {"schema_version": "atlas_splats2mesh_input.v1", "basis": "merged_discs_for_splats2mesh_size",
+                         "source_sha256": source["sha256"], "source_gaussian_count": manifest["gaussian_count"],
+                         "source_voxel_size": manifest["voxel_size"], "gaussian_count": merged.count,
+                         "voxel_size": voxel, "limit": SPLATS2MESH_MAX_GAUSSIANS,
+                         "path": str(output.resolve()), "sha256": _sha256_file(output)}
+        receipt_path.write_text(json.dumps(write_receipt, indent=2) + "\n")
+    receipt = json.loads(receipt_path.read_text())
+    if receipt["source_sha256"] != source["sha256"] or _sha256_file(Path(receipt["path"])) != receipt["sha256"]:
+        raise ValueError("atlas_depth_splat_mesh_input_changed")
+    merged_input = {"path": receipt["path"], "sha256": receipt["sha256"]}
+    return ({**spec, "uploads": {**spec["uploads"], "splat": merged_input}},
+            mesh_root.with_name(f"{mesh_root.name}-{MESH_INPUT_REVISION}"))
+
+
 def build_depth_splat(pose_root: Path, output_root: Path, *, voxel_footprint_multiple: float = 2.0) -> dict[str, Any]:
     """Write the draft splat (PLY + SPZ), its manifest and the splats2Mesh task spec."""
     result, frames = load_posed_rgbd(pose_root)
@@ -501,24 +537,12 @@ def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_mult
     ply = write_standard_3dgs_ply(splat, output_root / "atlas_depth_splat.ply")
     spz = output_root / "atlas_depth_splat.spz"
     spz.write_bytes(data)
-    outputs, mesh_spz = [("splat_ply", ply), ("splat_spz", spz)], spz
-    mesh_splat, mesh_voxel = splats2mesh_input(splat, report["voxel_size"])
-    if mesh_splat is not splat:
-        mesh_data = encode_spz(mesh_splat)
-        if decode_spz(mesh_data).count != mesh_splat.count:
-            raise ValueError("atlas_depth_splat_spz_round_trip_failed")
-        mesh_spz = output_root / "atlas_depth_splat_mesh_input.spz"
-        mesh_spz.write_bytes(mesh_data)
-        outputs.append(("mesh_input_spz", mesh_spz))
     source_video_digest = result["binding"]["source_video_digest"]
     manifest = {"schema_version": SCHEMA_VERSION, "pose_result_digest": result["digest"],
                 "pose_operation_id": result["operation"]["id"], "source_video_digest": source_video_digest,
                 **report, "gaussian_count": splat.count,
-                **({"mesh_input": {"gaussian_count": mesh_splat.count, "voxel_size": mesh_voxel,
-                                   "limit": SPLATS2MESH_MAX_GAUSSIANS, "basis": "merged_discs_for_splats2mesh_size"}}
-                   if mesh_splat is not splat else {}),
                 "outputs": [{"role": role, "path": path.name, "bytes": path.stat().st_size, "sha256": _sha256_file(path)}
-                            for role, path in outputs],
+                            for role, path in (("splat_ply", ply), ("splat_spz", spz))],
                 "world_frame": "atlas_world_rub_y_up", "units": result.get("depth_unit"),
                 "scale_status": result.get("scale_status"), "splat_kind": "depth_fused_draft",
                 "photometric_optimization": False, "generated_content": bool(generated_result_digests),
@@ -528,7 +552,7 @@ def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_mult
                 "metric_measurement_proven": False, "claim_scope": "development_only"}
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
     (output_root / "atlas_depth_splat_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    spec = splats2mesh_task_spec(frames=frames, spz=mesh_spz, source_video_digest=source_video_digest)
+    spec = splats2mesh_task_spec(frames=frames, spz=spz, source_video_digest=source_video_digest)
     (output_root / "splats2mesh_task_spec.json").write_text(json.dumps(spec, indent=2) + "\n")
     return manifest
 
