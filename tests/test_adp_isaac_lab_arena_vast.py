@@ -1193,3 +1193,53 @@ def test_failed_download_keeps_paid_remote_evidence_and_recovery_access(tmp_path
         assert 'test-only-protected-reference' not in json.dumps(result)
     else:
         assert result['status'] == 'completed' and not remote and not access.exists()
+
+
+@pytest.mark.parametrize('inventory_verified', [True, False])
+def test_refused_create_cleanup_requires_authenticated_no_instance_proof(
+    tmp_path, monkeypatch, inventory_verified,
+):
+    """A vanished offer can close staging; an uncertain create keeps recovery access."""
+    staging = tmp_path / 'stage'
+    staging.mkdir()
+    access = staging / 'provider_output_get_url.txt'
+    access.write_text('test-only-protected-reference')
+    calls = []
+    adapter = {
+        'status': 'failed',
+        'provider_create_attempted': True,
+        'vast_instance_ids': [],
+        'vast_side_effects_may_have_occurred': False,
+        'continuing_spend_from_this_run': False,
+        'create_failure_diagnosis': {
+            'http_status_code': 400,
+            'error_preview': 'no_such_ask: selected offer is not available',
+            'definite_create_refusal': True,
+            'create_inventory_verified': inventory_verified,
+            'create_inventory_http_status_code': 200,
+            'create_produced_no_instance': True,
+            'matching_attempt_instance_ids': [],
+            'attempted_labels': ['exact-render-only-attempt'],
+        },
+        'provider_attempt_classification': {
+            'classification': 'pre_execution_provider_null',
+            'scientific_attempt_consumed': False,
+        },
+    }
+
+    def cleanup(path):
+        calls.append(path)
+        access.unlink()
+        return {'status': 'completed', 'all_objects_absent': True, 'blockers': []}
+
+    monkeypatch.setattr(arena, 'cleanup_staged_wam_provider_objects', cleanup)
+    result = arena._cleanup_downloaded_provider_objects(
+        staging_dir=staging, output_zip=tmp_path / 'never-produced.zip', adapter=adapter,
+    )
+    if inventory_verified:
+        assert calls == [staging]
+        assert result['all_objects_absent'] is True
+        assert not access.exists()
+    else:
+        assert calls == [] and access.exists()
+        assert result['remote_objects_retained_for_recovery'] is True

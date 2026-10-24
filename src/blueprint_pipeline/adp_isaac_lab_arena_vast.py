@@ -351,7 +351,8 @@ def build_arena_native_control_bundle(
 def _cleanup_downloaded_provider_objects(*, staging_dir: Path, output_zip: Path,
                                          adapter: Mapping[str, Any]) -> dict[str, Any]:
     """Never discard the paid run's remote result when local collection was refused."""
-    if output_zip.is_file() or adapter.get("provider_create_attempted") is False:
+    if (output_zip.is_file() or adapter.get("provider_create_attempted") is False
+            or definite_create_refusal_without_instance(adapter)):
         return cleanup_staged_wam_provider_objects(staging_dir)
     return {"status": "blocked", "blockers": ["provider_output_uncollected_objects_retained"],
             "remote_objects_retained_for_recovery": True, "signed_url_files_preserved": True,
