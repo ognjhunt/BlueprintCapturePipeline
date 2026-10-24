@@ -458,8 +458,12 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time) -> dic
             raise ValueError("website_capture_withdrawn")
         current = int(now())
         retries = [*job.get("retries", []), {"reason": job["reason"], "at_epoch": current}]
+        # The failure's own cleanup completed; the resumed run makes new assets,
+        # so cleanup is armed again, keeping what was already deleted.
+        cleanup = {**(job.get("provider_cleanup") or {}), "state": "pending", "attempts": 0,
+                   "next_attempt_at_epoch": 0}
         job = _transition(job, current, "processing", None, stage="queued", transient_failures=0,
-                          next_attempt_at_epoch=current, retries=retries)
+                          next_attempt_at_epoch=current, retries=retries, provider_cleanup=cleanup)
         write_json(path, job)
         return job
 
