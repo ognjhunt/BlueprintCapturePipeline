@@ -34,6 +34,9 @@ MAX_INPUT_TOKENS = 32_000
 MAX_COST_USD = 0.5
 PREVIEW_LONG_SIDE = 768
 CAPABILITY = "website_image_repair_planner"
+CAMERA_CHANGED_INSTRUCTION = (
+    "Keep this view's exact original camera: the same framing, zoom, perspective and visible edges. "
+    "Do not recompose the scene; change only the removed objects and the surfaces they hid.")
 INSTRUCTIONS = (
     "You plan repairs for rejected image edits of ONE room. An independent review rejected the prepared "
     "views; its reasons are below. For each view you see the ORIGINAL and the EDITED image. The edits must "
@@ -308,6 +311,14 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
                                  output_root=output_root, invoker=invoker,
                                  max_repairs=max_repairs, source_video_digest=source_video_digest)
     repairs = receipt["plan"]["repairs"]
+    # The deterministic camera check names views whose edit reframed or copied
+    # the reference view's camera. Re-edit each from its original, planned or not,
+    # and without that reference, which is what the editor copied.
+    camera_changed = [frame_id for frame_id in (failed_review.get("review") or {}).get("camera_changed_frame_ids", ())
+                      if frame_id in sources]
+    planned = {row["frame_id"] for row in repairs}
+    repairs = [*repairs, *({"frame_id": frame_id, "instruction": CAMERA_CHANGED_INSTRUCTION}
+                           for frame_id in camera_changed if frame_id not in planned)]
     if not repairs:
         return list(map(dict, selected)), {**failed_review, "repair_plan": receipt["plan"]}
     repaired_ids = {row["frame_id"] for row in repairs}
@@ -326,7 +337,8 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
             frames=[source], task_digest=plan["task_context_sha256"], output_root=output_root / "repairs",
             admission={}, token=os.getenv("OPENAI_API_KEY", ""), targets=plan["targets"],
             task_context=task_context, repair_instruction=row["instruction"],
-            repair_reference_path=(repair_reference_path if repair_reference_path is not None
+            repair_reference_path=(None if row["frame_id"] in camera_changed
+                                   else repair_reference_path if repair_reference_path is not None
                                    else Path(anchor["image_path"]) if anchor is not None else None),
             source_video_digest=source_video_digest, mask_guidance=True)[0]
         result[index] = {**edited, "repair_instruction": row["instruction"]}
