@@ -15,6 +15,7 @@ from blueprint_pipeline.adp009d_policy_provisioning import (
     BLOCKER_DEPENDENCY_LOCK,
     BLOCKER_JAX_PREALLOCATION,
     BLOCKER_NOT_LOOPBACK,
+    BLOCKER_PYTHON_REQUEST,
     BLOCKER_SHARED_INTERPRETER,
     ISAAC_INTERPRETER,
     ISAAC_PYTHON_EXECUTABLE,
@@ -295,17 +296,20 @@ def test_provisioning_agrees_with_the_standup_and_materialization_contracts() ->
         assert provisioning["isaac_interpreter"] == standup["isaac_interpreter"]
 
 
-def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
-    """A worker run measured both interpreters; use the one outside Isaac's prefix."""
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_policy_venv_uses_its_admitted_interpreter(candidate_id: str) -> None:
+    """The policy stays outside Isaac with an explicit interpreter selection."""
 
     from blueprint_pipeline.adp009d_policy_provisioning import (
         ISAAC_INTERPRETER,
+        POLICY_PYTHON_REQUESTS,
         SYSTEM_INTERPRETER,
     )
 
-    script = build_provisioning_script("pi05_droid")
+    script = build_provisioning_script(candidate_id)
 
-    assert f'venv --python "{SYSTEM_INTERPRETER}"' in script
+    requested = POLICY_PYTHON_REQUESTS.get(candidate_id, SYSTEM_INTERPRETER)
+    assert f'venv --python "{requested}"' in script
     assert SYSTEM_INTERPRETER == "/usr/bin/python3"
     # Never Isaac's own interpreter, and never its measured real path either.
     # Isaac's interpreter may appear -- the preflight checker runs under it --
@@ -319,19 +323,20 @@ def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
     install_lines = [
         line
         for line in script.splitlines()
-        if f'VIRTUAL_ENV="{policy_venv_root("pi05_droid")}"' in line
+        if f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}"' in line
     ]
     assert install_lines
     for line in install_lines:
         assert '"$UV" sync' in line
-        assert f'--project "{POLICY_SOURCE_ROOT}/pi05_droid"' in line
+        assert f'--project "{POLICY_SOURCE_ROOT}/{candidate_id}"' in line
     client_install_lines = [
         line
         for line in script.splitlines()
         if f'--python "{ISAAC_PYTHON_EXECUTABLE}"' in line
     ]
     assert client_install_lines
-    assert all('"$UV" pip install' in line for line in client_install_lines)
+    if candidate_id == "pi05_droid":
+        assert all('"$UV" pip install' in line for line in client_install_lines)
 
 
 def test_the_pinned_policy_source_is_verified_not_merely_cloned() -> None:
@@ -601,6 +606,37 @@ def test_active_candidate_dependency_lock_drift_is_refused() -> None:
     }
 
     assert BLOCKER_DEPENDENCY_LOCK in validate_provisioning(receipt)
+
+
+def test_openpi_lock_uses_the_existing_cp311_interpreter_pin() -> None:
+    """The retained CPython 3.12 run tried to build MuJoCo 2.3.7 from source."""
+    from pathlib import Path
+
+    from blueprint_pipeline.adp009d_policy_provisioning import POLICY_PYTHON_REQUESTS
+
+    pin = POLICY_PYTHON_REQUESTS["pi05_droid"]
+    dockerfile = Path(__file__).parents[1] / "deploy/docker/policy_ranking_openpi/Dockerfile"
+    assert f"uv venv --python {pin} " in dockerfile.read_text()
+    script = build_provisioning_script("pi05_droid")
+    assert f'"$UV" venv --python "{pin}"' in script
+    assert "--no-build-package mujoco" in script
+    receipt = describe_provisioning("pi05_droid")
+    assert receipt["policy_python_request"] == pin
+    receipt["policy_python_request"] = "/opt/isaaclab-venv/bin/python"
+    assert BLOCKER_PYTHON_REQUEST in validate_provisioning(receipt)
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_frozen_sync_cannot_rediscover_the_image_python(candidate_id: str) -> None:
+    """VIRTUAL_ENV alone lost to the GA image's inherited UV_PYTHON setting."""
+    import shlex
+
+    line = next(
+        line for line in build_provisioning_script(candidate_id).splitlines()
+        if '"$UV" sync ' in line
+    )
+    argv = shlex.split(line)
+    assert argv[argv.index("--python") + 1] == f"{policy_venv_root(candidate_id)}/bin/python"
 
 
 def test_the_client_install_follows_the_verified_checkout() -> None:

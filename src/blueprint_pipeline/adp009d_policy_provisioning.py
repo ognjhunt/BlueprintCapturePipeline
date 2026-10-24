@@ -102,6 +102,12 @@ POLICY_SOURCE_ROOT = "/opt/adp009d-policy-source"
 # separately.  The venv is built from the system interpreter so nothing
 # resolves out of Isaac's prefix.
 SYSTEM_INTERPRETER = "/usr/bin/python3"
+# OpenPI's frozen gym-aloha dependency requires MuJoCo 2.3.7, whose Linux
+# wheels stop at CPython 3.11. Reuse the interpreter pinned by our standalone
+# OpenPI image; installing that unchanged lock on Isaac's Python 3.12 attempts
+# an unsupported MuJoCo source build before any policy query can run.
+POLICY_PYTHON_REQUESTS = {"pi05_droid": "3.11.9"}
+POLICY_PYTHON_INSTALL_DIR = "/opt/adp009d-python"
 POLICY_HOST = "127.0.0.1"
 POLICY_PORT = 8000
 GATED_BACKBONE_AUTH_ENV = "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"
@@ -125,6 +131,7 @@ BLOCKER_NOT_LOOPBACK = "policy_provisioning_endpoint_not_loopback"
 BLOCKER_CREDENTIALS = "policy_provisioning_credentials_forwarded"
 BLOCKER_GROOT_WIRE_WHEEL_LOCK = "policy_provisioning_groot_wire_wheel_lock_invalid"
 BLOCKER_DEPENDENCY_LOCK = "policy_provisioning_dependency_lock_invalid"
+BLOCKER_PYTHON_REQUEST = "policy_provisioning_python_request_invalid"
 
 # These are the upstream uv.lock bytes committed at the same immutable source
 # revisions as the two active ADP-009D candidates.  A frozen source revision is
@@ -283,8 +290,11 @@ def _install_commands(candidate_id: str) -> list[str]:
         ]
         policy_install = (
             f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" sync '
-            f'--project "{source}" --active --no-dev --frozen'
+            f'--project "{source}" --active --no-dev --frozen '
+            f'--python "{policy_venv_root(candidate_id)}/bin/python"'
         )
+        if candidate_id == "pi05_droid":
+            policy_install += " --no-build-package mujoco"
     return [
         f'git clone --filter=blob:none "{repository}" "{source}"',
         f'git -C "{source}" fetch --depth 1 origin "{revision}"',
@@ -434,6 +444,7 @@ apt-get install -y -qq \
   "$OUT_DIR/adp009d_provisioning_preflight_after.json" || true
 
 export UV_INSTALL_DIR={uv_root}
+export UV_PYTHON_INSTALL_DIR="{POLICY_PYTHON_INSTALL_DIR}"
 UV_ARCHIVE="$(mktemp /tmp/blueprint-adp009d-uv.XXXXXX.tar.gz)"
 trap 'rm -f "$UV_ARCHIVE"' EXIT
 curl -LsSf {UV_ARCHIVE_URL} -o "$UV_ARCHIVE"
@@ -445,7 +456,7 @@ test -x "$UV"
 test "$("$UV" --version)" = "{UV_VERSION_OUTPUT}"
 
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_venv:started"
-"$UV" venv --python "{SYSTEM_INTERPRETER}" "{venv_root}"
+"$UV" venv --python "{POLICY_PYTHON_REQUESTS.get(candidate_id, SYSTEM_INTERPRETER)}" "{venv_root}"
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_venv:completed"
 
 # Prove the venv is real and is not Isaac's interpreter before anything installs.
@@ -508,6 +519,7 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "topology": "shared_worker_separate_interpreter",
         "isaac_interpreter": ISAAC_INTERPRETER,
         "policy_interpreter": f"{policy_venv_root(candidate_id)}/bin/python",
+        "policy_python_request": POLICY_PYTHON_REQUESTS.get(candidate_id, SYSTEM_INTERPRETER),
         "uv_version": UV_VERSION,
         "uv_version_output": UV_VERSION_OUTPUT,
         "uv_archive_url": UV_ARCHIVE_URL,
@@ -739,6 +751,10 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
     interpreter = str(receipt.get("policy_interpreter", ""))
     if not interpreter or interpreter == ISAAC_INTERPRETER or "isaac-sim" in interpreter:
         errors.append(BLOCKER_SHARED_INTERPRETER)
+    if receipt.get("policy_python_request") != POLICY_PYTHON_REQUESTS.get(
+        candidate_id, SYSTEM_INTERPRETER
+    ):
+        errors.append(BLOCKER_PYTHON_REQUEST)
 
     if receipt.get("credentials_forwarded") is not False:
         errors.append(BLOCKER_CREDENTIALS)

@@ -420,3 +420,34 @@ startup crash leaves its Python stack in the retained provider log. Eleven
 focused tests pass, including a controlled child-process segmentation fault
 with core dumps disabled that verifies the diagnostic reaches stderr. This
 adds diagnostic evidence without changing the workcell, actions or scoring.
+
+## Policy dependency refusal, 2026-10-24
+
+The first GA policy allocation that reached provisioning, Vast `57491120`, ran
+source `ab3ae0fc62aea459584692e8b06f22301a755deb`. Its actual RTX 6000 Ada
+UUID was `GPU-55697b98-3d04-983e-6bba-8e27570e83c4`, driver `580.178.04`,
+with 49,140 MiB total memory. The independent watchdog and shared spend guard
+recognized the allocation, and the native Isaac bootstrap completed in 25.656
+seconds. This was a startup smoke; the workcell and policy episodes did not run.
+
+OpenPI's verified upstream lock then failed installing MuJoCo 2.3.7. Provisioning
+created a system-Python 3.12.3 environment, but `uv sync` selected the image's
+Python 3.12.14 and recreated it. The locked `gym-aloha` dependency requires
+MuJoCo 2.3.7, which supplies Linux CPython 3.11 wheels but no CPython 3.12 wheel.
+Its source build refused `MUJOCO_PATH environment variable is not set`.
+
+The narrow repair uses the same Python 3.11.9 pin as the existing standalone
+OpenPI image, binds frozen sync explicitly to each candidate's own interpreter,
+and refuses a MuJoCo source build. Both runtimes must use this repaired
+provisioning before a learned-policy pair can be compared. Task inputs, model
+revisions, upstream dependency-lock bytes, controls and scoring remain fixed.
+This paid discovery was a provisioning-preflight defect; source tests alone do
+not establish a successful dependency install or a policy outcome.
+
+The original result SHA-256 is
+`96bd909bfc6061af28a2dc217726d024d38eb76a02104e63c9810cd61d0684f7`.
+The exact raw output, provisioning log, typed before-first-observation media
+gap, hardware readback and teardown records are retained. Canonical allocator
+and watchdog exit, instance absence, staging cleanup and global Vast zero were
+verified. Official billing is $0.101; there is no continuing spend from this run.
+The comparison remains unqualified, with zero learned-policy episodes.
