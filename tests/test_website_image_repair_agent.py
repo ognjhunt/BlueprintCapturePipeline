@@ -24,9 +24,15 @@ def _views(tmp_path):
     for index, color in enumerate(("red", "green", "blue")):
         original = _image(tmp_path / f"original-{index}.png", color)
         edited = _image(tmp_path / f"edited-{index}.png", "white")
+        mask = tmp_path / f"mask-{index}.png"
+        pixels = Image.new("L", (40, 20))
+        for x in range(5):
+            pixels.putpixel((x, 0), 255)
+        pixels.save(mask)
         frame_id = f"f{index}"
         sources.append({"frame_id": frame_id, **original, "original_image_path": original["image_path"],
-                        "original_image_digest": original["image_digest"], "remaining_pixel_count": 5})
+                        "original_image_digest": original["image_digest"], "remaining_pixel_count": 5,
+                        "remaining_mask_path": str(mask), "remaining_mask_digest": _sha256_file(mask)})
         selected.append({"frame_id": frame_id, **edited, "original_image_path": original["image_path"],
                          "original_image_digest": original["image_digest"], "generated_pixels_present": True,
                          "generated_pixel_count": 100 * (index + 1), "remaining_pixel_count": 0})
@@ -126,6 +132,80 @@ def test_restart_reuses_the_retained_plan_without_buying_again(tmp_path, website
     assert len(invoker.calls) == 1 and len(website["reserve"]) == 1 and len(website["settle"]) == 1
 
 
+def test_completed_removal_marker_reedits_original_through_real_completion_and_reuses_receipts(tmp_path, monkeypatch):
+    from hashlib import sha256
+    from io import BytesIO
+    from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission
+    from blueprint_pipeline.semantic_teacher_image_edit_worker import _normalized_usage
+
+    selected, sources = _views(tmp_path)
+    # Exact retained-data failure: the edited image is finished, but a later
+    # review requests a new edit of its original using the still nonempty mask.
+    sources[0]["remaining_pixel_count"] = 0
+    sources[0].update(image_path=selected[0]["image_path"], image_digest=selected[0]["image_digest"])
+    original_mask = Path(sources[0]["remaining_mask_path"]).read_bytes()
+    invoker = _Invoker({"repairs": [{"frame_id": "f0", "instruction": "Preserve the original camera"}],
+                        "summary": "The reused edit changed viewpoint"})
+    reservations, edits, reviews = [], [], []
+
+    def reserve(**kwargs):
+        reservations.append(kwargs)
+        admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+            "resource_class": kwargs["resource_class"], "external_disclosure_allowed": True,
+            "allocation_binding_digest": kwargs["binding_digest"], "maximum_cost_usd": kwargs["maximum_cost_usd"]}
+        grant = require_paid_resource_admission(admission, resource_class=kwargs["resource_class"],
+                                                expected_schema_version="paid_lane_admission.v1")
+        return admission, grant
+
+    def edit(**kwargs):
+        edits.append(kwargs)
+        stream = BytesIO()
+        Image.new("RGB", kwargs["expected_size"], "blue").save(stream, format="PNG")
+        return {"succeeded": True, "generated": stream.getvalue(),
+                "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
+
+    def review(**kwargs):
+        reviews.append(kwargs)
+        image = Image.open(kwargs["frames"][0]["image_path"])
+        assert image.getpixel((20, 10)) == (0, 0, 255)
+        assert kwargs["frames"][0]["image_digest"] != sources[0]["original_image_digest"]
+        return {"status": "passed"}
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
+    monkeypatch.setattr(control, "website_webapp_request", lambda **kw:
+                        {**kw["payload"]["settlement"], "status": "settled"})
+    monkeypatch.setattr(completion, "_execute_frame_request", edit)
+    monkeypatch.setattr(completion, "verify_completed_background", review)
+    task_digest = sha256(json.dumps(CONTEXT, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    args = dict(selected=selected, object_removal_frames=sources, original_frames=sources,
+        plan={**PLAN, "task_context_sha256": task_digest}, failed_review=FAILED,
+        output_root=tmp_path / "repair", task_context=CONTEXT, invoker=invoker)
+    frames, reviewed = repair.repair_rejected_views(**args)
+    assert reviewed["status"] == "passed" and len(edits) == 1
+    assert frames[1:] == selected[1:] and sources[0]["remaining_pixel_count"] == 0
+    assert Path(sources[0]["remaining_mask_path"]).read_bytes() == original_mask
+    assert len(reservations) == 2  # One plan and one image, both canonical.
+    assert repair.repair_rejected_views(**args)[0] == frames
+    assert len(edits) == len(invoker.calls) == 1 and len(reservations) == 2 and len(reviews) == 2
+
+
+@pytest.mark.parametrize("fault", ["digest", "grid", "nonbinary"])
+def test_invalid_reused_source_mask_refuses_before_repair_plan(tmp_path, website, fault):
+    selected, sources = _views(tmp_path)
+    mask = Path(sources[0]["remaining_mask_path"])
+    if fault == "digest":
+        sources[0]["remaining_mask_digest"] = "changed"
+    else:
+        Image.new("L", (20, 40) if fault == "grid" else (40, 20), 255 if fault == "grid" else 127).save(mask)
+        sources[0]["remaining_mask_digest"] = _sha256_file(mask)
+    invoker = _Invoker({"repairs": [], "summary": ""})
+    with pytest.raises(ValueError, match="website_image_repair_(source_changed|mask_invalid)"):
+        repair.repair_rejected_views(selected=selected, object_removal_frames=sources, original_frames=sources,
+            plan=PLAN, failed_review=FAILED, output_root=tmp_path / "repair", task_context=CONTEXT, invoker=invoker)
+    assert not invoker.calls and not website["reserve"] and not website["edit"]
+
+
 def test_atlas_repairs_use_scene_size_same_source_cap_and_fixed_clean_reference(tmp_path, website):
     selected, sources = _views(tmp_path)
     selected.append({**selected[-1], "frame_id": "f3"})
@@ -158,6 +238,20 @@ def test_uncertain_plan_is_never_bought_again(tmp_path, website):
 def test_empty_plan_keeps_the_rejection_and_edits_nothing(tmp_path, website):
     _, (frames, review) = _run(tmp_path, _Invoker({"repairs": [], "summary": "nothing fixable"}))
     assert review["status"] == "blocked" and not website["edit"] and not website["review"]
+
+
+def test_unchanged_repair_preserves_rejection_without_buying_the_same_review(tmp_path, website, monkeypatch):
+    selected, sources = _views(tmp_path)
+    monkeypatch.setattr(completion, "complete_background_images", lambda **kw:
+                        [dict(next(f for f in selected if f["frame_id"] == kw["frames"][0]["frame_id"]))])
+    invoker = _Invoker({"repairs": [{"frame_id": "f0", "instruction": "Preserve the original viewpoint"}],
+                        "summary": "camera mismatch"})
+    frames, reviewed = repair.repair_rejected_views(selected=selected, object_removal_frames=sources,
+        original_frames=sources, plan=PLAN, failed_review=FAILED,
+        output_root=tmp_path / "repair", task_context=CONTEXT, invoker=invoker)
+    assert frames[0]["image_digest"] == selected[0]["image_digest"]
+    assert reviewed["status"] == "blocked" and reviewed["request_digest"] == FAILED["request_digest"]
+    assert not website["review"] and reviewed["repaired_frame_ids"] == ["f0"]
 
 
 @pytest.mark.parametrize("repairs,error", [

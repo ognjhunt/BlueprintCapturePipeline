@@ -71,6 +71,27 @@ def _preview(path: Path) -> str:
     return "data:image/png;base64," + base64.b64encode(stream.getvalue()).decode()
 
 
+def _original_repair_source(frame: Mapping[str, Any]) -> dict[str, Any]:
+    """Restore original removal intent when a completed edit is reused.
+
+    A completed image has zero *remaining* pixels, while its retained source
+    mask still describes the original target. A requested re-edit must not
+    interpret that completion marker as permission to return the raw image.
+    Validate the source mask before purchasing the repair plan.
+    """
+    image_path = Path(frame["original_image_path"])
+    mask_path = Path(frame["remaining_mask_path"])
+    if (_sha256_file(image_path) != frame["original_image_digest"]
+            or _sha256_file(mask_path) != frame["remaining_mask_digest"]):
+        raise ValueError("website_image_repair_source_changed")
+    with Image.open(image_path) as image, Image.open(mask_path) as mask:
+        histogram = mask.convert("L").histogram()
+        if mask.size != image.size or any(histogram[1:255]):
+            raise ValueError("website_image_repair_mask_invalid")
+    return {**frame, "image_path": str(image_path), "image_digest": frame["original_image_digest"],
+            "remaining_pixel_count": histogram[255], "generated_pixels_present": False}
+
+
 def _agent_input(*, frames: Sequence[Mapping[str, Any]], originals: Mapping[str, Mapping[str, Any]],
                  review: Mapping[str, Any], targets: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     content: list[dict[str, Any]] = [{"type": "input_text", "text": (
@@ -220,6 +241,7 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
         source = sources.get(frame["frame_id"])
         if source is None:
             raise ValueError("website_image_repair_source_missing")
+        source = sources[frame["frame_id"]] = _original_repair_source(source)
         originals[frame["frame_id"]] = {"image_path": source["original_image_path"],
                                         "image_digest": source["original_image_digest"]}
     receipt = plan_image_repairs(frames=selected, originals=originals, failed_review=failed_review,
@@ -239,6 +261,8 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
     for row in repairs:
         index = next(i for i, frame in enumerate(result) if frame["frame_id"] == row["frame_id"])
         source = sources[row["frame_id"]]
+        if not source["remaining_pixel_count"]:
+            raise ValueError("website_image_repair_mask_empty")
         edited = complete_background_images(
             frames=[source], task_digest=plan["task_context_sha256"], output_root=output_root / "repairs",
             admission={}, token=os.getenv("OPENAI_API_KEY", ""), targets=plan["targets"],
@@ -247,8 +271,12 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
                                    else Path(anchor["image_path"]) if anchor is not None else None),
             source_video_digest=source_video_digest, mask_guidance=True)[0]
         result[index] = {**edited, "repair_instruction": row["instruction"]}
-    review = verify_completed_background(frames=result, original_frames=original_frames, plan=plan,
-                                         output_root=output_root, task_context=task_context,
-                                         source_video_digest=source_video_digest)
+    same_images = all((before["frame_id"], before["image_digest"]) == (after["frame_id"], after["image_digest"])
+                      for before, after in zip(selected, result, strict=True))
+    # A no-op correction cannot change the verdict or authorize another purchase
+    # of the same review under a different repair-round directory.
+    review = failed_review if same_images else verify_completed_background(
+        frames=result, original_frames=original_frames, plan=plan,
+        output_root=output_root, task_context=task_context, source_video_digest=source_video_digest)
     return result, {**review, "prior_failed_review": failed_review, "repair_plan": receipt["plan"],
                     "repair_plan_digest": receipt["plan_digest"], "repaired_frame_ids": sorted(repaired_ids)}
