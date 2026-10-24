@@ -177,7 +177,9 @@ def _retained_pose_alignment(*, job_dir: Path, source_root: Path, source: Mappin
     return None
 
 
-def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, Any]:
+def atlas_scene_source(*, capture_root: Path, output_root: Path,
+                       retained_result_path: Path | None = None,
+                       retained_result_digest: str | None = None) -> dict[str, Any]:
     """``ready`` with a base scene and source geometry, ``pending``, or ``needs_input`` with a reason."""
     from .atlas_source_geometry import atlas_posed_view_geometry
     from .atlas_video_inputs import GEOMETRY_INPUTS_FILE
@@ -194,6 +196,19 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path) -> dict[str, An
     result = _read(job_dir / "result.json")
     if result.get("digest") != canonical_digest(result, digest_field="digest") or result["digest"] != job.get("result_digest"):
         raise ValueError("website_atlas_scene_result_changed")
+    if retained_result_path is not None or retained_result_digest is not None:
+        if retained_result_path is None or not retained_result_digest:
+            raise ValueError("website_atlas_scene_retained_selection_incomplete")
+        retained = _read(_inside(retained_result_path, job_dir))
+        if (retained.get("schema_version") != "website_atlas_pipeline_result.v1"
+                or retained.get("digest") != retained_result_digest
+                or retained.get("digest") != canonical_digest(retained, digest_field="digest")
+                or any(not result.get(key) or retained.get(key) != result[key]
+                       for key in ("source_video_digest", "task_context_digest", "source_pose"))):
+            raise ValueError("website_atlas_scene_retained_result_changed")
+        # Read a completed background revision without changing the capture's
+        # controller state, original observations, scale evidence or publication.
+        result = retained
     background = (result.get("automation") or {}).get("background") or {}
     if (result.get("automation") or {}).get("status") != "completed" or background.get("status") != "completed":
         return {"status": "needs_input", "reason": "website_atlas_background_unavailable",
