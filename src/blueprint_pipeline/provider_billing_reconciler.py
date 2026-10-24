@@ -4,8 +4,9 @@ The synchronizer reads the same file-backed provider credentials as the GPU
 spend guard, fetches cumulative cohort charges from fixed official endpoints,
 retains the exact private response bytes, and atomically writes the narrow
 ``blueprint.provider_billing_export.v1`` input consumed by the guard.  It never
-creates, changes, or deletes provider resources. AWS billing remains explicitly
-uncovered: automatic paid Cost Explorer queries have been removed.
+creates, changes, or deletes provider resources. GCP can use a fresh retained
+official project CSV with explicit account and inventory scope. AWS billing
+remains uncovered: automatic paid Cost Explorer queries have been removed.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from blueprint_pipeline.provider_billing_audit_retention import (
 BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_SOURCE_SCHEMA_VERSION = "blueprint.provider_billing_source_receipt.v1"
 BILLING_SCOPE = "blueprint_beta_100_user_cohort"
-PROVIDERS = ("runpod", "vast", "digitalocean", "aws")
+PROVIDERS = ("runpod", "vast", "digitalocean", "aws", "gcp")
 RUNPOD_BILLING_URL = "https://rest.runpod.io/v1/billing"
 VAST_CHARGES_URL = "https://console.vast.ai/api/v0/charges/"
 DIGITALOCEAN_API_URL = "https://api.digitalocean.com/v2"
@@ -354,6 +355,9 @@ def reconcile_provider_billing(
     aws_profile: str | None = None,
     aws_credentials: Any | None = None,
     required_providers: Sequence[str] = (),
+    gcp_report_receipt: str | Path | None = None,
+    gcp_billing_account_id: str = "",
+    gcp_project_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     # Preserve legacy call signatures without reading credentials or making AWS requests.
     del aws_account_id, aws_credentials_file, aws_profile, aws_credentials
@@ -373,6 +377,7 @@ def reconcile_provider_billing(
     transport = MeteredTransport(transport, Path(audit_root).expanduser().resolve().parent / "metered-call-events")
     audit_rows: list[dict[str, Any]] = []
     totals: dict[str, float] = {}
+    source_times = [current]
     optional_provider_failures: dict[str, str] = {"aws": AWS_BILLING_UNAVAILABLE_REASON}
     security_blockers = (
         "secret_symlink_forbidden:",
@@ -423,6 +428,24 @@ def reconcile_provider_billing(
         ),
     )
 
+    def collect_gcp() -> float:
+        from blueprint_pipeline.gcp_billing_report import GCPBillingReportError, read_report
+
+        if not gcp_report_receipt:
+            raise ProviderBillingReconciliationError("gcp_billing_report_unconfigured")
+        try:
+            total, captured, row = read_report(
+                gcp_report_receipt, billing_account_id=gcp_billing_account_id,
+                project_ids=list(gcp_project_ids), cohort_start=start, now=current,
+            )
+        except GCPBillingReportError as exc:
+            raise ProviderBillingReconciliationError(str(exc)) from exc
+        source_times.append(captured)
+        audit_rows.append(row)
+        return total
+
+    record_provider("gcp", collect_gcp)
+
     if not totals:
         raise ProviderBillingReconciliationError("provider_billing_no_provider_covered")
     totals = {provider: round(value, 6) for provider, value in totals.items()}
@@ -470,7 +493,7 @@ def reconcile_provider_billing(
                     "status": "reconciled",
                     "generated_at": generated_at,
                     "cohort_start_at": start.isoformat(),
-                    "cohort_end_at": generated_at,
+                    "cohort_end_at": min(source_times).isoformat(),
                     "provider_totals_usd": totals,
                     "required_provider_ids": sorted(required_provider_ids),
                     "covered_provider_ids": covered_provider_ids,
@@ -503,7 +526,8 @@ def reconcile_provider_billing(
         raise ProviderBillingReconciliationError(str(exc)) from exc
     billing_export = {
         "schema_version": BILLING_EXPORT_SCHEMA_VERSION,
-        "generated_at": generated_at,
+        # Re-reading a downloaded report must never renew its freshness lease.
+        "generated_at": min(source_times).isoformat(),
         "currency": "USD",
         "scope": BILLING_SCOPE,
         "provider_totals_usd": totals,
@@ -549,6 +573,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--aws-credentials-file", help="legacy option; no AWS credentials are read"
     )
     parser.add_argument("--aws-profile", help="legacy option; no AWS credentials are read")
+    parser.add_argument("--gcp-report-receipt", default=os.getenv("BLUEPRINT_GCP_BILLING_REPORT_RECEIPT"))
+    parser.add_argument("--gcp-billing-account-id", default=os.getenv("BLUEPRINT_GCP_BILLING_ACCOUNT_ID", ""))
     parser.add_argument(
         "--require-provider",
         action="append",
@@ -560,6 +586,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    from blueprint_pipeline.cloud_vm_render_providers import GCPRenderProvider
+
     try:
         result = reconcile_provider_billing(
             secrets_dir=args.secrets_dir,
@@ -571,6 +599,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             aws_credentials_file=args.aws_credentials_file,
             aws_profile=args.aws_profile,
             required_providers=args.require_provider,
+            gcp_report_receipt=args.gcp_report_receipt,
+            gcp_billing_account_id=args.gcp_billing_account_id,
+            gcp_project_ids=GCPRenderProvider().inventory_projects(),
         )
     except (OSError, ProviderBillingReconciliationError, MeteredCallEvidenceError) as exc:
         print(
