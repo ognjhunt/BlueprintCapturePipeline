@@ -562,6 +562,37 @@ def test_full_task_secondary_motions_reach_authoring_and_their_evidence_is_selec
     assert not coverage.coverage_matches(record, target=target, source_geometry=geometry, task_context=changed)
 
 
+def test_a_later_batch_need_not_repeat_a_task_motion_already_identified(tmp_path, model):
+    calls, state = model
+    named = []
+
+    def answer(binding):
+        value = _answer(binding)
+        # The prompt lists earlier motions as already identified; a later batch
+        # that shows the door may answer with only what is new.
+        if named and value["task_part_components"]:
+            value["required_motions"] = []
+        named.extend(row["motion_id"] for row in value["required_motions"])
+        return value
+    state["answer"] = answer
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track, frames=600), geometry, registry=_registry(600))
+    door_batches = [binding for binding in calls if set(MOVING) & {part for row in _answer(binding)["frames"]
+                                                                   for part in row["visible_parts"]}]
+    assert len(door_batches) > 1 and named == ["primary_motion"]
+    assert record["status"] == "complete", record["blockers"]
+    assert [row["motion_id"] for row in record["required_motions"]] == ["primary_motion"]
+
+
+def test_a_clip_that_never_names_a_motion_for_the_task_part_is_refused(tmp_path, model):
+    _, state = model
+    state["answer"] = lambda binding: {**_answer(binding), "required_motions": []}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track, frames=600), geometry, registry=_registry(600))
+    assert record["status"] == "incomplete"
+    assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
+
+
 def test_each_articulated_target_gets_its_own_record_and_uncaptured_ones_are_not_complete(tmp_path, model):
     calls, _ = model
     geometry, track = _source_geometry(tmp_path / "geometry")

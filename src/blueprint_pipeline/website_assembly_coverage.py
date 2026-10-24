@@ -510,10 +510,6 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
                                                            for row in batch})
             from .task_object_required_motions import merge_required_motions
             motions = merge_required_motions(motions, value["required_motions"])
-            if value["task_part_components"] and not any(
-                    set(value["task_part_components"]) & set(motion["part_ids"])
-                    for motion in value["required_motions"]):
-                raise ValueError("website_assembly_required_primary_motion_missing")
         except ValueError as exc:
             raise CoverageClassificationInvalid(receipts) from exc
         for row, label in zip(batch, value["frames"], strict=True):
@@ -523,6 +519,11 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
         components.update(value["task_part_components"])
         if value["hinge_edge"] is not None:
             hinges.add(value["hinge_edge"])
+    # Later batches receive the motions already identified and need not repeat
+    # them; the clip as a whole must still name a motion for the task part.
+    if components and not any(components & set(motion["part_ids"]) for motion in motions):
+        raise CoverageClassificationInvalid(receipts) from ValueError(
+            "website_assembly_required_primary_motion_missing")
     return {"frames": classified, "task_part_components": sorted(components), "hinge_edges": sorted(hinges),
             "required_motions": motions, "receipts": receipts}
 
