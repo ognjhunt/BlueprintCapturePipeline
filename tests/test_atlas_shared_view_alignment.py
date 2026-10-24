@@ -130,3 +130,25 @@ def test_views_that_do_not_show_the_same_pixels_are_never_paired():
 
 def test_one_shared_view_is_not_enough():
     assert shared_view_alignment(views()[:1], background()) is None
+
+
+def test_development_fit_keeps_modest_estimate_noise_distinct_from_measurement():
+    target = background()
+    for index, frame in enumerate(target):
+        yy, xx = np.indices(frame['depth'].shape)
+        frame['depth'] *= 1 + .035 * np.sin(xx / 75 + index) * np.cos(yy / 90)
+    fit = shared_view_alignment(views(), target, estimated_depth_tolerance=True)
+    assert fit is not None and fit['agreeing_frame_count'] >= 2
+    assert fit['scale'] == pytest.approx(WORLD_SCALE, rel=.04)
+    assert fit['claim_ceiling'] == 'development_only' and fit['metric_measurement_proven'] is False
+    assert fit['median_residual_fraction'] < .04
+
+
+def test_development_fit_still_requires_matching_photos_and_multiple_views():
+    unrelated = background()
+    for frame in unrelated:
+        frame['rgb'] = np.random.default_rng(3).integers(0, 255, frame['rgb'].shape, dtype=np.uint8)
+    assert shared_view_alignment(views(), unrelated, estimated_depth_tolerance=True) is None
+    assert shared_view_alignment(views()[:1], background(), estimated_depth_tolerance=True) is None
+    with pytest.raises(ValueError, match='tolerance_invalid'):
+        shared_view_alignment(views(), background(), estimated_depth_tolerance='yes')

@@ -105,6 +105,21 @@ def expected_depth_for_candidate(frames, candidate):
     return project_source_depth(chosen, candidate['camera'])
 
 
+def load_exported_splat(root):
+    """Read the exact retained export for survey and geometry recovery."""
+    from .atlas_depth_splat import decode_spz
+
+    root = Path(root)
+    manifest = json.loads((root / 'atlas_depth_splat_manifest.json').read_text())
+    if manifest.get('digest') != canonical_digest(manifest, digest_field='digest'):
+        raise ValueError('atlas_completion_export_changed')
+    asset = next(r for r in manifest['outputs'] if r['role'] == 'splat_spz')
+    path = root / asset['path']
+    if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or _sha256_file(path) != asset['sha256']:
+        raise ValueError('atlas_completion_export_changed')
+    return manifest, decode_spz(path.read_bytes())
+
+
 def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=(),
                 splat_root=None):
     """Survey all known directions; the existing production agent chooses gaps."""
@@ -125,17 +140,8 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
                for key in ('rgb', 'depth', 'confidence')}} for f in expected_frames]
     splat = None
     if splat_root is not None:
-        from .atlas_depth_splat import decode_spz
-
-        manifest = json.loads((splat_root / 'atlas_depth_splat_manifest.json').read_text())
-        if manifest.get('digest') != canonical_digest(manifest, digest_field='digest'):
-            raise ValueError('atlas_completion_export_changed')
-        asset = next(r for r in manifest['outputs'] if r['role'] == 'splat_spz')
-        path = splat_root / asset['path']
-        if path.is_symlink() or not path.resolve().is_relative_to(splat_root.resolve()) or _sha256_file(path) != asset['sha256']:
-            raise ValueError('atlas_completion_export_changed')
+        manifest, splat = load_exported_splat(splat_root)
         binding['export_manifest_digest'] = manifest['digest']
-        splat = decode_spz(path.read_bytes())
     binding_digest = canonical_digest(binding)
     saved = root / 'survey.json'
     if saved.is_file():

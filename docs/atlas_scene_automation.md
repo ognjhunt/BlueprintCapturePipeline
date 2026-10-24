@@ -174,6 +174,33 @@ The production Atlas controller runs the following for a new scene plan:
    binding. An unfundable request still refuses locally rather than omitting
    observations or increasing the capture's cumulative allowance.
 
+Post-export completion now retains the source camera's field of view while
+aiming at a named gap; the geometry mask limits additions without zooming away
+the surrounding fixture. Zero detected raster gaps still require the agent's
+complete-surface assessment before task coverage can be sufficient.
+
+Before fusing newly generated views, the harness jointly poses their RGB with
+all approved cleaned source photographs through the existing Atlas pose adapter.
+Repeated conditioning outputs are excluded. A shared-source fit registers the
+new candidates into the retained world, leaving original source geometry fixed.
+The development fit allows modest scene-relative estimate error and records its
+limits; it does not qualify measurement accuracy. Requested camera metadata
+alone is not confirmation of image alignment. The source cap is checked for
+generation, registration, review and mesh work; each purchase uses its existing
+durable admission. An unfinished registration resumes the same operation.
+
+The scene agent then selects useful surfaces again in the registered views.
+Their depth is tested against the actual exported SPZ. Matching estimated depth
+may restore an explicitly selected export hole, including a missing foreground
+face with a farther plane behind it. Photographed RGB, original source geometry,
+source free space and captured extent retain priority. Earlier generated depth
+is a hypothesis rather than authority to erase a source-visible surface.
+Registration and recovery receipts are bound into the next export. The next
+surface review checks that export, rather than inferring success from image or
+point counts. Large remaining fixture gaps keep the result incomplete; minor
+seams and modest distortion need no new generation. The core regression cases
+use generic supports and room planes, without site/object-specific conditions.
+
 When a refinement adds source views, its parent prepared-background manifest
 can seed the expanded set. Source video, task context and original RGB pixels
 must match, and the accepted edits stay byte-identical. Only missing views are

@@ -218,7 +218,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                                                     'targeted': targeted['binding_digest']})}
         gaps['digest'] = canonical_digest(gaps, digest_field='digest')
         write_json(root / 'gap-target-survey.json', gaps)
-    if not any(row['gaps'] for row in gaps['views']):
+    if not any(row['gaps'] for row in gaps['views']) and coverage_feedback is None:
         report = {'status': 'passed', 'generation_result_digest': gaps['digest'], 'generated_roots': [],
                   'generated_frame_ids': [], 'preservation_paths': [str(root / 'gaps/survey.json')],
                   'review': {'status': 'not_required', 'reason': 'no_eligible_geometry_gaps'},
@@ -233,8 +233,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     with_gaps = {row['camera_id'] for row in gaps['views'] if row['gap_pixel_count']}
     # Show the actual proposed camera views, including dedicated gap views.
     # The source-camera overlay cannot reveal a bad new viewpoint.
-    previews = [row for row in gaps['previews'] if row['camera_id'] in usable & with_gaps]
-    if not usable & with_gaps:
+    preview_ids = usable if coverage_feedback is not None else usable & with_gaps
+    previews = [row for row in gaps['previews'] if row['camera_id'] in preview_ids]
+    if not preview_ids:
         raise ValueError('atlas_completion_no_context_supported_gap_camera')
     originals = {}
     survey_frames = []

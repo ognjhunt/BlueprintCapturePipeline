@@ -174,7 +174,7 @@ def observed_scene_bounds(frames):
             'additional_space_beyond_observed_bounds': False}
 
 
-def unobserved_geometry_mask(generated, references, *, extent_bounds=None):
+def unobserved_geometry_mask(generated, references, *, extent_bounds=None, repair_exported_gap=False):
     """Reject generated surfaces in known geometry or observed free space.
 
     A point behind an observed surface may be unseen/occluded; a point in
@@ -193,7 +193,13 @@ def unobserved_geometry_mask(generated, references, *, extent_bounds=None):
         rows, cols = np.floor(v[inside]).astype(int), np.floor(u[inside]).astype(int)
         observed = reference['depth'][rows, cols]
         known = _valid(reference)[rows, cols]
-        blocked = known & (z[inside] <= observed * (1 + MAX_MEDIAN_CROSS_VIEW_RESIDUAL))
+        if repair_exported_gap:
+            # A source depth estimate is not proof that its surface survived
+            # export. In an explicit export hole, matching depth may repair it;
+            # a surface significantly in front still contradicts source space.
+            blocked = known & (z[inside] < observed * (1 - MAX_MEDIAN_CROSS_VIEW_RESIDUAL))
+        else:
+            blocked = known & (z[inside] <= observed * (1 + MAX_MEDIAN_CROSS_VIEW_RESIDUAL))
         allowed[indices[blocked]] = False
     mask = np.zeros(valid.shape, bool)
     mask[y[allowed], x[allowed]] = True
@@ -232,11 +238,13 @@ def prepare_completion_views(*, frames, selected, root):
 
 
 def preserve_generated_view(*, generated, prepared, references, output_root, native_result_digest,
-                            native_frame_index, extent_bounds=None):
+                            native_frame_index, extent_bounds=None, repair_exported_gap=False):
     """Keep source-derived RGB exactly; exclude known regions from new geometry."""
     from PIL import Image
 
     output_root.mkdir(parents=True, exist_ok=True)
+    if type(repair_exported_gap) is not bool or (repair_exported_gap and not prepared.get('completion_gap_mask_path')):
+        raise ValueError('atlas_export_depth_repair_named_gap_required')
     for key in ('image', 'keep_mask'):
         if _sha256_file(Path(prepared[key + '_path'])) != prepared[key + '_digest']:
             raise ValueError('atlas_completion_preservation_inputs_changed')
@@ -257,7 +265,8 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
         depth_known = np.asarray(Image.open(depth_path).convert('L')) > 0
         if depth_known.shape != keep.shape:
             raise ValueError('atlas_completion_preservation_grid_changed')
-    allowed = unobserved_geometry_mask(generated, references, extent_bounds=extent_bounds) & (~keep | ~depth_known)
+    allowed = unobserved_geometry_mask(generated, references, extent_bounds=extent_bounds,
+                                      repair_exported_gap=repair_exported_gap) & (~keep | ~depth_known)
     if prepared.get('completion_gap_mask_path'):
         gap_path = Path(prepared['completion_gap_mask_path'])
         if _sha256_file(gap_path) != prepared['completion_gap_mask_digest']:
@@ -288,6 +297,8 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
               'depth_basis': 'unchanged_native_depth_with_generated_geometry_mask',
               'confidence_rule': 'native_confidence_times_generated_geometry_mask',
               'source_geometry_modified': False, 'native_outputs_modified': False,
+              **({'geometry_admission_rule': 'named_export_gap_matching_source_depth_v2'}
+                 if repair_exported_gap else {}),
               **({key: prepared[key] for key in ('completion_gap_mask_digest', 'completion_gap_ids',
                                                   'completion_gap_pixel_count')}
                  if prepared.get('completion_gap_mask_path') else {}),
