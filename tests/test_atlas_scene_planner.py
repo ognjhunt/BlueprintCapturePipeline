@@ -126,7 +126,10 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
 
 
 def test_full_frame_export_review_reserves_for_each_image_not_each_sheet(tmp_path, monkeypatch):
-    path, _, _, policy = fixture(tmp_path)
+    path, survey, _, policy = fixture(tmp_path)
+    image = tmp_path / 'preview.png'
+    Image.new('RGB', (1280, 720), 'white').save(image)
+    previews = [{'path': str(image), 'kind': 'geometry_gap_survey'}] * 12
     captured = []
     from blueprint_pipeline import openai_prompt_cache
     monkeypatch.setattr(openai_prompt_cache, 'worst_case_reservation_usd',
@@ -135,8 +138,23 @@ def test_full_frame_export_review_reserves_for_each_image_not_each_sheet(tmp_pat
     with pytest.raises(ValueError, match='token_budget_exceeded'):
         planner.review_survey(survey_path=path, task_context={}, configuration={'policy': policy},
             output_root=tmp_path, completion={'scope': 'missing_surfaces_within_captured_scene',
-                'post_export_coverage': {}, 'previews': [{'kind': 'geometry_gap_survey'}] * 12})
-    assert captured[0]['input_token_ceiling'] >= 24_000 + 3000 * (3 + 12)
+                'post_export_coverage': {}, 'previews': previews})
+    assert captured[0]['input_token_ceiling'] >= 24_000 + planner._export_image_token_ceiling(survey, previews)
+    assert planner._export_image_token_ceiling(survey, previews) > planner._export_image_token_ceiling(survey, previews[:3])
+
+
+def test_realistic_retained_full_frame_review_stays_within_one_dollar(tmp_path):
+    from blueprint_pipeline.openai_prompt_cache import worst_case_reservation_usd
+
+    source, preview = tmp_path / 'source.png', tmp_path / 'preview.png'
+    Image.new('RGB', (1080, 1920), 'white').save(source)
+    Image.new('RGB', (1280, 720), 'white').save(preview)
+    survey = {'frames': [{'source_image_path': str(source)}] * 7}
+    previews = [{'path': str(preview)}] * 77
+    bound = 24_000 + planner._export_image_token_ceiling(survey, previews) + 40_000
+    assert worst_case_reservation_usd(model='gpt-6.1-sol', input_token_ceiling=bound,
+                                      max_output_tokens=4000, cache_policy=None) < 1
+    assert planner._export_image_token_ceiling({'frames': []}, previews[:1]) == 3 * 32 * 18 + 256
 
 
 def test_unpriced_or_overbudget_model_refused_before_reservation(tmp_path):

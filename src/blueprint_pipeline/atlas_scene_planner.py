@@ -466,6 +466,26 @@ def completion_summary(completion):
     return value
 
 
+def _export_image_token_ceiling(survey, previews):
+    """Bound the actual resized canvases instead of pricing every image as 2k².
+
+    Vision's 32px patch calculation is documented at
+    https://developers.openai.com/api/docs/guides/images-vision#patch-based-image-tokenization
+    Three tokens per patch plus label overhead exceeds the published patch
+    multipliers (1.2--2.46). No crop, frame omission or enlargement is involved.
+    """
+    ceiling = 0
+    for path, size in [*((row['source_image_path'], 512) for row in survey['frames']),
+                       *((row['path'], 1024) for row in previews)]:
+        with Image.open(path) as source:
+            width, height = source.size
+        scale = min(1., size / max(width, height))
+        # Ceil is conservative relative to PIL thumbnail's integer rounding.
+        width, height = math.ceil(width * scale), math.ceil(height * scale)
+        ceiling += 3 * math.ceil(width / 32) * math.ceil(height / 32) + 256
+    return ceiling
+
+
 def review_survey(*, survey_path: Path, task_context, configuration, output_root: Path,
                   invoker=None, release_blockers=None, feedback=None, completion=None, scaling=None,
                   recovery=None):
@@ -488,7 +508,10 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
             and 'post_export_coverage' not in (extra or {})):
         original_count = sum(row.get('kind') == 'original_capture_source_check_only' for row in previews)
         preview_count = original_count + math.ceil((preview_count - original_count) / 4)
-    tokens = 24_000 + 3000 * (len(survey["frames"]) + preview_count)
+    image_tokens = 3000 * (len(survey["frames"]) + preview_count)
+    if 'post_export_coverage' in (extra or {}) and policy['model'].startswith('gpt-6'):
+        image_tokens = _export_image_token_ceiling(survey, previews)
+    tokens = 24_000 + image_tokens
     if completion is not None or scaling is not None or recovery is not None:
         # _input excludes preview paths/digests from its text; image costs and
         # their short labels are already covered above. Do not count them twice.
@@ -538,7 +561,7 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         if 'original_capture_gallery' in completion:
             binding['source_gallery_input_revision'] = 'separate_full_frame_previews_v1'
         if 'post_export_coverage' in completion:
-            binding['export_coverage_input_revision'] = 'full_frame_component_surface_review_v1'
+            binding['export_coverage_input_revision'] = 'full_frame_component_surface_review_v2_canvas_budget'
     if scaling is not None:
         binding['scale_review_digest'] = canonical_digest(scaling)
     if recovery is not None:
