@@ -203,6 +203,57 @@ def test_large_export_review_fits_its_existing_cap_without_losing_views_or_gaps(
     assert sum('original_capture_frame' in row for row in labels) == 19
 
 
+def test_fitted_export_review_is_repriced_before_invoker_admission(tmp_path, monkeypatch):
+    path, _, _, policy = fixture(tmp_path)
+    preview = tmp_path / 'derived.png'
+    Image.new('RGB', (1280, 720), 'white').save(preview)
+    from blueprint_pipeline import openai_prompt_cache, website_task_context, paid_resource_admission
+    quote = openai_prompt_cache.worst_case_reservation_usd
+    quotes, reservations, invoked = [], [], []
+
+    def price(**kwargs):
+        value = quote(**kwargs)
+        quotes.append(value)
+        return value
+
+    monkeypatch.setattr(openai_prompt_cache, 'worst_case_reservation_usd', price)
+    monkeypatch.setattr(website_task_context, 'reserve_website_preparation_spend',
+                        lambda **kw: (reservations.append(kw) or {}, object()))
+    monkeypatch.setattr(website_task_context, 'website_webapp_request', lambda **_: {'status': 'settled'})
+    monkeypatch.setattr(paid_resource_admission, 'require_paid_resource_admission_grant', lambda *a, **k: None)
+
+    class Invoker:
+        config = SimpleNamespace(max_inference_cost_usd=policy['maximum_review_cost_usd'])
+
+        def configure_reservation_audit(self, **_):
+            pass
+
+        def invoke(self, spec, inputs):
+            invoked.append(spec)
+            return SimpleNamespace(output={'status': 'sufficient', 'selected_camera_ids': [],
+                'gap_assessment': ['The surface is complete'], 'remaining_unknowns': [],
+                'environment_surfaces': [{'component': 'fixture', 'surface': 'side',
+                    'required_for_local_environment': True, 'coverage': 'present', 'source_frame_ids': ['0'],
+                    'evidence_camera_ids': ['camera-0'], 'gap_ids': [], 'reason': 'Continuous visible surface'}]},
+                cost_usd=.01, usage={'input_tokens': 100}, model=spec.model, sdk_version='test')
+
+    result = planner.review_survey(survey_path=path, task_context={'description': 'Complete the local work fixture',
+        'context_digest': 'context',
+        'request_id': 'request', 'scene_id': 'scene', 'capture_id': 'capture'}, configuration={'policy': policy},
+        output_root=tmp_path / 'plans', invoker=Invoker(), release_blockers=lambda: ('c' * 40, []),
+        completion={'scope': 'missing_surfaces_within_captured_scene', 'post_export_coverage': {},
+            'candidate_camera_ids': ['camera-' + str(i) for i in range(80)],
+            'previews': [{'path': str(preview), 'sha256': _sha256_file(preview),
+                          'source_frame_id': '0', 'kind': 'geometry_gap_survey',
+                          'camera_id': 'camera-' + str(i % 80)} for i in range(160)]})
+    assert quotes[0] > policy['maximum_review_cost_usd'], 'This request must exercise budget fitting'
+    assert result['status'] == 'completed' and len(invoked) == len(reservations) == 1
+    spec = invoked[0]
+    assert quote(model=policy['model'], input_token_ceiling=spec.max_input_tokens,
+                 max_output_tokens=spec.max_output_tokens, cache_policy=None) <= policy['maximum_review_cost_usd']
+    assert reservations[0]['maximum_cost_usd'] == policy['maximum_review_cost_usd']
+
+
 def test_unpriced_or_overbudget_model_refused_before_reservation(tmp_path):
     path, _, _, policy = fixture(tmp_path)
     policy["maximum_review_cost_usd"] = .00001

@@ -681,6 +681,13 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
             survey, task_context, extra, model=policy['model'], maximum=maximum,
             output_tokens=output_tokens, instructions=instructions, schema=schema,
             minimum_output_tokens=output_tokens if truncation_retry is not None else 4000)
+        # Admission must price the fitted request, not the larger request that
+        # triggered fitting. Both the WebApp cap and a supplied invoker's
+        # remaining allowance still apply to this final payload.
+        ceiling = worst_case_reservation_usd(model=policy['model'], input_token_ceiling=tokens,
+                                            max_output_tokens=output_tokens, cache_policy=None)
+        if ceiling is None or ceiling + search_calls * search_fee > maximum:
+            raise ValueError('atlas_scene_planner_token_budget_exceeded')
     binding = {"survey_digest": survey["digest"], "task_context_digest": task_context["context_digest"],
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
                "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": output_tokens,
