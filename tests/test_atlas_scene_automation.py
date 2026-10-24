@@ -759,6 +759,39 @@ def test_an_object_track_missing_a_view_refuses_but_an_absent_transient_is_empty
     assert "removed_transient_ids" not in prepared[1]
 
 
+def _segment(tmp_path, monkeypatch, frames, regions, found):
+    from blueprint_pipeline import meta_sam31
+    sam = {"track_id": "meta-sam31-obj-0", "label": "obj", **track(found)["track"]}
+    monkeypatch.setattr(meta_sam31, "run_meta_sam31", lambda **_: {"tracks": [sam]})
+    target = {**plan()["objects"][0], "regions": regions}
+    inputs = {"frames": [{"frame_id": f["frame_id"], "timestamp_seconds": i} for i, f in enumerate(frames)]}
+    return edits.segment_objects(frames=frames, objects=[target], inputs=inputs, task_context={},
+                                 source_digest="sha256:" + "a" * 64, root=tmp_path / "sam")
+
+
+def test_a_sam_track_that_found_some_views_covers_the_rest_without_leaving_the_object(tmp_path, monkeypatch):
+    """2026-10-24: the chosen dish track covered 3 of 10 views and missed one the planner marked."""
+    a, b, c = view(tmp_path), view(tmp_path, "b", 0.1), view(tmp_path, "c", 0.2)
+    box = {"box_xywh_normalized": [0.2, 0.2, 0.6, 0.6]}
+    # SAM found the object in a; the planner also marked b; c shows nothing to remove.
+    [selected] = _segment(tmp_path, monkeypatch, [a, b, c],
+                          [{"frame_id": "a", **box}, {"frame_id": "b", **box}], found=[a])
+    observations = {row["source_frame_id"]: row for row in selected["track"]["observations"]}
+    assert set(observations) == {"a", "b", "c"} and selected["track"]["guide_only"] is True
+    assert observations["a"] == track([a])["track"]["observations"][0]  # SAM's own mask is kept
+    assert observations["b"]["runs"] and observations["c"]["runs"] == []
+    prepared = edits.prepare_masked_frames(frames=[a, b, c], targets=[selected], margin=0.01, root=tmp_path / "masks")
+    assert [row["remaining_pixel_count"] > 0 for row in prepared] == [True, True, False]
+
+
+def test_a_sam_track_missing_only_unmarked_views_stays_a_segmentation(tmp_path, monkeypatch):
+    a, b = view(tmp_path), view(tmp_path, "b", 0.1)
+    [selected] = _segment(tmp_path, monkeypatch, [a, b],
+                          [{"frame_id": "a", "box_xywh_normalized": [0.2, 0.2, 0.6, 0.6]}], found=[a])
+    assert [row["runs"] == [] for row in selected["track"]["observations"]] == [False, True]
+    assert "guide_only" not in selected["track"]
+
+
 @pytest.mark.parametrize("scope, edited", [("required_and_additional", ["a"]), ("all_selected_views", ["a", "b"])])
 def test_the_trial_scope_cleans_every_selected_view_and_the_default_only_the_reviewed_ones(
         tmp_path, monkeypatch, scope, edited):

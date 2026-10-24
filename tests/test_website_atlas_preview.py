@@ -467,6 +467,18 @@ def test_a_cleanup_reset_without_its_lists_still_deletes_and_delivers(monkeypatc
     assert job["delivered_revision"] == job["revision"] and world.pushed[-1]["revision"] == job["revision"]
 
 
+def test_a_task_confirmed_mid_run_is_picked_up_by_the_next_tick_not_failed(monkeypatch, site):
+    """2026-10-24: the owner confirmed the task while the fresh capture's preview ran."""
+    _enqueue(site)
+    changed = ValueError("website_control_atlas-reservation_http_409:website_scene_sponsorship_binding_invalid")
+    world = World(monkeypatch, site, [changed, _completed])
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["transient_failures"] == 1 and job["last_transient_reason"] == "website_scene_sponsorship_binding_invalid"
+    world.clock = job["next_attempt_at_epoch"]
+    assert world.advance() == "ready" and len(world.runs) == 2
+
+
 def test_a_failed_job_resumes_once_an_operator_retries_it_after_a_fix(monkeypatch, site):
     """2026-10-23: a fixed planner check could not reach a job its old check had failed."""
     _enqueue(site)
@@ -486,6 +498,21 @@ def test_a_failed_job_resumes_once_an_operator_retries_it_after_a_fix(monkeypatc
     assert _job(site)["provider_cleanup"]["state"] == "complete"
     assert world.pushed[-1]["state"] == "ready" and world.pushed[-1]["revision"] > job["revision"]
     # Only a recoverable failure can be retried.
+    with pytest.raises(ValueError, match="requires_recoverable_failure"):
+        preview.retry_failed_job(site.job, now=world.now)
+
+
+def test_a_job_stopped_for_background_review_resumes_but_one_needing_a_new_capture_does_not(monkeypatch, site):
+    """2026-10-24: a cleanup stopped at needs_input could not resume once its cause was fixed."""
+    _enqueue(site)
+    stopped = {"status": "needs_input", "reason": "atlas_object_mask_view_coverage_incomplete"}
+    world = World(monkeypatch, site, [stopped, _completed])
+    assert world.advance() == "needs_input"
+    assert world.advance() == "needs_input" and len(world.runs) == 1  # stopped until resumed
+    job = preview.retry_failed_job(site.job, now=world.now)
+    assert job["state"] == "processing" and job["retries"][0]["reason"] == "atlas_background_review_required"
+    assert world.advance() == "ready" and len(world.runs) == 2
+    site.job.write_text(json.dumps({**_job(site), "state": "needs_input", "reason": "atlas_scene_planner_abstained"}))
     with pytest.raises(ValueError, match="requires_recoverable_failure"):
         preview.retry_failed_job(site.job, now=world.now)
 

@@ -128,6 +128,31 @@ def grounded_region_guide(*, target, frames):
         'spatial_evidence_digest': canonical_digest(target['spatial_evidence'])}
 
 
+def complete_track_coverage(*, track, target, frames):
+    """Report every selected view for a SAM track, which names only the views it found.
+
+    A view the planner marked for this object that the track misses takes the
+    planner's box as an image-edit hint, so the object is never left in that
+    edit; any other unreported view has nothing to remove. 2026-10-24: the chosen
+    dish track covered 3 of 10 views and missed one the planner had marked.
+    """
+    observed = {row['source_frame_id']: row for row in track['observations']}
+    missing = [frame for frame in frames if frame['frame_id'] not in observed]
+    if not missing:
+        return track
+    marked = {region['frame_id'] for region in target['regions']}
+    hints = ({row['source_frame_id']: row for row in grounded_region_guide(target=target, frames=frames)['observations']}
+             if any(frame['frame_id'] in marked for frame in missing) else {})
+    observations = []
+    for frame in frames:
+        h, w = frame['rgb'].shape[:2]
+        observations.append(observed.get(frame['frame_id']) or hints.get(frame['frame_id'])
+                            or {'source_frame_id': frame['frame_id'], 'width': w, 'height': h, 'runs': []})
+    return {**track, 'observations': observations,
+            **({'guide_only': True, 'physical_evidence': False,
+                'selection_basis': 'sam31_track_with_agent_grounded_regions'} if hints else {})}
+
+
 def segment_objects(*, frames, objects, inputs, task_context, source_digest, root, transients=()):
     """Segment reviewed objects; region fallbacks remain image-edit hints only.
 
@@ -185,6 +210,8 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
             # The image editor needs a location hint, not a single physical
             # instance. Keep strict track selection unchanged for geometry.
             track = grounded_region_guide(target=target, frames=frames)
+        else:
+            track = complete_track_coverage(track=track, target=target, frames=frames)
         # A track must explicitly report every selected view, even an empty mask.
         if {o["source_frame_id"] for o in track["observations"]} != set(by_id):
             raise ValueError("atlas_object_mask_view_coverage_incomplete")

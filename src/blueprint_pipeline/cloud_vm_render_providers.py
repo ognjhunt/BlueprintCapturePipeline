@@ -43,6 +43,8 @@ _GCP_COMPUTE_POLICY = safe_outbound_http.pinned_api_policy(GCP_COMPUTE_API)
 GCP_SERVICE_USAGE_API = "https://serviceusage.googleapis.com/v1beta1"
 _GCP_SERVICE_USAGE_POLICY = safe_outbound_http.pinned_api_policy(GCP_SERVICE_USAGE_API)
 GCP_CREDENTIALS_FILE_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
+GCP_BILLING_PRICE_API = "https://cloudbilling.googleapis.com/v1beta"
+_GCP_BILLING_PRICE_POLICY = safe_outbound_http.pinned_api_policy(GCP_BILLING_PRICE_API)
 
 _NAME_RE = re.compile(r"^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$")
 
@@ -793,6 +795,13 @@ class GCPRenderProvider(GpuRenderProvider):
         missing page or partial provider response is unknown, not fleet zero.
         """
         config, resources = self._config(), []
+        price_cache: dict[str, Mapping] = {}
+
+        def quote(sku: str) -> Mapping:
+            if sku not in price_cache:
+                price_cache[sku] = self._public_sku_price(sku)
+            return price_cache[sku]
+
         projects = self.inventory_projects() if projects is None else projects
         if not projects:
             return {'api_confirmed': False, 'resources': [], 'live_resource_count': None,
@@ -826,12 +835,20 @@ class GCPRenderProvider(GpuRenderProvider):
                         machine = str(row.get('machineType') or '').rsplit('/', 1)[-1]
                         known_rate = (project == config['project'] and machine == config['machine_type']
                                       and row.get('status') != 'TERMINATED')
+                        retained_cost = {}
+                        if row.get('status') == 'TERMINATED':
+                            from blueprint_pipeline.gcp_retained_vm_cost import stopped_vm_cost
+
+                            retained_cost = stopped_vm_cost(
+                                row, project=project, zone=zone, compute=self._call, quote=quote,
+                            )
                         resources.append({'instance_id': row['name'], 'name': row['name'],
                             'project': project, 'zone': zone, 'status': row.get('status'),
                             'machine_type': machine, 'created_at': row.get('creationTimestamp'),
                             'scheduling': row.get('scheduling', {}),
                             'attached_disk_count': len(row.get('disks', [])),
                             'cost_per_hour': config['configured_hourly_rate_usd'] if known_rate else None,
+                            **retained_cost,
                             'cleanup_authorized': (project == config['project'] and zone == config['zone']
                                 and _mapping(row.get('labels')).get('blueprint-managed') == 'true')})
                 token = body.get('nextPageToken')
@@ -844,6 +861,29 @@ class GCPRenderProvider(GpuRenderProvider):
         return {'status': 'observed', 'api_confirmed': True, 'http': 200,
                 'projects': projects, 'resources': resources,
                 'live_resource_count': len(resources), 'blockers': []}
+
+    def _public_sku_price(self, sku: str) -> Mapping:
+        """Current public catalog price; failures cannot become a zero rate."""
+        from blueprint_pipeline.gcp_retained_vm_cost import BALANCED_SKU, SPOT_IP_SKU, STANDARD_IP_SKU
+
+        if sku not in {BALANCED_SKU, SPOT_IP_SKU, STANDARD_IP_SKU}:
+            raise ValueError('gcp_attachment_sku_unsupported')
+        credentials, error = self._credentials()
+        if credentials is None:
+            raise ValueError(f'gcp_attachment_pricing_credentials_unavailable:{error}')
+        request = urllib.request.Request(
+            f'{GCP_BILLING_PRICE_API}/skus/{sku}/price?currencyCode=USD', method='GET',
+            headers={'Authorization': f'Bearer {credentials.token}'},
+        )
+        try:
+            response = safe_outbound_http.open_request(
+                request, policy=_GCP_BILLING_PRICE_POLICY, timeout_seconds=45,
+            )
+            if response.status != 200:
+                raise ValueError('gcp_attachment_pricing_unavailable')
+            return json.loads(response.body)
+        except Exception as exc:  # noqa: BLE001 - preserve unknown on provider errors
+            raise ValueError('gcp_attachment_pricing_unavailable') from exc
 
     def stop(self, instance_id: str) -> dict:
         config = self._config()
