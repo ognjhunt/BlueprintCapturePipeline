@@ -3,6 +3,7 @@ import json
 import math
 import struct
 import zlib
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -258,3 +259,79 @@ def test_generated_background_writer_retains_edit_and_review_provenance(tmp_path
     assert manifest['visual_review_digest']=='independent-review'
     assert manifest['appearance_basis']=='generated_object_absent_background'
     assert manifest['metric_measurement_proven'] is False
+
+
+def disc_splat(xyz, normals, voxel=0.01):
+    count = len(xyz)
+    return depth_splat.depth_fused_splat({"xyz": np.asarray(xyz, float), "rgb": np.full((count, 3), 0.6),
+                                          "normal": np.asarray(normals, float), "normal_agreement": np.ones(count),
+                                          "confidence": np.ones(count)}, voxel)
+
+
+def test_oversized_splat_merges_onto_a_coarser_grid_for_meshing_only():
+    grid = np.stack(np.meshgrid(np.arange(60), np.arange(60), indexing="ij"), -1).reshape(-1, 2) * 0.01
+    normal = np.array([-0.3, 0.0, 1.0]) / np.linalg.norm([-0.3, 0.0, 1.0])
+    splat = disc_splat(np.column_stack([grid, 0.3 * grid[:, 0]]), np.tile(normal, (len(grid), 1)))
+    merged, size = depth_splat.splats2mesh_input(splat, 0.01, limit=1000)
+    assert merged.count <= 1000 < splat.count and size > 0.01
+    assert np.allclose(np.abs(depth_splat._disc_normals(merged) @ normal), 1.0, atol=1e-5)
+    assert np.all(merged.scales[:, 2] < merged.scales[:, 0]), "merged discs stay thin on the surface"
+    assert np.allclose(merged.xyz[:, 2], 0.3 * merged.xyz[:, 0], atol=1e-5)
+    assert np.allclose(merged.f_dc, splat.f_dc[0], atol=1e-5)
+    same, voxel = depth_splat.splats2mesh_input(splat, 0.01, limit=splat.count)
+    assert same is splat and voxel == 0.01
+
+
+def test_wall_discs_facing_either_way_still_merge_into_thin_discs():
+    grid = np.stack(np.meshgrid(np.arange(60), np.arange(60), indexing="ij"), -1).reshape(-1, 2) * 0.01
+    normals = np.zeros((len(grid), 3))
+    normals[:, 0] = np.where(np.arange(len(grid)) % 2, 1.0, -1.0)
+    splat = disc_splat(np.column_stack([np.zeros(len(grid)), grid]), normals)
+    merged, _ = depth_splat.splats2mesh_input(splat, 0.01, limit=1000)
+    assert np.allclose(np.abs(depth_splat._disc_normals(merged)[:, 0]), 1.0, atol=1e-5)
+    assert np.all(merged.scales[:, 2] < merged.scales[:, 0])
+
+
+def test_mesh_attempt_merges_an_unattempted_oversized_export_without_rewriting_it(tmp_path, monkeypatch):
+    splat_root = tmp_path / "splat"
+    manifest = depth_splat.build_depth_splat(retained_pose_root(tmp_path / "pose"), splat_root)
+    retained = {path.name: path.read_bytes() for path in splat_root.iterdir()}
+    original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    assert depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh") == (original, tmp_path / "mesh")
+    monkeypatch.setattr(depth_splat, "SPLATS2MESH_MAX_GAUSSIANS", manifest["gaussian_count"] // 3)
+    spec, mesh_root = depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh")
+    assert mesh_root == tmp_path / "mesh-merged-v1" and not mesh_root.exists()
+    assert spec["request"] == original["request"], "the priced request is unchanged"
+    receipt = json.loads((tmp_path / "mesh-input-merged-v1" / "mesh_input.json").read_text())
+    assert spec["uploads"]["splat"] == {"path": receipt["path"], "sha256": receipt["sha256"]}
+    assert receipt["source_sha256"] == original["uploads"]["splat"]["sha256"]
+    assert receipt["gaussian_count"] <= manifest["gaussian_count"] // 3 < manifest["gaussian_count"]
+    assert receipt["voxel_size"] > manifest["voxel_size"]
+    assert depth_splat.decode_spz(Path(receipt["path"]).read_bytes()).count == receipt["gaussian_count"]
+    assert {path.name: path.read_bytes() for path in splat_root.iterdir()} == retained
+    # A restart reuses the same merged input and attempt root.
+    assert depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh") == (spec, mesh_root)
+
+
+def test_mesh_attempt_keeps_an_already_attempted_root_and_refuses_a_changed_input(tmp_path, monkeypatch):
+    splat_root = tmp_path / "splat"
+    manifest = depth_splat.build_depth_splat(retained_pose_root(tmp_path / "pose"), splat_root)
+    original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    monkeypatch.setattr(depth_splat, "SPLATS2MESH_MAX_GAUSSIANS", manifest["gaussian_count"] // 3)
+    (tmp_path / "mesh" / "atlas_pose").mkdir(parents=True)
+    assert depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh") == (original, tmp_path / "mesh")
+    depth_splat.splats2mesh_attempt(splat_root, tmp_path / "other")
+    merged = tmp_path / "other-input-merged-v1" / "atlas_depth_splat_mesh_input.spz"
+    merged.write_bytes(merged.read_bytes() + b"\0")
+    with pytest.raises(ValueError, match="mesh_input_changed"):
+        depth_splat.splats2mesh_attempt(splat_root, tmp_path / "other")
+    (splat_root / "atlas_depth_splat.spz").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="mesh_source_changed"):
+        depth_splat.splats2mesh_attempt(splat_root, tmp_path / "third")
+
+
+def test_discs_of_crossing_surfaces_merge_into_a_round_gaussian():
+    xyz = np.full((200, 3), 0.003) + np.linspace(0.0, 0.002, 200)[:, None]
+    normals = np.where((np.arange(200) % 2 == 0)[:, None], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    merged, _ = depth_splat.splats2mesh_input(disc_splat(xyz, normals), 0.01, limit=100)
+    assert merged.count == 1 and np.allclose(merged.scales[0], merged.scales[0, 0])

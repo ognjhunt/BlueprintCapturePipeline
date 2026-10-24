@@ -48,6 +48,11 @@ DISC_THICKNESS_RATIO = 0.1
 SPLATS2MESH_MAX_RENDER = 1024
 SPLATS2MESH_MIN_RENDER = 64
 SPLATS2MESH_MAX_CAMERAS = 512
+# splats2Mesh documents no splat limit. It meshed a 2.45M-Gaussian draft
+# (2026-10-23) and failed with EXECUTION_FAILED on a 3.6M one (2026-10-24).
+SPLATS2MESH_MAX_GAUSSIANS = 2_000_000
+_MESH_INPUT_GRID_MULTIPLES = (1.5, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0)
+MESH_INPUT_REVISION = "merged-v1"
 EXR_MAGIC = b"\x76\x2f\x31\x01"
 _EXR_LINES_PER_BLOCK = {0: 1, 2: 1, 3: 16}  # none, ZIPS, ZIP
 _EXR_PIXEL_TYPES = {1: "<f2", 2: "<f4"}
@@ -334,6 +339,50 @@ def depth_fused_splat(fused: Mapping[str, np.ndarray], voxel: float) -> SplatDat
                      quats=quats.astype(np.float32), properties=PLY_PROPERTIES)
 
 
+def _disc_normals(splat: SplatData) -> np.ndarray:
+    """Each disc's rotated local z axis: the normal depth_fused_splat turned it onto."""
+    w, x, y, z = (splat.quats[:, index].astype(np.float64) for index in range(4))
+    normal = np.stack([2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)], axis=1)
+    return normal / np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
+
+
+def splats2mesh_input(splat: SplatData, voxel: float, *, limit: int | None = None) -> tuple[SplatData, float]:
+    """Merge discs on the finest coarser grid within the size splats2Mesh has meshed.
+
+    Only the mesh input is merged; the full draft stays the viewing and download splat.
+    """
+    limit = SPLATS2MESH_MAX_GAUSSIANS if limit is None else limit
+    if splat.count <= limit:
+        return splat, voxel
+    points = splat.xyz.astype(np.float64)
+    for multiple in _MESH_INPUT_GRID_MULTIPLES:
+        size = voxel * multiple
+        keys, inverse = np.unique(_voxel_keys(points, size), return_inverse=True)
+        if len(keys) <= limit:
+            break
+    else:
+        raise ValueError("atlas_depth_splat_mesh_input_exceeds_limit")
+    inverse = inverse.reshape(-1)
+    weight = np.clip((splat.opacity_sigmoid.astype(np.float64) - 0.5) / 0.49, 1e-3, 1.0)
+    total = np.bincount(inverse, weights=weight, minlength=len(keys))
+
+    def mean(values):
+        return np.stack([np.bincount(inverse, weights=weight * values[:, column], minlength=len(keys))
+                         for column in range(values.shape[1])], axis=1) / total[:, None]
+
+    # Disc normals are flipped towards +z, so a wall's neighbours can point either
+    # way: merge their sign-free principal axis, not their vector mean. Agreement
+    # is that axis's anisotropy: 1 for parallel normals, 0 for an even spread.
+    normals = _disc_normals(splat)
+    pairs = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
+    second = mean(np.stack([normals[:, i] * normals[:, j] for i, j in pairs], axis=1))
+    values, vectors = np.linalg.eigh(second[:, [0, 1, 2, 1, 3, 4, 2, 4, 5]].reshape(-1, 3, 3))
+    fused = {"xyz": mean(points), "rgb": mean(splat.f_dc.astype(np.float64) * SH_C0 + 0.5),
+             "normal": vectors[:, :, 2], "normal_agreement": np.clip((3 * values[:, 2] - 1) / 2, 0.0, 1.0),
+             "confidence": total / np.bincount(inverse, minlength=len(keys))}
+    return depth_fused_splat(fused, size), size
+
+
 def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
                       voxel_footprint_multiple: float = 2.0) -> tuple[SplatData, dict[str, Any]]:
     """Gate cross-view agreement, then stream every usable pixel into a draft splat.
@@ -432,6 +481,41 @@ def splats2mesh_task_spec(*, frames: Sequence[Mapping[str, Any]], spz: Path,
     return {"task": "splats2Mesh", "source_video_digest": source_video_digest,
             "request": {"splatAsset": {"assetId": "upload:splat"}, "cameras": cameras, "textureMode": "image_texture"},
             "uploads": {"splat": {"path": str(spz.resolve()), "sha256": _sha256_file(spz)}}}
+
+
+def splats2mesh_attempt(splat_root: Path, mesh_root: Path) -> tuple[dict[str, Any], Path]:
+    """The splats2Mesh spec and attempt root, with an oversized draft merged for meshing only.
+
+    The retained export is never rewritten: its manifest digest binds coverage and
+    bundle state. A root already attempted keeps its input, so a pending or
+    completed mesh is never bought twice; a merged input gets its own attempt root.
+    """
+    spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    manifest = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
+    if manifest.get("gaussian_count", 0) <= SPLATS2MESH_MAX_GAUSSIANS or mesh_root.exists():
+        return spec, mesh_root
+    source = spec["uploads"]["splat"]
+    if _sha256_file(Path(source["path"])) != source["sha256"]:
+        raise ValueError("atlas_depth_splat_mesh_source_changed")
+    input_root = mesh_root.with_name(f"{mesh_root.name}-input-{MESH_INPUT_REVISION}")
+    receipt_path = input_root / "mesh_input.json"
+    if not receipt_path.is_file():
+        merged, voxel = splats2mesh_input(decode_spz(Path(source["path"]).read_bytes()), manifest["voxel_size"])
+        input_root.mkdir(parents=True, exist_ok=True)
+        output = input_root / "atlas_depth_splat_mesh_input.spz"
+        output.write_bytes(encode_spz(merged))
+        write_receipt = {"schema_version": "atlas_splats2mesh_input.v1", "basis": "merged_discs_for_splats2mesh_size",
+                         "source_sha256": source["sha256"], "source_gaussian_count": manifest["gaussian_count"],
+                         "source_voxel_size": manifest["voxel_size"], "gaussian_count": merged.count,
+                         "voxel_size": voxel, "limit": SPLATS2MESH_MAX_GAUSSIANS,
+                         "path": str(output.resolve()), "sha256": _sha256_file(output)}
+        receipt_path.write_text(json.dumps(write_receipt, indent=2) + "\n")
+    receipt = json.loads(receipt_path.read_text())
+    if receipt["source_sha256"] != source["sha256"] or _sha256_file(Path(receipt["path"])) != receipt["sha256"]:
+        raise ValueError("atlas_depth_splat_mesh_input_changed")
+    merged_input = {"path": receipt["path"], "sha256": receipt["sha256"]}
+    return ({**spec, "uploads": {**spec["uploads"], "splat": merged_input}},
+            mesh_root.with_name(f"{mesh_root.name}-{MESH_INPUT_REVISION}"))
 
 
 def build_depth_splat(pose_root: Path, output_root: Path, *, voxel_footprint_multiple: float = 2.0) -> dict[str, Any]:

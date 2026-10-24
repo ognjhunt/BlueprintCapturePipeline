@@ -395,11 +395,12 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     blockers = ["metric_scene_registration_unproven"]
     mesh_root = None
     if "mesh_export_cost_usd" in policy:
-        spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+        from .atlas_depth_splat import splats2mesh_attempt
+
+        spec, mesh_root = splats2mesh_attempt(splat_root, output_root / "mesh")
         mesh_quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "splats2Mesh",
             "request_digest": canonical_digest(spec["request"]), "maximum_cost_usd": policy["mesh_export_cost_usd"],
             **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
-        mesh_root = output_root / "mesh"
         check("mesh")
         mesh = run_sponsored_website_atlas_task(task="splats2Mesh", request=spec["request"], uploads=spec["uploads"],
             source_video_digest=source_digest, output_root=mesh_root, task_context=task_context,
