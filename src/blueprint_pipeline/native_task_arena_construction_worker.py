@@ -1347,6 +1347,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["site_appearance_renderer"] = _prepare_site_appearance_renderer(
             simulation_app=simulation_app,
             plan=plan,
+            **({"retained_packet_request": json.loads(
+                (packet / "native_task_arena_packet_request.v1.json").read_text())}
+               if runtime_measurement is not None else {}),
             progress_callback=lambda row: _announce(
                 f"nurec_warmup_round_{row['round']}", "completed"
             ),

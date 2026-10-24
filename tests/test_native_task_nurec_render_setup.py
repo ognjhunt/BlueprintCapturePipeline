@@ -403,6 +403,92 @@ def test_a_sealed_pxr_upstream_native_asset_is_not_mutated_on_the_live_stage() -
     assert receipt["live_stage_mutated"] is False
 
 
+def _retained_legacy_fixture():
+    pytest.importorskip("pxr")
+    from pxr import Sdf, Usd
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    stage = Usd.Stage.CreateInMemory()
+    field = stage.DefinePrim("/World/gauss/gauss", "ParticleField3DGaussianSplat")
+    material = stage.DefinePrim("/World/gauss/Looks/ParticleFieldEmissive", "Material")
+    shader = stage.DefinePrim(str(material.GetPath()) + "/Shader", "Shader")
+    field.CreateRelationship("material:binding").SetTargets([material.GetPath()])
+    for name, value in (("projectionModeHint", "perspective"), ("sortingModeHint", "zDepth")):
+        field.CreateAttribute(name, Sdf.ValueTypeNames.Token).Set(value)
+    shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
+        Sdf.AssetPath("ParticleFieldEmissive.mdl"))
+    shader.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(
+        "ParticleFieldEmissive")
+    shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token)
+    material.CreateAttribute("outputs:mdl:surface", Sdf.ValueTypeNames.Token).SetConnections(
+        [str(shader.GetPath()) + ".outputs:out"])
+    asset = "sha256:" + "7" * 64
+    plan = {"appearance_frame_alignment": {"representation": "particlefield_3d_gaussian_splat"},
+            "objects": [{"semantic_role": "scene_appearance", "sha256": asset}]}
+    request = {"assets": [{"semantic_role": "scene_appearance", "source": {"sha256": asset}}],
+               "appearance_variant": {"representation": "particlefield_3d_gaussian_splat",
+                   "particlefield_emissive_material_binding_authored": True,
+                   "particlefield_emissive_material_inputs": "mdl_defaults"}}
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    return stage, field, shader, plan, request
+
+
+def test_comparison_preserves_sealed_legacy_shader_and_default_path_still_refuses():
+    stage, _, _, plan, request = _retained_legacy_fixture()
+    before = stage.GetRootLayer().ExportToString()
+    assert not apply_display_referred_particlefield_material(stage)["passed"]
+    app = _App()
+    result = prepare_site_appearance_renderer(
+        simulation_app=app, plan=plan, stage=stage, retained_packet_request=request,
+        setup_for_rendering_factory=_qualified, settings_reader=_reader(True), warmup_steps=40)
+    assert result["passed"] and app.updates == 45
+    material = result["display_referred_material"]
+    assert material["particlefields"][0]["material_contract"] == "legacy_particlefield_emissive"
+    assert material["retained_material_contract"]["request_digest"] == request["request_digest"]
+    assert stage.GetRootLayer().ExportToString() == before
+
+
+@pytest.mark.parametrize("mutation", ["shader", "subidentifier", "inputs", "unbound", "connection"])
+def test_comparison_refuses_legacy_shader_drift_before_warmup(mutation):
+    stage, field, shader, plan, request = _retained_legacy_fixture()
+    from pxr import Sdf
+    if mutation == "shader":
+        shader.GetAttribute("info:mdl:sourceAsset").Set(Sdf.AssetPath("different.mdl"))
+    elif mutation == "subidentifier":
+        shader.GetAttribute("info:mdl:sourceAsset:subIdentifier").Set("different")
+    elif mutation == "inputs":
+        shader.CreateAttribute("inputs:apply_srgb_linear", Sdf.ValueTypeNames.Bool).Set(True)
+    elif mutation == "unbound":
+        field.GetRelationship("material:binding").ClearTargets(True)
+    else:
+        stage.GetPrimAtPath(shader.GetPath().GetParentPath()).GetAttribute(
+            "outputs:mdl:surface").ClearConnections()
+    app = _App()
+    result = prepare_site_appearance_renderer(
+        simulation_app=app, plan=plan, stage=stage, retained_packet_request=request,
+        setup_for_rendering_factory=_qualified, settings_reader=_reader(True))
+    assert result["blockers"] == [BLOCKER_PARTICLEFIELD_MATERIAL_MISSING]
+    assert app.updates == 0
+
+
+@pytest.mark.parametrize("mutation", ["digest", "asset", "label"])
+def test_comparison_refuses_unbound_packet_identity(mutation):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.native_task_nurec_render_setup import (
+        AppearanceRenderPathError, retained_particlefield_material_contract,
+    )
+    _, _, _, plan, request = _retained_legacy_fixture()
+    if mutation == "digest":
+        request["request_digest"] = "sha256:" + "0" * 64
+    elif mutation == "asset":
+        plan["objects"][0]["sha256"] = "sha256:" + "0" * 64
+    else:
+        request["appearance_variant"]["particlefield_emissive_material_inputs"] = "linear_scene_referred"
+        request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    with pytest.raises(AppearanceRenderPathError, match="retained_material_binding_invalid"):
+        retained_particlefield_material_contract(plan, request)
+
+
 def test_appearance_render_path_is_derived_from_the_sealed_plan() -> None:
     """The plan names the composed asset; the launcher must not choose one."""
 

@@ -390,4 +390,15 @@ def bind_policy_runtime_measurement(*, runtime: Path, output_root: Path, inputs,
             selected_cell_digest=canonical_digest({"value": inputs["cells"][selected_cell_index]}),
         )
         bound_runtime = measurement.wrap(bound_runtime)
+        # Preserve the same historical shader bytes in both runtime variants.
+        # This opt-in is available only after the comparison identity is bound.
+        request_path = runtime / "native_task_packet/native_task_arena_packet_request.v1.json"
+        if request_path.is_file():
+            retained_request = json.loads(request_path.read_text())
+            prepare = bound_runtime.prepare_appearance_renderer
+
+            def prepare_retained_appearance(**kwargs):
+                return prepare(**kwargs, retained_packet_request=retained_request)
+
+            bound_runtime = replace(bound_runtime, prepare_appearance_renderer=prepare_retained_appearance)
     return bound_runtime
