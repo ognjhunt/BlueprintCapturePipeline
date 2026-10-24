@@ -342,15 +342,18 @@ def test_admission_dictionary_cannot_authorize_image_spend(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("website", [False, True])
-def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypatch, website):
+@pytest.mark.parametrize("novel", [False, True])
+def test_background_review_keeps_client_alive_and_prices_all_novel_capture_context(tmp_path, monkeypatch, website, novel):
     import sys
     from types import SimpleNamespace as NS
     import google
 
     state = {"closed": False, "calls": 0}
+    requests = []
     def generate(**kwargs):
         assert not state["closed"]
         state["calls"] += 1
+        requests.append(kwargs)
         return NS(candidates=[NS(finish_reason="STOP")], text=json.dumps({
             "consistent_background": True, "task_objects_removed": True,
             "people_absent": False, "unrelated_objects_preserved": True,
@@ -373,9 +376,15 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
     monkeypatch.setitem(sys.modules, "google.genai", fake)
     monkeypatch.setattr(completion, "_api_key", lambda: ("fixture-key", "fixture"))
     frames, _ = _inputs(tmp_path)
-    args = dict(frames=frames, original_frames=frames, plan={"task_context_sha256": "task", "targets": []},
+    if novel:
+        frames = [{**frame, "novel_view": True} for frame in frames]
+    raw_path = tmp_path / "unselected-capture.png"
+    Image.new("RGB", (20, 10), "blue").save(raw_path)
+    raw = {"frame_id": "unselected-capture", "image_path": str(raw_path), "image_digest": _sha256_file(raw_path)}
+    args = dict(frames=frames, original_frames=[*frames, raw], plan={"task_context_sha256": "task", "targets": []},
                 output_root=tmp_path / "review")
     reservations = []
+    quotes = []
     if website:
         from blueprint_pipeline import website_gemini_receipts as receipts
         from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -389,14 +398,32 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
             reservations.append(kwargs)
             return {"status": "admitted"}, object()
         monkeypatch.setattr(receipts, "reserve_website_preparation_spend", reserve)
+        real_quote = receipts.gemini_quote
+        def quote(**kwargs):
+            quotes.append(kwargs)
+            return real_quote(**kwargs)
+        monkeypatch.setattr(receipts, "gemini_quote", quote)
     assert completion.verify_completed_background(**args)["status"] == "passed"
     assert state == {"closed": True, "calls": 1}
+    images = [item for item in requests[0]["contents"] if isinstance(item, dict)]
+    assert len(images) == 4 + int(novel)
+    assert ("raw capture context unselected-capture" in requests[0]["contents"]) is novel
+    assert any(item["data"] == raw_path.read_bytes() for item in images) is novel
     if website:
         monkeypatch.setattr(completion, "_api_key", lambda: (None, None))
         assert len(reservations) == 1
         assert reservations[0]["provider"] == "google"
+        request = json.loads(next((args["output_root"] / "gemini_reviews").glob("*.json")).read_text())["request"]
+        assert len(request["binding"]["image_digests"]) == len(images)
+        assert request["binding"].get("capture_context_frame_ids", []) == ([raw["frame_id"]] if novel else [])
+        assert quotes[0]["input_tokens"] >= 1120 * len(images)
     assert completion.verify_completed_background(**args)["status"] == "passed"
     assert state["calls"] == 1
+    if website and novel:
+        Image.new("RGB", (20, 10), "green").save(raw_path)
+        with pytest.raises(ValueError, match="review_source_changed"):
+            completion.verify_completed_background(**args)
+        assert len(reservations) == 1
 
 
 @pytest.mark.parametrize("camera_ids,novel,expected", [
