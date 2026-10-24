@@ -134,3 +134,12 @@ def test_audit_flags_an_approved_background_view_that_left_its_camera(tmp_path, 
     assert audit_main([str(retained)]) == 2
     status = {row["frame_id"]: row["status"] for row in json.loads(capsys.readouterr().out)}
     assert status == {"kept": "kept", "copied": "moved", "unedited": "not_edited"}
+
+
+def test_reused_view_whose_mask_left_with_its_run_goes_to_the_model_review(tmp_path, monkeypatch):
+    monkeypatch.setattr(completion, "_verify_completed_background", lambda **_: {"status": "passed", "paid": True})
+    paths = case(tmp_path, repaint(reframe(scene(1), 1.1), removal_mask()))
+    edited, originals = frames(paths)
+    paths["mask"].unlink()
+    assert completion.verify_completed_background(frames=edited, original_frames=originals,
+        plan={"targets": []}, output_root=tmp_path / "review") == {"status": "passed", "paid": True}
