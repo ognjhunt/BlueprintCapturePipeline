@@ -44,6 +44,9 @@ CROSS_VIEW_NEIGHBOURS = 8
 _KEY_BITS = 21
 # Tangent sigma per voxel edge keeps neighbouring discs overlapping without gaps.
 DISC_SIGMA_PER_VOXEL = 0.7
+# A camera's pixel rows land footprint / cos(incidence) apart on a slanted surface;
+# beyond about 80 degrees the depth is too oblique to widen a disc further.
+MIN_INCIDENCE_COSINE = 0.17
 DISC_THICKNESS_RATIO = 0.1
 SPLATS2MESH_MAX_RENDER = 1024
 SPLATS2MESH_MIN_RENDER = 64
@@ -236,11 +239,15 @@ def surface_samples(frame: Mapping[str, Any]) -> dict[str, np.ndarray]:
         keep &= length > 0
     points = world[1:-1, 1:-1][keep]
     normal = normal[keep] / length[keep][:, None]
-    normal[np.einsum("ij,ij->i", normal, frame["position"] - points) < 0] *= -1.0
+    rays = frame["position"] - points
+    facing = np.einsum("ij,ij->i", normal, rays)
+    normal[facing < 0] *= -1.0
+    footprint = center[keep] / math.sqrt(k["fx"] * k["fy"])
+    incidence = np.abs(facing) / np.maximum(np.linalg.norm(rays, axis=1), 1e-12)
     return {"points": points, "normals": normal,
             "colors": frame["rgb"][1:-1, 1:-1][keep].astype(np.float64) / 255.0,
             "weights": frame["confidence"][1:-1, 1:-1][keep].astype(np.float64),
-            "footprint": center[keep] / math.sqrt(k["fx"] * k["fy"])}
+            "footprint": footprint, "slant": footprint / np.maximum(incidence, MIN_INCIDENCE_COSINE)}
 
 
 def _subsample(sample: Mapping[str, np.ndarray]) -> dict[str, Any]:
@@ -316,15 +323,17 @@ class VoxelSums:
     def __init__(self, voxel: float):
         self.voxel = voxel
         self._keys = np.empty(0, np.int64)
-        self._columns = np.empty((11, 0))  # weight, weighted xyz, rgb and normal, sample count
+        # weight, weighted xyz, rgb and normal, sample count, weighted slanted footprint
+        self._columns = np.empty((12, 0))
         self._pending: list[tuple[np.ndarray, np.ndarray]] = []
         self._pending_rows = 0
 
     def add(self, sample: Mapping[str, np.ndarray]) -> None:
         weights = sample["weights"]
+        slant = sample.get("slant", np.zeros_like(weights))
         columns = np.concatenate([weights[None], (sample["points"] * weights[:, None]).T,
                                   (sample["colors"] * weights[:, None]).T, (sample["normals"] * weights[:, None]).T,
-                                  np.ones_like(weights)[None]])
+                                  np.ones_like(weights)[None], (slant * weights)[None]])
         self._pending.append(_sum_by_key(_voxel_keys(sample["points"], self.voxel), columns))
         self._pending_rows += len(self._pending[-1][0])
         if self._pending_rows >= max(self.MIN_MERGE_ROWS, len(self._keys) // 2):
@@ -353,18 +362,24 @@ class VoxelSums:
         agreement = np.linalg.norm(normal, axis=1)
         return {"xyz": self.sums[:, 1:4] / total, "rgb": self.sums[:, 4:7] / total,
                 "normal": normal / np.maximum(agreement, 1e-12)[:, None], "normal_agreement": agreement,
-                "confidence": total[:, 0] / self.sums[:, 10], "observations": self.sums[:, 10]}
+                "confidence": total[:, 0] / self.sums[:, 10], "observations": self.sums[:, 10],
+                "slant": self.sums[:, 11] / total[:, 0]}
 
 
 def depth_fused_splat(fused: Mapping[str, np.ndarray], voxel: float) -> SplatData:
-    """One Gaussian per voxel: a thin disc on the fused normal, isotropic where normals disagree."""
+    """One Gaussian per voxel: a thin disc on the fused normal, isotropic where normals disagree.
+
+    A disc spans its voxel or, on a slanted surface, the spacing of the pixel rows
+    that sampled it, so oblique views do not leave stripes between those rows.
+    """
     count = len(fused["xyz"])
     normal = fused["normal"] * np.where(fused["normal"][:, 2:3] < 0, -1.0, 1.0)
     quats = np.stack([1.0 + normal[:, 2], -normal[:, 1], normal[:, 0], np.zeros(count)], axis=1)
     quats /= np.linalg.norm(quats, axis=1, keepdims=True)
-    sigma = DISC_SIGMA_PER_VOXEL * voxel
-    scales = np.full((count, 3), math.log(sigma))
-    scales[fused["normal_agreement"] >= 0.5, 2] = math.log(sigma * DISC_THICKNESS_RATIO)
+    sigma = DISC_SIGMA_PER_VOXEL * np.maximum(voxel, fused.get("slant", np.zeros(count)))
+    scales = np.repeat(np.log(sigma)[:, None], 3, axis=1)
+    thin = fused["normal_agreement"] >= 0.5
+    scales[thin, 2] = np.log(sigma[thin] * DISC_THICKNESS_RATIO)
     opacity = 0.5 + 0.49 * np.clip(fused["confidence"], 0.0, 1.0)
     return SplatData(count=count, xyz=fused["xyz"].astype(np.float32),
                      opacity=np.log(opacity / (1.0 - opacity)).astype(np.float32),
@@ -410,9 +425,11 @@ def splats2mesh_input(splat: SplatData, voxel: float, *, limit: int | None = Non
     pairs = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
     second = mean(np.stack([normals[:, i] * normals[:, j] for i, j in pairs], axis=1))
     values, vectors = np.linalg.eigh(second[:, [0, 1, 2, 1, 3, 4, 2, 4, 5]].reshape(-1, 3, 3))
+    # Each disc's tangent sigma records the row spacing it had to bridge.
+    spans = np.exp(splat.scales[:, :1].astype(np.float64)) / DISC_SIGMA_PER_VOXEL
     fused = {"xyz": mean(points), "rgb": mean(splat.f_dc.astype(np.float64) * SH_C0 + 0.5),
              "normal": vectors[:, :, 2], "normal_agreement": np.clip((3 * values[:, 2] - 1) / 2, 0.0, 1.0),
-             "confidence": total / np.bincount(inverse, minlength=len(keys))}
+             "confidence": total / np.bincount(inverse, minlength=len(keys)), "slant": mean(spans)[:, 0]}
     return depth_fused_splat(fused, size), size
 
 

@@ -110,6 +110,9 @@ The production Atlas controller runs the following for a new scene plan:
    separate ZIP and explicit result/review lineage. Original reconstruction and
    its ZIP remain available. Native photometrically trained splat export remains
    subject to Atlas availability; this adapter produces a depth-fused draft.
+   Each disc spans its voxel or, on a slanted surface, the spacing of the pixel
+   rows that sampled it (footprint / cos incidence, capped at 80 degrees), so a
+   wall seen at a grazing angle does not render as stripes.
    Above `SPLATS2MESH_MAX_GAUSSIANS` (2M; splats2Mesh meshed 2.45M and failed at
    3.6M, with no documented limit) `splats2mesh_attempt` merges a copy on the
    finest coarser grid that fits and meshes it in its own `-merged-v1` root. The
