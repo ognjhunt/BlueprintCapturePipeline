@@ -57,8 +57,8 @@ class Tensor(np.ndarray):
 
 class FakeEnv:
     def __init__(self, *, drift=0.0, nonfinite=False, wrong_backend=False):
-        manager = type("NewtonMJWarpManager", (), {})
-        manager.__module__ = "isaaclab_newton.physics.mjwarp_manager" if not wrong_backend else "physx"
+        manager = type("NewtonArenaMJWarpManager", (), {})
+        manager.__module__ = probe.ARENA_NEWTON_MANAGER.rsplit(".", 1)[0] if not wrong_backend else "physx"
         solver = type("SolverMuJoCo", (), {})
         manager._solver = solver()
         manager.get_device = lambda: "cuda:0"
@@ -179,6 +179,7 @@ def test_feature_bundle_seals_request_and_cannot_omit_reference(tmp_path, monkey
     # The generic archive fixture has synthetic baseline source bytes. Exact
     # GA source admission is exercised above; this lane tests sealed transport.
     monkeypatch.setattr(probe, "validate_feature_source", lambda source: None)
+    monkeypatch.setattr(probe, "replay_arena_backend_binding", lambda source: {"status": "passed", "native_execution": False})
     receipt = build_native_task_arena_construction_bundle(**kwargs, runtime_comparison_request_path=comparison_path)
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         assert json.loads(archive.read("provider_runtime/runtime_inputs/" + probe.REQUEST_FILENAME)) == json.loads(feature_path.read_text())
@@ -205,3 +206,42 @@ def test_feature_bundle_seals_request_and_cannot_omit_reference(tmp_path, monkey
     monkeypatch.setattr(probe, "run_feature_probe", native_feature)
     assert worker.main([]) == 0
     assert closed == [True]
+
+
+def test_released_arena_source_reproduces_refusal_and_preflights_explicit_newton(monkeypatch):
+    import hashlib
+    from pathlib import Path
+    fixture = Path(__file__).parent / "fixtures/isaaclab_arena_ga_backend"
+    manifest = json.loads((fixture / "source.json").read_text())
+    archive = fixture / "released_backend_contract.zip"
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest["archive_sha256"]
+    source = {"packet_path": str(archive)}
+    failed = probe.replay_arena_backend_binding(source, legacy_default=True)
+    assert failed["status"] == "refused"
+    assert failed["refusing_predicate"] == "env_cfg_callback changed the physics backend away from PhysX."
+    fixed = probe.replay_arena_backend_binding(source)
+    assert fixed["status"] == "passed" and fixed["selected_backend"] == "newton"
+    assert fixed["replicate_physics"] is True
+    assert fixed["retained_arena_solver"]["njmax"] == 8192
+    assert fixed["retained_arena_solver"]["nconmax"] == 8192
+    assert fixed["retained_arena_solver"]["integrator"] == "implicitfast"
+    assert fixed["native_execution"] is False
+    assert set(fixed["vendor_source_sha256"].values()) <= {row["sha256"] for row in manifest["files"]}
+    monkeypatch.setattr(probe, "arena_backend_kwargs", lambda backend: {})
+    with pytest.raises(ValueError, match="arena_physics_preset_missing"):
+        probe.replay_arena_backend_binding(source)
+
+
+def test_backend_replay_rejects_modified_vendor_source_before_compilation(tmp_path):
+    import zipfile
+    from pathlib import Path
+    fixture = Path(__file__).parent / "fixtures/isaaclab_arena_ga_backend/released_backend_contract.zip"
+    modified = tmp_path / "modified.zip"
+    with zipfile.ZipFile(fixture) as original, zipfile.ZipFile(modified, "w") as output:
+        for name in original.namelist():
+            data = original.read(name)
+            if name.endswith("physics_backend.py"):
+                data = b"raise RuntimeError('must never execute')\n" + data
+            output.writestr(name, data)
+    with pytest.raises(ValueError, match="backend_source_digest_mismatch"):
+        probe.replay_arena_backend_binding({"packet_path": str(modified)})

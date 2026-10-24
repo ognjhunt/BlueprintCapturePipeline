@@ -41,6 +41,32 @@ PhysX properties differently; this separate smoke cannot establish physical
 fidelity, a policy outcome or a comparable performance improvement. Native
 execution remains pending; source tests are preparation evidence only.
 
+The first separate native attempt, Vast `57469156` on execution commit
+`cad3e2f9162b4479db8236679dacb1a50d872315`, failed before scene construction.
+Bootstrap passed in 29.006 seconds; the native Kit launch took 589.150 seconds.
+Arena then refused `env_cfg_callback changed the physics backend away from
+PhysX.` The adapter had changed the physics configuration in its callback while
+leaving Arena's environment backend selection at its PhysX default. No Newton
+physics step or camera observation occurred. The typed before-first-observation
+gap and failure traceback are retained. Instance, allocator, watchdog and staged
+objects are absent; canonical provider-zero and official billing passed at
+$0.125. Fifteen evidence files were hash-verified locally and on the host.
+
+This was a paid preflight process defect. The repair declares Newton before
+Arena adapts the embodiment and preserves Arena's released Newton solver preset,
+including its manipulation-specific manager and contact/constraint capacities.
+Bundle preparation now replays the actual pinned vendor constructor, backend
+selector, physics preset and callback guard without Kit, a GPU, geometry or a
+provider call. The old behavior reproduces the exact native assertion; the
+candidate selects Newton and enables the required physics replication. That
+replay is a preparation artifact, not a native success claim.
+
+The released Newton DROID adapter changes gravity compensation, collision and
+gripper settings. The experiment records its resulting configuration separately
+from the retained PhysX reference and leaves the source asset bytes unchanged.
+It cannot borrow the primary pair's controls or configuration-equivalence claim.
+A correctly selected native rerun remains required.
+
 ## Observed construction pair, 2026-10-24
 
 The GA and baseline construction replays completed on the same physical RTX
@@ -88,7 +114,8 @@ within the unchanged resource and driver limits.
 Vast GA instance `57459128` and baseline instance `57462894` are confirmed
 absent. Their allocators and watchdogs exited; staging cleanup and canonical
 provider-zero passed. Official charges were $0.179 and $0.263. Official Vast
-charges for all task attempts, including SimReady intake, total $1.360.
+charges for all task attempts, including SimReady intake and the separate failed
+Newton attempt, total $1.485.
 Baseline attempt 1 allocated nothing and has a separate official $0 closeout.
 
 Retained evidence is under `output/isaaclab_ga_20261023/` locally and beneath

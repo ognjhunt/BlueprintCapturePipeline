@@ -131,12 +131,20 @@ def build_native_task_arena_construction_bundle(
             from .native_task_droid_runtime_compat import comparison_robot_asset_inputs
             bound_runtime_inputs.update(comparison_robot_asset_inputs(comparison_path))
         if native_feature_request_path is not None:
-            from .native_task_newton_feature_probe import REQUEST_FILENAME, validate_feature_request, validate_feature_source
+            from .native_task_newton_feature_probe import (
+                REQUEST_FILENAME, validate_feature_request, validate_feature_source, replay_arena_backend_binding,
+            )
             if runtime_comparison_request_path is None:
                 raise ValueError("native_feature_requires_retained_ga_reference")
             feature_path = Path(native_feature_request_path).resolve()
             validate_feature_request(json.loads(feature_path.read_text()), comparison=comparison, plan=scene_plan)
-            validate_feature_source(json.loads(Path(runtime_source_packet_receipt).read_text()))
+            from .native_task_runtime_source_packet import verify_native_task_runtime_source_packet
+            source = verify_native_task_runtime_source_packet(runtime_source_packet_receipt)
+            validate_feature_source(source)
+            abi_preflight = replay_arena_backend_binding(source)
+            abi_path = Path(raw) / "native_task_newton_arena_backend_preflight.v1.json"
+            abi_path.write_text(json.dumps(abi_preflight, indent=2) + "\n")
+            bound_runtime_inputs[abi_path.name] = abi_path
             bound_runtime_inputs[REQUEST_FILENAME] = feature_path
         if terminal_feedback_adoption_path is not None:
             adoption_path = Path(terminal_feedback_adoption_path).expanduser().resolve()

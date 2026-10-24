@@ -18,6 +18,151 @@ REQUEST_FILENAME = "native_task_newton_feature_request.v1.json"
 RESULT_FILENAME = "native_task_newton_feature_result.v1.json"
 BACKEND = "newton_mjwarp"
 STEPS = 64
+ARENA_NEWTON_MANAGER = "isaaclab_arena.environments.isaaclab_arena_manager_based_env_cfg.NewtonArenaMJWarpManager"
+_RELEASED_BACKEND_SOURCE_SHA256 = {
+    "environment": "f53e566eb74f72cb0581e942781c55c7acab008f12f2b8919656d6ac317d9408",
+    "builder": "fcf7c088a1c08f998fff4ca6deddc835318ade0d35b38e8db0df460932b9fa79",
+    "backend": "369cd8bc4ead94cfcec58deed87e439ef53dbaea4e5f169b9691a9b356a2f054",
+    "physics": "97196afd442adc0f8ca26dba23097d6dbeaadfea769acd97375dfca99fac93c1",
+}
+
+
+def arena_backend_kwargs(physics_backend: str) -> dict[str, str]:
+    # Arena selects and adapts its embodiment before invoking env_cfg_callback.
+    # Changing only cfg.sim.physics in that callback violates the released API.
+    return {"default_physics_backend": "newton"} if physics_backend == BACKEND else {}
+
+
+def preserve_arena_newton_physics(physics: Any) -> Any:
+    manager = getattr(getattr(physics, "solver_cfg", None), "class_type", None)
+    identity = f"{getattr(manager, '__module__', '')}.{getattr(manager, '__qualname__', '')}"
+    if identity != ARENA_NEWTON_MANAGER:
+        raise ValueError("newton_feature_arena_physics_preset_missing")
+    return physics
+
+
+def newton_embodiment_configuration(embodiment: Any) -> dict[str, Any]:
+    """Record released Newton adaptations separately from the PhysX reference."""
+    import math
+    robot = embodiment.scene_config.robot
+    spawn = robot.spawn
+    def normal(value: Any) -> Any:
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else repr(value)
+        if isinstance(value, Mapping):
+            return {str(k): normal(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [normal(v) for v in value]
+        return str(value)
+    func = getattr(spawn, "func", None)
+    material = getattr(spawn, "physics_material", None)
+    fields = ("stiffness", "damping", "armature", "joint_effort_limit", "effort_limit", "effort_limit_sim")
+    return {"scope": "released_newton_backend_configuration_not_physx_equivalence",
+            "usd_path": str(getattr(spawn, "usd_path", "")),
+            "spawn_function": None if func is None else f"{func.__module__}.{func.__qualname__}",
+            "disable_gravity": getattr(getattr(spawn, "rigid_props", None), "disable_gravity", None),
+            "material": {name: normal(getattr(material, name, None)) for name in
+                         ("static_friction", "dynamic_friction", "restitution")},
+            "actuators": {name: {field: normal(getattr(cfg, field, None)) for field in fields}
+                          for name, cfg in getattr(robot, "actuators", {}).items()},
+            "configuration_equivalent_to_physx": False}
+
+
+def replay_arena_backend_binding(source: Mapping[str, Any], *, legacy_default: bool = False) -> dict[str, Any]:
+    """Replay the real released Arena selector and callback guard without Kit.
+
+    Only the retained constructor, selector property and three guard statements
+    are compiled. Physics config objects are type witnesses; no simulator,
+    geometry, network, or provider is constructed.
+    """
+    import ast
+    import hashlib
+    from enum import Enum
+    from types import SimpleNamespace
+    import zipfile
+
+    prefix = "runtime_sources/arena/isaaclab_arena/"
+    names = {"environment": "environments/isaaclab_arena_environment.py",
+             "builder": "environments/arena_env_builder.py", "backend": "utils/physics_backend.py",
+             "physics": "environments/isaaclab_arena_manager_based_env_cfg.py"}
+    with zipfile.ZipFile(source["packet_path"]) as archive:
+        files = {key: archive.read(prefix + name) for key, name in names.items()}
+    hashes = {key: hashlib.sha256(data).hexdigest() for key, data in files.items()}
+    if hashes != _RELEASED_BACKEND_SOURCE_SHA256:
+        raise ValueError("newton_arena_backend_source_digest_mismatch")
+    trees = {key: ast.parse(data) for key, data in files.items()}
+    def class_node(key: str, name: str) -> Any:
+        return next(node for node in trees[key].body if isinstance(node, ast.ClassDef) and node.name == name)
+    def execute(nodes: list[Any], namespace: dict[str, Any]) -> None:
+        future = ast.parse("from __future__ import annotations").body[0]
+        module = ast.fix_missing_locations(ast.Module(body=[future, *nodes], type_ignores=[]))
+        exec(compile(module, "<retained-arena-backend-contract>", "exec"), namespace)
+
+    namespace: dict[str, Any] = {"Enum": Enum, "__name__": "retained_arena_backend_replay"}
+    execute([class_node("backend", "PhysicsBackend")], namespace)
+    execute([class_node("environment", "IsaacLabArenaEnvironment")], namespace)
+    backend = namespace["PhysicsBackend"]
+    builder = class_node("builder", "ArenaEnvBuilder")
+    selector = next(node for node in builder.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "resolved_physics_backend")
+    replay_class = ast.parse("class ArenaBackendReplay: pass").body[0]
+    replay_class.body = [selector]
+    execute([replay_class], namespace)
+    starts = [(function, index) for function in builder.body if isinstance(function, ast.FunctionDef)
+              for index, node in enumerate(function.body) if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "arena_physics" for target in node.targets)]
+    if len(starts) != 1:
+        raise ValueError("newton_arena_backend_source_contract_changed")
+    function, index = starts[0]
+    guard = function.body[index:index + 3]
+    if (len(guard) != 3 or not isinstance(guard[1], ast.If) or not isinstance(guard[2], ast.If)
+            or "changed the physics backend away from PhysX" not in ast.unparse(guard[2])):
+        raise ValueError("newton_arena_backend_source_contract_changed")
+    physx_type = type("PhysxCfg", (), {})
+    class NewtonCfg:
+        def __init__(self, **kwargs: Any):
+            self.__dict__.update(kwargs)
+    newton_type = NewtonCfg
+    arena_manager = type("NewtonArenaMJWarpManager", (), {})
+    arena_manager.__module__ = ARENA_NEWTON_MANAGER.rsplit(".", 1)[0]
+    namespace.update(PhysxCfg=physx_type, NewtonCfg=newton_type, PresetCfg=object,
+                     configclass=lambda cls: cls, MJWarpSolverCfg=lambda **kwargs: SimpleNamespace(**kwargs),
+                     NewtonArenaMJWarpManager=arena_manager)
+    execute([class_node("physics", "ArenaPhysicsCfg")], namespace)
+    def configure(cfg: Any) -> Any:
+        if legacy_default:
+            cfg.sim.physics = newton_type()
+        else:
+            cfg.sim.physics = preserve_arena_newton_physics(cfg.sim.physics)
+        return cfg
+    environment = namespace["IsaacLabArenaEnvironment"](
+        name="retained_backend_preflight", scene=SimpleNamespace(), env_cfg_callback=configure,
+        **({} if legacy_default else arena_backend_kwargs(BACKEND)))
+    instance = namespace["ArenaBackendReplay"]()
+    instance.cfg = SimpleNamespace(presets=None)
+    instance.arena_env = environment
+    cfg = SimpleNamespace(sim=SimpleNamespace(physics=None), scene=SimpleNamespace(replicate_physics=False))
+    namespace.update(self=instance, env_cfg=cfg, resolved_physics_backend=instance.resolved_physics_backend,
+        PhysxCfg=physx_type, NewtonCfg=newton_type)
+    failure = None
+    try:
+        execute(guard, namespace)
+    except AssertionError as exc:
+        failure = str(exc)
+    result = {"schema_version": "native_task_newton_arena_backend_preflight.v1",
+              "status": "refused" if failure else "passed", "legacy_default_replayed": legacy_default,
+              "selected_backend": str(instance.resolved_physics_backend), "callback_backend": BACKEND,
+              "replicate_physics": cfg.scene.replicate_physics, "refusing_predicate": failure,
+              "retained_arena_solver": ({name: getattr(cfg.sim.physics.solver_cfg, name) for name in
+                  ("njmax", "nconmax", "integrator", "iterations", "use_mujoco_contacts")}
+                  if not failure else None),
+              "vendor_source_sha256": hashes,
+              "native_execution": False, "qualification_effect": "none"}
+    if not legacy_default and (failure or instance.resolved_physics_backend is not backend.NEWTON):
+        raise ValueError("native_task_newton_arena_backend_preflight_failed:" + str(failure))
+    return result
 
 
 def validate_feature_source(source: Mapping[str, Any]) -> None:
@@ -94,7 +239,7 @@ def verify_native_backend(env: Any) -> dict[str, str]:
     solver = getattr(manager, "_solver", None)
     solver_type = f"{type(solver).__module__}.{type(solver).__name__}"
     device = str(manager.get_device())
-    if (qualified != "isaaclab_newton.physics.mjwarp_manager.NewtonMJWarpManager"
+    if (qualified != ARENA_NEWTON_MANAGER
             or "SolverMuJoCo" not in solver_type or device != "cuda:0"):
         raise ValueError(f"newton_feature_native_backend_mismatch:{qualified}:{solver_type}:{device}")
     return {"manager": qualified, "solver": solver_type, "device": device}

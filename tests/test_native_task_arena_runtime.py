@@ -52,7 +52,9 @@ def test_newton_factory_preserves_explicit_backend_through_arena_callback(monkey
     _install_fake_native_runtime(monkeypatch)
     from blueprint_pipeline import native_task_newton_feature_probe as feature
     newton = types.ModuleType("isaaclab_newton.physics")
-    newton.MJWarpSolverCfg = lambda: "mjwarp"
+    marker = type("NewtonArenaMJWarpManager", (), {})
+    marker.__module__ = "isaaclab_arena.environments.isaaclab_arena_manager_based_env_cfg"
+    newton.MJWarpSolverCfg = lambda: SimpleNamespace(class_type=marker, njmax=8192)
     newton.NewtonCfg = lambda **kwargs: SimpleNamespace(backend="newton", **kwargs)
     monkeypatch.setitem(sys.modules, newton.__name__, newton)
     preconstruction = {"schema_version": "native_task_arena_preconstruction.v1", "passed": True,
@@ -61,8 +63,9 @@ def test_newton_factory_preserves_explicit_backend_through_arena_callback(monkey
     monkeypatch.setattr(feature, "prepare_newton_preconstruction", lambda **kwargs: preconstruction)
     built = build_native_task_arena_environment(_sealed_scene_plan(), physics_backend="newton_mjwarp")
     assert built.cfg.sim.physics.backend == "newton"
-    assert built.cfg.sim.physics.solver_cfg == "mjwarp"
+    assert built.cfg.sim.physics.solver_cfg.njmax == 8192
     assert _ArenaBuilder.last.args.presets is None
+    assert _ArenaBuilder.last.arena_env.default_physics_backend == "newton"
     assert built.native_configuration_readback["physics_backend_requested"] == "newton_mjwarp"
     with pytest.raises(NativeTaskArenaRuntimeError, match="preconstruction_receipt_invalid"):
         build_native_task_arena_environment(_sealed_scene_plan(), preconstruction_receipt=preconstruction)
@@ -326,6 +329,9 @@ class _ArenaBuilder:
         cfg = SimpleNamespace(
             sim=SimpleNamespace(), seed=None, decimation=None, episode_length_s=None
         )
+        if getattr(self.arena_env, "default_physics_backend", "physx") == "newton":
+            from isaaclab_newton.physics import NewtonCfg, MJWarpSolverCfg
+            cfg.sim.physics = NewtonCfg(solver_cfg=MJWarpSolverCfg())
         self.arena_env.env_cfg_callback(cfg)
         return "native-env", cfg
 

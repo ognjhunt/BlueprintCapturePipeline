@@ -1616,8 +1616,8 @@ def build_native_task_arena_environment(
                     else settings_manager.SettingsManager.instance())
         settings.set("/physics/fabricEnabled", cfg.sim.use_fabric)
         if physics_backend == "newton_mjwarp":
-            from isaaclab_newton.physics import NewtonCfg, MJWarpSolverCfg
-            cfg.sim.physics = NewtonCfg(solver_cfg=MJWarpSolverCfg())
+            from .native_task_newton_feature_probe import preserve_arena_newton_physics
+            cfg.sim.physics = preserve_arena_newton_physics(cfg.sim.physics)
         else:
             cfg.sim.physics = PhysxCfg(
                 solver_type=1,
@@ -1627,12 +1627,14 @@ def build_native_task_arena_environment(
             )
         return cfg
 
+    from .native_task_newton_feature_probe import arena_backend_kwargs, newton_embodiment_configuration
     arena_env = IsaacLabArenaEnvironment(
         name="Blueprint-Native-Task-Evaluation-v1",
         scene=scene,
         embodiment=embodiment,
         task=NoTask(),
         env_cfg_callback=configure,
+        **arena_backend_kwargs(physics_backend),
     )
     builder = ArenaEnvBuilder(
         arena_env,
@@ -1729,7 +1731,10 @@ def build_native_task_arena_environment(
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
             "physics_backend_requested": physics_backend,
-            "retained_droid_configuration": droid_comparison,
+            "retained_droid_configuration": droid_comparison if physics_backend == "isaacsim_physx" else None,
+            **({"retained_droid_reference_configuration": droid_comparison,
+                "newton_backend_configuration": newton_embodiment_configuration(embodiment)}
+               if physics_backend == "newton_mjwarp" else {}),
             "cameras": camera_configuration_readback,
             "direct_wrist_camera_aim": direct_camera_aim,
             "native_wrist_camera_attachment": native_camera_attachment,
