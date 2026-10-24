@@ -8,7 +8,6 @@ for log redaction and never placed in argv, JSON inputs, receipts, or outputs.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -21,6 +20,7 @@ from typing import Any
 
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .immutable_file_digest import sha256_file
 from .task_evaluation_scene_configuration_component_package import (
     TaskEvaluationSceneConfigurationComponentPackageError,
     validate_scene_configuration_component_package,
@@ -123,11 +123,7 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return sha256_file(path)
 
 
 def _read(path: Path, *, code: str) -> dict[str, Any]:

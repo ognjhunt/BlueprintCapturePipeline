@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.immutable_file_digest import immutable_file_digest_cache
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
     SCHEMA_VERSION as COMPONENT_PACKAGE_SCHEMA_VERSION,
 )
@@ -25,6 +26,13 @@ from scripts.build_task_evaluation_scene_configuration_toolchain import (
 
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def publication_digest_scope():
+    """Exercise full-byte readback and refusal cases under the production scope."""
+    with immutable_file_digest_cache():
+        yield
 
 
 def _component_packages(tmp_path: Path, *, empty_file: bool = False) -> dict[str, Path]:
