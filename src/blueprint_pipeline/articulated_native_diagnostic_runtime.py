@@ -19,6 +19,7 @@ _RUNTIME_SYMBOLS = {
     "timeline": ("omni.timeline", None),
     "usd_context": ("omni.usd", None),
     "single_articulation": ("isaacsim.core.prims", "SingleArticulation"),
+    "articulation_action": ("isaacsim.core.utils.types", "ArticulationAction"),
     "camera": ("isaacsim.sensors.camera", "Camera"),
     "image": ("PIL.Image", None),
     "gf": ("pxr.Gf", None),
@@ -59,6 +60,23 @@ def _phase(name: str, **fields: Any) -> None:
     print(
         f"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:articulated_native_diagnostic:{name}{suffix}",
         flush=True,
+    )
+
+
+def _apply_joint_targets(
+    articulation: Any, action_type: Any, positions: Any, joint_indices: Any
+) -> None:
+    """Drive SingleArticulation through its controller, without teleporting joints."""
+
+    apply_action = getattr(articulation, "apply_action", None)
+    if not callable(apply_action):
+        raise RuntimeError("articulated_native_apply_action_unavailable")
+    apply_action(
+        action_type(
+            joint_positions=positions,
+            joint_velocities=positions * 0.0,
+            joint_indices=joint_indices,
+        )
     )
 
 
@@ -220,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         omni_timeline = symbols["timeline"]
         omni_usd = symbols["usd_context"]
         SingleArticulation = symbols["single_articulation"]
+        ArticulationAction = symbols["articulation_action"]
         Camera = symbols["camera"]
         Image = symbols["image"]
         Gf = symbols["gf"]
@@ -375,16 +394,14 @@ def main(argv: list[str] | None = None) -> int:
             commanded_indices = np.asarray(
                 [handles[name] for name in commanded_names], dtype=np.int64
             )
-            articulation.set_joint_position_targets(
+            _apply_joint_targets(
+                articulation,
+                ArticulationAction,
                 np.asarray(
                     [math.radians(float(angle)), *([0.0] * len(locked_names))],
                     dtype=np.float32,
                 ),
-                joint_indices=commanded_indices,
-            )
-            articulation.set_joint_velocity_targets(
-                np.zeros(len(commanded_names), dtype=np.float32),
-                joint_indices=commanded_indices,
+                commanded_indices,
             )
             for _ in range(settle_steps):
                 app.update()
@@ -449,13 +466,11 @@ def main(argv: list[str] | None = None) -> int:
         reset_indices = np.asarray(
             [handles[name] for name in [driven_name, *locked_names]], dtype=np.int64
         )
-        articulation.set_joint_position_targets(
+        _apply_joint_targets(
+            articulation,
+            ArticulationAction,
             np.zeros(len(reset_indices), dtype=np.float32),
-            joint_indices=reset_indices,
-        )
-        articulation.set_joint_velocity_targets(
-            np.zeros(len(reset_indices), dtype=np.float32),
-            joint_indices=reset_indices,
+            reset_indices,
         )
         for _ in range(settle_steps):
             app.update()
@@ -500,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
                 "native_runtime": {
                     "isaac_sim_version": str(carb.settings.get_settings().get("/app/version") or "unknown"),
                     "articulation_api": "isaacsim.core.prims.SingleArticulation",
+                    "joint_command_api": "SingleArticulation.apply_action(ArticulationAction)",
                     "legacy_dynamic_control_api_used": False,
                     "runtime_capability_probe": {
                         "status": "passed",
