@@ -384,6 +384,23 @@ def adopt_recorded_recoveries(*, root, frames, pose, automation, context, source
         candidates = [(p, v) for p, v in candidates if p != path]
 
 
+def source_completion_root(initial, output_root, reports):
+    """Keep a finished native prefix when adopting more recorded source views."""
+    saved = initial / 'completion.json'
+    if not reports:
+        return initial
+    if saved.is_file():
+        value = json.loads(saved.read_text())
+        if value.get('digest') != canonical_digest(value, digest_field='digest'):
+            raise ValueError('atlas_retained_initial_completion_changed')
+        # complete_scene/retained_completion still verify pose and every native
+        # output. A newer source set does not require purchasing this prefix again.
+        if value.get('status') == 'passed' and value.get('generated_roots'):
+            return initial
+    return output_root / 'source_conditioned_completion' / canonical_digest(
+        {'recoveries': [r['digest'] for r in reports]})[7:23]
+
+
 def merge_source_frames(current, updates):
     """Replace refreshed IDs once, preserving order and unrelated native repairs."""
     by_id = {f['frame_id']: f for f in updates}

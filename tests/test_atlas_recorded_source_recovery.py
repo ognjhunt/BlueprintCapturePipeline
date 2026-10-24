@@ -279,3 +279,21 @@ def test_completed_source_adoption_refuses_changed_evidence(tmp_path, monkeypatc
         p.write_text(json.dumps(bound(alignment)))
     with pytest.raises(ValueError, match='atlas_retained_source_'):
         recovery.adopt_recorded_recoveries(**args)
+
+
+def test_adopting_sources_keeps_a_completed_native_prefix_instead_of_replanning_it(tmp_path):
+    initial = tmp_path/'scene-completion'
+    initial.mkdir()
+    report = bound({'status': 'passed', 'generated_roots': [str(initial/'native')]})
+    (initial/'completion.json').write_text(json.dumps(report))
+    sources = [{'digest': 'reviewed-source-recovery'}]
+    assert recovery.source_completion_root(initial, tmp_path, sources) == initial
+    report = bound({'status': 'source_recovery_required', 'generated_roots': []})
+    (initial/'completion.json').write_text(json.dumps(report))
+    expected = tmp_path/'source_conditioned_completion'/canonical_digest(
+        {'recoveries': ['reviewed-source-recovery']})[7:23]
+    assert recovery.source_completion_root(initial, tmp_path, sources) == expected
+    report['status'] = 'passed'
+    (initial/'completion.json').write_text(json.dumps(report))
+    with pytest.raises(ValueError, match='retained_initial_completion_changed'):
+        recovery.source_completion_root(initial, tmp_path, sources)
