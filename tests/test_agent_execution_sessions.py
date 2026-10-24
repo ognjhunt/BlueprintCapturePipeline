@@ -326,6 +326,29 @@ def test_turn_completion_requires_final_message_and_complete_pagination(tmp_path
     assert any(q and q.get("after") == "message_commentary" for *_, q in api.calls)
 
 
+def test_output_schema_check_is_reused_only_for_a_schema_that_passed_as_plain_json(monkeypatch):
+    from jsonschema.exceptions import SchemaError
+
+    from blueprint_pipeline.agent_execution import contracts
+
+    checked, check = [], contracts.Draft202012Validator.check_schema
+    monkeypatch.setattr(contracts, "_CHECKED_OUTPUT_SCHEMAS", set())
+    monkeypatch.setattr(contracts.Draft202012Validator, "check_schema",
+                        classmethod(lambda _cls, schema, **kw: checked.append(1) or check(schema, **kw)))
+    make_task()
+    make_task(task_id="task_reread")
+    assert len(checked) == 1, "A retained record re-read on every tick reuses its passed check"
+    make_task(output_schema={**OUTPUT_SCHEMA, "properties": {"answer": {"type": "number"}}})
+    assert len(checked) == 2
+    for _ in range(2):
+        with pytest.raises(SchemaError):
+            make_task(output_schema={**OUTPUT_SCHEMA, "properties": {"answer": {"type": 5}}})
+    assert len(checked) == 4, "A failing schema is never remembered"
+    with pytest.raises(SchemaError):
+        make_task(output_schema={**OUTPUT_SCHEMA, "required": ("answer",)})
+    assert len(checked) == 5, "A tuple serializes like the passed list but is not a JSON array"
+
+
 def test_idle_and_schema_invalid_output_never_become_success(tmp_path):
     service, api = runtime(tmp_path)
     task = make_task()
