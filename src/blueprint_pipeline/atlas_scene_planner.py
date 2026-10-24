@@ -486,10 +486,49 @@ def _export_image_token_ceiling(survey, previews):
     return ceiling
 
 
+MAX_TRUNCATION_RETRIES = 2
+SDK_MAX_OUTPUT_TOKENS = 32_000  # OpenAIAgentsSDKConfig's accepted ceiling.
+
+
+def _truncated_attempt(recorded, allowance):
+    """The call's one recorded completion, when it is structured output cut off at its allowance."""
+    if len(recorded) != 1:
+        return None
+    completion, = recorded
+    usage = completion.get("usage") or {}
+    cost = completion.get("reconciled_actual_cost_usd")
+    if (completion.get("status") != "invalid_structured_output" or usage.get("cost_is_actual") is not True
+            or type(usage.get("output_tokens")) is not int or usage["output_tokens"] < allowance
+            or type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0):
+        return None
+    return completion
+
+
 def review_survey(*, survey_path: Path, task_context, configuration, output_root: Path,
                   invoker=None, release_blockers=None, feedback=None, completion=None, scaling=None,
                   recovery=None):
-    """One idempotent proposal, reserved in the SAME source-bound test allowance."""
+    """One idempotent proposal, reserved in the SAME source-bound test allowance.
+
+    A response cut off at its output allowance is settled at its actual charge
+    and retried, at most twice, with a larger allowance that still fits the
+    review cap. A restart follows the retained receipts and buys nothing again.
+    """
+    retry = None
+    while True:
+        receipt = _review_attempt(survey_path=survey_path, task_context=task_context, configuration=configuration,
+                                  output_root=output_root, invoker=invoker, release_blockers=release_blockers,
+                                  feedback=feedback, completion=completion, scaling=scaling, recovery=recovery,
+                                  truncation_retry=retry)
+        if receipt["status"] != "truncated":
+            return receipt
+        if receipt["truncation_retry"] is None:
+            raise ValueError("atlas_scene_planner_output_truncated_retry_unavailable")
+        retry = receipt["truncation_retry"]
+
+
+def _review_attempt(*, survey_path: Path, task_context, configuration, output_root: Path, invoker,
+                    release_blockers, feedback, completion, scaling, recovery, truncation_retry):
+    """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
@@ -528,6 +567,8 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         # Component surfaces plus per-gap source evidence outgrow the original
         # camera-only 4k response. Bound by the supplied evidence, not a view quota.
         output_tokens = max(8000, 2000 + 250 * len(completion.get('candidate_camera_ids', [])))
+    if truncation_retry is not None:
+        output_tokens = truncation_retry["max_output_tokens"]
     ceiling = worst_case_reservation_usd(model=policy["model"], input_token_ceiling=tokens,
                                         max_output_tokens=output_tokens, cache_policy=None)
     search_calls = 0 if completion is not None or recovery is not None else 2
@@ -584,9 +625,10 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if path.exists():
             receipt = json.loads(path.read_text())
-            if receipt.get("status") != "completed":
+            if receipt.get("status") not in ("completed", "truncated"):
                 raise ValueError("atlas_scene_planner_requires_reconciliation")
-            if receipt.get("binding_digest") != digest or receipt.get("proposal_digest") != canonical_digest(receipt["proposal"]):
+            if receipt.get("binding_digest") != digest or (receipt["status"] == "completed"
+                    and receipt.get("proposal_digest") != canonical_digest(receipt["proposal"])):
                 raise ValueError("atlas_scene_planner_receipt_changed")
         else:
             input_value = _input(survey, task_context, extra,
@@ -610,9 +652,17 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
                 stream.flush()
                 os.fsync(stream.fileno())
             audit = InferenceReservationAudit(run_root=output_root / digest[7:], run_id=digest[7:23])
+            recorded = []
+
+            def record_completion(value):
+                audit.record_completion(value)
+                recorded.append(value)
             selected.configure_reservation_audit(record_reservation=audit.record_reservation,
-                record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
+                record_completion=record_completion, restored_reserved_cost_usd=0.0)
             from agents import WebSearchTool
+            from agents.exceptions import ModelBehaviorError
+            from pydantic import ValidationError
+            truncated = None
             try:
                 result = selected.invoke(AgentsSDKAgentSpec(run_id=digest[7:23], capability="atlas_scene_planner",
                     name="Blueprint Atlas Scene Planner", instructions=instructions, model=policy["model"], max_turns=1,
@@ -621,19 +671,41 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
                                   if search_calls else ()),
                     max_hosted_tool_calls_per_turn=search_calls, hosted_tool_call_usd=search_fee,
                     output_type=schema), input_value)
+            except (ModelBehaviorError, ValidationError):
+                # Live reviews twice outgrew a hand-set allowance; each cut-off
+                # response left a submitting receipt for an operator to clear.
+                truncated = _truncated_attempt(recorded, output_tokens)
+                if truncated is None:
+                    raise
             finally:
                 audit.write_manifest()
-            proposal = schema.model_validate(result.output).model_dump(mode="json", exclude_none=True)
-            from .atlas_reference_research import retain_references
-            reference_sources = retain_references(proposal, output_root / digest[7:])
-            cost = result.cost_usd
-            if type(cost) not in (int, float) or not math.isfinite(cost) or not 0 <= cost <= maximum:
-                raise ValueError("atlas_scene_planner_usage_unknown")
-            receipt = {"status": "completed", "binding_digest": digest, "binding": binding,
-                "proposal": proposal, "proposal_digest": canonical_digest(proposal), "usage": dict(result.usage),
-                "cost_usd": cost, "model": result.model, "sdk_version": result.sdk_version,
-                "reference_sources": reference_sources,
-                "source_commit": commit, "admission": admission, "claim_ceiling": "development_only"}
+            if truncated is not None:
+                attempt = (truncation_retry or {}).get("attempt", 0) + 1
+                retry = None
+                for factor in ((2, 1.5, 1.25) if attempt <= MAX_TRUNCATION_RETRIES else ()):
+                    allowance = min(SDK_MAX_OUTPUT_TOKENS, math.ceil(output_tokens * factor))
+                    quote = worst_case_reservation_usd(model=policy["model"], input_token_ceiling=tokens,
+                                                       max_output_tokens=allowance, cache_policy=None)
+                    if allowance > output_tokens and quote is not None and quote + search_calls * search_fee <= maximum:
+                        retry = {"max_output_tokens": allowance, "attempt": attempt}
+                        break
+                # Token usage omits hosted searches, so hold their full fee within the cap.
+                cost = min(maximum, truncated["reconciled_actual_cost_usd"] + search_calls * search_fee)
+                receipt = {"status": "truncated", "binding_digest": digest, "binding": binding,
+                    "usage": truncated["usage"], "cost_usd": cost, "truncation_retry": retry,
+                    "source_commit": commit, "admission": admission, "claim_ceiling": "development_only"}
+            else:
+                proposal = schema.model_validate(result.output).model_dump(mode="json", exclude_none=True)
+                from .atlas_reference_research import retain_references
+                reference_sources = retain_references(proposal, output_root / digest[7:])
+                cost = result.cost_usd
+                if type(cost) not in (int, float) or not math.isfinite(cost) or not 0 <= cost <= maximum:
+                    raise ValueError("atlas_scene_planner_usage_unknown")
+                receipt = {"status": "completed", "binding_digest": digest, "binding": binding,
+                    "proposal": proposal, "proposal_digest": canonical_digest(proposal), "usage": dict(result.usage),
+                    "cost_usd": cost, "model": result.model, "sdk_version": result.sdk_version,
+                    "reference_sources": reference_sources,
+                    "source_commit": commit, "admission": admission, "claim_ceiling": "development_only"}
             temporary = path.with_suffix(".tmp")
             write_json(temporary, receipt)
             os.replace(temporary, path)
