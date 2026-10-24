@@ -130,7 +130,11 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
                 "gap_assessment": ["Complete floor and empty bay"], "remaining_unknowns": ["Generated rear wall"],
                 'scene_caption': 'The photographed room with bare continuous floor in cleared space.',
                 'view_gap_reasons': [{'camera_id': 'a-wide', 'reason': 'Retain the observed task-region anchor'},
-                                     {'camera_id': 'b-lower', 'reason': 'Fill its nearby floor gap'}]}
+                                     {'camera_id': 'b-lower', 'reason': 'Fill its nearby floor gap'}],
+                'environment_surfaces': [{'component': 'support fixture', 'surface': 'end face',
+                    'required_for_local_environment': True, 'coverage': 'material_gap',
+                    'source_frame_ids': ['a'], 'evidence_camera_ids': ['a-wide'], 'gap_ids': [],
+                    'reason': 'A photographed face is incomplete in the exported geometry'}]}
     calls = []
     def generate(**kw):
         calls.append(kw)
@@ -175,9 +179,15 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
             "rate_card_reference": "rates", "reviewed_on": "2026-10-22", "reviewed_by": "test"}},
         task_runner=lambda **kw: pytest.fail('Unconstrained generation bypassed preservation'),
         planner_runner=planner,
-        release_blockers=lambda: ("commit", []), max_polls=1, source_survey_path=source_path)
+        release_blockers=lambda: ("commit", []), max_polls=1, source_survey_path=source_path,
+        coverage_feedback={})
     output, report = completion.complete_scene(**args)
-    feedback = json.loads(next((tmp_path / 'complete').glob('plan-inputs-source-*.json')).read_text())
+    feedback_path = next((tmp_path / 'complete').glob('plan-inputs-source-*.json'))
+    feedback = json.loads(feedback_path.read_text())
+    # Rehearse a policy upgrade on the retained pass: preserve its input and
+    # initial budget snapshot rather than buying a different planner decision.
+    feedback_path.rename(feedback_path.with_name(feedback_path.name.replace('-surfaces-v1', '')))
+    args['configuration']['remaining_cost_usd'] = 4
     assert feedback['baseline_geometry_comparable'] is False and 'baseline_geometry_gaps' not in feedback
     assert len(output) == len(proposal["selected_camera_ids"]) and report["generated_geometry_ready"] is True
     assert len(calls) == 1 and [row['camera_id'] for row in calls[0]['selected']] == proposal['selected_camera_ids']
@@ -195,6 +205,7 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     proposal['view_gap_reasons'][0]['source_evidence'][0].update(
         visibility='observed_elsewhere_in_capture', source_frame_ids=['unselected-angle'])
     output, source_action = completion.complete_scene(**args)
+    assert json.loads(feedback_path.read_text())['remaining_budget_usd_at_plan'] == 5
     assert output is None and source_action['status'] == 'source_recovery_required'
     assert source_action['source_evidence']['additional_source_frame_ids'] == ['unselected-angle']
     assert source_action['new_atlas_generation_calls'] == 0 and len(calls) == 1

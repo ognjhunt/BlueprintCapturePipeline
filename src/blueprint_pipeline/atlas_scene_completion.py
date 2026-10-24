@@ -294,6 +294,13 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                     or registration.get("splat_manifest_digest") != baseline["digest"]):
                 raise ValueError("atlas_completion_baseline_mesh_changed")
             feedback["baseline_geometry_gaps"]["mesh_area_kept_fraction"] = registration["area_kept_fraction"]
+    prior_feedback = root / ('plan-inputs-source-' + gallery['survey_digest'][7:23] + '.json')
+    if coverage_feedback is not None and not feedback_path.exists() and prior_feedback.is_file():
+        saved = json.loads(prior_feedback.read_text())
+        if {key: saved.get(key) for key in feedback} == feedback:
+            # A review-policy upgrade retains the exact evidence/budget snapshot;
+            # the live reservation still rechecks the current remaining allowance.
+            write_json(feedback_path, saved)
     if feedback_path.exists():
         saved = json.loads(feedback_path.read_text())
         if {key: saved.get(key) for key in feedback} != feedback:
