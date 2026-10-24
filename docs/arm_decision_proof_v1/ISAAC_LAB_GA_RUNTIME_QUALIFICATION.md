@@ -549,3 +549,66 @@ Insufficient, stale, malformed, or unverifiable credit refuses allocation.
 The receipt remains a balance snapshot, not a reservation or spend authority.
 No task, model, input, scoring, runtime-worker, or allocation limit changes are
 part of this funding repair. The paired policy comparison remains incomplete.
+
+## Retained constructor refusal, 2026-10-24
+
+Vast `57520002` ran source `7db0e7d6139642f47916c9f05af8f8c5f3b37de5`
+on RTX 5880 Ada UUID `GPU-f9d722da-cebf-3e33-9f39-ded64d8212de`, driver
+`580.159.03`, with 49,140 MiB total memory. Bootstrap app readiness was 29.155
+seconds. The full frozen OpenPI environment, 27 verified checkpoint files
+(12,434,530,837 bytes), and both weighted policy servers reached readiness.
+The SDK's NumPy 2.3.1 remained unchanged. These are provisioning observations,
+not policy queries or task outcomes.
+
+Cell zero completed Isaac launch after cold ray-tracing shader compilation:
+417.320414 seconds, sampled peak device memory 15,340 MiB. This incomplete
+startup measurement is not comparable to a completed workcell episode. Robot
+construction then raised `AssertionError` before any build, reset, step,
+observation or policy load completed. The original child source trace ends at
+GA Arena `droid.py:set_initial_joint_pose:228`. The parent incorrectly reported
+`droid_policy_canary_embodiment_parity_probe_failed`; no motion-parity trial ran.
+
+CPU replay of that exact setter and the sealed cell-zero robot input reproduces
+`expected 13 joint positions, got 7`. The frozen input supplies seven named
+Franka arm joints; GA changed its constructor setter to require all thirteen
+articulation joints. The repair skips that setter only for the exact ordered
+seven-arm mapping and applies the unchanged values through the retained reset
+event. The arena builder still binds the supplied named spawn state. No gripper
+values are invented, and the existing thirteen-value path remains unchanged.
+Pinned baseline and GA constructor classes and reset event functions, licenses,
+source hashes and the exact input are retained in
+`tests/fixtures/droid_constructor_replay/`. CPU tests execute the released
+method bodies with SDK configuration/asset and kernel stand-ins; this is not
+native simulation evidence. A blocked pre-policy child now also seals a blocked
+parent result with the original typed exception, source trace, raw child and
+before-first-observation media gap, before the parity gate. The gate itself is
+unchanged.
+
+Focused verification: 96 tests passed in 84.50 seconds across the released
+constructor/reset replay, frozen configuration, worker/session orchestration,
+runtime-comparison contracts, mandatory lifecycle rehearsal and isolated
+provider import closure. Changed-file Ruff and `git diff --check` passed.
+These checks cover the encoded compatibility and evidence-retention repairs;
+native workcell construction and all policy episodes remain unproven.
+
+The original allocator result SHA-256 is
+`a28f772b4e777c754353f229e8a23e9f450bfa61789a4e48b57ece5e1b541cb4`;
+the durable archive SHA-256 is
+`a5e51a61d6825689feecd2342bb495135c02a7176cdc358c79170bf177f31175`.
+All 29 runtime members and all 110 retained runtime/host/billing evidence files
+were copied and hash-verified locally, manifest
+`ea17c7892f0bd69231bc74cf601507ca0427948ea4e55e0113ec7c61715187b0`.
+The child result is
+`runtime/cell_runs/00/native_task_arena_policy_canary_session_result.v1.json`
+within the attempt-seven evidence directory; SHA-256
+`5d14afbea3fb61118a4d87220ac11f89f4fb3646d29099d6d73d80acb23bd5d7`.
+The exact captured constructor input SHA-256 is
+`5220ad77f58230d83b5e6153a7009beda624e7b824d8695ca8f98c1d20a84927`.
+
+Canonical allocator/watchdog exit, instance absence, staged-object cleanup and
+global Vast zero were verified. Official charge was $1.715 at closeout;
+later provider postings may change reconciliation totals. The original raw
+result has `candidate_policy_queried: false`; its absent scientific-execution,
+first-observation and worker-exit fields remain absent. Zero learned-policy
+episodes are proven. All forty baseline/GA learned episodes and their media,
+on the same actual physical GPU, remain required before qualification.

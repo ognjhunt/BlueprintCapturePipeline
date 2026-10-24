@@ -1,0 +1,48 @@
+{
+  "sources": [
+    {
+      "path": "baseline_droid.py",
+      "repository": "https://github.com/isaac-sim/IsaacLab-Arena",
+      "commit": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+      "source_path": "isaaclab_arena/embodiments/droid/droid.py",
+      "sha256": "42a5d463351cc43246c55335c8e0c9eefc747802c28ade53b1ee8bf0c4b404ee",
+      "git_blob": "2c8566a48bed83760e204b979f76d2e58ebc8a66",
+      "license": "Apache-2.0"
+    },
+    {
+      "path": "ga_droid.py",
+      "repository": "https://github.com/isaac-sim/IsaacLab-Arena",
+      "commit": "b5708b72b21f37f74c8c66b1ee9cedff362a424b",
+      "source_path": "isaaclab_arena/embodiments/droid/droid.py",
+      "sha256": "e2ad86908ade4913abebc9a5db1756a3e8c5b315034411202a022bc5ce371a3d",
+      "git_blob": "cb8637b033221d834d4ba379e96d6b3f0cda75d9",
+      "license": "Apache-2.0"
+    },
+    {
+      "path": "baseline_franka_stack_events.py",
+      "repository": "https://github.com/isaac-sim/IsaacLab",
+      "commit": "ffff603eafc6b74264a5261cc0183d6a65390d78",
+      "source_path": "source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/stack/mdp/franka_stack_events.py",
+      "sha256": "9e33aa4a217b50bad92bbd153d7cc1735bb24f544cfb7202473026052cb3fbdb",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "path": "ga_franka_stack_events.py",
+      "repository": "https://github.com/isaac-sim/IsaacLab",
+      "commit": "e3f7d9ff1f5d7f8280de3ece9000b7117f66bcf4",
+      "source_path": "source/isaaclab_tasks/isaaclab_tasks/contrib/stack/mdp/franka_stack_events.py",
+      "sha256": "07192dc39ded07c7f723abecdcd0f332955f55519ab36b065f752bf4a9aecc5c",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "path": "ga_stack_events.py",
+      "repository": "https://github.com/isaac-sim/IsaacLab",
+      "commit": "e3f7d9ff1f5d7f8280de3ece9000b7117f66bcf4",
+      "source_path": "source/isaaclab_tasks/isaaclab_tasks/contrib/stack/mdp/stack_events.py",
+      "sha256": "25d0d87636acb1f2516f63956109c750854b3adada3c2b5971c2e7f5088755a3",
+      "license": "BSD-3-Clause"
+    }
+  ],
+  "development_only": true,
+  "retained_input_sha256": "5220ad77f58230d83b5e6153a7009beda624e7b824d8695ca8f98c1d20a84927"
+}

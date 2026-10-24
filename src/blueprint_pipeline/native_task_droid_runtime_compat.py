@@ -36,6 +36,7 @@ FRAMES = (
     ("tool_rightfinger", "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/right_inner_finger", (0.0, 0.0, 0.046)),
     ("tool_leftfinger", "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/left_inner_finger", (0.0, 0.0, 0.046)),
 )
+DROID_ARM_JOINT_NAMES = tuple(f"panda_joint{index}" for index in range(1, 8))
 
 
 def comparison_robot_asset_inputs(request_path: str | Path) -> dict[str, Path]:
@@ -53,6 +54,17 @@ def comparison_robot_asset_inputs(request_path: str | Path) -> dict[str, Path]:
     return result
 
 
+def droid_constructor_joint_pose(reset: Mapping[str, float]) -> list[float] | None:
+    """Apply an arm-only reset through events, not GA's full-articulation setter.
+
+    GA's constructor setter requires thirteen joints. The retained policy input
+    supplies seven arm joints; inventing six gripper positions would change it.
+    The named spawn state is bound by the arena builder after construction.
+    Full reset vectors retain the existing constructor path.
+    """
+    return None if tuple(reset) == DROID_ARM_JOINT_NAMES else list(reset.values())
+
+
 def configure_droid_reset(embodiment: Any, reset: Mapping[str, float]) -> None:
     """Keep the legacy reset event, including its ordering and supplied vector."""
     events = embodiment.event_config
@@ -63,7 +75,8 @@ def configure_droid_reset(embodiment: Any, reset: Mapping[str, float]) -> None:
         from isaaclab.utils.configclass import configclass
         from isaaclab_arena.embodiments.franka.franka import franka_stack_events
 
-        if len(reset) != 13 or not callable(getattr(embodiment, "set_initial_joint_pose", None)):
+        if ((len(reset) != 13 and tuple(reset) != DROID_ARM_JOINT_NAMES)
+                or not callable(getattr(embodiment, "set_initial_joint_pose", None))):
             raise ValueError("runtime_comparison_droid_reset_api_unrecognized")
 
         @configclass

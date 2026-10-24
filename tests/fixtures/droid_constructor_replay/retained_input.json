@@ -1,0 +1,48 @@
+{
+  "schema_version": "retained_droid_constructor_input.v1",
+  "development_only": true,
+  "source_instance_id": 57520002,
+  "source_commit": "7db0e7d6139642f47916c9f05af8f8c5f3b37de5",
+  "source_bundle_sha256": "sha256:2db879446108137952b2f340c5bd691d1f64be0b94d9cb4bd1cabd926d7dadcf",
+  "runtime_inputs_digest": "sha256:cee2e28205f3713a48418907def157d7a87d9a1c99ea90409961aaf76552e799",
+  "cell_id": "scene840920.quick10.00.canonical_anchor",
+  "robot": {
+    "robot_id": "franka_panda",
+    "base_pose_world": {
+      "position_world_m": [
+        3.788486295946884,
+        8.906664022603987,
+        0.090782
+      ],
+      "orientation_xyzw": [
+        0.0,
+        0.0,
+        0.7071067811865475,
+        0.7071067811865476
+      ]
+    },
+    "joint_reset_positions_rad": {
+      "panda_joint1": 0.0,
+      "panda_joint2": -0.6283185307179586,
+      "panda_joint3": 0.0,
+      "panda_joint4": -2.5132741228718345,
+      "panda_joint5": 0.0,
+      "panda_joint6": 1.8849555921538759,
+      "panda_joint7": 0.0
+    },
+    "grasp_frame": {
+      "kind": "body_midpoint",
+      "body_names": [
+        "left_inner_finger",
+        "right_inner_finger"
+      ],
+      "measurement_authority": "native_robot_body_pose_readback"
+    },
+    "action_seam": {
+      "kind": "joint_position_with_gripper",
+      "arm_joint_count": 7,
+      "action_dimension": 8,
+      "gripper_command_source": "native_readback_resolved"
+    }
+  }
+}

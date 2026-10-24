@@ -76,6 +76,7 @@ def build_droid_embodiment(
     robot: Mapping[str, Any], *, enable_cameras: bool, pose_class: Any
 ) -> Any:
     from isaaclab_arena.embodiments.droid.droid import DroidAbsoluteJointPositionEmbodiment
+    from .native_task_droid_runtime_compat import configure_droid_reset, droid_constructor_joint_pose
 
     pose = robot["base_pose_world"]
     reset = dict(robot["joint_reset_positions_rad"])
@@ -85,9 +86,8 @@ def build_droid_embodiment(
             position_xyz=tuple(pose["position_world_m"]),
             rotation_xyzw=tuple(pose["orientation_xyzw"]),
         ),
-        initial_joint_pose=list(reset.values()),
+        initial_joint_pose=droid_constructor_joint_pose(reset),
     )
-    from .native_task_droid_runtime_compat import configure_droid_reset
     configure_droid_reset(embodiment, reset)
     embodiment.get_scene_cfg()
     embodiment.scene_config.stand = None

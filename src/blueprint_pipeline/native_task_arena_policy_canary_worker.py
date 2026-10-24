@@ -1219,8 +1219,7 @@ def _aggregate_isolated_cell_results(
         (str(row.get("candidate_id")), str(row.get("cell_id")), int(row.get("seed")))
         for row in episodes
     }
-    prepolicy_only = (inputs.get("run_kind") == TEAM_RUN_KIND and bool(failed_cells)
-                      and len(failed_cells) == len(child_results))
+    prepolicy_only = bool(failed_cells) and len(failed_cells) == len(child_results)
     if observed != expected or (not episodes and not prepolicy_only):
         raise RuntimeError("policy_canary_isolated_cell_pairing_invalid")
     result: dict[str, Any] = {
@@ -1484,6 +1483,30 @@ def _run_isolated_cell_processes(
                 reason="policy_canary_isolated_cell_result_unreadable", interrupted_cell_index=index)
             raise
         child_results.append(child_result)
+        if (inputs.get("run_kind") != TEAM_RUN_KIND
+                and child_result.get("status") == "blocked"
+                and child_result.get("episodes") == []):
+            # A constructor/observation-gate failure never ran the parity probe.
+            # Validate and retain that child's original failure before stopping;
+            # do not turn an absent diagnostic into a measured parity failure.
+            if _validate_isolated_cell_result(child=child_result, inputs=inputs, index=index):
+                raise RuntimeError("policy_canary_prepolicy_failure_shape_invalid")
+            result = _aggregate_isolated_cell_results(
+                authority=authority, inputs={**inputs, "cells": inputs["cells"][:len(child_results)]},
+                child_results=child_results, output_root=output_root,
+                construction_lineage_mode=construction_lineage_mode)
+            result.update(
+                status="blocked", blockers=["policy_canary_prepolicy_cell_failed"],
+                planned_episodes_per_policy=len(inputs["cells"]),
+                execution_stopped_after_cell=len(child_results),
+                session_failure_type=child_result["session_failure_type"],
+                session_failure_source_trace=child_result.get("session_failure_source_trace", []),
+                session_failure_codes=child_result.get("session_failure_codes", []),
+                media_gap={"type": "before_first_observation", "cell_index": index,
+                           "reason": "policy_canary_prepolicy_cell_failed"})
+            result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+            _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+            return 1
         if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
             # The scene failed its robot-free check in cell 0: no further team episode runs on it.
             blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",

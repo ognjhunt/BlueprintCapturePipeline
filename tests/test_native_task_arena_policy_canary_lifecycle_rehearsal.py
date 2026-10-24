@@ -1518,6 +1518,39 @@ def test_one_failed_cell_is_a_typed_gap_and_the_other_nineteen_rollouts_continue
     assert all(isaac.result_sealed_at_close is True for isaac in isaacs)
 
 
+def test_constructor_failure_seals_parent_without_claiming_parity_probe(tmp_path: Path) -> None:
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    isaacs: list[FakeIsaac] = []
+
+    def failing_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
+        runtime = _rehearsal_runtime(isaac)
+
+        def build(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("expected 13 joint positions, got 7")
+
+        return worker.CellRuntime(**{**runtime.__dict__, "build_environment": build})
+
+    exit_code = worker._run_isolated_cell_processes(
+        runtime_root=runtime_root, output_root=provider_output,
+        run_cell_process=lambda **kwargs: _run_cell_in_process(
+            **kwargs, isaacs=isaacs, runtime_factory=failing_runtime))
+
+    assert exit_code == 1
+    assert len(isaacs) == 1 and isaacs[0].result_sealed_at_close is True
+    result = _sealed_result(provider_output / PROVIDER_RESULT_FILENAME)
+    child = _sealed_result(provider_output / "cell_runs/00" / PROVIDER_RESULT_FILENAME)
+    assert result["status"] == "blocked"
+    assert result["session_failure_type"] == "AssertionError"
+    assert result["session_failure_source_trace"] == child["session_failure_source_trace"]
+    assert result["isolated_cell_failures"][0]["raw_child_result"] == child
+    assert result["planned_episodes_per_policy"] == 10
+    assert result["episodes"] == result["policy_loads"] == []
+    assert result["learned_policy_rollout_count"] == 0
+    assert result["candidate_policy_queried"] is False
+    assert result["media_gap"]["type"] == "before_first_observation"
+    assert result["blockers"] == ["policy_canary_prepolicy_cell_failed"]
+
+
 def test_unqualified_nurec_renderer_blocks_both_policies_before_query_and_seals_gap(
     tmp_path: Path,
 ) -> None:
