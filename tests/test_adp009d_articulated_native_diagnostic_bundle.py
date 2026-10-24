@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 import zipfile
@@ -13,6 +14,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
+from blueprint_pipeline import articulated_native_diagnostic_runtime as diagnostic_runtime
 from blueprint_pipeline.articulated_native_diagnostic_bundle import (
     ArticulatedNativeDiagnosticError,
     REQUEST_SCHEMA,
@@ -21,6 +23,7 @@ from blueprint_pipeline.articulated_native_diagnostic_bundle import (
 )
 from blueprint_pipeline.articulated_native_diagnostic_runtime import (
     _author_fixed_base_anchor,
+    _apply_joint_targets,
     _require_runtime_symbols,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -399,13 +402,16 @@ def test_paid_offer_and_post_create_gates_include_storage_in_hourly_cap(
 
 def test_runtime_capability_probe_reports_complete_missing_module_set() -> None:
     available = {
-        name: SimpleNamespace(SingleArticulation=object, Camera=object)
+        name: SimpleNamespace(
+            SingleArticulation=object, Camera=object, ArticulationAction=object
+        )
         for name in (
             "carb",
             "numpy",
             "omni.timeline",
             "omni.usd",
             "isaacsim.core.prims",
+            "isaacsim.core.utils.types",
             "isaacsim.sensors.camera",
             "PIL.Image",
             "pxr.Gf",
@@ -441,6 +447,122 @@ def test_provider_runtime_uses_isaac6_articulation_api_not_removed_dynamic_contr
     assert "joint_command_started" in source
     assert "joint_command_completed" in source
     assert "runtime_capabilities_resolved" in source
+
+
+def test_joint_controller_requires_drive_api_and_never_teleports() -> None:
+    import numpy as np
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("joint state setters cannot substitute for a drive command")
+
+    articulation = SimpleNamespace(set_joint_positions=forbidden)
+    with pytest.raises(RuntimeError, match="articulated_native_apply_action_unavailable"):
+        _apply_joint_targets(
+            articulation, SimpleNamespace, np.zeros(1), np.asarray([0])
+        )
+
+
+def test_complete_diagnostic_loop_uses_single_articulation_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CPU API rehearsal only: fake joint readback does not establish physics."""
+    import numpy as np
+    from PIL import Image
+    from pxr import UsdLux
+
+    asset = _asset(tmp_path / "source.usda")
+    request = _request(asset)
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request))
+    output = tmp_path / "scratch" / "result.json"
+    stage = Usd.Stage.Open(str(asset))
+    actions = []
+    lifecycle = []
+
+    class App:
+        def __init__(self, config: Any) -> None:
+            lifecycle.append("started")
+
+        def update(self) -> None:
+            pass
+
+        def close(self) -> None:
+            lifecycle.append("closed")
+
+    class Articulation:
+        # Match the actual SingleArticulation API: no target/state setter methods.
+        handles_initialized = True
+        dof_names = ["upper_door_hinge", "lower_door_hinge"]
+        num_dof = 2
+        num_bodies = 3
+
+        def __init__(self, **kwargs: Any) -> None:
+            self.positions = np.zeros(2)
+
+        def initialize(self) -> None:
+            pass
+
+        def get_dof_index(self, name: str) -> int:
+            return self.dof_names.index(name)
+
+        def apply_action(self, action: Any) -> None:
+            actions.append(action)
+            self.positions[action.joint_indices] = action.joint_positions
+
+        def get_joint_positions(self) -> Any:
+            return self.positions
+
+        def get_joint_velocities(self) -> Any:
+            return np.zeros(2)
+
+    class Camera:
+        def __init__(self, *, resolution: Any, **kwargs: Any) -> None:
+            width, height = resolution
+            self.rgba = np.zeros((height, width, 4), dtype=np.uint8)
+            self.rgba[:, :width // 2, :3] = 255
+
+        def initialize(self) -> None:
+            pass
+
+        def get_rgba(self) -> Any:
+            return self.rgba
+
+    context = SimpleNamespace(open_stage=lambda path: None, get_stage=lambda: stage)
+    timeline = SimpleNamespace(play=lambda: None, stop=lambda: lifecycle.append("stopped"))
+    symbols = {
+        "carb": SimpleNamespace(settings=SimpleNamespace(
+            get_settings=lambda: SimpleNamespace(get=lambda key: "cpu_api_rehearsal")
+        )),
+        "numpy": np,
+        "timeline": SimpleNamespace(get_timeline_interface=lambda: timeline),
+        "usd_context": SimpleNamespace(get_context=lambda: context),
+        "single_articulation": Articulation,
+        "articulation_action": SimpleNamespace,
+        "camera": Camera,
+        "image": Image,
+        "gf": Gf,
+        "usd_geom": UsdGeom,
+        "usd_lux": UsdLux,
+        "usd_physics": UsdPhysics,
+        "usd_shade": UsdShade,
+    }
+    monkeypatch.setitem(sys.modules, "isaacsim", SimpleNamespace(SimulationApp=App))
+    monkeypatch.setattr(diagnostic_runtime, "_require_runtime_symbols", lambda: symbols)
+
+    assert diagnostic_runtime.main([
+        "--asset", str(asset), "--request", str(request_path), "--output", str(output)
+    ]) == 0
+    result = json.loads(output.read_text())
+    angles = request["articulation"]["commanded_angles_degrees"]
+    assert len(actions) == len(angles) + 1
+    for action, angle in zip(actions, [*angles, 0.0], strict=True):
+        np.testing.assert_allclose(action.joint_positions, [np.deg2rad(angle), 0.0])
+        np.testing.assert_array_equal(action.joint_indices, [0, 1])
+        np.testing.assert_array_equal(action.joint_velocities, [0.0, 0.0])
+    assert result["articulation_readback"]["reset_readback_degrees"] == 0.0
+    assert result["candidate_policy_queried"] is False
+    assert result["native_material_render_readback"]["frame_count"] == len(angles) * 2
+    assert lifecycle == ["started", "stopped", "closed"]
 
 
 def test_native_articulation_anchor_is_fixed_to_world_and_not_kinematic(
