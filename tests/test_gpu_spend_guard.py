@@ -26,13 +26,16 @@ from scripts import gpu_spend_guard as guard
 UTC = timezone.utc
 
 
+@pytest.mark.parametrize("prefix", ["blueprint-task-evaluation-scene-config-fixture-",
+                                  "blueprint-native-task-policy-canary-"])
 @pytest.mark.parametrize("fault", [None, "expired", "dead_owner", "wrong_deadline", "cancelled", "terminal",
-    "missing_deadline", "boolean_deadline", "string_deadline", "invalid_deadline"])
-def test_task_evaluation_watchdog_protects_only_its_live_bounded_owner(tmp_path, fault):
+    "missing_deadline", "boolean_deadline", "string_deadline", "invalid_deadline", "unrecognized_prefix"])
+def test_task_evaluation_watchdog_protects_only_its_live_bounded_owner(tmp_path, fault, prefix):
     root = tmp_path / "task-evaluation-launch-runs/run/allocator/scene-configuration-job/independent_vast_watchdog"
     root.mkdir(parents=True)
     deadline = 4600.0
-    prefix = "blueprint-task-evaluation-scene-config-fixture-"
+    if fault == "unrecognized_prefix":
+        prefix = "blueprint-native-task-policy-unapproved-"
     record = {
         "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
         "status": "armed", "provider": "vast", "independent_process": True,
