@@ -235,11 +235,20 @@ def test_service_preserves_operator_owned_group_accessible_lock(policy, monkeypa
     import os
 
     lock = Path(policy["state_path"]).with_suffix(".lock")
-    lock.touch(mode=0o660)
+    lock.touch(mode=0o640)
     owner = lock.stat().st_uid
     monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
     monkeypatch.setattr(os, "fchmod", lambda *args: pytest.fail("service cannot chmod another owner's lock"))
     assert guard.run_guard(policy, client=Client(policy), now=NOW)["admission_allowed"]
+
+
+def test_budget_lock_grants_group_read_without_group_write(policy):
+    import stat
+
+    result = guard.run_guard(policy, client=Client(policy), now=NOW)
+    lock = Path(policy["state_path"]).with_suffix(".lock")
+    assert result["admission_allowed"]
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o640
 
 
 def test_even_under_budget_job_waits_for_native_enforcement_activation(policy):

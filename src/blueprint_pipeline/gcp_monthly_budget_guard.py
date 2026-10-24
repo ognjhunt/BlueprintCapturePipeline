@@ -190,11 +190,13 @@ class NativeClient:
 def run_guard(policy: Mapping[str, Any], *, client=None, now: datetime | None = None) -> dict:
     lock = Path(policy["state_path"]).with_suffix(".lock")
     lock.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o660)
+    # flock needs no file writes. Group read access lets the service share an
+    # operator-owned inode without granting permission to modify that inode.
+    descriptor = os.open(lock, os.O_CREAT | os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), 0o640)
     try:
         status = os.fstat(descriptor)
         if status.st_uid == os.geteuid():
-            os.fchmod(descriptor, 0o660)
+            os.fchmod(descriptor, 0o640)
         elif status.st_mode & 0o007:
             raise ValueError("budget_lock_permissions_unsafe")
         try:
