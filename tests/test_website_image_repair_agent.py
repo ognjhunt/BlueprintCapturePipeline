@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from blueprint_pipeline import website_image_completion as completion
 from blueprint_pipeline import website_image_repair_agent as repair
 from blueprint_pipeline import website_task_context as control
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 
 CONTEXT = {"context_digest": "sha256:" + "c" * 64, "capture_id": "cap", "request_id": "req", "scene_id": "scene"}
@@ -50,6 +51,31 @@ class _Invoker:
         self.calls.append((spec, input_value))
         return SimpleNamespace(output=self.output, model=repair.MODEL, usage={"input_tokens": 9000},
                                cost_usd=0.04)
+
+
+class _AuditedInvoker(_Invoker):
+    def configure_reservation_audit(self, **kwargs):
+        self.audit = kwargs
+
+    def invoke(self, spec, input_value):
+        reservation = {"schema_version": "task_evaluation_inference_reservation.v1", "run_id": spec.run_id,
+            "capability": repair.CAPABILITY, "model": spec.model,
+            "input_digest": canonical_digest({"input": input_value}), "max_turns": 1,
+            "max_output_tokens": spec.max_output_tokens, "projected_max_cost_usd": .5,
+            "cache_policy_digest": "policy", "cache_policy": {"policy_digest": "policy"}, "breakpoint_digests": []}
+        reservation["reservation_id"] = canonical_digest({k: reservation[k] for k in (
+            "run_id", "capability", "model", "input_digest", "max_turns", "max_output_tokens", "cache_policy_digest")})
+        reservation["inference_reservation_digest"] = canonical_digest(reservation, digest_field="inference_reservation_digest")
+        self.audit["record_reservation"](reservation)
+        result = super().invoke(spec, input_value)
+        completion = {"schema_version": "task_evaluation_inference_completion.v1",
+            **{k: reservation[k] for k in ("reservation_id", "run_id", "capability", "model", "cache_policy", "breakpoint_digests")},
+            "provider": "openai", "usage": {"provider_response_id": "response-fixture"},
+            "structured_output_digest": canonical_digest(result.output), "projected_max_cost_usd": .5,
+            "reconciled_actual_cost_usd": .04, "released_reservation_usd": .46}
+        completion["inference_completion_digest"] = canonical_digest(completion, digest_field="inference_completion_digest")
+        self.audit["record_completion"](completion)
+        return result
 
 
 @pytest.fixture
@@ -229,10 +255,76 @@ def test_uncertain_plan_is_never_bought_again(tmp_path, website):
     invoker = _Invoker({"repairs": [], "summary": ""})
     _run(tmp_path, invoker)
     receipt_path = next((tmp_path / "image_completion" / "repair_agent").glob("plan-*[0-9a-f].json"))
-    receipt_path.write_text(json.dumps({"status": "submitting"}))
+    receipt = json.loads(receipt_path.read_text())
+    receipt["status"] = "submitting"
+    receipt_path.write_text(json.dumps(receipt))
     with pytest.raises(ValueError, match="requires_reconciliation"):
         _run(tmp_path, invoker)
     assert len(invoker.calls) == 1
+
+
+def test_different_reviews_keep_independent_inference_audits(tmp_path, website):
+    invoker = _AuditedInvoker({"repairs": [], "summary": "nothing fixable"})
+    _run(tmp_path, invoker)
+    _run(tmp_path, invoker, failed_review={**FAILED, "review": {**FAILED["review"], "reason": "different failure"}})
+    manifests = list((tmp_path / "image_completion/repair_agent").glob("inference-*/inference_reservations/manifest.json"))
+    assert len(manifests) == len(invoker.calls) == 2
+    assert len({json.loads(p.read_text())["run_id"] for p in manifests}) == 2
+    assert all(json.loads(p.read_text())["in_flight_unknown_count"] == 0 for p in manifests)
+
+
+def test_completed_plan_is_saved_before_audit_finalization(tmp_path, website, monkeypatch):
+    from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
+
+    def fail(_self):
+        raise ValueError("audit_write_fixture")
+    monkeypatch.setattr(InferenceReservationAudit, "write_manifest", fail)
+    invoker = _AuditedInvoker({"repairs": [], "summary": "nothing fixable"})
+    with pytest.raises(ValueError, match="audit_write_fixture"):
+        _run(tmp_path, invoker)
+    (path,) = (tmp_path / "image_completion/repair_agent").glob("plan-*[0-9a-f].json")
+    assert json.loads(path.read_text())["status"] == "completed"
+    _run(tmp_path, invoker)
+    assert len(invoker.calls) == len(website["reserve"]) == 1
+
+
+@pytest.mark.parametrize("fault", [None, "missing-completion", "changed-completion"])
+def test_lost_output_reconciles_only_completed_exact_input_and_preserves_its_charge(tmp_path, website, fault):
+    invoker = _AuditedInvoker({"repairs": [], "summary": "nothing fixable"})
+    _run(tmp_path, invoker)
+    root = tmp_path / "image_completion/repair_agent"
+    (path,) = root.glob("plan-*[0-9a-f].json")
+    saved = json.loads(path.read_text())
+    pending = {k: saved[k] for k in ("binding_digest", "binding", "admission")}
+    pending["status"] = "submitting"
+    path.write_text(json.dumps(pending))
+    original = path.read_bytes()
+    (root / f"{path.stem}.settlement.json").unlink()
+    website["settle"].clear()
+    # Recreate the legacy shared audit directory without altering its records.
+    audit_parent = root / ("inference-" + saved["binding_digest"][7:])
+    (audit_parent / "inference_reservations").rename(root / "inference_reservations")
+    (completion_path,) = (root / "inference_reservations/completed").glob("*.json")
+    if fault == "missing-completion":
+        completion_path.unlink()
+    elif fault == "changed-completion":
+        value = json.loads(completion_path.read_text())
+        value["structured_output_digest"] = "changed"
+        completion_path.write_text(json.dumps(value))
+    # The old call was charged and settled; repeat settlement is unnecessary.
+    if fault:
+        with pytest.raises(ValueError):
+            _run(tmp_path, invoker)
+        assert len(invoker.calls) == len(website["reserve"]) == 1
+    else:
+        _run(tmp_path, invoker)
+        assert len(invoker.calls) == len(website["reserve"]) == 2
+        assert all(s["provider_charge_amount_usd"] == .04 for s in website["settle"])
+        (lost,) = root.glob("lost-output-*.json")
+        assert json.loads(lost.read_text())["cost_usd"] == .04
+        _run(tmp_path, invoker)
+        assert len(invoker.calls) == len(website["reserve"]) == 2
+    assert path.read_bytes() == original
 
 
 def test_empty_plan_keeps_the_rejection_and_edits_nothing(tmp_path, website):

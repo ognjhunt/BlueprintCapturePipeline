@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import fcntl
 import json
+import math
 import os
 from io import BytesIO
 from pathlib import Path
@@ -117,6 +118,47 @@ def _default_invoker():
         allow_live_invocation=True, tracing_disabled=True, max_inference_cost_usd=MAX_COST_USD))
 
 
+def _completed_plan_without_output(*, root, digest, binding, frames, originals, failed_review, targets):
+    """Reconcile a conclusively completed SDK call; never infer an uncertain call's outcome."""
+    from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
+
+    matches = []
+    for audit_root in (root, root / f"inference-{digest[7:]}"):
+        for path in (audit_root / "inference_reservations/completed").glob("*.json"):
+            value = json.loads(path.read_text())
+            if value.get("run_id") == digest[7:23]:
+                matches.append((audit_root, path, value))
+    if len(matches) != 1:
+        raise ValueError("website_image_repair_requires_reconciliation")
+    audit_root, completion_path, completion = matches[0]
+    audit = InferenceReservationAudit(run_root=audit_root, run_id=digest[7:23])
+    if completion_path != audit._completion_path(completion["reservation_id"]):
+        raise ValueError("website_image_repair_completed_call_invalid")
+    # This is an idempotent validation of the existing completion and its paired
+    # reservation; an existing identical completion is never rewritten.
+    audit.record_completion(completion)
+    reservation = json.loads(audit._reservation_path(completion["reservation_id"]).read_text())
+    identity_keys = ["run_id", "capability", "model", "input_digest", "max_turns", "max_output_tokens"]
+    identity_keys += [k for k in ("provider", "reasoning_effort", "cache_policy_digest") if k in reservation]
+    expected_input = canonical_digest({"input": _agent_input(
+        frames=frames, originals=originals, review=failed_review, targets=targets)})
+    cost = completion.get("reconciled_actual_cost_usd")
+    if (canonical_digest({k: reservation[k] for k in identity_keys}) != completion["reservation_id"]
+            or reservation.get("input_digest") != expected_input
+            or completion.get("capability") != CAPABILITY or completion.get("model") != binding["model"]
+            or reservation.get("max_turns") != 1
+            or reservation.get("max_output_tokens") != binding["max_output_tokens"]
+            or not completion.get("structured_output_digest")
+            or not completion.get("usage", {}).get("provider_response_id")
+            or isinstance(cost, bool) or not isinstance(cost, (int, float))
+            or not math.isfinite(cost) or not 0 <= cost <= MAX_COST_USD):
+        raise ValueError("website_image_repair_completed_call_invalid")
+    return {"status": "completed_output_unavailable", "binding_digest": digest,
+            "inference_completion_digest": completion["inference_completion_digest"],
+            "structured_output_digest": completion["structured_output_digest"],
+            "usage": completion["usage"], "cost_usd": cost, "model": completion["model"]}
+
+
 def plan_image_repairs(*, frames: Sequence[Mapping[str, Any]], originals: Mapping[str, Mapping[str, Any]],
                        failed_review: Mapping[str, Any], targets: Sequence[Mapping[str, Any]],
                        task_context: Mapping[str, Any], output_root: Path, invoker: Any = None,
@@ -141,32 +183,47 @@ def plan_image_repairs(*, frames: Sequence[Mapping[str, Any]], originals: Mappin
     digest = canonical_digest(binding)
     root = output_root / "repair_agent"
     root.mkdir(parents=True, exist_ok=True)
-    path = root / f"plan-{digest[7:]}.json"
-    with (root / f"plan-{digest[7:]}.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ValueError("website_image_repair_in_progress") from exc
-        if path.is_file():
-            receipt = json.loads(path.read_text())
-            if receipt.get("status") != "completed":
-                # An uncertain plan call is never bought again.
-                raise ValueError("website_image_repair_requires_reconciliation")
-            if (receipt.get("binding_digest") != digest
-                    or receipt.get("plan_digest") != canonical_digest(receipt.get("plan"))):
-                raise ValueError("website_image_repair_receipt_invalid")
-        else:
-            receipt = _buy_plan(path=path, root=root, digest=digest, binding=binding, frames=frames,
-                                originals=originals, failed_review=failed_review, targets=targets,
-                                task_context=task_context, invoker=invoker,
-                                reserve=reserve_website_preparation_spend)
-    settlement_path = root / f"plan-{digest[7:]}.settlement.json"
-    if not settlement_path.is_file():
+    reconciled = []
+    while True:
+        path = root / f"plan-{digest[7:]}.json"
+        with (root / f"plan-{digest[7:]}.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ValueError("website_image_repair_in_progress") from exc
+            if path.is_file():
+                receipt = json.loads(path.read_text())
+                if receipt.get("binding_digest") != digest or receipt.get("binding") != binding:
+                    raise ValueError("website_image_repair_receipt_invalid")
+                if receipt.get("status") != "completed":
+                    lost = _completed_plan_without_output(root=root, digest=digest, binding=binding,
+                        frames=frames, originals=originals, failed_review=failed_review, targets=targets)
+                    # Keep the original intent and its actual charge. The new
+                    # paid plan explicitly binds the verified completed call it
+                    # replaces; unknown or in-flight calls still refuse above.
+                    write_json(root / f"lost-output-{digest[7:]}.json", lost)
+                    reconciled.append((digest, lost))
+                    binding = {**binding, "completed_plan_recovery": {
+                        "binding_digest": digest, "inference_completion_digest": lost["inference_completion_digest"]}}
+                    digest = canonical_digest(binding)
+                    continue
+                if receipt.get("plan_digest") != canonical_digest(receipt.get("plan")):
+                    raise ValueError("website_image_repair_receipt_invalid")
+            else:
+                receipt = _buy_plan(path=path, root=root, digest=digest, binding=binding, frames=frames,
+                                    originals=originals, failed_review=failed_review, targets=targets,
+                                    task_context=task_context, invoker=invoker,
+                                    reserve=reserve_website_preparation_spend)
+        break
+    for settlement_digest, completed in [*reconciled, (digest, receipt)]:
+        settlement_path = root / f"plan-{settlement_digest[7:]}.settlement.json"
+        if settlement_path.is_file():
+            continue
         # Release the unused quote; the request count is never replenished.
-        command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": digest,
+        command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": settlement_digest,
                    "provider": "openai", "completed_request_count": 1,
-                   "provider_charge_amount_usd": round(min(float(receipt["cost_usd"]), MAX_COST_USD), 6),
-                   "usage_receipt_digest": canonical_digest({"usage": receipt["usage"]})}
+                   "provider_charge_amount_usd": round(min(float(completed["cost_usd"]), MAX_COST_USD), 6),
+                   "usage_receipt_digest": canonical_digest({"usage": completed["usage"]})}
         settlement = website_webapp_request(capture_id=task_context["capture_id"],
             operation="preparation-settlement", payload={"request_id": task_context["request_id"],
                 "scene_id": task_context["scene_id"], "settlement": command})
@@ -193,7 +250,7 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
     selected_invoker = invoker if invoker is not None else _default_invoker()
-    audit = InferenceReservationAudit(run_root=root, run_id=digest[7:23])
+    audit = InferenceReservationAudit(run_root=root / f"inference-{digest[7:]}", run_id=digest[7:23])
     selected_invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
         record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
     output_type = RepairPlan
@@ -208,21 +265,23 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
         output_type=output_type)
     try:
         invocation = selected_invoker.invoke(spec, input_value)
+        plan = output_type.model_validate(invocation.output).model_dump(mode="json")
+        frame_ids = [frame["frame_id"] for frame in frames]
+        requested = [row["frame_id"] for row in plan["repairs"]]
+        if len(set(requested)) != len(requested) or any(frame_id not in frame_ids for frame_id in requested):
+            raise ValueError("website_image_repair_plan_frames_invalid")
+        cost = float(invocation.cost_usd)
+        receipt = {"status": "completed", "binding_digest": digest, "binding": binding, "admission": admission,
+                   "plan": plan, "plan_digest": canonical_digest(plan), "model": invocation.model,
+                   "usage": invocation.usage, "cost_usd": cost, "basis": "model_repair_plan",
+                   "approves_views": False}
+        temporary = path.with_suffix(".tmp")
+        write_json(temporary, receipt)
+        os.replace(temporary, path)
     finally:
+        # Persist the returned plan first so an audit-finalization failure can
+        # never erase a paid structured result and force another model call.
         audit.write_manifest()
-    plan = output_type.model_validate(invocation.output).model_dump(mode="json")
-    frame_ids = [frame["frame_id"] for frame in frames]
-    requested = [row["frame_id"] for row in plan["repairs"]]
-    if len(set(requested)) != len(requested) or any(frame_id not in frame_ids for frame_id in requested):
-        raise ValueError("website_image_repair_plan_frames_invalid")
-    cost = float(invocation.cost_usd)
-    receipt = {"status": "completed", "binding_digest": digest, "binding": binding, "admission": admission,
-               "plan": plan, "plan_digest": canonical_digest(plan), "model": invocation.model,
-               "usage": invocation.usage, "cost_usd": cost, "basis": "model_repair_plan",
-               "approves_views": False}
-    temporary = path.with_suffix(".tmp")
-    write_json(temporary, receipt)
-    os.replace(temporary, path)
     return receipt
 
 

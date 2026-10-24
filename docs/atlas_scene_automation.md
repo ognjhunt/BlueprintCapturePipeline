@@ -51,6 +51,11 @@ The production Atlas controller runs the following for a new scene plan:
    plan. Completed correction receipts remain reusable on restart; the original
    source cannot silently substitute for a requested correction. An unchanged
    correction retains the failed verdict without buying the same review again.
+   Each repair plan has its own inference audit directory. Returned plans are
+   saved before audit finalization. For a legacy lost output, only a validated
+   SDK completion paired with the exact input reservation can establish a
+   completed charge and permit an explicitly bound replacement plan. Its charge
+   is retained; missing or uncertain completion evidence still blocks a retry.
 6. The agent surveys missing surfaces across the captured scene and chooses
    named gaps and candidate cameras, including modest translated viewpoints.
    Additional scene-depth-relative viewpoints stay inside source-observed free
