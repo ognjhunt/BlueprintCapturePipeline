@@ -1142,9 +1142,12 @@ def build_native_task_arena_environment(
     enable_cameras: bool = True,
     include_scene_appearance: bool = True,
     render_mode: str | None = "rgb_array",
+    physics_backend: str = "isaacsim_physx",
 ) -> NativeTaskArenaEnvironment:
     """Instantiate the pinned Arena environment from one immutable plan."""
 
+    if physics_backend not in {"isaacsim_physx", "newton_mjwarp"}:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_physics_backend_invalid"])
     if (
         not isinstance(num_envs, int)
         or isinstance(num_envs, bool)
@@ -1191,13 +1194,19 @@ def build_native_task_arena_environment(
     )
 
     if preconstruction_receipt is None:
-        preconstruction_receipt = prepare_native_task_arena_preconstruction(
-            expected_device=device
-        )
+        if physics_backend == "newton_mjwarp":
+            from .native_task_newton_feature_probe import prepare_newton_preconstruction
+            preconstruction_receipt = prepare_newton_preconstruction(expected_device=device)
+        else:
+            preconstruction_receipt = prepare_native_task_arena_preconstruction(
+                expected_device=device
+            )
     try:
         preconstruction = validate_native_task_arena_preconstruction_receipt(
             preconstruction_receipt, expected_device=device
         )
+        if preconstruction.get("physics_backend", "isaacsim_physx") != physics_backend:
+            raise ValueError("native_task_arena_preconstruction_backend_mismatch")
     except ValueError as exc:
         blockers = list(preconstruction_receipt.get("blockers") or [])
         raise NativeTaskArenaRuntimeError(
@@ -1606,12 +1615,16 @@ def build_native_task_arena_environment(
                     if hasattr(settings_manager, "get_settings_manager")
                     else settings_manager.SettingsManager.instance())
         settings.set("/physics/fabricEnabled", cfg.sim.use_fabric)
-        cfg.sim.physics = PhysxCfg(
-            solver_type=1,
-            enable_enhanced_determinism=True,
-            gpu_max_rigid_contact_count=2**23,
-            gpu_max_rigid_patch_count=2**15,
-        )
+        if physics_backend == "newton_mjwarp":
+            from isaaclab_newton.physics import NewtonCfg, MJWarpSolverCfg
+            cfg.sim.physics = NewtonCfg(solver_cfg=MJWarpSolverCfg())
+        else:
+            cfg.sim.physics = PhysxCfg(
+                solver_type=1,
+                enable_enhanced_determinism=True,
+                gpu_max_rigid_contact_count=2**23,
+                gpu_max_rigid_patch_count=2**15,
+            )
         return cfg
 
     arena_env = IsaacLabArenaEnvironment(
@@ -1715,6 +1728,7 @@ def build_native_task_arena_environment(
         camera_scene_names=camera_names,
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
+            "physics_backend_requested": physics_backend,
             "retained_droid_configuration": droid_comparison,
             "cameras": camera_configuration_readback,
             "direct_wrist_camera_aim": direct_camera_aim,

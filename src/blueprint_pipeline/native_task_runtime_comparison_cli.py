@@ -17,6 +17,10 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--packet-dir", required=True)
     prepare.add_argument("--variant", choices=("baseline", "isaaclab_3_ga"), required=True)
     prepare.add_argument("--output", required=True)
+    feature = sub.add_parser("prepare-newton-smoke")
+    feature.add_argument("--packet-dir", required=True)
+    feature.add_argument("--reference-construction-request", required=True)
+    feature.add_argument("--output", required=True)
     policy = sub.add_parser("prepare-policy")
     policy.add_argument("--packet-dir", required=True)
     policy.add_argument("--runtime-source-receipt", required=True)
@@ -60,6 +64,16 @@ def main(argv: list[str] | None = None) -> int:
             return [json.loads(path.read_text()) for path in sorted(
                 Path(root).rglob("native_task_runtime_measurement.v1.json"))]
         value = compare_runtime_measurement_sets(measurements(args.baseline_root), measurements(args.candidate_root))
+    elif args.command == "prepare-newton-smoke":
+        from .native_task_arena_bundle import verify_native_task_arena_packet
+        from .native_task_construction_plan import materialize_native_task_construction_phase_plan
+        from .native_task_newton_feature_probe import build_feature_request
+        root, _, _ = verify_native_task_arena_packet(args.packet_dir)
+        plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
+        comparison = validate_construction_comparison_request(
+            json.loads(Path(args.reference_construction_request).read_text()), plan=plan,
+            phase_plan=materialize_native_task_construction_phase_plan(plan))
+        value = build_feature_request(comparison, plan)
     elif args.command == "prepare-construction":
         from .native_task_arena_bundle import verify_native_task_arena_packet
         from .native_task_construction_plan import materialize_native_task_construction_phase_plan

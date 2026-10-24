@@ -1198,6 +1198,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         phase_plan = frozen_phase_plan
         result["construction_phase_plan"] = phase_plan
         comparison_path = runtime / "runtime_inputs/native_task_runtime_comparison_request.v1.json"
+        feature_path = runtime / "runtime_inputs/native_task_newton_feature_request.v1.json"
+        if feature_path.exists() and not comparison_path.is_file():
+            raise RuntimeError("native_feature_requires_retained_ga_reference")
         if comparison_path.is_file():
             from blueprint_pipeline.native_task_runtime_comparison import (
                 RuntimeMeasurement, validate_construction_comparison_request,
@@ -1206,6 +1209,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json.loads(comparison_path.read_text()), plan=plan, phase_plan=phase_plan)
             if comparison["runtime_identity"]["container_image"] != manifest["container_image"]:
                 raise RuntimeError("runtime_comparison_construction_image_mismatch")
+            from blueprint_pipeline.native_task_newton_feature_probe import (
+                REQUEST_FILENAME, run_feature_probe, validate_feature_request,
+            )
+            feature_path = runtime / "runtime_inputs" / REQUEST_FILENAME
+            if feature_path.is_file():
+                feature_request = validate_feature_request(
+                    json.loads(feature_path.read_text()), comparison=comparison, plan=plan)
+                feature, simulation_app = run_feature_probe(
+                    request=feature_request, plan=plan, runtime=runtime,
+                    output_root=output_root, snapshot=_camera_snapshot,
+                    implementation_commit=manifest["implementation_commit"])
+                result.update(status=feature["status"], native_feature_test_only=True,
+                              phase_reached="separate_native_feature_test", feature_result=feature,
+                              native_isaac_executed=feature["native_isaac_executed"],
+                              blockers=feature["blockers"], qualification_effect="none")
+                return 0 if feature["status"] == "completed" else 1
             runtime_measurement = RuntimeMeasurement(
                 output_path=output_root / "native_task_runtime_measurement.v1.json",
                 variant=comparison["variant"], runtime_identity=comparison["runtime_identity"],

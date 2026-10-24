@@ -98,3 +98,24 @@ def test_ga_uses_explicit_physx_context_lifecycle(monkeypatch):
     assert result.app.is_exiting() is False
     result.app.close(exit_code=3)
     assert calls[-1] == (SystemExit, 3)
+
+
+def test_separate_newton_launch_keeps_kit_and_uses_newton_config(monkeypatch):
+    calls = []
+    context = SimpleNamespace(__enter__=lambda: None, __exit__=lambda *args: None)
+    lab_app = ModuleType("isaaclab.app")
+    lab_app.launch_simulation = lambda cfg, arguments: (calls.append((cfg, arguments)) or context)
+    physics = ModuleType("isaaclab_newton.physics")
+    physics.MJWarpSolverCfg = lambda: "frozen-mjwarp-defaults"
+    physics.NewtonCfg = lambda **kwargs: kwargs
+    omni, kit, app = ModuleType("omni"), ModuleType("omni.kit"), ModuleType("omni.kit.app")
+    app.get_app = lambda: object()
+    omni.kit, kit.app = kit, app
+    for name, value in {"isaaclab.app": lab_app, "isaaclab_newton.physics": physics,
+                        "omni": omni, "omni.kit": kit, "omni.kit.app": app}.items():
+        monkeypatch.setitem(sys.modules, name, value)
+    ga.ga_app_launcher(physics_backend="newton_mjwarp", device="cuda:0", enable_cameras=True)
+    assert calls == [({"solver_cfg": "frozen-mjwarp-defaults"},
+                     {"physics": "newton_mjwarp", "device": "cuda:0", "enable_cameras": True, "require_kit": True})]
+    with pytest.raises(ValueError, match="backend_unadmitted"):
+        ga.ga_app_launcher(physics_backend="newton_vbd")

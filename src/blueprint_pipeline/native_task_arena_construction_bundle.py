@@ -62,6 +62,7 @@ def build_native_task_arena_construction_bundle(
     construction_phase_plan_override: Mapping[str, Any] | None = None,
     terminal_feedback_adoption_path: str | Path | None = None,
     runtime_comparison_request_path: str | Path | None = None,
+    native_feature_request_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package one sealed task packet for the native Panda construction worker."""
 
@@ -76,6 +77,8 @@ def build_native_task_arena_construction_bundle(
     # scene-plan schema. Every real native packet must freeze this local plan
     # before a provider can be allocated.
     if scene_plan.get("schema_version") != "native_task_arena_scene_plan.v1":
+        if native_feature_request_path is not None:
+            raise ValueError("native_feature_requires_executable_retained_packet")
         if terminal_feedback_adoption_path is not None:
             raise ValueError(
                 "native_task_arena_terminal_feedback_requires_executable_packet"
@@ -127,6 +130,14 @@ def build_native_task_arena_construction_bundle(
             bound_runtime_inputs["native_task_runtime_comparison_request.v1.json"] = comparison_path
             from .native_task_droid_runtime_compat import comparison_robot_asset_inputs
             bound_runtime_inputs.update(comparison_robot_asset_inputs(comparison_path))
+        if native_feature_request_path is not None:
+            from .native_task_newton_feature_probe import REQUEST_FILENAME, validate_feature_request, validate_feature_source
+            if runtime_comparison_request_path is None:
+                raise ValueError("native_feature_requires_retained_ga_reference")
+            feature_path = Path(native_feature_request_path).resolve()
+            validate_feature_request(json.loads(feature_path.read_text()), comparison=comparison, plan=scene_plan)
+            validate_feature_source(json.loads(Path(runtime_source_packet_receipt).read_text()))
+            bound_runtime_inputs[REQUEST_FILENAME] = feature_path
         if terminal_feedback_adoption_path is not None:
             adoption_path = Path(terminal_feedback_adoption_path).expanduser().resolve()
             adoption = validate_native_construction_terminal_feedback_adoption(
@@ -270,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--container-image", default=NATIVE_TASK_ARENA_IMAGE)
     parser.add_argument("--generated-at", dest="generated_at")
     parser.add_argument("--runtime-comparison-request-path")
+    parser.add_argument("--native-feature-request-path")
     parser.add_argument(
         "--construction-phase-plan-override",
         dest="construction_phase_plan_override",
@@ -302,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             terminal_feedback_adoption_path=args.terminal_feedback_adoption_path,
             runtime_comparison_request_path=args.runtime_comparison_request_path,
+            native_feature_request_path=args.native_feature_request_path,
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(

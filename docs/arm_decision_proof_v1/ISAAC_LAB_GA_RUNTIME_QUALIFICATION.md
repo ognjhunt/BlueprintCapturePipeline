@@ -3,7 +3,43 @@
 ADP-009D Day-28 rehearsal / Day-35 simulation matrix. This opt-in experiment
 compares the retained native workcell against the pinned beta runtime. Production
 runtime defaults, PhysX, RTX, task inputs, controls and scoring remain fixed.
-Neither Newton nor standalone rendering is included.
+Neither Newton nor standalone rendering is included in that comparison.
+
+## Separate native Newton/RTX smoke
+
+The user selected one additional native feature test on 2026-10-24. This opt-in
+ADP-009D / Day-35 compatibility experiment reuses the retained workcell and RTX
+camera path with Newton's MuJoCo-Warp solver. The existing factory and launcher
+hardwired PhysX; a sealed feature request now selects Newton explicitly at both
+boundaries without changing the production default or the paired measurements.
+
+Prepare the request and bundle with:
+
+```bash
+python -m blueprint_pipeline.native_task_runtime_comparison_cli prepare-newton-smoke \
+  --packet-dir RETAINED_PACKET --reference-construction-request GA_REQUEST \
+  --output newton-request.json
+python -m blueprint_pipeline.native_task_arena_construction_bundle \
+  --job-dir NEW_BUNDLE --packet-dir RETAINED_PACKET \
+  --runtime-source-packet-receipt GA_SOURCE_RECEIPT \
+  --implementation-commit IMMUTABLE_COMMIT --container-image PINNED_GA_IMAGE \
+  --runtime-comparison-request-path GA_REQUEST \
+  --native-feature-request-path newton-request.json
+```
+
+The canonical construction allocator, authority, watchdog, budget, TTL and
+teardown still apply. The worker reads back the actual Newton manager, solver,
+CUDA device and package versions, then checks 64 hold-position steps, finite
+joint state, three cameras before/after, and a repeated seeded reset. It retains
+joint drift and timing without assigning a task-success score. A native refusal
+is retained with its phase and an explicit media gap where applicable.
+
+The completion artifact is `native_task_newton_feature_result.v1.json`. The
+construction transport envelope always retains `construction_gate_qualified:
+false` and `qualification_effect: none`. Newton may interpret the retained USD's
+PhysX properties differently; this separate smoke cannot establish physical
+fidelity, a policy outcome or a comparable performance improvement. Native
+execution remains pending; source tests are preparation evidence only.
 
 ## Observed construction pair, 2026-10-24
 

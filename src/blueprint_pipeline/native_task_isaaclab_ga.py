@@ -200,10 +200,17 @@ def verify_ga_launch(provisioning: Mapping[str, Any]) -> dict[str, Any]:
             "runtime_import_probes": rows, "device_coherence_still_requires_native_readback": True}
 
 
-def ga_app_launcher(**arguments: Any) -> Any:
+def ga_app_launcher(*, physics_backend: str = "isaacsim_physx", **arguments: Any) -> Any:
     from isaaclab.app import launch_simulation
-    from isaaclab_physx.physics import PhysxCfg
-    context = launch_simulation(PhysxCfg(), {**arguments, "physics": "isaacsim_physx", "require_kit": True})
+    if physics_backend == "isaacsim_physx":
+        from isaaclab_physx.physics import PhysxCfg
+        physics = PhysxCfg()
+    elif physics_backend == "newton_mjwarp":
+        from isaaclab_newton.physics import NewtonCfg, MJWarpSolverCfg
+        physics = NewtonCfg(solver_cfg=MJWarpSolverCfg())
+    else:
+        raise ValueError("ga_physics_backend_unadmitted")
+    context = launch_simulation(physics, {**arguments, "physics": physics_backend, "require_kit": True})
     context.__enter__()
     import omni.kit.app
     app = omni.kit.app.get_app()

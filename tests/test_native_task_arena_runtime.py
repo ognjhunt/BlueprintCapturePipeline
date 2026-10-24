@@ -48,6 +48,26 @@ def test_builder_accepts_ga_reset_api_without_changing_retained_reset(monkeypatc
     assert built.native_configuration_readback["retained_droid_configuration"] is None
 
 
+def test_newton_factory_preserves_explicit_backend_through_arena_callback(monkeypatch):
+    _install_fake_native_runtime(monkeypatch)
+    from blueprint_pipeline import native_task_newton_feature_probe as feature
+    newton = types.ModuleType("isaaclab_newton.physics")
+    newton.MJWarpSolverCfg = lambda: "mjwarp"
+    newton.NewtonCfg = lambda **kwargs: SimpleNamespace(backend="newton", **kwargs)
+    monkeypatch.setitem(sys.modules, newton.__name__, newton)
+    preconstruction = {"schema_version": "native_task_arena_preconstruction.v1", "passed": True,
+                       "expected_device": "cuda:0", "physics_backend": "newton_mjwarp", "blockers": []}
+    preconstruction["receipt_digest"] = canonical_digest(preconstruction, digest_field="receipt_digest")
+    monkeypatch.setattr(feature, "prepare_newton_preconstruction", lambda **kwargs: preconstruction)
+    built = build_native_task_arena_environment(_sealed_scene_plan(), physics_backend="newton_mjwarp")
+    assert built.cfg.sim.physics.backend == "newton"
+    assert built.cfg.sim.physics.solver_cfg == "mjwarp"
+    assert _ArenaBuilder.last.args.presets is None
+    assert built.native_configuration_readback["physics_backend_requested"] == "newton_mjwarp"
+    with pytest.raises(NativeTaskArenaRuntimeError, match="preconstruction_receipt_invalid"):
+        build_native_task_arena_environment(_sealed_scene_plan(), preconstruction_receipt=preconstruction)
+
+
 def test_legacy_prismatic_joint_gets_readback_verified_passive_friction_only_on_derived_asset(tmp_path):
     from pxr import Usd, UsdGeom, UsdPhysics
     from blueprint_pipeline.native_task_arena_runtime import (
