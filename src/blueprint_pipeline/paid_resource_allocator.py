@@ -767,10 +767,20 @@ def run_sponsored_website_atlas_automation(*, experimental: bool = False, **opti
         commit, _, _ = _current_checkout_source_state()
         return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
 
-    return run_automation(release_blockers=release_blockers,
-        task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
-        planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw),
-        pose_runner=lambda **kw: run_sponsored_website_atlas_pose(experimental=experimental, **kw), **options)
+    from .paid_resource_admission import PaidResourceAdmissionBlocked
+    try:
+        return run_automation(release_blockers=release_blockers,
+            task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
+            planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw),
+            pose_runner=lambda **kw: run_sponsored_website_atlas_pose(experimental=experimental, **kw), **options)
+    except PaidResourceAdmissionBlocked as exc:
+        from .gcp_monthly_budget_guard import stale_report_wait
+        waiting = (stale_report_wait() if exc.blockers == ["gcp_monthly_budget_admission_blocked"] else None)
+        if waiting is None:
+            raise
+        # Completed stages and their reservation bindings remain in the same
+        # output root. The next controller tick must pass admission again.
+        return {"status": "processing", "stage": "paid_admission_wait", **waiting}
 
 
 def run_sponsored_website_atlas_plan(*, experimental: bool = False, **options: Any) -> dict[str, Any]:

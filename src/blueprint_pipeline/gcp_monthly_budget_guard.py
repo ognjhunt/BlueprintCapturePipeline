@@ -329,6 +329,32 @@ def admission_blockers(*, report_path: str | None = None, project_id: str | None
     return []
 
 
+def stale_report_wait(*, now: datetime | None = None) -> dict | None:
+    """Recognize an otherwise admitted report awaiting its next monitor cycle.
+
+    This grants no authority and never rewrites the report. A controller can
+    wait for the real monitor; the paid boundary still requires a fresh report.
+    Exhaustion, changed policy, missing evidence and month rollover stay blocked.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        configured = os.getenv(CONFIG_ENV, "").strip()
+        if not configured:
+            return None
+        policy = load_policy(Path(configured))
+        path = os.getenv(REPORT_ENV, "").strip() or policy["report_path"]
+        report = _read(Path(path))
+        generated = _time(report["generated_at"])
+        if (_period(generated) != _period(now) or now - generated <= timedelta(minutes=5)
+                or admission_blockers(report_path=path, now=generated)):
+            return None
+        return {"waiting_for": "gcp_budget_monitor", "reason": "gcp_monthly_budget_report_stale",
+                "report_generated_at": report["generated_at"],
+                "retry_not_before_epoch": now.timestamp() + 60}
+    except Exception:
+        return None
+
+
 def project_admission_blockers(project_id: str) -> list[str]:
     configured = os.getenv(CONFIG_ENV, "").strip()
     if not configured:

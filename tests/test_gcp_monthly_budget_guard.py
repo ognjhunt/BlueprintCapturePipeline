@@ -76,6 +76,92 @@ class Client:
                 "billingAccountName": f"billingAccounts/{self.policy['billing_account_id']}" if self.enabled else ""}
 
 
+def _dated_admitted_report(policy):
+    born = INTERVAL + timedelta(days=10, hours=12)
+    client = Client(policy)
+    client.messages = [message(policy, published=born)]
+    result = guard.run_guard(policy, client=client, now=born)
+    assert result["admission_allowed"] is True
+    return born, result
+
+
+def test_only_staleness_defers_without_changing_report_or_admitting_spend(policy):
+    born, _ = _dated_admitted_report(policy)
+    path = Path(policy["report_path"])
+    before = path.read_bytes()
+    now = born + timedelta(minutes=6)
+    assert guard.admission_blockers(now=now) == ["gcp_monthly_budget_admission_blocked"]
+    waiting = guard.stale_report_wait(now=now)
+    assert waiting["waiting_for"] == "gcp_budget_monitor"
+    assert waiting["retry_not_before_epoch"] == now.timestamp() + 60
+    assert path.read_bytes() == before
+    assert guard.admission_blockers(now=now) == ["gcp_monthly_budget_admission_blocked"]
+
+
+@pytest.mark.parametrize("case", ["exhausted", "disabled", "policy_changed", "corrupt", "fresh", "future", "next_month"])
+def test_budget_or_authority_failures_are_not_transient_monitor_waits(policy, case):
+    born, report = _dated_admitted_report(policy)
+    now = born + timedelta(minutes=6)
+    if case == "exhausted":
+        report.update(observed_cost_usd="100", admission_allowed=False)
+    elif case == "disabled":
+        report["billing_enabled"] = False
+    elif case == "policy_changed":
+        report["policy_sha256"] = "0" * 64
+    elif case == "fresh":
+        now = born + timedelta(minutes=4)
+    elif case == "future":
+        now = born - timedelta(minutes=1)
+    elif case == "next_month":
+        now = born + timedelta(days=35)
+    path = Path(policy["report_path"])
+    path.write_text("invalid json" if case == "corrupt" else json.dumps(report))
+    assert guard.stale_report_wait(now=now) is None
+
+
+def test_atlas_controller_returns_processing_for_expired_admitted_monitor(policy, monkeypatch, tmp_path):
+    from blueprint_pipeline import atlas_scene_automation, paid_resource_allocator
+
+    born, _ = _dated_admitted_report(policy)
+    original = guard.stale_report_wait
+    monkeypatch.setattr(guard, "stale_report_wait", lambda: original(now=born + timedelta(minutes=6)))
+    calls = []
+
+    def stopped_before_provider(**options):
+        calls.append(options["output_root"])
+        raise PaidResourceAdmissionBlocked(["gcp_monthly_budget_admission_blocked"])
+
+    monkeypatch.setattr(atlas_scene_automation, "run_automation", stopped_before_provider)
+    output = tmp_path / "retained-job"
+    result = paid_resource_allocator.run_sponsored_website_atlas_automation(output_root=output)
+    assert result["status"] == "processing" and result["stage"] == "paid_admission_wait"
+    assert result["waiting_for"] == "gcp_budget_monitor"
+    assert calls == [output] and not output.exists()
+
+
+@pytest.mark.parametrize("blockers", [
+    ["gcp_monthly_budget_admission_blocked", "paid_resource_admission_not_admitted"],
+    ["gcp_monthly_budget_report_missing_or_invalid"],
+    ["paid_resource_admission_not_admitted"],
+])
+def test_atlas_controller_preserves_other_admission_refusals(monkeypatch, blockers):
+    from blueprint_pipeline import atlas_scene_automation, paid_resource_allocator
+
+    error = PaidResourceAdmissionBlocked(blockers)
+
+    def refuse(**_):
+        raise error
+
+    def unexpected_wait():
+        raise AssertionError("Other authority failures must not become an automatic wait")
+
+    monkeypatch.setattr(atlas_scene_automation, "run_automation", refuse)
+    monkeypatch.setattr(guard, "stale_report_wait", unexpected_wait)
+    with pytest.raises(PaidResourceAdmissionBlocked) as caught:
+        paid_resource_allocator.run_sponsored_website_atlas_automation()
+    assert caught.value is error
+
+
 def test_fresh_under_budget_report_admits_and_records_cpu_inventory(policy):
     result = guard.run_guard(policy, client=Client(policy), now=NOW)
     assert result["admission_allowed"] is True

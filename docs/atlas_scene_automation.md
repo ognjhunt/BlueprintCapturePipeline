@@ -191,7 +191,14 @@ provider's disclosure. An automatic preview grant carries that consent itself,
 pinned to each provider's terms when the grant is made (Blueprint-WebApp #1097);
 an explicit owner authorization still needs the native sponsorship. Forecasts cover the main
 route, while each actual reservation remains the transaction authority. Fallback
-work requires remaining allowance. There is no budget reset or automatic retry
+work requires remaining allowance. If only an otherwise admitted GCP cost report
+has aged out while its monitor is paused or refreshing, the existing Atlas
+controller returns `processing` at `paid_admission_wait`. A later controller tick
+adopts completed stages and must pass the original fresh-report admission again.
+The waiting state grants no spending authority and does not rewrite the report.
+Exhausted budgets, changed policy, month rollover, missing evidence and additional
+rights or funding blockers retain their refusal.
+There is no budget reset or automatic retry
 of an uncertain purchase. A blocked auxiliary stage preserves the source result
 and available size estimates.
 
