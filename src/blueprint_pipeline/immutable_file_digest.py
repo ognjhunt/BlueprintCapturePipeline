@@ -9,10 +9,12 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+from time import time_ns as _now_ns
 from typing import BinaryIO, Iterator
 
 
 _MAX_ENTRIES = 131072
+_STABLE_AGE_NS = 2_000_000_000
 _cache: ContextVar[OrderedDict[tuple[int, ...], str] | None] = ContextVar(
     "immutable_file_digest_cache", default=None
 )
@@ -53,9 +55,10 @@ def sha256_file(path: Path) -> str:
     """Hash normally unless the same read-only inode is verified in this transaction.
 
     Cache hits still open the actual path and check descriptor/path identities.
-    Write, chmod, replacement and link changes invalidate the entry. Mutable
-    files and symlink leaves are always read in full. Service-account readback
-    is independent of this digest helper and still reads every installed byte.
+    Only transaction-owned POSIX files older than the timestamp safety window
+    qualify: a recent write may share a coarse filesystem timestamp with another
+    write. Mutable files, unowned files and symlink leaves are read in full.
+    Service-account readback remains independent and reads every installed byte.
     """
     cache = _cache.get()
     with path.open("rb") as stream:
@@ -63,7 +66,10 @@ def sha256_file(path: Path) -> str:
             return _read_digest(stream)
         before = os.fstat(stream.fileno())
         identity = _identity(before)
-        eligible = (stat.S_ISREG(before.st_mode) and not before.st_mode & 0o222
+        eligible = (os.name == "posix" and stat.S_ISREG(before.st_mode)
+                    and before.st_uid == os.geteuid() and before.st_ino != 0
+                    and not before.st_mode & 0o222
+                    and _now_ns() - before.st_ctime_ns >= _STABLE_AGE_NS
                     and _identity(path.lstat()) == identity)
         if not eligible:
             return _read_digest(stream)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import immutable_file_digest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.immutable_file_digest import immutable_file_digest_cache
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
@@ -29,8 +30,10 @@ def _sha256(path: Path) -> str:
 
 
 @pytest.fixture(autouse=True)
-def publication_digest_scope():
+def publication_digest_scope(monkeypatch):
     """Exercise full-byte readback and refusal cases under the production scope."""
+    clock = immutable_file_digest._now_ns
+    monkeypatch.setattr(immutable_file_digest, "_now_ns", lambda: clock() + 10_000_000_000)
     with immutable_file_digest_cache():
         yield
 
