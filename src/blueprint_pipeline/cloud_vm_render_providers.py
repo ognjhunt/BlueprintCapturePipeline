@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -378,7 +379,33 @@ class GCPRenderProvider(GpuRenderProvider):
             "configured_hourly_rate_usd": _positive_float(_env("BLUEPRINT_GCP_HOURLY_RATE_USD")),
             "registry_auth": _env("BLUEPRINT_GCP_REGISTRY_AUTH") or "public",
             "registry_host": _env("BLUEPRINT_GCP_REGISTRY_HOST"),
+            "max_run_seconds": _positive_int(_env("BLUEPRINT_GCP_MAX_RUN_SECONDS")),
         }
+
+    def inventory_projects(self) -> list[str]:
+        """Monitoring scope is explicit and independent of GPU launch readiness."""
+        return list(dict.fromkeys([*_csv("BLUEPRINT_GCP_INVENTORY_PROJECTS"),
+                                   *([self._config()['project']] if self._config()['project'] else [])]))
+
+    def inventory_configured(self) -> bool:
+        # A registered project remains required when credentials break. The
+        # actual GET must then fail closed rather than silently skip monitoring.
+        return bool(self.inventory_projects())
+
+    def _deadline_blockers(self, request: Mapping[str, Any]) -> list[str]:
+        maximum = self._config()['max_run_seconds']
+        body = _mapping(request.get('instance_body'))
+        scheduling = _mapping(body.get('scheduling'))
+        raw_seconds = str(_mapping(scheduling.get('maxRunDuration')).get('seconds'))
+        seconds = int(raw_seconds) if re.fullmatch(r'[0-9]+', raw_seconds) else None
+        disks = body.get('disks')
+        if (maximum is None or seconds is None or not 30 <= seconds <= min(maximum, 120 * 86400)
+                or scheduling.get('instanceTerminationAction') != 'DELETE'
+                or scheduling.get('automaticRestart') is not False
+                or not isinstance(disks, list) or not disks
+                or any(not isinstance(d, Mapping) or d.get('autoDelete') is not True for d in disks)):
+            return ['gcp_native_runtime_limit_missing_or_invalid']
+        return []
 
     def _credentials(self) -> tuple[Any | None, str | None]:
         try:
@@ -492,6 +519,9 @@ class GCPRenderProvider(GpuRenderProvider):
             blockers.append("gcp_provisioning_model_invalid")
         if registry_auth == "gcp_artifact_registry" and not config["registry_host"]:
             blockers.append("gcp_registry_host_missing")
+        lifetime = config['max_run_seconds']
+        if lifetime is None or not 30 <= lifetime <= 120 * 86400:
+            blockers.append('gcp_native_runtime_limit_missing_or_invalid')
         # The provider intentionally creates no external IP.  Pulling the worker
         # and uploading artifacts therefore requires a pre-existing, verified
         # private egress path (Cloud NAT and/or Private Google Access as relevant).
@@ -557,7 +587,9 @@ class GCPRenderProvider(GpuRenderProvider):
                 ),
             }]},
             "labels": {"blueprint-managed": "true", "blueprint-name-prefix": name[:40]},
-            "scheduling": {"onHostMaintenance": "TERMINATE", "automaticRestart": False},
+            "scheduling": {"onHostMaintenance": "TERMINATE", "automaticRestart": False,
+                           "maxRunDuration": {"seconds": str(lifetime or 0)},
+                           "instanceTerminationAction": "DELETE"},
         }
         if provisioning_model == "SPOT":
             body["scheduling"].update(
@@ -716,6 +748,7 @@ class GCPRenderProvider(GpuRenderProvider):
         blockers = [
             *_string_list(request.get("configuration_blockers")),
             *_render_prelaunch_guard_blockers(request, provider_name="gcp"),
+            *self._deadline_blockers(request),
         ]
         if blockers:
             return {"status": "blocked", "blockers": list(dict.fromkeys(blockers)), "allocation_created": False}
@@ -749,6 +782,65 @@ class GCPRenderProvider(GpuRenderProvider):
             return {"status": "blocked", "provider": self.name, "name_prefix": name_prefix, "live_resource_count": None, "resources": [], "api_confirmed": False, "blockers": ["gcp_billable_inventory_failed"], "http": status}
         resources = [{"instance_id": str(row.get("name") or ""), "name": row.get("name"), "status": row.get("status"), "machine_type": str(row.get("machineType") or "").rsplit("/", 1)[-1], "zone": config["zone"], "created_at": row.get("creationTimestamp"), "cost_per_hour": config["configured_hourly_rate_usd"]} for row in rows if isinstance(row, Mapping) and str(row.get("name") or "").startswith(name_prefix) and row.get("status") != "TERMINATED"]
         return {"status": "observed", "provider": self.name, "name_prefix": name_prefix, "live_resource_count": len(resources), "resources": resources, "api_confirmed": True, "http": status, "raw_provider_response_recorded": False}
+
+    def project_inventory(self) -> dict:
+        """All zones and CPU/GPU VMs, including stopped VMs with retained disks.
+
+        Unknown ownership permits reporting only, never automatic reaping. A
+        missing page or partial provider response is unknown, not fleet zero.
+        """
+        config, resources = self._config(), []
+        projects = self.inventory_projects()
+        if not projects:
+            return {'api_confirmed': False, 'resources': [], 'live_resource_count': None,
+                    'blockers': ['gcp_inventory_scope_unconfigured']}
+        for project in projects:
+            token, seen = '', set()
+            while True:
+                path = f'/projects/{urllib.parse.quote(project, safe="")}/aggregated/instances'
+                if token:
+                    path += '?pageToken=' + urllib.parse.quote(token, safe='')
+                status, body = self._call('GET', path, timeout=60)
+                items = body.get('items', {})
+                if status != 200 or not isinstance(items, Mapping) or body.get('unreachables'):
+                    return {'api_confirmed': False, 'http': status, 'resources': resources,
+                            'live_resource_count': None, 'blockers': ['gcp_project_inventory_incomplete']}
+                for scope, group in items.items():
+                    if not isinstance(group, Mapping):
+                        return {'api_confirmed': False, 'http': status, 'resources': resources,
+                                'live_resource_count': None, 'blockers': ['gcp_project_inventory_incomplete']}
+                    warning = _mapping(group.get('warning'))
+                    rows = group.get('instances', [])
+                    if (not isinstance(rows, list) or warning and warning.get('code') != 'NO_RESULTS_ON_PAGE'):
+                        return {'api_confirmed': False, 'http': status, 'resources': resources,
+                                'live_resource_count': None, 'blockers': ['gcp_project_inventory_incomplete']}
+                    for row in rows:
+                        if (not isinstance(row, Mapping) or not row.get('name')
+                                or not isinstance(row.get('disks', []), list)):
+                            return {'api_confirmed': False, 'http': status, 'resources': resources,
+                                    'live_resource_count': None, 'blockers': ['gcp_project_inventory_incomplete']}
+                        zone = str(row.get('zone') or scope).rsplit('/', 1)[-1]
+                        machine = str(row.get('machineType') or '').rsplit('/', 1)[-1]
+                        known_rate = (project == config['project'] and machine == config['machine_type']
+                                      and row.get('status') != 'TERMINATED')
+                        resources.append({'instance_id': row['name'], 'name': row['name'],
+                            'project': project, 'zone': zone, 'status': row.get('status'),
+                            'machine_type': machine, 'created_at': row.get('creationTimestamp'),
+                            'scheduling': row.get('scheduling', {}),
+                            'attached_disk_count': len(row.get('disks', [])),
+                            'cost_per_hour': config['configured_hourly_rate_usd'] if known_rate else None,
+                            'cleanup_authorized': (project == config['project'] and zone == config['zone']
+                                and _mapping(row.get('labels')).get('blueprint-managed') == 'true')})
+                token = body.get('nextPageToken')
+                if not token:
+                    break
+                if not isinstance(token, str) or token in seen:
+                    return {'api_confirmed': False, 'http': status, 'resources': resources,
+                            'live_resource_count': None, 'blockers': ['gcp_project_inventory_pagination_invalid']}
+                seen.add(token)
+        return {'status': 'observed', 'api_confirmed': True, 'http': 200,
+                'projects': projects, 'resources': resources,
+                'live_resource_count': len(resources), 'blockers': []}
 
     def stop(self, instance_id: str) -> dict:
         config = self._config()

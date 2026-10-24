@@ -20,6 +20,23 @@ _ORIGINAL_CLOUD_LAUNCHES = {
     GCPRenderProvider: GCPRenderProvider.launch,
 }
 
+
+@pytest.mark.parametrize('alteration', ['fractional_duration', 'retained_disk', 'restart', 'no_expiry'])
+def test_gcp_native_deadline_rejects_incomplete_cost_controls(monkeypatch, tmp_path, alteration):
+    _gcp_env(monkeypatch)
+    provider = GCPRenderProvider()
+    request = provider.build_request(_spec(), tmp_path)
+    body = request['instance_body']
+    if alteration == 'fractional_duration':
+        body['scheduling']['maxRunDuration']['seconds'] = 30.5
+    elif alteration == 'retained_disk':
+        body['disks'][0]['autoDelete'] = False
+    elif alteration == 'restart':
+        body['scheduling']['automaticRestart'] = True
+    else:
+        body['scheduling'].pop('maxRunDuration')
+    assert provider._deadline_blockers(request) == ['gcp_native_runtime_limit_missing_or_invalid']
+
 @pytest.fixture(autouse=True)
 def _issue_test_only_provider_grant(monkeypatch: pytest.MonkeyPatch) -> None:
     admission = build_paid_lane_admission(resource_class="gpu_render", blockers=[])
@@ -58,6 +75,7 @@ def _gcp_env(monkeypatch) -> None:
         "BLUEPRINT_GCP_HOURLY_RATE_USD": "0.71",
         "BLUEPRINT_GCP_MAX_HOURLY_RATE_USD": "1.00",
         "BLUEPRINT_GCP_PRIVATE_EGRESS_READY": "true",
+        "BLUEPRINT_GCP_MAX_RUN_SECONDS": "7200",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -218,6 +236,46 @@ def test_gcp_empty_inventory_response_is_confirmed_zero(monkeypatch) -> None:
     result = provider.billable_inventory(name_prefix="blueprint-gpu-")
     assert result["api_confirmed"] is True
     assert result["live_resource_count"] == 0
+
+
+def test_gcp_native_expiry_cannot_be_removed_from_an_admitted_request(monkeypatch, tmp_path):
+    _gcp_env(monkeypatch)
+    provider = GCPRenderProvider()
+    request = provider.build_request(_spec(), tmp_path)
+    assert request['instance_body']['scheduling']['maxRunDuration'] == {'seconds': '7200'}
+    request['prelaunch_spend_guard'] = {'required_before_provider_launch': True, 'can_launch': True}
+    del request['instance_body']['scheduling']['maxRunDuration']
+    monkeypatch.setattr(provider, '_call', lambda *a, **kw: pytest.fail('API accessed without expiry'))
+    assert 'gcp_native_runtime_limit_missing_or_invalid' in provider.launch(tmp_path, request)['blockers']
+    monkeypatch.delenv('BLUEPRINT_GCP_MAX_RUN_SECONDS')
+    assert 'gcp_native_runtime_limit_missing_or_invalid' in provider.build_request(_spec(), tmp_path)['configuration_blockers']
+
+
+def test_gcp_project_inventory_finds_cpu_and_stopped_vms_without_gpu_configuration(monkeypatch):
+    monkeypatch.setenv('BLUEPRINT_GCP_INVENTORY_PROJECTS', 'project-one,project-two')
+    provider = GCPRenderProvider()
+    monkeypatch.setattr(provider, '_credentials', lambda: (object(), None))
+    assert provider.inventory_configured()
+    calls = []
+    def api(method, path, **kw):
+        calls.append(path)
+        if 'project-two' in path:
+            return 200, {}
+        if 'pageToken=' not in path:
+            return 200, {'items': {'zones/us-central1-a': {'instances': [{
+                'name': 'policy-sandbox', 'machineType': 'zones/us-central1-a/machineTypes/t2a-standard-2',
+                'status': 'RUNNING', 'disks': [{}]}]}}, 'nextPageToken': 'second page'}
+        return 200, {'items': {'zones/europe-west1-b': {'instances': [{
+            'name': 'retained-worker', 'status': 'TERMINATED', 'disks': [{}]}]}}}
+    monkeypatch.setattr(provider, '_call', api)
+    result = provider.project_inventory()
+    assert result['api_confirmed'] and len(calls) == 3
+    assert {r['name'] for r in result['resources']} == {'policy-sandbox', 'retained-worker'}
+    assert all(r['cleanup_authorized'] is False and r['cost_per_hour'] is None for r in result['resources'])
+    monkeypatch.setattr(provider, '_call', lambda *a, **kw: (403, {}))
+    assert provider.project_inventory()['live_resource_count'] is None
+    monkeypatch.setattr(provider, '_call', lambda *a, **kw: (200, {'unreachables': ['some-zone']}))
+    assert provider.project_inventory()['api_confirmed'] is False
 
 
 class _FakeEC2:
