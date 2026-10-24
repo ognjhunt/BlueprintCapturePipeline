@@ -2405,7 +2405,12 @@ def test_runtime_preflight_ada_policy_accepts_provider_slug_and_rejects_a6000() 
     assert selected["ask_contract_id"] == 2
     assert selected["gpu_name"] == "RTX 4090"
 
-def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path) -> None:
+def test_construction_bundle_passes_native_vast_static_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # This fixture represents a terminal launcher, not the CI runner's service.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL", raising=False)
     receipt = build_native_task_arena_construction_bundle(
         job_dir=tmp_path / "bundle",
         packet_dir=_packet(tmp_path, scene_id="840796"),
@@ -2464,7 +2469,7 @@ def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path)
         paid_resource_admission_grant=None,
         execute=False,
     )
-    assert dry_run["status"] == "dry_run_ready"
+    assert dry_run["status"] == "dry_run_ready", dry_run.get("blockers")
     assert dry_run["provider_mutations_performed"] == 0
 
 

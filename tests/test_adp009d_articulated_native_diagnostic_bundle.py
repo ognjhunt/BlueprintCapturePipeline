@@ -24,9 +24,14 @@ from blueprint_pipeline.articulated_native_diagnostic_bundle import (
 from blueprint_pipeline.articulated_native_diagnostic_runtime import (
     _author_fixed_base_anchor,
     _apply_joint_targets,
+    _joint_state,
     _require_runtime_symbols,
+    _usd_world_pose,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_task_arena_execution_contract import (
+    native_task_arena_execution_transport_completed,
+)
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
     _container_missing_max_seconds,
@@ -403,7 +408,8 @@ def test_paid_offer_and_post_create_gates_include_storage_in_hourly_cap(
 def test_runtime_capability_probe_reports_complete_missing_module_set() -> None:
     available = {
         name: SimpleNamespace(
-            SingleArticulation=object, Camera=object, ArticulationAction=object
+            SingleArticulation=object, Camera=object, ArticulationAction=object,
+            SimulationContext=object,
         )
         for name in (
             "carb",
@@ -412,6 +418,7 @@ def test_runtime_capability_probe_reports_complete_missing_module_set() -> None:
             "omni.usd",
             "isaacsim.core.prims",
             "isaacsim.core.utils.types",
+            "isaacsim.core.api",
             "isaacsim.sensors.camera",
             "PIL.Image",
             "pxr.Gf",
@@ -462,8 +469,44 @@ def test_joint_controller_requires_drive_api_and_never_teleports() -> None:
         )
 
 
+@pytest.mark.parametrize("positions,velocities,code", [
+    ([float("nan")], [0.0], "nonfinite"),
+    ([0.0], [float("inf")], "nonfinite"),
+    ([], [], "shape_invalid"),
+])
+def test_nonfinite_or_missing_joint_state_cannot_pass(
+    positions: Any, velocities: Any, code: str,
+) -> None:
+    articulation = SimpleNamespace(
+        get_joint_positions=lambda: positions, get_joint_velocities=lambda: velocities,
+    )
+    with pytest.raises(RuntimeError, match=f"articulated_native_joint_state_{code}:reset"):
+        _joint_state(articulation, count=1, phase="reset")
+
+
+def test_nonfinite_body_pose_cannot_pass_a_zero_drift_comparison() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/Body").AddTranslateOp().Set(Gf.Vec3d(float("nan"), 0, 0))
+    with pytest.raises(RuntimeError, match="articulated_native_body_pose_nonfinite"):
+        _usd_world_pose(stage, "/Body", UsdGeom)
+
+
+@pytest.mark.parametrize("reset", [0.0, float("nan"), float("inf")])
+def test_consumer_rejects_legacy_nonfinite_completion_receipts(reset: float) -> None:
+    import math
+
+    result = {
+        "schema_version": "adp009d_articulated_native_diagnostic.v1",
+        "status": "completed", "articulation_readback": {"reset_readback_degrees": reset},
+    }
+    assert native_task_arena_execution_transport_completed(
+        result, expected_output_filename="adp009d_native_microcheck.json"
+    ) is math.isfinite(reset)
+
+
+@pytest.mark.parametrize("invalid_reset", [None, float("nan"), float("inf")])
 def test_complete_diagnostic_loop_uses_single_articulation_actions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_reset: float | None
 ) -> None:
     """CPU API rehearsal only: fake joint readback does not establish physics."""
     import numpy as np
@@ -478,6 +521,7 @@ def test_complete_diagnostic_loop_uses_single_articulation_actions(
     stage = Usd.Stage.Open(str(asset))
     actions = []
     lifecycle = []
+    physics_steps = []
 
     class App:
         def __init__(self, config: Any) -> None:
@@ -489,6 +533,22 @@ def test_complete_diagnostic_loop_uses_single_articulation_actions(
         def close(self) -> None:
             lifecycle.append("closed")
 
+    class Simulation:
+        def __init__(self, *, physics_dt: float, **kwargs: Any) -> None:
+            self.dt = physics_dt
+
+        def initialize_physics(self) -> None:
+            lifecycle.append("physics_initialized")
+
+        def get_physics_dt(self) -> float:
+            return self.dt
+
+        def play(self) -> None:
+            lifecycle.append("playing")
+
+        def step(self, *, render: bool) -> None:
+            physics_steps.append(render)
+
     class Articulation:
         # Match the actual SingleArticulation API: no target/state setter methods.
         handles_initialized = True
@@ -498,6 +558,8 @@ def test_complete_diagnostic_loop_uses_single_articulation_actions(
 
         def __init__(self, **kwargs: Any) -> None:
             self.positions = np.zeros(2)
+            self.has_opened = False
+            self.reset_applied = False
 
         def initialize(self) -> None:
             pass
@@ -508,9 +570,14 @@ def test_complete_diagnostic_loop_uses_single_articulation_actions(
         def apply_action(self, action: Any) -> None:
             actions.append(action)
             self.positions[action.joint_indices] = action.joint_positions
+            self.has_opened |= self.positions[0] > 0.1
+            self.reset_applied = self.has_opened and self.positions[0] == 0.0
 
         def get_joint_positions(self) -> Any:
-            return self.positions
+            values = self.positions.copy()
+            if invalid_reset is not None and self.reset_applied:
+                values[0] = invalid_reset
+            return values
 
         def get_joint_velocities(self) -> Any:
             return np.zeros(2)
@@ -538,6 +605,7 @@ def test_complete_diagnostic_loop_uses_single_articulation_actions(
         "usd_context": SimpleNamespace(get_context=lambda: context),
         "single_articulation": Articulation,
         "articulation_action": SimpleNamespace,
+        "simulation_context": Simulation,
         "camera": Camera,
         "image": Image,
         "gf": Gf,
@@ -549,20 +617,35 @@ def test_complete_diagnostic_loop_uses_single_articulation_actions(
     monkeypatch.setitem(sys.modules, "isaacsim", SimpleNamespace(SimulationApp=App))
     monkeypatch.setattr(diagnostic_runtime, "_require_runtime_symbols", lambda: symbols)
 
-    assert diagnostic_runtime.main([
+    code = diagnostic_runtime.main([
         "--asset", str(asset), "--request", str(request_path), "--output", str(output)
-    ]) == 0
+    ])
     result = json.loads(output.read_text())
     angles = request["articulation"]["commanded_angles_degrees"]
-    assert len(actions) == len(angles) + 1
-    for action, angle in zip(actions, [*angles, 0.0], strict=True):
+    ramp_steps = request["runtime"]["settle_steps_per_command"]
+    assert len(actions) == (len(angles) + 1) * ramp_steps
+    for action, angle in zip(actions[ramp_steps - 1::ramp_steps], [*angles, 0.0], strict=True):
         np.testing.assert_allclose(action.joint_positions, [np.deg2rad(angle), 0.0])
         np.testing.assert_array_equal(action.joint_indices, [0, 1])
         np.testing.assert_array_equal(action.joint_velocities, [0.0, 0.0])
-    assert result["articulation_readback"]["reset_readback_degrees"] == 0.0
+    if invalid_reset is None:
+        assert code == 0
+        assert result["articulation_readback"]["reset_readback_degrees"] == 0.0
+        assert result["native_runtime"]["physics_timestep_seconds"] == 1 / 120
+        assert lifecycle[-2:] == ["stopped", "closed"]
+    else:
+        assert code == 1
+        assert result["status"] == "blocked"
+        assert result["blockers"] == ["articulated_native_joint_state_nonfinite:command_ramp"]
+        assert result["articulation_readback"]["reset_readback_degrees"] is None
+        assert "NaN" not in output.read_text() and "Infinity" not in output.read_text()
+        assert lifecycle[-1] == "closed"
     assert result["candidate_policy_queried"] is False
     assert result["native_material_render_readback"]["frame_count"] == len(angles) * 2
-    assert lifecycle == ["started", "stopped", "closed"]
+    assert lifecycle[:3] == ["started", "physics_initialized", "playing"]
+    assert physics_steps and any(physics_steps) and not all(physics_steps)
+    targets = [float(action.joint_positions[0]) for action in actions]
+    assert max(abs(b - a) for a, b in zip(targets, targets[1:])) < 0.02
 
 
 def test_native_articulation_anchor_is_fixed_to_world_and_not_kinematic(
