@@ -48,6 +48,7 @@ OPENPI_STARTUP_TIMEOUT_SECONDS = 30.0
 OPENPI_INFERENCE_TIMEOUT_SECONDS = 300.0
 OPENPI_CLOSE_TIMEOUT_SECONDS = 5.0
 OPENPI_CLIENT_DEPS_DIRNAME = "openpi_client_deps"
+OPENPI_CLIENT_FALLBACK_DIRNAME = "openpi_client_fallback_deps"
 OPENPI_CLIENT_WEBSOCKETS_VERSION = "15.0.1"
 LOCAL_VERIFICATION_FIELDS = frozenset(
     {
@@ -72,6 +73,17 @@ def activate_staged_openpi_client_dependencies(module_file: str = __file__) -> s
         raise RuntimeError("openpi_client_staging_path_invalid")
     if any(p.name.startswith(("numpy", "torch", "jax")) for p in staged.iterdir()):
         raise RuntimeError("openpi_client_staging_contains_scientific_runtime")
+    fallback = root / OPENPI_CLIENT_FALLBACK_DIRNAME
+    if fallback.exists():
+        if fallback.is_symlink() or not fallback.resolve().is_relative_to(root):
+            raise RuntimeError("openpi_client_fallback_path_invalid")
+        if any(p.name.startswith(("numpy", "torch", "jax")) for p in fallback.iterdir()):
+            raise RuntimeError("openpi_client_staging_contains_scientific_runtime")
+        # Isaac's own codecs and typing helpers remain preferred. The fallback
+        # supplies the complete wire import closure when the SDK omits them.
+        while str(fallback) in sys.path:
+            sys.path.remove(str(fallback))
+        sys.path.append(str(fallback))
     for name in ("openpi_client", "websockets"):
         loaded = sys.modules.get(name)
         if loaded is not None and not Path(getattr(loaded, "__file__", "")).resolve().is_relative_to(staged):
@@ -92,6 +104,8 @@ def check_staged_openpi_client(output_path: str | Path, module_file: str = __fil
     if staged is None:
         raise RuntimeError("openpi_client_staging_missing")
     import websockets
+    import msgpack
+    import typing_extensions
     from openpi_client import websocket_client_policy
 
     if any(not Path(module.__file__).resolve().is_relative_to(staged)
@@ -107,6 +121,14 @@ def check_staged_openpi_client(output_path: str | Path, module_file: str = __fil
         "isaac_numpy_version": np.__version__, "isaac_numpy_path": np.__file__,
         "websockets_version": websockets.__version__, "websockets_path": websockets.__file__,
         "client_path": websocket_client_policy.__file__,
+        "msgpack_version": msgpack.__version__, "msgpack_path": msgpack.__file__,
+        "msgpack_implementation": msgpack.Packer.__module__,
+        "typing_extensions_path": typing_extensions.__file__,
+        "fallback_dependencies": {
+            name: Path(module.__file__).resolve().is_relative_to(
+                Path(module_file).resolve().parent / OPENPI_CLIENT_FALLBACK_DIRNAME)
+            for name, module in (("msgpack", msgpack), ("typing_extensions", typing_extensions))
+        },
         "isaac_numpy_unchanged": True, "model_called": False,
     }
     result["receipt_digest"] = "sha256:" + canonical_sha256(result)

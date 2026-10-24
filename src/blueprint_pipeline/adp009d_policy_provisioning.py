@@ -55,7 +55,7 @@ from .adp009d_policy_server_worker import (
 )
 from .decision_evidence_contracts import canonical_digest
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_DEVICE
-from .openpi_droid_policy_runtime import OPENPI_CLIENT_DEPS_DIRNAME
+from .openpi_droid_policy_runtime import OPENPI_CLIENT_DEPS_DIRNAME, OPENPI_CLIENT_FALLBACK_DIRNAME
 
 PROVISIONING_SCHEMA_VERSION = "adp009d_policy_provisioning.v1"
 
@@ -126,6 +126,21 @@ OPENPI_CLIENT_WEBSOCKETS_WHEEL = {
     "url": "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/websockets-15.0.1-py3-none-any.whl",
     "sha256": "f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f",
     "size_bytes": 169743,
+}
+# Both artifacts occur in the same verified upstream uv.lock. Msgpack's
+# released pure-Python implementation avoids tying the SDK client to a CPython
+# extension ABI; the policy server still uses its unchanged frozen environment.
+OPENPI_CLIENT_FALLBACK_ARTIFACTS = {
+    "msgpack": {
+        "url": "https://files.pythonhosted.org/packages/cb/d0/7555686ae7ff5731205df1012ede15dd9d927f6227ea151e901c7406af4f/msgpack-1.1.0.tar.gz",
+        "sha256": "dd432ccc2c72b914e4cb77afce64aab761c1137cc698be3984eee260bcb2896e",
+        "size_bytes": 167260,
+    },
+    "typing-extensions": {
+        "url": "https://files.pythonhosted.org/packages/8b/54/b1ae86c0973cc6f0210b53d508ca3641fb6d0c56823f288d108bc7ab3cc8/typing_extensions-4.13.2-py3-none-any.whl",
+        "sha256": "a439e7c04b49fec3e5d3e2beaa21755cadbbdc391694e28ccdd36ca4a1408f8c",
+        "size_bytes": 45806,
+    },
 }
 POLICY_HOST = "127.0.0.1"
 POLICY_PORT = 8000
@@ -234,9 +249,10 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
     if candidate_id == "pi05_droid":
         # Resolving this package into Kit requests NumPy <2, but the retained
         # baseline/GA use NumPy 2.3.1/2.5.1. Copy the exact wire-only source and
-        # one locked transport wheel beside the runtime instead. No installer
+        # locked wire dependencies beside the runtime instead. No installer
         # writes to Isaac's prefix and no NumPy/Pillow/model dependency resolves.
         target = f"$RUNTIME_DIR/{OPENPI_CLIENT_DEPS_DIRNAME}"
+        fallback = f"$RUNTIME_DIR/{OPENPI_CLIENT_FALLBACK_DIRNAME}"
         wheel = OPENPI_CLIENT_WEBSOCKETS_WHEEL
         unpack = "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])"
         check = (
@@ -244,15 +260,40 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
             "from openpi_droid_policy_runtime import check_staged_openpi_client; "
             "check_staged_openpi_client(sys.argv[2])"
         )
-        return [
+        commands = [
             f'test ! -e "{target}"',
+            f'test ! -e "{fallback}"',
             f'mkdir -p "{target}"',
+            f'mkdir -p "{fallback}"',
             f'cp -R "{source}/packages/openpi-client/src/openpi_client" "{target}/openpi_client"',
             f'cp "{source}/LICENSE" "{target}/OPENPI_LICENSE"',
             f'curl -LsSf {shlex.quote(wheel["url"])} -o "{target}/websockets.whl"',
             f'printf \'%s  %s\\n\' {wheel["sha256"]} "{target}/websockets.whl" | sha256sum --check --strict -',
             f'"{policy_venv_root(candidate_id)}/bin/python" -c {shlex.quote(unpack)} '
             f'"{target}/websockets.whl" "{target}"',
+        ]
+        for name, artifact in OPENPI_CLIENT_FALLBACK_ARTIFACTS.items():
+            commands += [
+                f'curl -LsSf {shlex.quote(artifact["url"])} -o "{fallback}/{name}.archive"',
+                f'printf \'%s  %s\\n\' {artifact["sha256"]} "{fallback}/{name}.archive" '
+                '| sha256sum --check --strict -',
+            ]
+        extract_fallback = '''import sys,tarfile,zipfile
+from pathlib import Path
+root=Path(sys.argv[1])
+with zipfile.ZipFile(root/'typing-extensions.archive') as archive:
+    archive.extractall(root)
+with tarfile.open(root/'msgpack.archive') as archive:
+    for name in ('__init__.py','exceptions.py','ext.py','fallback.py','COPYING'):
+        source='msgpack-1.1.0/'+('msgpack/'+name if name!='COPYING' else name)
+        target=root/('msgpack/'+name if name!='COPYING' else 'MSGPACK_COPYING')
+        target.parent.mkdir(parents=True,exist_ok=True)
+        with target.open('xb') as stream:
+            stream.write(archive.extractfile(source).read())
+'''
+        return [*commands,
+            f'"{policy_venv_root(candidate_id)}/bin/python" -c {shlex.quote(extract_fallback)} '
+            f'"{fallback}"',
             f'"{ISAAC_INTERPRETER}" -c {shlex.quote(check)} "$RUNTIME_DIR" '
             '"$OUT_DIR/openpi_client_staging.v1.json"',
         ]
@@ -577,6 +618,9 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
             {"source_revision": EXPECTED_CANDIDATES[candidate_id]["source_revision"],
              "directory": OPENPI_CLIENT_DEPS_DIRNAME,
              "transport_wheel": dict(OPENPI_CLIENT_WEBSOCKETS_WHEEL),
+             "fallback_directory": OPENPI_CLIENT_FALLBACK_DIRNAME,
+             "fallback_artifacts": {key: dict(value) for key, value in OPENPI_CLIENT_FALLBACK_ARTIFACTS.items()},
+             "prefer_sdk_dependencies": True,
              "preserve_isaac_numpy": True, "model_called_in_preflight": False}
             if candidate_id == "pi05_droid" else None
         ),
@@ -819,6 +863,9 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
         {"source_revision": EXPECTED_CANDIDATES[candidate_id]["source_revision"],
          "directory": OPENPI_CLIENT_DEPS_DIRNAME,
          "transport_wheel": dict(OPENPI_CLIENT_WEBSOCKETS_WHEEL),
+         "fallback_directory": OPENPI_CLIENT_FALLBACK_DIRNAME,
+         "fallback_artifacts": {key: dict(value) for key, value in OPENPI_CLIENT_FALLBACK_ARTIFACTS.items()},
+         "prefer_sdk_dependencies": True,
          "preserve_isaac_numpy": True, "model_called_in_preflight": False}
         if candidate_id == "pi05_droid" else None
     )

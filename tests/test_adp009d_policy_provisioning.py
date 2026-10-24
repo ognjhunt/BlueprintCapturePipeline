@@ -530,6 +530,12 @@ def test_openpi_client_is_staged_without_resolving_isaacs_numpy() -> None:
     from blueprint_pipeline.adp009d_policy_provisioning import OPENPI_CLIENT_WEBSOCKETS_WHEEL
     assert OPENPI_CLIENT_WEBSOCKETS_WHEEL["url"] in script
     assert OPENPI_CLIENT_WEBSOCKETS_WHEEL["sha256"] in script
+    from blueprint_pipeline.adp009d_policy_provisioning import OPENPI_CLIENT_FALLBACK_ARTIFACTS
+    for artifact in OPENPI_CLIENT_FALLBACK_ARTIFACTS.values():
+        assert artifact["url"] in script
+        assert artifact["sha256"] in script
+    assert "msgpack-1.1.0/" in script
+    assert "openpi_client_fallback_deps" in script
     # The wrapper is correct for running Isaac, but not for pip build
     # subprocesses: C83's pi05 setup lost the stdlib and failed importing json.
     assert f'"{ISAAC_INTERPRETER}" -m pip' not in script

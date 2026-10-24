@@ -29,10 +29,12 @@ from blueprint_pipeline.adp009d_policy_provisioning import (
     POLICY_PYTHON_REQUESTS,
     POLICY_PYTHON_INSTALL_DIR,
     POLICY_SOURCE_ROOT,
+    UV_ROOT,
     UV_ARCHIVE_SHA256,
     UV_ARCHIVE_URL,
     ISAAC_INTERPRETER,
     OPENPI_CLIENT_WEBSOCKETS_WHEEL,
+    OPENPI_CLIENT_FALLBACK_ARTIFACTS,
     _isaac_client_commands,
     build_provisioning_script,
     policy_venv_root,
@@ -139,6 +141,48 @@ def mujoco_requirement(lock: dict) -> str:
     return "mujoco==2.3.7 " + " ".join(f"--hash={value}" for value in hashes) + "\n"
 
 
+def production_setup_prefix(*, workspace: Path, isaac_wrapper: Path) -> str:
+    """Run every production command through install completion, before weights.
+
+    Only owned absolute paths are rebased. In particular, source checkout,
+    lock verification, uv download, venv/sync, and SDK staging stay intact.
+    """
+    script = build_provisioning_script(CANDIDATE)
+    marker = f'echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{CANDIDATE}_checkpoint:started"'
+    if script.count(marker) != 1:
+        raise ValueError("policy_dependency_replay_checkpoint_boundary_ambiguous")
+    prefix = script.split(marker)[0]
+    install_complete = f'echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{CANDIDATE}_install:completed"'
+    if prefix.count(install_complete) != 1 or "check_staged_openpi_client" not in prefix:
+        raise ValueError("policy_dependency_replay_install_boundary_missing")
+    replacements = {
+        policy_venv_root(CANDIDATE): workspace / "policy",
+        POLICY_SOURCE_ROOT: workspace / "source",
+        POLICY_PYTHON_INSTALL_DIR: workspace / "python",
+        UV_ROOT: workspace / "production-uv",
+        ISAAC_INTERPRETER: isaac_wrapper,
+    }
+    for old, new in replacements.items():
+        if any(character in str(new) for character in " \t\n\r'\"`$\\"):
+            raise ValueError("policy_dependency_replay_path_requires_shell_escaping")
+        prefix = prefix.replace(old, str(new))
+    if any(value in prefix for value in replacements):
+        raise ValueError("policy_dependency_replay_path_rebase_incomplete")
+    return prefix
+
+
+def write_isaac_wrapper(path: Path, python: Path) -> None:
+    # python.sh emits informational stdout around commands. Do not replace it
+    # with a quiet executable in the replay and accidentally hide protocol bugs.
+    path.write_text("#!/usr/bin/env bash\n"
+                    "printf '[INFO] SDK Python wrapper started\\n'\n"
+                    f"{shlex.quote(str(python))} \"$@\"\n"
+                    "result=$?\n"
+                    "printf '[INFO] SDK Python wrapper completed\\n'\n"
+                    "exit \"$result\"\n")
+    path.chmod(0o700)
+
+
 def replay(workspace: Path, output: Path, *, source_commit: str) -> dict:
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise ValueError("policy_dependency_replay_requires_linux_x86_64")
@@ -188,7 +232,7 @@ def replay(workspace: Path, output: Path, *, source_commit: str) -> dict:
         "candidate_id": CANDIDATE, "checkpoint_downloaded": False,
         "policy_query_performed": False, "gpu_used": False, "provider_mutation_performed": False,
         "full_environment_installed": False,
-        "claim_ceiling": "cpu_policy_dependency_install_only", "records": records,
+        "claim_ceiling": "cpu_production_setup_before_checkpoint", "records": records,
     }
     try:
         uvroot = workspace / "uv"
@@ -246,7 +290,6 @@ print(json.dumps({'python':sys.version,'base_prefix':sys.base_prefix,
  'venv_config_sha256':hashlib.sha256((Path(sys.prefix)/'pyvenv.cfg').read_bytes()).hexdigest(),
  'distributions':sorted((d.metadata['Name'],d.version) for d in distributions())},sort_keys=True))
 """
-        sdk_before = run("image-sdk-before", [str(negative / "bin/python"), "-c", sdk_probe])
         # Match the image's system-Python search rather than a CI runner's
         # optional hosted-toolcache interpreters.
         original_path = env["PATH"]
@@ -262,11 +305,41 @@ print(json.dumps({'python':sys.version,'base_prefix':sys.base_prefix,
         # 3.11.9 venv, then sync without the inherited 3.12 selection replacing it.
         # Leave VIRTUAL_ENV and UV_PROJECT_ENVIRONMENT pointing at the SDK;
         # the production venv target and sync's --active must select the policy.
-        env.update(UV_PYTHON_DOWNLOADS="never")
-        run("full-frozen-install", ["bash", "-c", production_environment_setup(
-            source=source, venv=positive, uv=uv, python_install_root=workspace / "python")])
+        sdk = workspace / "minimal-sdk"
+        run("minimal-sdk-venv", [str(uv), "venv", "--python", sys.executable, str(sdk)])
+        run("minimal-sdk-numpy-only", [str(uv), "pip", "install", "--python", str(sdk / "bin/python"),
+                                      "--only-binary", ":all:", "numpy==2.5.1"])
+        env.update(image_interpreter_environment(sdk), UV_PYTHON_DOWNLOADS="never")
+        sdk_before = run("image-sdk-before", [str(sdk / "bin/python"), "-c", sdk_probe])
+        runtime, prefix_output = workspace / "production-runtime", output / "production-prefix"
+        runtime.mkdir()
+        prefix_output.mkdir()
+        blueprint_source = Path(__file__).resolve().parents[1] / "src/blueprint_pipeline"
+        for name in ("openpi_droid_policy_runtime.py", "droid_policy_bridge.py",
+                     "adp009d_provisioning_preflight.py"):
+            shutil.copy2(blueprint_source / name, runtime / name)
+        wrapper = workspace / "isaac-python.sh"
+        write_isaac_wrapper(wrapper, sdk / "bin/python")
+        env.update(RUNTIME_DIR=str(runtime), OUT_DIR=str(prefix_output))
+        prefix = output / "production-setup-prefix.sh"
+        prefix.write_text(production_setup_prefix(workspace=workspace, isaac_wrapper=wrapper))
+        original_script = output / "production-provisioning.sh"
+        original_script.write_text(build_provisioning_script(CANDIDATE))
+        run("full-production-setup-prefix", ["bash", str(prefix)],
+            contains=f"provision_{CANDIDATE}_install:completed")
+        source = workspace / "source" / CANDIDATE
+        if ("sha256:" + hashlib.sha256((source / "uv.lock").read_bytes()).hexdigest() != digest):
+            raise ValueError("policy_dependency_replay_production_lock_mismatch")
+        staging = json.loads((prefix_output / "openpi_client_staging.v1.json").read_text())
+        if staging["fallback_dependencies"] != {"msgpack": True, "typing_extensions": True}:
+            raise ValueError("policy_dependency_replay_minimal_sdk_dependencies_preseeded")
+        result["full_production_setup_prefix_replayed"] = True
+        result["production_prefix_minimal_sdk_staging"] = staging
+        result["production_scripts"] = [{
+            "path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        } for path in (original_script, prefix)]
         result["production_venv_setup_replayed"] = True
-        sdk_after = run("image-sdk-after", [str(negative / "bin/python"), "-c", sdk_probe])
+        sdk_after = run("image-sdk-after", [str(sdk / "bin/python"), "-c", sdk_probe])
         if sdk_before.stdout.strip() != sdk_after.stdout.strip():
             raise ValueError("policy_dependency_replay_image_sdk_changed")
         result["image_sdk_environment_preserved"] = True
@@ -290,22 +363,26 @@ print(json.dumps({'python': sys.version, 'mujoco': mujoco.mj_versionString(),
 """])
         result.update(full_environment_installed=True,
                       native_imports=json.loads(probe.stdout.strip().splitlines()[-1]))
-        locked_websockets = next(p for p in tomllib.loads(lock.read_text())["package"]
-                                 if p["name"] == "websockets")
-        if not any(row["url"] == OPENPI_CLIENT_WEBSOCKETS_WHEEL["url"]
-                   and row["hash"] == "sha256:" + OPENPI_CLIENT_WEBSOCKETS_WHEEL["sha256"]
-                   and row["size"] == OPENPI_CLIENT_WEBSOCKETS_WHEEL["size_bytes"]
-                   for row in locked_websockets["wheels"]):
-            raise ValueError("policy_dependency_replay_client_wheel_not_in_frozen_lock")
+        for name, artifact in {"websockets": OPENPI_CLIENT_WEBSOCKETS_WHEEL,
+                               **OPENPI_CLIENT_FALLBACK_ARTIFACTS}.items():
+            locked = next(p for p in tomllib.loads(lock.read_text())["package"] if p["name"] == name)
+            if not any(row["url"] == artifact["url"]
+                       and row["hash"] == "sha256:" + artifact["sha256"]
+                       and row["size"] == artifact["size_bytes"]
+                       for row in [*locked["wheels"], locked["sdist"]]):
+                raise ValueError(f"policy_dependency_replay_client_artifact_not_in_frozen_lock:{name}")
         result["isaac_client_matrix"] = []
-        for numpy_version, msgpack_version in (("2.3.1", "1.2.1"), ("2.5.1", "1.1.0")):
-            label = "isaac-client-numpy-" + numpy_version
+        for numpy_version, msgpack_version in (("2.3.1", None), ("2.5.1", None),
+                                                ("2.3.1", "1.2.1"), ("2.5.1", "1.1.0")):
+            label = "isaac-client-numpy-" + numpy_version + ("-sdk-codec" if msgpack_version else "-minimal")
             client = workspace / label
             run(label + "-venv", [str(uv), "venv", "--python", sys.executable, str(client)])
             client_python = client / "bin/python"
+            host_dependencies = [f"numpy=={numpy_version}"]
+            if msgpack_version:
+                host_dependencies += [f"msgpack=={msgpack_version}", "typing-extensions==4.13.2"]
             run(label + "-host-dependencies", [str(uv), "pip", "install", "--python", str(client_python),
-                "--only-binary", ":all:", f"numpy=={numpy_version}", f"msgpack=={msgpack_version}",
-                "typing-extensions==4.13.2"])
+                "--only-binary", ":all:", *host_dependencies])
             runtime, client_output = workspace / (label + "-runtime"), output / label
             runtime.mkdir()
             client_output.mkdir()
@@ -316,12 +393,17 @@ print(json.dumps({'python': sys.version, 'mujoco': mujoco.mj_versionString(),
             commands = "set -euo pipefail\n" + "\n".join(_isaac_client_commands(CANDIDATE))
             commands = commands.replace(f"{POLICY_SOURCE_ROOT}/{CANDIDATE}", str(source))
             commands = commands.replace(policy_venv_root(CANDIDATE), str(positive))
-            commands = commands.replace(ISAAC_INTERPRETER, str(client_python))
+            matrix_wrapper = workspace / (label + "-python.sh")
+            write_isaac_wrapper(matrix_wrapper, client_python)
+            commands = commands.replace(ISAAC_INTERPRETER, str(matrix_wrapper))
             run(label + "-production-staging", ["bash", "-c", commands])
             client_receipt = client_output / "openpi_client_staging.v1.json"
             staging = json.loads(client_receipt.read_text())
             if staging["isaac_numpy_version"] != numpy_version or staging["isaac_numpy_unchanged"] is not True:
                 raise ValueError("policy_dependency_replay_isaac_numpy_changed")
+            if staging["fallback_dependencies"] != dict.fromkeys(("msgpack", "typing_extensions"),
+                                                                 msgpack_version is None):
+                raise ValueError("policy_dependency_replay_sdk_dependency_precedence_changed")
             request, response = workspace / (label + ".request"), workspace / (label + ".response")
             encode = """
 import sys, hashlib, json, inspect
@@ -370,7 +452,9 @@ print(json.dumps({'client_numpy':np.__version__,'lossless_action_roundtrip':True
 """
             run(label + "-decode", [str(client_python), "-c", verify, str(runtime), str(response)])
             result["isaac_client_matrix"].append({
-                "numpy_version": numpy_version, "msgpack_version": msgpack_version,
+                "numpy_version": numpy_version, "msgpack_version": staging["msgpack_version"],
+                "sdk_msgpack_version": msgpack_version,
+                "fallback_dependencies": staging["fallback_dependencies"],
                 "isaac_numpy_unchanged": True, "wire_roundtrip_passed": True,
                 "staging_receipt_path": str(client_receipt.relative_to(output)),
                 "staging_receipt_sha256": hashlib.sha256(client_receipt.read_bytes()).hexdigest(),

@@ -30,6 +30,45 @@ def test_cpu_replay_consumes_the_actual_production_sync(replay_script, tmp_path)
     assert not any("/opt/" in word for word in args)
 
 
+def test_full_prefix_replays_checkout_and_sdk_import_before_any_checkpoint(replay_script, tmp_path):
+    from blueprint_pipeline.adp009d_policy_provisioning import EXPECTED_CANDIDATES
+
+    prefix = replay_script.production_setup_prefix(workspace=tmp_path, isaac_wrapper=tmp_path / "sdk.sh")
+    assert "git clone --filter=blob:none" in prefix
+    assert EXPECTED_CANDIDATES["pi05_droid"]["source_revision"] in prefix
+    assert "--active --no-dev --frozen" in prefix
+    assert "check_staged_openpi_client" in prefix
+    assert "provision_pi05_droid_install:completed" in prefix
+    assert "adp009d_checkpoint_fetch_worker" not in prefix
+    assert "provision_pi05_droid_checkpoint:started" not in prefix
+    assert "adp009d_policy_server_worker" not in prefix
+    assert "/opt/adp009d-" not in prefix
+    assert str(tmp_path / "source/pi05_droid") in prefix
+    subprocess.run(["bash", "-n"], input=prefix, text=True, check=True)
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate"])
+def test_full_prefix_refuses_an_ambiguous_checkpoint_boundary(replay_script, tmp_path, monkeypatch, change):
+    script = replay_script.build_provisioning_script("pi05_droid")
+    marker = 'echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_pi05_droid_checkpoint:started"'
+    script = script.replace(marker, "" if change == "missing" else marker + "\n" + marker)
+    monkeypatch.setattr(replay_script, "build_provisioning_script", lambda _: script)
+    with pytest.raises(ValueError, match="checkpoint_boundary_ambiguous"):
+        replay_script.production_setup_prefix(workspace=tmp_path, isaac_wrapper=tmp_path / "sdk.sh")
+
+
+def test_sdk_wrapper_preserves_nonzero_status_and_noisy_stdout(replay_script, tmp_path):
+    import sys
+
+    wrapper = tmp_path / "python.sh"
+    replay_script.write_isaac_wrapper(wrapper, Path(sys.executable))
+    result = subprocess.run([str(wrapper), "-c", "print('payload');raise SystemExit(7)"],
+                            capture_output=True, text=True)
+    assert result.returncode == 7
+    assert result.stdout.splitlines() == ["[INFO] SDK Python wrapper started", "payload",
+                                          "[INFO] SDK Python wrapper completed"]
+
+
 def test_replay_retains_all_pinned_image_interpreter_selectors(replay_script, tmp_path):
     settings = replay_script.image_interpreter_environment(tmp_path / "sdk")
     assert settings["VIRTUAL_ENV"] == settings["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "sdk")
