@@ -34,7 +34,8 @@ def reviewed_reference_frames(reviewed_views, region_plan):
 def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_views,
                           region_plan, splat_root, output_root, review, context,
                           configuration, task_runner, planner_runner, release_blockers,
-                          max_polls, checkpoint=None, source_survey_path=None):
+                          max_polls, checkpoint=None, source_survey_path=None,
+                          source_recovery_runner=None, recorded_frames=(), recorded_source_reports=()):
     """Survey -> choose necessary gaps -> generate -> fuse -> re-survey.
 
     Repeated calls adopt identical completed stages. The shared provider allowance
@@ -53,6 +54,9 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
     reports, paths, generated_roots, depth_outcomes = [], [], [], []
     provenance = list(manifest.get('generated_result_digests', []))
     visual = manifest.get('visual_review_digest')
+    recorded, source_reports = list(recorded_frames), list(recorded_source_reports)
+    references.extend(recorded)
+    paths.extend(p for report in source_reports for p in report.get('preservation_paths', []))
     while references:
         binding = {'revision': 'v2-paired-depth', 'export_digest': manifest['digest'],
                    'task_region_plan_digest': region_plan['digest'],
@@ -70,12 +74,46 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
                 'required_surface_hypotheses': region_plan['proposal']['remaining_required_surfaces'],
                 'task_extent_summary': region_plan['proposal']['task_extent_summary'],
                 'previous_repair_outcomes': depth_outcomes,
+                **({'recorded_source_outcomes': [{'recovered_frame_ids': r['recovered_frame_ids'],
+                    'rejected_views': r.get('rejected_views', [])} for r in source_reports]}
+                   if source_reports else {}),
                 'small_distortions_acceptable': True, 'scene_complete_is_not_implied': True},
             review=review, root=root, context=context, configuration=configuration,
             task_runner=task_runner, planner_runner=planner_runner, release_blockers=release_blockers,
-            max_polls=max_polls, checkpoint=checkpoint, source_survey_path=source_survey_path)
+            max_polls=max_polls, checkpoint=checkpoint, source_survey_path=source_survey_path,
+            **({'recorded_frames': recorded} if recorded else {}))
         if report.get('status') == 'processing':
             return None, report
+        if report.get('status') == 'source_recovery_required' and source_recovery_runner is not None:
+            recovered, source_report = source_recovery_runner(report, [*frames, *recorded])
+            if recovered is None:
+                return None, source_report
+            known = {f['frame_id'] for f in [*frames, *recorded]}
+            if (not recovered or len({f['frame_id'] for f in recovered}) != len(recovered)
+                    or any(f['frame_id'] in known for f in recovered)
+                    or source_report.get('status') != 'completed'
+                    or source_report.get('digest') != canonical_digest(source_report, digest_field='digest')
+                    or source_report.get('target_pose_digest') != pose['digest']
+                    or set(source_report.get('recovered_frame_ids', [])) != {f['frame_id'] for f in recovered}):
+                raise ValueError('atlas_coverage_recorded_source_recovery_invalid')
+            recorded.extend(recovered)
+            source_reports.append(source_report)
+            references.extend(recovered)
+            geometry.extend(recovered)
+            provenance.append(source_report['digest'])
+            visual = canonical_digest({'previous': visual, 'recorded_source_review': source_report['digest']})
+            paths.extend(source_report.get('preservation_paths', []))
+            splat_root = output_root / ('background_source_recovered_splat-' + source_report['digest'][7:23])
+            saved = splat_root / 'atlas_depth_splat_manifest.json'
+            manifest = (json.loads(saved.read_text()) if saved.is_file() else write_depth_splat(
+                frames=geometry, result=pose, output_root=splat_root,
+                generated_result_digests=provenance, visual_review_digest=visual))
+            if (manifest.get('digest') != canonical_digest(manifest, digest_field='digest')
+                    or manifest.get('pose_result_digest') != pose['digest']
+                    or manifest.get('generated_result_digests') != provenance
+                    or {r['frame_id'] for r in manifest['frames']} != {f['frame_id'] for f in geometry}):
+                raise ValueError('atlas_coverage_export_did_not_consume_recorded_sources')
+            continue
         if generated is None:
             return None, report
         reports.append(report)
@@ -124,6 +162,7 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
               'binding': binding if references else {'task_region_plan_digest': region_plan['digest']},
               'splat_root': str(splat_root), 'splat_manifest_digest': manifest['digest'],
               'completion_reports': reports, 'generated_roots': generated_roots,
+              **({'recorded_source_recoveries': source_reports} if source_reports else {}),
               'preservation_paths': list(dict.fromkeys(paths)), 'stop_reason': stop,
               'task_coverage_sufficient': stop in {'agent_found_no_material_task_gap', 'no_eligible_geometry_gaps',
                                                    'source_review_found_physical_openings'},

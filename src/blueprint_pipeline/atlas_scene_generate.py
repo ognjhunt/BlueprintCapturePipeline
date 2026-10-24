@@ -40,7 +40,7 @@ def prepare_rgbd_context(*, frames, root):
 def generate_rgbd_completion(*, frames, selected, candidates, root, pose, context,
                              configuration, task_runner, max_polls, scene_caption='',
                              checkpoint=None, geometry_frames=None, reference_frames=None,
-                             exported_gap_feedback=False, **_):
+                             exported_gap_feedback=False, extent_frames=None, **_):
     """Generate native RGBD, then admit additions only in explicit missing regions."""
     from .atlas_result_bundle import _completed_task
     from .atlas_scene_chisel import prepare_depth_context, target_batches
@@ -58,7 +58,7 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
     groups = target_batches(selected=selected, candidates=candidates, source_count=len(contexts))
     chosen = list({row['camera_id']: row for group in groups for row in group}.values())
     references = frames if geometry_frames is None else geometry_frames
-    extent = observed_scene_bounds(frames)
+    extent = observed_scene_bounds(frames if extent_frames is None else extent_frames)
     rows = prepare_completion_views(frames=context_frames, selected=chosen, root=root / 'source-footprints')
     depths = prepare_depth_context(frames=references, selected=chosen, root=root / 'depth-context')
     selected_by_id = {row['camera_id']: row for row in selected}

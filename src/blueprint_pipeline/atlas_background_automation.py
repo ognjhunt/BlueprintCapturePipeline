@@ -125,7 +125,7 @@ def grounded_region_guide(*, target, frames):
     return {'track_id': target['target_id'] + '-grounded-region-guide', 'label': target['target_id'],
         'observations': observations, 'guide_only': True, 'physical_evidence': False,
         'selection_basis': 'agent_grounded_region_not_segmentation',
-        'spatial_evidence_digest': canonical_digest(target['spatial_evidence'])}
+        'spatial_evidence_digest': canonical_digest({'regions': target['spatial_evidence']})}
 
 
 def complete_track_coverage(*, track, target, frames):
@@ -274,9 +274,9 @@ def prepare_masked_frames(*, frames, targets, margin, root):
                 **({"removed_transient_ids": transients} if transients else {}),
                 "generated_pixels_present": False,
                 **({'mask_guide_basis': 'agent_grounded_region',
-                    'mask_guide_evidence_digest': canonical_digest([
+                    'mask_guide_evidence_digest': canonical_digest({'targets': [
                         {'target_id': target['target_id'], 'track_digest': canonical_digest(target['track'])}
-                        for target in targets if target['disposition'] == 'remove' and target['track'].get('guide_only')])}
+                        for target in targets if target['disposition'] == 'remove' and target['track'].get('guide_only')]})}
                    if any(target['disposition'] == 'remove' and target['track'].get('guide_only') for target in targets) else {}),
             }
         )

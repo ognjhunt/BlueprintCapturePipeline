@@ -116,7 +116,8 @@ def load_generated_views(root: Path, frame_ids):
 def complete_scene(*, pose_root, pose, frames, review, root, context, configuration,
                    task_runner, planner_runner, release_blockers, max_polls, checkpoint=None,
                    existing_geometry_frames=(), expected_frames=(), splat_root=None,
-                   reference_frames=None, coverage_feedback=None, source_survey_path=None):
+                   reference_frames=None, coverage_feedback=None, source_survey_path=None,
+                   recorded_frames=()):
     """Plan -> generate RGBD -> independent review, all resumable under one cap."""
     from .website_image_completion import verify_completed_background
 
@@ -165,7 +166,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                 np.linalg.norm(f['rotation'] - rotation))
             target.setdefault('expected_frame_id', closest['frame_id'])
     from .atlas_scene_preservation import observed_scene_bounds
-    extent = observed_scene_bounds(frames)
+    extent = observed_scene_bounds([*frames, *recorded_frames])
     from .atlas_scene_gaps import survey_gaps, select_gap_mask, target_gap_ids, context_supported_candidates
     geometry_frames = [*frames, *existing_geometry_frames]
     survey_options = ({'expected_frames': expected_frames, 'splat_root': splat_root}
@@ -265,7 +266,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     from .atlas_source_gap_evidence import source_gallery, source_actions
     gallery, source_previews = source_gallery(
         survey_path=source_survey_path, source_video_digest=pose['binding']['source_video_digest'],
-        conditioned_frame_ids=[f['frame_id'] for f in frames], root=root / 'original-capture')
+        conditioned_frame_ids=[f['frame_id'] for f in [*frames, *recorded_frames]], root=root / 'original-capture')
     feedback['original_capture_gallery'] = gallery
     feedback['previews'].extend(source_previews)
     # Source review can be added to a retained, unfinished pass without
@@ -401,6 +402,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         max_polls=max_polls, removed_objects=[obj["label"] for obj in review["automation"]["objects"]
             if obj["disposition"] == "remove"], checkpoint=checkpoint,
         scene_caption=proposal['scene_caption'], view_gap_reasons=reasons, geometry_frames=geometry_frames,
+        **({'extent_frames': [*frames, *recorded_frames]} if recorded_frames else {}),
         **({'reference_frames': reference_frames} if reference_frames is not None else {}),
         **({'exported_gap_feedback': True} if splat_root is not None else {}))
     if completed is None:

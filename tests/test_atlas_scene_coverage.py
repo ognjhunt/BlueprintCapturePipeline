@@ -115,3 +115,47 @@ def test_reference_selection_refuses_changed_semantic_plan(tmp_path):
     args['region_plan']['proposal']['task_extent_summary'] = 'changed'
     with pytest.raises(ValueError, match='task_region_plan_changed'):
         coverage.refine_scene_coverage(**args)
+
+
+def test_recorded_source_action_is_recovered_fused_and_conditioned_before_generation(tmp_path, monkeypatch):
+    args = fixture(tmp_path)
+    args['pose']['digest'] = 'pose'
+    calls, recoveries = [], []
+    new = deepcopy(args['reviewed_views'][0]['frame'])
+    new['frame_id'] = 'recorded-later'
+    new['confidence'][:] = 0
+    new['confidence'][12:36, 20:44] = 1
+    receipt = {'status': 'completed', 'target_pose_digest': 'pose',
+        'recovered_frame_ids': [new['frame_id']], 'frame_bindings': [_frame_binding(new)],
+        'preservation_paths': [], 'rejected_views': []}
+    receipt['digest'] = canonical_digest(receipt, digest_field='digest')
+    def complete(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            return None, {'status': 'source_recovery_required', 'digest': 'source-action'}
+        assert kw['recorded_frames'] == [new]
+        assert 'recorded-later' in {f['frame_id'] for f in kw['reference_frames']}
+        assert 'recorded-later' in {f['frame_id'] for f in kw['existing_geometry_frames']}
+        assert kw['coverage_feedback']['recorded_source_outcomes'][0]['recovered_frame_ids'] == ['recorded-later']
+        assert kw['splat_root'] != args['splat_root']
+        return [], report('agent_found_no_material_task_gap')
+    def recover(action, known):
+        recoveries.append(action)
+        assert [f['frame_id'] for f in known] == ['source']
+        return [new], receipt
+    monkeypatch.setattr(completion, 'complete_scene', complete)
+    args['source_recovery_runner'] = recover
+    (geometry, manifest, _), result = coverage.refine_scene_coverage(**args)
+    assert len(calls) == 2 and len(recoveries) == 1
+    assert [f['frame_id'] for f in geometry] == ['source', 'recorded-later']
+    assert manifest['pose_result_digest'] == 'pose'
+    assert receipt['digest'] in manifest['generated_result_digests']
+    assert result['recorded_source_recoveries'] == [receipt]
+
+
+def test_source_recovery_processing_does_not_start_generation(tmp_path, monkeypatch):
+    args = fixture(tmp_path)
+    monkeypatch.setattr(completion, 'complete_scene', lambda **_: (None, {'status': 'source_recovery_required'}))
+    pending = {'status': 'processing', 'stage': 'recorded_source_pose', 'operation_id': 'retained-pose'}
+    args['source_recovery_runner'] = lambda *_: (None, pending)
+    assert coverage.refine_scene_coverage(**args) == (None, pending)

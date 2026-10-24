@@ -281,3 +281,51 @@ def test_automation_consumes_generated_depth_and_refuses_a_stale_baseline(tmp_pa
         if coverage_enabled:
             assert exports[0]['splat_root'] == tmp_path / 'refined-splat'
             assert result['background']['export_coverage']['task_coverage_sufficient'] is True
+
+
+def test_initial_construction_automatically_recovers_recorded_views_and_exports_the_new_receipts(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_scene_automation as worker, atlas_background_automation
+    from blueprint_pipeline import atlas_scene_measurements, atlas_depth_splat, atlas_result_bundle
+    from blueprint_pipeline import atlas_scene_recovery, atlas_scene_task_regions, atlas_recorded_source_recovery
+    source, extra, novel = frame(), frame('recorded-later', .1), frame('novel', .2)
+    pose = {'digest': 'old-world', 'binding': {'source_video_digest': 'source'}}
+    monkeypatch.setattr(atlas_scene_measurements, 'load_views', lambda *_: (pose, [source]))
+    monkeypatch.setattr(atlas_scene_measurements, 'estimate_sizes', lambda **_: {})
+    monkeypatch.setattr(atlas_background_automation, 'run_background', lambda **_: {
+        'status': 'fallback_prepared', 'frames': [], 'review': {'status': 'passed'}})
+    monkeypatch.setattr(worker, '_fallback_pose', lambda *_: ((pose, [source], tmp_path), {'status': 'completed'}))
+    completed, recovered, exports = [], [], []
+    def complete(**kw):
+        completed.append(kw)
+        if len(completed) == 1:
+            return None, {'status': 'source_recovery_required', 'digest': 'sha256:source-action'}
+        assert [f['frame_id'] for f in kw['recorded_frames']] == ['recorded-later']
+        assert kw['pose'] is pose and [f['frame_id'] for f in kw['frames']] == ['a']
+        return [novel], {'status': 'passed', 'generation_result_digest': 'native-result',
+                         'review': {'status': 'passed'}, 'generated_root': str(tmp_path / 'generated')}
+    def recover(**kw):
+        recovered.append(kw)
+        assert kw['pose'] is pose and kw['background_path'].name == 'prepared_background.json'
+        return [extra], {'status': 'completed', 'digest': 'sha256:recovered',
+                        'background_path': str(tmp_path / 'recovered-background.json'),
+                        'expanded_automation': kw['automation'], 'preservation_paths': []}
+    monkeypatch.setattr(completion, 'complete_scene', complete)
+    monkeypatch.setattr(atlas_recorded_source_recovery, 'recover_recorded_sources', recover)
+    monkeypatch.setattr(atlas_scene_recovery, 'reviewed_completion_views', lambda _: [])
+    monkeypatch.setattr(atlas_scene_task_regions, 'plan_task_regions', lambda **_: {})
+    monkeypatch.setattr(atlas_scene_recovery, 'recover_reviewed_geometry', lambda **_: ([], {'preservation_paths': []}))
+    def build(**kw):
+        assert [f['frame_id'] for f in kw['frames']] == ['a', 'recorded-later', 'novel']
+        assert kw['result'] is pose and 'sha256:recovered' in kw['generated_result_digests']
+        return {'digest': 'splat', 'generated_result_digests': kw['generated_result_digests'],
+                'frames': [{'frame_id': f['frame_id']} for f in kw['frames']]}
+    monkeypatch.setattr(atlas_depth_splat, 'write_depth_splat', build)
+    monkeypatch.setattr(atlas_result_bundle, 'export_pose_bundle', lambda **kw: exports.append(kw) or {'zip_path': 'scene.zip'})
+    result = worker.run_automation(pose_root=tmp_path, inputs={},
+        review={'automation': {'objects': [], 'scale_references': [], 'removal_instruction': 'Empty target location',
+                              'mask_margin_fraction': .01}}, output_root=tmp_path / 'out', task_context={},
+        configuration={'policy': {'rgbd_view_cost_usd': .05}}, task_runner=None, pose_runner=None,
+        planner_runner=object(), release_blockers=lambda: ('commit', []), source_survey_path=tmp_path / 'source.json')
+    assert result['status'] == 'completed' and len(completed) == 2 and len(recovered) == 1
+    assert any('source_conditioned_completion' in str(path) and path.name == 'completion.json'
+               for path in exports[0]['analysis_paths'])
