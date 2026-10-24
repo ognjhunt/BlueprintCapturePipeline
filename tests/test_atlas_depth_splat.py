@@ -512,3 +512,15 @@ def test_a_sample_straddling_an_occluder_edge_is_no_vote():
     frames = [frame(a, np.full((80, 120), 2.0, np.float32), "a"), frame(b, panel, "b")]
     rescaled, _ = depth_splat.consensus_depths(frames)
     assert np.array_equal(rescaled[0]["depth"], frames[0]["depth"])
+
+
+def test_a_correction_never_crosses_an_occlusion_edge():
+    # Both views agree on a depth-1 foreground but disagree by 4 % on the background beside it.
+    a, b = camera(width=96, height=64, focal=80.0), camera(width=96, height=64, focal=80.0)
+    foreground = np.arange(96)[None, :] < 46
+    frames = [frame(a, np.broadcast_to(np.where(foreground, 1.0, 2.0), (64, 96)).astype(np.float32), "a"),
+              frame(b, np.broadcast_to(np.where(foreground, 1.0, 2.08), (64, 96)).astype(np.float32), "b")]
+    rescaled, _ = depth_splat.consensus_depths(frames)
+    for before, after in zip(frames, rescaled):
+        assert np.array_equal(after["depth"][:, :46], before["depth"][:, :46]), "the agreeing foreground stays one sheet"
+    assert np.median(np.abs(rescaled[0]["depth"][:, 60:] - rescaled[1]["depth"][:, 60:])) < 0.02

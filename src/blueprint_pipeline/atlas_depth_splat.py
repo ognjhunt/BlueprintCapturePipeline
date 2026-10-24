@@ -382,18 +382,60 @@ def _inverse_depth_at(frame: Mapping[str, Any], column: np.ndarray, row: np.ndar
     return out
 
 
+def _surface_smoothed(correction: np.ndarray, voted: np.ndarray, depth: np.ndarray) -> np.ndarray:
+    """Gaussian-weighted mean of the voted corrections over grid pixels on each pixel's own surface.
+
+    A grid pixel whose depth differs by more than the gate is another surface, so a
+    correction never crosses an occlusion edge. Away from votes the ratio fades to 1.
+    """
+    radius = int(3.0 * DEPTH_CONSENSUS_SIGMA + 0.5)
+    offsets = np.arange(-radius, radius + 1)
+    kernel = np.exp(-(offsets[:, None] ** 2 + offsets[None, :] ** 2) / (2.0 * DEPTH_CONSENSUS_SIGMA ** 2))
+    kernel /= kernel.sum()
+    height, width = depth.shape
+    padded_correction = np.pad(np.where(voted, correction, 0.0), radius)
+    padded_voted = np.pad(voted.astype(np.float64), radius)
+    padded_depth = np.pad(depth, radius, constant_values=np.nan)
+    total, spread = np.zeros(depth.shape), np.zeros(depth.shape)
+    with np.errstate(invalid="ignore"):
+        for i, dy in enumerate(offsets):
+            for j, dx in enumerate(offsets):
+                window = (slice(radius + dy, radius + dy + height), slice(radius + dx, radius + dx + width))
+                same = np.abs(padded_depth[window] - depth) <= DEPTH_CONSENSUS_GATE * depth
+                total += kernel[i, j] * np.where(same, padded_correction[window], 0.0)
+                spread += kernel[i, j] * np.where(same, padded_voted[window], 0.0)
+    return 1.0 + total / np.maximum(spread, DEPTH_CONSENSUS_MIN_WEIGHT)
+
+
+def _upsampled_on_surface(ratio: np.ndarray, grid_depth: np.ndarray, depth: np.ndarray) -> np.ndarray:
+    """Bilinear full-resolution ratio from the grid samples on each pixel's own surface; 1 where none is."""
+    start, stride = DEPTH_CONSENSUS_STRIDE // 2, DEPTH_CONSENSUS_STRIDE
+    rows, columns = ratio.shape
+    gy = np.clip((np.arange(depth.shape[0]) - start) / stride, 0, rows - 1)
+    gx = np.clip((np.arange(depth.shape[1]) - start) / stride, 0, columns - 1)
+    y0, x0 = np.floor(gy).astype(np.int64), np.floor(gx).astype(np.int64)
+    total, weight = np.zeros(depth.shape), np.zeros(depth.shape)
+    with np.errstate(invalid="ignore"):
+        for ys, yw in ((y0, 1.0 - (gy - y0)), (np.minimum(y0 + 1, rows - 1), gy - y0)):
+            for xs, xw in ((x0, 1.0 - (gx - x0)), (np.minimum(x0 + 1, columns - 1), gx - x0)):
+                corner = np.ix_(ys, xs)
+                same = np.abs(grid_depth[corner] - depth) <= DEPTH_CONSENSUS_GATE * depth
+                total += np.where(same, yw[:, None] * xw[None, :] * ratio[corner], 0.0)
+                weight += np.where(same, yw[:, None] * xw[None, :], 0.0)
+    return np.where(weight > 0, total / np.where(weight > 0, weight, 1.0), 1.0)
+
+
 def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Rescale each frame's depth towards the median of its nearest views' depth along its pixels.
 
     A pixel's world point is projected into each nearest view; that view's depth there
     over the point's own distance from it is one vote, kept only within the gate, so an
     occluder or a surface seen past an edge never votes. The median with the frame's
-    own vote of 1 is smoothed across the image and applied at full resolution: the
-    correction is low-frequency and leaves surface detail alone. Views that already
-    agree vote exactly 1 and stay unchanged.
+    own vote of 1 is smoothed over its own surface and applied at full resolution on
+    that surface only: the correction is low-frequency, leaves surface detail alone and
+    never crosses an occlusion edge. Views that already agree vote exactly 1 and stay
+    unchanged.
     """
-    from scipy.ndimage import gaussian_filter, zoom
-
     frames = [dict(frame) for frame in frames]
     centres = np.array([frame["position"] for frame in frames])
     start, stride = DEPTH_CONSENSUS_STRIDE // 2, DEPTH_CONSENSUS_STRIDE
@@ -421,17 +463,15 @@ def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str
                     votes.append(np.where(np.abs(seen - 1.0) <= DEPTH_CONSENSUS_GATE, seen, np.nan))
             stack = np.stack(votes)
             counted = np.isfinite(stack).sum(axis=0) >= 2
-            correction, weight = np.zeros(depth.shape), np.zeros(depth.shape)
+            correction, voted_grid = np.zeros(depth.shape), np.zeros(depth.shape, bool)
             correction[rows[counted], columns[counted]] = np.nanmedian(stack[:, counted], axis=0) - 1.0
-            weight[rows[counted], columns[counted]] = 1.0
-            spread = gaussian_filter(weight, DEPTH_CONSENSUS_SIGMA, mode="constant", truncate=3.0)
-            ratios.append(1.0 + gaussian_filter(correction, DEPTH_CONSENSUS_SIGMA, mode="constant", truncate=3.0)
-                          / np.maximum(spread, DEPTH_CONSENSUS_MIN_WEIGHT))
+            voted_grid[rows[counted], columns[counted]] = True
+            grid_depth = np.where(valid, depth, np.nan)
+            ratios.append((_surface_smoothed(correction, voted_grid, grid_depth), grid_depth))
             voted.append(float(counted.sum()) / depth.size)
-        for frame, ratio in zip(frames, ratios):
-            height, width = frame["depth"].shape
-            full = zoom(ratio, (height / ratio.shape[0], width / ratio.shape[1]), order=1, mode="nearest", grid_mode=True)
-            frame["depth"] = (frame["depth"] * full[:height, :width]).astype(frame["depth"].dtype)
+        for frame, (ratio, grid_depth) in zip(frames, ratios):
+            full = _upsampled_on_surface(ratio, grid_depth, frame["depth"])
+            frame["depth"] = (frame["depth"] * full).astype(frame["depth"].dtype)
         voted_by_pass.append(round(float(np.median(voted)), 4))
     return frames, {"basis": "median_of_nearest_views", "passes": DEPTH_CONSENSUS_PASSES,
                     "neighbours": CROSS_VIEW_NEIGHBOURS, "relative_gate": DEPTH_CONSENSUS_GATE,
