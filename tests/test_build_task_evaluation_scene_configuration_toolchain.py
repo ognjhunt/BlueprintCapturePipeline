@@ -239,6 +239,22 @@ def test_toolchain_publication_fails_closed_on_existing_or_bad_readback(
     assert not failed.exists()
 
 
+def test_a_stopped_toolchain_publication_leaves_no_staging(tmp_path: Path) -> None:
+    def stopped(_path: Path) -> bytes:
+        raise KeyboardInterrupt
+
+    root = tmp_path / "scene-configuration"
+    with pytest.raises(KeyboardInterrupt):
+        build_published_scene_configuration_toolchain(
+            source_commit="b" * 40,
+            output_root=root / ("b" * 40),
+            readback=stopped,
+            readback_actor="service-account:test-runner",
+            component_packages=_component_packages(tmp_path / "packages"),
+        )
+    assert list(root.iterdir()) == []
+
+
 @pytest.mark.parametrize("case,reuses_previous", [
     ("identical", True), ("changed_bytes", False), ("writable_source", False),
     ("writable_previous", False), ("different_mode", False), ("symlink", False),

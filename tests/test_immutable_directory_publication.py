@@ -104,3 +104,21 @@ def test_dangling_destination_symlink_is_not_followed(tmp_path: Path) -> None:
 
     assert destination.is_symlink()
     assert not escaped.exists()
+
+
+def test_a_stopped_publication_leaves_no_partial_destination(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import immutable_directory_publication as publication
+
+    def stopped(_source: str, _destination: str) -> str:
+        raise SystemExit(143)  # systemctl stop, through the provision step's SIGTERM handler
+
+    monkeypatch.setattr(publication, "_link_immutable_file", stopped)
+    destination = tmp_path / "published"
+    with pytest.raises(SystemExit):
+        publish_staged_immutable_directory(
+            staging=_staging(tmp_path, "stopped"),
+            destination=destination,
+            manifest_name="manifest.json",
+            output_exists_code="immutable_output_exists",
+        )
+    assert not destination.exists()

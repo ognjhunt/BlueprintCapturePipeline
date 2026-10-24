@@ -18,7 +18,6 @@ import signal
 import stat
 import sys
 import tempfile
-import time
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -34,6 +33,10 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     VGG16_WEIGHTS_SOURCE_URL,
 )
 from blueprint_pipeline.service_account_reader import ServiceAccountReader
+from blueprint_pipeline.provision_staging_sweep import (  # the provision CLI's startup sweep
+    remove_tree as _remove_tree,
+    sweep_stale_staging,
+)
 from blueprint_pipeline.task_evaluation_splat_render_runtime import (
     validate_splat_render_runtime,
 )
@@ -197,39 +200,6 @@ def reconcile_legacy_vgg16_runtime_storage(
         "digest": VGG16_WEIGHTS_SHA256,
         "mode": "0444",
     }
-
-
-def _remove_tree(root: Path) -> None:
-    if not root.exists() or root.is_symlink():
-        return
-    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        if path.is_dir():
-            path.chmod(0o700)
-    root.chmod(0o700)
-    shutil.rmtree(root)
-
-
-#: A provision killed before its cleanup ran (``systemctl stop`` or SIGKILL of
-#: a deploy) left about 11 GB of component staging in the temporary directory;
-#: three such runs filled the control plane's root disk on 2026-10-23 and the
-#: next deploy failed copying Blender. Deploys run one at a time, so staging
-#: this old belongs to a dead run.
-STALE_STAGING_SECONDS = 6 * 3600
-STAGING_PREFIXES = ("scene-configuration-components-", "blueprint-artisan-component-")
-
-
-def sweep_stale_staging(temp_root: Path | None = None, *, now: float | None = None) -> list[str]:
-    """Remove component staging a killed provision left behind; return the names removed."""
-    root = Path(temp_root or tempfile.gettempdir())
-    now = time.time() if now is None else now
-    removed = []
-    for path in sorted(root.iterdir()) if root.is_dir() else ():
-        info = path.lstat()
-        if (stat.S_ISDIR(info.st_mode) and path.name.startswith(STAGING_PREFIXES)
-                and info.st_uid == os.getuid() and now - info.st_mtime >= STALE_STAGING_SECONDS):
-            _remove_tree(path)
-            removed.append(path.name)
-    return removed
 
 
 def _terminated(signum: int, _frame: Any) -> None:
@@ -416,7 +386,7 @@ def main() -> int:
     parser.add_argument("--readback-user", required=True)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, _terminated)
-    removed = sweep_stale_staging()
+    removed = sweep_stale_staging(runtime_root=Path(args.runtime_root))
     if removed:
         print("removed stale provision staging: " + ", ".join(removed), file=sys.stderr, flush=True)
     readback = service_account_readback(args.readback_user)

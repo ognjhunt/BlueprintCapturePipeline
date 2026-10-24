@@ -355,6 +355,7 @@ from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
     reserve_control_plane_disk,
 )
 from blueprint_pipeline.control_plane_disk_usage import TreeUsage, tree_usage  # noqa: E402
+from blueprint_pipeline.provision_staging_sweep import sweep_stale_staging  # noqa: E402
 from blueprint_pipeline.control_plane_storage_pins import (  # noqa: E402
     DEFAULT_PINS_ROOT,
 )
@@ -4813,11 +4814,20 @@ def deploy_control_plane_commit(
             disk_reservation_root
         )
         try:
+            # Scratch a stopped deploy left is reclaimed before this one is
+            # admitted; otherwise its bytes would refuse every later deploy.
+            try:
+                swept_staging = sweep_stale_staging(
+                    runtime_root=Path(scene_configuration_runtime_root).expanduser()
+                )
+            except OSError as exc:  # best effort: admission still decides
+                swept_staging = [f"sweep_failed:{type(exc).__name__}"]
             # Reserve what this release costs to stage, not a flat 2 GiB: on
             # 2026-09-26 the flat figure refused a deploy the disk could hold.
             disk_reservation_estimate = _release_footprint_estimate(
                 source, source_commit, reservation_root=disk_reservation_root
             )
+            disk_reservation_estimate["swept_stale_staging"] = swept_staging
             disk_reservation = reserve_control_plane_disk(
                 "control_plane_deploy",
                 target_root=releases,

@@ -186,6 +186,25 @@ def test_failed_readback_preserves_shared_prerequisite_and_existing_runtime_mode
         assert info.st_nlink == 2
 
 
+def test_a_stopped_runtime_publication_leaves_no_staging(tmp_path: Path) -> None:
+    repository, commit = _repository(tmp_path)
+    node, browser_root, browser, modules = _prerequisites(tmp_path)
+    destination = tmp_path / "runtimes" / commit
+
+    def stopped(_path: Path) -> bytes:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        build_published_splat_render_runtime(
+            repository_root=repository, source_commit=commit,
+            node_executable=node, browser_root=browser_root,
+            browser_executable=browser, node_modules_root=modules,
+            output_root=destination, readback=stopped,
+            readback_actor="service-account:blueprint",
+        )
+    assert not destination.exists() and not list(destination.parent.iterdir())
+
+
 def test_public_runtime_readback_traverses_every_directory_under_private_umask(
     tmp_path: Path,
 ) -> None:
