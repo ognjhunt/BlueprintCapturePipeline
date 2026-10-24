@@ -65,11 +65,11 @@ def test_selection_budget_preserves_generated_coverage_before_buying_pose(tmp_pa
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=.11)
 
 
-@pytest.mark.parametrize("mode", ["scene", "completion", "export_coverage", "scale", "recovery"])
+@pytest.mark.parametrize("mode", ["scene", "completion", "export_coverage", "scale", "recovery", "recorded_sources"])
 def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_path, monkeypatch, mode):
     completion_mode = mode in {"completion", "export_coverage"}
     path, _, proposal, policy = fixture(tmp_path)
-    if mode == "recovery":
+    if mode in {"recovery", "recorded_sources"}:
         policy["maximum_review_cost_usd"] = 2
     from blueprint_pipeline import website_task_context as control
     from blueprint_pipeline import paid_resource_admission as admission
@@ -94,12 +94,16 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
         proposal = {"status": "proposed", "task_extent_summary": "Local working area",
                     "views": [{"frame_id": "0", "regions": [], "reason": "No missing task surface"}],
                     "remaining_required_surfaces": [], "excluded_scene_regions": ["distant scenery"]}
+    elif mode == 'recorded_sources':
+        proposal = {'views': [{'frame_id': '0', 'decision': 'use', 'fixed_environment_consistent': True,
+                              'objects': [], 'reason': 'The fixed support is visible'}],
+                    'transients': [], 'summary': 'Recover the recorded support'}
     class Invoker:
         def configure_reservation_audit(self, **_):
             pass
         def invoke(self, spec, input_value):
             assert spec.model == policy["model"] and len(input_value[0]["content"]) == (7 if mode == "scene" else 8)
-            no_search = completion_mode or mode == "recovery"
+            no_search = completion_mode or mode in {"recovery", "recorded_sources"}
             assert len(spec.hosted_tools) == (0 if no_search else 1)
             assert spec.max_hosted_tool_calls_per_turn == (0 if no_search else 2) and spec.hosted_tool_call_usd == .01
             if mode == 'export_coverage':
@@ -117,6 +121,8 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
         options["scaling"] = {"previews": [], "previous_measurement_digest": "old"}
     elif mode == "recovery":
         options["recovery"] = {"previews": [], "native_frame_ids": ["0"]}
+    elif mode == 'recorded_sources':
+        options['recovery'] = {'scope': 'recorded_background_sources', 'previews': [], 'requested_frame_ids': ['0']}
     result = planner.review_survey(**options)
     assert planner.review_survey(**options) == result
     assert len(calls) == 1 and calls[0]["provider"] == "openai" and calls[0]["source_video_digest"]

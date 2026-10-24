@@ -313,6 +313,26 @@ def run_automation(
                 # Adopt the last passed completion in the same pose frame.
                 # Completed geometry stays in the base and cannot be regenerated.
                 original_frames = derived_frames
+                from .atlas_recorded_source_recovery import recover_recorded_sources
+                recovery_background_path = output_root / 'background/prepared_background.json'
+                recovery_automation = automation
+
+                def recover_sources(action, known_frames):
+                    nonlocal recovery_background_path, recovery_automation
+                    recovered, source_report = recover_recorded_sources(
+                        action=action, source_survey_path=source_survey_path,
+                        background_path=recovery_background_path, automation=recovery_automation,
+                        pose=effective_pose, frames=known_frames,
+                        root=output_root / 'recorded_source_recovery' / action['digest'][7:23],
+                        context=task_context, configuration=configuration, task_runner=task_runner,
+                        pose_runner=pose_runner, planner_runner=planner_runner,
+                        release_blockers=release_blockers, max_polls=max_polls, checkpoint=checkpoint)
+                    if recovered is not None:
+                        recovery_background_path = Path(source_report['background_path'])
+                        recovery_automation = source_report['expanded_automation']
+                    return recovered, source_report
+
+                recorded_frames, recorded_reports = [], []
                 prior_frames, prior_reports = [], []
                 for prior in sorted(output_root.glob('scene_completion-v[0-9]*'),
                                     key=lambda p: int(p.name.rsplit('v', 1)[1])):
@@ -333,19 +353,38 @@ def run_automation(
                     generated_roots.extend(Path(p) for p in prior_report['generated_roots'])
                 background['adopted_completion_digests'] = [p['digest'] for p in prior_reports]
 
-                generated, completion = complete_scene(
-                    pose_root=effective_root, pose=effective_pose, frames=original_frames,
-                    review=review, root=output_root / f"scene_completion-{COMPLETION_REVISION}", context=task_context,
-                    configuration=configuration, task_runner=task_runner, release_blockers=release_blockers,
-                    planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint,
-                    existing_geometry_frames=prior_frames, source_survey_path=source_survey_path)
+                completion_root = output_root / f"scene_completion-{COMPLETION_REVISION}"
+                while True:
+                    generated, completion = complete_scene(
+                        pose_root=effective_root, pose=effective_pose, frames=original_frames,
+                        review=review, root=completion_root, context=task_context,
+                        configuration=configuration, task_runner=task_runner, release_blockers=release_blockers,
+                        planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint,
+                        existing_geometry_frames=[*prior_frames, *recorded_frames],
+                        source_survey_path=source_survey_path,
+                        **({'recorded_frames': recorded_frames, 'expected_frames': recorded_frames,
+                            'reference_frames': [*original_frames, *recorded_frames]} if recorded_frames else {}))
+                    if completion.get('status') != 'source_recovery_required':
+                        break
+                    recovered, source_report = recover_sources(completion, [*original_frames, *recorded_frames])
+                    if recovered is None:
+                        return source_report
+                    if not recovered or {f['frame_id'] for f in recovered} & {
+                            f['frame_id'] for f in [*original_frames, *recorded_frames]}:
+                        raise ValueError('atlas_initial_recorded_source_no_progress')
+                    recorded_frames.extend(recovered)
+                    recorded_reports.append(source_report)
+                    provenance.append(source_report['digest'])
+                    visual_digest = canonical_digest({'previous': visual_digest, 'recovery': source_report['digest']})
+                    completion_root = output_root / 'source_conditioned_completion' / canonical_digest(
+                        {'recoveries': [r['digest'] for r in recorded_reports]})[7:23]
                 if completion.get('status') in {'source_recovery_required', 'source_review_required'}:
                     return completion
                 if completion["status"] == "processing":
                     return completion
                 if generated is None:
                     raise ValueError(completion["reason"])
-                derived_frames = [*original_frames, *prior_frames, *generated]
+                derived_frames = [*original_frames, *prior_frames, *recorded_frames, *generated]
                 provenance = [*provenance, completion["generation_result_digest"]]
                 visual_digest = canonical_digest({"reviews": [visual_digest, completion["review"]]})
                 generated_roots.extend(Path(p) for p in completion.get("generated_roots", []) or
@@ -367,6 +406,10 @@ def run_automation(
                     derived_frames.extend(recovered)
                     provenance.append(recovery["digest"])
                     recovery_suffix = "-recovered-" + recovery["digest"][7:23]
+                if recorded_reports:
+                    recovery_suffix += '-sources-' + canonical_digest(
+                        {'recoveries': [r['digest'] for r in recorded_reports]})[7:23]
+                    background['recorded_source_recoveries'] = recorded_reports
                 background["geometry_recovery"] = recovery
                 background["recovered_completion_frame_count"] = len(recovered)
                 background["completion"] = completion
@@ -403,7 +446,9 @@ def run_automation(
                     review=review, context=task_context, configuration=configuration,
                     task_runner=task_runner, planner_runner=planner_runner,
                     release_blockers=release_blockers, max_polls=max_polls, checkpoint=checkpoint,
-                    source_survey_path=source_survey_path)
+                    source_survey_path=source_survey_path, source_recovery_runner=recover_sources,
+                    **({'recorded_frames': recorded_frames, 'recorded_source_reports': recorded_reports}
+                       if recorded_frames else {}))
                 if refined is None:
                     return coverage
                 derived_frames, splat, splat_root = refined
@@ -462,9 +507,10 @@ def run_automation(
                 analysis_paths=[
                     output_root / "scene_measurements.json",
                     output_root / "background_review.json",
-                ] + ([output_root / f"scene_completion-{COMPLETION_REVISION}" / name for name in
+                ] + ([completion_root / name for name in
                       ("completion.json", "context-fov-audit.json")] +
                      [Path(p) for p in completion.get("preservation_paths", [])] +
+                     [Path(p) for r in recorded_reports for p in r.get('preservation_paths', [])] +
                      [Path(p) for prior_report in prior_reports for p in prior_report.get('preservation_paths', [])]
                      if completion else []) + ([Path(p) for p in recovery["preservation_paths"]] if recovery else []) +
                     ([Path(p) for p in coverage['preservation_paths']] if coverage else []),

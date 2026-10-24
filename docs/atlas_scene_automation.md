@@ -88,7 +88,19 @@ The production Atlas controller runs the following for a new scene plan:
    opening. Original views are individual full-frame previews; they remain
    decision evidence and never bypass cleaning into Atlas generation inputs.
    A useful unconditioned recorded view returns `source_recovery_required`
-   before generation, while ambiguous visibility returns `source_review_required`.
+   before generation. The controller automatically reviews those exact source
+   views, appends removal regions to frozen targets, reuses previously approved
+   edits, cleans only the new views, and independently reviews the expanded set.
+   It obtains new depth with shared cleaned anchors, then uses the existing
+   shared-view depth fit to register only the added views into the original
+   coordinate frame. Original cameras, task-state selection, native generations
+   and receipts remain unchanged. Added depth enters the actual splat and every
+   subsequent coverage/generation reference set before the next gap decision.
+   A moved articulated target is acceptable only in this background-only stage
+   when completely erased; retained fixtures must still agree. Uncertain
+   visibility, changed fixed layout, failed cleanup or weak alignment stays an
+   explicit held result. Rejected recorded views and their reasons accompany
+   the next review. Every call remains on the existing source allowance.
    Physical openings are excluded from fill masks. Candidate sampling alone
    never proves absence from every video frame. Subsequent reviews also receive
    per-view requested pixels, available native depth, and admitted depth, so an

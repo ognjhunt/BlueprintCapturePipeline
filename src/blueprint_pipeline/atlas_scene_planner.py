@@ -521,7 +521,8 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     from .openai_prompt_cache import worst_case_reservation_usd
     # Every native view needs a complete typed decision. A fixed 8k allowance
     # truncated the live 13-view surface list before segmentation could start.
-    output_tokens = (max(8000, 2000 + 2000 * len(recovery.get("native_frame_ids", [])))
+    output_tokens = (max(8000, 2000 + 2000 * len(
+                        recovery.get("native_frame_ids", recovery.get('requested_frame_ids', []))))
                      if recovery is not None else 4000)
     if completion is not None and 'post_export_coverage' in completion:
         # Component surfaces plus per-gap source evidence outgrow the original
@@ -542,12 +543,18 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     if completion is not None and 'original_capture_gallery' in completion:
         from .atlas_source_gap_evidence import SOURCE_FIRST_INSTRUCTIONS
         instructions += SOURCE_FIRST_INSTRUCTIONS
+        if completion.get('post_export_coverage', {}).get('recorded_source_outcomes'):
+            instructions += ("\nUse recorded_source_outcomes and each rejected view's exact reason. "
+                             "Do not request the same unusable source again without new evidence.\n")
     if recovery is not None:
         from .atlas_scene_task_regions import TASK_SURFACE_INSTRUCTIONS, TaskSurfaceProposal
         instructions, schema = TASK_SURFACE_INSTRUCTIONS, TaskSurfaceProposal
         if recovery.get("scope") == "task_surface_masks":
             from .atlas_scene_surface_masks import SURFACE_MASK_REVIEW_INSTRUCTIONS, SurfaceMaskReview
             instructions, schema = SURFACE_MASK_REVIEW_INSTRUCTIONS, SurfaceMaskReview
+        elif recovery.get('scope') == 'recorded_background_sources':
+            from .atlas_recorded_source_recovery import RECORDED_SOURCE_INSTRUCTIONS, RecordedSourceProposal
+            instructions, schema = RECORDED_SOURCE_INSTRUCTIONS, RecordedSourceProposal
     # Exercise the exact SDK boundary before reserving spend or recording an
     # ambiguous submission. Plain JSON Schema validity is insufficient here.
     from agents import AgentOutputSchema
