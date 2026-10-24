@@ -295,8 +295,13 @@ def test_repair_copies_the_accepted_view_showing_most_objects(tmp_path, monkeypa
     for index, shown in enumerate((["cup"], ["cup", "bowl"], ["bowl"])):
         path = tmp_path / f"edited-{index}.png"
         Image.new("RGB", (8, 8), "white").save(path)
+        mask_path = tmp_path / f"mask-{index}.png"
+        mask = np.zeros((8, 8), np.uint8)
+        mask.flat[:5] = 255
+        Image.fromarray(mask).save(mask_path)
         record = {"frame_id": f"f{index}", "image_path": str(path), "image_digest": _sha256_file(path),
                   "original_image_path": str(path), "original_image_digest": _sha256_file(path),
+                  "remaining_mask_path": str(mask_path), "remaining_mask_digest": _sha256_file(mask_path),
                   "removed_task_object_ids": shown}
         sources.append(dict(record, remaining_pixel_count=5))
         selected.append(dict(record, generated_pixels_present=True, generated_pixel_count=64 * (3 - index),

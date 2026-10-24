@@ -35,7 +35,8 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
                           region_plan, splat_root, output_root, review, context,
                           configuration, task_runner, planner_runner, release_blockers,
                           max_polls, checkpoint=None, source_survey_path=None,
-                          source_recovery_runner=None, recorded_frames=(), recorded_source_reports=()):
+                          source_recovery_runner=None, recorded_frames=(), recorded_source_reports=(),
+                          context_pose_root=None, context_pose_digest=None):
     """Survey -> choose necessary gaps -> generate -> fuse -> re-survey.
 
     Repeated calls adopt identical completed stages. The shared provider allowance
@@ -44,7 +45,9 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
     """
     from .atlas_depth_splat import surface_samples, write_depth_splat
     from .atlas_scene_completion import complete_scene
+    from .atlas_recorded_source_recovery import merge_source_frames
 
+    frames = list(frames)
     references = reviewed_reference_frames(reviewed_views, region_plan)
     geometry = list(geometry_frames)
     manifest = json.loads((splat_root / 'atlas_depth_splat_manifest.json').read_text())
@@ -66,10 +69,13 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
         if checkpoint:
             checkpoint('automation_export_coverage', export_digest=manifest['digest'],
                        gaussian_count=manifest['gaussian_count'], completed_repair_passes=len(reports))
+        sources = merge_source_frames(frames, recorded)
+        source_ids = {f['frame_id'] for f in sources}
         generated, report = complete_scene(
-            pose_root=pose_root, pose=pose, frames=frames,
-            existing_geometry_frames=geometry[len(frames):], expected_frames=references,
-            splat_root=splat_root, reference_frames=[*frames, *references],
+            pose_root=pose_root, pose=pose, frames=sources,
+            existing_geometry_frames=[f for f in geometry if f['frame_id'] not in source_ids],
+            expected_frames=references,
+            splat_root=splat_root, reference_frames=merge_source_frames(sources, references),
             coverage_feedback={**binding,
                 'required_surface_hypotheses': region_plan['proposal']['remaining_required_surfaces'],
                 'task_extent_summary': region_plan['proposal']['task_extent_summary'],
@@ -81,7 +87,8 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
             review=review, root=root, context=context, configuration=configuration,
             task_runner=task_runner, planner_runner=planner_runner, release_blockers=release_blockers,
             max_polls=max_polls, checkpoint=checkpoint, source_survey_path=source_survey_path,
-            **({'recorded_frames': recorded} if recorded else {}))
+            **({'context_pose_root': context_pose_root, 'context_pose_digest': context_pose_digest}
+               if context_pose_root else {}))
         if report.get('status') == 'processing':
             return None, report
         if report.get('status') == 'source_recovery_required' and source_recovery_runner is not None:
@@ -89,17 +96,24 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
             if recovered is None:
                 return None, source_report
             known = {f['frame_id'] for f in [*frames, *recorded]}
+            added = set(source_report.get('recovered_frame_ids', []))
+            refreshed = set(source_report.get('refreshed_frame_ids', []))
             if (not recovered or len({f['frame_id'] for f in recovered}) != len(recovered)
-                    or any(f['frame_id'] in known for f in recovered)
+                    or added & known or not refreshed <= known or added & refreshed
                     or source_report.get('status') != 'completed'
                     or source_report.get('digest') != canonical_digest(source_report, digest_field='digest')
                     or source_report.get('target_pose_digest') != pose['digest']
-                    or set(source_report.get('recovered_frame_ids', [])) != {f['frame_id'] for f in recovered}):
+                    or added | refreshed != {f['frame_id'] for f in recovered}):
                 raise ValueError('atlas_coverage_recorded_source_recovery_invalid')
-            recorded.extend(recovered)
+            frames = merge_source_frames(frames, [f for f in recovered if f['frame_id'] in {
+                old['frame_id'] for old in frames}])
+            recorded = merge_source_frames(recorded, [f for f in recovered if f['frame_id'] not in {
+                old['frame_id'] for old in frames}])
+            context_pose_root = source_report.get('context_pose_root', context_pose_root)
+            context_pose_digest = source_report.get('pose_result_digest', context_pose_digest)
             source_reports.append(source_report)
-            references.extend(recovered)
-            geometry.extend(recovered)
+            references = merge_source_frames(references, recovered)
+            geometry = merge_source_frames(geometry, recovered)
             provenance.append(source_report['digest'])
             visual = canonical_digest({'previous': visual, 'recorded_source_review': source_report['digest']})
             paths.extend(source_report.get('preservation_paths', []))
@@ -149,6 +163,10 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
         visual = canonical_digest({'previous': visual, 'review': report['review']})
         splat_root = output_root / ('background_refined_splat-' + identity[7:23])
         saved = splat_root / 'atlas_depth_splat_manifest.json'
+        if checkpoint:
+            checkpoint('automation_export_coverage_fuse', reuse_cached_export=saved.is_file(),
+                       retained_frame_count=len(geometry),
+                       added_generated_frame_ids=[frame['frame_id'] for frame in contributions])
         manifest = (json.loads(saved.read_text()) if saved.is_file() else write_depth_splat(
             frames=geometry, result=pose, output_root=splat_root,
             generated_result_digests=provenance, visual_review_digest=visual))

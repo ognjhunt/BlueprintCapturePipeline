@@ -358,7 +358,8 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
             retained = json.loads(admission_path.read_text()) if admission_path.is_file() else None
             admission, grant = reserve_website_preparation_spend(task_context=task_context, binding_digest=request_digest,
                 maximum_cost_usd=cost, request_count=1, resource_class=pose.RESOURCE_CLASS,
-                provider=pose.PROVIDER, source_video_digest=source_video_digest, retained_admission=retained)
+                provider=pose.PROVIDER, source_video_digest=source_video_digest, retained_admission=retained,
+                retain_admission=lambda value: pose._write_state(admission_path, {**value, "source_commit": commit}))
             pose._require_admission(admission, request_digest=request_digest, binding=binding, now=now())
             require_paid_resource_admission_grant(grant, resource_class=pose.RESOURCE_CLASS,
                 allocation_binding_digest=request_digest, require_allocation_binding=True)
@@ -447,12 +448,20 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
         return result
 
 
+# Terminal operation failures that a new submission may clear, by (google.rpc
+# code, ErrorInfo reason). https://atlas-beta.worldlabs.ai/docs/errors (read
+# 2026-10-24): THROTTLED means "submit a new task later with backoff" and an
+# EXECUTION_TIMEOUT retry "is a new task submission"; code 4 alone can also mean
+# an expired task. EXECUTION_FAILED says to investigate first, so it stays final.
+RESUBMITTABLE_FAILURES = frozenset({(14, "TRANSIENT_UPSTREAM"), (8, "THROTTLED"), (4, "EXECUTION_TIMEOUT")})
+
+
 def _transient_upstream_failure(state):
     operation = state.get("terminal_operation") or {}
     error = operation.get("error") or {}
     return (state.get("status") == "failed" and operation.get("done") is True
-            and operation.get("id") == state.get("operation_id") and error.get("code") == 14
-            and any(row.get("reason") == "TRANSIENT_UPSTREAM"
+            and operation.get("id") == state.get("operation_id")
+            and any((error.get("code"), row.get("reason")) in RESUBMITTABLE_FAILURES
                     and row.get("domain") == "api.worldlabs.ai"
                     for row in error.get("details", []) if isinstance(row, dict)))
 

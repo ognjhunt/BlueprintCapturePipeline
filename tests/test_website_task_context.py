@@ -275,3 +275,25 @@ def test_only_exact_retained_atlas_admission_can_resume_before_submission(monkey
     else:
         admission, grant = module.reserve_website_preparation_spend(**kwargs)
         assert admission == retained and grant.allocation_binding_digest == command['allocation_binding_digest']
+
+
+@pytest.mark.parametrize("fault", [
+    {"status": "already_reserved"}, {"status": "blocked"}, {"blockers": ["rights_missing"]},
+    {"schema_version": "invalid"}, {"allocation_binding_digest": "sha256:" + "0" * 64},
+    {"external_disclosure_allowed": False}, {"expires_at_epoch": 0},
+])
+def test_invalid_remote_admission_cannot_be_retained_as_restart_authority(monkeypatch, fault):
+    task = context()
+    command = dict(task_context_digest=task["context_digest"], allocation_binding_digest="sha256:" + "a" * 64,
+                   maximum_cost_usd=.15, request_count=1, provider="world_labs_atlas",
+                   resource_class="provider_reconstruction_api")
+    value = {**command, "schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+             "external_disclosure_allowed": True, "expires_at_epoch": 9_999_999_999, **fault}
+    monkeypatch.setattr(module, "website_webapp_request", lambda **_: value)
+    retained = []
+    with pytest.raises((ValueError, RuntimeError)):
+        module.reserve_website_preparation_spend(
+            task_context=task, binding_digest=command["allocation_binding_digest"], maximum_cost_usd=.15,
+            request_count=1, provider=command["provider"], resource_class=command["resource_class"],
+            retain_admission=retained.append)
+    assert retained == []

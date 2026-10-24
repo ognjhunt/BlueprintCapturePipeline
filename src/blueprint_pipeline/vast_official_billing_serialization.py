@@ -1,4 +1,4 @@
-"""Stable byte identities for official Vast billing evidence."""
+"""Stable official billing metadata and byte identities without provider clients."""
 
 from __future__ import annotations
 
@@ -7,6 +7,11 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+
+
+BILLING_SOURCE_SCHEMA_VERSION = "blueprint.provider_billing_source_receipt.v1"
+VAST_CHARGES_URL = "https://console.vast.ai/api/v0/charges/"
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:

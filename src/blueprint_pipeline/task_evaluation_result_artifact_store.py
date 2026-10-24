@@ -693,7 +693,9 @@ def offload_result_artifacts(
         report["result_digest"] = canonical_digest(report, digest_field="result_digest")
         return report
 
-    hot = now() - registry_path.stat().st_mtime < hot_window_seconds
+    # A zero window holds nothing back. A filesystem clock slightly ahead of
+    # time.time() made a just-sealed registry "hot" on a CI runner (2026-10-24).
+    hot = hot_window_seconds > 0 and now() - registry_path.stat().st_mtime < hot_window_seconds
     protected = None
     if not hot and protection_checker is not None:
         with _offload_stage("protection"):

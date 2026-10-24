@@ -34,6 +34,18 @@ The production Atlas controller runs the following for a new scene plan:
    reflections and contents can extend beyond the highlighted region. The
    overlay and its checksum are retained with the image receipt. Completed
    earlier edits remain reusable; uncertain earlier intents still refuse.
+   New edits use a separate immutable backend row with custom output dimensions
+   at the complete source aspect ratio (rounded to the API's 16-pixel grid).
+   The previous resolution budget, model, quality and price cap are unchanged.
+   No black letterbox border is added or cropped away. Camera-change repairs
+   require this canvas and cannot adopt a completed legacy crop; uncertain
+   legacy requests still refuse. Canvas policy and dimensions are retained in
+   each new image receipt. Panoramas outside the provider's 1:3 to 3:1 aspect
+   range refuse before a provider request rather than silently losing coverage.
+   Provider failures retain the shared adapter's sanitized status, error code
+   and request ID with the non-completed intent. They keep the full reservation
+   and require reconciliation; restarting cannot purchase the uncertain call
+   again. Raw error bodies, headers and secrets are never retained.
 5. Gemini independently reviews the complete selected edited set before Atlas
    receives any RGB. Rejected views cannot enter reconstruction. Accepted RGB
    acquires fresh Atlas cameras and depth, rather than putting original
@@ -45,6 +57,36 @@ The production Atlas controller runs the following for a new scene plan:
    as many repairs as this scene needs, using the passed anchor as its fixed
    reference; every call stays on the same source allowance. A fresh independent
    review of the complete set decides whether reconstruction can proceed.
+   Repairs restore the original source mask's pixel count rather than copying
+   the completed edit's zero-remaining marker. Original image/mask digests,
+   binary mask values and grid alignment are checked before buying a repair
+   plan. Completed correction receipts remain reusable on restart; the original
+   source cannot silently substitute for a requested correction. An unchanged
+   correction retains the failed verdict without buying the same review again.
+   Each repair plan has its own inference audit directory. Returned plans are
+   saved before audit finalization. For a legacy lost output, only a validated
+   SDK completion paired with the exact input reservation can establish a
+   completed charge and permit an explicitly bound replacement plan. Its charge
+   is retained; missing or uncertain completion evidence still blocks a retry.
+   Before that review is bought, a deterministic camera check
+   (`edited_view_camera.py`) compares each edited view with its original outside
+   the dilated removal mask. A coherent transform supported by distributed
+   shared features rejects a substantial camera shift without a paid review,
+   with `camera_changed_frame_ids`. Low texture retention alone does not prove
+   movement: repainted wood grain can leave very few matches even when cabinet
+   edges remain aligned. Such views require the independent visual review,
+   which must explicitly name camera changes and reject copied reference
+   compositions. Minor texture changes and local distortion remain acceptable.
+   Missing or invalid camera findings block and retain the completed answer;
+   they cannot silently approve a view or become a reason to rebuy that review.
+   Novel-camera generation is reviewed under its separate viewpoint contract.
+   The repair agent re-edits views with a changed camera
+   from their original without the anchor reference they copied, and a rejected
+   anchor is re-edited once with its camera named. Views with too few features
+   outside the mask, or whose retained mask is gone, stay with the model review.
+   `python -m blueprint_pipeline.edited_view_camera <prepared_background.json>`
+   re-checks an already approved set without provider calls; a moved or
+   unverifiable camera exits nonzero and requires review.
 6. The agent surveys missing surfaces across the captured scene and chooses
    named gaps and candidate cameras, including modest translated viewpoints.
    Additional scene-depth-relative viewpoints stay inside source-observed free
@@ -92,10 +134,16 @@ The production Atlas controller runs the following for a new scene plan:
    views, appends removal regions to frozen targets, reuses previously approved
    edits, cleans only the new views, and independently reviews the expanded set.
    It obtains new depth with shared cleaned anchors, then uses the existing
-   shared-view depth fit to register only the added views into the original
-   coordinate frame. Original cameras, task-state selection, native generations
-   and receipts remain unchanged. Added depth enters the actual splat and every
-   subsequent coverage/generation reference set before the next gap decision.
+   shared-view depth fit to register the complete fresh posed set into the original
+   coordinate frame. Shared IDs replace their earlier derived RGB, depth and
+   cameras in both geometry and conditioning; added IDs enter exactly once.
+   The next generation uses every current approved photograph, including the
+   added sources, and their current depth. The fresh pose root supplies pixel
+   verification and planner photographs while the original world frame remains
+   the placement authority. Mixed capture identities or missing current frames
+   refuse before generation. Original pose files, task-state selection, native
+   generations and receipts remain unchanged; a versioned recovery report
+   retains the refreshed bindings without overwriting an earlier report.
    A moved articulated target is acceptable only in this background-only stage
    when completely erased; retained fixtures must still agree. Uncertain
    visibility, changed fixed layout, failed cleanup or weak alignment stays an
@@ -107,7 +155,7 @@ The production Atlas controller runs the following for a new scene plan:
    attractive RGB fill cannot hide a failed 3D repair. Passed native generations
    and their verified fused pixels are adopted without another purchase.
 
-   The post-export review uses separate full-frame geometry previews and records
+   The post-export review uses full-frame geometry previews and records
    `environment_surfaces` for the complete connected local work fixture: its
    worktop, outer faces, ends, edges, supports, and operating floor as applicable.
    A `sufficient` decision requires geometry-preview evidence and cannot contain
@@ -116,6 +164,15 @@ The production Atlas controller runs the following for a new scene plan:
    fit/force qualification remain separate unknowns. A narrow old task-extent
    summary does not excuse a large missing part of its support fixture. The
    earlier planner inputs and completed native repair receipts remain retained.
+   If the full review exceeds its existing request cap, the planner fits its
+   input before reserving money: every camera, gap and source view stays present,
+   camera/gap metadata uses labeled tables, and derived overlays use labeled
+   contact sheets. Original capture previews retain the largest affordable
+   full-frame resolution. Response tokens stay inside the SDK limit and the
+   same reviewed request cap; source images sent to Atlas are unchanged.
+   Legacy affordable requests retain their exact input serialization and
+   binding. An unfundable request still refuses locally rather than omitting
+   observations or increasing the capture's cumulative allowance.
 
 When a refinement adds source views, its parent prepared-background manifest
 can seed the expanded set. Source video, task context and original RGB pixels
@@ -134,7 +191,19 @@ provider's disclosure. An automatic preview grant carries that consent itself,
 pinned to each provider's terms when the grant is made (Blueprint-WebApp #1097);
 an explicit owner authorization still needs the native sponsorship. Forecasts cover the main
 route, while each actual reservation remains the transaction authority. Fallback
-work requires remaining allowance. There is no budget reset or automatic retry
+work requires remaining allowance. If only an otherwise admitted GCP cost report
+has aged out while its monitor is paused or refreshing, the existing Atlas
+controller returns `processing` at `paid_admission_wait`. A later controller tick
+adopts completed stages and must pass the original fresh-report admission again.
+The reservation broker checks known local budget blockers before asking WebApp
+to reserve. Both Atlas adapters durably save the original authenticated admission
+before the final local budget check: if the report expires during the RPC, the
+next tick reuses the exact saved reservation. A bare `already_reserved` response
+without the matching original receipt never authorizes another purchase.
+The waiting state grants no spending authority and does not rewrite the report.
+Exhausted budgets, changed policy, month rollover, missing evidence and additional
+rights or funding blockers retain their refusal.
+There is no budget reset or automatic retry
 of an uncertain purchase. A blocked auxiliary stage preserves the source result
 and available size estimates.
 

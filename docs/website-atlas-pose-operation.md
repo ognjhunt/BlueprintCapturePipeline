@@ -146,7 +146,7 @@ capture. Everything lives beside `atlas_pose_inputs.json`:
 
 | File | Written |
 |---|---|
-| `atlas_pose/controller_admission.json` | After the WebApp grants the reservation |
+| `atlas_pose/controller_admission.json` | Immediately after a valid WebApp reservation, before the final local budget check |
 | `atlas_pose/submission.json` | Before the first upload, and at each later step: when each asset is created (`created_assets`, so no asset holding site pixels is ever untracked), after each upload, after each `READY` check, before each POST (`submitting`, with the exact request bytes, the key and an unanswered entry in `sends`), with each raw answer, and after success (`submitted`, with the operation ID and the API root it belongs to) |
 | `atlas_pose/outputs/<frame>/{image,depth,confidence,mask}.*` | Downloaded through fresh `:createReadUrl` links, size-checked against the asset's `sizeBytes` (a bounded HTTP read can end early without an error), fsynced |
 | `atlas_posed_rgbd_result.json` | `website_atlas_pose_result.v1`, read by `prepare_atlas_pose_inputs` |

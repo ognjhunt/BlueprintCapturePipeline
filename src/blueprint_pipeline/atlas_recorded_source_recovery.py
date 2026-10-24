@@ -271,11 +271,17 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
                      'claim_ceiling': 'development_only'}
         alignment['digest'] = canonical_digest(alignment, digest_field='digest')
         _bound_json(alignment_path, alignment)
-    recovered = aligned_recorded_frames([f for f in new_frames if f['frame_id'] in accepted], alignment['fit'])
-    if {f['frame_id'] for f in recovered} != set(accepted):
+    # Posing is a joint estimate. Shared views may also have corrected pixels,
+    # intrinsics and depth; carrying only the newly selected IDs leaves stale
+    # photographs in the next Atlas request and stale geometry in the export.
+    recovered = aligned_recorded_frames(new_frames, alignment['fit'])
+    known = {f['frame_id'] for f in frames}
+    if {f['frame_id'] for f in recovered} != known | set(accepted):
         raise ValueError('atlas_recorded_source_posed_frames_missing')
-    report = {'schema_version': 'atlas_recorded_source_recovery.v1', 'status': 'completed', 'binding': binding,
-              'recovered_frame_ids': accepted, 'alignment_digest': alignment['digest'],
+    result_path = root / 'result-v2.json'
+    report = {'schema_version': 'atlas_recorded_source_recovery.v2', 'status': 'completed', 'binding': binding,
+              'recovered_frame_ids': accepted, 'refreshed_frame_ids': sorted(known),
+              'context_pose_root': str(pose_root), 'alignment_digest': alignment['digest'],
               'pose_result_digest': new_pose['digest'], 'target_pose_digest': pose['digest'],
               'frame_bindings': [_frame_binding(f) for f in recovered],
               'background_path': str(root / 'background/prepared_background.json'),
@@ -283,11 +289,20 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
               'rejected_views': [v for v in proposal['views'] if v['decision'] == 'reject'],
               'preservation_paths': [str(root / 'binding.json'), str(survey_path), str(root / 'recovery_inputs.json'),
                   str(root / 'background/prepared_background.json'), str(alignment_path),
-                  str(pose_root / 'atlas_posed_rgbd_result.json'), str(root / 'result.json'),
+                  str(pose_root / 'atlas_posed_rgbd_result.json'), str(result_path),
                   *[str(pose_root / asset['path']) for row in new_pose.get(
                       'operation_receipt', {}).get('input_usage', {}).get('frames', []) for asset in row['outputs']]],
               'raw_capture_preserved': True, 'original_pose_unchanged': True,
               'task_state_selection_unchanged': True, 'claim_ceiling': 'development_only'}
     report['digest'] = canonical_digest(report, digest_field='digest')
-    _bound_json(root / 'result.json', report)
+    _bound_json(result_path, report)
     return recovered, report
+
+
+def merge_source_frames(current, updates):
+    """Replace refreshed IDs once, preserving order and unrelated native repairs."""
+    by_id = {f['frame_id']: f for f in updates}
+    if len(by_id) != len(updates) or len({f['frame_id'] for f in current}) != len(current):
+        raise ValueError('atlas_recorded_source_duplicate_frame')
+    known = {f['frame_id'] for f in current}
+    return [by_id.get(f['frame_id'], f) for f in current] + [f for f in updates if f['frame_id'] not in known]

@@ -55,7 +55,7 @@ def _monthly_budget_blockers(resource_class: str) -> list[str]:
     if not explicit and not reconstruction:
         return []
     try:
-        from blueprint_pipeline.gcp_monthly_budget_guard import admission_blockers, project_admission_blockers
+        from blueprint_pipeline.gcp_monthly_budget_admission import admission_blockers, project_admission_blockers
 
         if explicit:
             return admission_blockers()
@@ -63,6 +63,19 @@ def _monthly_budget_blockers(resource_class: str) -> list[str]:
         return project_admission_blockers(project) if project else ["gcp_monthly_budget_project_binding_missing"]
     except Exception:
         return ["gcp_monthly_budget_report_unavailable"]
+
+
+def require_paid_resource_budget(*, resource_class: str) -> None:
+    """Refuse a known budget blocker before reserving external sponsorship.
+
+    This issues no grant. Dispatch still checks the complete admission and
+    current budget again after the remote transaction.
+    """
+    blockers = _monthly_budget_blockers(resource_class)
+    if resource_class not in PAID_RESOURCE_CLASSES:
+        blockers.append("paid_resource_class_invalid")
+    if blockers:
+        raise PaidResourceAdmissionBlocked(sorted(set(blockers)))
 
 
 def require_paid_resource_admission(

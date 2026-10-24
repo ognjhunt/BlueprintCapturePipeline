@@ -10,7 +10,7 @@ import hmac
 import hashlib
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from pathlib import Path
 from urllib.error import HTTPError
@@ -94,11 +94,12 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
                                      resource_class: str, provider: str,
                                      source_video_digest: str | None = None,
                                      atlas_auxiliary: bool = False,
-                                     retained_admission: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], Any]:
+                                     retained_admission: Mapping[str, Any] | None = None,
+                                     retain_admission: Callable[[Mapping[str, Any]], None] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
 
-    from .paid_resource_admission import require_paid_resource_admission
+    from .paid_resource_admission import require_paid_resource_admission, require_paid_resource_budget
     if (resource_class, provider) not in {("evaluator_api", "meta"), ("evaluator_api", "google"), ("openai_api_candidate", "openai"),
                                          ("provider_reconstruction_api", "world_labs_atlas")}:
         raise ValueError("website_preparation_provider_resource_mismatch")
@@ -111,6 +112,9 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
         if provider not in {"meta", "google"} or source_video_digest is None:
             raise ValueError("website_atlas_auxiliary_binding_invalid")
         command["atlas_auxiliary"] = True
+    # Avoid an orphaned remote hold when the local monitor already refuses.
+    # A report can still expire during the RPC, so this is only a precheck.
+    require_paid_resource_budget(resource_class=resource_class)
     operator_file = os.getenv("BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "").strip()
     if operator_file:
         value = load_atlas_operator_admission(Path(operator_file), command=command, task_context=task_context)
@@ -122,7 +126,7 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
             or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):
         raise ValueError("website_preparation_spend_receipt_invalid")
     if value.get("status") == "already_reserved" and retained_admission is not None:
-        # Only the Atlas pose adapter's durable recovery may reuse this grant,
+        # Only the Atlas adapters' durable recovery may reuse this grant,
         # between its uploads and its one submission. It locks and persists
         # intent before mutating; unknown outcomes still refuse, and another
         # worker without the original local admission cannot turn an existing
@@ -132,6 +136,13 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
                 or retained != {**value, "status": "admitted"}):
             raise ValueError("website_preparation_retained_admission_mismatch")
         value = retained
+    if (retain_admission is not None and value.get("status") == "admitted"
+            and value.get("schema_version") == "paid_lane_admission.v1"
+            and value.get("blockers") in ([], None)):
+        # Preserve the original authenticated transaction before rechecking
+        # local budget. A restart must never turn a bare already_reserved
+        # answer into authority or overwrite the original receipt with it.
+        retain_admission(dict(value))
     grant = require_paid_resource_admission(value, resource_class=resource_class, expected_schema_version="paid_lane_admission.v1")
     return value, grant
 

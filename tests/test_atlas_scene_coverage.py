@@ -64,6 +64,8 @@ def test_coverage_projects_the_export_and_ignores_invisible_points():
 
 def test_repair_is_fused_and_then_reviewed_again_before_meshing(tmp_path, monkeypatch):
     args = fixture(tmp_path)
+    progress = []
+    args['checkpoint'] = lambda stage, **fields: progress.append((stage, fields))
     calls = []
     def complete(**kw):
         calls.append(kw)
@@ -89,6 +91,9 @@ def test_repair_is_fused_and_then_reviewed_again_before_meshing(tmp_path, monkey
     assert manifest['gaussian_count'] > old['gaussian_count']
     assert root != args['splat_root'] and result['task_coverage_sufficient'] is True
     assert result['whole_scene_complete'] is False and result['simulation_qualified'] is False
+    fusion = [fields for stage, fields in progress if stage == 'automation_export_coverage_fuse']
+    assert fusion == [{'reuse_cached_export': False, 'retained_frame_count': 2,
+                       'added_generated_frame_ids': ['targeted-repair']}]
 
 
 def test_pretty_image_with_no_usable_depth_does_not_trigger_repeated_purchases(tmp_path, monkeypatch):
@@ -133,9 +138,9 @@ def test_recorded_source_action_is_recovered_fused_and_conditioned_before_genera
         calls.append(kw)
         if len(calls) == 1:
             return None, {'status': 'source_recovery_required', 'digest': 'source-action'}
-        assert kw['recorded_frames'] == [new]
+        assert [f['frame_id'] for f in kw['frames']] == ['source', 'recorded-later']
         assert 'recorded-later' in {f['frame_id'] for f in kw['reference_frames']}
-        assert 'recorded-later' in {f['frame_id'] for f in kw['existing_geometry_frames']}
+        assert 'recorded-later' not in {f['frame_id'] for f in kw['existing_geometry_frames']}
         assert kw['coverage_feedback']['recorded_source_outcomes'][0]['recovered_frame_ids'] == ['recorded-later']
         assert kw['splat_root'] != args['splat_root']
         return [], report('agent_found_no_material_task_gap')
@@ -151,6 +156,42 @@ def test_recorded_source_action_is_recovered_fused_and_conditioned_before_genera
     assert manifest['pose_result_digest'] == 'pose'
     assert receipt['digest'] in manifest['generated_result_digests']
     assert result['recorded_source_recoveries'] == [receipt]
+
+
+def test_shared_rgbd_refresh_replaces_old_geometry_and_all_generation_references(tmp_path, monkeypatch):
+    args = fixture(tmp_path)
+    source = args['frames'][0]
+    refreshed = deepcopy(source)
+    refreshed['rgb'][:] = 190
+    refreshed['depth'][:] = 2.1
+    new = deepcopy(refreshed)
+    new['frame_id'] = 'additional'
+    receipt = {'status': 'completed', 'target_pose_digest': 'pose', 'recovered_frame_ids': ['additional'],
+        'refreshed_frame_ids': ['source'], 'frame_bindings': [_frame_binding(f) for f in [refreshed, new]],
+        'context_pose_root': str(tmp_path / 'fresh-pose'), 'pose_result_digest': 'fresh-pose-digest',
+        'preservation_paths': [], 'rejected_views': []}
+    receipt['digest'] = canonical_digest(receipt, digest_field='digest')
+    calls = []
+    def complete(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            return None, {'status': 'source_recovery_required'}
+        assert kw['context_pose_root'] == str(tmp_path / 'fresh-pose')
+        assert kw['context_pose_digest'] == 'fresh-pose-digest'
+        assert [f['frame_id'] for f in kw['frames']] == ['source', 'additional']
+        assert np.all(kw['frames'][0]['rgb'] == 190)
+        assert np.all(kw['frames'][0]['depth'] == 2.1)
+        references = kw['reference_frames']
+        assert len(references) == len({f['frame_id'] for f in references})
+        assert np.all(next(f for f in references if f['frame_id'] == 'source')['rgb'] == 190)
+        assert kw['existing_geometry_frames'] == []
+        return [], report('agent_found_no_material_task_gap')
+    monkeypatch.setattr(completion, 'complete_scene', complete)
+    args['source_recovery_runner'] = lambda *_: ([refreshed, new], receipt)
+    (geometry, _, _), result = coverage.refine_scene_coverage(**args)
+    assert len(calls) == 2 and result['task_coverage_sufficient']
+    assert np.all(next(f for f in geometry if f['frame_id'] == 'source')['rgb'] == 190)
+    assert np.all(source['rgb'] == 90), 'Original retained data must stay unchanged'
 
 
 def test_source_recovery_processing_does_not_start_generation(tmp_path, monkeypatch):

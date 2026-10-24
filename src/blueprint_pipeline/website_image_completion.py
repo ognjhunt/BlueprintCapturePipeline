@@ -32,10 +32,11 @@ from .local_reconstruction_adapters import _sha256_file
 from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 from .semantic_teacher_image_edit_worker import _execute_frame_request, _open_no_redirect, _usage_cost
 
-BACKEND_ID = "openai_gpt_image_2_5_sunburst_2026_09_08_website_xhigh"
+BACKEND_ID = "openai_gpt_image_2_5_sunburst_2026_09_08_website_full_frame"
 # Batches these rows already completed stay readable after the quality change;
 # a partial or missing legacy batch is never finished at the old setting.
-LEGACY_BACKEND_IDS = ("openai_gpt_image_2_5_sunburst_2026_09_08_semantic_teacher",)
+LEGACY_BACKEND_IDS = ("openai_gpt_image_2_5_sunburst_2026_09_08_website_xhigh",
+                      "openai_gpt_image_2_5_sunburst_2026_09_08_semantic_teacher")
 # Leave room for the generateContent JSON envelope under its 20 MB inline limit.
 INLINE_REVIEW_REQUEST_BYTES = 18_000_000
 REGISTRY_PATH = Path(__file__).resolve().parents[2] / "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
@@ -60,6 +61,15 @@ REVIEW_PROMPT = (
     "remaining_task_object_frame_ids: an array of "
     "the exact prepared-view frame IDs still showing a manipulated task object. Return an empty array "
     "only when no prepared view shows one. False if uncertain. Targets: "
+)
+
+CAMERA_REVIEW_PROMPT = (
+    "Check each edited photograph against its SAME-ID original for a changed camera. "
+    "Reject a substantial crop, zoom, viewpoint change or copied reference composition, "
+    "even when it depicts the same room. Repainted texture, small local distortions and "
+    "minor edge shifts alone are acceptable when the field of view and useful scene geometry remain. "
+    "Return camera_changed_frame_ids: the exact edited photograph IDs with a changed camera, "
+    "or an empty array if none. A nonempty array makes consistent_background false. "
 )
 
 CONSISTENCY_DIAGNOSIS_PROMPT = (
@@ -185,6 +195,8 @@ def _review_prompt(targets: Sequence[Mapping[str, Any]], *, frames: Sequence[Map
               REVIEW_PROMPT.removesuffix("Targets: ") + MULTI_OBJECT_REVIEW_PROMPT)
     if _has_transients(targets):
         prompt = prompt.removesuffix("Targets: ") + TRANSIENT_REVIEW_PROMPT + "Targets: "
+    if any(frame.get("generated_pixels_present") for frame in frames):
+        prompt = prompt.removesuffix("Targets: ") + CAMERA_REVIEW_PROMPT + "Targets: "
     if any(frame.get("target_guidance") in {"sam_overlay_v1", "source_grounded_region_overlay_v1"} for frame in frames):
         prompt += (" Judge the same camera field of view: require an empty installation opening only where "
                    "that opening is visible in this view. A door or rack extending into the foreground from "
@@ -243,15 +255,34 @@ def _png(image: Image.Image) -> bytes:
     return stream.getvalue()
 
 
-def _sam_guide(source: Image.Image, mask: Image.Image) -> bytes:
+def _sam_guide(source: Image.Image, mask: Image.Image, *, native_aspect: bool = True) -> bytes:
     tint = Image.blend(source, Image.new("RGB", source.size, (255, 0, 255)), .4)
     overlay = Image.composite(tint, source, mask)
-    canvas, _ = _canvas(overlay)
+    canvas, _ = _canvas(overlay, native_aspect=native_aspect)
     return _png(canvas)
 
 
-def _canvas(image: Image.Image) -> tuple[Image.Image, tuple[int, int, int, int]]:
-    # Letterbox rather than stretch camera geometry into a provider output size.
+def _canvas_size(size: tuple[int, int], *, native_aspect: bool) -> tuple[int, int]:
+    width, height = size
+    budget = (1024, 1536) if height > width else (1536, 1024)
+    if not native_aspect:
+        return budget
+    # Keep the existing resolution budget, but use the API's custom dimensions
+    # instead of asking the editor to preserve a black letterbox border.
+    if not 1 / 3 <= width / height <= 3:
+        raise ValueError("website_image_completion_source_aspect_unsupported")
+    scale = min(budget[0] / width, budget[1] / height)
+    result = (max(16, round(width * scale / 16) * 16), max(16, round(height * scale / 16) * 16))
+    if not 655_360 <= math.prod(result) <= 8_294_400 or max(result) > 3840:
+        raise ValueError("website_image_completion_canvas_invalid")
+    return result
+
+
+def _canvas(image: Image.Image, *, native_aspect: bool = True) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    if native_aspect:
+        width, height = _canvas_size(image.size, native_aspect=True)
+        return image.resize((width, height), Image.Resampling.LANCZOS), (0, 0, width, height)
+    # Retained legacy backends keep their exact previous request geometry.
     size = (1024, 1536) if image.height > image.width else (1536, 1024)
     fitted = ImageOps.contain(image, size, Image.Resampling.LANCZOS)
     x, y = (size[0] - fitted.width) // 2, (size[1] - fitted.height) // 2
@@ -316,6 +347,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                repair_reference_path: Path | None = None,
                                source_video_digest: str | None = None,
                                require_cached: bool = False,
+                               require_original_camera: bool = False,
                                mask_guidance: bool = False) -> list[dict[str, Any]]:
     if not any(frame["remaining_pixel_count"] for frame in frames):
         return [dict(frame) for frame in frames]
@@ -345,17 +377,31 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             if any(path.exists() for path in paths):
                 if not all(path.is_file() for path in paths):
                     raise ValueError("website_image_completion_requires_reconciliation")
+                if require_original_camera:
+                    if any(json.loads(path.read_text()).get("status") != "completed" for path in paths):
+                        raise ValueError("website_image_completion_requires_reconciliation")
+                    continue
                 # Completed edits remain candidates; an uncertain prior intent
                 # still refuses in the normal reader instead of being re-bought.
                 execution, backend_digest, binding, request_digest = prior
                 break
     for legacy_id in LEGACY_BACKEND_IDS:
         legacy = bound(legacy_id, binding.get("target_guidance") in {"sam_overlay_v1", "source_grounded_region_overlay_v1"})
+        if require_original_camera:
+            paths = [output_root / legacy[3][7:] / f"{i}.json" for i in edited_indices]
+            if any(path.exists() for path in paths) and (
+                    not all(path.is_file() for path in paths)
+                    or any(json.loads(path.read_text()).get("status") != "completed" for path in paths)):
+                raise ValueError("website_image_completion_requires_reconciliation")
+            continue
         if (not (output_root / request_digest[7:]).is_dir()
                 and all((output_root / legacy[3][7:] / f"{i}.json").is_file() for i in edited_indices)):
             execution, backend_digest, binding, request_digest = legacy
             break
     cap = float(execution["pricing_binding"]["max_cost_per_request_usd"])
+    native_aspect = execution.get("website_canvas_policy") == "native_aspect_v1"
+    if require_original_camera and not native_aspect:
+        raise ValueError("website_image_completion_camera_canvas_policy_missing")
     output_root.mkdir(parents=True, exist_ok=True)
     with (output_root / "completion.lock").open("a") as lock:
         try:
@@ -397,6 +443,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 if (_sha256_file(Path(frame["image_path"])) != frame["image_digest"]
                         or _sha256_file(Path(frame["remaining_mask_path"])) != frame["remaining_mask_digest"]):
                     raise ValueError("website_image_completion_source_changed")
+                with Image.open(frame["image_path"]) as image:
+                    _canvas_size(image.size, native_aspect=native_aspect)
             if task_context is not None and not admission:
                 if sha256(json.dumps(dict(task_context), sort_keys=True, separators=(",", ":")).encode()).hexdigest() != task_digest:
                     raise ValueError("website_image_completion_task_mismatch")
@@ -443,7 +491,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             else:
                 if spent + cap > budget:
                     raise ValueError("website_image_completion_budget_exhausted")
-                canvas, box = _canvas(source)
+                canvas, box = _canvas(source, native_aspect=native_aspect)
                 # Retain intent before the paid call, including its reference.
                 with receipt_path.open("x") as stream:
                     json.dump({"status": "submitting", "request_digest": request_digest,
@@ -464,7 +512,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 references = [reference] if reference else []
                 guidance = {}
                 if binding.get("target_guidance") in {"sam_overlay_v1", "source_grounded_region_overlay_v1"}:
-                    guide = _sam_guide(source, mask)
+                    guide = _sam_guide(source, mask, native_aspect=native_aspect)
                     guide_path = root / f"{index}-target-guide.png"
                     guide_path.write_bytes(guide)
                     references.append(guide)
@@ -475,6 +523,16 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                                   expected_size=canvas.size, token=token, opener=opener,
                                                   reference_images=references)
                 if not response["succeeded"]:
+                    # Keep the adapter's sanitized provider evidence before
+                    # surfacing the failure. The non-completed intent still
+                    # fences retries and retains its full spending reservation.
+                    failure = {"status": "submitting", "request_digest": request_digest,
+                               "frame_id": frame["frame_id"], "blocker": response["blocker"],
+                               "provider_failure": response.get("provider_failure"),
+                               "requires_reconciliation": True}
+                    temporary = receipt_path.with_suffix(".tmp")
+                    write_json(temporary, failure)
+                    os.replace(temporary, receipt_path)
                     raise ValueError(response["blocker"])
                 if response["usage"] is None:
                     raise ValueError("website_image_completion_usage_missing")
@@ -487,6 +545,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 receipt = {"status": "completed", "request_digest": request_digest, "frame_id": frame["frame_id"],
                            "image_digest": _sha256_file(destination), "cost_usd": cost, "usage": response["usage"],
                            "backend_digest": backend_digest, "generated_pixel_count": source.width * source.height,
+                           "canvas_policy": execution.get("website_canvas_policy", "legacy_letterbox"),
+                           "canvas_size": list(canvas.size),
                            **guidance}
                 temporary = receipt_path.with_suffix(".tmp")
                 write_json(temporary, receipt)
@@ -560,6 +620,13 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
     remaining = review.get("remaining_task_object_frame_ids")
     unrelated_loss = review.get("unrelated_object_loss_frame_ids")
     frame_ids = {frame["frame_id"] for frame in frames}
+    same_camera_ids = ({frame["frame_id"] for frame in frames if frame.get("generated_pixels_present")}
+                       if not any(frame.get("novel_view") for frame in frames) else set())
+    camera_changed = review.get("camera_changed_frame_ids")
+    camera_valid = not same_camera_ids or (
+        isinstance(camera_changed, list)
+        and all(isinstance(item, str) and item in same_camera_ids for item in camera_changed)
+        and len(set(camera_changed)) == len(camera_changed))
     if (not isinstance(remaining, list) or any(not isinstance(item, str) or item not in frame_ids
             for item in remaining) or len(set(remaining)) != len(remaining)
             or bool(remaining) == (review.get("task_objects_removed") is True)):
@@ -584,11 +651,13 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
             # A paid answer that cannot name the remaining objects blocks the set;
             # it is retained, not lost, so the receipt never becomes uncertain.
             objects_valid = False
-    passed = objects_valid and all(review.get(field) is True for field in
+    passed = objects_valid and camera_valid and not (same_camera_ids and camera_changed) and all(
+        review.get(field) is True for field in
                                    ("consistent_background", "task_objects_removed", "unrelated_objects_preserved"))
     result = {"status": "passed" if passed else "blocked", "binding": binding, "request_digest": digest,
               "review": review, "basis": "model_visual_review", "physical_evidence": False,
-              **({} if objects_valid else {"blocker": "website_image_completion_review_objects_invalid"})}
+              **({} if objects_valid else {"blocker": "website_image_completion_review_objects_invalid"}),
+              **({} if camera_valid else {"blocker": "website_image_completion_review_camera_frame_ids_invalid"})}
     output_root.mkdir(parents=True, exist_ok=True)
     if retain_result:
         write_json(receipt_path, result)
@@ -655,10 +724,58 @@ def _review_contents(*, client, types, pairs, prompt, output_root, binding_diges
             write_json(receipt_path, receipt)
 
 
+CAMERA_CHANGED_REASON = (
+    "These edited views no longer line up with their ORIGINAL outside the removed object: the editor "
+    "reframed, zoomed or copied another view's camera. Re-edit each from its ORIGINAL and keep its exact "
+    "framing, zoom and perspective; use reference images only for the revealed surfaces.")
+
+
+def _camera_changed_review(frames: Sequence[Mapping[str, Any]],
+                           original_frames: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """A blocked review, bought from no one, when an edit left its source camera."""
+    from .edited_view_camera import CHECK_REVISION, edited_view_camera
+
+    originals = {frame["frame_id"]: frame for frame in original_frames}
+    for frame in frames:
+        if frame.get("original_image_path"):
+            originals[frame["frame_id"]] = {"image_path": frame["original_image_path"],
+                                              "image_digest": frame["original_image_digest"]}
+    checks = []
+    for frame in frames:
+        original = originals.get(frame["frame_id"])
+        if (original is None or frame.get("novel_view") or not frame.get("generated_pixels_present")
+                or not frame.get("remaining_mask_path")
+                or original["image_digest"] == frame["image_digest"]):
+            continue
+        paths = (Path(original["image_path"]), Path(frame["image_path"]), Path(frame["remaining_mask_path"]))
+        if not paths[2].is_file():
+            # A reused view's mask can leave with its earlier run; the model review still judges it.
+            continue
+        expected = (original["image_digest"], frame["image_digest"], frame.get("remaining_mask_digest"))
+        if any(digest is not None and _sha256_file(path) != digest for path, digest in zip(paths, expected)):
+            raise ValueError("website_image_completion_review_source_changed")
+        checks.append({"frame_id": frame["frame_id"], "image_digest": frame["image_digest"],
+                       "original_image_digest": original["image_digest"],
+                       "mask_digest": frame.get("remaining_mask_digest"), **edited_view_camera(*paths)})
+    moved = [check["frame_id"] for check in checks if check["status"] == "moved"]
+    if not moved:
+        return None
+    binding = {"kind": "edited_view_camera_check", "revision": CHECK_REVISION, "checks": checks}
+    return {"status": "blocked", "binding": binding, "request_digest": canonical_digest(binding),
+            "basis": "deterministic_view_geometry", "physical_evidence": False,
+            "review": {"consistent_background": False, "camera_changed_frame_ids": moved,
+                       "reason": CAMERA_CHANGED_REASON}}
+
+
 def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original_frames: Sequence[Mapping[str, Any]],
                                 plan: Mapping[str, Any], output_root: Path,
                                 task_context: Mapping[str, Any] | None = None,
                                 source_video_digest: str | None = None) -> dict[str, Any]:
+    # A reframed or copied camera fails before any paid review, with a reason
+    # the repair planner can act on; views that cannot be judged still go there.
+    moved = _camera_changed_review(frames, original_frames)
+    if moved is not None:
+        return moved
     if not (task_context or {}).get("capture_id"):
         return _verify_completed_background(frames=frames, original_frames=original_frames,
                                             plan=plan, output_root=output_root)
