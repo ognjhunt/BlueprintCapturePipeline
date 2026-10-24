@@ -102,6 +102,8 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
             no_search = completion_mode or mode == "recovery"
             assert len(spec.hosted_tools) == (0 if no_search else 1)
             assert spec.max_hosted_tool_calls_per_turn == (0 if no_search else 2) and spec.hosted_tool_call_usd == .01
+            if mode == 'export_coverage':
+                assert spec.max_output_tokens >= 8000, 'Surface and source decisions were truncated at 4k'
             return SimpleNamespace(output=proposal, cost_usd=.03, usage={"input_tokens": 100},
                                    model=spec.model, sdk_version="test")
     options = dict(survey_path=path, task_context={"description": "test task", "context_digest": "sha256:" + "b" * 64,
@@ -153,7 +155,7 @@ def test_realistic_retained_full_frame_review_stays_within_one_dollar(tmp_path):
     previews = [{'path': str(preview)}] * 77
     bound = 24_000 + planner._export_image_token_ceiling(survey, previews) + 40_000
     assert worst_case_reservation_usd(model='gpt-6.1-sol', input_token_ceiling=bound,
-                                      max_output_tokens=4000, cache_policy=None) < 1
+                                      max_output_tokens=13_500, cache_policy=None) < 1
     assert planner._export_image_token_ceiling({'frames': []}, previews[:1]) == 3 * 32 * 18 + 256
 
 

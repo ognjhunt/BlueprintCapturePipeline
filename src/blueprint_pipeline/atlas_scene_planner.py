@@ -523,6 +523,10 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     # truncated the live 13-view surface list before segmentation could start.
     output_tokens = (max(8000, 2000 + 2000 * len(recovery.get("native_frame_ids", [])))
                      if recovery is not None else 4000)
+    if completion is not None and 'post_export_coverage' in completion:
+        # Component surfaces plus per-gap source evidence outgrow the original
+        # camera-only 4k response. Bound by the supplied evidence, not a view quota.
+        output_tokens = max(8000, 2000 + 250 * len(completion.get('candidate_camera_ids', [])))
     ceiling = worst_case_reservation_usd(model=policy["model"], input_token_ceiling=tokens,
                                         max_output_tokens=output_tokens, cache_policy=None)
     search_calls = 0 if completion is not None or recovery is not None else 2
