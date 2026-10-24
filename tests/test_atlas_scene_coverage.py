@@ -54,7 +54,7 @@ def report(reason=None):
 def test_coverage_projects_the_export_and_ignores_invisible_points():
     data = SplatData(count=2, xyz=np.array([[0, 0, -2], [1, 0, -2]], np.float32),
         opacity=np.array([10, -10], np.float32), f_dc=np.zeros((2, 3), np.float32),
-        scales=np.zeros((2, 3), np.float32), quats=np.array([[1, 0, 0, 0]] * 2, np.float32), properties=())
+        scales=np.full((2, 3), np.log(0.002), np.float32), quats=np.array([[1, 0, 0, 0]] * 2, np.float32), properties=())
     camera = {'intrinsics': {'width': 64, 'height': 48, 'fx': 60., 'fy': 60., 'cx': 32., 'cy': 24.},
               'extrinsics': {'position': [0, 0, 0], 'quaternion': [0, 0, 0, 1], 'coordinateSystem': 'rub'}}
     depth = project_exported_splat(data, camera)
@@ -253,3 +253,21 @@ def test_source_recovery_processing_does_not_start_generation(tmp_path, monkeypa
     pending = {'status': 'processing', 'stage': 'recorded_source_pose', 'operation_id': 'retained-pose'}
     args['source_recovery_runner'] = lambda *_: (None, pending)
     assert coverage.refine_scene_coverage(**args) == (None, pending)
+
+
+def test_coverage_counts_a_slanted_surface_its_discs_bridge_but_keeps_real_gaps():
+    camera = {'intrinsics': {'width': 64, 'height': 48, 'fx': 60., 'fy': 60., 'cx': 32., 'cy': 24.},
+              'extrinsics': {'position': [0, 0, 0], 'quaternion': [0, 0, 0, 1], 'coordinateSystem': 'rub'}}
+    # Rows of centres 4 px apart, as an oblique view samples a surface, with a 12 px hole.
+    columns = [c for c in range(8, 56) if not 26 <= c < 38]
+    pixels = [(c, r) for r in range(8, 40, 4) for c in columns]
+    xyz = np.array([[(c + .5 - 32) / 60 * 2, -(r + .5 - 24) / 60 * 2, -2] for c, r in pixels], np.float32)
+    def export(sigma):
+        return SplatData(count=len(xyz), xyz=xyz, opacity=np.full(len(xyz), 10, np.float32),
+            f_dc=np.zeros((len(xyz), 3), np.float32), scales=np.full((len(xyz), 3), np.log(sigma), np.float32),
+            quats=np.array([[1, 0, 0, 0]] * len(xyz), np.float32), properties=())
+    rows = (slice(9, 37), slice(10, 22))
+    assert (project_exported_splat(export(0.002), camera)[rows] == 0).any(), 'one-voxel discs leave row gaps'
+    bridged = project_exported_splat(export(0.06), camera)  # 1.5 sigma ~ 2.7 px bridges 4 px rows
+    assert (bridged[rows] > 0).all()
+    assert (bridged[16:32, 30:34] == 0).all(), 'a real missing patch stays a gap'

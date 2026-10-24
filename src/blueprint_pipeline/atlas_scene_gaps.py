@@ -71,11 +71,16 @@ def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None,
     return result, regions
 
 
-def project_exported_splat(splat, camera):
-    """CPU coverage diagnostic of retained export centers, not a beauty render.
+MAX_COVERAGE_DISC_PIXELS = 6
 
-    A one-pixel support border suppresses point-raster pinholes. Large missing
-    patches remain visible; no triangle or room surface is invented here.
+
+def project_exported_splat(splat, camera):
+    """CPU coverage diagnostic of retained export discs, not a beauty render.
+
+    Each visible disc covers 1.5 sigma around its centre, at least a one-pixel
+    border that suppresses point-raster pinholes. A slanted surface whose discs
+    bridge their sampling rows is therefore not reported as a gap, while large
+    missing patches remain visible; no triangle or room surface is invented here.
     """
     import cv2
     from .atlas_scene_preservation import _project
@@ -83,14 +88,20 @@ def project_exported_splat(splat, camera):
 
     k = camera['intrinsics']
     shape = (int(k['height']), int(k['width']))
-    points = splat.xyz[np.isfinite(splat.xyz).all(axis=1) &
-                       (splat.opacity_sigmoid >= DEFAULT_VISIBLE_OPACITY)]
-    z, u, v, inside = _project(points, camera)
+    visible = np.isfinite(splat.xyz).all(axis=1) & (splat.opacity_sigmoid >= DEFAULT_VISIBLE_OPACITY)
+    z, u, v, inside = _project(splat.xyz[visible], camera)
     pixels = np.floor(v[inside]).astype(int) * shape[1] + np.floor(u[inside]).astype(int)
+    sigma = np.exp(splat.scales[visible][inside, :2].astype(np.float64).max(axis=1))
+    radius = np.clip(np.floor(1.5 * sigma * k['fx'] / z[inside]), 1, MAX_COVERAGE_DISC_PIXELS).astype(int)
     depth = np.full(shape, np.inf, np.float32)
-    np.minimum.at(depth.reshape(-1), pixels, z[inside])
-    depth = cv2.erode(depth, np.ones((3, 3), np.uint8),
-                      borderType=cv2.BORDER_CONSTANT, borderValue=float('inf'))
+    # One minimum filter per disc radius keeps the cost per candidate camera low.
+    for size in np.unique(radius):
+        layer = np.full(shape, np.inf, np.float32)
+        np.minimum.at(layer.reshape(-1), pixels[radius == size], z[inside][radius == size])
+        kernel = (np.ones((3, 3), np.uint8) if size == 1 else
+                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * size + 1, 2 * size + 1)))
+        depth = np.minimum(depth, cv2.erode(layer, kernel, borderType=cv2.BORDER_CONSTANT,
+                                            borderValue=float('inf')))
     return np.where(np.isfinite(depth), depth, 0).astype(np.float32)
 
 
