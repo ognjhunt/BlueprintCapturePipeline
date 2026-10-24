@@ -108,3 +108,25 @@ def test_dense_task_interval_does_not_hide_later_video_views(tmp_path):
     with pytest.raises(ValueError, match='capture_image_changed'):
         source_gallery(survey_path=path, source_video_digest='video', conditioned_frame_ids=['first'],
                        root=tmp_path / 'changed-previews')
+def test_original_capture_is_shown_as_a_full_frame_not_a_tiny_derived_tile(tmp_path):
+    import base64
+    from io import BytesIO
+    from blueprint_pipeline.atlas_scene_planner import _input
+
+    image = tmp_path / 'portrait.png'
+    Image.new('RGB', (720, 1280), 'white').save(image)
+    raw = {'path': str(image), 'sha256': _sha256_file(image),
+           'source_frame_id': 'recorded-later-angle', 'timestamp_seconds': 20.,
+           'kind': 'original_capture_source_check_only'}
+    overlay = {**raw, 'kind': 'geometry_gap_survey', 'camera_id': 'gap-camera'}
+    content = _input({'frames': []}, {'description': 'restore task surfaces'}, {
+        'scope': 'missing_surfaces_within_captured_scene', 'previews': [overlay, raw]})[0]['content']
+    labels = [json.loads(row['text']) for row in content if row['type'] == 'input_text']
+    assert any(row.get('original_capture_frame') == 'recorded-later-angle' and
+               row.get('not_atlas_generation_input') is True for row in labels)
+    tiles = next(row['derived_reconstruction_previews'] for row in labels
+                 if 'derived_reconstruction_previews' in row)
+    assert len(tiles) == 1 and tiles[0]['kind'] == 'geometry_gap_survey'
+    images = [Image.open(BytesIO(base64.b64decode(row['image_url'].split(',')[1])))
+              for row in content if row['type'] == 'input_image']
+    assert images[-1].size == (576, 1024)
