@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from blueprint_pipeline import gcp_monthly_budget_guard as guard
+from blueprint_pipeline import gcp_monthly_budget_admission as reader
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION, PaidResourceAdmissionBlocked,
     build_paid_lane_admission, require_paid_resource_admission,
@@ -17,6 +18,16 @@ from blueprint_pipeline.paid_resource_admission import (
 NOW = datetime.now(timezone.utc)
 LOCAL = NOW.astimezone(ZoneInfo("America/Los_Angeles"))
 INTERVAL = LOCAL.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def test_admission_reader_shares_policy_without_reaching_monitor_or_provider_code():
+    from tests.test_live_pipeline_import_isolation import HOT_LANE_MODULES, _transitive_local_modules
+
+    reachable = _transitive_local_modules(("paid_resource_admission",))
+    assert "gcp_monthly_budget_admission" in reachable
+    assert not reachable.intersection(HOT_LANE_MODULES | {"gcp_monthly_budget_guard", "cloud_vm_render_providers"})
+    assert guard.admission_blockers is reader.admission_blockers
+    assert guard.load_policy is reader.load_policy
 
 
 @pytest.fixture
@@ -74,6 +85,116 @@ class Client:
             self.enabled = False
         return {"projectId": self.policy["project_id"], "billingEnabled": self.enabled,
                 "billingAccountName": f"billingAccounts/{self.policy['billing_account_id']}" if self.enabled else ""}
+
+
+def _dated_admitted_report(policy):
+    born = INTERVAL + timedelta(days=10, hours=12)
+    client = Client(policy)
+    client.messages = [message(policy, published=born)]
+    result = guard.run_guard(policy, client=client, now=born)
+    assert result["admission_allowed"] is True
+    return born, result
+
+
+def test_only_staleness_defers_without_changing_report_or_admitting_spend(policy):
+    born, _ = _dated_admitted_report(policy)
+    path = Path(policy["report_path"])
+    before = path.read_bytes()
+    now = born + timedelta(minutes=6)
+    assert guard.admission_blockers(now=now) == ["gcp_monthly_budget_admission_blocked"]
+    waiting = guard.stale_report_wait(now=now)
+    assert waiting["waiting_for"] == "gcp_budget_monitor"
+    assert waiting["retry_not_before_epoch"] == now.timestamp() + 60
+    assert path.read_bytes() == before
+    assert guard.admission_blockers(now=now) == ["gcp_monthly_budget_admission_blocked"]
+
+
+@pytest.mark.parametrize("case", ["exhausted", "disabled", "policy_changed", "corrupt", "fresh", "future", "next_month"])
+def test_budget_or_authority_failures_are_not_transient_monitor_waits(policy, case):
+    born, report = _dated_admitted_report(policy)
+    now = born + timedelta(minutes=6)
+    if case == "exhausted":
+        report.update(observed_cost_usd="100", admission_allowed=False)
+    elif case == "disabled":
+        report["billing_enabled"] = False
+    elif case == "policy_changed":
+        report["policy_sha256"] = "0" * 64
+    elif case == "fresh":
+        now = born + timedelta(minutes=4)
+    elif case == "future":
+        now = born - timedelta(minutes=1)
+    elif case == "next_month":
+        now = born + timedelta(days=35)
+    path = Path(policy["report_path"])
+    path.write_text("invalid json" if case == "corrupt" else json.dumps(report))
+    assert guard.stale_report_wait(now=now) is None
+
+
+def test_atlas_controller_returns_processing_for_expired_admitted_monitor(policy, monkeypatch, tmp_path):
+    from blueprint_pipeline import atlas_scene_automation, paid_resource_allocator
+
+    born, _ = _dated_admitted_report(policy)
+    current = born + timedelta(minutes=6)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current.astimezone(tz)
+
+    monkeypatch.setattr(reader, "datetime", Clock)
+    calls, provider_calls = [], []
+
+    def stopped_before_provider(**options):
+        binding = (options["output_root"] / "saved-plan.json").read_bytes()
+        calls.append(binding)
+        grant = require_paid_resource_admission({"schema_version": PAID_LANE_ADMISSION_SCHEMA_VERSION,
+            "resource_class": "provider_reconstruction_api", "status": "admitted", "blockers": []},
+            resource_class="provider_reconstruction_api", expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+        require_paid_resource_admission_grant(grant, resource_class="provider_reconstruction_api")
+        provider_calls.append(binding)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(atlas_scene_automation, "run_automation", stopped_before_provider)
+    output = tmp_path / "retained-job"
+    output.mkdir()
+    saved = output / "saved-plan.json"
+    saved.write_bytes(b'{"binding": "same completed inputs and reservation"}')
+    binding = saved.read_bytes()
+    result = paid_resource_allocator.run_sponsored_website_atlas_automation(output_root=output)
+    assert result["status"] == "processing" and result["stage"] == "paid_admission_wait"
+    assert result["waiting_for"] == "gcp_budget_monitor"
+    assert calls == [binding] and provider_calls == []
+
+    refreshed = Client(policy)
+    refreshed.messages = [message(policy, published=current)]
+    guard.run_guard(policy, client=refreshed, now=current)
+    resumed = paid_resource_allocator.run_sponsored_website_atlas_automation(output_root=output)
+    assert resumed["status"] == "completed"
+    assert calls == [binding, binding] and provider_calls == [binding]
+    assert saved.read_bytes() == binding
+
+
+@pytest.mark.parametrize("blockers", [
+    ["gcp_monthly_budget_admission_blocked", "paid_resource_admission_not_admitted"],
+    ["gcp_monthly_budget_report_missing_or_invalid"],
+    ["paid_resource_admission_not_admitted"],
+])
+def test_atlas_controller_preserves_other_admission_refusals(monkeypatch, blockers):
+    from blueprint_pipeline import atlas_scene_automation, paid_resource_allocator
+
+    error = PaidResourceAdmissionBlocked(blockers)
+
+    def refuse(**_):
+        raise error
+
+    def unexpected_wait():
+        raise AssertionError("Other authority failures must not become an automatic wait")
+
+    monkeypatch.setattr(atlas_scene_automation, "run_automation", refuse)
+    monkeypatch.setattr(reader, "stale_report_wait", unexpected_wait)
+    with pytest.raises(PaidResourceAdmissionBlocked) as caught:
+        paid_resource_allocator.run_sponsored_website_atlas_automation()
+    assert caught.value is error
 
 
 def test_fresh_under_budget_report_admits_and_records_cpu_inventory(policy):

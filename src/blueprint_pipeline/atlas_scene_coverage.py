@@ -163,6 +163,10 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
         visual = canonical_digest({'previous': visual, 'review': report['review']})
         splat_root = output_root / ('background_refined_splat-' + identity[7:23])
         saved = splat_root / 'atlas_depth_splat_manifest.json'
+        if checkpoint:
+            checkpoint('automation_export_coverage_fuse', reuse_cached_export=saved.is_file(),
+                       retained_frame_count=len(geometry),
+                       added_generated_frame_ids=[frame['frame_id'] for frame in contributions])
         manifest = (json.loads(saved.read_text()) if saved.is_file() else write_depth_splat(
             frames=geometry, result=pose, output_root=splat_root,
             generated_result_digests=provenance, visual_review_digest=visual))

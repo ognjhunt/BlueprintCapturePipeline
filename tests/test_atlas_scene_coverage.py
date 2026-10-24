@@ -64,6 +64,8 @@ def test_coverage_projects_the_export_and_ignores_invisible_points():
 
 def test_repair_is_fused_and_then_reviewed_again_before_meshing(tmp_path, monkeypatch):
     args = fixture(tmp_path)
+    progress = []
+    args['checkpoint'] = lambda stage, **fields: progress.append((stage, fields))
     calls = []
     def complete(**kw):
         calls.append(kw)
@@ -89,6 +91,9 @@ def test_repair_is_fused_and_then_reviewed_again_before_meshing(tmp_path, monkey
     assert manifest['gaussian_count'] > old['gaussian_count']
     assert root != args['splat_root'] and result['task_coverage_sufficient'] is True
     assert result['whole_scene_complete'] is False and result['simulation_qualified'] is False
+    fusion = [fields for stage, fields in progress if stage == 'automation_export_coverage_fuse']
+    assert fusion == [{'reuse_cached_export': False, 'retained_frame_count': 2,
+                       'added_generated_frame_ids': ['targeted-repair']}]
 
 
 def test_pretty_image_with_no_usable_depth_does_not_trigger_repeated_purchases(tmp_path, monkeypatch):
