@@ -681,7 +681,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     articulated = articulation_kind in {"prismatic", "revolute"}
     coverage = subject_target.get("authoring_coverage") if articulated else None
     coverage_bound = coverage is not None and coverage_matches(coverage, target=subject_target,
-                                                               source_geometry=source_geometry)
+                                                               source_geometry=source_geometry,
+                                                               task_context=task_context)
     body = coverage["body_bounds"] if coverage_bound and coverage["status"] == "complete" else None
     # Source-estimate units to simulator metres.
     scale = abs(float(np.linalg.det(runtime_to_sim[:3, :3] @ matrix[:3, :3]))) ** (1 / 3)

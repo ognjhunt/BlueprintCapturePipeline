@@ -124,6 +124,24 @@ def test_real_hollow_articulated_bytes_keep_joint_frame_handle_and_native_contra
     assert joint["task_joint_limits"] == pytest.approx([0, 1.5])
 
 
+@pytest.mark.parametrize("requested_type,passes", [("revolute", True), ("prismatic", False)])
+def test_real_usd_must_supply_the_requested_motion_not_only_a_named_part(tmp_path, requested_type, passes):
+    request = construction_request(articulated=True)
+    request["configuration"].update(required_part_ids=["door"], construction_constraints={
+        "required_motions": [{"motion_id": "operate_panel", "part_ids": ["door"], "joint_type": requested_type,
+                              "task_actions": ["open"], "source_frame_ids": []}]})
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    source, final = usd_fixture(tmp_path, articulated=True), tmp_path / "final.usdz"
+    if passes:
+        result = adapt_usd(source, final, request, annotations_path=annotations(tmp_path, request))
+        readback = result["final_readback"]["required_motion_readback"]
+        assert readback["motions"][0]["joint_id"] == "door_hinge"
+        assert readback["task_success_proven"] is False
+    else:
+        with pytest.raises(AuthoringContractError, match="required_task_motion_missing:operate_panel"):
+            adapt_usd(source, final, request, annotations_path=annotations(tmp_path, request))
+
+
 def test_solid_collider_cannot_claim_a_hollow_interior(tmp_path):
     request = construction_request(articulated=True)
     with pytest.raises(AuthoringContractError, match="collision_cavity_unproven"):
