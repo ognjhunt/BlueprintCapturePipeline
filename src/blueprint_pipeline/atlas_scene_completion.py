@@ -271,6 +271,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     # Source review can be added to a retained, unfinished pass without
     # overwriting its older planner input or repurchasing finished native work.
     feedback_path = root / ('plan-inputs-source-' + gallery['survey_digest'][7:23] + '.json')
+    if coverage_feedback is not None:
+        # Keep the previous planner input/receipt while reusing native repairs.
+        feedback_path = feedback_path.with_name(feedback_path.stem + '-surfaces-v1.json')
     baseline_path = root.parent / "background_splat/atlas_depth_splat_manifest.json"
     if baseline_path.is_file():
         baseline = json.loads(baseline_path.read_text())
@@ -306,6 +309,17 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     planned = planner_runner(survey_path=survey_path, task_context=context, configuration=configuration,
                              output_root=root / "planner", completion=feedback)
     proposal = planned["proposal"]
+    if coverage_feedback is not None:
+        from .atlas_scene_planner import CoverageCompletionProposal
+        proposal = CoverageCompletionProposal.model_validate(proposal).model_dump(mode='json')
+        camera_ids = {row['camera_id'] for row in gaps['views']}
+        source_ids = set(gallery['reviewed_source_frame_ids'])
+        gap_ids = {gap['gap_id'] for row in gaps['views'] for gap in row['gaps']}
+        if any(not set(row['evidence_camera_ids']) <= camera_ids
+               or not set(row['source_frame_ids']) <= source_ids
+               or not set(row['gap_ids']) <= gap_ids
+               for row in proposal['environment_surfaces']):
+            raise ValueError('atlas_coverage_environment_evidence_invalid')
     if proposal['status'] == 'sufficient' and not proposal['selected_camera_ids']:
         report = {'status': 'passed', 'generation_result_digest': gaps['digest'],
                   'generated_roots': [], 'generated_frame_ids': [], 'planner': planned,
@@ -313,6 +327,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                   'review': {'status': 'not_required', 'reason': 'agent_found_no_material_task_gap'},
                   'gap_survey_digest': gaps['digest'], 'remaining_unknowns': proposal['remaining_unknowns'],
                   'gap_assessment': proposal['gap_assessment'], 'whole_scene_complete': False,
+                  'environment_surfaces': proposal.get('environment_surfaces', []),
                   'coverage_basis': 'task_prioritized_review_of_surveyed_export',
                   'generated_geometry_ready': True, 'claim_ceiling': 'development_only'}
         report['digest'] = canonical_digest(report, digest_field='digest')
@@ -411,6 +426,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "generated_frame_ids": [row["frame_id"] for row in generated], "review": visual,
               "selected_camera_ids": ids, "target_cameras": [row["camera"] for row in selected],
               "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": proposal["remaining_unknowns"],
+              "environment_surfaces": proposal.get("environment_surfaces", []),
               "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "identified_missing_geometry_only",
               'gap_survey_digest': gaps['digest'],
               'source_evidence': audit,

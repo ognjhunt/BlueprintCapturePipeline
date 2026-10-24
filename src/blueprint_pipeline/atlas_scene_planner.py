@@ -13,9 +13,10 @@ import math
 import os
 from io import BytesIO
 from pathlib import Path
+from typing import Literal
 
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .atlas_automation_plan import AutomationPlan, AUTOMATION_INSTRUCTIONS, ScaleReference
 from .common import write_json
@@ -107,9 +108,33 @@ class CompletionProposal(BaseModel):
     view_gap_reasons: list[CompletionViewReason] = Field(default_factory=list)
 
 
+class EnvironmentSurfaceAssessment(BaseModel):
+    """A visible environment component, rather than task-physics qualification."""
+    model_config = ConfigDict(extra="forbid")
+    component: str = Field(min_length=1)
+    surface: str = Field(min_length=1)
+    required_for_local_environment: bool
+    coverage: Literal["present", "minor_defects", "material_gap", "unknown", "physical_opening"]
+    source_frame_ids: list[str]
+    evidence_camera_ids: list[str]
+    gap_ids: list[str]
+    reason: str = Field(min_length=1)
+
+
 class CoverageCompletionProposal(CompletionProposal):
     status: str = Field(pattern="^(proposed|abstained|sufficient)$")
     selected_camera_ids: list[str] = Field(default_factory=list)
+    environment_surfaces: list[EnvironmentSurfaceAssessment] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def coverage_must_support_stopping(self):
+        if self.status == "sufficient":
+            required = [row for row in self.environment_surfaces if row.required_for_local_environment]
+            if (self.selected_camera_ids or not required or any(
+                    row.coverage in {"material_gap", "unknown"} or not row.evidence_camera_ids
+                    for row in required)):
+                raise ValueError("atlas_coverage_sufficient_with_unresolved_environment_surface")
+        return self
 
 
 class ScaleProposal(BaseModel):
@@ -201,7 +226,25 @@ POST_EXPORT_COMPLETION_INSTRUCTIONS = """
 This is a feedback pass on the actual exported reconstruction. Prioritize surfaces
 necessary for the task, its supports, approach/access space, nearby obstacles and
 recognizable local environment. Accurate background is welcome; do not spend on
-distant scenery before task gaps. Reviewed RGBD depth is an estimate of where a
+distant scenery before task gaps. First identify the COMPLETE connected work
+fixture or support assembly from all supplied photographs, not only the opening
+where the task object goes. Assess its worktop, visible outer faces, ends, edges,
+supports and adjoining operating floor as distinct environment_surfaces. Adapt
+these components to the actual site; do not assume a particular room or object.
+A narrow task_extent_summary or old required_surface_hypotheses list is not a
+complete environment checklist. Task-object mechanics, fit, forces and physical
+qualification are separate unknowns, not reasons to omit visible fixture surfaces.
+For every assessment identify the component, surface, whether it is required for
+the recognizable local environment, source_frame_ids, evidence_camera_ids from
+the actual geometry previews, exact gap_ids when applicable, and a concrete reason.
+Judge coverage of the reconstructed surface, not whether a source photo exists.
+Enough context to understand the task is not enough to close a large missing
+part of its connected fixture. Surfaces absent from the actual exported geometry
+remain material_gap even if their RGB pictures look complete. A real opening
+stays open; a photographed solid end panel is not an opening. Unseen interiors
+and distant scenery can be optional, with the reason recorded. Small speckles,
+thin seams and modest distortions are minor_defects and need no new purchase.
+Reviewed RGBD depth is an estimate of where a
 missing foreground surface belongs. A farther wall or floor visible through that
 missing surface does not close it. Use all supplied source photographs and
 reviewed references together. Request a new angle aimed at the gap, with enough
@@ -341,7 +384,8 @@ def _input(survey, context, feedback=None, *, preview_size=512):
         previews = feedback['previews']
         originals = [row for row in previews if row.get('kind') == 'original_capture_source_check_only']
         previews = [row for row in previews if row.get('kind') != 'original_capture_source_check_only']
-        tiled = feedback.get('scope') == 'missing_surfaces_within_captured_scene'
+        post_export = 'post_export_coverage' in feedback
+        tiled = feedback.get('scope') == 'missing_surfaces_within_captured_scene' and not post_export
         if tiled:
             from PIL import ImageDraw
             # Reconnaissance only: retain every viewpoint and its identity,
@@ -374,7 +418,7 @@ def _input(survey, context, feedback=None, *, preview_size=512):
             with Image.open(source) as image:
                 preview = image.convert("RGB")
                 original = row.get('kind') == 'original_capture_source_check_only'
-                size = 1024 if original else 768 if feedback.get('scope') == 'task_surface_masks' else 512
+                size = 1024 if original or post_export else 768 if feedback.get('scope') == 'task_surface_masks' else 512
                 preview.thumbnail((size, size))
                 stream = BytesIO()
                 preview.save(stream, format="PNG")
@@ -422,6 +466,26 @@ def completion_summary(completion):
     return value
 
 
+def _export_image_token_ceiling(survey, previews):
+    """Bound the actual resized canvases instead of pricing every image as 2k².
+
+    Vision's 32px patch calculation is documented at
+    https://developers.openai.com/api/docs/guides/images-vision#patch-based-image-tokenization
+    Three tokens per patch plus label overhead exceeds the published patch
+    multipliers (1.2--2.46). No crop, frame omission or enlargement is involved.
+    """
+    ceiling = 0
+    for path, size in [*((row['source_image_path'], 512) for row in survey['frames']),
+                       *((row['path'], 1024) for row in previews)]:
+        with Image.open(path) as source:
+            width, height = source.size
+        scale = min(1., size / max(width, height))
+        # Ceil is conservative relative to PIL thumbnail's integer rounding.
+        width, height = math.ceil(width * scale), math.ceil(height * scale)
+        ceiling += 3 * math.ceil(width / 32) * math.ceil(height / 32) + 256
+    return ceiling
+
+
 def review_survey(*, survey_path: Path, task_context, configuration, output_root: Path,
                   invoker=None, release_blockers=None, feedback=None, completion=None, scaling=None,
                   recovery=None):
@@ -440,10 +504,14 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
              else completion_summary(completion) if completion is not None else feedback)
     previews = (extra or {}).get('previews', [])
     preview_count = len(previews)
-    if (extra or {}).get('scope') == 'missing_surfaces_within_captured_scene':
+    if ((extra or {}).get('scope') == 'missing_surfaces_within_captured_scene'
+            and 'post_export_coverage' not in (extra or {})):
         original_count = sum(row.get('kind') == 'original_capture_source_check_only' for row in previews)
         preview_count = original_count + math.ceil((preview_count - original_count) / 4)
-    tokens = 24_000 + 3000 * (len(survey["frames"]) + preview_count)
+    image_tokens = 3000 * (len(survey["frames"]) + preview_count)
+    if 'post_export_coverage' in (extra or {}) and policy['model'].startswith('gpt-6'):
+        image_tokens = _export_image_token_ceiling(survey, previews)
+    tokens = 24_000 + image_tokens
     if completion is not None or scaling is not None or recovery is not None:
         # _input excludes preview paths/digests from its text; image costs and
         # their short labels are already covered above. Do not count them twice.
@@ -492,6 +560,8 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         binding['completion_model_input_digest'] = canonical_digest(extra)
         if 'original_capture_gallery' in completion:
             binding['source_gallery_input_revision'] = 'separate_full_frame_previews_v1'
+        if 'post_export_coverage' in completion:
+            binding['export_coverage_input_revision'] = 'full_frame_component_surface_review_v2_canvas_budget'
     if scaling is not None:
         binding['scale_review_digest'] = canonical_digest(scaling)
     if recovery is not None:
