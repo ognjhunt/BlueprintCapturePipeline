@@ -1,0 +1,53 @@
+name: Policy dependency replay
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - src/blueprint_pipeline/adp009d_policy_provisioning.py
+      - scripts/replay_openpi_policy_dependencies.py
+      - tests/test_policy_dependency_replay.py
+      - .github/workflows/policy-dependency-replay.yml
+  workflow_dispatch:
+
+concurrency:
+  group: policy-dependency-replay-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  openpi:
+    name: Frozen OpenPI install on CPU
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install native build and import prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential linux-libc-dev python3-dev pkg-config \
+            libegl1 libgl1 libglib2.0-0 ffmpeg
+
+      - name: Replay retained refusal and install the generated frozen environment
+        env:
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          PYTHONPATH: src
+        run: |
+          /usr/bin/python3 scripts/replay_openpi_policy_dependencies.py \
+            --workspace "${RUNNER_TEMP}/openpi-dependency-workspace" \
+            --output "${RUNNER_TEMP}/openpi-dependency-evidence" \
+            --source-commit "$SOURCE_COMMIT"
+
+      - name: Retain dependency receipt and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openpi-dependency-replay-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/openpi-dependency-evidence
+          if-no-files-found: error

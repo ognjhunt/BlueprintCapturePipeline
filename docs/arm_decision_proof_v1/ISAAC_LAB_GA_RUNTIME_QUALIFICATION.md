@@ -451,3 +451,26 @@ gap, hardware readback and teardown records are retained. Canonical allocator
 and watchdog exit, instance absence, staging cleanup and global Vast zero were
 verified. Official billing is $0.101; there is no continuing spend from this run.
 The comparison remains unqualified, with zero learned-policy episodes.
+
+The targeted `Policy dependency replay` Linux CI job exercises this boundary
+before another paid attempt. It reproduces the exact locked MuJoCo refusal on
+Python 3.12, then consumes the generated production sync command to install the
+complete frozen OpenPI environment with the image-style `UV_PYTHON` override
+present. It checks installed dependency consistency and imports the upstream
+policy/configuration modules, MuJoCo, Torch and CPU JAX under Python 3.11.9.
+It retains command logs, installed distributions and a digest-bound
+`openpi_policy_dependency_replay.v1` result. It downloads no checkpoint, sends
+no policy observation and establishes no GPU, simulator or episode result.
+Run the same check on a fresh Linux x86-64 CPU workspace with:
+
+```bash
+PYTHONPATH=src /usr/bin/python3 scripts/replay_openpi_policy_dependencies.py \
+  --workspace /absolute/new-dependency-workspace \
+  --output /absolute/new-dependency-evidence \
+  --source-commit "$(git rev-parse HEAD)"
+```
+
+The dependency replay needs Python 3.12, the native build/import packages named
+by its CI job, and sufficient temporary disk space. It preserves existing
+directories and the original failure. A passing replay is a provisioning gate;
+the full paired policy comparison is still required.
