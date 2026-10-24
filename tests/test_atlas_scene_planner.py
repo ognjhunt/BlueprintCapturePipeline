@@ -283,7 +283,6 @@ def test_people_working_in_the_one_video_stay_usable_and_are_named_for_erasing(t
 
 
 @pytest.mark.parametrize("change, reason", [
-    ({"transient_frame_ids": ["2"], "unsafe_frame_ids": ["2"]}, "transients_invalid"),
     ({"transient_frame_ids": ["missing"]}, "transients_invalid"),
     ({"transient_frame_ids": ["0"], "automation": None}, "transients_require_automation"),
 ])
@@ -296,6 +295,21 @@ def test_transients_cannot_be_unusable_unknown_or_unplanned(tmp_path, change, re
         del proposal["automation"]
     with pytest.raises(ValueError, match=reason):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+
+
+def test_an_unsafe_frame_showing_people_is_left_out_not_a_failed_plan(tmp_path):
+    """2026-10-23: hands on 22 frames of a different rack state failed a whole plan."""
+    _, survey, proposal, policy = fixture(tmp_path)
+    proposal.update(static_intervals_seconds=[[0, 2.5]], unsafe_frame_ids=["2"], automation=_automation(),
+                    transient_frame_ids=["1", "2"],
+                    transients=[{"label": "hands", "segmentation_prompt": "hands"}])
+    review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    # The unsafe frame is excluded from the inputs, so it has nothing to erase.
+    assert review["excluded_frame_ids"] == ["2"]
+    assert review["transient_frame_ids"] == ["1"]
+    # Unsafe frames that are all transient leave no transient to erase.
+    proposal["transient_frame_ids"] = ["2"]
+    assert "transient_frame_ids" not in planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
 
 
 def test_transient_targets_never_collide_with_reviewed_objects(tmp_path):
