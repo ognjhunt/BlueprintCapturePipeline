@@ -153,8 +153,10 @@ admission and zero-retry gates remain mandatory. No UK resource has been
 allocated, and these source checks do not establish transfer performance.
 
 A baseline session authority can additionally require the GA session's observed
-physical GPU UUID. Both the parent worker and each isolated cell check the one
-visible UUID before starting cells or loading learned clients. A mismatch,
+physical GPU UUID. Provider input preflight checks it before checkpoint
+provisioning; the parent worker and each isolated cell recheck the one visible
+UUID before starting cells or loading learned clients. Host static preflight
+does not probe a GPU. A mismatch,
 ambiguous device inventory or failed probe records a digest-bound refusal and
 before-first-observation gap. It does not query a policy. This supplements the
 existing comparison's requirement that every scenario and both runtimes share

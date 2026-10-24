@@ -565,7 +565,9 @@ def preflight_policy_canary_static_inputs(
     }
 
 
-def preflight_policy_canary_runtime_directory(runtime_root: Path) -> dict[str, Any]:
+def preflight_policy_canary_runtime_directory(
+    runtime_root: Path, *, physical_gpu_output_root: Path | None = None
+) -> dict[str, Any]:
     missing: list[str] = []
     def read(relative: str) -> dict[str, Any]:
         try:
@@ -592,6 +594,8 @@ def preflight_policy_canary_runtime_directory(runtime_root: Path) -> dict[str, A
         missing.append("provider_manifest:" + str(exc))
     receipt["blockers"] = sorted(set([*receipt["blockers"], *missing]))
     receipt["status"] = "blocked" if receipt["blockers"] else "passed"
+    if receipt["status"] == "passed" and physical_gpu_output_root is not None:
+        _required_gpu_identity_preflight(authority, physical_gpu_output_root)
     return receipt
 
 

@@ -249,7 +249,8 @@ fi
 import json, os
 from pathlib import Path
 from adp_arena_provider_runner import preflight_policy_canary_runtime_directory
-receipt = preflight_policy_canary_runtime_directory(Path(os.environ["RUNTIME_DIR"]))
+receipt = preflight_policy_canary_runtime_directory(
+    Path(os.environ["RUNTIME_DIR"]), physical_gpu_output_root=Path(os.environ["OUT_DIR"]))
 print(json.dumps(receipt, sort_keys=True))
 raise SystemExit(0 if receipt["status"] == "passed" else 2)
 PYINPUT
