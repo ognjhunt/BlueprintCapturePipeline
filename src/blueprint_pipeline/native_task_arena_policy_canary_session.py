@@ -369,14 +369,48 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def session_geolocation_country_codes(authority: Mapping[str, Any]) -> tuple[str, ...]:
+    """Keep US admission unless a pinned internal canary has explicit UK authority.
+
+    This changes the private compute location only. It grants no new input
+    disclosure, publishing, training, production evaluation or automatic retry.
+    The caller still applies driver, RT, VRAM, transfer-budget and watchdog gates.
+    """
+    if "geolocation_authority" not in authority:
+        return ("US",)
+    grant = authority["geolocation_authority"]
+    machines = authority.get("allowed_machine_ids")
+    if (not isinstance(grant, Mapping)
+            or set(grant) != {"schema_version", "country_codes", "runtime_inputs_digest",
+                              "authorized_by", "authorization_reference", "disclosure_scope"}
+            or grant.get("schema_version") != "policy_canary_geolocation_authority.v1"
+            or grant.get("country_codes") != ["GB"]
+            or authority.get("run_kind") != RUN_KIND
+            or not isinstance(machines, list) or not machines
+            or any(type(machine) is not int or machine <= 0 for machine in machines)
+            or grant.get("runtime_inputs_digest") != authority.get("runtime_inputs_digest")
+            or not _digest(grant.get("runtime_inputs_digest"))
+            or any(not isinstance(grant.get(field), str) or not grant[field].strip()
+                   for field in ("authorized_by", "authorization_reference"))
+            or grant.get("disclosure_scope") != "same_admitted_private_vast_inputs"):
+        raise PolicyCanarySessionError("policy_canary_session_geolocation_authority_invalid")
+    return ("GB",)
+
+
 def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
+    if "required_gpu_uuid" in payload and (
+        not isinstance(payload["required_gpu_uuid"], str)
+        or re.fullmatch(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", payload["required_gpu_uuid"]) is None
+    ):
+        raise PolicyCanarySessionError("policy_canary_session_required_gpu_uuid_invalid")
     if "allowed_machine_ids" in payload:
         machines = payload["allowed_machine_ids"]
         if (payload.get("run_kind") != RUN_KIND or not isinstance(machines, list) or not machines
                 or any(type(machine) is not int or machine <= 0 for machine in machines)
                 or len(machines) != len(set(machines))):
             raise PolicyCanarySessionError("policy_canary_session_machine_constraint_invalid")
+    session_geolocation_country_codes(payload)
     candidate_ids = _candidate_set(payload.get("candidate_ids"), payload.get("run_kind"))
     if (
         payload.get("schema_version") != AUTHORITY_SCHEMA_VERSION
@@ -512,6 +546,8 @@ def build_session_authority(
     execution_release: Mapping[str, Any] | None = None,
     hard_deadline_epoch: float | None = None,
     allowed_machine_ids: list[int] | None = None,
+    geolocation_authority: Mapping[str, Any] | None = None,
+    required_gpu_uuid: str | None = None,
 ) -> dict[str, Any]:
     inputs = validate_runtime_input_manifest(runtime_inputs)
     candidate_ids = _candidate_set(inputs["candidate_ids"], inputs["run_kind"])
@@ -550,6 +586,8 @@ def build_session_authority(
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
         **({"allowed_machine_ids": list(allowed_machine_ids)} if allowed_machine_ids is not None else {}),
+        **({"geolocation_authority": dict(geolocation_authority)} if geolocation_authority is not None else {}),
+        **({"required_gpu_uuid": required_gpu_uuid} if required_gpu_uuid is not None else {}),
         **({"hard_deadline_epoch": hard_deadline_epoch} if hard_deadline_epoch is not None else {}),
         "maximum_provider_allocations": 1,
         "retry_cap": 0,

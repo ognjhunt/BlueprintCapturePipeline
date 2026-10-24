@@ -27,6 +27,7 @@ from .native_task_arena_policy_canary_session import (
     PROVIDER_RESULT_FILENAME as POLICY_CANARY_RESULT_FILENAME,
     RESULT_SCHEMA_VERSION as POLICY_CANARY_RESULT_SCHEMA_VERSION,
     consume_session_authority_once,
+    session_geolocation_country_codes,
     validate_provider_bundle as validate_policy_canary_provider_bundle,
     validate_session_authority as validate_policy_canary_session_authority,
 )
@@ -50,9 +51,9 @@ NO_POLICY_PREFERRED_GPU_KEYWORDS = ("L40S", "RTX 6000 Ada", "RTX 4090")
 # Runtime layers and evidence are served from Blueprint's US object store.
 # A soft geolocation preference selected Chile and North Macedonia twice,
 # consuming most of a 30-minute render probe before the 4.09 GB layer arrived.
-# Keep every native-task allocation in the same country as those immutable
-# inputs; the state-level regex remains a ranking preference inside this hard
-# boundary.
+# Default native-task allocations stay in the inputs' country. The internal
+# paired canary can carry the explicit, input-bound UK authority validated below;
+# other lanes retain this hard boundary. State-level regexes rank inside it.
 NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES = ("US",)
 # Policy provisioning still fetches a revision-pinned source tree and locked
 # packages outside the sealed checkpoint/runtime packets.  The completed pi0.5
@@ -679,9 +680,7 @@ def run_native_task_arena_policy_canary_session_vast(
             preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
             minimum_driver_version=MINIMUM_DRIVER_VERSION,
             require_independent_watchdog=True,
-            allowed_geolocation_country_codes=(
-                NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
-            ),
+            allowed_geolocation_country_codes=session_geolocation_country_codes(authority),
             authorization_consumption=consumption,
             stale_offer_create_retry_limit=0,
             expected_provider_download_bytes=pi_download + groot_download + witness_capacity,

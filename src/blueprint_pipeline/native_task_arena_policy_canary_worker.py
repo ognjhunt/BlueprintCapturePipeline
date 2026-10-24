@@ -60,6 +60,34 @@ _CELL_PROGRESS_STAGES = frozenset({
 _write_indexed_telemetry = _write_policy_canary_telemetry
 
 
+def _required_gpu_identity_preflight(authority: Mapping[str, Any], output_root: Path) -> dict[str, Any] | None:
+    """Refuse a different physical card before any isolated cell or model load."""
+    required = authority.get("required_gpu_uuid")
+    if required is None:
+        return None
+    observed = []
+    error = None
+    try:
+        probe = subprocess.run(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+                               capture_output=True, text=True, check=True, timeout=15)
+        observed = [line.strip() for line in probe.stdout.splitlines() if line.strip()]
+    except (OSError, subprocess.SubprocessError) as exc:
+        error = type(exc).__name__
+    passed = observed == [required] and error is None
+    result = {"schema_version": "policy_canary_required_gpu_identity.v1", "passed": passed,
+              "authority_digest": authority["authority_digest"], "required_gpu_uuid": required,
+              "observed_gpu_uuids": observed, "probe_error": error,
+              "candidate_policy_queried": False,
+              "media_gap": None if passed else {"type": "before_first_observation",
+                                               "reason": "required_physical_gpu_identity_mismatch"}}
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    output_root.mkdir(parents=True, exist_ok=True)
+    (output_root / "policy_canary_required_gpu_identity.v1.json").write_text(json.dumps(result, indent=2) + "\n")
+    if not passed:
+        raise RuntimeError("policy_canary_required_physical_gpu_identity_mismatch")
+    return result
+
+
 def _policy_camera_visibility_contract(
     snapshot: Mapping[str, Any],
     *,
@@ -1358,6 +1386,7 @@ def _run_isolated_cell_processes(
     authority = validate_session_authority(
         _read(runtime / "runtime_inputs" / "policy_canary_session_authority.json")
     )
+    _required_gpu_identity_preflight(authority, output_root)
     base_scene_plan = _read(
         runtime / "native_task_packet" / "native_task_arena_scene_plan.v1.json"
     )
@@ -1557,6 +1586,7 @@ def _run_selected_cell(
     authority = validate_session_authority(
         _read(runtime / "runtime_inputs" / "policy_canary_session_authority.json")
     )
+    _required_gpu_identity_preflight(authority, output_root)
     provider_manifest = _validate_provider_manifest(
         _read(runtime / "adp_arena_provider_manifest.json"),
         runtime_inputs=inputs,

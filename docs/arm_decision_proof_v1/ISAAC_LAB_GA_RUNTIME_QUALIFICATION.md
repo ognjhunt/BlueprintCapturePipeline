@@ -39,7 +39,7 @@ construction transport envelope always retains `construction_gate_qualified:
 false` and `qualification_effect: none`. Newton may interpret the retained USD's
 PhysX properties differently; this separate smoke cannot establish physical
 fidelity, a policy outcome or a comparable performance improvement. Native
-execution remains pending; source tests are preparation evidence only.
+physics stepping remains unqualified; source tests are preparation evidence only.
 
 The first separate native attempt, Vast `57469156` on execution commit
 `cad3e2f9162b4479db8236679dacb1a50d872315`, failed before scene construction.
@@ -65,7 +65,28 @@ The released Newton DROID adapter changes gravity compensation, collision and
 gripper settings. The experiment records its resulting configuration separately
 from the retained PhysX reference and leaves the source asset bytes unchanged.
 It cannot borrow the primary pair's controls or configuration-equivalence claim.
-A correctly selected native rerun remains required.
+The correctly selected rerun is recorded below.
+
+The second separate attempt executed `be697a32edb81e3c5f361f3e17c21e5bd0663262`
+on Vast `57473847`, RTX 3090 UUID
+`GPU-dbe176f1-fb1e-bcb8-b17c-c923a025b448`, driver 580.173.02. Bootstrap passed
+in 26.743 seconds and the native app launched in 146.550 seconds. The run
+reported Newton 1.6.1, MuJoCo/MuJoCo-Warp 3.12.0, Warp 1.17.0 and Torch
+2.11.0+cu130. During workcell construction, CoACD's manifold edge check was
+followed by `std::logic_error: unexpected code path was hit`; the process
+aborted with provider entrypoint exit code 134. It retained no observation
+PNGs and never reached the requested hold-step/reset probe or backend readback.
+
+The canonical outer process result is blocked. The feature JSON remains a
+`running`/`build` checkpoint after the native abort and must not be interpreted
+as a final result. All 15 evidence files, bootstrap logs and two native-log
+snapshots were retained; the final evidence and the locally copied snapshots
+were hash-verified. `newton-feature-observed-outcome-20261024.json` binds the
+raw records and explicit before-first-observation media gap without modifying
+the checkpoint. Canonical teardown/provider-zero passed, all instance,
+allocator, watchdog and staging resources are absent, and official spend is
+$0.048. This is a failed compatibility test for this scene/configuration; it
+does not qualify Newton or alter the primary PhysX pair.
 
 ## Observed construction pair, 2026-10-24
 
@@ -107,15 +128,43 @@ lower-bound peak, including other processes.
 The full comparison still requires both frozen learned policies on all ten
 identical cells in each runtime: 40 episodes, complete policy-input frames,
 digest-bound manifests, derived review videos, deterministic scores and contact
-evidence. Standalone rendering/Newton remain separate, unexecuted experiments.
+evidence. The separate Newton attempt failed before physics stepping;
+standalone rendering was not executed.
 Fresh capacity at 2026-10-24 04:29 UTC offered no qualifying US 48 GB policy GPU
 within the unchanged resource and driver limits.
+
+A subsequent read-only capacity audit found that the RT-candidate list omitted
+the RTX 5880 Ada. NVIDIA documents 48 GB and third-generation RT cores at
+https://www.nvidia.com/en-us/products/workstations/rtx-5880/. The hardware
+registry now recognizes both provider spellings and caps advertised memory at
+48 GB. This corrects hardware metadata; native qualification, driver,
+architecture, geography and total-transfer-cost gates still apply. The observed
+UK offer is not admitted by the existing US-only execution authorities.
+
+For ADP-009D's Day-35 matrix, the observed US capacity blocker justifies an
+opt-in private UK compute authority for the same admitted inputs. This is a
+capacity preparation change, not a new evaluation or provider. Existing
+authorities retain US placement. A UK internal canary must bind its exact
+runtime-input digest, named authorizer and authorization reference, unchanged
+private Vast disclosure scope, and an explicit machine constraint. Production
+team evaluations cannot use it. The authority remains digest-bound; driver,
+architecture, RT, VRAM, requested disk, total transfer cost, watchdog, output
+admission and zero-retry gates remain mandatory. No UK resource has been
+allocated, and these source checks do not establish transfer performance.
+
+A baseline session authority can additionally require the GA session's observed
+physical GPU UUID. Both the parent worker and each isolated cell check the one
+visible UUID before starting cells or loading learned clients. A mismatch,
+ambiguous device inventory or failed probe records a digest-bound refusal and
+before-first-observation gap. It does not query a policy. This supplements the
+existing comparison's requirement that every scenario and both runtimes share
+the actual GPU; a machine ID alone can refer to several physical cards.
 
 Vast GA instance `57459128` and baseline instance `57462894` are confirmed
 absent. Their allocators and watchdogs exited; staging cleanup and canonical
 provider-zero passed. Official charges were $0.179 and $0.263. Official Vast
 charges for all task attempts, including SimReady intake and the separate failed
-Newton attempt, total $1.485.
+Newton attempts, total $1.533.
 Baseline attempt 1 allocated nothing and has a separate official $0 closeout.
 
 Retained evidence is under `output/isaaclab_ga_20261023/` locally and beneath
