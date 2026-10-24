@@ -128,6 +128,30 @@ def test_novel_projection_requires_cross_view_depth_and_colour_support_without_c
     assert not preservation.supported_projection_frames([a])[0]['confidence'].any()
 
 
+def test_supported_pixels_stop_comparing_but_later_views_can_confirm_remaining_pixels(monkeypatch):
+    a, b, c = frame('a'), frame('b'), frame('c')
+    b['rgb'][:, 3:] = (220, 0, 0)
+    c['rgb'][:, :3] = (220, 0, 0)
+    projected_sizes = []
+    project = preservation._project
+
+    def track(points, camera):
+        projected_sizes.append(len(points))
+        return project(points, camera)
+
+    monkeypatch.setattr(preservation, '_project', track)
+    result = preservation.supported_projection_frames([a, b, c])
+    assert projected_sizes[:2] == [16, 8], 'The late reference sees every still-unconfirmed pixel'
+    expected = np.zeros((6, 6), np.float32)
+    expected[1:-1, 1:-1] = 1
+    assert np.array_equal(result[0]['confidence'], expected)
+    left, right = expected.copy(), expected.copy()
+    left[:, 3:] = 0
+    right[:, :3] = 0
+    assert np.array_equal(result[1]['confidence'], left)
+    assert np.array_equal(result[2]['confidence'], right)
+
+
 def test_novel_context_drops_thin_projection_noise_and_neutralizes_fillable_pixels(tmp_path):
     a, b = frame('a'), frame('b')
     a['confidence'][:] = 0

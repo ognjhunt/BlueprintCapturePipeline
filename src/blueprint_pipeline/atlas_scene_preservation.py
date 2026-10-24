@@ -57,8 +57,9 @@ def supported_projection_frames(frames):
     from .atlas_depth_splat import EDGE_RELATIVE_JUMP
 
     filtered = []
-    for source in frames:
-        valid = _valid(source)
+    validity = [_valid(frame) for frame in frames]
+    for source, source_valid in zip(frames, validity, strict=True):
+        valid = source_valid
         depth = source['depth']
         center = depth[1:-1, 1:-1]
         interior = valid[1:-1, 1:-1].copy()
@@ -69,15 +70,20 @@ def supported_projection_frames(frames):
         points, y, x = _world(source, valid)
         supported = np.zeros(len(points), bool)
         colors = source['rgb'][y, x].astype(np.int16)
-        for other in frames:
+        for other, other_valid in zip(frames, validity, strict=True):
             if other is source:
                 continue
+            # Support is an OR across references. Once another view agrees,
+            # reprojecting that pixel cannot change its admission decision.
+            pending = np.flatnonzero(~supported)
+            if not len(pending):
+                break
             camera = {'intrinsics': other['intrinsics'], 'extrinsics': other['extrinsics']}
-            z, u, v, inside = _project(points, camera)
-            ids = np.flatnonzero(inside)
+            z, u, v, inside = _project(points[pending], camera)
+            ids = pending[inside]
             rows, cols = np.floor(v[inside]).astype(int), np.floor(u[inside]).astype(int)
             observed = other['depth'][rows, cols]
-            agrees = (_valid(other)[rows, cols]
+            agrees = (other_valid[rows, cols]
                       & (np.abs(z[inside] - observed) <= EDGE_RELATIVE_JUMP * observed)
                       & (np.max(np.abs(colors[ids] - other['rgb'][rows, cols].astype(np.int16)), axis=-1) <= 32))
             supported[ids[agrees]] = True
