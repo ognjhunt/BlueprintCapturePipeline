@@ -437,7 +437,12 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     # changed fixture or invented possession in its known-photo footprint.
     review_images = [{**image, 'image_path': image.get('native_image_path', image['image_path']),
                       'image_digest': image.get('native_image_digest', image['image_digest'])} for image in images]
-    visual = verify_completed_background(frames=review_images, original_frames=review_images, plan=plan,
+    capture_references = [{"frame_id": row["source_frame_id"], "image_path": row["path"],
+                           "image_digest": row["sha256"]} for row in source_previews]
+    # Raw capture is review-only context. It may contain the removed targets;
+    # it must never become an unclean input to native background generation.
+    visual = verify_completed_background(frames=review_images,
+        original_frames=[*review_images, *capture_references], plan=plan,
         output_root=root / "review", task_context=context, source_video_digest=survey["source_video_digest"])
     report = {"status": "passed" if visual["status"] == "passed" else "needs_input",
               "planner": planned, "context_fov_audit_digest": fov["digest"],

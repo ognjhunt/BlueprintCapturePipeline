@@ -116,6 +116,18 @@ def test_production_autostart_real_sdk_and_real_registry_inspection(tmp_path, mo
     assert restarted.status(task.task_id, "fixture-client")["state"] == "completed"
 
 
+def test_a_record_with_an_invalid_output_schema_is_refused_without_stopping_autostart(tmp_path):
+    service, task, record_path, _ = fixture(tmp_path)
+    invalid = json.loads(record_path.read_text())
+    invalid["task"] = {**invalid["task"], "task_id": "bad_task",
+                       "output_schema": {"type": "object", "properties": {"answer": {"type": 5}}}}
+    write(record_path.with_name("bad_task.json"), invalid)  # sorts before the valid record
+    assert service.autostart() == 1
+    assert service.journal.task(task.task_id)["state"] == "queued"
+    with pytest.raises(AgentExecutionError):
+        service.journal.task("bad_task")
+
+
 def test_changed_server_record_revokes_before_inference(tmp_path):
     service, task, record_path, _ = fixture(tmp_path)
     service.enqueue(task.task_id, "fixture-client")
