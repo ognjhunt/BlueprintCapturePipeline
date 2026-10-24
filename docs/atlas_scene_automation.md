@@ -34,6 +34,14 @@ The production Atlas controller runs the following for a new scene plan:
    reflections and contents can extend beyond the highlighted region. The
    overlay and its checksum are retained with the image receipt. Completed
    earlier edits remain reusable; uncertain earlier intents still refuse.
+   New edits use a separate immutable backend row with custom output dimensions
+   at the complete source aspect ratio (rounded to the API's 16-pixel grid).
+   The previous resolution budget, model, quality and price cap are unchanged.
+   No black letterbox border is added or cropped away. Camera-change repairs
+   require this canvas and cannot adopt a completed legacy crop; uncertain
+   legacy requests still refuse. Canvas policy and dimensions are retained in
+   each new image receipt. Panoramas outside the provider's 1:3 to 3:1 aspect
+   range refuse before a provider request rather than silently losing coverage.
 5. Gemini independently reviews the complete selected edited set before Atlas
    receives any RGB. Rejected views cannot enter reconstruction. Accepted RGB
    acquires fresh Atlas cameras and depth, rather than putting original
