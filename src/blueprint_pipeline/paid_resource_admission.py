@@ -55,7 +55,7 @@ def _monthly_budget_blockers(resource_class: str) -> list[str]:
     if not explicit and not reconstruction:
         return []
     try:
-        from blueprint_pipeline.gcp_monthly_budget_guard import admission_blockers, project_admission_blockers
+        from blueprint_pipeline.gcp_monthly_budget_admission import admission_blockers, project_admission_blockers
 
         if explicit:
             return admission_blockers()

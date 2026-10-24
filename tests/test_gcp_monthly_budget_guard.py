@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from blueprint_pipeline import gcp_monthly_budget_guard as guard
+from blueprint_pipeline import gcp_monthly_budget_admission as reader
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION, PaidResourceAdmissionBlocked,
     build_paid_lane_admission, require_paid_resource_admission,
@@ -17,6 +18,16 @@ from blueprint_pipeline.paid_resource_admission import (
 NOW = datetime.now(timezone.utc)
 LOCAL = NOW.astimezone(ZoneInfo("America/Los_Angeles"))
 INTERVAL = LOCAL.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def test_admission_reader_shares_policy_without_reaching_monitor_or_provider_code():
+    from tests.test_live_pipeline_import_isolation import HOT_LANE_MODULES, _transitive_local_modules
+
+    reachable = _transitive_local_modules(("paid_resource_admission",))
+    assert "gcp_monthly_budget_admission" in reachable
+    assert not reachable.intersection(HOT_LANE_MODULES | {"gcp_monthly_budget_guard", "cloud_vm_render_providers"})
+    assert guard.admission_blockers is reader.admission_blockers
+    assert guard.load_policy is reader.load_policy
 
 
 @pytest.fixture
@@ -130,7 +141,7 @@ def test_atlas_controller_returns_processing_for_expired_admitted_monitor(policy
         def now(cls, tz=None):
             return current.astimezone(tz)
 
-    monkeypatch.setattr(guard, "datetime", Clock)
+    monkeypatch.setattr(reader, "datetime", Clock)
     calls, provider_calls = [], []
 
     def stopped_before_provider(**options):
@@ -180,7 +191,7 @@ def test_atlas_controller_preserves_other_admission_refusals(monkeypatch, blocke
         raise AssertionError("Other authority failures must not become an automatic wait")
 
     monkeypatch.setattr(atlas_scene_automation, "run_automation", refuse)
-    monkeypatch.setattr(guard, "stale_report_wait", unexpected_wait)
+    monkeypatch.setattr(reader, "stale_report_wait", unexpected_wait)
     with pytest.raises(PaidResourceAdmissionBlocked) as caught:
         paid_resource_allocator.run_sponsored_website_atlas_automation()
     assert caught.value is error

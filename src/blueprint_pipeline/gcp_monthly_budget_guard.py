@@ -9,7 +9,6 @@ import base64
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,41 +17,11 @@ import tempfile
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
-SCHEMA = "blueprint.gcp_monthly_budget_guard.v1"
-CONFIG_ENV = "BLUEPRINT_GCP_BUDGET_GUARD_CONFIG"
-REPORT_ENV = "BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT"
-
-
-def _time(value: str) -> datetime:
-    result = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if result.tzinfo is None:
-        raise ValueError("timestamp_timezone_missing")
-    return result
-
-
-def _period(now: datetime) -> str:
-    return now.astimezone(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m")
-
-
-def _money(value: Any) -> Decimal:
-    result = Decimal(str(value))
-    if not result.is_finite() or result < 0:
-        raise ValueError("cost_invalid")
-    return result
-
-
-def effective_limit(policy: Mapping[str, Any], now: datetime) -> Decimal:
-    """A dated owner exception never changes the recurring monthly amount."""
-    return _money(policy.get("monthly_limit_overrides", {}).get(_period(now), policy["limit_usd"]))
-
-
-def _read(path: Path) -> dict:
-    if path.is_symlink() or path.stat().st_size > 1_000_000:
-        raise ValueError("budget_file_unsafe")
-    result = json.loads(path.read_text())
-    if not isinstance(result, dict):
-        raise ValueError("budget_file_invalid")
-    return result
+from .gcp_monthly_budget_admission import (
+    SCHEMA, CONFIG_ENV, REPORT_ENV as REPORT_ENV, _time, _period, _money, _read,
+    effective_limit, load_policy, admission_blockers as admission_blockers,
+    stale_report_wait as stale_report_wait, project_admission_blockers as project_admission_blockers,
+)
 
 
 def _write(path: Path, value: Mapping[str, Any]) -> None:
@@ -67,35 +36,6 @@ def _write(path: Path, value: Mapping[str, Any]) -> None:
         os.fsync(stream.fileno())
     os.chmod(temporary, 0o640)
     os.replace(temporary, path)
-
-
-def load_policy(path: Path) -> dict:
-    policy = _read(path)
-    for key, pattern in {
-        "project_id": r"[a-z][a-z0-9-]{4,62}",
-        "project_number": r"[0-9]+",
-        "billing_account_id": r"[A-F0-9]{6}-[A-F0-9]{6}-[A-F0-9]{6}",
-        "budget_id": r"[a-f0-9-]{36}",
-    }.items():
-        if not re.fullmatch(pattern, str(policy.get(key, ""))):
-            raise ValueError("budget_policy_identity_invalid")
-    if _money(policy["limit_usd"]) <= 0:
-        raise ValueError("budget_policy_limit_invalid")
-    overrides = policy.get("monthly_limit_overrides", {})
-    if not isinstance(overrides, dict):
-        raise ValueError("budget_policy_overrides_invalid")
-    for period, limit in overrides.items():
-        if not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", period) or _money(limit) <= 0:
-            raise ValueError("budget_policy_overrides_invalid")
-    for key in ("topic", "subscription"):
-        kind = "topics" if key == "topic" else "subscriptions"
-        if not re.fullmatch(f"projects/{policy['project_id']}/{kind}/[a-zA-Z][a-zA-Z0-9._~-]+", str(policy.get(key, ""))):
-            raise ValueError("budget_policy_pubsub_scope_invalid")
-    for key in ("state_path", "report_path"):
-        if not Path(policy[key]).is_absolute():
-            raise ValueError("budget_policy_path_invalid")
-    policy["policy_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-    return policy
 
 
 def validate_budget(policy: Mapping[str, Any], budget: Mapping[str, Any]) -> None:
@@ -297,75 +237,6 @@ def run_configured_guard() -> dict | None:
     if not configured:
         return None
     return run_guard(load_policy(Path(configured)))
-
-
-def admission_blockers(*, report_path: str | None = None, project_id: str | None = None,
-                       now: datetime | None = None) -> list[str]:
-    path = report_path if report_path is not None else os.getenv(REPORT_ENV, "").strip()
-    if not path:
-        return []
-    now = now or datetime.now(timezone.utc)
-    try:
-        configured = os.getenv(CONFIG_ENV, "").strip()
-        if not configured:
-            raise ValueError("gcp_monthly_budget_policy_missing")
-        policy = load_policy(Path(configured))
-        report = _read(Path(path))
-        if (report.get("schema_version") != SCHEMA or report.get("period") != _period(now)
-                or str(Path(path)) != policy["report_path"]
-                or report.get("project_id") != policy["project_id"]
-                or _money(report.get("limit_usd")) != effective_limit(policy, now)
-                or report.get("policy_sha256") != policy["policy_sha256"]
-                or project_id is not None and report.get("project_id") != project_id
-                or report.get("admission_allowed") is not True or report.get("blockers")
-                or report.get("billing_shutdown_authorized") is not True
-                or report.get("cutoff_permission_verified") is not True
-                or report.get("billing_enabled") is not True
-                or _money(report["observed_cost_usd"]) >= _money(report["limit_usd"])
-                or not timedelta(0) <= now - _time(report["generated_at"]) <= timedelta(minutes=5)):
-            return ["gcp_monthly_budget_admission_blocked"]
-    except Exception:
-        return ["gcp_monthly_budget_report_missing_or_invalid"]
-    return []
-
-
-def stale_report_wait(*, now: datetime | None = None) -> dict | None:
-    """Recognize an otherwise admitted report awaiting its next monitor cycle.
-
-    This grants no authority and never rewrites the report. A controller can
-    wait for the real monitor; the paid boundary still requires a fresh report.
-    Exhaustion, changed policy, missing evidence and month rollover stay blocked.
-    """
-    now = now or datetime.now(timezone.utc)
-    try:
-        configured = os.getenv(CONFIG_ENV, "").strip()
-        if not configured:
-            return None
-        policy = load_policy(Path(configured))
-        path = os.getenv(REPORT_ENV, "").strip() or policy["report_path"]
-        report = _read(Path(path))
-        generated = _time(report["generated_at"])
-        if (_period(generated) != _period(now) or now - generated <= timedelta(minutes=5)
-                or admission_blockers(report_path=path, now=generated)):
-            return None
-        return {"waiting_for": "gcp_budget_monitor", "reason": "gcp_monthly_budget_report_stale",
-                "report_generated_at": report["generated_at"],
-                "retry_not_before_epoch": now.timestamp() + 60}
-    except Exception:
-        return None
-
-
-def project_admission_blockers(project_id: str) -> list[str]:
-    configured = os.getenv(CONFIG_ENV, "").strip()
-    if not configured:
-        return []
-    try:
-        policy = load_policy(Path(configured))
-        if policy["project_id"] != project_id:
-            return []
-        return admission_blockers(report_path=policy["report_path"], project_id=project_id)
-    except Exception:
-        return ["gcp_monthly_budget_policy_invalid"]
 
 
 if __name__ == "__main__":

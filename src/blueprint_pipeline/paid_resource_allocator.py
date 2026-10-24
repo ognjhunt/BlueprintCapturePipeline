@@ -774,7 +774,7 @@ def run_sponsored_website_atlas_automation(*, experimental: bool = False, **opti
             planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw),
             pose_runner=lambda **kw: run_sponsored_website_atlas_pose(experimental=experimental, **kw), **options)
     except PaidResourceAdmissionBlocked as exc:
-        from .gcp_monthly_budget_guard import stale_report_wait
+        from .gcp_monthly_budget_admission import stale_report_wait
         waiting = (stale_report_wait() if exc.blockers == ["gcp_monthly_budget_admission_blocked"] else None)
         if waiting is None:
             raise
