@@ -14,6 +14,70 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 
 
+def _retained_native_repair(root):
+    """Adopt completed paid repairs before changing a derived-export cache key."""
+    path = root / 'completion.json'
+    if not path.is_file():
+        return False
+    report = json.loads(path.read_text())
+    if report.get('digest') != canonical_digest(report, digest_field='digest'):
+        raise ValueError('atlas_coverage_retained_completion_changed')
+    roots = report.get('generated_roots', [])
+    if report.get('status') != 'passed' or not roots:
+        return False
+    from pathlib import Path
+    for directory in roots:
+        result = Path(directory) / 'result.json'
+        if result.is_symlink() or not result.is_file():
+            raise ValueError('atlas_coverage_retained_native_result_missing')
+        native = json.loads(result.read_text())
+        if (native.get('status') != 'completed'
+                or native.get('digest') != canonical_digest(native, digest_field='digest')):
+            raise ValueError('atlas_coverage_retained_native_result_changed')
+    return True
+
+
+def _verify_export_outputs(manifest, root):
+    from .local_reconstruction_adapters import _sha256_file
+    from pathlib import Path
+    for row in manifest['outputs']:
+        relative = Path(row['path'])
+        path = root / relative
+        if (relative.is_absolute() or '..' in relative.parts or path.is_symlink()
+                or not path.is_file() or _sha256_file(path) != row['sha256']):
+            raise ValueError('atlas_coverage_refreshed_export_changed')
+
+
+def _refresh_fusion(*, manifest, splat_root, geometry, pose, provenance, visual, checkpoint):
+    from .atlas_depth_splat import fusion_profile, write_depth_splat
+
+    profile = fusion_profile()
+    if manifest.get('fusion_profile') == profile:
+        return None
+    binding = {'source_export_digest': manifest['digest'], 'fusion_profile': profile}
+    root = splat_root.with_name(splat_root.name + '-fusion-' + canonical_digest(binding)[7:23])
+    saved = root / 'atlas_depth_splat_manifest.json'
+    if checkpoint:
+        checkpoint('automation_export_refresh_fusion', retained_frame_count=len(geometry),
+                   reuse_cached_export=saved.is_file(), fusion_profile=profile)
+    current = (json.loads(saved.read_text()) if saved.is_file() else write_depth_splat(
+        frames=geometry, result=pose, output_root=root, generated_result_digests=provenance,
+        visual_review_digest=visual, voxel_footprint_multiple=manifest['voxel_footprint_multiple'],
+        rebuild_source_manifest_digest=manifest['digest']))
+    if (current.get('digest') != canonical_digest(current, digest_field='digest')
+            or current.get('fusion_profile') != profile
+            or current.get('pose_result_digest') != pose['digest']
+            or current.get('rebuild_source_manifest_digest') != manifest['digest']
+            or current.get('voxel_footprint_multiple') != manifest['voxel_footprint_multiple']
+            or current.get('generated_result_digests', []) != provenance
+            or current.get('visual_review_digest') != visual
+            or [row['frame_id'] for row in current.get('frames', [])]
+                != [frame['frame_id'] for frame in geometry]):
+        raise ValueError('atlas_coverage_refreshed_export_changed')
+    _verify_export_outputs(current, root)
+    return current, root
+
+
 def reviewed_reference_frames(reviewed_views, region_plan):
     """Keep every approved reference; remove explicitly rejected pixels/depth."""
     from .atlas_scene_task_regions import task_region_masks
@@ -36,7 +100,7 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
                           configuration, task_runner, planner_runner, release_blockers,
                           max_polls, pose_runner, checkpoint=None, source_survey_path=None,
                           source_recovery_runner=None, recorded_frames=(), recorded_source_reports=(),
-                          context_pose_root=None, context_pose_digest=None):
+                          context_pose_root=None, context_pose_digest=None, completed_exports_only=False):
     """Survey -> choose necessary gaps -> generate -> fuse -> re-survey.
 
     Repeated calls adopt identical completed stages. The shared provider allowance
@@ -49,6 +113,10 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
 
     if pose_runner is None:
         raise ValueError('atlas_generated_registration_canonical_pose_runner_required')
+    if completed_exports_only:
+        from .atlas_scene_automation import _offline_provider_call, _retained_pose_runner
+        task_runner = planner_runner = _offline_provider_call
+        pose_runner = _retained_pose_runner
     frames = list(frames)
     references = reviewed_reference_frames(reviewed_views, region_plan)
     geometry = list(geometry_frames)
@@ -68,6 +136,17 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
                    'task_context_digest': context['context_digest']}
         identity = canonical_digest(binding)
         root = output_root / 'completion_coverage' / identity[7:23]
+        retained = _retained_native_repair(root)
+        if not retained:
+            refreshed = _refresh_fusion(manifest=manifest, splat_root=splat_root,
+                geometry=geometry, pose=pose, provenance=provenance, visual=visual, checkpoint=checkpoint)
+            if refreshed is not None:
+                manifest, splat_root = refreshed
+                continue
+            if completed_exports_only:
+                _verify_export_outputs(manifest, splat_root)
+                stop = 'retained_exports_replayed_without_new_generation'
+                break
         if checkpoint:
             checkpoint('automation_export_coverage', export_digest=manifest['digest'],
                        gaussian_count=manifest['gaussian_count'], completed_repair_passes=len(reports))
@@ -146,7 +225,8 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
                 return None, registration
             regions = plan_task_regions(frames=sources, reviewed_views=registered, pose=pose,
                 context=context, configuration=configuration, root=root / 'registered-task-regions',
-                planner_runner=planner_runner, checkpoint=checkpoint)
+                planner_runner=planner_runner, checkpoint=checkpoint,
+                **({'segmenter': _offline_provider_call} if completed_exports_only else {}))
             generated, recovery = recover_reviewed_geometry(frames=sources, geometry_frames=geometry,
                 reviewed_views=registered, region_plan=regions, exported_splat_root=splat_root,
                 root=root / 'registered-export-recovery', checkpoint=checkpoint)
@@ -220,5 +300,6 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
               'whole_scene_complete': False, 'metric_measurement_proven': False,
               'simulation_qualified': False, 'claim_ceiling': 'development_only'}
     result['digest'] = canonical_digest(result, digest_field='digest')
-    write_json(output_root / 'completion_coverage' / 'latest.json', result)
+    write_json(output_root / 'completion_coverage' /
+               ('replay-latest.json' if completed_exports_only else 'latest.json'), result)
     return (geometry, manifest, splat_root), result

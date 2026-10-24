@@ -14,6 +14,52 @@ from blueprint_pipeline.atlas_depth_splat import posed_frame
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 
 
+def test_replay_refuses_missing_prepared_images_before_editing(tmp_path):
+    with pytest.raises(ValueError, match='replay_prepared_background_missing'):
+        edits.run_background(frames=[], objects=[{'disposition': 'remove'}], automation={},
+            inputs={'digest': 'inputs'}, pose={'digest': 'pose'}, root=tmp_path,
+            context={}, policy={}, source_digest='video', task_runner=None,
+            release_blockers=lambda: ('commit', []), require_cached=True)
+
+
+@pytest.mark.parametrize('missing_cache', [False, True])
+def test_export_replay_skips_paid_mesh_and_preserves_canonical_result(tmp_path, monkeypatch, missing_cache):
+    import json
+    from blueprint_pipeline import atlas_scene_automation as worker
+
+    frame = view(tmp_path)
+    pose = {'digest': 'pose', 'binding': {'source_video_digest': 'video'},
+            'operation': {'id': 'already-paid'}, 'depth_unit': 'estimated', 'scale_status': 'estimated'}
+    monkeypatch.setattr(sizes, 'load_views', lambda *args: (pose, [frame]))
+    monkeypatch.setattr(sizes, 'estimate_sizes', lambda **kw: {})
+    def retained(**kw):
+        assert kw['require_cached'] is True
+        if missing_cache:
+            raise ValueError('atlas_export_replay_prepared_background_missing')
+        return {'status': 'passed', 'stage_roots': [], 'result_digests': ['edited'],
+                'visual_review_digest': 'review'}
+    monkeypatch.setattr(edits, 'run_background', retained)
+    monkeypatch.setattr(worker, '_edited_frames', lambda background: [frame])
+    canonical = tmp_path / 'result.json'
+    canonical.write_text('{"retained_production_result":true}')
+    before = canonical.read_bytes()
+    result = worker.run_automation(pose_root=tmp_path, inputs={}, review={'automation': plan()},
+        output_root=tmp_path, task_context={}, configuration={'policy': {'mesh_export_cost_usd': .5}},
+        task_runner=lambda **_: pytest.fail('paid mesh called'), pose_runner=None, release_blockers=None,
+        replay_exports_only=True)
+    assert result['schema_version'] == 'atlas_scene_export_replay.v1' and result['new_paid_calls'] == 0
+    if missing_cache:
+        assert result['status'] == 'needs_input'
+        assert result['background']['reason'] == 'atlas_export_replay_prepared_background_missing'
+    else:
+        assert result['status'] == 'completed' and result['retained_frame_count'] == 1
+        assert result['whole_scene_complete'] is False
+    assert result['simulation_qualified'] is False
+    assert canonical.read_bytes() == before
+    saved = next((tmp_path / 'export_replays').glob('*.json'))
+    assert json.loads(saved.read_text()) == result
+
+
 def view(tmp_path, key="a", position=0, width=80, height=60):
     camera = {
         "intrinsics": {

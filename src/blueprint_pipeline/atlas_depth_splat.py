@@ -33,6 +33,7 @@ from .gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from .local_reconstruction_adapters import _sha256_file
 
 SCHEMA_VERSION = "atlas_depth_splat.v1"
+FUSION_REVISION = "local-plane-slant-aware-v2"
 POSE_RESULT = "atlas_posed_rgbd_result.json"
 SH_C0 = 0.28209479177387814
 # A 5 % depth jump between neighbouring pixels is a discontinuity: a continuous
@@ -638,6 +639,17 @@ def splats2mesh_attempt(splat_root: Path, mesh_root: Path) -> tuple[dict[str, An
             mesh_root.with_name(f"{mesh_root.name}-{MESH_INPUT_REVISION}"))
 
 
+def fusion_profile() -> dict[str, Any]:
+    """Bind derived exports to fusion semantics, independently of paid RGBD stages."""
+    return {"revision": FUSION_REVISION, "edge_relative_jump": EDGE_RELATIVE_JUMP,
+            "disc_sigma_per_voxel": DISC_SIGMA_PER_VOXEL,
+            "minimum_incidence_cosine": MIN_INCIDENCE_COSINE,
+            "disc_thickness_ratio": DISC_THICKNESS_RATIO,
+            "depth_smoothing_sigma_pixels": DEPTH_SMOOTHING_SIGMA_PIXELS,
+            "depth_smoothing_residual": DEPTH_SMOOTHING_RESIDUAL,
+            "depth_smoothing_tolerance": DEPTH_SMOOTHING_TOLERANCE}
+
+
 def build_depth_splat(pose_root: Path, output_root: Path, *, voxel_footprint_multiple: float = 2.0) -> dict[str, Any]:
     """Write the draft splat (PLY + SPZ), its manifest and the splats2Mesh task spec."""
     result, frames = load_posed_rgbd(pose_root)
@@ -646,7 +658,8 @@ def build_depth_splat(pose_root: Path, output_root: Path, *, voxel_footprint_mul
 
 
 def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_multiple=2.0,
-                      generated_result_digests=(), visual_review_digest=None):
+                      generated_result_digests=(), visual_review_digest=None,
+                      rebuild_source_manifest_digest=None):
     """Shared writer; edited RGBD remains explicitly generated and separately bound."""
     splat, report = fuse_posed_frames(frames, voxel_footprint_multiple=voxel_footprint_multiple)
     data = encode_spz(splat)
@@ -658,7 +671,8 @@ def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_mult
     spz = output_root / "atlas_depth_splat.spz"
     spz.write_bytes(data)
     source_video_digest = result["binding"]["source_video_digest"]
-    manifest = {"schema_version": SCHEMA_VERSION, "pose_result_digest": result["digest"],
+    manifest = {"schema_version": SCHEMA_VERSION, "fusion_profile": fusion_profile(),
+                "pose_result_digest": result["digest"],
                 "pose_operation_id": result["operation"]["id"], "source_video_digest": source_video_digest,
                 **report, "gaussian_count": splat.count,
                 "outputs": [{"role": role, "path": path.name, "bytes": path.stat().st_size, "sha256": _sha256_file(path)}
@@ -670,6 +684,8 @@ def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_mult
                     "visual_review_digest": visual_review_digest,
                     "appearance_basis": "generated_object_absent_background"} if generated_result_digests else {}),
                 "metric_measurement_proven": False, "claim_scope": "development_only"}
+    if rebuild_source_manifest_digest is not None:
+        manifest['rebuild_source_manifest_digest'] = rebuild_source_manifest_digest
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
     (output_root / "atlas_depth_splat_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     spec = splats2mesh_task_spec(frames=frames, spz=spz, source_video_digest=source_video_digest)
