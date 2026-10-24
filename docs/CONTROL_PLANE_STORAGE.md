@@ -41,7 +41,7 @@ and never a host path.
 
 | Role | Declared ceiling | Its reservation holds | Where it refuses |
 |---|---|---|---|
-| `control_plane_deploy` | 2 GiB | the release's git-tree estimate: blob bytes × 1.25, plus 4 KiB per file, plus 256 MiB (the measured footprint if the tree cannot be listed) | `deploy_control_plane_commit.py` before provenance or staging |
+| `control_plane_deploy` | 2 GiB | the release's git-tree estimate: blob bytes × 1.25, plus 4 KiB per file, plus 256 MiB (the measured footprint if the tree cannot be listed); for a commit with no published scene-configuration toolchain, a second reservation (workload `scene_configuration_staging`) on the temporary directory's filesystem for the provision step's scratch copy: the newest published toolchain's file bytes × 1.05 plus 4 KiB per file (12 GiB when none is published), freed when provisioning ends | `deploy_control_plane_commit.py` before provenance or staging |
 | `launch_preparation` | 2 GiB | exact bytes of references the content store lacks, plus 256 MiB; the runtime-source layer separately on a miss | preparation worker, before any fetch |
 | `episode_compilation` | 2 GiB | exact bytes of runtime members the member store lacks, plus 256 MiB | compile worker, before the output directory exists |
 | `launch_activation` | 2 GiB | the measured footprint, never less than the reference bytes the request declares plus 256 MiB | activation worker |
