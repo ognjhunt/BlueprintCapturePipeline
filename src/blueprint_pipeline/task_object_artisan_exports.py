@@ -57,6 +57,53 @@ def upstream_exports(terminal: dict, workspace: Path) -> dict:
             "physics_report": file_record(report_path), "exports": records, "usd": usd}
 
 
+def validated_sdk_exports(*, manifest_path: Path, model_path: Path, blueprint_path: Path) -> dict:
+    """Read a real SDK validation export without inventing CLI registration.
+
+    The SDK's accepted candidate is usable for independent static/native checks;
+    it is not an ARTISAN controller DONE record or a registered library asset.
+    """
+    manifest = read_json(manifest_path)
+    require(manifest.get("schema_version") == "release-candidate-v7"
+            and manifest.get("status") == "accepted" and bool(manifest.get("candidate_id"))
+            and "usd" in manifest.get("formats", []), "artisan_sdk_candidate_not_accepted")
+    require(file_record(model_path)["sha256"][7:] == manifest.get("model_sha256")
+            and file_record(blueprint_path)["sha256"][7:] == manifest.get("blueprint_sha256"),
+            "artisan_reviewed_program_or_blueprint_changed")
+    root, records = manifest_path.parent, {}
+    for name, row in manifest.get("artifacts", {}).items():
+        relative = Path(row["path"])
+        require(not relative.is_absolute() and ".." not in relative.parts, "artisan_export_path_invalid")
+        path = verified_file({"path": str(root / relative), "sha256": "sha256:" + row["sha256"],
+                              "size_bytes": row["size_bytes"]}, root=root)
+        records[name] = file_record(path)
+    require("object.usd" in records, "artisan_reviewed_usd_export_missing")
+    relative = Path(manifest["physics_report_path"])
+    require(not relative.is_absolute() and ".." not in relative.parts,
+            "artisan_export_physics_report_path_invalid")
+    report_path = root / relative
+    require(report_path.resolve().is_relative_to(root.resolve()), "artisan_upstream_storage_escape")
+    report = read_json(report_path)
+    require(file_record(report_path)["sha256"][7:] == manifest.get("physics_report_sha256")
+            and report.get("candidate_id") == manifest["candidate_id"]
+            and report.get("model_sha256") == manifest["model_sha256"]
+            and bool(manifest.get("build_id")) and report.get("build_id") == manifest["build_id"]
+            and report.get("status") == "pass" and report.get("blocking_findings") == [],
+            "artisan_sdk_physics_report_invalid")
+    for report_key, manifest_key in (("algorithm_version", "validation_algorithm_version"),
+                                     ("validation_policy_sha256", "validation_policy_sha256"),
+                                     ("simulator_collision_digest", "simulator_collision_digest"),
+                                     ("accepted_fcl_pose_sha256", "accepted_fcl_pose_sha256")):
+        require(bool(manifest.get(manifest_key)) and report.get(report_key) == manifest[manifest_key],
+                "artisan_sdk_validation_binding_changed")
+    # Both roles refer to the actual SDK manifest. There is no separate CLI
+    # export manifest, canonical registry record or synthetic terminal status.
+    return {"manifest": manifest, "export_manifest": file_record(manifest_path),
+            "candidate_manifest": file_record(manifest_path), "program": file_record(model_path),
+            "blueprint": file_record(blueprint_path), "physics_report": file_record(report_path),
+            "exports": records, "usd": records["object.usd"]}
+
+
 def _finite(values):
     return all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in values)
 
