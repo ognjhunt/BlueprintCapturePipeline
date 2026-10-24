@@ -1,6 +1,7 @@
 """Generated views must contribute bound geometry, not just downloaded pictures."""
 from copy import deepcopy
 import json
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -220,6 +221,9 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert report['generated_roots'] == [str(tmp_path / 'native')]
     assert reviews[0]["frames"][1]["original_image_path"] == str(tmp_path / "1-image.bin")
     assert reviews[0]['frames'][1]['image_path'] == str(tmp_path / 'native-1.png')
+    assert [row['frame_id'] for row in reviews[0]['original_frames']] == [
+        *[row['frame_id'] for row in reviews[0]['frames']], 'a', 'b', 'unselected-angle']
+    assert all(Path(row['image_path']).is_file() for row in reviews[0]['original_frames'])
     assert report['completion_extent'] == 'identified_missing_geometry_only'
     assert all(row['completion_gap_ids'] for row in calls[0]['selected'])
     assert report['generation_extent']['additional_space_beyond_observed_bounds'] is False

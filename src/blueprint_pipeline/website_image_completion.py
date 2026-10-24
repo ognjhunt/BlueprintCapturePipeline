@@ -167,12 +167,16 @@ def _review_prompt(targets: Sequence[Mapping[str, Any]], *, frames: Sequence[Map
         novel_prompt = (
             "Review Atlas-generated NOVEL CAMERA views of the same object-absent environment. "
             "Original images are appearance/context references, not same-camera pixel targets. "
+            "Additional raw capture context shows the actual site and may still contain targets or people; "
+            "require their absence only in the prepared views. Examine all capture context before calling "
+            "a fixture invented: absence or occlusion in one reference does not prove a surface was blank. "
             "Some views have calibrated camera roll to retain portrait photographs on a landscape grid; "
             "judge scene content, not whether the image is upright. "
             "Different framing and newly revealed surfaces are expected. Check that the room, "
             "floor, installation bay and surrounding fixtures remain coherent across views, "
             "with usable continuous surfaces. Do not require perfect rendering or photorealism: "
-            "minor blur, seams, speckling and small boundary defects are acceptable. Reject distortion "
+            "minor blur, seams, speckling, small fixture-detail differences and small boundary defects are "
+            "acceptable. Reject distortion "
             "only when it materially changes the room layout or task geometry, creates substantial "
             "missing floor/walls, or obstructs the task. Every removed target, its contents and every person must be "
             "absent; retain unrelated objects wherever visible. Reject invented, substituted or duplicated "
@@ -569,6 +573,15 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
         return results
 
 
+def _novel_review_context(frames: Sequence[Mapping[str, Any]], originals: Mapping[str, Mapping[str, Any]]):
+    """Novel-view review also needs recorded angles beyond its nearest paired reference."""
+    if not any(frame.get("novel_view") is True for frame in frames):
+        return []
+    prepared_ids = {frame["frame_id"] for frame in frames}
+    return [(f"raw capture context {frame_id}", item) for frame_id, item in originals.items()
+            if frame_id not in prepared_ids]
+
+
 def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original_frames: Sequence[Mapping[str, Any]],
                                 plan: Mapping[str, Any], output_root: Path, retain_result: bool = True,
                                 timeout_ms: int = 120_000, max_output_tokens: int = 2048) -> dict[str, Any]:
@@ -599,6 +612,10 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
             if _sha256_file(path) != item["image_digest"]:
                 raise ValueError("website_image_completion_review_source_changed")
             pairs.append((f"{label} {frame['frame_id']}", item))
+    for label, item in _novel_review_context(frames, originals):
+        if _sha256_file(Path(item["image_path"])) != item["image_digest"]:
+            raise ValueError("website_image_completion_review_source_changed")
+        pairs.append((label, item))
     with genai.Client(api_key=key, http_options=types.HttpOptions(
             timeout=timeout_ms, retry_options=types.HttpRetryOptions(attempts=1))) as client:
         with _review_contents(client=client, types=types, pairs=pairs,
@@ -794,15 +811,24 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
             if _sha256_file(Path(item["image_path"])) != item["image_digest"]:
                 raise ValueError("website_image_completion_review_source_changed")
             inputs.append(item["image_digest"])
+    capture_context = _novel_review_context(frames, originals)
+    for _, item in capture_context:
+        if _sha256_file(Path(item["image_path"])) != item["image_digest"]:
+            raise ValueError("website_image_completion_review_source_changed")
+        inputs.append(item["image_digest"])
     prompt = _review_prompt(plan["targets"], frames=frames)
     base_binding = {"kind": "background_review", "model": DEFAULT_MODEL, "max_output_tokens": 2048,
                     "image_digests": inputs, "frame_ids": [f["frame_id"] for f in frames], "targets": plan["targets"],
                     "prompt": prompt, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
+    if capture_context:
+        base_binding["capture_context_frame_ids"] = [frame_id for frame_id in originals
+            if frame_id not in {frame["frame_id"] for frame in frames}]
     # HIGH is bounded at 1120 tokens/image. UTF-8 bytes upper-bound the
     # controlled text; 2048 covers the fixed prompt and per-image labels.
     # https://ai.google.dev/gemini-api/docs/generate-content/media-resolution
     text_bytes = len((prompt + json.dumps(plan["targets"], sort_keys=True)).encode()) + 2048
     text_bytes += sum(len(str(frame["frame_id"]).encode()) * 2 + 32 for frame in frames)
+    text_bytes += sum(len(label.encode()) + 32 for label, _ in capture_context)
     input_tokens = text_bytes + 1120 * len(inputs)
     quote = gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens, max_output_tokens=2048)
     # Reuse completed v1/v2 receipts byte for byte. V1's short timeout and
