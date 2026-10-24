@@ -315,6 +315,7 @@ def run_automation(
                 original_frames = derived_frames
                 from .atlas_recorded_source_recovery import (
                     recover_recorded_sources, merge_source_frames, adopt_recorded_recoveries,
+                    source_completion_root,
                 )
                 recovery_background_path = output_root / 'background/prepared_background.json'
                 recovery_automation = automation
@@ -382,10 +383,8 @@ def run_automation(
                     visual_digest = canonical_digest({'previous': visual_digest,
                                                        'recovery': source_report['digest']})
 
-                completion_root = output_root / f"scene_completion-{COMPLETION_REVISION}"
-                if recorded_reports:
-                    completion_root = output_root / 'source_conditioned_completion' / canonical_digest(
-                        {'recoveries': [r['digest'] for r in recorded_reports]})[7:23]
+                completion_root = source_completion_root(
+                    output_root / f"scene_completion-{COMPLETION_REVISION}", output_root, recorded_reports)
                 while True:
                     generated, completion = complete_scene(
                         pose_root=effective_root, pose=effective_pose,
