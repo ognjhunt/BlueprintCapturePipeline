@@ -745,6 +745,21 @@ def run_background(
             task_context=context,
             source_video_digest=source_digest,
         )
+        if anchor_review.get("basis") == "deterministic_view_geometry":
+            # The editor reframed the anchor, which every other view would copy.
+            # One re-edit names the camera to keep; the review still decides.
+            from .website_image_repair_agent import CAMERA_CHANGED_INSTRUCTION
+
+            check("automation_anchor_camera_reedit")
+            anchor = complete_background_images(
+                frames=[anchor_source], task_digest=task_digest, output_root=root / "anchor",
+                admission={}, token="", targets=targets, task_context=context,
+                source_video_digest=source_digest, mask_guidance=True,
+                repair_instruction=automation["removal_instruction"] + " " + CAMERA_CHANGED_INSTRUCTION,
+            )[0]
+            anchor_review = verify_completed_background(
+                frames=[anchor], original_frames=[anchor_source], plan=plan,
+                output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
     if anchor_review["status"] != "passed":
         return {
             "status": "quality_rejected",
