@@ -168,6 +168,22 @@ dependent step as blocked instead of guessing.
 
 ## Working Rules
 
+- **Development cost controls (owner direction 2026-10-23).** Google Cloud
+  project `blueprint-8c1ca` has a USD 100/calendar-month ceiling, separate from
+  capture/run allowances. Local disk pressure does not authorize an unbounded
+  cloud VM, duplicate retained assets, or another full paid rerun. Replay saved
+  stage outputs without network/model calls first; pay only for the changed
+  provider boundary after its preflight passes. Every temporary cloud VM needs
+  an explicit budget-bounded provider-native expiry, owner/run binding and
+  teardown readback. No ad hoc VM creation/start outside the canonical allocator.
+  Inventory CPU and GPU resources in every registered GCP project/zone even
+  without a configured GPU launcher. Missing inventory or unknown pricing is
+  unknown spend, never zero. Preserve current releases, rollback/proof image
+  digests and unknown ownership; preview registry cleanup against that needed
+  set before deletion. Budget alerts are not hard caps; native service caps
+  do not cover every GCP service. Never claim the monthly ceiling is enforced
+  merely because a budget exists. See `docs/runbooks/development-cloud-cost-controls.md`.
+
 - **Agent autonomy (user direction `Sentinel_ee0f838338808191b9e431227a652f65`):**
   agents choose research strategy, configured tools and depth. Harmless formatting,
   extra metadata, date precision, expected pending usage and arbitrary result quotas

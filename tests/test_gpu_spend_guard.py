@@ -166,6 +166,32 @@ def test_parse_cloud_vm_is_visible_to_burn_and_orphan_logic(provider: str) -> No
     assert inst.age_seconds == pytest.approx(3600)
 
 
+def test_cpu_only_project_is_monitored_without_gpu_launch_config(monkeypatch) -> None:
+    from blueprint_pipeline.cloud_vm_render_providers import GCPRenderProvider
+    from blueprint_pipeline import gpu_render_providers
+
+    provider = GCPRenderProvider()
+    monkeypatch.setenv('BLUEPRINT_GCP_INVENTORY_PROJECTS', 'project-one')
+    monkeypatch.setattr(provider, '_credentials', lambda: (object(), None))
+    monkeypatch.setattr(gpu_render_providers, 'get_render_provider', lambda _: provider)
+    monkeypatch.setattr(provider, '_call', lambda *a, **kw: (200, {'items': {
+        'zones/us-central1-a': {'instances': [{'name': 'policy-sandbox',
+            'machineType': 't2a-standard-2', 'status': 'RUNNING',
+            'creationTimestamp': '2026-09-29T00:00:00Z', 'disks': [{}]},
+            {'name': 'stopped-worker', 'status': 'TERMINATED', 'disks': [{}]}]}}}))
+    assert guard.cloud_provider_configured('gcp')
+    rows = guard.fetch_cloud_vm_instances('gcp')
+    assert len(rows) == 2
+    instance = guard._parse_cloud_vm(rows[0], provider='gcp', now=_epoch(2026, 10, 23))
+    assert instance.live and not instance.cleanup_authorized and not instance.cost_rate_known
+    assert not guard.is_reapable(instance, max_boot_seconds=480, protected_ids=set())
+    assert 'fleet_live_resource_cost_rate_unknown' in guard.build_fleet_budget_guard([instance])['blockers']
+    stopped = guard._parse_cloud_vm(rows[1], provider='gcp', now=_epoch(2026, 10, 23))
+    assert stopped.live and not stopped.booted and not stopped.cleanup_authorized
+    monkeypatch.setattr(provider, '_credentials', lambda: (None, 'unavailable'))
+    assert guard.cloud_provider_configured('gcp'), 'Missing credentials must not silently remove the project scope'
+
+
 def test_collect_instances_includes_gcp_and_aws() -> None:
     rows = [{"instance_id": "vm", "name": "blueprint", "status": "running"}]
     instances = guard.collect_instances(
@@ -2335,3 +2361,25 @@ def test_main_never_queries_retired_aws_even_when_old_credentials_are_configured
     assert aws["api_confirmed"] is False
     assert "aws" not in queried
     assert guard.main(["--require-provider", "aws", "--json-report", str(output)]) == 2
+
+
+def test_unknown_cpu_vm_cost_is_not_zero_or_a_ledger_update(tmp_path):
+    vm = guard._parse_cloud_vm({
+        'instance_id': 'cpu-sandbox', 'status': 'RUNNING',
+        'cost_per_hour': None, 'cleanup_authorized': False,
+    }, provider='gcp', now=1_000)
+    ledger = tmp_path / 'ledger.json'
+    ledger.write_text('{"prior_accounting": "preserve"}')
+    previous = ledger.read_bytes()
+    result = guard.update_spend_ledger([vm], ledger_path=ledger, now=1_000)
+    assert result['status'] == 'blocked'
+    assert ledger.read_bytes() == previous
+    budget = guard.build_fleet_budget_guard([vm])
+    assert budget['status'] == 'blocked'
+    assert budget['total_burn_per_hour_usd'] is None
+    report = guard.build_json_report([vm], protected_ids=set(), max_boot_seconds=30)
+    assert report['status'] == 'blocked'
+    assert report['total_burn_per_hour_usd'] is None
+    assert report['instances'][0]['cost_per_hr_usd'] is None
+    assert 'Total burn estimate: unknown' in guard.build_report(
+        [vm], protected_ids=set(), max_boot_seconds=30)
