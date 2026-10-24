@@ -1,8 +1,8 @@
 """Replay the retained OpenPI packaging failure and the production repair on CPU.
 
 This networked Linux check installs the frozen policy environment, never a
-checkpoint. It consumes the generated production sync command so the preflight
-cannot silently test a different installer. Logs and a digest-bound receipt are
+checkpoint. It consumes the generated exports, venv creation and sync command
+so the preflight cannot silently test a different installer. Logs and a digest-bound receipt are
 kept separately from the disposable environment.
 """
 
@@ -27,6 +27,7 @@ from blueprint_pipeline.adp009d_policy_candidate_admission import EXPECTED_CANDI
 from blueprint_pipeline.adp009d_policy_provisioning import (
     ACTIVE_CANDIDATE_DEPENDENCY_LOCKS,
     POLICY_PYTHON_REQUESTS,
+    POLICY_PYTHON_INSTALL_DIR,
     POLICY_SOURCE_ROOT,
     UV_ARCHIVE_SHA256,
     UV_ARCHIVE_URL,
@@ -40,6 +41,53 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 CANDIDATE = "pi05_droid"
 SCHEMA = "openpi_policy_dependency_replay.v1"
+
+
+def production_venv_arguments(*, venv: Path, uv: Path) -> list[str]:
+    lines = [line for line in build_provisioning_script(CANDIDATE).splitlines()
+             if '"$UV" venv ' in line]
+    if len(lines) != 1:
+        raise ValueError("policy_dependency_replay_venv_command_ambiguous")
+    words = shlex.split(lines[0])
+    if words != ["$UV", "venv", "--python", POLICY_PYTHON_REQUESTS[CANDIDATE],
+                 policy_venv_root(CANDIDATE)]:
+        raise ValueError("policy_dependency_replay_venv_binding_invalid")
+    return [str(uv), *words[1:-1], str(venv)]
+
+
+def production_environment_setup(*, source: Path, venv: Path, uv: Path,
+                                 python_install_root: Path) -> str:
+    """Replay exports, venv creation and frozen sync in one production scope."""
+    lines = build_provisioning_script(CANDIDATE).splitlines()
+    venv_indexes = [i for i, line in enumerate(lines) if '"$UV" venv ' in line]
+    sync_indexes = [i for i, line in enumerate(lines) if '"$UV" sync ' in line]
+    if (len(venv_indexes) != 1 or len(sync_indexes) != 1
+            or sync_indexes[0] <= venv_indexes[0]):
+        raise ValueError("policy_dependency_replay_environment_command_order_invalid")
+    settings = {}
+    for index, line in enumerate(lines):
+        if not line.startswith("export UV_PYTHON_"):
+            continue
+        if index >= venv_indexes[0]:
+            raise ValueError("policy_dependency_replay_python_environment_too_late")
+        words = shlex.split(line)
+        if len(words) != 2 or "=" not in words[1]:
+            raise ValueError("policy_dependency_replay_python_environment_invalid")
+        key, value = words[1].split("=", 1)
+        if key in settings:
+            raise ValueError("policy_dependency_replay_python_environment_duplicated")
+        settings[key] = value
+    if (set(settings) != {"UV_PYTHON_INSTALL_DIR", "UV_PYTHON_PREFERENCE", "UV_PYTHON_DOWNLOADS"}
+            or settings["UV_PYTHON_INSTALL_DIR"] != POLICY_PYTHON_INSTALL_DIR):
+        raise ValueError("policy_dependency_replay_python_environment_unbound")
+    settings["UV_PYTHON_INSTALL_DIR"] = str(python_install_root)
+    return "\n".join([
+        "set -euo pipefail",
+        *(f"export {key}={shlex.quote(value)}" for key, value in settings.items()),
+        shlex.join(production_venv_arguments(venv=venv, uv=uv)),
+        f"VIRTUAL_ENV={shlex.quote(str(venv))} "
+        + shlex.join(production_sync_arguments(source=source, venv=venv, uv=uv)),
+    ])
 
 
 def production_sync_arguments(*, source: Path, venv: Path, uv: Path) -> list[str]:
@@ -162,12 +210,27 @@ def replay(workspace: Path, output: Path, *, source_commit: str) -> dict:
             str(negative / "bin/python"), "--require-hashes", "--no-deps", "-r", str(requirement)],
             expected=1, contains="MUJOCO_PATH environment variable is not set")
         result["retained_failure_reproduced"] = True
-        run("candidate-venv", [str(uv), "venv", "--python",
-                              POLICY_PYTHON_REQUESTS[CANDIDATE], str(positive)])
-        # Reproduce the GA image's interpreter override. The generated CLI must
-        # defeat it without recreating the candidate environment as Python 3.12.
-        env.update(VIRTUAL_ENV=str(positive), UV_PYTHON=str(negative / "bin/python"))
-        run("full-frozen-install", production_sync_arguments(source=source, venv=positive, uv=uv))
+        # The earlier replay created the venv under clean discovery defaults.
+        # Reproduce the next real refusal before trying the production repair.
+        env.update(UV_PYTHON=str(negative / "bin/python"),
+                   UV_PYTHON_PREFERENCE="only-system", UV_PYTHON_DOWNLOADS="automatic")
+        # Match the image's system-Python search rather than a CI runner's
+        # optional hosted-toolcache interpreters.
+        original_path = env["PATH"]
+        env["PATH"] = "/usr/bin:/bin"
+        try:
+            run("retained-interpreter-preference-refusal", production_venv_arguments(
+                venv=workspace / "blocked-policy", uv=uv), expected=2, contains="only system")
+        finally:
+            env["PATH"] = original_path
+        result["retained_interpreter_preference_failure_reproduced"] = True
+        # Downloads=never is a stricter fixture than the observed image refusal.
+        # The generated exports must defeat both restrictions, create the real
+        # 3.11.9 venv, then sync without the inherited 3.12 selection replacing it.
+        env.update(VIRTUAL_ENV=str(positive), UV_PYTHON_DOWNLOADS="never")
+        run("full-frozen-install", ["bash", "-c", production_environment_setup(
+            source=source, venv=positive, uv=uv, python_install_root=workspace / "python")])
+        result["production_venv_setup_replayed"] = True
         result["full_environment_installed"] = True
         run("dependency-consistency", [str(uv), "pip", "check", "--python", str(positive / "bin/python")])
         run("installed-distributions", [str(uv), "pip", "list", "--format", "json",

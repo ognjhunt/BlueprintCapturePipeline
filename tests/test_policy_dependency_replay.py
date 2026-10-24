@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,6 +28,56 @@ def test_cpu_replay_consumes_the_actual_production_sync(replay_script, tmp_path)
     assert args[args.index("--python") + 1] == str(tmp_path / "policy/bin/python")
     assert args[args.index("--no-build-package") + 1] == "mujoco"
     assert not any("/opt/" in word for word in args)
+
+
+def test_production_setup_defeats_inherited_discovery_before_both_commands(replay_script, tmp_path):
+    """Execute the real setup scope, recording each installer invocation."""
+    uv = tmp_path / "recording-uv"
+    log = tmp_path / "uv.jsonl"
+    uv.write_text("#!/usr/bin/env python3\nimport json,os,sys\n"
+                  "with open(os.environ['UV_TEST_LOG'],'a') as f:\n"
+                  " f.write(json.dumps({'args':sys.argv[1:],'environment':{k:os.environ[k] "
+                  "for k in ['UV_PYTHON_PREFERENCE','UV_PYTHON_DOWNLOADS','UV_PYTHON_INSTALL_DIR']}})+'\\n')\n")
+    uv.chmod(0o700)
+    install_root = tmp_path / "managed python"
+    setup = replay_script.production_environment_setup(
+        source=tmp_path / "source", venv=tmp_path / "policy", uv=uv,
+        python_install_root=install_root,
+    )
+    subprocess.run(["bash", "-c", setup], check=True, env={
+        **os.environ, "UV_TEST_LOG": str(log), "UV_PYTHON_PREFERENCE": "only-system",
+        "UV_PYTHON_DOWNLOADS": "never", "UV_PYTHON": "/opt/isaaclab-venv/bin/python",
+    })
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [call["args"][0] for call in calls] == ["venv", "sync"]
+    assert all(call["environment"] == {
+        "UV_PYTHON_PREFERENCE": "managed", "UV_PYTHON_DOWNLOADS": "automatic",
+        "UV_PYTHON_INSTALL_DIR": str(install_root),
+    } for call in calls)
+    assert calls[0]["args"][2] == "3.11.9"
+    assert calls[1]["args"][calls[1]["args"].index("--python") + 1] == str(tmp_path / "policy/bin/python")
+
+
+@pytest.mark.parametrize("broken", ["missing", "duplicated", "late", "wrong_root", "two_venvs"])
+def test_setup_replay_refuses_missing_late_or_unbound_environment(replay_script, monkeypatch, tmp_path, broken):
+    script = replay_script.build_provisioning_script("pi05_droid")
+    line = 'export UV_PYTHON_PREFERENCE="managed"'
+    if broken == "missing":
+        script = script.replace(line, "")
+    elif broken == "duplicated":
+        script = script.replace(line, line + "\n" + line)
+    elif broken == "late":
+        script = script.replace(line, "") + "\n" + line
+    elif broken == "wrong_root":
+        script = script.replace('export UV_PYTHON_INSTALL_DIR="/opt/adp009d-python"',
+                                'export UV_PYTHON_INSTALL_DIR="/opt/isaaclab-venv"')
+    else:
+        script += "\n" + next(line for line in script.splitlines() if '"$UV" venv ' in line)
+    monkeypatch.setattr(replay_script, "build_provisioning_script", lambda _: script)
+    with pytest.raises(ValueError, match="policy_dependency_replay_"):
+        replay_script.production_environment_setup(
+            source=tmp_path, venv=tmp_path, uv=tmp_path, python_install_root=tmp_path,
+        )
 
 
 @pytest.mark.parametrize("broken", ["missing_python", "wrong_python", "two_syncs"])

@@ -109,6 +109,18 @@ SYSTEM_INTERPRETER = "/usr/bin/python3"
 # an unsupported MuJoCo source build before any policy query can run.
 POLICY_PYTHON_REQUESTS = {"pi05_droid": "3.11.9"}
 POLICY_PYTHON_INSTALL_DIR = "/opt/adp009d-python"
+
+
+def policy_python_environment(candidate_id: str) -> dict[str, str]:
+    """Keep image-wide uv discovery restrictions out of the policy setup."""
+    managed = candidate_id in POLICY_PYTHON_REQUESTS
+    return {
+        "UV_PYTHON_INSTALL_DIR": POLICY_PYTHON_INSTALL_DIR,
+        "UV_PYTHON_PREFERENCE": "managed" if managed else "only-system",
+        "UV_PYTHON_DOWNLOADS": "automatic" if managed else "never",
+    }
+
+
 # The pure-Python wheel is one exact artifact in OpenPI's verified upstream lock.
 OPENPI_CLIENT_WEBSOCKETS_WHEEL = {
     "url": "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/websockets-15.0.1-py3-none-any.whl",
@@ -439,6 +451,10 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_gated_backbone:completed"
 '''
+    python_environment_exports = "\n".join(
+        f'export {name}="{value}"'
+        for name, value in policy_python_environment(candidate_id).items()
+    )
     return f"""#!/usr/bin/env bash
 # ADP-009D policy provisioning for {candidate_id}.  Generated, not hand-written.
 set -euo pipefail
@@ -477,7 +493,10 @@ apt-get install -y -qq \
   "$OUT_DIR/adp009d_provisioning_preflight_after.json" || true
 
 export UV_INSTALL_DIR={uv_root}
-export UV_PYTHON_INSTALL_DIR="{POLICY_PYTHON_INSTALL_DIR}"
+# The GA image sets UV_PYTHON_PREFERENCE=only-system. An exact version request
+# does not override that preference: uv refuses before creating OpenPI's venv.
+# Bind discovery and downloads here, before creating the separate policy venv.
+{python_environment_exports}
 UV_ARCHIVE="$(mktemp /tmp/blueprint-adp009d-uv.XXXXXX.tar.gz)"
 trap 'rm -f "$UV_ARCHIVE"' EXIT
 curl -LsSf {UV_ARCHIVE_URL} -o "$UV_ARCHIVE"
@@ -553,6 +572,7 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "isaac_interpreter": ISAAC_INTERPRETER,
         "policy_interpreter": f"{policy_venv_root(candidate_id)}/bin/python",
         "policy_python_request": POLICY_PYTHON_REQUESTS.get(candidate_id, SYSTEM_INTERPRETER),
+        "policy_python_environment": policy_python_environment(candidate_id),
         "isaac_client_staging": (
             {"source_revision": EXPECTED_CANDIDATES[candidate_id]["source_revision"],
              "directory": OPENPI_CLIENT_DEPS_DIRNAME,
@@ -791,9 +811,9 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
     interpreter = str(receipt.get("policy_interpreter", ""))
     if not interpreter or interpreter == ISAAC_INTERPRETER or "isaac-sim" in interpreter:
         errors.append(BLOCKER_SHARED_INTERPRETER)
-    if receipt.get("policy_python_request") != POLICY_PYTHON_REQUESTS.get(
+    if (receipt.get("policy_python_request") != POLICY_PYTHON_REQUESTS.get(
         candidate_id, SYSTEM_INTERPRETER
-    ):
+    ) or receipt.get("policy_python_environment") != policy_python_environment(candidate_id)):
         errors.append(BLOCKER_PYTHON_REQUEST)
     expected_client_staging = (
         {"source_revision": EXPECTED_CANDIDATES[candidate_id]["source_revision"],

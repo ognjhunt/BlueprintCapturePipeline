@@ -652,6 +652,26 @@ def test_frozen_sync_cannot_rediscover_the_image_python(candidate_id: str) -> No
     assert argv[argv.index("--python") + 1] == f"{policy_venv_root(candidate_id)}/bin/python"
 
 
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+@pytest.mark.parametrize("mutation", ["missing", "preference", "downloads", "directory"])
+def test_policy_interpreter_discovery_settings_are_admission_bound(candidate_id: str, mutation: str) -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import BLOCKER_PYTHON_REQUEST
+
+    receipt = describe_provisioning(candidate_id)
+    assert validate_provisioning(receipt) == []
+    if mutation == "missing":
+        receipt.pop("policy_python_environment")
+    else:
+        settings = receipt["policy_python_environment"]
+        if mutation == "preference":
+            settings["UV_PYTHON_PREFERENCE"] = "only-system" if candidate_id == "pi05_droid" else "managed"
+        elif mutation == "downloads":
+            settings["UV_PYTHON_DOWNLOADS"] = "never" if candidate_id == "pi05_droid" else "automatic"
+        else:
+            settings["UV_PYTHON_INSTALL_DIR"] = "/opt/isaaclab-venv"
+    assert BLOCKER_PYTHON_REQUEST in validate_provisioning(receipt)
+
+
 def test_the_client_install_follows_the_verified_checkout() -> None:
     """Installing before the revision is verified would install a moved branch."""
 
