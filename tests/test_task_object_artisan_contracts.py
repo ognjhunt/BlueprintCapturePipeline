@@ -57,6 +57,25 @@ def test_source_dimensions_in_semantic_body_frame_are_not_rotated_world_aabb(tmp
     assert request["configuration"]["metric_envelope"] == stage["configuration"]["metric_envelope"]
 
 
+def test_secondary_task_motion_constraints_survive_and_cannot_be_declared_fixed(tmp_path):
+    from blueprint_pipeline.task_object_authoring_contracts import artisan_prompt
+    stage, deps, frames = source_request(tmp_path)
+    motions = [{"motion_id": "extend_tray", "part_ids": ["tray"], "joint_type": "prismatic",
+                "task_actions": ["extend", "retract"], "source_frame_ids": ["observed-open"]}]
+    configuration = stage["configuration"]
+    configuration.update(schema_version="articulated_replacement_authoring_configuration.v1",
+        mechanism={"joint_type": "revolute", "opening_axis_asset_frame": [1, 0, 0]},
+        hinge_edge="bottom", required_part_ids=["lid", "tray"],
+        construction_constraints={"task_description": "Open the lid and extend the tray.",
+            "task_part_components": ["lid"], "required_motions": motions, "fixed_parts": []})
+    request = build_construction_request(stage, deps, frames, {})
+    assert request["joint_constraints"]["required_motions"] == motions
+    assert "secondary task parts" in artisan_prompt(request)
+    configuration["construction_constraints"]["fixed_parts"] = ["tray"]
+    with pytest.raises(AuthoringContractError, match="task_motion_marked_fixed"):
+        build_construction_request(stage, deps, frames, {})
+
+
 @pytest.mark.parametrize("edge,axis", [("bottom", [0, 1, 0]), ("left", [0, 0, -1])])
 def test_hinge_axis_is_distinct_from_pull_direction(tmp_path, edge, axis):
     stage, deps, frames = source_request(tmp_path)

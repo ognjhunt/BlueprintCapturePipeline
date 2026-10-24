@@ -45,11 +45,12 @@ MIN_CANDIDATE_SPACING_SECONDS = 0.4
 MIN_MASK_AREA_FRACTION = 0.01
 CLASSIFY_BATCH = 12
 CLASSIFIER_MODEL = "gemini-3.8-flash"
-# 3: each visible part is also boxed inside the frame (2026-09-27 website capture).
-CLASSIFIER_REVISION = 3
+# 4: full-task motion requirements accompany the visible-part classification.
+CLASSIFIER_REVISION = 4
 # Selection output shape; a change recomputes records while replaying retained
-# classifier receipts for free. 3: frames a part extent was measured from are seeded.
-SELECTION_REVISION = 3
+# classifier receipts for free. 4: seed required-motion witnesses and select for
+# coverage rather than padding an articulated task's image budget.
+SELECTION_REVISION = 4
 CLASSIFIER_MAX_OUTPUT_TOKENS = 8192
 # A JSON syntax error gets one text-only repair turn in the same call, never a
 # receipt left uncertain or a second paid classification.
@@ -126,9 +127,23 @@ PROMPT = (
 REVOLUTE_PROMPT = ("Give hinge_edge, the edge of the task part it rotates about (bottom, left, right, "
                    "top), or not_visible when no frame shows the task part move or its hinge. ")
 PRISMATIC_PROMPT = "The task part slides; set hinge_edge to null. "
+MOTIONS_PROMPT = (
+    "Read the full task description, not only the primary task part. List required_motions for every "
+    "independently moving part needed to perform that task, including secondary moving parts. "
+    "Do not assume an interior part is fixed. Each entry has motion_id (a stable snake_case name), "
+    "part_ids (the observed parts moving together), joint_type (revolute or prismatic), task_actions "
+    "(the requested operations), and source_frame_ids (these batch frames showing any listed part). "
+    "Keep independent motions separate; fixed features moving with a part belong to that part's group. "
+    "For source_frame_ids choose clear, diverse witnesses of distinct observed states, not every frame. "
+    "Preserve motion IDs already listed below. This is a task requirement and mechanism hypothesis, "
+    "not a measured axis, travel, force or physical qualification. Do not invent tasks absent from "
+    "the description. Return an empty list only when no requested moving part is identifiable. "
+)
 RESPONSE_SHAPE = ('Return JSON only: {"hinge_edge": ..., "task_part_components": [...], "frames": '
                   '[{"frame_id": ..., "visible_parts": [...], "part_boxes": [{"part": ..., '
-                  '"box_xywh_normalized": [...]}], "task_part_state": ..., "view": ..., "label_text": [...]}]}. ')
+                  '"box_xywh_normalized": [...]}], "task_part_state": ..., "view": ..., "label_text": [...]}], '
+                  '"required_motions": [{"motion_id": ..., "part_ids": [...], "joint_type": ..., '
+                  '"task_actions": [...], "source_frame_ids": [...]}]}. ')
 # 2026-09-27 website capture: a stylized brand wordmark on the closed task
 # part's front was plain in the footage, yet label_text came
 # back empty for every frame: one field of a 12-frame part batch at 2048 px.
@@ -351,13 +366,15 @@ def validate_part_boxes(value: Any, *, visible_parts: Sequence[str],
 
 
 def validate_classification(value: Any, *, frame_ids: Sequence[str], articulation_kind: str,
-                            subject_boxes: Mapping[str, Sequence[float]] | None = None) -> dict[str, Any]:
+                            subject_boxes: Mapping[str, Sequence[float]] | None = None,
+                            known_parts: Sequence[str] = ()) -> dict[str, Any]:
     """Strict: any malformed or out-of-vocabulary answer refuses the whole batch.
 
     Part boxes are optional localization evidence: a missing or malformed box
     leaves its part listed without one (``validate_part_boxes``).
     """
-    if not isinstance(value, Mapping) or set(value) != {"hinge_edge", "task_part_components", "frames"}:
+    keys = {"hinge_edge", "task_part_components", "frames"}
+    if not isinstance(value, Mapping) or not keys <= set(value) <= keys | {"required_motions"}:
         raise ValueError("website_assembly_coverage_classification_invalid")
     hinge = value["hinge_edge"]
     if (articulation_kind == "revolute" and hinge not in (*HINGE_EDGES, "not_visible")
@@ -383,8 +400,12 @@ def validate_classification(value: Any, *, frame_ids: Sequence[str], articulatio
     components = _parts(value["task_part_components"])
     if set(components) - {part for row in frames for part in row["visible_parts"]}:
         raise ValueError("website_assembly_coverage_classification_invalid")
+    from .task_object_required_motions import required_motions
+    motions = required_motions(value.get("required_motions", []),
+        known_parts=set(known_parts) | {part for row in frames for part in row["visible_parts"]},
+        source_frame_ids=frame_ids)
     return {"hinge_edge": None if hinge == "not_visible" else hinge, "task_part_components": components,
-            "frames": frames}
+            "frames": frames, "required_motions": motions}
 
 
 def _json_answer(text: str, repair: Callable[[str], str]) -> tuple[Any, dict[str, Any] | None]:
@@ -417,15 +438,18 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
     from .website_gemini_receipts import gemini_quote, retained_gemini_call
 
     vocabulary: set[str] = set()
-    classified, components, hinges, receipts = [], set(), set(), []
+    classified, components, hinges, receipts, motions = [], set(), set(), [], []
     for start in range(0, len(frames), CLASSIFY_BATCH):
         batch = list(frames[start:start + CLASSIFY_BATCH])
         images = [_classifier_copy(Path(row["path"])) for row in batch]
         data = {"assembly": assembly_label, "task_part": task_part, "joint_type": articulation_kind,
+                "full_task_description": task_context.get("description", ""),
+                "owner_success_criteria": task_context.get("success_criteria"),
+                "required_motions_already_identified": motions,
                 "part_names_already_used_for_this_object": sorted(vocabulary),
                 "frames": [{"frame_id": row["frame_id"], "subject_box_xywh_normalized": row["subject_box_xywh_normalized"]}
                            for row in batch]}
-        prompt = (PROMPT + (REVOLUTE_PROMPT if articulation_kind == "revolute" else PRISMATIC_PROMPT)
+        prompt = (PROMPT + MOTIONS_PROMPT + (REVOLUTE_PROMPT if articulation_kind == "revolute" else PRISMATIC_PROMPT)
                   + RESPONSE_SHAPE + json.dumps(data, sort_keys=True))
         binding = {"kind": "website_assembly_coverage_classification", "revision": CLASSIFIER_REVISION,
                    "json_repair_turns": JSON_REPAIR_TURNS,
@@ -476,11 +500,20 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
             preflight=preflight, invoke=invoke)
         receipts.append({"binding_digest": canonical_digest(binding), "result_digest": canonical_digest(result)})
         try:
+            if not isinstance(result.get("classification"), Mapping) or "required_motions" not in result["classification"]:
+                raise ValueError("website_assembly_required_motions_missing")
             value = validate_classification(result.get("classification"),
                                             frame_ids=[row["frame_id"] for row in batch],
                                             articulation_kind=articulation_kind,
+                                            known_parts=vocabulary,
                                             subject_boxes={row["frame_id"]: row["subject_box_xywh_normalized"]
                                                            for row in batch})
+            from .task_object_required_motions import merge_required_motions
+            motions = merge_required_motions(motions, value["required_motions"])
+            if value["task_part_components"] and not any(
+                    set(value["task_part_components"]) & set(motion["part_ids"])
+                    for motion in value["required_motions"]):
+                raise ValueError("website_assembly_required_primary_motion_missing")
         except ValueError as exc:
             raise CoverageClassificationInvalid(receipts) from exc
         for row, label in zip(batch, value["frames"], strict=True):
@@ -491,7 +524,7 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
         if value["hinge_edge"] is not None:
             hinges.add(value["hinge_edge"])
     return {"frames": classified, "task_part_components": sorted(components), "hinge_edges": sorted(hinges),
-            "receipts": receipts}
+            "required_motions": motions, "receipts": receipts}
 
 
 def brand_read_frames(frames: Sequence[Mapping[str, Any]], *, boxes: Mapping[str, Sequence[float]],
@@ -614,7 +647,8 @@ DEPTH_SEED_REASON = "shows the open interior the body depth was measured from"
 
 def select_reference_frames(frames: Sequence[Mapping[str, Any]], *, cap: int = MAX_REFERENCE_FRAMES,
                             seed_frame_ids: Sequence[str] = (),
-                            seed_reasons: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+                            seed_reasons: Mapping[str, str] | None = None,
+                            fill_diversity: bool = True) -> list[dict[str, Any]]:
     """Greedy set cover: every part and state first, then part-states and views, then spread.
 
     ``seed_frame_ids`` (the interior view body depth was measured from, then
@@ -665,7 +699,7 @@ def select_reference_frames(frames: Sequence[Mapping[str, Any]], *, cap: int = M
             uncovered_optional -= optional[best["frame_id"]]
             rest.remove(best)
             selected.append({**best, "reason": describe(added)})
-    while rest and len(selected) < cap:
+    while fill_diversity and rest and len(selected) < cap:
         def spread(row):
             same = sum(1 for other in selected if (other["view"], other["part_state"]) == (row["view"], row["part_state"]))
             gap = min((abs(row["timestamp_seconds"] - other["timestamp_seconds"]) for other in selected), default=math.inf)
@@ -1053,6 +1087,7 @@ def coverage_record(*, target_id: str, binding: Mapping[str, Any], articulation_
              "status": "incomplete" if blockers else "complete", "binding": dict(binding),
              "articulation_kind": articulation_kind, "observed_parts": observed,
              "task_part_components": list(classified["task_part_components"]),
+             "required_motions": classified.get("required_motions", []),
              "observed_states": sorted({row["part_state"] for row in frames} - {"not_visible"}),
              "selected_frames": [{"frame_id": row["frame_id"], "timestamp_seconds": row["timestamp_seconds"],
                                   "path": row["path"], "sha256": row["sha256"],
@@ -1068,7 +1103,8 @@ def coverage_record(*, target_id: str, binding: Mapping[str, Any], articulation_
              "label_readings": _label_readings(frames, brand_read),
              "brand_read": dict(brand_read) if brand_read is not None else None,
              "blockers": blockers, "candidate_frame_count": candidate_count,
-             "reference_frame_cap": MAX_REFERENCE_FRAMES,
+             "reference_frame_cap": max(MAX_REFERENCE_FRAMES, len(frames))
+                 if classified.get("required_motions") else MAX_REFERENCE_FRAMES,
              "classifier": {"model": CLASSIFIER_MODEL, "revision": CLASSIFIER_REVISION,
                             "receipts": list(classified["receipts"])},
              "claim_ceiling": "development_only", "physical_measurement_proven": False}
@@ -1096,25 +1132,30 @@ def empty_record(*, target_id: str, binding: Mapping[str, Any], articulation_kin
     return value
 
 
-def coverage_binding(*, target: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> dict[str, Any]:
+def coverage_binding(*, target: Mapping[str, Any], source_geometry: Mapping[str, Any],
+                     task_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     return {"target_id": target["target_id"],
             "source_track_digest": canonical_digest(target["source_track"]) if target.get("source_track") else None,
             "track_digest": canonical_digest(target["track"]), "source_geometry_digest": source_geometry["digest"],
             "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest"),
             "classifier_model": CLASSIFIER_MODEL, "classifier_revision": CLASSIFIER_REVISION,
+            **({"task_context_digest": task_context.get("context_digest") or canonical_digest(task_context)}
+               if task_context is not None else {}),
             "prompt_digest": canonical_digest({"prompt": PROMPT, "revolute": REVOLUTE_PROMPT,
-                                               "prismatic": PRISMATIC_PROMPT, "response": RESPONSE_SHAPE}),
-            "reference_frame_cap": MAX_REFERENCE_FRAMES, "selection_revision": SELECTION_REVISION,
+                "prismatic": PRISMATIC_PROMPT, "motions": MOTIONS_PROMPT, "response": RESPONSE_SHAPE}),
+            "legacy_reference_frame_cap": MAX_REFERENCE_FRAMES, "selection_revision": SELECTION_REVISION,
+            "motion_reference_selection": "required_witnesses_then_part_state_and_view_coverage",
             # A brand-read change recomputes records; classifier receipts replay for free.
             "brand_read_revision": BRAND_READ_REVISION,
             "brand_prompt_digest": canonical_digest({"prompt": BRAND_PROMPT, "response": BRAND_RESPONSE_SHAPE})}
 
 
 def coverage_matches(record: Mapping[str, Any] | None, *, target: Mapping[str, Any],
-                     source_geometry: Mapping[str, Any]) -> bool:
+                     source_geometry: Mapping[str, Any], task_context: Mapping[str, Any] | None = None) -> bool:
     return (isinstance(record, Mapping) and record.get("schema_version") == SCHEMA_VERSION
             and record.get("digest") == canonical_digest(record, digest_field="digest")
-            and record.get("binding") == coverage_binding(target=target, source_geometry=source_geometry))
+            and record.get("binding") == coverage_binding(target=target, source_geometry=source_geometry,
+                                                          task_context=task_context))
 
 
 def coverage_blockers(record: Mapping[str, Any] | None, *, target_id: str, several: bool) -> list[str]:
@@ -1131,7 +1172,7 @@ def assembly_coverage(*, target: Mapping[str, Any], assembly_label: str, task_pa
     """One target's coverage record; every artifact and receipt is keyed by its target id."""
     if articulation_kind not in ARTICULATION_KINDS:
         raise ValueError("website_assembly_articulation_kind_invalid")
-    binding = coverage_binding(target=target, source_geometry=source_geometry)
+    binding = coverage_binding(target=target, source_geometry=source_geometry, task_context=task_context)
     source_track = target.get("source_track")
     if source_track is None:
         return empty_record(target_id=target["target_id"], binding=binding, articulation_kind=articulation_kind,
@@ -1175,9 +1216,17 @@ def assembly_coverage(*, target: Mapping[str, Any], assembly_label: str, task_pa
     extents = estimate_part_extents(track=target["track"], frames=frames, classified=classified["frames"], body=body,
                                     parts=fixed_interior_parts(classified, articulation_kind=articulation_kind))
     seeds, reasons = measurement_seeds(classified["frames"], body, extents)
+    for motion in classified.get("required_motions", []):
+        for frame_id in motion["source_frame_ids"]:
+            if frame_id not in seeds:
+                seeds.append(frame_id)
+            reasons[frame_id] = reasons.get(frame_id, "") + " Task-motion evidence: " + motion["motion_id"]
     return coverage_record(target_id=target["target_id"], binding=binding, articulation_kind=articulation_kind,
                            classified=classified, selected=select_reference_frames(
-                               classified["frames"], seed_frame_ids=seeds, seed_reasons=reasons),
+                               classified["frames"], seed_frame_ids=seeds, seed_reasons=reasons,
+                               fill_diversity=not bool(classified.get("required_motions")),
+                               cap=max(MAX_REFERENCE_FRAMES, len(classified["frames"]))
+                               if classified.get("required_motions") else MAX_REFERENCE_FRAMES),
                            body_bounds=body, body_blockers=body_blockers, candidate_count=len(candidates),
                            brand_read=brand, part_extents=extents)
 
@@ -1192,7 +1241,8 @@ def attach_assembly_coverage(*, task_masks: Mapping[str, Any], source_geometry: 
         entry = entries.get(target["target_id"], {})
         kind = str(entry.get("articulation_kind") or target.get("articulation_kind") or "")
         if (target.get("task_effect") != "manipulated" or kind not in ARTICULATION_KINDS
-                or coverage_matches(target.get("authoring_coverage"), target=target, source_geometry=source_geometry)):
+                or coverage_matches(target.get("authoring_coverage"), target=target, source_geometry=source_geometry,
+                                    task_context=task_context)):
             targets.append(target)
             continue
         record = assembly_coverage(target=target,
@@ -1261,8 +1311,11 @@ def part_role(part: str, *, task_part_components: Sequence[str], articulation_ki
 
 def assembly_constraints(record: Mapping[str, Any], *, task_part: str) -> dict[str, Any]:
     moving = set(record["task_part_components"])
+    motions = record.get("required_motions", [])
+    moving.update(part for motion in motions for part in motion["part_ids"])
     return {"required_parts": list(record["observed_parts"]), "task_part": task_part,
-            "task_part_components": sorted(moving),
+            "task_part_components": list(record["task_part_components"]),
+            "required_motions": motions,
             "fixed_parts": [part for part in record["observed_parts"] if part not in moving],
             "hinge_edge": record["hinge_edge"]}
 
@@ -1292,6 +1345,8 @@ def assembly_contract(record: Mapping[str, Any], *, articulation_kind: str,
     # its depth frames still show the builder the observed interior.
     published = body.get("dimension_authority") in {"published_product_specification", "published_category_standard"}
     required_parts = [{"part_id": part, "label": part.replace("_", " "),
+                       # Keep the existing sizing/mass category. Mobility is
+                       # specified separately by required_motions, not this label.
                        "role": part_role(part, task_part_components=moving, articulation_kind=articulation_kind),
                        "observed_frame_ids": [row["frame_id"] for row in frames if part in row["visible_parts"]]}
                       for part in record["observed_parts"]]

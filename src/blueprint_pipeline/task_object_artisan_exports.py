@@ -11,7 +11,7 @@ import json
 import math
 from pathlib import Path
 
-from .task_object_authoring_contracts import require, file_record, read_json, verified_file, source_joint_constraints
+from .task_object_authoring_contracts import AuthoringContractError, require, file_record, read_json, verified_file, source_joint_constraints
 
 
 def upstream_exports(terminal: dict, workspace: Path) -> dict:
@@ -422,6 +422,18 @@ def validate_final_usd(path: Path, request: dict) -> dict:
     required_parts = configuration.get("required_part_ids") or [row["part_id"] for row in configuration.get("required_parts") or []]
     names = set(link_rows) | {p.GetCustomDataByKey("blueprint:visualName") for p in visuals}
     require(set(required_parts) <= names, "artisan_required_observed_part_missing")
+    from .task_object_required_motions import motion_graph_readback
+    requirements = (request.get("joint_constraints") or source_joint_constraints(configuration)).get("required_motions", [])
+    part_links = {}
+    for part in {part for motion in requirements for part in motion["part_ids"]}:
+        owners = ({part} if part in link_rows else {_owner(p, UsdPhysics).GetName() for p in visuals
+            if p.GetCustomDataByKey("blueprint:visualName") == part})
+        require(len(owners) == 1, "artisan_required_motion_part_owner_ambiguous:" + part)
+        part_links[part] = next(iter(owners))
+    try:
+        motion_readback = motion_graph_readback(requirements, graph, part_links=part_links)
+    except ValueError as exc:
+        raise AuthoringContractError(str(exc)) from exc
     handle_point = None
     if handles:
         moving = stage.GetPrimAtPath(link_rows[task["child_link_id"]]["prim_path"])
@@ -441,4 +453,5 @@ def validate_final_usd(path: Path, request: dict) -> dict:
         "joint_prim_paths": joint_paths, "handle_prim_paths": sorted(str(p.GetPath()) for p in handles),
         "handle_grasp_point_link_m": handle_point,
         "interior_cavity_readback": cavity_readback,
+        "required_motion_readback": motion_readback,
         "physics_authority_granted": False, "physical_equivalence_proven": False}

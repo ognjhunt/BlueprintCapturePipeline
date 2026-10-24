@@ -27,6 +27,7 @@ from blueprint_pipeline.website_object_observations import (
 from blueprint_pipeline.website_task_preparation import compile_website_scene_preparation
 from tests.test_website_task_preparation import (
     CLOSED_FRONT, HEIGHT, WIDTH, _arguments as _default_arguments, _assembly_inputs, _depth, _frame, _masks,
+    _task_context,
 )
 
 
@@ -100,7 +101,8 @@ def _dishwasher_inputs(root: Path, *, object_spec=None, views=DISHWASHER_VIEWS):
     states = {row["frame_id"]: row["part_state"] for row in classified["frames"]}
     body, blockers = coverage.estimate_body_bounds(track=target["track"], frames=frames, states=states)
     target["authoring_coverage"] = coverage.coverage_record(
-        target_id=target["target_id"], binding=coverage.coverage_binding(target=target, source_geometry=geometry),
+        target_id=target["target_id"], binding=coverage.coverage_binding(target=target, source_geometry=geometry,
+                                                                     task_context=_task_context()),
         articulation_kind="revolute", classified=classified,
         selected=coverage.select_reference_frames(classified["frames"],
                                                   seed_frame_ids=coverage.depth_seed(classified["frames"], body)),

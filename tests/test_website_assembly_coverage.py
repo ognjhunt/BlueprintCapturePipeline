@@ -120,7 +120,15 @@ def _answer(binding, *, hinge="bottom"):
     frames = [dict(zip(("task_part_state", "view", "visible_parts"), _label(int(i[8:]))), frame_id=i,
                    label_text=["BOSCH", "800 Series"] if int(i[8:]) < 40 else []) for i in ids]
     visible = {part for row in frames for part in row["visible_parts"]}
-    return {"hinge_edge": hinge, "task_part_components": sorted(MOVING & visible), "frames": frames}
+    moving = sorted(MOVING & visible)
+    witnesses = {}
+    for row in frames:
+        if set(row["visible_parts"]) & MOVING:
+            witnesses.setdefault(row["task_part_state"], row["frame_id"])
+    return {"hinge_edge": hinge, "task_part_components": moving, "frames": frames,
+            "required_motions": [{"motion_id": "primary_motion", "part_ids": moving,
+                "joint_type": "revolute", "task_actions": ["open", "close"],
+                "source_frame_ids": list(witnesses.values())}] if moving else []}
 
 
 def _no_brand(binding):
@@ -185,7 +193,8 @@ def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp
     assert record["status"] == "complete", record["blockers"]
     assert record["digest"] == canonical_digest(record, digest_field="digest")
     selected = record["selected_frames"]
-    assert len(selected) == coverage.MAX_REFERENCE_FRAMES == 12
+    assert len(selected) <= record["reference_frame_cap"]
+    assert record["reference_frame_cap"] == record["candidate_frame_count"]
     shown = {part for row in selected for part in row["visible_parts"]}
     assert shown == set(record["observed_parts"]) == set(FRONT_PARTS + OPEN_PARTS + ["left_side", "right_side"])
     assert record["missing_parts"] == []
@@ -215,7 +224,7 @@ def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp
     readings = record["label_readings"]
     assert readings and all(row["label_text"] == ["BOSCH", "800 Series"] and int(row["frame_id"][8:]) < 40
                             and Path(row["path"]).is_file() for row in readings)
-    assert "label_text" in calls[0]["prompt"] and record["classifier"]["revision"] == 3
+    assert "label_text" in calls[0]["prompt"] and record["classifier"]["revision"] == coverage.CLASSIFIER_REVISION
     assert "part_boxes" in calls[0]["prompt"] and "box_xywh_normalized" in calls[0]["prompt"]
     # Retained receipts: a restart buys nothing and reproduces the record.
     assert _run(tmp_path, target, geometry, registry=_registry(600)) == record
@@ -520,6 +529,39 @@ def test_inconsistent_hinge_is_a_blocker(tmp_path, model):
     assert record["blockers"] == ["website_assembly_hinge_edge_inconsistent"]
 
 
+def test_full_task_secondary_motions_reach_authoring_and_their_evidence_is_selected(tmp_path, model):
+    calls, state = model
+    def answer(binding):
+        value = _answer(binding)
+        visible = {part for row in value["frames"] for part in row["visible_parts"]}
+        for name in ("upper_rack", "lower_rack"):
+            if name in visible:
+                parts = [name] + (["cutlery_basket"] if name == "lower_rack" and "cutlery_basket" in visible else [])
+                witness = next(row["frame_id"] for row in value["frames"] if name in row["visible_parts"])
+                value["required_motions"].append({"motion_id": "slide_" + name, "part_ids": parts,
+                    "joint_type": "prismatic", "task_actions": ["extend", "retract"], "source_frame_ids": [witness]})
+        return value
+    state["answer"] = answer
+    context = {**_context(), "description": "Open and close the door and slide both racks."}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    record = _run(tmp_path, target, geometry, task_context=context)
+    assert record["status"] == "complete"
+    assert {row["motion_id"] for row in record["required_motions"]} == {
+        "primary_motion", "slide_upper_rack", "slide_lower_rack"}
+    constraints = coverage.assembly_constraints(record, task_part="door")
+    assert not {"upper_rack", "lower_rack", "cutlery_basket"} & set(constraints["fixed_parts"])
+    assert set(constraints["task_part_components"]) == MOVING  # Secondary motions cannot inflate door sizing.
+    shown = {row["frame_id"] for row in record["selected_frames"]}
+    assert all(set(row["source_frame_ids"]) <= shown for row in record["required_motions"])
+    assert context["description"] in calls[0]["prompt"]
+    assert coverage.coverage_matches(record, target=target, source_geometry=geometry, task_context=context)
+    changed = {**context, "description": "Only open the door."}
+    changed["context_digest"] = canonical_digest(changed, digest_field="context_digest")
+    assert not coverage.coverage_matches(record, target=target, source_geometry=geometry, task_context=changed)
+
+
 def test_each_articulated_target_gets_its_own_record_and_uncaptured_ones_are_not_complete(tmp_path, model):
     calls, _ = model
     geometry, track = _source_geometry(tmp_path / "geometry")
@@ -553,12 +595,13 @@ def test_each_articulated_target_gets_its_own_record_and_uncaptured_ones_are_not
 
 
 def test_uncaptured_target_is_held_by_the_preparation_gate(tmp_path):
-    from tests.test_website_task_preparation import _assembly_inputs, _compile
+    from tests.test_website_task_preparation import _assembly_inputs, _compile, _task_context
     inputs = _assembly_inputs(tmp_path, covered=False)
     masks = inputs["task_masks"]
     target = masks["targets"][0]
     record = coverage.empty_record(target_id=target["target_id"],
-        binding=coverage.coverage_binding(target=target, source_geometry=inputs["source_geometry"]),
+        binding=coverage.coverage_binding(target=target, source_geometry=inputs["source_geometry"],
+                                          task_context=_task_context()),
         articulation_kind="prismatic", status="not_captured", blocker="website_assembly_not_captured")
     masks["targets"][0] = {**target, "authoring_coverage": record}
     masks["digest"] = canonical_digest(masks, digest_field="digest")
