@@ -424,3 +424,35 @@ def test_mesh_attempt_moves_to_the_merged_input_only_after_confirmed_failures(
     assert mesh_root == (tmp_path / "mesh-merged-v1" if switches else tmp_path / "mesh")
     original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
     assert (spec["uploads"] != original["uploads"]) is switches
+
+
+def test_terraced_atlas_depth_smooths_back_onto_its_plane():
+    cam = camera(width=120, height=160, focal=200.0)
+    true = tilted_plane_depth(cam, 55.0).astype(np.float64)
+    terraced = (np.round(true / 0.009) * 0.009).astype(np.float32)  # Atlas-like 9 mm plateaus
+    smoothed = depth_splat.smoothed_depth(terraced).astype(np.float64)
+    interior = (slice(12, -12), slice(12, -12))
+    raw_error = np.median(np.abs(terraced[interior] - true[interior]))
+    assert np.median(np.abs(smoothed[interior] - true[interior])) < 0.25 * raw_error
+    assert np.mean(np.abs(smoothed[interior] - true[interior]) < 0.001) > 0.8 > np.mean(
+        np.abs(terraced[interior] - true[interior]) < 0.001)
+
+
+def test_depth_smoothing_never_blends_across_a_real_edge():
+    near = np.round(np.linspace(0.9, 1.1, 96)[None, :] / 0.009) * 0.009 * np.ones((64, 1))
+    depth = np.where(np.arange(96)[None, :] < 48, near, 2.0 * near).astype(np.float32)
+    smoothed = depth_splat.smoothed_depth(depth)
+    between = (smoothed > 1.1 * 1.03) & (smoothed < 1.8 * 0.97)
+    assert not between.any(), "no intermediate surface appears at the edge"
+
+
+def test_planes_stay_exact_beside_missing_depth():
+    cam = camera(width=96, height=96, focal=150.0)
+    true = tilted_plane_depth(cam, 40.0)
+    holed = true.copy()
+    holed[30:50, 40:60] = np.nan
+    holed[:, :3] = 0.0
+    smoothed = depth_splat.smoothed_depth(holed)
+    assert np.isnan(smoothed[30:50, 40:60]).all() and (smoothed[:, :3] == 0).all()
+    valid = np.isfinite(holed) & (holed > 0)
+    assert np.allclose(smoothed[valid], true[valid], rtol=1e-5)

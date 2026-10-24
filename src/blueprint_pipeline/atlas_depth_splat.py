@@ -47,6 +47,15 @@ DISC_SIGMA_PER_VOXEL = 0.7
 # A camera's pixel rows land footprint / cos(incidence) apart on a slanted surface;
 # beyond about 80 degrees the depth is too oblique to widen a disc further.
 MIN_INCIDENCE_COSINE = 0.17
+# Atlas depth arrives in plateaus of 5-10 pixels with ~9 mm steps: about 140
+# distinct values per frame in a half-float EXR (measured 2026-10-24). Fused at
+# pixel resolution, those terraces layer surfaces and tilt per-pixel normals.
+DEPTH_SMOOTHING_SIGMA_PIXELS = 4.0
+# A local plane replaces a pixel's depth only where it explains the window
+# (RMS residual) and stays near the pixel; elsewhere, as across a real
+# discontinuity, the pixel keeps its own depth. Terrace steps are ~0.3% RMS.
+DEPTH_SMOOTHING_RESIDUAL = 0.015
+DEPTH_SMOOTHING_TOLERANCE = 0.03
 DISC_THICKNESS_RATIO = 0.1
 SPLATS2MESH_MAX_RENDER = 1024
 SPLATS2MESH_MIN_RENDER = 64
@@ -218,6 +227,44 @@ def posed_rgbd_frames(result: Mapping[str, Any],
         frames.append(posed_frame(frame_id=row["frame_id"], rgb=image[..., ::-1], depth=depth,
                                   confidence=confidence, camera=frame["camera"]))
     return frames
+
+
+def smoothed_depth(depth: np.ndarray) -> np.ndarray:
+    """Replace terraced depth with a local Gaussian-weighted plane fit within surfaces.
+
+    A 3D plane is linear in inverse depth across a pinhole image, so the fit keeps
+    flat and slanted surfaces exact, including at image borders and holes.
+    Missing pixels stay missing; a window spanning a real edge keeps raw depth.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    valid = np.isfinite(depth) & (depth > 0)
+    m = valid.astype(np.float64)
+    with np.errstate(divide="ignore"):
+        d = np.where(valid, 1.0 / depth.astype(np.float64), 0.0)  # inverse depth
+    y, x = (axis.astype(np.float64) for axis in np.indices(depth.shape))
+
+    def window(values):
+        return gaussian_filter(values, DEPTH_SMOOTHING_SIGMA_PIXELS, mode="constant", truncate=3.0)
+
+    s0, sx, sy, sd = window(m), window(m * x), window(m * y), window(d)
+    sxx, sxy, syy = window(m * x * x), window(m * x * y), window(m * y * y)
+    sxd, syd, sdd = window(d * x), window(d * y), window(d * d)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # Moments about each pixel, so the fitted plane's intercept is its depth.
+        mx, my, md = sx / s0, sy / s0, sd / s0
+        cxx, cxy, cyy = sxx / s0 - mx * mx, sxy / s0 - mx * my, syy / s0 - my * my
+        cxd, cyd, cdd = sxd / s0 - mx * md, syd / s0 - my * md, sdd / s0 - md * md
+        determinant = cxx * cyy - cxy * cxy
+        slope_x = (cxd * cyy - cyd * cxy) / determinant
+        slope_y = (cyd * cxx - cxd * cxy) / determinant
+        fit = md + slope_x * (x - mx) + slope_y * (y - my)
+        residual = np.sqrt(np.maximum(cdd - slope_x * cxd - slope_y * cyd, 0.0))
+        # Relative changes in inverse depth equal relative changes in depth.
+        keep = (valid & (s0 > 0.25) & (determinant > 1e-6) & np.isfinite(fit) & (fit > 0)
+                & (residual <= DEPTH_SMOOTHING_RESIDUAL * d)
+                & (np.abs(fit - d) <= DEPTH_SMOOTHING_TOLERANCE * d))
+        return np.where(keep, 1.0 / fit, depth).astype(depth.dtype)
 
 
 def surface_samples(frame: Mapping[str, Any]) -> dict[str, np.ndarray]:
@@ -442,6 +489,7 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
     """
     if not math.isfinite(voxel_footprint_multiple) or voxel_footprint_multiple <= 0:
         raise ValueError("atlas_depth_splat_voxel_multiple_invalid")
+    frames = [{**frame, "depth": smoothed_depth(frame["depth"])} for frame in frames]
     samples = [_subsample(surface_samples(frame)) for frame in frames]
     agreement = cross_view_agreement(frames, samples)
     if (agreement["median_relative_residual"] is not None
@@ -459,6 +507,9 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
                          for frame, sample in zip(frames, samples)],
               "cross_view_agreement": agreement, "voxel_size": voxel,
               "voxel_footprint_multiple": voxel_footprint_multiple,
+              "depth_smoothing": {"basis": "local_plane_fit", "sigma_pixels": DEPTH_SMOOTHING_SIGMA_PIXELS,
+                                  "relative_residual": DEPTH_SMOOTHING_RESIDUAL,
+                                  "relative_tolerance": DEPTH_SMOOTHING_TOLERANCE},
               "median_observations_per_gaussian": float(np.median(fused["observations"]))}
     return depth_fused_splat(fused, voxel), report
 
