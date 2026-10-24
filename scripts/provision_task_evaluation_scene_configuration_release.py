@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -216,19 +217,34 @@ def _remove_tree(root: Path) -> None:
 #: this old belongs to a dead run.
 STALE_STAGING_SECONDS = 6 * 3600
 STAGING_PREFIXES = ("scene-configuration-components-", "blueprint-artisan-component-")
+#: A publisher stopped mid-publication leaves ``.<commit>.<random>`` beside the
+#: runtime trees, and the release retention plan refuses any child it does not
+#: know (2026-10-23: three such folders, 7.5 GB, blocked it).
+RUNTIME_COMPONENTS = ("scene-configuration", "splat-render")
+PUBLICATION_STAGING = re.compile(r"\.[0-9a-f]{40}\.[a-z0-9_]{8}")
 
 
-def sweep_stale_staging(temp_root: Path | None = None, *, now: float | None = None) -> list[str]:
-    """Remove component staging a killed provision left behind; return the names removed."""
+def sweep_stale_staging(temp_root: Path | None = None, *, runtime_root: Path | None = None,
+                        now: float | None = None) -> list[str]:
+    """Remove staging a killed provision left behind; return the names removed.
+
+    Runtime-tree staging is named ``<component>/<name>``.
+    """
     root = Path(temp_root or tempfile.gettempdir())
     now = time.time() if now is None else now
+    candidates = [(path, path.name, path.name.startswith(STAGING_PREFIXES))
+                  for path in (sorted(root.iterdir()) if root.is_dir() else ())]
+    for component in RUNTIME_COMPONENTS if runtime_root is not None else ():
+        parent = Path(runtime_root) / component
+        candidates += [(path, f"{component}/{path.name}", PUBLICATION_STAGING.fullmatch(path.name) is not None)
+                       for path in (sorted(parent.iterdir()) if parent.is_dir() else ())]
     removed = []
-    for path in sorted(root.iterdir()) if root.is_dir() else ():
+    for path, name, staged in candidates:
         info = path.lstat()
-        if (stat.S_ISDIR(info.st_mode) and path.name.startswith(STAGING_PREFIXES)
-                and info.st_uid == os.getuid() and now - info.st_mtime >= STALE_STAGING_SECONDS):
+        if (staged and stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                and now - info.st_mtime >= STALE_STAGING_SECONDS):
             _remove_tree(path)
-            removed.append(path.name)
+            removed.append(name)
     return removed
 
 
@@ -416,7 +432,7 @@ def main() -> int:
     parser.add_argument("--readback-user", required=True)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, _terminated)
-    removed = sweep_stale_staging()
+    removed = sweep_stale_staging(runtime_root=Path(args.runtime_root))
     if removed:
         print("removed stale provision staging: " + ", ".join(removed), file=sys.stderr, flush=True)
     readback = service_account_readback(args.readback_user)

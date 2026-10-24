@@ -307,7 +307,7 @@ def build_published_scene_configuration_toolchain(
             stream.flush()
             os.fsync(stream.fileno())
         return receipt
-    except Exception:
+    except BaseException:  # a stop (SystemExit) or interrupt leaves nothing half-built either
         owned = destination if installed else staging
         if owned.exists() and not owned.is_symlink():
             for path in sorted(owned.rglob("*"), key=lambda item: len(item.parts), reverse=True):
