@@ -339,6 +339,10 @@ def test_portable_export_indexes_preserved_views_separately_from_native_outputs(
         assert bundle.read(view['generated_geometry_mask_path']) == allowed.read_bytes()
         assert manifest['approved_context_pixels_preserved'] is True
         assert bundle.read('generated/0/native.png') == image.read_bytes()
+    duplicates = [Path(exported['directory']) / row['path'] for row in manifest['assets']
+                  if row['sha256'] == geometry._sha256_file(fixed)]
+    assert len(duplicates) >= 2
+    assert len({path.stat().st_ino for path in duplicates}) == 1
     record['native_result_digest'] = 'not-this-operation'
     record['digest'] = canonical_digest(record, digest_field='digest')
     receipt.write_text(json.dumps(record))

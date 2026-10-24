@@ -10,13 +10,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .website_atlas_pose import load_pending_atlas_pose_inputs, verify_atlas_pose_receipt
+
+
+def _replace_bundle_member(source: Path, destination: Path, *, duplicate: Path | None = None) -> None:
+    """Publish complete members and keep other hard-linked snapshots unchanged."""
+    with tempfile.TemporaryDirectory(prefix=".atlas-member-", dir=destination.parent) as folder:
+        temporary = Path(folder) / "member"
+        if duplicate is not None:
+            try:
+                os.link(duplicate, temporary)
+            except OSError:
+                shutil.copyfile(source, temporary)
+        else:
+            shutil.copyfile(source, temporary)
+        if destination.exists() and (temporary.stat().st_mode & 0o777) != (destination.stat().st_mode & 0o777):
+            if temporary.stat().st_nlink > 1:
+                temporary.unlink()
+                shutil.copyfile(source, temporary)
+            shutil.copymode(destination, temporary)
+        os.replace(temporary, destination)
 
 
 def _suffix(data: bytes) -> str:
@@ -179,14 +200,25 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
     if target.is_symlink():
         raise ValueError("atlas_bundle_output_symlink")
     target.mkdir(parents=True, exist_ok=True)
+    binary_members: dict[tuple[str, int], Path] = {}
 
     def copy(source, relative):
         path = target / relative
         if path.is_symlink():
             raise ValueError("atlas_bundle_output_symlink")
         path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, path)
-        manifest["assets"].append({"path": str(relative), "sha256": _sha256_file(path), "bytes": path.stat().st_size})
+        digest, size = _sha256_file(source), source.stat().st_size
+        key = digest, size
+        duplicate = binary_members.get(key) if relative.suffix.lower() != ".json" else None
+        if duplicate is not None and (duplicate.is_symlink() or not duplicate.is_file()
+                or duplicate.stat().st_size != size or _sha256_file(duplicate) != digest):
+            duplicate = None
+        _replace_bundle_member(source, path, duplicate=duplicate)
+        if path.stat().st_size != size or _sha256_file(path) != digest:
+            raise ValueError("atlas_bundle_copy_changed")
+        if relative.suffix.lower() != ".json":
+            binary_members[key] = path
+        manifest["assets"].append({"path": str(relative), "sha256": digest, "bytes": size})
 
     def copy_task(root, value, folder, label):
         for row in value["outputs"]:
