@@ -206,6 +206,10 @@ can seed the expanded set. Source video, task context and original RGB pixels
 must match, and the accepted edits stay byte-identical. Only missing views are
 edited; the complete expanded set receives a fresh independent review. The
 parent manifest and assets remain retained, and reuse is recorded in the result.
+Before a revised camera plan starts, the harness also adopts compatible completed
+recorded-source recoveries. It verifies their cleaned review, original pixels,
+posed outputs, shared-world alignment and full frame bindings. Replanning or an
+expanded candidate gallery does not discard already approved source work.
 If SAM returns no unambiguous instance, the image editor may use the agent's
 validated source region as a location guide. Its receipt explicitly distinguishes
 that region from segmentation. It is never a measurement/geometry mask, never

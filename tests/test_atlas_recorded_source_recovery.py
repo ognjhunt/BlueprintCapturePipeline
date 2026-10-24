@@ -202,3 +202,80 @@ def test_offline_replay_reuses_accepted_edits_and_preserves_old_world(tmp_path, 
 def test_recovery_schema_is_accepted_by_the_production_sdk():
     from agents import AgentOutputSchema
     AgentOutputSchema(recovery.RecordedSourceProposal)
+
+
+def retained_fixture(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_depth_splat
+    from blueprint_pipeline.atlas_scene_recovery import _frame_binding
+
+    args, _, rows = fixture(tmp_path)
+    root = tmp_path/'retained/previous-camera-plan'
+    root.mkdir(parents=True)
+    survey = json.loads(args['source_survey_path'].read_text())
+    (root/'survey.json').write_text(json.dumps(survey))
+    known = args['frames']
+    extra = deepcopy(known[0])
+    extra['frame_id'] = 'later'
+    new = [*deepcopy(known), extra]
+    pose_root = root/'fallback_pose-v3'
+    pose_root.mkdir()
+    posed = bound({'binding': {'source_video_digest': 'source-video'}})
+    monkeypatch.setattr(atlas_depth_splat, 'load_posed_rgbd', lambda path: (posed, deepcopy(new)))
+    old = json.loads(args['background_path'].read_text())
+    prepared = deepcopy(old['background']['frames'])
+    prepared.append({**prepared[0], 'frame_id': 'later', 'original_image_path': rows[-1]['source_image_path'],
+                     'original_image_digest': rows[-1]['source_image_digest']})
+    background_path = root/'background/prepared_background.json'
+    background._prepared_background(background_path, old['binding'], {
+        'status': 'fallback_prepared', 'frames': prepared, 'review': review(prepared),
+        'ready_for_reconstruction': True})
+    alignment = bound({'binding': {'source_pose_digest': posed['digest'],
+        'target_pose_digest': args['pose']['digest'], 'source_frames': [_frame_binding(f) for f in new],
+        'target_frames': [_frame_binding(f) for f in known]},
+        'fit': {'scale': 1., 'rotation': np.eye(3).tolist(), 'translation': [0, 0, 0]}})
+    (root/'alignment.json').write_text(json.dumps(alignment))
+    new = recovery.aligned_recorded_frames(new, alignment['fit'])
+    result = bound({'schema_version': 'atlas_recorded_source_recovery.v2', 'status': 'completed',
+        'binding': {'source_pose_digest': args['pose']['digest'], 'task_context_digest': args['context']['context_digest'],
+            'automation_digest': canonical_digest(args['automation']),
+            'target_frame_bindings': [_frame_binding(f) for f in known],
+            'source_action_digest': 'an-older-camera-plan'},
+        'target_pose_digest': args['pose']['digest'], 'context_pose_root': str(pose_root),
+        'background_path': str(background_path), 'pose_result_digest': posed['digest'],
+        'alignment_digest': alignment['digest'], 'frame_bindings': [_frame_binding(f) for f in new],
+        'recovered_frame_ids': ['later'], 'refreshed_frame_ids': ['anchor-a', 'anchor-b'],
+        'expanded_automation': args['automation']})
+    (root/'result-v2.json').write_text(json.dumps(result))
+    options = {k: args[k] for k in ('frames', 'pose', 'automation', 'context', 'source_survey_path')}
+    return {**options, 'root': root.parent}, result, rows
+
+
+def test_a_changed_camera_plan_and_expanded_gallery_reuse_completed_source_work(tmp_path, monkeypatch):
+    args, report, _ = retained_fixture(tmp_path, monkeypatch)
+    survey = json.loads(args['source_survey_path'].read_text())
+    survey['frames'].append({**survey['frames'][0], 'frame_id': 'new-candidate', 'timestamp_seconds': 4.})
+    args['source_survey_path'].write_text(json.dumps(bound(survey)))
+    actual, receipts = recovery.adopt_recorded_recoveries(**args)
+    assert [f['frame_id'] for f in actual] == ['anchor-a', 'anchor-b', 'later']
+    assert receipts == [report]
+    assert args['frames'][0]['frame_id'] == 'anchor-a' and len(args['frames']) == 2
+    again, repeated = recovery.adopt_recorded_recoveries(**args)
+    assert repeated == receipts and np.array_equal(again[-1]['depth'], actual[-1]['depth'])
+
+
+@pytest.mark.parametrize('change', ['pixels', 'receipt', 'world'])
+def test_completed_source_adoption_refuses_changed_evidence(tmp_path, monkeypatch, change):
+    args, report, rows = retained_fixture(tmp_path, monkeypatch)
+    path = args['root']/'previous-camera-plan/result-v2.json'
+    if change == 'pixels':
+        Image.fromarray(np.zeros((48, 64, 3), np.uint8)).save(rows[-1]['source_image_path'])
+    elif change == 'receipt':
+        report['recovered_frame_ids'] = ['invented']
+        path.write_text(json.dumps(report))
+    else:
+        p = args['root']/'previous-camera-plan/alignment.json'
+        alignment = json.loads(p.read_text())
+        alignment['fit']['translation'] = [100, 0, 0]
+        p.write_text(json.dumps(bound(alignment)))
+    with pytest.raises(ValueError, match='atlas_retained_source_'):
+        recovery.adopt_recorded_recoveries(**args)
