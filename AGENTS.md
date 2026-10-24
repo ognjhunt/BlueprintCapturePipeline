@@ -170,7 +170,9 @@ dependent step as blocked instead of guessing.
 
 - **Development cost controls (owner direction 2026-10-23).** Google Cloud
   project `blueprint-8c1ca` has a USD 100/calendar-month ceiling, separate from
-  capture/run allowances. Local disk pressure does not authorize an unbounded
+  capture/run allowances. The owner authorized USD 125 for October 2026 only;
+  November and later months return to USD 100 without resetting recorded costs.
+  Local disk pressure does not authorize an unbounded
   cloud VM, duplicate retained assets, or another full paid rerun. Replay saved
   stage outputs without network/model calls first; pay only for the changed
   provider boundary after its preflight passes. Every temporary cloud VM needs

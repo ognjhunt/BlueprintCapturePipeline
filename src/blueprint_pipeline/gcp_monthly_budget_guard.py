@@ -41,6 +41,11 @@ def _money(value: Any) -> Decimal:
     return result
 
 
+def effective_limit(policy: Mapping[str, Any], now: datetime) -> Decimal:
+    """A dated owner exception never changes the recurring monthly amount."""
+    return _money(policy.get("monthly_limit_overrides", {}).get(_period(now), policy["limit_usd"]))
+
+
 def _read(path: Path) -> dict:
     if path.is_symlink() or path.stat().st_size > 1_000_000:
         raise ValueError("budget_file_unsafe")
@@ -76,6 +81,12 @@ def load_policy(path: Path) -> dict:
             raise ValueError("budget_policy_identity_invalid")
     if _money(policy["limit_usd"]) <= 0:
         raise ValueError("budget_policy_limit_invalid")
+    overrides = policy.get("monthly_limit_overrides", {})
+    if not isinstance(overrides, dict):
+        raise ValueError("budget_policy_overrides_invalid")
+    for period, limit in overrides.items():
+        if not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", period) or _money(limit) <= 0:
+            raise ValueError("budget_policy_overrides_invalid")
     for key in ("topic", "subscription"):
         kind = "topics" if key == "topic" else "subscriptions"
         if not re.fullmatch(f"projects/{policy['project_id']}/{kind}/[a-zA-Z][a-zA-Z0-9._~-]+", str(policy.get(key, ""))):
@@ -109,7 +120,7 @@ def update_observation(policy: Mapping[str, Any], previous: Mapping[str, Any],
     period = _period(now)
     state = {"schema_version": SCHEMA, "project_id": policy["project_id"], "period": period,
              "limit_usd": str(policy["limit_usd"]), "observed_cost_usd": None,
-             "source_observed_at": None}
+             "source_observed_at": None, "provider_observed_at": None}
     if previous:
         if (previous.get("schema_version") != SCHEMA or previous.get("project_id") != policy["project_id"]
                 or _money(previous.get("limit_usd")) != _money(policy["limit_usd"])):
@@ -147,6 +158,8 @@ def update_observation(policy: Mapping[str, Any], previous: Mapping[str, Any],
         state["observed_cost_usd"] = str(max(amount, _money(old) if old is not None else Decimal(0)))
         if not state["source_observed_at"] or published > _time(state["source_observed_at"]):
             state["source_observed_at"] = published.isoformat()
+        if not state.get("provider_observed_at") or published > _time(state["provider_observed_at"]):
+            state["provider_observed_at"] = published.isoformat()
     return state
 
 
@@ -160,7 +173,7 @@ class NativeClient:
         self.session = AuthorizedSession(credentials, refresh_timeout=10)
 
     def call(self, method: str, service: str, path: str, body: dict | None = None) -> dict:
-        if service not in {"billingbudgets", "cloudbilling", "pubsub"} or not path.startswith("/v1/"):
+        if service not in {"billingbudgets", "cloudbilling", "pubsub", "cloudresourcemanager"} or not path.startswith("/v1/"):
             raise ValueError("budget_api_scope_invalid")
         response = self.session.request(method, f"https://{service}.googleapis.com{path}",
                                         json=body, timeout=10, allow_redirects=False)
@@ -196,9 +209,11 @@ def run_guard(policy: Mapping[str, Any], *, client=None, now: datetime | None = 
 
 def _run_guard(policy: Mapping[str, Any], *, client=None, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
+    limit = effective_limit(policy, now)
     report = {"schema_version": SCHEMA, "generated_at": now.isoformat(),
               "project_id": policy["project_id"], "period": _period(now),
-              "limit_usd": str(policy["limit_usd"]), "policy_sha256": policy.get("policy_sha256"),
+              "limit_usd": str(limit), "base_limit_usd": str(policy["limit_usd"]),
+              "policy_sha256": policy.get("policy_sha256"),
               "admission_allowed": False, "native_cutoff_verified": False, "blockers": [],
               "claim_boundary": "Automatic stop uses delayed Google cost reports; an exact invoice ceiling is not guaranteed."}
     try:
@@ -216,6 +231,7 @@ def _run_guard(policy: Mapping[str, Any], *, client=None, now: datetime | None =
         state = update_observation(policy, previous, received, now=now)
         _write(path, state)
         report.update(state)
+        report["limit_usd"] = str(limit)
         info_path = f"/v1/projects/{policy['project_id']}/billingInfo"
         info = client.call("GET", "cloudbilling", info_path)
         if info.get("projectId") != policy["project_id"]:
@@ -225,8 +241,13 @@ def _run_guard(policy: Mapping[str, Any], *, client=None, now: datetime | None =
         if info.get("billingEnabled") is True and info.get("billingAccountName") != f"billingAccounts/{policy['billing_account_id']}":
             raise ValueError("budget_project_billing_account_changed")
         cost = state.get("observed_cost_usd")
-        exhausted = cost is not None and _money(cost) >= _money(policy["limit_usd"])
+        exhausted = cost is not None and _money(cost) >= limit
         report["billing_enabled"] = info.get("billingEnabled")
+        report["billing_shutdown_authorized"] = policy.get("billing_shutdown_authorized") is True
+        permission = "resourcemanager.projects.deleteBillingAssignment"
+        permissions = client.call("POST", "cloudresourcemanager",
+            f"/v1/projects/{policy['project_id']}:testIamPermissions", {"permissions": [permission]})
+        report["cutoff_permission_verified"] = permission in permissions.get("permissions", [])
         if info.get("billingEnabled") is True:
             report["inventory"] = client.inventory(policy["project_id"])
             if report["inventory"].get("api_confirmed") is not True:
@@ -235,7 +256,7 @@ def _run_guard(policy: Mapping[str, Any], *, client=None, now: datetime | None =
             report["blockers"].append("gcp_monthly_budget_exhausted")
             if info.get("billingEnabled") is False:
                 report["native_cutoff_verified"] = True
-            elif policy.get("billing_shutdown_authorized") is True:
+            elif policy.get("billing_shutdown_authorized") is True and report["cutoff_permission_verified"]:
                 client.call("PUT", "cloudbilling", info_path, {"billingAccountName": ""})
                 confirmation = client.call("GET", "cloudbilling", info_path)
                 report["billing_enabled"] = confirmation.get("billingEnabled")
@@ -244,9 +265,14 @@ def _run_guard(policy: Mapping[str, Any], *, client=None, now: datetime | None =
                 if not report["native_cutoff_verified"]:
                     report["blockers"].append("gcp_billing_cutoff_readback_failed")
             else:
-                report["blockers"].append("gcp_billing_shutdown_activation_required")
+                report["blockers"].append("gcp_billing_shutdown_activation_required"
+                    if not report["billing_shutdown_authorized"] else "gcp_billing_cutoff_permission_missing")
         else:
-            observed = state.get("source_observed_at")
+            if not report["billing_shutdown_authorized"]:
+                report["blockers"].append("gcp_billing_shutdown_activation_required")
+            if not report["cutoff_permission_verified"]:
+                report["blockers"].append("gcp_billing_cutoff_permission_missing")
+            observed = state.get("provider_observed_at")
             if cost is None or not observed or not timedelta(0) <= now - _time(observed) <= timedelta(hours=24):
                 report["blockers"].append("gcp_monthly_cost_missing_or_stale")
             if info.get("billingEnabled") is not True:
@@ -286,10 +312,12 @@ def admission_blockers(*, report_path: str | None = None, project_id: str | None
         if (report.get("schema_version") != SCHEMA or report.get("period") != _period(now)
                 or str(Path(path)) != policy["report_path"]
                 or report.get("project_id") != policy["project_id"]
-                or _money(report.get("limit_usd")) != _money(policy["limit_usd"])
+                or _money(report.get("limit_usd")) != effective_limit(policy, now)
                 or report.get("policy_sha256") != policy["policy_sha256"]
                 or project_id is not None and report.get("project_id") != project_id
                 or report.get("admission_allowed") is not True or report.get("blockers")
+                or report.get("billing_shutdown_authorized") is not True
+                or report.get("cutoff_permission_verified") is not True
                 or report.get("billing_enabled") is not True
                 or _money(report["observed_cost_usd"]) >= _money(report["limit_usd"])
                 or not timedelta(0) <= now - _time(report["generated_at"]) <= timedelta(minutes=5)):

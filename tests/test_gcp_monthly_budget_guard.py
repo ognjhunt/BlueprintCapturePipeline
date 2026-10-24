@@ -29,7 +29,7 @@ def policy(tmp_path, monkeypatch):
         "topic": "projects/blueprint-test/topics/monthly-budget",
         "subscription": "projects/blueprint-test/subscriptions/monthly-budget",
         "state_path": str(tmp_path / "state.json"), "report_path": str(tmp_path / "report.json"),
-        "billing_shutdown_authorized": False,
+        "billing_shutdown_authorized": True,
     }))
     monkeypatch.setenv(guard.CONFIG_ENV, str(path))
     monkeypatch.setenv(guard.REPORT_ENV, str(tmp_path / "report.json"))
@@ -63,6 +63,8 @@ class Client:
 
     def call(self, method, service, path, body=None):
         self.calls.append((method, service, path, body))
+        if service == "cloudresourcemanager":
+            return {"permissions": ["resourcemanager.projects.deleteBillingAssignment"]}
         if service == "billingbudgets":
             return self.budget
         if service == "pubsub":
@@ -94,6 +96,7 @@ def test_exhausted_budget_disconnects_only_bound_project_and_verifies_readback(p
 
 
 def test_activation_is_separate_from_preview_and_cannot_reenable_billing(policy):
+    policy["billing_shutdown_authorized"] = False
     client = Client(policy, "105")
     result = guard.run_guard(policy, client=client, now=NOW)
     assert "gcp_billing_shutdown_activation_required" in result["blockers"]
@@ -237,3 +240,86 @@ def test_service_preserves_operator_owned_group_accessible_lock(policy, monkeypa
     monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
     monkeypatch.setattr(os, "fchmod", lambda *args: pytest.fail("service cannot chmod another owner's lock"))
     assert guard.run_guard(policy, client=Client(policy), now=NOW)["admission_allowed"]
+
+
+def test_even_under_budget_job_waits_for_native_enforcement_activation(policy):
+    policy["billing_shutdown_authorized"] = False
+    result = guard.run_guard(policy, client=Client(policy), now=NOW)
+    assert not result["admission_allowed"]
+    assert "gcp_billing_shutdown_activation_required" in result["blockers"]
+
+
+def test_missing_shutdown_permission_cannot_release_a_paid_job(policy):
+    class ReadOnly(Client):
+        def call(self, method, service, path, body=None):
+            if service == "cloudresourcemanager":
+                return {"permissions": []}
+            return super().call(method, service, path, body)
+    result = guard.run_guard(policy, client=ReadOnly(policy), now=NOW)
+    assert not result["admission_allowed"]
+    assert "gcp_billing_cutoff_permission_missing" in result["blockers"]
+
+
+@pytest.fixture
+def monthly_exception(policy):
+    path = Path(policy["report_path"]).parent / "policy.json"
+    data = json.loads(path.read_text())
+    data["monthly_limit_overrides"] = {guard._period(NOW): "125"}
+    path.write_text(json.dumps(data))
+    return guard.load_policy(path)
+
+
+def test_month_only_exception_uses_fresh_cost_without_raising_recurring_budget(monthly_exception):
+    result = guard.run_guard(monthly_exception, client=Client(monthly_exception, "105.28"), now=NOW)
+    assert result["admission_allowed"]
+    assert result["limit_usd"] == "125" and result["base_limit_usd"] == "100"
+    assert result["observed_cost_usd"] == "105.28"
+    assert guard.admission_blockers(now=NOW) == []
+    # Costs remain monotonic after the owner changes only the allowance.
+    result = guard.run_guard(monthly_exception, client=Client(monthly_exception, "20"), now=NOW)
+    assert result["observed_cost_usd"] == "105.28"
+
+
+def test_exception_still_stops_at_its_exact_ceiling(monthly_exception):
+    result = guard.run_guard(monthly_exception, client=Client(monthly_exception, "125"), now=NOW)
+    assert not result["admission_allowed"] and result["native_cutoff_verified"]
+
+
+def test_october_exception_automatically_expires_in_november(policy):
+    policy["monthly_limit_overrides"] = {"2026-10": "125"}
+    october = datetime(2026, 10, 24, 12, tzinfo=ZoneInfo("America/Los_Angeles"))
+    november = datetime(2026, 11, 1, 12, tzinfo=ZoneInfo("America/Los_Angeles"))
+    assert guard.effective_limit(policy, october) == 125
+    assert guard.effective_limit(policy, november) == 100
+    client = Client(policy)
+    client.messages = [message(policy, "101", published=november,
+                               interval=november.replace(day=1, hour=0))]
+    result = guard.run_guard(policy, client=client, now=november)
+    assert result["limit_usd"] == "100"
+    assert not result["admission_allowed"] and result["native_cutoff_verified"]
+
+
+def test_raised_ceiling_does_not_turn_retained_seed_into_spend_permission(monthly_exception):
+    monthly_exception["over_budget_seed"] = {
+        "period": guard._period(NOW), "observed_cost_usd": "105.28",
+        "source_sha256": "a" * 64, "observed_at": NOW.isoformat()}
+    client = Client(monthly_exception)
+    client.messages = []
+    result = guard.run_guard(monthly_exception, client=client, now=NOW)
+    assert result["observed_cost_usd"] == "105.28"
+    assert not result["admission_allowed"]
+    assert "gcp_monthly_cost_missing_or_stale" in result["blockers"]
+    # The retained high-water charge survives receipt of a real provider update.
+    result = guard.run_guard(monthly_exception, client=Client(monthly_exception, "105.28"), now=NOW)
+    assert result["admission_allowed"] and result["observed_cost_usd"] == "105.28"
+
+
+@pytest.mark.parametrize("overrides", [{"2026-13": "125"}, {"October": "125"},
+                                       {"2026-10": "NaN"}, {"2026-10": "0"}, []])
+def test_invalid_month_exceptions_fail_closed(policy, overrides):
+    path = Path(policy["report_path"]).parent / "policy.json"
+    data = json.loads(path.read_text())
+    data["monthly_limit_overrides"] = overrides
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        guard.load_policy(path)

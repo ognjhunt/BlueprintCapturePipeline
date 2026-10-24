@@ -2,6 +2,8 @@
 
 Owner direction, October 23, 2026: keep developing while lowering retained
 infrastructure cost; `blueprint-8c1ca` has a USD 100/calendar-month ceiling.
+The owner subsequently authorized USD 125 for October 2026 only. The recurring
+amount stays USD 100; the dated exception expires at the next billing month.
 This does not replace or increase a capture's provider allowance. This removes
 a beta capture-to-scene development blocker and protects ADP-040/day-28.
 
@@ -11,8 +13,9 @@ a beta capture-to-scene development blocker and protects ADP-040/day-28.
   evidence that a VM was deleted or its attachments retired.
 - Bind a project-scoped USD 100 monthly budget to project number 744608654760
   on its selected billing account; read it back. Preserve existing budgets.
-  Cost reports already show more than USD 100 this October, so the existing
-  month has no new GCP development allowance. Do not reset its accounting.
+  Preserve the recurring budget and use `monthly_limit_overrides` in the
+  controller policy for the owner's October-only USD 125 exception. Do not
+  reset the existing month's recorded charges or raise November's allowance.
 - Verify `blueprint-policy-sandbox-20260929` in `us-central1-a` is stopped,
   retain its data and inspect its active consumers before retirement. Its
   last start found in the audit was September 29. Do not restart it simply to
@@ -82,6 +85,15 @@ root-managed policy file outside the checkout. The file binds one project ID
 and number, billing account, monthly USD amount, exact budget ID, Pub/Sub topic
 and subscription, and separate state/report paths. It uses the existing ADC
 credential integration; do not create or copy service-account keys.
+
+`limit_usd` is the recurring amount and the live Google notification budget.
+`monthly_limit_overrides: {"2026-10": "125"}` changes only October's effective
+admission/shutoff ceiling. Notifications still provide the actual cumulative
+cost against the recurring budget; changing the ceiling neither resets that
+cost nor changes Google billing. The controller and paid boundary independently
+resolve the current month, so November automatically uses USD 100. The policy
+and report retain both amounts. A below-ceiling retained report cannot release
+work: a fresh native notification and active cutoff permissions are required.
 
 The controller rechecks the live budget scope and amount, consumes its budget
 notifications, inventories CPU/GPU VMs across the project's zones, and retains
