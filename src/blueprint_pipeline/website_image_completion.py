@@ -63,6 +63,15 @@ REVIEW_PROMPT = (
     "only when no prepared view shows one. False if uncertain. Targets: "
 )
 
+CAMERA_REVIEW_PROMPT = (
+    "Check each edited photograph against its SAME-ID original for a changed camera. "
+    "Reject a substantial crop, zoom, viewpoint change or copied reference composition, "
+    "even when it depicts the same room. Repainted texture, small local distortions and "
+    "minor edge shifts alone are acceptable when the field of view and useful scene geometry remain. "
+    "Return camera_changed_frame_ids: the exact edited photograph IDs with a changed camera, "
+    "or an empty array if none. A nonempty array makes consistent_background false. "
+)
+
 CONSISTENCY_DIAGNOSIS_PROMPT = (
     "The independent review rejected these prepared views ONLY for inconsistent background. "
     "Compare each prepared frame with its labeled original and with the other views of the same room. "
@@ -186,6 +195,8 @@ def _review_prompt(targets: Sequence[Mapping[str, Any]], *, frames: Sequence[Map
               REVIEW_PROMPT.removesuffix("Targets: ") + MULTI_OBJECT_REVIEW_PROMPT)
     if _has_transients(targets):
         prompt = prompt.removesuffix("Targets: ") + TRANSIENT_REVIEW_PROMPT + "Targets: "
+    if any(frame.get("generated_pixels_present") for frame in frames):
+        prompt = prompt.removesuffix("Targets: ") + CAMERA_REVIEW_PROMPT + "Targets: "
     if any(frame.get("target_guidance") in {"sam_overlay_v1", "source_grounded_region_overlay_v1"} for frame in frames):
         prompt += (" Judge the same camera field of view: require an empty installation opening only where "
                    "that opening is visible in this view. A door or rack extending into the foreground from "
@@ -512,6 +523,16 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                                   expected_size=canvas.size, token=token, opener=opener,
                                                   reference_images=references)
                 if not response["succeeded"]:
+                    # Keep the adapter's sanitized provider evidence before
+                    # surfacing the failure. The non-completed intent still
+                    # fences retries and retains its full spending reservation.
+                    failure = {"status": "submitting", "request_digest": request_digest,
+                               "frame_id": frame["frame_id"], "blocker": response["blocker"],
+                               "provider_failure": response.get("provider_failure"),
+                               "requires_reconciliation": True}
+                    temporary = receipt_path.with_suffix(".tmp")
+                    write_json(temporary, failure)
+                    os.replace(temporary, receipt_path)
                     raise ValueError(response["blocker"])
                 if response["usage"] is None:
                     raise ValueError("website_image_completion_usage_missing")
@@ -599,6 +620,13 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
     remaining = review.get("remaining_task_object_frame_ids")
     unrelated_loss = review.get("unrelated_object_loss_frame_ids")
     frame_ids = {frame["frame_id"] for frame in frames}
+    same_camera_ids = ({frame["frame_id"] for frame in frames if frame.get("generated_pixels_present")}
+                       if not any(frame.get("novel_view") for frame in frames) else set())
+    camera_changed = review.get("camera_changed_frame_ids")
+    camera_valid = not same_camera_ids or (
+        isinstance(camera_changed, list)
+        and all(isinstance(item, str) and item in same_camera_ids for item in camera_changed)
+        and len(set(camera_changed)) == len(camera_changed))
     if (not isinstance(remaining, list) or any(not isinstance(item, str) or item not in frame_ids
             for item in remaining) or len(set(remaining)) != len(remaining)
             or bool(remaining) == (review.get("task_objects_removed") is True)):
@@ -623,11 +651,13 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
             # A paid answer that cannot name the remaining objects blocks the set;
             # it is retained, not lost, so the receipt never becomes uncertain.
             objects_valid = False
-    passed = objects_valid and all(review.get(field) is True for field in
+    passed = objects_valid and camera_valid and not (same_camera_ids and camera_changed) and all(
+        review.get(field) is True for field in
                                    ("consistent_background", "task_objects_removed", "unrelated_objects_preserved"))
     result = {"status": "passed" if passed else "blocked", "binding": binding, "request_digest": digest,
               "review": review, "basis": "model_visual_review", "physical_evidence": False,
-              **({} if objects_valid else {"blocker": "website_image_completion_review_objects_invalid"})}
+              **({} if objects_valid else {"blocker": "website_image_completion_review_objects_invalid"}),
+              **({} if camera_valid else {"blocker": "website_image_completion_review_camera_frame_ids_invalid"})}
     output_root.mkdir(parents=True, exist_ok=True)
     if retain_result:
         write_json(receipt_path, result)
@@ -713,7 +743,8 @@ def _camera_changed_review(frames: Sequence[Mapping[str, Any]],
     checks = []
     for frame in frames:
         original = originals.get(frame["frame_id"])
-        if (original is None or not frame.get("generated_pixels_present") or not frame.get("remaining_mask_path")
+        if (original is None or frame.get("novel_view") or not frame.get("generated_pixels_present")
+                or not frame.get("remaining_mask_path")
                 or original["image_digest"] == frame["image_digest"]):
             continue
         paths = (Path(original["image_path"]), Path(frame["image_path"]), Path(frame["remaining_mask_path"]))

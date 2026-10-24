@@ -399,6 +399,68 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
     assert state["calls"] == 1
 
 
+@pytest.mark.parametrize("camera_ids,novel,expected", [
+    ([], False, "passed"), (None, False, "blocked"), (["0"], False, "blocked"),
+    (["missing"], False, "blocked"), (["0", "0"], False, "blocked"), ([1], False, "blocked"),
+    (None, True, "passed"),
+])
+def test_visual_review_must_resolve_source_camera_changes_and_retains_invalid_answers(
+        tmp_path, monkeypatch, camera_ids, novel, expected):
+    import sys
+    from types import SimpleNamespace as NS
+
+    response = {"consistent_background": True, "task_objects_removed": True,
+                "unrelated_objects_preserved": True, "remaining_task_object_frame_ids": [],
+                "unrelated_object_loss_frame_ids": [], "camera_changed_frame_ids": camera_ids}
+    calls = []
+    class Client:
+        def __init__(self, **_):
+            self.models = self
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            return NS(candidates=[NS(finish_reason="STOP")], text=json.dumps(response))
+    types = NS(Part=NS(from_bytes=lambda **kw: kw), GenerateContentConfig=NS,
+               HttpOptions=NS, HttpRetryOptions=NS)
+    monkeypatch.setitem(sys.modules, "google.genai", NS(Client=Client, types=types))
+    monkeypatch.setattr(completion, "_api_key", lambda: ("fixture-key", "fixture"))
+    frames, _ = _inputs(tmp_path)
+    edited = [{**frame, "generated_pixels_present": True, "novel_view": novel} for frame in frames]
+    args = dict(frames=edited, original_frames=frames,
+                plan={"task_context_sha256": "task", "targets": []}, output_root=tmp_path / "review")
+    first = completion.verify_completed_background(**args)
+    assert first["status"] == expected
+    assert first["review"] == response
+    assert (completion.CAMERA_REVIEW_PROMPT in first["binding"]["review_prompt"]) is not novel
+    assert completion.verify_completed_background(**args) == first
+    assert len(calls) == 1  # A blocked/invalid answer remains a completed paid review.
+
+
+def test_http_failure_retains_sanitized_provider_evidence_and_never_retries(tmp_path, monkeypatch):
+    frames, admission = _inputs(tmp_path)
+    calls = []
+    failure = {"http_status": 429, "provider_error_code": "rate_limit_exceeded",
+               "provider_request_id": "req_fixture", "raw_provider_body_recorded": False}
+    def request(**_):
+        calls.append(True)
+        return {"succeeded": False, "blocker": "semantic_teacher_provider_http_error",
+                "provider_failure": failure}
+    monkeypatch.setattr(completion, "_execute_frame_request", request)
+    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits",
+                admission=admission, admission_grant=_grant(admission), token="fixture-key")
+    with pytest.raises(ValueError, match="semantic_teacher_provider_http_error"):
+        completion.complete_background_images(**args)
+    receipt = json.loads(next((tmp_path / "edits").glob("*/0.json")).read_text())
+    assert receipt["provider_failure"] == failure
+    assert receipt["status"] == "submitting" and receipt["requires_reconciliation"] is True
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        completion.complete_background_images(**args)
+    assert calls == [True]
+
+
 @pytest.mark.parametrize("diagnosed_ids", [["0"], [], ["0", "1"], ["missing"]])
 def test_consistency_diagnosis_is_exactly_one_retained_view(tmp_path, monkeypatch, diagnosed_ids):
     import sys

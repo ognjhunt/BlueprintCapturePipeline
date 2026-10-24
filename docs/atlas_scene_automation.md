@@ -42,6 +42,10 @@ The production Atlas controller runs the following for a new scene plan:
    legacy requests still refuse. Canvas policy and dimensions are retained in
    each new image receipt. Panoramas outside the provider's 1:3 to 3:1 aspect
    range refuse before a provider request rather than silently losing coverage.
+   Provider failures retain the shared adapter's sanitized status, error code
+   and request ID with the non-completed intent. They keep the full reservation
+   and require reconciliation; restarting cannot purchase the uncertain call
+   again. Raw error bodies, headers and secrets are never retained.
 5. Gemini independently reviews the complete selected edited set before Atlas
    receives any RGB. Rejected views cannot enter reconstruction. Accepted RGB
    acquires fresh Atlas cameras and depth, rather than putting original
@@ -66,15 +70,23 @@ The production Atlas controller runs the following for a new scene plan:
    is retained; missing or uncertain completion evidence still blocks a retry.
    Before that review is bought, a deterministic camera check
    (`edited_view_camera.py`) compares each edited view with its original outside
-   the dilated removal mask. An edit that reframed the scene or copied another
-   view's camera keeps almost none of the original's keypoints there (measured
-   0.00-0.01 against 0.6 for faithful edits), so it is rejected without a paid
-   review, with `camera_changed_frame_ids`. The repair agent re-edits those views
+   the dilated removal mask. A coherent transform supported by distributed
+   shared features rejects a substantial camera shift without a paid review,
+   with `camera_changed_frame_ids`. Low texture retention alone does not prove
+   movement: repainted wood grain can leave very few matches even when cabinet
+   edges remain aligned. Such views require the independent visual review,
+   which must explicitly name camera changes and reject copied reference
+   compositions. Minor texture changes and local distortion remain acceptable.
+   Missing or invalid camera findings block and retain the completed answer;
+   they cannot silently approve a view or become a reason to rebuy that review.
+   Novel-camera generation is reviewed under its separate viewpoint contract.
+   The repair agent re-edits views with a changed camera
    from their original without the anchor reference they copied, and a rejected
    anchor is re-edited once with its camera named. Views with too few features
    outside the mask, or whose retained mask is gone, stay with the model review.
    `python -m blueprint_pipeline.edited_view_camera <prepared_background.json>`
-   re-checks an already approved set without provider calls.
+   re-checks an already approved set without provider calls; a moved or
+   unverifiable camera exits nonzero and requires review.
 6. The agent surveys missing surfaces across the captured scene and chooses
    named gaps and candidate cameras, including modest translated viewpoints.
    Additional scene-depth-relative viewpoints stay inside source-observed free
