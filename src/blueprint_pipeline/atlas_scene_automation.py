@@ -228,13 +228,18 @@ def run_automation(
     prior_background_path=None,
     source_survey_path=None,
     replay_exports_only=False,
+    finalize_retained_exports=False,
+    retained_mesh_root=None,
 ):
     from .atlas_scene_measurements import load_views, estimate_sizes
     from .atlas_background_automation import run_background
 
     if review.get("automation") is None:
         return {"status": "legacy_plan_without_automation", "new_paid_calls": 0}
-    if replay_exports_only:
+    retained_only = replay_exports_only or finalize_retained_exports
+    if replay_exports_only and finalize_retained_exports:
+        raise ValueError('atlas_export_mode_ambiguous')
+    if retained_only:
         task_runner = planner_runner = _offline_provider_call
         pose_runner = _retained_pose_runner
     automation = measurement_plan(review)
@@ -289,7 +294,7 @@ def run_automation(
             selected_frame_ids=selected_ids,
             transients=review.get("transients", []),
             **({'prior_background_path': prior_background_path} if prior_background_path is not None else {}),
-            **({'require_cached': True} if replay_exports_only else {}),
+            **({'require_cached': True} if retained_only else {}),
         )
         if background["status"] == "processing":
             return background
@@ -463,7 +468,7 @@ def run_automation(
                     context=task_context, configuration=configuration,
                     root=output_root / "completion_task_regions", planner_runner=planner_runner,
                     checkpoint=checkpoint,
-                    **({'segmenter': _offline_provider_call} if replay_exports_only else {}))
+                    **({'segmenter': _offline_provider_call} if retained_only else {}))
                 recovered, recovery = recover_reviewed_geometry(
                     frames=original_frames, geometry_frames=derived_frames,
                     reviewed_views=reviewed_views, region_plan=region_plan,
@@ -517,7 +522,7 @@ def run_automation(
                         'context_pose_digest': recovery_context_pose_digest} if recovery_context_pose_root else {}),
                     **({'recorded_frames': recorded_frames, 'recorded_source_reports': recorded_reports}
                        if recorded_frames else {}),
-                    **({'completed_exports_only': True} if replay_exports_only else {}))
+                    **({'completed_exports_only': True} if retained_only else {}))
                 if refined is None:
                     return coverage
                 derived_frames, splat, splat_root = refined
@@ -525,7 +530,7 @@ def run_automation(
                 background['export_coverage'] = coverage
                 background['reconstruction_frame_count'] = len(derived_frames)
                 recovery_suffix += '-coverage-' + splat['digest'][7:23]
-            if replay_exports_only:
+            if retained_only:
                 if coverage is None:
                     from .atlas_scene_coverage import _refresh_fusion
                     refreshed = _refresh_fusion(manifest=splat, splat_root=splat_root,
@@ -533,6 +538,7 @@ def run_automation(
                         visual=visual_digest, checkpoint=checkpoint)
                     if refreshed is not None:
                         splat, splat_root = refreshed
+            if replay_exports_only:
                 value = {'schema_version': 'atlas_scene_export_replay.v1', 'status': 'completed',
                          'splat_root': str(splat_root), 'splat_manifest_digest': splat['digest'],
                          'retained_frame_count': len(derived_frames),
@@ -544,7 +550,20 @@ def run_automation(
                 write_json(output_root / 'export_replays' / (splat['digest'][7:23] + '.json'), value)
                 return value
             mesh_root = None
-            if "mesh_export_cost_usd" in policy:
+            from .atlas_result_bundle import retained_mesh_for_splat, find_retained_mesh_root
+
+            if retained_mesh_root is not None:
+                mesh_root = Path(retained_mesh_root)
+            elif task_context.get('context_digest'):
+                mesh_root = find_retained_mesh_root(output_root=output_root, splat_root=splat_root,
+                    source_video_digest=source, task_context_digest=task_context['context_digest'])
+            if mesh_root is not None:
+                retained_mesh_for_splat(mesh_root=mesh_root, splat_root=splat_root,
+                    source_video_digest=source, task_context_digest=task_context['context_digest'])
+                background['retained_mesh_root'] = str(mesh_root)
+            elif finalize_retained_exports:
+                raise ValueError('atlas_retained_mesh_required')
+            elif "mesh_export_cost_usd" in policy:
                 from .atlas_depth_splat import splats2mesh_attempt
 
                 spec, mesh_root = splats2mesh_attempt(splat_root, output_root / (
@@ -633,9 +652,12 @@ def run_automation(
     }
     if replay_exports_only:
         value.update(schema_version='atlas_scene_export_replay.v1', replay_exports_only=True, new_paid_calls=0)
+    elif finalize_retained_exports:
+        value.update(finalized_retained_exports=True, new_paid_calls=0)
     value["digest"] = canonical_digest(value, digest_field="digest")
     path = (output_root / 'export_replays' / (value['digest'][7:23] + '.json')
-            if replay_exports_only else output_root / 'result.json')
+            if replay_exports_only or (finalize_retained_exports and value['status'] != 'completed')
+            else output_root / 'result.json')
     write_json(path, value)
     return value
 
