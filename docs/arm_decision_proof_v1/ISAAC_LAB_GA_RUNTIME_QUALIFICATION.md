@@ -5,6 +5,68 @@ compares the retained native workcell against the pinned beta runtime. Productio
 runtime defaults, PhysX, RTX, task inputs, controls and scoring remain fixed.
 Neither Newton nor standalone rendering is included.
 
+## Observed construction pair, 2026-10-24
+
+The GA and baseline construction replays completed on the same physical RTX
+4090, UUID `GPU-3b954a77-b580-0fc9-0149-d9990de42321`, driver 580.159.03.
+Both executed immutable source `5265bdd80b58212a3f320a5c4cb8ebfb5716459c`
+with the same retained workcell, controls, camera configuration and scoring.
+
+| Measurement | Baseline | GA | Observed GA change |
+| --- | ---: | ---: | ---: |
+| Native app startup | 16.972 s | 212.904 s | +1154.44% |
+| Environment build | 34.003 s | 41.543 s | +22.17% |
+| Median step, 218 samples each | 167.576 ms | 167.143 ms | -0.26% |
+| Median reset, 5 samples each | 73.857 ms | 67.719 ms | -8.31% |
+| Sampled device-wide peak | 6145 MiB | 6411 MiB | +4.33% |
+
+Both runs reached all ten motion targets over 150 action steps, passed all
+three camera gates and reset replay, and retained 150 task-state samples. All
+four measured contact-force channels remained at 0 N, with no collision,
+containment or joint-limit failure. Both global-IK preflights solved six of ten
+targets; actual motion reached all ten. No candidate policy was queried.
+
+All 33 camera pairs have identical intrinsics, matching raw RGB shapes and
+sources, and identical camera positions. All five recorded robot joint-position
+arrays and reset seeds match exactly. The 44 original PNGs per runtime were
+verified against their native snapshot receipts. RGB mean absolute differences
+range from 6.43 to 11.06 on a 0–255 scale. Representative reset/approach views and
+the largest-difference prealign/wrist pair have matching view geometry but
+visible texture/noise differences. Their cause and policy impact remain
+unresolved; the original robot rubber-material gap is retained.
+
+This single construction pair does not establish repeatability or an overall
+runtime improvement. Startup and build were slower and the observed memory peak
+was higher under GA. The canonical comparator reports
+`measured_pending_correctness_review`, with `improvement_qualified: false` and
+`runtime_promotion_authorized: false`. Memory remains a sampled device-wide
+lower-bound peak, including other processes.
+
+The full comparison still requires both frozen learned policies on all ten
+identical cells in each runtime: 40 episodes, complete policy-input frames,
+digest-bound manifests, derived review videos, deterministic scores and contact
+evidence. Standalone rendering/Newton remain separate, unexecuted experiments.
+Fresh capacity at 2026-10-24 04:29 UTC offered no qualifying US 48 GB policy GPU
+within the unchanged resource and driver limits.
+
+Vast GA instance `57459128` and baseline instance `57462894` are confirmed
+absent. Their allocators and watchdogs exited; staging cleanup and canonical
+provider-zero passed. Official charges were $0.179 and $0.263. Official Vast
+charges for all task attempts, including SimReady intake, total $1.360.
+Baseline attempt 1 allocated nothing and has a separate official $0 closeout.
+
+Retained evidence is under `output/isaaclab_ga_20261023/` locally and beneath
+`/mnt/blueprint-work/isaaclab-ga-adf55cb3f/output/` on the control-plane host.
+The GA attempt 19 and baseline attempt 2 evidence directories each contain 14
+hash-verified files. `construction-pair-20261024/` retains the comparison,
+per-frame review, original extracted PNGs and a side-by-side figure. The
+canonical comparison receipt is
+`sha256:8197110ed86e342af9f96c7d0553ee812d7cda076f4908a1047dd94bc4ed84c1`.
+
+Before these runs, 87 focused material/comparison tests and the 25 required
+policy lifecycle/import-closure tests passed on the executed source commit.
+The native run source and bundles did not change between the paired attempts.
+
 The GA profile pins Isaac Lab `e3f7d9ff1f5d7f8280de3ece9000b7117f66bcf4`,
 Arena `b5708b72b21f37f74c8c66b1ee9cedff362a424b`, and the full NVIDIA Lab 3.0.0
 image by digest in `native_task_isaaclab_ga.py`. The source archive verifies each
@@ -16,7 +78,7 @@ actual versions and a CUDA operation before scene execution.
 its actions, observations or scoring. It records startup/build/step/reset timing,
 device-wide GPU memory, actual reset joints, camera gates and episode/contact/media
 receipts. Timing synchronizes CUDA for steps and resets. Memory is a sampled peak
-lower bound. An exact GPU UUID is required for a causal timing comparison.
+lower bound. An exact GPU UUID is required for the paired timing comparison.
 
 Prepare a construction precursor with:
 
