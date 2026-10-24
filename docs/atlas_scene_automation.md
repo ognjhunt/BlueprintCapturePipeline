@@ -110,6 +110,10 @@ The production Atlas controller runs the following for a new scene plan:
    separate ZIP and explicit result/review lineage. Original reconstruction and
    its ZIP remain available. Native photometrically trained splat export remains
    subject to Atlas availability; this adapter produces a depth-fused draft.
+   Above `SPLATS2MESH_MAX_GAUSSIANS` (2M; splats2Mesh meshed 2.45M and failed at
+   3.6M, with no documented limit) the writer merges a separate
+   `mesh_input_spz` on the finest coarser grid that fits. The full draft stays the
+   viewing and download splat.
 
    Before purchasing the final mesh, the harness re-surveys the exported splat
    from every source and approved generated view. Reviewed depth supplies a
