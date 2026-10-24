@@ -210,6 +210,13 @@ Path(sys.argv[1]).write_text(json.dumps({{
   "run_kind": "internal_policy_canary",
   "claim_ceiling": "diagnostic_policy_execution",
   "candidate_policy_queried": False,
+  "visual_evidence": {{"media_gap": {{
+    "type": "before_first_observation" if sys.argv[3] in {{
+      "policy_canary_runtime_source_provision_failed", "policy_canary_input_preflight_failed",
+      "policy_canary_control_mode_missing", "policy_canary_control_mode_invalid",
+    }} else "entrypoint_failed_without_media_receipt",
+    "reason": sys.argv[3],
+  }}}},
   "blockers": [sys.argv[3]],
   "worker_exit_code": int(sys.argv[2]),
 }}, sort_keys=True) + "\\n", encoding="utf-8")
@@ -222,6 +229,9 @@ teardown_servers() {{
   trap - EXIT INT TERM HUP
   write_fallback_result policy_canary_entrypoint_failed_without_result "$original_rc"
   for candidate in pi05_droid groot_n17_droid; do
+    if [ ! -f "$OUT_DIR/adp009d_policy_server_receipt.$candidate.json" ]; then
+      continue
+    fi
     /isaac-sim/python.sh "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
       --terminate-ready-server \
       --receipt "$OUT_DIR/adp009d_policy_server_receipt.$candidate.json" \
@@ -251,6 +261,8 @@ from pathlib import Path
 from adp_arena_provider_runner import preflight_policy_canary_runtime_directory
 receipt = preflight_policy_canary_runtime_directory(
     Path(os.environ["RUNTIME_DIR"]), physical_gpu_output_root=Path(os.environ["OUT_DIR"]))
+Path(os.environ["OUT_DIR"]).joinpath("policy_canary_static_startup_preflight.v1.json").write_text(
+    json.dumps(receipt, sort_keys=True) + "\\n", encoding="utf-8")
 print(json.dumps(receipt, sort_keys=True))
 raise SystemExit(0 if receipt["status"] == "passed" else 2)
 PYINPUT
@@ -262,22 +274,30 @@ fi
 
 # Strict controls execute before either checkpoint is loaded. The second stage
 # validates and reuses these exact cell receipts after ordinary provisioning.
-strict_controls=$(/isaac-sim/python.sh - <<'PYSTRICT'
+# Isaac Lab's launcher emits informational stdout. Use a file for this protocol.
+/isaac-sim/python.sh - <<'PYSTRICT'
 import json, os
 from pathlib import Path
 from blueprint_pipeline.native_policy_canary_control_gate import controls_required
 inputs = json.loads((Path(os.environ["RUNTIME_DIR"]) / "runtime_inputs/policy_canary_runtime_inputs.json").read_text())
-print("required" if controls_required(inputs["task_success_contract"]) else "legacy")
+mode = "required" if controls_required(inputs["task_success_contract"]) else "legacy"
+Path(os.environ["OUT_DIR"]).joinpath("policy_canary_control_mode.txt").write_text(
+    mode + "\\n", encoding="utf-8")
 PYSTRICT
-)
 strict_rc=$?
 if [ $strict_rc -ne 0 ]; then exit $strict_rc; fi
+IFS= read -r strict_controls < "$OUT_DIR/policy_canary_control_mode.txt"
+if [ $? -ne 0 ]; then
+  write_fallback_result policy_canary_control_mode_missing 86
+  exit 86
+fi
 if [ "$strict_controls" = required ]; then
   BLUEPRINT_POLICY_CANARY_MATRIX_STAGE=controls /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
   controls_rc=$?
   if [ $controls_rc -ne 0 ]; then exit $controls_rc; fi
   export BLUEPRINT_POLICY_CANARY_MATRIX_STAGE=policies
 elif [ "$strict_controls" != legacy ]; then
+  write_fallback_result policy_canary_control_mode_invalid 86
   exit 86
 fi
 

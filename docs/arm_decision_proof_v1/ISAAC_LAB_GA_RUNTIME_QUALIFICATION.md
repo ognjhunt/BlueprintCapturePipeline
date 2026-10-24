@@ -149,8 +149,8 @@ runtime-input digest, named authorizer and authorization reference, unchanged
 private Vast disclosure scope, and an explicit machine constraint. Production
 team evaluations cannot use it. The authority remains digest-bound; driver,
 architecture, RT, VRAM, requested disk, total transfer cost, watchdog, output
-admission and zero-retry gates remain mandatory. No UK resource has been
-allocated, and these source checks do not establish transfer performance.
+admission and zero-retry gates remain mandatory. Source checks alone do not
+establish transfer performance; the first observed UK attempt is recorded below.
 
 A baseline session authority can additionally require the GA session's observed
 physical GPU UUID. Provider input preflight checks it before checkpoint
@@ -162,11 +162,33 @@ before-first-observation gap. It does not query a policy. This supplements the
 existing comparison's requirement that every scenario and both runtimes share
 the actual GPU; a machine ID alone can refer to several physical cards.
 
+The first UK policy attempt, instance `57479820`, executed source
+`bf9709aa010d8b71f2e9f270df1a87b00617dba4` on machine 49863. SSH readback
+proved RTX 5880 Ada Generation, 49,140 MiB, driver 580.159.03, UUID
+`GPU-1925818e-d48f-b7e1-8211-cef77c827d10`. Bootstrap passed in 28.2 seconds;
+the exact source packet provisioned and immutable input preflight passed.
+Before checkpoint provisioning, the entrypoint exited 86: GA's Python launcher
+added an informational stdout line to a shell-captured control-mode value.
+No policy was queried and no policy observation was produced. The original
+fallback and secondary missing-server teardown diagnostics remain unchanged.
+The derived evidence manifest records the before-first-observation gap.
+
+The repair passes control mode through a file rather than launcher stdout,
+retains the input-preflight receipt, and preserves typed prepolicy failures
+without inventing a server teardown when no receipt exists. A CPU fixture
+replay, bound to the retained provider log, reproduces exit 86 with the original
+entrypoint and reaches the worker with the candidate. Five shell-entrypoint
+checks cover both control paths and missing/invalid modes. These are software
+boundary checks with source provisioning and servers stubbed, not simulator,
+checkpoint-loading, policy-execution or runtime-improvement evidence. A native
+rerun is required. All 24 terminal evidence files were copied and hash-verified;
+provider-zero, exact staging cleanup and official $0.039 billing are closed.
+
 Vast GA instance `57459128` and baseline instance `57462894` are confirmed
 absent. Their allocators and watchdogs exited; staging cleanup and canonical
 provider-zero passed. Official charges were $0.179 and $0.263. Official Vast
 charges for all task attempts, including SimReady intake and the separate failed
-Newton attempts, total $1.533.
+Newton attempts and the first UK policy attempt, total $1.572.
 Baseline attempt 1 allocated nothing and has a separate official $0 closeout.
 
 Retained evidence is under `output/isaaclab_ga_20261023/` locally and beneath
