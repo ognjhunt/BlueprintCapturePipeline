@@ -123,20 +123,44 @@ def test_atlas_controller_returns_processing_for_expired_admitted_monitor(policy
     from blueprint_pipeline import atlas_scene_automation, paid_resource_allocator
 
     born, _ = _dated_admitted_report(policy)
-    original = guard.stale_report_wait
-    monkeypatch.setattr(guard, "stale_report_wait", lambda: original(now=born + timedelta(minutes=6)))
-    calls = []
+    current = born + timedelta(minutes=6)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current.astimezone(tz)
+
+    monkeypatch.setattr(guard, "datetime", Clock)
+    calls, provider_calls = [], []
 
     def stopped_before_provider(**options):
-        calls.append(options["output_root"])
-        raise PaidResourceAdmissionBlocked(["gcp_monthly_budget_admission_blocked"])
+        binding = (options["output_root"] / "saved-plan.json").read_bytes()
+        calls.append(binding)
+        grant = require_paid_resource_admission({"schema_version": PAID_LANE_ADMISSION_SCHEMA_VERSION,
+            "resource_class": "provider_reconstruction_api", "status": "admitted", "blockers": []},
+            resource_class="provider_reconstruction_api", expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+        require_paid_resource_admission_grant(grant, resource_class="provider_reconstruction_api")
+        provider_calls.append(binding)
+        return {"status": "completed"}
 
     monkeypatch.setattr(atlas_scene_automation, "run_automation", stopped_before_provider)
     output = tmp_path / "retained-job"
+    output.mkdir()
+    saved = output / "saved-plan.json"
+    saved.write_bytes(b'{"binding": "same completed inputs and reservation"}')
+    binding = saved.read_bytes()
     result = paid_resource_allocator.run_sponsored_website_atlas_automation(output_root=output)
     assert result["status"] == "processing" and result["stage"] == "paid_admission_wait"
     assert result["waiting_for"] == "gcp_budget_monitor"
-    assert calls == [output] and not output.exists()
+    assert calls == [binding] and provider_calls == []
+
+    refreshed = Client(policy)
+    refreshed.messages = [message(policy, published=current)]
+    guard.run_guard(policy, client=refreshed, now=current)
+    resumed = paid_resource_allocator.run_sponsored_website_atlas_automation(output_root=output)
+    assert resumed["status"] == "completed"
+    assert calls == [binding, binding] and provider_calls == [binding]
+    assert saved.read_bytes() == binding
 
 
 @pytest.mark.parametrize("blockers", [

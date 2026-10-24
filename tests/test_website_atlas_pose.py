@@ -21,6 +21,7 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import paid_resource_admission as admission_gate
 from blueprint_pipeline import safe_outbound_http
 from blueprint_pipeline import website_atlas_pose as atlas
 from blueprint_pipeline import website_scene_geometry as geometry
@@ -928,6 +929,31 @@ def test_changed_source_pixels_are_refused_before_any_reservation(atlas_case):
     with pytest.raises(ValueError, match="website_atlas_pose_input_changed"):
         atlas_case.run(FakeAtlas(atlas_case.events))
     assert atlas_case.events == []
+
+
+def test_budget_race_retains_pose_admission_before_any_upload_and_reuses_it(atlas_case, monkeypatch):
+    fake = FakeAtlas(atlas_case.events)
+    stale = False
+
+    def reserve(**kwargs):
+        nonlocal stale
+        first = not atlas_case.webapp.reserved
+        result = atlas_case.webapp(**kwargs)
+        if first:
+            stale = True
+        return result
+
+    monkeypatch.setattr(control, "website_webapp_request", reserve)
+    monkeypatch.setattr(admission_gate, "_monthly_budget_blockers",
+                        lambda _: ["gcp_monthly_budget_admission_blocked"] if stale else [])
+    with pytest.raises(PaidResourceAdmissionBlocked, match="gcp_monthly_budget"):
+        atlas_case.run(fake)
+    retained = json.loads((atlas_case.root / "atlas_pose/controller_admission.json").read_text())
+    assert retained == {**next(iter(atlas_case.webapp.reserved.values())), "source_commit": "1" * 40}
+    assert fake.calls == [] and len(atlas_case.webapp.reserved) == 1
+    stale = False
+    assert atlas_case.run(fake, max_polls=3)["status"] == "completed"
+    assert len(atlas_case.webapp.reserved) == len(fake.submissions) == 1
 
 
 def test_interrupted_uploads_resume_and_every_created_asset_stays_on_record(atlas_case):

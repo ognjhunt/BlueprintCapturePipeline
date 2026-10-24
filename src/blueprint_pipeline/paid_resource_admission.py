@@ -65,6 +65,19 @@ def _monthly_budget_blockers(resource_class: str) -> list[str]:
         return ["gcp_monthly_budget_report_unavailable"]
 
 
+def require_paid_resource_budget(*, resource_class: str) -> None:
+    """Refuse a known budget blocker before reserving external sponsorship.
+
+    This issues no grant. Dispatch still checks the complete admission and
+    current budget again after the remote transaction.
+    """
+    blockers = _monthly_budget_blockers(resource_class)
+    if resource_class not in PAID_RESOURCE_CLASSES:
+        blockers.append("paid_resource_class_invalid")
+    if blockers:
+        raise PaidResourceAdmissionBlocked(sorted(set(blockers)))
+
+
 def require_paid_resource_admission(
     admission: Mapping[str, Any],
     *,

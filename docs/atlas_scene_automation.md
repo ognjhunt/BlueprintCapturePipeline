@@ -195,6 +195,11 @@ work requires remaining allowance. If only an otherwise admitted GCP cost report
 has aged out while its monitor is paused or refreshing, the existing Atlas
 controller returns `processing` at `paid_admission_wait`. A later controller tick
 adopts completed stages and must pass the original fresh-report admission again.
+The reservation broker checks known local budget blockers before asking WebApp
+to reserve. Both Atlas adapters durably save the original authenticated admission
+before the final local budget check: if the report expires during the RPC, the
+next tick reuses the exact saved reservation. A bare `already_reserved` response
+without the matching original receipt never authorizes another purchase.
 The waiting state grants no spending authority and does not rewrite the report.
 Exhausted budgets, changed policy, month rollover, missing evidence and additional
 rights or funding blockers retain their refusal.
