@@ -22,6 +22,7 @@ from .native_task_arena_execution_contract import (
     native_task_arena_execution_transport_completed,
 )
 from .paid_lane_guard import (
+    REQUIRE_SPEND_ADMISSION_LOCK_ENV,
     SPEND_ADMISSION_LOCK_PATH_ENV,
     PreSpendPreflightBlocked,
     image_contract_from_ref,
@@ -35,6 +36,8 @@ from .task_evaluation_artifact_manifest import (
     seal_unallocated_provider_teardown,
 )
 from .vast_independent_watchdog_control import (
+    _caller_exit_survival_contract,
+    _caller_exit_survival_proven,
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
 )
@@ -249,12 +252,51 @@ def _require_native_pre_spend_preflight(
         try:
             return require_pre_spend_preflight(**preflight_args)
         except PreSpendPreflightBlocked as error:
-            if (provider_bundle_kind != "native_task_arena"
-                    or error.preflight.get("blockers") != ["spend_admission:spend_admission_lock_stale"]
+            if (error.preflight.get("blockers") != ["spend_admission:spend_admission_lock_stale"]
                     or stale_attempt == 16):
                 raise
             time.sleep(15)
     raise AssertionError("native_pre_spend_retry_exhausted")
+
+
+def _native_pre_spend_args(
+    *,
+    provider_bundle_kind: str,
+    container_image: str,
+    max_hourly_rate_usd: float,
+    hard_cap_usd: float,
+    remaining_live_minutes: int,
+    record_dir: Path,
+) -> dict[str, Any]:
+    credential_present = _vast_credential_file_present()
+    return dict(
+        lane=provider_bundle_kind,
+        provider="vast",
+        credential_present=credential_present,
+        capacity_evidence={
+            "available": credential_present,
+            "detail": (
+                "credential_bound; provider adapter rechecks global inventory and "
+                "offer capacity before allocation"
+            ),
+        },
+        image_contract=image_contract_from_ref(container_image),
+        runtime_contract={
+            "startup_marker": "vast_instance_started_or_blocked",
+            "progress_marker": "vast_provider_bundle_progress",
+            "startup_timeout_seconds": remaining_live_minutes * 60,
+            "no_progress_timeout_seconds": 1800,
+        },
+        spend_gate_open=_bounded_spend_gate_open(
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            remaining_live_minutes=remaining_live_minutes,
+        ),
+        record_dir=record_dir,
+        spend_admission_lock=(
+            None if str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip() else {}
+        ),
+    )
 
 
 @contextmanager
@@ -553,7 +595,93 @@ def run_arena_native_control_vast(
         or _file_sha256(bundle_path) != bundle.get("bundle_sha256")
     ):
         raise ValueError("adp_arena_prepared_bundle_binding_invalid")
+    watchdog_preflight: dict[str, Any] = {}
+    if require_independent_watchdog:
+        survival = _caller_exit_survival_contract()
+        watchdog_preflight = {
+            "independent_watchdog_preflight": {
+                "caller_exit_survival_contract": survival,
+                "caller_exit_survival_supported": _caller_exit_survival_proven(survival),
+                "watchdog_armed": False,
+            }
+        }
+        if not _caller_exit_survival_proven(survival):
+            result = {
+                "schema_version": result_schema_version,
+                "generated_at": generated,
+                "status": "blocked",
+                "provider_mutations_performed": 0,
+                "estimated_cost_usd": 0.0,
+                "all_staged_objects_absent": True,
+                "retry_cap": 0,
+                "blockers": [f"{blocker_prefix}_independent_watchdog_caller_exit_survival_unproven"],
+                **watchdog_preflight,
+                **delivery_record,
+            }
+            write_json(job / "adp_arena_vast_result.json", result)
+            return result
     if not execute:
+        # Offline bundle inspection needs no billing credentials. A configured
+        # live launch must also exercise its actual user's spending gate here;
+        # execute rechecks it before any provider request.
+        live_admission = bool(str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()) or (
+            str(os.getenv(REQUIRE_SPEND_ADMISSION_LOCK_ENV) or "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        ) or (
+            str(os.getenv("BLUEPRINT_LAUNCH_PROOF_MODE") or "").strip().lower()
+            == "production"
+        )
+        preflight_record: dict[str, Any] = {"live_spend_preflight_checked": False}
+        if live_admission:
+            remaining_live_minutes = _remaining_session_live_minutes(
+                job=job,
+                hard_cap_usd=hard_cap_usd,
+                hard_ttl_seconds=hard_ttl_seconds,
+                max_hourly_rate_usd=max_hourly_rate_usd,
+            )
+            if hard_deadline_epoch is not None:
+                if type(hard_deadline_epoch) not in (int, float) or not math.isfinite(hard_deadline_epoch):
+                    raise ValueError("adp_arena_hard_deadline_invalid")
+                remaining_live_minutes = min(
+                    remaining_live_minutes,
+                    math.floor((hard_deadline_epoch - time.time()) / 60),
+                )
+            try:
+                preflight = _require_native_pre_spend_preflight(
+                    provider_bundle_kind=provider_bundle_kind,
+                    preflight_args=_native_pre_spend_args(
+                        provider_bundle_kind=provider_bundle_kind,
+                        container_image=container_image,
+                        max_hourly_rate_usd=max_hourly_rate_usd,
+                        hard_cap_usd=hard_cap_usd,
+                        remaining_live_minutes=remaining_live_minutes,
+                        record_dir=job / "dry_run_pre_spend",
+                    ),
+                )
+            except PreSpendPreflightBlocked as exc:
+                result = {
+                    "schema_version": result_schema_version,
+                    "generated_at": generated,
+                    "status": "blocked",
+                    "bundle": bundle,
+                    "provider_mutations_performed": 0,
+                    "estimated_cost_usd": 0.0,
+                    "retry_cap": 0,
+                    "live_spend_preflight_checked": True,
+                    "pre_spend_preflight": exc.preflight,
+                    "blockers": sorted({
+                        f"{blocker_prefix}_pre_spend_preflight_not_passed",
+                        *exc.preflight.get("blockers", []),
+                    }),
+                    **watchdog_preflight,
+                    **delivery_record,
+                }
+                write_json(job / "adp_arena_vast_result.json", result)
+                return result
+            preflight_record = {
+                "live_spend_preflight_checked": True,
+                "pre_spend_preflight": preflight,
+            }
         result = {
             "schema_version": result_schema_version,
             "generated_at": generated,
@@ -562,6 +690,8 @@ def run_arena_native_control_vast(
             "provider_mutations_performed": 0,
             "retry_cap": 0,
             "blockers": [],
+            **preflight_record,
+            **watchdog_preflight,
             **delivery_record,
         }
         write_json(job / "adp_arena_vast_result.json", result)
@@ -607,39 +737,14 @@ def run_arena_native_control_vast(
         return result
     provider_run = attempt_root / "vast_provider_run"
     ensure_dir(provider_run)
-    vast_credential_present = _vast_credential_file_present()
     try:
-        preflight_args = dict(
-            lane=provider_bundle_kind,
-            provider="vast",
-            credential_present=vast_credential_present,
-            capacity_evidence={
-                "available": vast_credential_present,
-                "detail": (
-                    "credential_bound; provider adapter rechecks global inventory and "
-                    "offer capacity before allocation"
-                ),
-            },
-            image_contract=image_contract_from_ref(container_image),
-            runtime_contract={
-                "startup_marker": "vast_instance_started_or_blocked",
-                "progress_marker": "vast_provider_bundle_progress",
-                "startup_timeout_seconds": remaining_live_minutes * 60,
-                "no_progress_timeout_seconds": 1800,
-            },
-            spend_gate_open=(
-                _bounded_spend_gate_open(
-                    max_hourly_rate_usd=max_hourly_rate_usd,
-                    hard_cap_usd=hard_cap_usd,
-                    remaining_live_minutes=remaining_live_minutes,
-                )
-            ),
+        preflight_args = _native_pre_spend_args(
+            provider_bundle_kind=provider_bundle_kind,
+            container_image=container_image,
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            remaining_live_minutes=remaining_live_minutes,
             record_dir=provider_run,
-            spend_admission_lock=(
-                None
-                if str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
-                else {}
-            ),
         )
         # Bundle preparation can outlast one lock. The independent guard may
         # publish a fresh one while this native launch remains unallocated.

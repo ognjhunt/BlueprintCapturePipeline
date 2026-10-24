@@ -64,6 +64,12 @@ INSTANCE = 49_247_792
 CHUNK = 1024**2
 
 
+@pytest.fixture(autouse=True)
+def _isolate_supervisor_context(monkeypatch) -> None:
+    # Provider/watchdog doubles do not run inside the CI runner's service.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+
 def _aggregate(**extra) -> dict:
     value = {"schema_version": "native_task_arena_policy_canary_session_result.v1",
              "status": "runtime_completed_unqualified_pending_closeout", "run_kind": "internal_policy_canary",
