@@ -467,6 +467,18 @@ def test_a_cleanup_reset_without_its_lists_still_deletes_and_delivers(monkeypatc
     assert job["delivered_revision"] == job["revision"] and world.pushed[-1]["revision"] == job["revision"]
 
 
+def test_a_task_confirmed_mid_run_is_picked_up_by_the_next_tick_not_failed(monkeypatch, site):
+    """2026-10-24: the owner confirmed the task while the fresh capture's preview ran."""
+    _enqueue(site)
+    changed = ValueError("website_control_atlas-reservation_http_409:website_scene_sponsorship_binding_invalid")
+    world = World(monkeypatch, site, [changed, _completed])
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["transient_failures"] == 1 and job["last_transient_reason"] == "website_scene_sponsorship_binding_invalid"
+    world.clock = job["next_attempt_at_epoch"]
+    assert world.advance() == "ready" and len(world.runs) == 2
+
+
 def test_a_failed_job_resumes_once_an_operator_retries_it_after_a_fix(monkeypatch, site):
     """2026-10-23: a fixed planner check could not reach a job its old check had failed."""
     _enqueue(site)

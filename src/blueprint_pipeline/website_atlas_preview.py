@@ -154,12 +154,18 @@ def _reason(error: BaseException) -> str:
                                                                          type(error).__name__.lower())[:60]
 
 
+#: The owner confirmed or edited the task while a step ran: what it reserved
+#: against the old task context is refused, and the next tick reloads the current one.
+_TASK_CONTEXT_CHANGED = frozenset({"website_scene_sponsorship_binding_invalid"})
+
+
 def _transient(error: BaseException) -> bool:
     status = getattr(error, "status", None)
     if isinstance(status, int):
         return status == 429 or status >= 500
     if isinstance(error, ValueError):
-        return re.match(r"website_control_[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None
+        return (_reason(error) in _TASK_CONTEXT_CHANGED
+                or re.match(r"website_control_[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None)
     return True  # Typed refusals are ValueErrors; transport, storage and lock contention retry.
 
 
