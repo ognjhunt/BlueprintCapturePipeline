@@ -339,7 +339,8 @@ def test_discs_of_crossing_surfaces_merge_into_a_round_gaussian():
 def test_batched_voxel_merges_equal_a_direct_sum(monkeypatch, merge_rows):
     rng = np.random.default_rng(3)
     samples = [{"points": rng.uniform(-1, 1, (500, 3)), "colors": rng.uniform(0, 1, (500, 3)),
-                "normals": rng.normal(size=(500, 3)), "weights": rng.uniform(0.1, 1, 500)} for _ in range(6)]
+                "normals": rng.normal(size=(500, 3)), "weights": rng.uniform(0.1, 1, 500),
+                "slant": rng.uniform(0.001, 0.01, 500)} for _ in range(6)]
     monkeypatch.setattr(depth_splat.VoxelSums, "MIN_MERGE_ROWS", merge_rows)
     sums = depth_splat.VoxelSums(0.2)
     for sample in samples:
@@ -348,10 +349,46 @@ def test_batched_voxel_merges_equal_a_direct_sum(monkeypatch, merge_rows):
     keys, inverse = np.unique(depth_splat._voxel_keys(every["points"], 0.2), return_inverse=True)
     weights = every["weights"][:, None]
     values = np.concatenate([weights, every["points"] * weights, every["colors"] * weights,
-                             every["normals"] * weights, np.ones_like(weights)], axis=1)
+                             every["normals"] * weights, np.ones_like(weights), every["slant"][:, None] * weights], axis=1)
     expected = np.stack([np.bincount(inverse.reshape(-1), weights=values[:, column], minlength=len(keys))
                          for column in range(values.shape[1])], axis=1)
     assert np.array_equal(sums.keys, keys) and np.allclose(sums.sums, expected)
+
+
+def tilted_plane_depth(cam, tilt_degrees, distance=2.0):
+    k = cam["intrinsics"]
+    u = (np.arange(k["width"]) + 0.5 - k["cx"]) / k["fx"]
+    v = (np.arange(k["height"]) + 0.5 - k["cy"]) / k["fy"]
+    rays = np.stack(np.broadcast_arrays(u[None, :], -v[:, None], -1.0), axis=-1)
+    normal = np.array([math.sin(math.radians(tilt_degrees)), 0.0, math.cos(math.radians(tilt_degrees))])
+    return (-distance * normal[2] / (rays @ normal)).astype(np.float32)
+
+
+def test_oblique_view_discs_bridge_the_spacing_of_their_pixel_rows():
+    cam = camera(width=48, height=64, focal=120.0)
+    front, front_report = depth_splat.fuse_posed_frames([frame(cam, plane_depth(cam))])
+    assert np.allclose(np.exp(front.scales[:, 0]), depth_splat.DISC_SIGMA_PER_VOXEL * front_report["voxel_size"],
+                       rtol=1e-5), "a frontal view keeps one-voxel discs"
+    oblique_frame = frame(cam, tilted_plane_depth(cam, 70.0))
+    oblique, report = depth_splat.fuse_posed_frames([oblique_frame])
+    sigma, base = np.exp(oblique.scales[:, 0]), depth_splat.DISC_SIGMA_PER_VOXEL * report["voxel_size"]
+    rows = depth_splat.surface_samples(oblique_frame)["slant"]
+    assert np.median(rows) > report["voxel_size"], "at 70 degrees the pixel rows land wider than a voxel"
+    assert np.all(sigma >= base * (1 - 1e-6)) and np.median(sigma) > 1.3 * base
+    assert np.max(sigma) <= depth_splat.DISC_SIGMA_PER_VOXEL * np.max(rows) * (1 + 1e-6)
+    assert np.all(oblique.scales[:, 2] < oblique.scales[:, 0])
+
+
+def test_merged_mesh_input_keeps_the_row_spacing_its_discs_bridged():
+    grid = np.stack(np.meshgrid(np.arange(60), np.arange(60), indexing="ij"), -1).reshape(-1, 2) * 0.01
+    count = len(grid)
+    splat = depth_splat.depth_fused_splat({
+        "xyz": np.column_stack([grid, np.zeros(count)]), "rgb": np.full((count, 3), 0.6),
+        "normal": np.tile([0.0, 0.0, 1.0], (count, 1)), "normal_agreement": np.ones(count),
+        "confidence": np.ones(count), "slant": np.full(count, 0.03)}, 0.01)
+    merged, size = depth_splat.splats2mesh_input(splat, 0.01, limit=1000)
+    assert size < 0.03
+    assert np.allclose(np.exp(merged.scales[:, 0]), depth_splat.DISC_SIGMA_PER_VOXEL * 0.03, rtol=1e-4)
 
 
 def write_attempt(root, state, result=False):
@@ -387,3 +424,35 @@ def test_mesh_attempt_moves_to_the_merged_input_only_after_confirmed_failures(
     assert mesh_root == (tmp_path / "mesh-merged-v1" if switches else tmp_path / "mesh")
     original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
     assert (spec["uploads"] != original["uploads"]) is switches
+
+
+def test_terraced_atlas_depth_smooths_back_onto_its_plane():
+    cam = camera(width=120, height=160, focal=200.0)
+    true = tilted_plane_depth(cam, 55.0).astype(np.float64)
+    terraced = (np.round(true / 0.009) * 0.009).astype(np.float32)  # Atlas-like 9 mm plateaus
+    smoothed = depth_splat.smoothed_depth(terraced).astype(np.float64)
+    interior = (slice(12, -12), slice(12, -12))
+    raw_error = np.median(np.abs(terraced[interior] - true[interior]))
+    assert np.median(np.abs(smoothed[interior] - true[interior])) < 0.25 * raw_error
+    assert np.mean(np.abs(smoothed[interior] - true[interior]) < 0.001) > 0.8 > np.mean(
+        np.abs(terraced[interior] - true[interior]) < 0.001)
+
+
+def test_depth_smoothing_never_blends_across_a_real_edge():
+    near = np.round(np.linspace(0.9, 1.1, 96)[None, :] / 0.009) * 0.009 * np.ones((64, 1))
+    depth = np.where(np.arange(96)[None, :] < 48, near, 2.0 * near).astype(np.float32)
+    smoothed = depth_splat.smoothed_depth(depth)
+    between = (smoothed > 1.1 * 1.03) & (smoothed < 1.8 * 0.97)
+    assert not between.any(), "no intermediate surface appears at the edge"
+
+
+def test_planes_stay_exact_beside_missing_depth():
+    cam = camera(width=96, height=96, focal=150.0)
+    true = tilted_plane_depth(cam, 40.0)
+    holed = true.copy()
+    holed[30:50, 40:60] = np.nan
+    holed[:, :3] = 0.0
+    smoothed = depth_splat.smoothed_depth(holed)
+    assert np.isnan(smoothed[30:50, 40:60]).all() and (smoothed[:, :3] == 0).all()
+    valid = np.isfinite(holed) & (holed > 0)
+    assert np.allclose(smoothed[valid], true[valid], rtol=1e-5)
