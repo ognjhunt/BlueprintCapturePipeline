@@ -681,6 +681,9 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
             survey, task_context, extra, model=policy['model'], maximum=maximum,
             output_tokens=output_tokens, instructions=instructions, schema=schema,
             minimum_output_tokens=output_tokens if truncation_retry is not None else 4000)
+        # The fitted request, not the one that did not fit, is what the invoker admits.
+        ceiling = worst_case_reservation_usd(model=policy["model"], input_token_ceiling=tokens,
+                                             max_output_tokens=output_tokens, cache_policy=None)
     binding = {"survey_digest": survey["digest"], "task_context_digest": task_context["context_digest"],
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
                "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": output_tokens,
