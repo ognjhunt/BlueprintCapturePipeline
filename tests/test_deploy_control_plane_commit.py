@@ -27,6 +27,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,14 @@ _SPEC = importlib.util.spec_from_file_location(
 deploy = importlib.util.module_from_spec(_SPEC)
 assert _SPEC.loader is not None
 _SPEC.loader.exec_module(deploy)
+
+
+@pytest.fixture(autouse=True)
+def _private_temporary_directory(tmp_path_factory, monkeypatch):
+    """The deploy sweeps stale provision scratch in the temporary directory; never the host's."""
+    scratch = tmp_path_factory.mktemp("temporary")
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    return scratch
 
 
 def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(monkeypatch, tmp_path):
@@ -3149,9 +3158,17 @@ def test_deploy_refuses_before_staging_a_toolchain_the_disk_cannot_hold(tmp_path
         return Reservation(kwargs["workload"])
 
     monkeypatch.setattr(deploy, "reserve_control_plane_disk", reserve)
+    # A stopped deploy's scratch from hours ago is reclaimed before admission.
+    old = time.time() - 7 * 3600
+    dead = [Path(tempfile.gettempdir()) / "scene-configuration-components-dead",
+            arguments["scene_configuration_runtime_root"] / "scene-configuration" / f".{'e' * 40}.8ouxnrg0"]
+    for path in dead:
+        path.mkdir(parents=True)
+        os.utime(path, (old, old))
     with pytest.raises(deploy.ControlPlaneDeployError,
                        match="deploy_disk_budget_exceeded:insufficient_headroom"):
         deploy.deploy_control_plane_commit(**arguments)
+    assert not any(path.exists() for path in dead)
     staged = deploy._scene_configuration_staging_estimate(arguments["scene_configuration_runtime_root"], commit)
     assert calls == [("control_plane_release", 4096), ("scene_configuration_staging", staged["bytes"])]
     # The release's own reservation does not outlive the refusal.

@@ -1096,6 +1096,11 @@ files. Its receipt records `release_retirement.status = not_requested`, reason
 `requires_separate_action`, and zero retired bytes. It neither plans nor applies
 retirement, sweeps leftovers, nor rewrites the last actual retirement summary.
 Insufficient disk headroom refuses deployment rather than deleting old trees.
+Before admission it does reclaim scratch a stopped provision left more than six
+hours ago (`blueprint_pipeline.provision_staging_sweep`): component staging in the
+temporary directory and `.<commit>.<random>` publication staging beside the
+runtime trees. That scratch is never a published tree or receipt; the receipt lists
+it under `disk_reservation_estimate.swept_stale_staging`.
 
 Retirement remains a separate explicit operation. The existing plan/apply tools
 and their protection checks are unchanged. A commit's trees (release,

@@ -13,13 +13,11 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import signal
 import stat
 import sys
 import tempfile
-import time
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -35,6 +33,10 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     VGG16_WEIGHTS_SOURCE_URL,
 )
 from blueprint_pipeline.service_account_reader import ServiceAccountReader
+from blueprint_pipeline.provision_staging_sweep import (  # the provision CLI's startup sweep
+    remove_tree as _remove_tree,
+    sweep_stale_staging,
+)
 from blueprint_pipeline.task_evaluation_splat_render_runtime import (
     validate_splat_render_runtime,
 )
@@ -198,54 +200,6 @@ def reconcile_legacy_vgg16_runtime_storage(
         "digest": VGG16_WEIGHTS_SHA256,
         "mode": "0444",
     }
-
-
-def _remove_tree(root: Path) -> None:
-    if not root.exists() or root.is_symlink():
-        return
-    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        if path.is_dir():
-            path.chmod(0o700)
-    root.chmod(0o700)
-    shutil.rmtree(root)
-
-
-#: A provision killed before its cleanup ran (``systemctl stop`` or SIGKILL of
-#: a deploy) left about 11 GB of component staging in the temporary directory;
-#: three such runs filled the control plane's root disk on 2026-10-23 and the
-#: next deploy failed copying Blender. Deploys run one at a time, so staging
-#: this old belongs to a dead run.
-STALE_STAGING_SECONDS = 6 * 3600
-STAGING_PREFIXES = ("scene-configuration-components-", "blueprint-artisan-component-")
-#: A publisher stopped mid-publication leaves ``.<commit>.<random>`` beside the
-#: runtime trees, and the release retention plan refuses any child it does not
-#: know (2026-10-23: three such folders, 7.5 GB, blocked it).
-RUNTIME_COMPONENTS = ("scene-configuration", "splat-render")
-PUBLICATION_STAGING = re.compile(r"\.[0-9a-f]{40}\.[a-z0-9_]{8}")
-
-
-def sweep_stale_staging(temp_root: Path | None = None, *, runtime_root: Path | None = None,
-                        now: float | None = None) -> list[str]:
-    """Remove staging a killed provision left behind; return the names removed.
-
-    Runtime-tree staging is named ``<component>/<name>``.
-    """
-    root = Path(temp_root or tempfile.gettempdir())
-    now = time.time() if now is None else now
-    candidates = [(path, path.name, path.name.startswith(STAGING_PREFIXES))
-                  for path in (sorted(root.iterdir()) if root.is_dir() else ())]
-    for component in RUNTIME_COMPONENTS if runtime_root is not None else ():
-        parent = Path(runtime_root) / component
-        candidates += [(path, f"{component}/{path.name}", PUBLICATION_STAGING.fullmatch(path.name) is not None)
-                       for path in (sorted(parent.iterdir()) if parent.is_dir() else ())]
-    removed = []
-    for path, name, staged in candidates:
-        info = path.lstat()
-        if (staged and stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
-                and now - info.st_mtime >= STALE_STAGING_SECONDS):
-            _remove_tree(path)
-            removed.append(name)
-    return removed
 
 
 def _terminated(signum: int, _frame: Any) -> None:
