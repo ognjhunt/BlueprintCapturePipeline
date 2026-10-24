@@ -30,6 +30,23 @@ def test_cpu_replay_consumes_the_actual_production_sync(replay_script, tmp_path)
     assert not any("/opt/" in word for word in args)
 
 
+def test_replay_retains_all_pinned_image_interpreter_selectors(replay_script, tmp_path):
+    settings = replay_script.image_interpreter_environment(tmp_path / "sdk")
+    assert settings["VIRTUAL_ENV"] == settings["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "sdk")
+    assert settings["UV_PYTHON"] == str(tmp_path / "sdk/bin/python")
+    assert settings["UV_PYTHON_PREFERENCE"] == "only-system"
+
+
+def test_replay_refuses_an_environment_snapshot_from_another_image(replay_script, tmp_path, monkeypatch):
+    value = json.loads(replay_script.IMAGE_ENVIRONMENT_FIXTURE.read_text())
+    value["image"] += "-different"
+    path = tmp_path / "image.json"
+    path.write_text(json.dumps(value))
+    monkeypatch.setattr(replay_script, "IMAGE_ENVIRONMENT_FIXTURE", path)
+    with pytest.raises(ValueError, match="image_environment_mismatch"):
+        replay_script.image_interpreter_environment(tmp_path)
+
+
 def test_production_setup_defeats_inherited_discovery_before_both_commands(replay_script, tmp_path):
     """Execute the real setup scope, recording each installer invocation."""
     uv = tmp_path / "recording-uv"
@@ -37,7 +54,8 @@ def test_production_setup_defeats_inherited_discovery_before_both_commands(repla
     uv.write_text("#!/usr/bin/env python3\nimport json,os,sys\n"
                   "with open(os.environ['UV_TEST_LOG'],'a') as f:\n"
                   " f.write(json.dumps({'args':sys.argv[1:],'environment':{k:os.environ[k] "
-                  "for k in ['UV_PYTHON_PREFERENCE','UV_PYTHON_DOWNLOADS','UV_PYTHON_INSTALL_DIR']}})+'\\n')\n")
+                  "for k in ['UV_PYTHON_PREFERENCE','UV_PYTHON_DOWNLOADS','UV_PYTHON_INSTALL_DIR',"
+                  "'UV_PROJECT_ENVIRONMENT','VIRTUAL_ENV']}})+'\\n')\n")
     uv.chmod(0o700)
     install_root = tmp_path / "managed python"
     setup = replay_script.production_environment_setup(
@@ -47,13 +65,17 @@ def test_production_setup_defeats_inherited_discovery_before_both_commands(repla
     subprocess.run(["bash", "-c", setup], check=True, env={
         **os.environ, "UV_TEST_LOG": str(log), "UV_PYTHON_PREFERENCE": "only-system",
         "UV_PYTHON_DOWNLOADS": "never", "UV_PYTHON": "/opt/isaaclab-venv/bin/python",
+        "VIRTUAL_ENV": str(tmp_path / "sdk"), "UV_PROJECT_ENVIRONMENT": str(tmp_path / "sdk"),
     })
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert [call["args"][0] for call in calls] == ["venv", "sync"]
-    assert all(call["environment"] == {
+    expected = {
         "UV_PYTHON_PREFERENCE": "managed", "UV_PYTHON_DOWNLOADS": "automatic",
         "UV_PYTHON_INSTALL_DIR": str(install_root),
-    } for call in calls)
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "sdk"), "VIRTUAL_ENV": str(tmp_path / "sdk"),
+    }
+    assert calls[0]["environment"] == expected
+    assert calls[1]["environment"] == {**expected, "VIRTUAL_ENV": str(tmp_path / "policy")}
     assert calls[0]["args"][2] == "3.11.9"
     assert calls[1]["args"][calls[1]["args"].index("--python") + 1] == str(tmp_path / "policy/bin/python")
 

@@ -38,9 +38,26 @@ from blueprint_pipeline.adp009d_policy_provisioning import (
     policy_venv_root,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_task_isaaclab_ga import IMAGE as ISAAC_GA_IMAGE
 
 CANDIDATE = "pi05_droid"
 SCHEMA = "openpi_policy_dependency_replay.v1"
+IMAGE_ENVIRONMENT_FIXTURE = (Path(__file__).resolve().parents[1]
+                             / "tests/fixtures/isaac_lab_ga_interpreter_environment.json")
+
+
+def image_interpreter_environment(sdk_root: Path) -> dict[str, str]:
+    """Rebase the exact retained image settings to a disposable CPU SDK venv."""
+    fixture = json.loads(IMAGE_ENVIRONMENT_FIXTURE.read_text())
+    settings = fixture["environment"]
+    sdk = "/opt/isaaclab-venv"
+    if (fixture.get("image") != ISAAC_GA_IMAGE
+            or set(settings) != {"UV_PYTHON", "UV_PYTHON_PREFERENCE", "UV_PROJECT_ENVIRONMENT",
+                                 "VIRTUAL_ENV", "UV_HTTP_RETRIES"}
+            or settings["VIRTUAL_ENV"] != sdk or settings["UV_PROJECT_ENVIRONMENT"] != sdk
+            or settings["UV_PYTHON"] != sdk + "/bin/python"):
+        raise ValueError("policy_dependency_replay_image_environment_mismatch")
+    return {key: value.replace(sdk, str(sdk_root)) for key, value in settings.items()}
 
 
 def production_venv_arguments(*, venv: Path, uv: Path) -> list[str]:
@@ -212,8 +229,24 @@ def replay(workspace: Path, output: Path, *, source_commit: str) -> dict:
         result["retained_failure_reproduced"] = True
         # The earlier replay created the venv under clean discovery defaults.
         # Reproduce the next real refusal before trying the production repair.
-        env.update(UV_PYTHON=str(negative / "bin/python"),
-                   UV_PYTHON_PREFERENCE="only-system", UV_PYTHON_DOWNLOADS="automatic")
+        env.update(image_interpreter_environment(negative), UV_PYTHON_DOWNLOADS="automatic")
+        retained_environment = output / "isaac-ga-interpreter-environment.json"
+        shutil.copy2(IMAGE_ENVIRONMENT_FIXTURE, retained_environment)
+        result["image_environment_fixture"] = {
+            "path": retained_environment.name,
+            "sha256": hashlib.sha256(retained_environment.read_bytes()).hexdigest(),
+            "image": ISAAC_GA_IMAGE,
+            "scope": "pinned_image_uv_settings_and_active_sdk_environment",
+        }
+        sdk_probe = """
+import hashlib,json,sys
+from pathlib import Path
+from importlib.metadata import distributions
+print(json.dumps({'python':sys.version,'base_prefix':sys.base_prefix,
+ 'venv_config_sha256':hashlib.sha256((Path(sys.prefix)/'pyvenv.cfg').read_bytes()).hexdigest(),
+ 'distributions':sorted((d.metadata['Name'],d.version) for d in distributions())},sort_keys=True))
+"""
+        sdk_before = run("image-sdk-before", [str(negative / "bin/python"), "-c", sdk_probe])
         # Match the image's system-Python search rather than a CI runner's
         # optional hosted-toolcache interpreters.
         original_path = env["PATH"]
@@ -227,10 +260,17 @@ def replay(workspace: Path, output: Path, *, source_commit: str) -> dict:
         # Downloads=never is a stricter fixture than the observed image refusal.
         # The generated exports must defeat both restrictions, create the real
         # 3.11.9 venv, then sync without the inherited 3.12 selection replacing it.
-        env.update(VIRTUAL_ENV=str(positive), UV_PYTHON_DOWNLOADS="never")
+        # Leave VIRTUAL_ENV and UV_PROJECT_ENVIRONMENT pointing at the SDK;
+        # the production venv target and sync's --active must select the policy.
+        env.update(UV_PYTHON_DOWNLOADS="never")
         run("full-frozen-install", ["bash", "-c", production_environment_setup(
             source=source, venv=positive, uv=uv, python_install_root=workspace / "python")])
         result["production_venv_setup_replayed"] = True
+        sdk_after = run("image-sdk-after", [str(negative / "bin/python"), "-c", sdk_probe])
+        if sdk_before.stdout.strip() != sdk_after.stdout.strip():
+            raise ValueError("policy_dependency_replay_image_sdk_changed")
+        result["image_sdk_environment_preserved"] = True
+        result["image_sdk_preservation_scope"] = ["interpreter", "pyvenv.cfg", "installed_distributions"]
         result["full_environment_installed"] = True
         run("dependency-consistency", [str(uv), "pip", "check", "--python", str(positive / "bin/python")])
         run("installed-distributions", [str(uv), "pip", "list", "--format", "json",
