@@ -111,6 +111,18 @@ def test_projection_keeps_nearer_surface_in_front_of_farther_surface():
     assert keep.all() and np.all(rgb == np.array([255, 0, 0]))
 
 
+@pytest.mark.parametrize('first_depth,expected', [(2., (255, 0, 0)), (3., (0, 0, 255))])
+def test_projection_depth_ties_keep_first_pixel_and_first_reference(first_depth, expected):
+    first, second = frame('a', colour=(0, 0, 255)), frame('b', colour=(0, 255, 0))
+    first['rgb'][0, 0] = (255, 0, 0)
+    first['depth'][0, 0] = first_depth
+    target = camera(width=1, height=1, x=.01)
+    target['intrinsics'].update(fx=.1, fy=.1)
+    rgb, keep = preservation.project_known_context([first, second], target)
+    assert keep.all()
+    assert np.array_equal(rgb[0, 0], expected)
+
+
 def test_novel_projection_requires_cross_view_depth_and_colour_support_without_changing_source():
     a, b = frame('a'), frame('b')
     a['rgb'][2, 2] = (0, 0, 0)

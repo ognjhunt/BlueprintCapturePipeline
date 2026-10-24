@@ -129,13 +129,15 @@ def project_known_context(frames, camera):
         z, u, v, inside = _project(points, camera)
         source_indices = np.flatnonzero(inside)
         flat = np.floor(v[inside]).astype(int) * width + np.floor(u[inside]).astype(int)
-        order = np.lexsort((z[inside], flat))
-        sorted_flat = flat[order]
-        first = np.r_[True, sorted_flat[1:] != sorted_flat[:-1]] if len(order) else np.array([], bool)
-        chosen = source_indices[order[first]]
-        pixels = sorted_flat[first]
-        nearer = z[chosen] < zbuffer[pixels]
-        chosen, pixels = chosen[nearer], pixels[nearer]
+        local_depth = np.full(height * width, np.inf)
+        np.minimum.at(local_depth, flat, z[inside])
+        nearest = (z[inside] == local_depth[flat]) & (z[inside] < zbuffer[flat])
+        # Linear z-buffer selection, preserving the stable first-source-pixel
+        # tie break of the former full depth/pixel sort.
+        first = np.full(height * width, len(points), dtype=np.intp)
+        np.minimum.at(first, flat[nearest], source_indices[nearest])
+        pixels = np.flatnonzero(first < len(points))
+        chosen = first[pixels]
         rgb.reshape(-1, 3)[pixels] = frame['rgb'][y[chosen], x[chosen]]
         zbuffer[pixels] = z[chosen]
         keep[pixels] = True
