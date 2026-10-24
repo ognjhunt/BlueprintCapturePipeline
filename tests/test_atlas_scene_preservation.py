@@ -111,6 +111,18 @@ def test_projection_keeps_nearer_surface_in_front_of_farther_surface():
     assert keep.all() and np.all(rgb == np.array([255, 0, 0]))
 
 
+@pytest.mark.parametrize('first_depth,expected', [(2., (255, 0, 0)), (3., (0, 0, 255))])
+def test_projection_depth_ties_keep_first_pixel_and_first_reference(first_depth, expected):
+    first, second = frame('a', colour=(0, 0, 255)), frame('b', colour=(0, 255, 0))
+    first['rgb'][0, 0] = (255, 0, 0)
+    first['depth'][0, 0] = first_depth
+    target = camera(width=1, height=1, x=.01)
+    target['intrinsics'].update(fx=.1, fy=.1)
+    rgb, keep = preservation.project_known_context([first, second], target)
+    assert keep.all()
+    assert np.array_equal(rgb[0, 0], expected)
+
+
 def test_novel_projection_requires_cross_view_depth_and_colour_support_without_changing_source():
     a, b = frame('a'), frame('b')
     a['rgb'][2, 2] = (0, 0, 0)
@@ -126,6 +138,30 @@ def test_novel_projection_requires_cross_view_depth_and_colour_support_without_c
     # locked new-camera pixels, even with positive native confidence.
     assert not preservation.supported_projection_frames([a, frame(depth=4.)])[0]['confidence'].any()
     assert not preservation.supported_projection_frames([a])[0]['confidence'].any()
+
+
+def test_supported_pixels_stop_comparing_but_later_views_can_confirm_remaining_pixels(monkeypatch):
+    a, b, c = frame('a'), frame('b'), frame('c')
+    b['rgb'][:, 3:] = (220, 0, 0)
+    c['rgb'][:, :3] = (220, 0, 0)
+    projected_sizes = []
+    project = preservation._project
+
+    def track(points, camera):
+        projected_sizes.append(len(points))
+        return project(points, camera)
+
+    monkeypatch.setattr(preservation, '_project', track)
+    result = preservation.supported_projection_frames([a, b, c])
+    assert projected_sizes[:2] == [16, 8], 'The late reference sees every still-unconfirmed pixel'
+    expected = np.zeros((6, 6), np.float32)
+    expected[1:-1, 1:-1] = 1
+    assert np.array_equal(result[0]['confidence'], expected)
+    left, right = expected.copy(), expected.copy()
+    left[:, 3:] = 0
+    right[:, :3] = 0
+    assert np.array_equal(result[1]['confidence'], left)
+    assert np.array_equal(result[2]['confidence'], right)
 
 
 def test_novel_context_drops_thin_projection_noise_and_neutralizes_fillable_pixels(tmp_path):
