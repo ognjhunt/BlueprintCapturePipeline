@@ -56,6 +56,12 @@ per-upload cap the WebApp grant enforces. It is development-only and unscaled.
   `withdrawn`. A missing grant or terms waits as `needs_input` and is re-checked
   every 30 minutes; transport errors back off and fail after 8 tries; jobs end
   after 7 days. With routing off no job exists and the tick does nothing.
+- **Retry.** `failed` is final for the worker. Once a release fixes the cause,
+  an operator resumes the job as `blueprint`:
+  `python -m blueprint_pipeline.website_atlas_preview retry --job <capture>/pipeline/atlas/preview_job.json`.
+  The next tick starts at the first unfinished stage, reusing every retained
+  receipt (survey, plans); the job records each retry under `retries`. Expired
+  jobs, a missing source video and withdrawn captures are refused.
 - **Secrets.** Only the worker reads `/etc/blueprint/website-atlas-preview.env`:
   `WORLDLABS_ATLAS_API_KEY` (or `_FILE`), `WORLDLABS_ATLAS_API_BASE_URL` and
   `BLUEPRINT_ATLAS_PROVIDER_RETENTION`. The key needs `assets.delete` besides the

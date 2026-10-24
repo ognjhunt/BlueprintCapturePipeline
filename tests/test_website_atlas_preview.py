@@ -467,6 +467,37 @@ def test_a_cleanup_reset_without_its_lists_still_deletes_and_delivers(monkeypatc
     assert job["delivered_revision"] == job["revision"] and world.pushed[-1]["revision"] == job["revision"]
 
 
+def test_a_failed_job_resumes_once_an_operator_retries_it_after_a_fix(monkeypatch, site):
+    """2026-10-23: a fixed planner check could not reach a job its old check had failed."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError("atlas_scene_planner_transients_invalid"), _completed])
+    assert world.advance() == "failed"
+    failed = _job(site)
+    assert world.advance() == "failed" and len(world.runs) == 1  # a failure is final until retried
+    world.clock += 60
+    job = preview.retry_failed_job(site.job, now=world.now)
+    assert (job["state"], job["reason"], job["revision"]) == ("processing", None, failed["revision"] + 1)
+    assert job["retries"] == [{"reason": "atlas_scene_planner_transients_invalid", "at_epoch": world.clock}]
+    assert world.advance() == "ready" and len(world.runs) == 2
+    assert world.pushed[-1]["state"] == "ready" and world.pushed[-1]["revision"] > job["revision"]
+    # Only a recoverable failure can be retried.
+    with pytest.raises(ValueError, match="requires_recoverable_failure"):
+        preview.retry_failed_job(site.job, now=world.now)
+
+
+def test_a_retry_refuses_an_expired_or_withdrawn_job(monkeypatch, site):
+    _enqueue(site)
+    job = _job(site)
+    site.job.write_text(json.dumps({**job, "state": "failed", "reason": "atlas_preview_expired"}))
+    with pytest.raises(ValueError, match="requires_recoverable_failure"):
+        preview.retry_failed_job(site.job)
+    site.job.write_text(json.dumps({**job, "state": "failed", "reason": "atlas_scene_planner_transients_invalid"}))
+    _withdraw(site)
+    with pytest.raises(ValueError, match="website_capture_withdrawn"):
+        preview.retry_failed_job(site.job)
+    assert _job(site)["state"] == "failed"
+
+
 def test_cleanup_waits_for_operations_it_never_collected_and_deletes_their_outputs(monkeypatch, site):
     _enqueue(site)
 

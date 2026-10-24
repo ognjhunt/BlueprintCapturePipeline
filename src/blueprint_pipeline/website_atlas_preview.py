@@ -434,6 +434,36 @@ def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: 
         return job["state"]
 
 
+#: Failures a retry cannot cure: the job outlived its window, or its source is gone.
+_NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video_unavailable"})
+
+
+def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time) -> dict[str, Any]:
+    """Resume one failed job once its cause is fixed in the deployed release.
+
+    An operator action, never automatic. The next tick resumes at the first
+    unfinished stage, so the survey, plans and other receipts already bought are
+    reused, not bought again. A withdrawn capture, or a job that is not failed or
+    cannot recover, is refused.
+    """
+    with (path.parent / LOCK_FILE).open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("atlas_preview_job_busy") from None
+        job = _read(path)
+        if job["state"] != "failed" or job["reason"] in _NOT_RETRYABLE:
+            raise ValueError("atlas_preview_retry_requires_recoverable_failure")
+        if _withdrawn(path.parents[2]):
+            raise ValueError("website_capture_withdrawn")
+        current = int(now())
+        retries = [*job.get("retries", []), {"reason": job["reason"], "at_epoch": current}]
+        job = _transition(job, current, "processing", None, stage="queued", transient_failures=0,
+                          next_attempt_at_epoch=current, retries=retries)
+        write_json(path, job)
+        return job
+
+
 def tick(storage_root: Path, *, now: Callable[[], float] = time.time) -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in sorted(Path(storage_root).glob(f"*/scenes/site-*/captures/walkthrough-*/pipeline/atlas/{JOB_FILE}")):
@@ -451,8 +481,15 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     advance = commands.add_parser("tick", help="advance every preview job one bounded step")
     advance.add_argument("--storage-root", type=Path, required=True)
+    retry = commands.add_parser("retry", help="resume one failed job after its cause is fixed (run as the service user)")
+    retry.add_argument("--job", type=Path, required=True)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
+    if args.command == "retry":
+        job = retry_failed_job(args.job)
+        print(json.dumps({key: job[key] for key in ("capture_id", "state", "revision", "retries")},
+                         sort_keys=True), flush=True)
+        return 0
     print(json.dumps(tick(args.storage_root), sort_keys=True), flush=True)
     return 0
 
