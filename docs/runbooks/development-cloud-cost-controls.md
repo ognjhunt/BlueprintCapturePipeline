@@ -73,3 +73,53 @@ References:
 - https://docs.cloud.google.com/compute/docs/instances/limit-vm-runtime
 - https://docs.cloud.google.com/artifact-registry/docs/repositories/cleanup-policy
 - https://docs.cloud.google.com/billing/docs/how-to/budgets-spend-caps
+
+## Monthly admission and automatic stop
+
+The existing `blueprint-gpu-spend-guard.timer` runs the optional controller in
+`gcp_monthly_budget_guard.py`. Set `BLUEPRINT_GCP_BUDGET_GUARD_CONFIG` to a
+root-managed policy file outside the checkout. The file binds one project ID
+and number, billing account, monthly USD amount, exact budget ID, Pub/Sub topic
+and subscription, and separate state/report paths. It uses the existing ADC
+credential integration; do not create or copy service-account keys.
+
+The controller rechecks the live budget scope and amount, consumes its budget
+notifications, inventories CPU/GPU VMs across the project's zones, and retains
+the highest observed cost for that month. Duplicate, late or lower cost
+notifications cannot reopen an exhausted month. A retained cost-report digest
+can seed an over-budget refusal; a seed below the limit is rejected. A new
+month waits for a real current-month observation. Missing/stale observations,
+inaccessible APIs, corrupt state and failed cutoff readbacks remain refusals.
+
+The selected reconstruction job also sets
+`BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT` to that policy's report. The shared paid
+admission checks it both before issuing a grant and immediately before provider
+mutation, including previously issued grants. Reports must match the policy,
+project, month and amount, and be no more than five minutes old. This project
+allowance does not replace unrelated providers' fleet allowances.
+
+The policy defaults `billing_shutdown_authorized` to false. At or above the
+limit, it refuses spending and reports that activation is required. If the
+owner authorizes whole-project shutoff, setting that field true enables only
+unlinking that exact project from its configured billing account, followed by
+independent billing-status readback. It never re-enables billing. Keep the
+controller on the existing external host so a disabled Google project cannot
+erase its blocked-month state or silently restart it.
+
+Activation has a material consequence: Google's documented shutoff stops all
+services in the project, including Firebase/Storage, and warns that resources
+may be irretrievably deleted. Review that consequence with the owner before
+activating it. Budget notifications and cost reporting are delayed; even this
+automatic shutoff cannot guarantee an invoice of exactly USD 100. Do not
+describe alerts, a local fixture or a configured callback as verified native
+cutoff. Retain the actual admission refusal and Google billing readback.
+
+Required read access is budget viewing on the selected billing account,
+subscriber access on the specific budget subscription, project billing-info
+read access and Compute inventory access. Billing-unlink authority, when
+activated, must be limited to the selected project and must not include
+permission to re-enable billing or raise the budget.
+
+References:
+- https://docs.cloud.google.com/billing/docs/how-to/budgets-programmatic-notifications
+- https://docs.cloud.google.com/billing/docs/how-to/disable-billing-with-notifications

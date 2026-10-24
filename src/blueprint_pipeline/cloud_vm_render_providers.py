@@ -745,10 +745,13 @@ class GCPRenderProvider(GpuRenderProvider):
             require_paid_resource_admission_grant(paid_resource_admission_grant, resource_class="gpu_render")
         except PaidResourceAdmissionBlocked as exc:
             return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
+        from blueprint_pipeline.gcp_monthly_budget_guard import project_admission_blockers
+
         blockers = [
             *_string_list(request.get("configuration_blockers")),
             *_render_prelaunch_guard_blockers(request, provider_name="gcp"),
             *self._deadline_blockers(request),
+            *project_admission_blockers(str(request.get('project') or '')),
         ]
         if blockers:
             return {"status": "blocked", "blockers": list(dict.fromkeys(blockers)), "allocation_created": False}
@@ -783,14 +786,14 @@ class GCPRenderProvider(GpuRenderProvider):
         resources = [{"instance_id": str(row.get("name") or ""), "name": row.get("name"), "status": row.get("status"), "machine_type": str(row.get("machineType") or "").rsplit("/", 1)[-1], "zone": config["zone"], "created_at": row.get("creationTimestamp"), "cost_per_hour": config["configured_hourly_rate_usd"]} for row in rows if isinstance(row, Mapping) and str(row.get("name") or "").startswith(name_prefix) and row.get("status") != "TERMINATED"]
         return {"status": "observed", "provider": self.name, "name_prefix": name_prefix, "live_resource_count": len(resources), "resources": resources, "api_confirmed": True, "http": status, "raw_provider_response_recorded": False}
 
-    def project_inventory(self) -> dict:
+    def project_inventory(self, *, projects: list[str] | None = None) -> dict:
         """All zones and CPU/GPU VMs, including stopped VMs with retained disks.
 
         Unknown ownership permits reporting only, never automatic reaping. A
         missing page or partial provider response is unknown, not fleet zero.
         """
         config, resources = self._config(), []
-        projects = self.inventory_projects()
+        projects = self.inventory_projects() if projects is None else projects
         if not projects:
             return {'api_confirmed': False, 'resources': [], 'live_resource_count': None,
                     'blockers': ['gcp_inventory_scope_unconfigured']}

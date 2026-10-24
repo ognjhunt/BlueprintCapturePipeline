@@ -2155,6 +2155,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # This project-scoped controller writes its own refusal/receipt. Its budget
+    # cannot silently replace the unrelated providers' fleet allowance.
+    try:
+        from blueprint_pipeline.gcp_monthly_budget_guard import run_configured_guard
+
+        project_budget = run_configured_guard()
+        if project_budget is not None:
+            print("GCP monthly budget: " + ("admitted" if project_budget["admission_allowed"] else "blocked"), file=sys.stderr)
+    except Exception as exc:
+        # The project's admission report expires closed if configuration breaks.
+        # Keep the existing orphan/invoice checks running for other providers.
+        print(f"GCP monthly budget controller failed: {type(exc).__name__}", file=sys.stderr)
+
     secrets_dir = Path(
         str(os.getenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR") or SECRETS_DIR)
     ).expanduser()

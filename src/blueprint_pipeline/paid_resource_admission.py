@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Any, Mapping
 
 
@@ -47,6 +48,23 @@ class PaidResourceAdmissionBlocked(RuntimeError):
         super().__init__("paid_resource_admission_blocked:" + ",".join(blockers))
 
 
+def _monthly_budget_blockers(resource_class: str) -> list[str]:
+    explicit = os.getenv("BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT", "").strip()
+    reconstruction = (resource_class == "provider_reconstruction_api"
+                      and os.getenv("BLUEPRINT_GCP_BUDGET_GUARD_CONFIG", "").strip())
+    if not explicit and not reconstruction:
+        return []
+    try:
+        from blueprint_pipeline.gcp_monthly_budget_guard import admission_blockers, project_admission_blockers
+
+        if explicit:
+            return admission_blockers()
+        project = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+        return project_admission_blockers(project) if project else ["gcp_monthly_budget_project_binding_missing"]
+    except Exception:
+        return ["gcp_monthly_budget_report_unavailable"]
+
+
 def require_paid_resource_admission(
     admission: Mapping[str, Any],
     *,
@@ -55,7 +73,7 @@ def require_paid_resource_admission(
 ) -> PaidResourceAdmissionGrant:
     """Return an in-process grant or raise before a provider mutation."""
 
-    blockers: list[str] = []
+    blockers: list[str] = _monthly_budget_blockers(resource_class)
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
     admission_resource_class = admission.get("resource_class")
@@ -94,7 +112,7 @@ def require_paid_resource_admission_grant(
 ) -> None:
     """Validate the opaque in-process capability issued by the chokepoint."""
 
-    blockers: list[str] = []
+    blockers: list[str] = _monthly_budget_blockers(resource_class)
     if not isinstance(grant, PaidResourceAdmissionGrant):
         blockers.append("paid_resource_admission_grant_missing")
     else:
