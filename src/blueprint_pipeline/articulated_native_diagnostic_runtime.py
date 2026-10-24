@@ -20,6 +20,7 @@ _RUNTIME_SYMBOLS = {
     "usd_context": ("omni.usd", None),
     "single_articulation": ("isaacsim.core.prims", "SingleArticulation"),
     "articulation_action": ("isaacsim.core.utils.types", "ArticulationAction"),
+    "simulation_context": ("isaacsim.core.api", "SimulationContext"),
     "camera": ("isaacsim.sensors.camera", "Camera"),
     "image": ("PIL.Image", None),
     "gf": ("pxr.Gf", None),
@@ -78,6 +79,34 @@ def _apply_joint_targets(
             joint_indices=joint_indices,
         )
     )
+
+
+def _joint_state(articulation: Any, *, count: int, phase: str) -> tuple[Any, Any]:
+    import numpy as np
+
+    positions = np.asarray(articulation.get_joint_positions(), dtype=float)
+    velocities = np.asarray(articulation.get_joint_velocities(), dtype=float)
+    if positions.shape != (count,) or velocities.shape != (count,):
+        raise RuntimeError(f"articulated_native_joint_state_shape_invalid:{phase}")
+    if not np.isfinite(positions).all() or not np.isfinite(velocities).all():
+        raise RuntimeError(f"articulated_native_joint_state_nonfinite:{phase}")
+    return positions, velocities
+
+
+def _ramp_joint_targets(
+    articulation: Any, action_type: Any, targets: Any, joint_indices: Any,
+    *, simulation: Any, steps: int, dof_count: int,
+) -> None:
+    """Ease into each target on fixed physics steps, including the closed reset."""
+    positions, _ = _joint_state(articulation, count=dof_count, phase="before_command")
+    start = positions[joint_indices].astype(targets.dtype, copy=True)
+    for index in range(1, steps + 1):
+        fraction = index / steps
+        blend = fraction * fraction * (3.0 - 2.0 * fraction)
+        target = targets if index == steps else start + blend * (targets - start)
+        _apply_joint_targets(articulation, action_type, target, joint_indices)
+        simulation.step(render=False)
+        _joint_state(articulation, count=dof_count, phase="command_ramp")
 
 
 def _camera_quaternion_wxyz(forward: Any, up: Any) -> Any:
@@ -160,7 +189,7 @@ def _usd_world_pose(stage: Any, prim_path: str, usd_geom: Any) -> dict[str, Any]
     translation = matrix.ExtractTranslation()
     quaternion = matrix.ExtractRotationQuat()
     imaginary = quaternion.GetImaginary()
-    return {
+    result = {
         "position": [float(translation[index]) for index in range(3)],
         "rotation_xyzw": [
             float(imaginary[0]),
@@ -169,6 +198,9 @@ def _usd_world_pose(stage: Any, prim_path: str, usd_geom: Any) -> dict[str, Any]
             float(quaternion.GetReal()),
         ],
     }
+    if not all(math.isfinite(value) for values in result.values() for value in values):
+        raise RuntimeError(f"articulated_native_body_pose_nonfinite:{prim_path}")
+    return result
 
 
 def _author_fixed_base_anchor(
@@ -239,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         omni_usd = symbols["usd_context"]
         SingleArticulation = symbols["single_articulation"]
         ArticulationAction = symbols["articulation_action"]
+        SimulationContext = symbols["simulation_context"]
         Camera = symbols["camera"]
         Image = symbols["image"]
         Gf = symbols["gf"]
@@ -336,13 +369,22 @@ def main(argv: list[str] | None = None) -> int:
         scene.CreateGravityDirectionAttr((0.0, 0.0, -1.0))
         scene.CreateGravityMagnitudeAttr(9.81)
         timeline = omni_timeline.get_timeline_interface()
-        timeline.play()
+        physics_dt = 1.0 / 120.0
+        simulation = SimulationContext(
+            physics_dt=physics_dt, rendering_dt=physics_dt,
+            stage_units_in_meters=1.0, physics_prim_path="/PhysicsScene",
+        )
+        simulation.initialize_physics()
+        simulation.play()
+        observed_dt = float(simulation.get_physics_dt())
+        if not math.isfinite(observed_dt) or not math.isclose(observed_dt, physics_dt):
+            raise RuntimeError("articulated_native_physics_timestep_mismatch")
         for _ in range(60):
-            app.update()
+            simulation.step(render=True)
         for camera in camera_objects.values():
             camera.initialize()
         for _ in range(30):
-            app.update()
+            simulation.step(render=True)
 
         articulation = SingleArticulation(
             prim_path=articulation_spec["root_prim_path"],
@@ -394,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
             commanded_indices = np.asarray(
                 [handles[name] for name in commanded_names], dtype=np.int64
             )
-            _apply_joint_targets(
+            _ramp_joint_targets(
                 articulation,
                 ArticulationAction,
                 np.asarray(
@@ -402,11 +444,13 @@ def main(argv: list[str] | None = None) -> int:
                     dtype=np.float32,
                 ),
                 commanded_indices,
+                simulation=simulation, steps=settle_steps, dof_count=dof_count,
             )
             for _ in range(settle_steps):
-                app.update()
-            joint_positions = np.asarray(articulation.get_joint_positions(), dtype=float)
-            joint_velocities = np.asarray(articulation.get_joint_velocities(), dtype=float)
+                simulation.step(render=False)
+            joint_positions, joint_velocities = _joint_state(
+                articulation, count=dof_count, phase="after_settle"
+            )
             readback = math.degrees(float(joint_positions[driven_handle]))
             velocity = float(joint_velocities[driven_handle])
             locked_readback = {
@@ -423,7 +467,8 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
             for camera_id, camera in sorted(camera_objects.items()):
-                app.update()
+                simulation.step(render=True)
+                _joint_state(articulation, count=dof_count, phase="render")
                 rgba = np.asarray(camera.get_rgba())
                 if rgba.ndim != 3 or rgba.shape[:2] != (height, width):
                     raise RuntimeError(
@@ -466,16 +511,32 @@ def main(argv: list[str] | None = None) -> int:
         reset_indices = np.asarray(
             [handles[name] for name in [driven_name, *locked_names]], dtype=np.int64
         )
-        _apply_joint_targets(
+        # Preserve successful opening evidence even when the reset fails.
+        result["articulation_readback"] = {
+            "articulation_root_prim_path": articulation_spec["root_prim_path"],
+            "dof_count": dof_count, "body_count": body_count, "dof_names": names,
+            "rows": rows, "reset_readback_degrees": None,
+        }
+        result["native_material_render_readback"] = {
+            "status": "partial_pending_reset", "frame_count": len(frame_rows),
+            "frames": frame_rows, "policy_input_frames_produced": False,
+        }
+        _phase("reset_started")
+        _ramp_joint_targets(
             articulation,
             ArticulationAction,
             np.zeros(len(reset_indices), dtype=np.float32),
             reset_indices,
+            simulation=simulation, steps=settle_steps, dof_count=dof_count,
         )
         for _ in range(settle_steps):
-            app.update()
-        reset_positions = np.asarray(articulation.get_joint_positions(), dtype=float)
+            simulation.step(render=False)
+        simulation.step(render=True)
+        reset_positions, reset_velocities = _joint_state(
+            articulation, count=dof_count, phase="reset"
+        )
         reset_readback = math.degrees(float(reset_positions[driven_handle]))
+        reset_velocity = float(reset_velocities[driven_handle])
         final_fixed_pose = _usd_world_pose(
             stage, articulation_spec["fixed_base_body_prim_path"], UsdGeom
         )
@@ -504,6 +565,8 @@ def main(argv: list[str] | None = None) -> int:
             errors.append("articulated_native_joint_not_settled")
         if abs(reset_readback) > float(runtime["joint_readback_tolerance_degrees"]):
             errors.append("articulated_native_reset_replay_failed")
+        if abs(reset_velocity) > float(runtime["maximum_abs_joint_velocity_rad_s_after_settle"]):
+            errors.append("articulated_native_reset_not_settled")
         if translation_drift > float(runtime["fixed_base_translation_tolerance_m"]):
             errors.append("articulated_native_fixed_base_translated")
         if rotation_drift > float(runtime["fixed_base_rotation_tolerance_degrees"]):
@@ -516,6 +579,9 @@ def main(argv: list[str] | None = None) -> int:
                     "isaac_sim_version": str(carb.settings.get_settings().get("/app/version") or "unknown"),
                     "articulation_api": "isaacsim.core.prims.SingleArticulation",
                     "joint_command_api": "SingleArticulation.apply_action(ArticulationAction)",
+                    "physics_timestep_seconds": observed_dt,
+                    "command_ramp_steps": settle_steps,
+                    "stepping_api": "SimulationContext.step",
                     "legacy_dynamic_control_api_used": False,
                     "runtime_capability_probe": {
                         "status": "passed",
@@ -529,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
                     "dof_names": names,
                     "rows": rows,
                     "reset_readback_degrees": reset_readback,
+                    "reset_velocity_rad_s_after_settle": reset_velocity,
                 },
                 "fixed_base_readback": {
                     "world_anchor_joint_prim_path": fixed_anchor_path,
@@ -571,7 +638,7 @@ def main(argv: list[str] | None = None) -> int:
         _phase("blocked", error_type=type(exc).__name__)
     finally:
         output.write_text(
-            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
         )
         if app is not None:
             app.close()
