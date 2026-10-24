@@ -165,6 +165,44 @@ def test_realistic_retained_full_frame_review_stays_within_one_dollar(tmp_path):
     assert planner._export_image_token_ceiling({'frames': []}, previews[:1]) == 3 * 32 * 18 + 256
 
 
+def test_large_export_review_fits_its_existing_cap_without_losing_views_or_gaps(tmp_path):
+    from blueprint_pipeline.openai_prompt_cache import worst_case_reservation_usd
+    source, preview = tmp_path / 'full-source.png', tmp_path / 'derived.png'
+    Image.new('RGB', (1080, 1920), 'white').save(source)
+    Image.new('RGB', (1280, 720), 'white').save(preview)
+    survey = {'display_rotation_degrees': 0, 'frames': [{
+        'frame_id': str(i), 'source_image_path': str(source), 'source_image_digest': _sha256_file(source)}
+        for i in range(7)]}
+    cameras = ['gap-target-source-camera-' + str(i).zfill(5) + '-bounded-environment-surface' for i in range(65)]
+    rows = [{'camera_id': key, 'source_frame_id': '0', 'pose_rub': [0., 1., 2., 0., 0., 0., 1.],
+             'purpose': 'gap_target', 'source_gap_ids': [key + '-gap-1']} for key in cameras]
+    previews = [{'path': str(source if i < 19 else preview),
+        'sha256': _sha256_file(source if i < 19 else preview),
+        'source_frame_id': str(i), 'camera_id': cameras[i % len(cameras)], 'timestamp_seconds': i,
+        'kind': 'original_capture_source_check_only' if i < 19 else 'geometry_gap_survey'} for i in range(94)]
+    extra = {'scope': 'missing_surfaces_within_captured_scene', 'post_export_coverage': {},
+        'candidate_camera_ids': rows, 'previews': previews,
+        'gap_survey': {'views': [{'camera_id': key, 'gaps': [[j, 100, [.1, .2, .3, .4]] for j in range(7)]}
+                                for key in cameras]}}
+    value, payload, tokens, output, _ = planner._fit_export_review(
+        survey, {'description': 'Reconstruct this work area'}, extra, model='gpt-6.1-sol', maximum=.5,
+        output_tokens=18250, instructions=planner.COMPLETION_INSTRUCTIONS + planner.POST_EXPORT_COMPLETION_INSTRUCTIONS,
+        schema=planner.CoverageCompletionProposal)
+    assert worst_case_reservation_usd(model='gpt-6.1-sol', input_token_ceiling=tokens,
+                                      max_output_tokens=output, cache_policy=None) <= .5
+    assert 8000 <= output <= planner.SDK_MAX_OUTPUT_TOKENS
+    column = value['candidate_camera_columns'].index('camera_id')
+    assert [row[column] for row in value['candidate_camera_ids']] == cameras
+    assert [row[0] for row in value['gap_survey']['views']] == cameras
+    assert sum(len(row[2]) for row in value['gap_survey']['views']) == 455
+    assert len(value['previews']) == 94
+    assert value['planning_preview_layout']['original_long_side'] == 1024
+    labels = [json.loads(part['text']) for part in payload[0]['content'] if part['type'] == 'input_text']
+    identities = [tile['camera_id'] for label in labels for tile in label.get('derived_reconstruction_previews', [])]
+    assert identities == [row['camera_id'] for row in previews[19:]]
+    assert sum('original_capture_frame' in row for row in labels) == 19
+
+
 def test_unpriced_or_overbudget_model_refused_before_reservation(tmp_path):
     path, _, _, policy = fixture(tmp_path)
     policy["maximum_review_cost_usd"] = .00001

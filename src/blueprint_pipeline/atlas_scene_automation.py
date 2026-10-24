@@ -313,12 +313,15 @@ def run_automation(
                 # Adopt the last passed completion in the same pose frame.
                 # Completed geometry stays in the base and cannot be regenerated.
                 original_frames = derived_frames
-                from .atlas_recorded_source_recovery import recover_recorded_sources
+                from .atlas_recorded_source_recovery import recover_recorded_sources, merge_source_frames
                 recovery_background_path = output_root / 'background/prepared_background.json'
                 recovery_automation = automation
+                recovery_context_pose_root = None
+                recovery_context_pose_digest = None
 
                 def recover_sources(action, known_frames):
-                    nonlocal recovery_background_path, recovery_automation
+                    nonlocal recovery_background_path, recovery_automation, recovery_context_pose_root
+                    nonlocal recovery_context_pose_digest
                     recovered, source_report = recover_recorded_sources(
                         action=action, source_survey_path=source_survey_path,
                         background_path=recovery_background_path, automation=recovery_automation,
@@ -330,6 +333,8 @@ def run_automation(
                     if recovered is not None:
                         recovery_background_path = Path(source_report['background_path'])
                         recovery_automation = source_report['expanded_automation']
+                        recovery_context_pose_root = source_report.get('context_pose_root', recovery_context_pose_root)
+                        recovery_context_pose_digest = source_report.get('pose_result_digest', recovery_context_pose_digest)
                     return recovered, source_report
 
                 recorded_frames, recorded_reports = [], []
@@ -356,23 +361,34 @@ def run_automation(
                 completion_root = output_root / f"scene_completion-{COMPLETION_REVISION}"
                 while True:
                     generated, completion = complete_scene(
-                        pose_root=effective_root, pose=effective_pose, frames=original_frames,
+                        pose_root=effective_root, pose=effective_pose,
+                        frames=merge_source_frames(original_frames, recorded_frames),
                         review=review, root=completion_root, context=task_context,
                         configuration=configuration, task_runner=task_runner, release_blockers=release_blockers,
                         planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint,
                         existing_geometry_frames=[*prior_frames, *recorded_frames],
                         source_survey_path=source_survey_path,
-                        **({'recorded_frames': recorded_frames, 'expected_frames': recorded_frames,
-                            'reference_frames': [*original_frames, *recorded_frames]} if recorded_frames else {}))
+                        **({'expected_frames': recorded_frames,
+                            'reference_frames': merge_source_frames(original_frames, recorded_frames)}
+                           if recorded_frames else {}),
+                        **({'context_pose_root': recovery_context_pose_root,
+                            'context_pose_digest': recovery_context_pose_digest} if recovery_context_pose_root else {}))
                     if completion.get('status') != 'source_recovery_required':
                         break
                     recovered, source_report = recover_sources(completion, [*original_frames, *recorded_frames])
                     if recovered is None:
                         return source_report
-                    if not recovered or {f['frame_id'] for f in recovered} & {
-                            f['frame_id'] for f in [*original_frames, *recorded_frames]}:
+                    known = {f['frame_id'] for f in [*original_frames, *recorded_frames]}
+                    added = set(source_report.get('recovered_frame_ids', []))
+                    refreshed = set(source_report.get('refreshed_frame_ids', []))
+                    if (not recovered or added & known or not refreshed <= known or added & refreshed
+                            or {f['frame_id'] for f in recovered} != added | refreshed):
                         raise ValueError('atlas_initial_recorded_source_no_progress')
-                    recorded_frames.extend(recovered)
+                    original_ids = {f['frame_id'] for f in original_frames}
+                    original_frames = merge_source_frames(original_frames,
+                        [f for f in recovered if f['frame_id'] in original_ids])
+                    recorded_frames = merge_source_frames(recorded_frames,
+                        [f for f in recovered if f['frame_id'] not in original_ids])
                     recorded_reports.append(source_report)
                     provenance.append(source_report['digest'])
                     visual_digest = canonical_digest({'previous': visual_digest, 'recovery': source_report['digest']})
@@ -447,6 +463,8 @@ def run_automation(
                     task_runner=task_runner, planner_runner=planner_runner,
                     release_blockers=release_blockers, max_polls=max_polls, checkpoint=checkpoint,
                     source_survey_path=source_survey_path, source_recovery_runner=recover_sources,
+                    **({'context_pose_root': recovery_context_pose_root,
+                        'context_pose_digest': recovery_context_pose_digest} if recovery_context_pose_root else {}),
                     **({'recorded_frames': recorded_frames, 'recorded_source_reports': recorded_reports}
                        if recorded_frames else {}))
                 if refined is None:

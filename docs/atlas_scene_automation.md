@@ -134,10 +134,16 @@ The production Atlas controller runs the following for a new scene plan:
    views, appends removal regions to frozen targets, reuses previously approved
    edits, cleans only the new views, and independently reviews the expanded set.
    It obtains new depth with shared cleaned anchors, then uses the existing
-   shared-view depth fit to register only the added views into the original
-   coordinate frame. Original cameras, task-state selection, native generations
-   and receipts remain unchanged. Added depth enters the actual splat and every
-   subsequent coverage/generation reference set before the next gap decision.
+   shared-view depth fit to register the complete fresh posed set into the original
+   coordinate frame. Shared IDs replace their earlier derived RGB, depth and
+   cameras in both geometry and conditioning; added IDs enter exactly once.
+   The next generation uses every current approved photograph, including the
+   added sources, and their current depth. The fresh pose root supplies pixel
+   verification and planner photographs while the original world frame remains
+   the placement authority. Mixed capture identities or missing current frames
+   refuse before generation. Original pose files, task-state selection, native
+   generations and receipts remain unchanged; a versioned recovery report
+   retains the refreshed bindings without overwriting an earlier report.
    A moved articulated target is acceptable only in this background-only stage
    when completely erased; retained fixtures must still agree. Uncertain
    visibility, changed fixed layout, failed cleanup or weak alignment stays an
@@ -149,7 +155,7 @@ The production Atlas controller runs the following for a new scene plan:
    attractive RGB fill cannot hide a failed 3D repair. Passed native generations
    and their verified fused pixels are adopted without another purchase.
 
-   The post-export review uses separate full-frame geometry previews and records
+   The post-export review uses full-frame geometry previews and records
    `environment_surfaces` for the complete connected local work fixture: its
    worktop, outer faces, ends, edges, supports, and operating floor as applicable.
    A `sufficient` decision requires geometry-preview evidence and cannot contain
@@ -158,6 +164,15 @@ The production Atlas controller runs the following for a new scene plan:
    fit/force qualification remain separate unknowns. A narrow old task-extent
    summary does not excuse a large missing part of its support fixture. The
    earlier planner inputs and completed native repair receipts remain retained.
+   If the full review exceeds its existing request cap, the planner fits its
+   input before reserving money: every camera, gap and source view stays present,
+   camera/gap metadata uses labeled tables, and derived overlays use labeled
+   contact sheets. Original capture previews retain the largest affordable
+   full-frame resolution. Response tokens stay inside the SDK limit and the
+   same reviewed request cap; source images sent to Atlas are unchanged.
+   Legacy affordable requests retain their exact input serialization and
+   binding. An unfundable request still refuses locally rather than omitting
+   observations or increasing the capture's cumulative allowance.
 
 When a refinement adds source views, its parent prepared-background manifest
 can seed the expanded set. Source video, task context and original RGB pixels
