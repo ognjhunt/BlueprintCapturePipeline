@@ -335,3 +335,38 @@ def test_discs_of_crossing_surfaces_merge_into_a_round_gaussian():
     normals = np.where((np.arange(200) % 2 == 0)[:, None], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
     merged, _ = depth_splat.splats2mesh_input(disc_splat(xyz, normals), 0.01, limit=100)
     assert merged.count == 1 and np.allclose(merged.scales[0], merged.scales[0, 0])
+
+
+def write_attempt(root, state, result=False):
+    (root / "atlas_pose").mkdir(parents=True)
+    (root / "atlas_pose" / "submission.json").write_text(json.dumps(state))
+    if result:
+        (root / "result.json").write_text("{}")
+
+
+def failed(operation_id):
+    return {"status": "failed", "operation_id": operation_id,
+            "terminal_operation": {"id": operation_id, "done": True, "error": {"code": 13}}}
+
+
+@pytest.mark.parametrize("state, retry, result, switches", [
+    (failed("op1"), None, False, True),
+    (failed("op1"), failed("op2"), False, True),
+    (failed("op1"), {"status": "submitted", "operation_id": "op2"}, False, False),
+    ({"status": "submitted", "operation_id": "op1"}, None, False, False),
+    ({"status": "completed", "operation_id": "op1"}, None, True, False),
+    ({"status": "failed", "terminal_error": {"reason": "reconciliation_window_lapsed"}}, None, False, False),
+    ({"status": "rejected", "provider_rejection": {"status": 400, "retryable": False}}, None, False, False),
+])
+def test_mesh_attempt_moves_to_the_merged_input_only_after_confirmed_failures(
+        tmp_path, monkeypatch, state, retry, result, switches):
+    splat_root = tmp_path / "splat"
+    manifest = depth_splat.build_depth_splat(retained_pose_root(tmp_path / "pose"), splat_root)
+    monkeypatch.setattr(depth_splat, "SPLATS2MESH_MAX_GAUSSIANS", manifest["gaussian_count"] // 3)
+    write_attempt(tmp_path / "mesh", state, result)
+    if retry is not None:
+        write_attempt(tmp_path / "mesh" / "retry", retry)
+    spec, mesh_root = depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh")
+    assert mesh_root == (tmp_path / "mesh-merged-v1" if switches else tmp_path / "mesh")
+    original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    assert (spec["uploads"] != original["uploads"]) is switches
