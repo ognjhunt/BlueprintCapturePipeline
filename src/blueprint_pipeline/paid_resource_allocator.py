@@ -731,6 +731,30 @@ def _current_remote_branch_commit(branch: str) -> str:
     return commit
 
 
+def _remote_pull_request_head_has_commit(commit: str) -> bool:
+    """Whether origin serves ``commit`` as a pull request's head.
+
+    Merging deletes the experiment branch, but GitHub keeps every
+    ``refs/pull/<n>/head`` and refuses pushes to it.
+    """
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-remote", "origin", "refs/pull/*/head"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and any(
+        len(fields) == 2 and fields[0].lower() == commit and re.fullmatch(r"refs/pull/[0-9]+/head", fields[1])
+        for fields in (line.split() for line in result.stdout.splitlines())
+    )
+
+
 def run_sponsored_website_atlas_pose(*, output_root: Path, capture_id: str, task_context: Mapping[str, Any],
                                      experimental: bool = False,
                                      **options: Any) -> dict[str, Any]:
@@ -806,7 +830,10 @@ def _source_checkout_blockers(
         if not branch.startswith("codex/"):
             blockers.append("gpu_canary_experimental_branch_not_codex_namespaced")
         if not remote_branch_commit:
-            blockers.append("gpu_canary_remote_experimental_branch_commit_unavailable")
+            # A merge mid-run deleted the branch three times on 2026-10-24 and
+            # stopped live Atlas runs. Its pushed head stays served as a PR ref.
+            if not (branch.startswith("codex/") and _remote_pull_request_head_has_commit(checkout_commit)):
+                blockers.append("gpu_canary_remote_experimental_branch_commit_unavailable")
         elif checkout_commit != remote_branch_commit:
             blockers.append("gpu_canary_checkout_not_pushed_experimental_branch")
     else:
