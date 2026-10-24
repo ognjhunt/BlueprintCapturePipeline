@@ -193,10 +193,10 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
         raise ValueError('atlas_recorded_source_release_not_admitted:' + ','.join(blockers))
     from .atlas_background_automation import _provider_preflight
     _provider_preflight()
-    review_survey = {**survey, 'frames': rows}
-    review_survey['digest'] = canonical_digest(review_survey, digest_field='digest')
+    candidate_survey = {**survey, 'frames': rows}
+    candidate_survey['digest'] = canonical_digest(candidate_survey, digest_field='digest')
     survey_path = root / 'survey.json'
-    _bound_json(survey_path, review_survey)
+    _bound_json(survey_path, candidate_survey)
     previews = [{'path': r['image_path'], 'sha256': r['image_digest'],
                  'source_frame_id': r['frame_id'], 'kind': 'approved_cleaned_background_anchor'}
                 for r in background['frames']]
