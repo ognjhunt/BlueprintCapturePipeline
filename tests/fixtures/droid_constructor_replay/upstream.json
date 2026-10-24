@@ -44,5 +44,13 @@
     }
   ],
   "development_only": true,
-  "retained_input_sha256": "5220ad77f58230d83b5e6153a7009beda624e7b824d8695ca8f98c1d20a84927"
+  "retained_input_sha256": "5220ad77f58230d83b5e6153a7009beda624e7b824d8695ca8f98c1d20a84927",
+  "retained_blocked_gate_child": {
+    "path": "retained_blocked_gate_child.json",
+    "development_only": true,
+    "source_instance_id": 57527038,
+    "source_commit": "56bcc4c068fb6a029a7cf76aeb93e2036f5b6ab0",
+    "sha256": "74b1953b449173a164fd5b3fa027a637b7bd63201e5f2e900705cb50bf450088",
+    "claim_ceiling": "archived_prepolicy_refusal_not_a_policy_episode"
+  }
 }

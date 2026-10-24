@@ -1,7 +1,9 @@
 """CPU rehearsal uses real USD scopes and production lossless native AOV writer."""
 from dataclasses import replace
 from types import SimpleNamespace as NS
+import hashlib
 import json
+from pathlib import Path
 import sys
 
 import numpy as np
@@ -196,6 +198,36 @@ def test_composition_gate_retains_edge_differences_without_promoting_them_to_int
     result = assess_composition_pixels({'status': 'captured', 'blockers': []}, output_root=tmp_path)
     assert not result['passed']
     assert result['interior_pixels_occluded_by_appearance'] == 1
+
+
+def test_retained_native_camera_masks_preserve_the_exact_composition_refusal(tmp_path):
+    from blueprint_pipeline.native_task_asset_composition_gate import assess_composition_pixels
+
+    fixture = Path(__file__).parent / 'fixtures/native_task_composition_refusal'
+    manifest = json.loads((fixture / 'manifest.json').read_text())
+    archive = fixture / 'masks.npz'
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest['compressed_array_sha256']
+    with np.load(archive, allow_pickle=False) as arrays:
+        for role, interior, intrusion, silhouette in [('external', 216527, 2942, 440),
+                                                      ('overview', 4561, 0, 0)]:
+            output = tmp_path / role
+            pixel_root = output / 'pixel_comparison'
+            pixel_root.mkdir(parents=True)
+            for row in manifest['source_files']:
+                if not row['array_key'].startswith(role + '__'):
+                    continue
+                path = pixel_root / Path(row['relative_path']).name
+                np.save(path, arrays[row['array_key']], allow_pickle=False)
+                assert hashlib.sha256(path.read_bytes()).hexdigest() == row['sha256']
+            result = assess_composition_pixels({'status': 'captured', 'blockers': []}, output_root=output)
+            assert result['support_interior_pixels'] == interior
+            assert result['interior_pixels_occluded_by_appearance'] == intrusion
+            assert result['silhouette_pixels_occluded_by_appearance'] == silhouette
+            assert result['passed'] is (role == 'overview')
+            assert result['blockers'] == ([] if role == 'overview' else [
+                'composition_support_background_occlusion_requires_review'])
+            assert result['pixel_cause_proven'] is False
+            assert result['automatic_gaussian_deletion_authorized'] is False
 
 
 @pytest.mark.parametrize('failure', ['capture', 'pose', 'settings', 'stale', 'physics'])

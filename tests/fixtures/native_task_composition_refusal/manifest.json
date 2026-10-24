@@ -1,0 +1,48 @@
+{
+  "schema_version": "retained_composition_refusal_fixture.v1",
+  "development_only": true,
+  "source_commit": "56bcc4c068fb6a029a7cf76aeb93e2036f5b6ab0",
+  "source_instance_id": 57527038,
+  "source_child_sha256": "74b1953b449173a164fd5b3fa027a637b7bd63201e5f2e900705cb50bf450088",
+  "source_files": [
+    {
+      "relative_path": "external/task_object/pixel_comparison/native_mesh_target_semantic_mask.npy",
+      "sha256": "76f9ce9ee249c6396aae3b51d1222958aef2febac507567fb6b089b3ae03ce7c",
+      "array_key": "external__native_mesh_target_semantic_mask",
+      "shape": [
+        720,
+        1280
+      ]
+    },
+    {
+      "relative_path": "external/task_object/pixel_comparison/mesh_target_occluded_in_full.npy",
+      "sha256": "92f9ea80b8f3d058bde3fea4c4567ed18f1bc5ea92863b004e6fa02027044090",
+      "array_key": "external__mesh_target_occluded_in_full",
+      "shape": [
+        720,
+        1280
+      ]
+    },
+    {
+      "relative_path": "overview/task_object/pixel_comparison/native_mesh_target_semantic_mask.npy",
+      "sha256": "a32e6ae279a4804de670a8a67ea49e9a569ec0b5ec7ad5261f059becd548d2bc",
+      "array_key": "overview__native_mesh_target_semantic_mask",
+      "shape": [
+        180,
+        320
+      ]
+    },
+    {
+      "relative_path": "overview/task_object/pixel_comparison/mesh_target_occluded_in_full.npy",
+      "sha256": "bd04990f2967547712efb64cf7ce8cd2b91a8627be77f8b758787502b9c9968b",
+      "array_key": "overview__mesh_target_occluded_in_full",
+      "shape": [
+        180,
+        320
+      ]
+    }
+  ],
+  "compressed_array_sha256": "98b069e6206f1d2cce50e26c21cfc3fb7cf19f97bc8cc9026b07d43cf9e2ae9a",
+  "claim_ceiling": "exact_cpu_composition_stopping_predicate_replay",
+  "pixel_cause_proven": false
+}

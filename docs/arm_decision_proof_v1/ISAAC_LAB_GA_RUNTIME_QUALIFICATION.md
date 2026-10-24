@@ -612,3 +612,81 @@ result has `candidate_policy_queried: false`; its absent scientific-execution,
 first-observation and worker-exit fields remain absent. Zero learned-policy
 episodes are proven. All forty baseline/GA learned episodes and their media,
 on the same actual physical GPU, remain required before qualification.
+
+## Native construction passes; composition refuses, 2026-10-24
+
+Attempt eight executed `56bcc4c068fb6a029a7cf76aeb93e2036f5b6ab0` on Vast
+`57527038`, GB machine `154485`. Readback proved NVIDIA RTX A6000, 49,140 MiB,
+driver `580.178.04`, physical UUID
+`GPU-c539a641-0a6e-7636-c0fd-9474e67f5c8b`. The owner added account credit;
+the agent made no credit purchase. The existing $8 execution cap, $1/hour
+ceiling, 7,200-second TTL, one allocation and zero retries remained unchanged.
+
+Blank bootstrap app readiness took 19.641 seconds. Frozen OpenPI installation,
+all 27 checkpoint files (12,434,530,837 bytes), the SDK-preserving wire client
+and both weighted policy servers reached readiness. Cell zero's full native
+startup took 104.611883 seconds and native robot/workcell construction passed
+in 64.920886 seconds, with no build errors. The retained seven-arm constructor
+repair therefore passed actual native construction. Sampled device-wide memory
+reached 18,893 MiB, including both servers; this is not an episode measurement
+or an improvement over an earlier attempt that failed before construction.
+
+The pre-policy composition gate then refused
+`external:task_object:composition_support_background_occlusion_requires_review`.
+Its external view has 216,527 task-object interior pixels after the existing
+two-pixel silhouette exclusion: 2,942 lack the task object's semantic label in
+the full scene, with another 440 differences in the silhouette band. The
+overview has 4,561 interior pixels and no missing interior pixels. Visibility
+was restored, full-scene sensor buffers refreshed, and the composition receipt
+records zero physics steps and zero policy queries between passes. Native
+construction frames, raw RGB/depth/semantic arrays and both coverage passes
+are retained. No policy was loaded by the cell or queried, no policy-input
+observation was admitted, and no learned episode completed.
+
+Missing pixels cluster near the washer's lower front and floor contact, with
+smaller regions near the door and right edge. The cause remains unproven.
+An appearance-only pass was not requested by the coverage gate, Gaussian
+distance-AOV surface equivalence remains unqualified, and RGB differences do
+not prove primary-ray contributions. The original rubber-material warning is
+retained but is not the identified refusal. No scene input, transform,
+composition threshold or Gaussian was changed or deleted.
+
+The session sealed the complete blocked observation gate and raised
+`PolicyCanarySessionError` at `execute_paired_session`. The parent's strict
+pre-policy exception recognizer accepted only an exception inside the gate
+callback with no returned gate. It rejected this returned-refusal shape as
+`policy_canary_isolated_cell_result_invalid`, hiding the cause from the root
+result. This was a paid reporting-preflight process defect. CPU replay of the
+exact archived child and the real parent lifecycle reproduces the defect
+before repair. The repair retains a digest-valid blocked gate only when the
+child also proves no loaded policy, no query, no episode, zero telemetry and
+runtime closeout. Inconsistent or successful gate shapes remain rejected;
+retaining a refusal does not pass it or admit an episode.
+
+Focused verification passed 116 tests in 105.88 seconds, including mandatory
+lifecycle and provider import closure, worker/session orchestration, runtime
+comparison, native composition and the exact archived child. A separate replay
+of the losslessly retained native masks reproduces the 2,942-pixel refusal and
+the passing overview through the unchanged composition predicate. These are
+CPU reporting/predicate checks, not native qualification or new policy evidence.
+
+The raw allocator result SHA-256 is
+`871225d21471559658bc2a9c7d3e9988bb3b0a43409acf2390c1289af20a11f8`;
+the 8,112,460-byte durable archive SHA-256 is
+`93dbaf8a3a26d72cd583b0bf10f7aef5b3d9a9cfd4638423330c76858564d7b0`.
+All 62 runtime archive members and all 152 retained runtime/host/billing files
+were copied and hash-verified locally, manifest
+`d1195f7c6cbae0175aea6ff006a915d66fc9f3913957429ce7542ddada5e2ca8`.
+The exact blocked child SHA-256 is
+`74b1953b449173a164fd5b3fa027a637b7bd63201e5f2e900705cb50bf450088`.
+The full returned gate and compressed semantic masks are committed as replay
+fixtures, with original source hashes and development-only claim limits.
+
+Canonical teardown, allocator/watchdog exit, staged-object absence and fresh
+global Vast zero passed. Official charge was $0.273 at closeout; subsequent
+provider postings may change reconciliation totals. Shared deployment
+coordination was released after durable retention. The raw result preserves
+absent/null/false fields rather than filling missing scientific results.
+The comparison remains at **0/40 valid learned episodes**. Composition must be
+resolved on evidence before a policy attempt; baseline still requires the same
+actual GPU as a valid GA session. Newton remains separately unqualified.
