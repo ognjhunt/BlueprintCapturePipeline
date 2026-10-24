@@ -196,6 +196,90 @@ def test_thirteen_view_surface_response_is_not_capped_at_eight_thousand_tokens(t
     assert [v["frame_id"] for v in result["proposal"]["views"]] == ids
 
 
+def cut_off_review(tmp_path, monkeypatch, *, cut_offs, output_tokens=None):
+    """A planner whose first ``cut_offs`` responses stop at their output allowance."""
+    path, _, proposal, policy = fixture(tmp_path)
+    policy["maximum_review_cost_usd"] = 1
+    from agents.exceptions import ModelBehaviorError
+    from blueprint_pipeline import website_task_context as control, paid_resource_admission as admission
+    from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
+    monkeypatch.setattr(admission, "require_paid_resource_admission_grant", lambda *_, **__: None)
+    monkeypatch.setattr(InferenceReservationAudit, "record_completion", lambda self, value: None)
+    calls = {"allowances": [], "reserved": [], "settled": []}
+    monkeypatch.setattr(control, "reserve_website_preparation_spend",
+                        lambda **kw: (calls["reserved"].append(kw["binding_digest"]) or {}, object()))
+    monkeypatch.setattr(control, "website_webapp_request",
+                        lambda **kw: calls["settled"].append(kw["payload"]["settlement"]) or {"status": "settled"})
+
+    class Invoker:
+        def configure_reservation_audit(self, *, record_completion, **_):
+            self.record = record_completion
+
+        def invoke(self, spec, inputs):
+            calls["allowances"].append(spec.max_output_tokens)
+            if len(calls["allowances"]) <= cut_offs:
+                # The SDK records the observed charge, then rejects the unparseable JSON.
+                self.record({"status": "invalid_structured_output", "reconciled_actual_cost_usd": .02,
+                             "usage": {"output_tokens": output_tokens or spec.max_output_tokens,
+                                       "cost_is_actual": True}})
+                raise ModelBehaviorError("Invalid JSON when parsing a response cut off mid-object")
+            return SimpleNamespace(output=proposal, cost_usd=.03, usage={"output_tokens": 10},
+                                   model=spec.model, sdk_version="test")
+    options = dict(survey_path=path, task_context={"description": "task", "context_digest": "sha256:" + "b" * 64,
+        "request_id": "r", "scene_id": "s", "capture_id": "c"}, configuration={"policy": policy},
+        output_root=tmp_path / "plans", invoker=Invoker(), release_blockers=lambda: ("c" * 40, []))
+    return options, calls
+
+
+def test_cut_off_review_is_settled_and_retried_with_a_larger_allowance(tmp_path, monkeypatch):
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=1)
+    result = planner.review_survey(**options)
+    assert result["status"] == "completed" and result["binding"]["max_output_tokens"] == 8000
+    assert calls["allowances"] == [4000, 8000] and len(set(calls["reserved"])) == 2
+    # The cut-off call is charged what it used plus its hosted-search allowance; nothing is left held.
+    assert [row["provider_charge_amount_usd"] for row in calls["settled"]] == [pytest.approx(.04), .03]
+    cut_off = json.loads((tmp_path / "plans" / (calls["reserved"][0][7:] + ".json")).read_text())
+    assert cut_off["status"] == "truncated" and cut_off["truncation_retry"] == {"max_output_tokens": 8000, "attempt": 1}
+    # A restart follows the retained chain without buying either call again.
+    assert planner.review_survey(**options) == result
+    assert calls["allowances"] == [4000, 8000] and len(calls["settled"]) == 2
+
+
+def test_cut_off_review_stops_after_two_larger_retries(tmp_path, monkeypatch):
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=3)
+    with pytest.raises(ValueError, match="output_truncated_retry_unavailable"):
+        planner.review_survey(**options)
+    assert calls["allowances"] == [4000, 8000, 16000] and len(calls["settled"]) == 3
+    with pytest.raises(ValueError, match="output_truncated_retry_unavailable"):
+        planner.review_survey(**options)
+    assert len(calls["allowances"]) == 3 and len(calls["settled"]) == 3
+
+
+def test_retry_loop_keeps_the_allocator_as_the_only_paid_review_caller():
+    # Main's release verifier, not PR CI, rejects any other function naming
+    # review_survey; a self-call here would block the signed deploy artifact.
+    import importlib.util
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("verify_paid_resource_allocator",
+                                                  root / "scripts/verify_paid_resource_allocator.py")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    paths = ["src/blueprint_pipeline/atlas_scene_planner.py", "src/blueprint_pipeline/paid_resource_allocator.py"]
+    sources = {p: (root / p).read_text() for p in paths}
+    assert verifier._s3_transport_capability_callers(
+        sources, verifier.ATLAS_PLAN_CAPABILITIES) == verifier.APPROVED_ATLAS_PLAN_CALLERS
+
+
+def test_invalid_review_that_was_not_cut_off_still_needs_reconciliation(tmp_path, monkeypatch):
+    from agents.exceptions import ModelBehaviorError
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=1, output_tokens=900)
+    with pytest.raises(ModelBehaviorError):
+        planner.review_survey(**options)
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        planner.review_survey(**options)
+    assert calls["allowances"] == [4000] and calls["settled"] == []
+
+
 def test_completion_output_compiles_in_the_actual_strict_agents_sdk():
     from agents import AgentOutputSchema
 
