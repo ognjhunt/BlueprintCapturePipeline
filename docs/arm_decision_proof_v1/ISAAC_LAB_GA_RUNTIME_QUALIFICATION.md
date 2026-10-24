@@ -171,6 +171,24 @@ refused. Inputs, controls, scoring and publisher/provider restrictions do not
 change. Fresh capacity, complete preflight, actual native execution and the
 same observed GPU UUID for baseline are still required.
 
+After the dependency repair, the 09:45 UTC Estonia preflight found no offer on
+machine `40508` and stopped without allocation or authority consumption. A
+09:48 read-only inventory found no eligible US, GB or EE offer under the same
+filters. It did identify Japan machine `57960`: an advertised 48 GB RTX 6000
+Ada, driver 580.126.09, quoted $0.5815/hour including 200 GB of disk. The
+canonical selector accepted its hardware, storage, total transfer/spend bound
+and known-supported driver when given an explicit Japan country scope.
+
+The same owner-authorized private comparison may now bind one `JP` grant as
+well as the existing `GB`/`EE` grants. Each grant still requires one country,
+the exact runtime-input digest, named authorization, private Vast disclosure
+scope and explicit machine constraints. US remains the default; mixed grants,
+other countries and production/team use are refused. The $8 cap, $1/hour
+ceiling, 7200-second TTL, one allocation, zero automatic retries, publisher
+rights, provider terms and all canonical preflight/teardown gates stay binding.
+This is a capacity preparation change; the offer and quote prove no allocation,
+GPU execution or actual charge.
+
 A baseline session authority can additionally require the GA session's observed
 physical GPU UUID. Provider input preflight checks it before checkpoint
 provisioning; the parent worker and each isolated cell recheck the one visible

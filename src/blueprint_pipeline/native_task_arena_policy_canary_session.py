@@ -370,7 +370,7 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def session_geolocation_country_codes(authority: Mapping[str, Any]) -> tuple[str, ...]:
-    """Keep US admission unless a pinned canary has explicit UK or Estonia authority.
+    """Keep US admission unless a pinned canary has explicit GB, EE or JP authority.
 
     This changes the private compute location only. It grants no new input
     disclosure, publishing, training, production evaluation or automatic retry.
@@ -384,7 +384,7 @@ def session_geolocation_country_codes(authority: Mapping[str, Any]) -> tuple[str
             or set(grant) != {"schema_version", "country_codes", "runtime_inputs_digest",
                               "authorized_by", "authorization_reference", "disclosure_scope"}
             or grant.get("schema_version") != "policy_canary_geolocation_authority.v1"
-            or grant.get("country_codes") not in (["GB"], ["EE"])
+            or grant.get("country_codes") not in (["GB"], ["EE"], ["JP"])
             or authority.get("run_kind") != RUN_KIND
             or not isinstance(machines, list) or not machines
             or any(type(machine) is not int or machine <= 0 for machine in machines)
