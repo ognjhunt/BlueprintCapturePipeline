@@ -180,6 +180,63 @@ def test_novel_context_drops_thin_projection_noise_and_neutralizes_fillable_pixe
     assert rows[1]['projection_basis'] == 'source_center_rgb_homography'
 
 
+def _count_lifts(monkeypatch):
+    lifted, world = [], preservation._world
+    monkeypatch.setattr(preservation, '_world', lambda f, valid: lifted.append(f['frame_id']) or world(f, valid))
+    return lifted
+
+
+def test_batched_contexts_lift_each_frame_once_and_equal_single_camera_contexts(monkeypatch):
+    near, far = frame('near', colour=(255, 0, 0)), frame('far', depth=4., colour=(0, 0, 255), cam=camera(x=.2))
+    near['depth'][:, :2] = 3.
+    cameras = [camera(x=.01), camera(), camera(width=8, x=-.05), camera(x=.15)]
+    expected = [preservation.project_known_context([near, far], cam) for cam in cameras]
+    assert all(keep.any() for _, keep in expected)
+    lifted = _count_lifts(monkeypatch)
+    batched = preservation.project_known_contexts([near, far], cameras)
+    assert lifted == ['near', 'far'], 'One lift per source frame serves every new-centre camera'
+    for (rgb, keep), (want_rgb, want_keep) in zip(batched, expected, strict=True):
+        assert np.array_equal(rgb, want_rgb) and np.array_equal(keep, want_keep)
+
+
+def test_completion_views_are_identical_in_camera_batches(tmp_path, monkeypatch):
+    a, b = frame('a'), frame('b', cam=camera(x=.02))
+    selected = [{'camera_id': f'novel-{i}', 'source_frame_id': 'a', 'camera': camera(x=.01 + .001 * i)}
+                for i in range(10)]
+    selected.insert(4, {'camera_id': 'original', 'source_frame_id': 'a', 'camera': camera()})
+    monkeypatch.setattr(preservation, '_SUPPORT_MASKS', {})
+    monkeypatch.setattr(preservation, 'CONTEXT_BATCH_CAMERAS', 1)
+    single = preservation.prepare_completion_views(frames=[a, b], selected=selected, root=tmp_path / 'single')
+    monkeypatch.setattr(preservation, 'CONTEXT_BATCH_CAMERAS', 8)
+    lifted = _count_lifts(monkeypatch)
+    batched = preservation.prepare_completion_views(frames=[a, b], selected=selected, root=tmp_path / 'batched')
+    assert lifted == ['a', 'b', 'a', 'b'], 'Eleven cameras form two batches; support is not recomputed'
+    digests = [[(row['frame_id'], row['image_digest'], row['keep_mask_digest'], row['projection_basis'])
+                for row in rows] for rows in (single, batched)]
+    assert digests[0] == digests[1]
+    assert any(row['protected_pixel_count'] for row in batched if row['frame_id'] != 'original')
+
+
+def test_repeated_preparation_reuses_support_only_for_byte_identical_frames(tmp_path, monkeypatch):
+    a, b = frame('a'), frame('b', cam=camera(x=.02))
+    selected = [{'camera_id': 'novel', 'source_frame_id': 'a', 'camera': camera(x=.01)}]
+    checks, masks = [], preservation._support_masks
+    monkeypatch.setattr(preservation, '_SUPPORT_MASKS', {})
+    monkeypatch.setattr(preservation, '_support_masks', lambda frames: checks.append(len(frames)) or masks(frames))
+    first = preservation.prepare_completion_views(frames=[a, b], selected=selected, root=tmp_path / 'first')
+    again = preservation.prepare_completion_views(frames=[deepcopy(a), deepcopy(b)], selected=selected,
+                                                  root=tmp_path / 'again')
+    assert checks == [2] and first[0]['keep_mask_digest'] == again[0]['keep_mask_digest']
+    assert first[0]['protected_pixel_count']
+    moved = deepcopy(b)
+    moved['extrinsics'] = {**moved['extrinsics'], 'position': [.02 + 1e-12, 0, 0]}
+    preservation.prepare_completion_views(frames=[a, moved], selected=selected, root=tmp_path / 'moved')
+    recoloured = deepcopy(b)
+    recoloured['rgb'][3, 3] = (0, 150, 21)
+    preservation.prepare_completion_views(frames=[a, recoloured], selected=selected, root=tmp_path / 'recoloured')
+    assert checks == [2, 2, 2], 'Any changed pose or pixel is checked again'
+
+
 @pytest.mark.parametrize('depth,allowed', [(1., False), (2., False), (4., True)])
 def test_generated_geometry_cannot_fill_observed_free_space_or_replace_known_surface(depth, allowed):
     reference = frame()
