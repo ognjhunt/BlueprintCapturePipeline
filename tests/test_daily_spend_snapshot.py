@@ -331,6 +331,41 @@ def test_bound_observation_preserves_fraction_beyond_microseconds(
     assert source.read_bytes() == original_source
 
 
+@pytest.mark.parametrize(
+    "bound_time,export_time,redigest,expected_status",
+    [
+        ("2026-10-01T17:00:00Z", "2026-10-01T12:00:00-05:00", True, "written"),
+        ("2026-10-01T18:00:00.0000001Z", "2026-10-01T18:00:00.0000001Z", True, "unavailable"),
+        ("2026-10-01T17:00:00Z", "2026-10-01T17:00:01Z", True, "unavailable"),
+        (None, "2026-10-01T18:00:00Z", True, "unavailable"),
+        ("invalid", "2026-10-01T18:00:00Z", True, "unavailable"),
+        ("2026-10-01T17:00:00Z", "2026-10-01T17:00:00Z", False, "unavailable"),
+    ],
+)
+def test_explicit_export_observation_is_digest_bound_and_not_after_collection(
+    tmp_path, bound_time, export_time, redigest, expected_status
+):
+    export = tmp_path / "provider_billing_export.json"
+    result = reconcile_provider_billing(
+        secrets_dir=_secrets(tmp_path), billing_export_path=export,
+        audit_root=tmp_path / "billing-audit", start_at="2026-01-01T00:00:00Z",
+        now=NOW, transport=_Transport(),
+    )
+    source = Path(result["source_receipt_path"])
+    receipt = json.loads(source.read_bytes())
+    receipt["billing_export_generated_at"] = bound_time
+    if redigest:
+        receipt["receipt_digest"] = _hash({k: v for k, v in receipt.items() if k != "receipt_digest"})
+    source.write_text(json.dumps(receipt))
+    content = json.loads(export.read_bytes())
+    content["generated_at"] = export_time
+    export.write_text(json.dumps(content))
+    original_export, original_source = export.read_bytes(), source.read_bytes()
+    assert write_daily_snapshot(export, source, source.parent.parent)["status"] == expected_status
+    assert export.read_bytes() == original_export
+    assert source.read_bytes() == original_source
+
+
 def test_bound_offline_export_digest_and_fixture_publication_guard(tmp_path):
     export = tmp_path / "provider_billing_export.json"
     source = tmp_path / "audit" / "provider_billing_source_receipt.json"

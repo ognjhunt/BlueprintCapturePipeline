@@ -559,11 +559,16 @@ def _load_bound(export_path: Path, receipt_path: Path) -> tuple[dict, dict, list
     # Parse for this comparison only; retain the exact source bytes and hashes.
     export_observed = _exact_observation_time(export.get("generated_at"))
     receipt_observed = _exact_observation_time(receipt.get("generated_at"))
+    bound_export_observed = _exact_observation_time(
+        receipt.get("billing_export_generated_at", receipt.get("generated_at"))
+    )
     if (
         export.get("schema_version") != "blueprint.provider_billing_export.v1"
         or export_observed is None
         or receipt_observed is None
-        or export_observed != receipt_observed
+        or bound_export_observed is None
+        or bound_export_observed > receipt_observed
+        or export_observed != bound_export_observed
         or export.get("provider_totals_usd") != receipt.get("provider_totals_usd")
     ):
         raise ValueError("billing_export_receipt_binding_invalid")

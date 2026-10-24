@@ -138,6 +138,7 @@ def test_reconciler_retains_original_source_age_and_blocks_after_expiry(tmp_path
     )
     result = reconcile_provider_billing(**args, now=NOW)
     assert result["provider_totals_usd"] == {"gcp": 8.123456}
+    assert result["daily_spend_snapshot"]["status"] == "written"
     export = json.loads((tmp_path / "export.json").read_text())
     assert export["generated_at"] == (NOW - timedelta(hours=1)).isoformat()
     live = guard.GpuInstance(
@@ -152,6 +153,8 @@ def test_reconciler_retains_original_source_age_and_blocks_after_expiry(tmp_path
     assert accepted["status"] == "reconciled"
     receipt = json.loads(open(result["source_receipt_path"]).read())
     assert receipt["sources"][0]["source_captured_at"] == export["generated_at"]
+    assert receipt["billing_export_generated_at"] == export["generated_at"]
+    assert receipt["generated_at"] == NOW.isoformat()
     before = (tmp_path / "export.json").read_bytes()
     with pytest.raises(RuntimeError, match="no_provider_covered"):
         reconcile_provider_billing(**args, now=NOW + timedelta(days=1))
