@@ -560,6 +560,7 @@ def run_background(
     editor_first=True,
     transients=(),
     prior_background_path=None,
+    require_cached=False,
 ):
     from .website_image_completion import (
         complete_background_images,
@@ -593,6 +594,8 @@ def run_background(
     if retained is not None:
         check("automation_reuse_prepared_background")
         return retained
+    if require_cached:
+        raise ValueError("atlas_export_replay_prepared_background_missing")
     reused, prior_digest = reusable_background(prior_background_path, source_digest=source_digest,
         context=context, frames=frames, objects=objects)
     reused_ids = {row['frame_id'] for row in reused}
