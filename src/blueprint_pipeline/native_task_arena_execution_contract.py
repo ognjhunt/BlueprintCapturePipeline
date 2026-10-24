@@ -93,6 +93,18 @@ RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(
             "native_task_arena_construction_worker.py",
             "native_task_wrist_camera_mount_sweep.py",
             "rigid_frame_transforms.py",
+            # The render-only composition worker shares the lossless native AOV
+            # writer. Keep this finite closure identical in builder and admission.
+            "native_task_composition_worker.py",
+            "native_task_composition_diagnostic.py",
+            "native_task_asset_composition_gate.py",
+            "adp009d_isaac_runtime.py",
+            "adp009d_approach_capture.py",
+            "adp009d_hold_trace.py",
+            "adp009d_contact_envelope.py",
+            "adp009d_physics_backend_comparison.py",
+            "adp009d_newton_gripper_drive.py",
+            "adp009d_newton_collision_adapter.py",
         }
     )
 )

@@ -2165,6 +2165,12 @@ assert not any('groot_n17' in name or name.startswith('omni.') for name in sys.m
 """
     result = subprocess.run([sys.executable, "-I", "-c", probe, str(runtime)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+    static = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "composition-static", generated_at="fixed",
+        enable_blueprint_bundle=True, enable_isaac_smoke=True, provider_bundle_kind="native_task_arena",
+        bundle_path=Path(receipt["bundle_path"]), provider_bundle_url="https://example.com/bundle.zip",
+        provider_output_put_url="https://example.com/output.zip")
+    assert static["status"] == "passed", static["blockers"]
     from blueprint_pipeline.native_task_isaaclab_ga import IMAGE
     changed = dict(receipt, container_image=IMAGE)
     manifest = {key: value for key, value in changed.items() if key not in {"bundle_path", "bundle_sha256", "bundle_size_bytes"}}

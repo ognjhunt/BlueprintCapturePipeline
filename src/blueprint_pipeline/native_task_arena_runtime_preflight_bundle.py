@@ -10,7 +10,7 @@ import zipfile
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import build_native_task_arena_bundle, verify_native_task_arena_packet
-from .native_task_arena_construction_bundle import construction_runtime_sources
+from .native_task_arena_execution_contract import RUNTIME_PREFLIGHT_MODULE_NAMES
 from .native_task_runtime_source_packet import verify_native_task_runtime_source_packet
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 
@@ -22,11 +22,7 @@ RESULT_SCHEMA_VERSION = "native_task_arena_runtime_preflight.v1"
 
 def _sources() -> tuple[Path, ...]:
     package = Path(__file__).resolve().parent
-    return (
-        *construction_runtime_sources(),
-        package / "native_task_arena_construction_worker.py",
-        package / "native_task_wrist_camera_mount_sweep.py",
-    )
+    return tuple(package / name for name in RUNTIME_PREFLIGHT_MODULE_NAMES)
 
 
 def build_native_task_arena_runtime_preflight_bundle(
@@ -47,7 +43,6 @@ def build_native_task_arena_runtime_preflight_bundle(
     bound_inputs = {}
     if composition_request_path is not None or composition_scene_plan_path is not None:
         from .native_task_composition_diagnostic import PASSES, validate_request, verify_record
-        from .native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
 
         if composition_request_path is None or composition_scene_plan_path is None:
             raise ValueError("composition_request_and_scene_plan_required")
@@ -67,7 +62,6 @@ def build_native_task_arena_runtime_preflight_bundle(
         worker = package / "native_task_composition_worker.py"
         # Reuse the already-qualified AOV writer's complete import closure.
         # No policy provisioning or checkpoint bytes are added.
-        modules = tuple(package / name for name in POLICY_RUNTIME_MODULE_NAMES)
         bound_inputs = {"composition_request.json": request_path,
                         "composition_scene_plan.json": plan_path}
     return build_native_task_arena_bundle(

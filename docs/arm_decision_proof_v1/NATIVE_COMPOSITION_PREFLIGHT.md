@@ -76,3 +76,23 @@ capture with CPU USD/kernel stand-ins, verify its isolated import closure and
 close order, and reject mismatched image, seed, plan, packet, bytes or incomplete
 request pairs. Actual native attribution remains unproven until the admitted
 diagnostic executes and its retained readbacks are reviewed.
+
+The first complete host preflight on `502fdf433` was nonallocating. Funding,
+canonical billing/spend admission, source/input binding and three eligible US
+offers passed, but the full provider bundle check rejected two contracts:
+the composition payload declared the policy module inventory rather than the
+preflight inventory, and the original preflight runner signature required a
+motion servo. The outer allocator's `dry_run_ready` alone was therefore
+insufficient; dispatch stayed stopped. All ten preflight metadata/report files
+were retained and verified locally (manifest SHA-256
+`92f08752b51d1189f25f4766367672aaf08da1e339a3f8c995966112d101c2fe`).
+
+The encoded repair gives the preflight builder and provider admission the same
+finite AOV/composition import closure, and recognizes the existing render-only
+worker's explicit validation/capture/zero-policy contract without requiring a
+motion controller. The exact provider check reproduces both failures on the
+old bundle and passes on the repaired candidate; its strict module-set equality
+and all composition stopping predicates remain in force. Shared deployment
+coordination was unavailable pending the owner's production update, so a fresh
+full preflight against that update's exact installed identities is still
+required before any diagnostic allocation.
