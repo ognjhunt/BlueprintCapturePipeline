@@ -6,6 +6,7 @@ may contribute; known surfaces and observed free space always take precedence.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -46,7 +47,7 @@ def _same_center(frame, camera):
     return np.allclose(frame['position'], camera['extrinsics']['position'], atol=1e-8, rtol=0)
 
 
-def supported_projection_frames(frames):
+def supported_projection_frames(frames, masks=None):
     """Conservative RGBD projection candidates, never a modification of source.
 
     A valid depth alone is insufficient to lock a colour into a new viewpoint.
@@ -54,9 +55,41 @@ def supported_projection_frames(frames):
     The RGB tolerance is a projection heuristic, not calibrated confidence.
     Actual source viewpoints still preserve every source RGB pixel.
     """
+    masks = _support_masks(frames) if masks is None else masks
+    return [{**source, 'confidence': source['confidence'] * keep}
+            for source, keep in zip(frames, masks, strict=True)]
+
+
+# One completion pass prepares several camera sets from identical approved
+# frames, and the cross-view support check is quadratic in the frame count.
+_SUPPORT_MASKS = {}
+
+
+def _frames_digest(frames):
+    """Every frame input that support or projection reads, byte for byte."""
+    digest = hashlib.sha256()
+    for frame in frames:
+        k, e = frame['intrinsics'], frame['extrinsics']
+        for value in (frame['rgb'], frame['depth'], frame['confidence'], frame['position'],
+                      frame['rotation'], [k[key] for key in ('fx', 'fy', 'cx', 'cy', 'width', 'height')],
+                      e['position'], e['quaternion']):
+            value = np.ascontiguousarray(value)
+            digest.update(f'{value.dtype.str}{value.shape}'.encode() + value.tobytes())
+    return digest.hexdigest()
+
+
+def _reused_supported_frames(frames):
+    key = _frames_digest(frames)
+    if key not in _SUPPORT_MASKS:
+        _SUPPORT_MASKS.clear()
+        _SUPPORT_MASKS[key] = _support_masks(frames)
+    return supported_projection_frames(frames, _SUPPORT_MASKS[key])
+
+
+def _support_masks(frames):
     from .atlas_depth_splat import EDGE_RELATIVE_JUMP
 
-    filtered = []
+    masks = []
     validity = [_valid(frame) for frame in frames]
     for source, source_valid in zip(frames, validity, strict=True):
         valid = source_valid
@@ -89,8 +122,8 @@ def supported_projection_frames(frames):
             supported[ids[agrees]] = True
         keep = np.zeros(valid.shape, bool)
         keep[y[supported], x[supported]] = True
-        filtered.append({**source, 'confidence': source['confidence'] * keep})
-    return filtered
+        masks.append(keep)
+    return masks
 
 
 def _save_image(path, pixels):
@@ -112,58 +145,79 @@ def project_known_context(frames, camera):
     what an already photographed ray looks like at the same camera centre.
     Intrinsics and rotation define that resampling without estimated depth.
     """
+    return project_known_contexts(frames, [camera])[0]
+
+
+def project_known_contexts(frames, cameras):
+    """project_known_context for several cameras, lifting each source frame once.
+
+    Lifting a frame to world points costs more than projecting it. Each new-
+    centre camera still z-buffers the frames in the same order, so every
+    result equals its single-camera projection.
+    """
     import cv2
 
-    k = camera['intrinsics']
-    height, width = k['height'], k['width']
-    rgb = np.full((height, width, 3), 127, np.uint8)
-    zbuffer = np.full(height * width, np.inf)
-    keep = np.zeros(height * width, bool)
-    target_rotation = _rotation_matrix(camera['extrinsics']['quaternion'])
-    same = [frame for frame in frames if _same_center(frame, camera)]
+    canvases = []
+    for camera in cameras:
+        k = camera['intrinsics']
+        height, width = k['height'], k['width']
+        canvases.append((np.full((height, width, 3), 127, np.uint8), np.full(height * width, np.inf),
+                         np.zeros(height * width, bool),
+                         [frame for frame in frames if _same_center(frame, camera)]))
     # An actual source camera centre needs no estimated-depth warp. Keep its
     # authoritative RGB footprint clean; the other paired views provide
     # cross-view context to the inpainting model instead of noisy edge splats.
-    for frame in ([] if same else frames):
+    moving = [(camera, canvas) for camera, canvas in zip(cameras, canvases, strict=True) if not canvas[3]]
+    for frame in (frames if moving else []):
         points, y, x = _world(frame, _valid(frame))
-        z, u, v, inside = _project(points, camera)
-        source_indices = np.flatnonzero(inside)
-        flat = np.floor(v[inside]).astype(int) * width + np.floor(u[inside]).astype(int)
-        local_depth = np.full(height * width, np.inf)
-        np.minimum.at(local_depth, flat, z[inside])
-        nearest = (z[inside] == local_depth[flat]) & (z[inside] < zbuffer[flat])
-        # Linear z-buffer selection, preserving the stable first-source-pixel
-        # tie break of the former full depth/pixel sort.
-        first = np.full(height * width, len(points), dtype=np.intp)
-        np.minimum.at(first, flat[nearest], source_indices[nearest])
-        pixels = np.flatnonzero(first < len(points))
-        chosen = first[pixels]
-        rgb.reshape(-1, 3)[pixels] = frame['rgb'][y[chosen], x[chosen]]
-        zbuffer[pixels] = z[chosen]
-        keep[pixels] = True
-    keep = keep.reshape(height, width)
-    # At a shared centre, combine photographed directions; the closest
-    # orientation wins any overlap (an exact source view wins last).
-    for frame in sorted(same, key=lambda f: np.linalg.norm(f['rotation'] - target_rotation), reverse=True):
-        source = frame['intrinsics']
-        source_k = np.array([[source['fx'], 0, source['cx']], [0, source['fy'], source['cy']], [0, 0, 1.]])
-        target_k = np.array([[k['fx'], 0, k['cx']], [0, k['fy'], k['cy']], [0, 0, 1.]])
-        # Camera matrices use pixel centres; OpenCV uses integer pixel indices.
-        to_center = np.array([[1, 0, .5], [0, 1, .5], [0, 0, 1.]])
-        # Optical pixels are right/down/forward; the Atlas cameras are RUB.
-        optical_to_rub = np.diag([1., -1., -1.])
-        rotation = (np.eye(3) if np.allclose(target_rotation, frame['rotation'], atol=1e-8, rtol=0) else
-                    optical_to_rub @ target_rotation.T @ frame['rotation'] @ optical_to_rub)
-        mapping = np.linalg.inv(to_center) @ target_k @ rotation @ np.linalg.inv(source_k) @ to_center
-        known = cv2.warpPerspective(np.ones(frame['rgb'].shape[:2], np.uint8), mapping, (width, height),
-                                    flags=cv2.INTER_NEAREST).astype(bool)
-        yy, xx = np.indices((height, width))
-        source_z = (rotation.T @ np.linalg.inv(target_k))[2]
-        known &= (source_z[0] * (xx + .5) + source_z[1] * (yy + .5) + source_z[2]) > 0
-        sampled = cv2.warpPerspective(frame['rgb'], mapping, (width, height),
-                                      flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-        rgb[known], keep[known] = sampled[known], True
-    return rgb, keep
+        for camera, (rgb, zbuffer, keep, _) in moving:
+            k = camera['intrinsics']
+            height, width = k['height'], k['width']
+            z, u, v, inside = _project(points, camera)
+            source_indices = np.flatnonzero(inside)
+            flat = np.floor(v[inside]).astype(int) * width + np.floor(u[inside]).astype(int)
+            local_depth = np.full(height * width, np.inf)
+            np.minimum.at(local_depth, flat, z[inside])
+            nearest = (z[inside] == local_depth[flat]) & (z[inside] < zbuffer[flat])
+            # Linear z-buffer selection, preserving the stable first-source-pixel
+            # tie break of the former full depth/pixel sort.
+            first = np.full(height * width, len(points), dtype=np.intp)
+            np.minimum.at(first, flat[nearest], source_indices[nearest])
+            pixels = np.flatnonzero(first < len(points))
+            chosen = first[pixels]
+            rgb.reshape(-1, 3)[pixels] = frame['rgb'][y[chosen], x[chosen]]
+            zbuffer[pixels] = z[chosen]
+            keep[pixels] = True
+    contexts = []
+    for camera, (rgb, _, keep, same) in zip(cameras, canvases, strict=True):
+        k = camera['intrinsics']
+        height, width = k['height'], k['width']
+        keep = keep.reshape(height, width)
+        target_rotation = _rotation_matrix(camera['extrinsics']['quaternion'])
+        # At a shared centre, combine photographed directions; the closest
+        # orientation wins any overlap (an exact source view wins last).
+        same = sorted(same, key=lambda f, r=target_rotation: np.linalg.norm(f['rotation'] - r), reverse=True)
+        for frame in same:
+            source = frame['intrinsics']
+            source_k = np.array([[source['fx'], 0, source['cx']], [0, source['fy'], source['cy']], [0, 0, 1.]])
+            target_k = np.array([[k['fx'], 0, k['cx']], [0, k['fy'], k['cy']], [0, 0, 1.]])
+            # Camera matrices use pixel centres; OpenCV uses integer pixel indices.
+            to_center = np.array([[1, 0, .5], [0, 1, .5], [0, 0, 1.]])
+            # Optical pixels are right/down/forward; the Atlas cameras are RUB.
+            optical_to_rub = np.diag([1., -1., -1.])
+            rotation = (np.eye(3) if np.allclose(target_rotation, frame['rotation'], atol=1e-8, rtol=0) else
+                        optical_to_rub @ target_rotation.T @ frame['rotation'] @ optical_to_rub)
+            mapping = np.linalg.inv(to_center) @ target_k @ rotation @ np.linalg.inv(source_k) @ to_center
+            known = cv2.warpPerspective(np.ones(frame['rgb'].shape[:2], np.uint8), mapping, (width, height),
+                                        flags=cv2.INTER_NEAREST).astype(bool)
+            yy, xx = np.indices((height, width))
+            source_z = (rotation.T @ np.linalg.inv(target_k))[2]
+            known &= (source_z[0] * (xx + .5) + source_z[1] * (yy + .5) + source_z[2]) > 0
+            sampled = cv2.warpPerspective(frame['rgb'], mapping, (width, height),
+                                          flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            rgb[known], keep[known] = sampled[known], True
+        contexts.append((rgb, keep))
+    return contexts
 
 
 def observed_scene_bounds(frames):
@@ -214,17 +268,25 @@ def unobserved_geometry_mask(generated, references, *, extent_bounds=None, repai
     return mask
 
 
+# Cameras are projected a batch at a time so each source frame is lifted once
+# per batch; a 720p camera holds about 11 MB of canvas while it is projected.
+CONTEXT_BATCH_CAMERAS = 8
+
+
 def prepare_completion_views(*, frames, selected, root):
     """Prepare camera-paired grayscale keep masks without a provider call."""
     import cv2
 
     root.mkdir(parents=True, exist_ok=True)
     supported = (frames if all(any(_same_center(frame, row['camera']) for frame in frames) for row in selected)
-                 else supported_projection_frames(frames))
+                 else _reused_supported_frames(frames))
     rows = []
     for index, view in enumerate(selected):
+        if index % CONTEXT_BATCH_CAMERAS == 0:
+            batch = selected[index:index + CONTEXT_BATCH_CAMERAS]
+            contexts = project_known_contexts(supported, [row['camera'] for row in batch])
         same = any(_same_center(frame, view['camera']) for frame in frames)
-        rgb, keep = project_known_context(supported, view['camera'])
+        rgb, keep = contexts[index % CONTEXT_BATCH_CAMERAS]
         if not same:
             # Isolated forward-projected pixels and narrow jagged edges are
             # not stable image patches. Leave them fillable and neutral; a
