@@ -348,7 +348,10 @@ def main(argv: list[str] | None = None) -> int:
                 "articulated_native_dof_name_mismatch:"
                 + ",".join(sorted(set(expected_names) - set(handles)))
             )
-        if dof_count != int(articulation_spec["expected_joint_count"]):
+        # Fixed connections join rigid parts but create no movable DOF. Older
+        # requests contained only hinges and keep their original count contract.
+        if dof_count != int(articulation_spec.get("expected_dof_count",
+                                                 articulation_spec["expected_joint_count"])):
             raise RuntimeError(
                 f"articulated_native_dof_count_mismatch:{dof_count}"
             )
