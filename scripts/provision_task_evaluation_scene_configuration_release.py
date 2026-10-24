@@ -33,6 +33,7 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     VGG16_WEIGHTS_SOURCE_URL,
 )
 from blueprint_pipeline.service_account_reader import ServiceAccountReader
+from blueprint_pipeline.immutable_file_digest import immutable_file_digest_cache
 from blueprint_pipeline.provision_staging_sweep import (  # the provision CLI's startup sweep
     remove_tree as _remove_tree,
     sweep_stale_staging,
@@ -208,6 +209,7 @@ def _terminated(signum: int, _frame: Any) -> None:
     raise SystemExit(128 + signum)
 
 
+@immutable_file_digest_cache()
 def provision_scene_configuration_release(
     *,
     repository_root: str | Path,
