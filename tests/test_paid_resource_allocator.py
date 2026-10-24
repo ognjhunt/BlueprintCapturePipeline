@@ -2,6 +2,7 @@ import json
 import os
 import signal
 import subprocess
+import types
 from argparse import Namespace
 from pathlib import Path
 
@@ -1896,6 +1897,47 @@ def test_gpu_canary_experimental_lane_rejects_non_codex_branch(
         ],
         "c" * 40,
     )
+
+
+@pytest.mark.parametrize("served_as_pull_head", [True, False])
+def test_gpu_canary_experimental_lane_survives_a_merge_that_deleted_its_branch(
+    monkeypatch: pytest.MonkeyPatch, served_as_pull_head: bool,
+) -> None:
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("c" * 40, True, True))
+    monkeypatch.setattr(allocator, "_current_branch_name", lambda: "codex/diagnostic")
+    monkeypatch.setattr(allocator, "_current_remote_branch_commit", lambda _branch: "")
+    asked = []
+    monkeypatch.setattr(allocator, "_remote_pull_request_head_has_commit",
+                        lambda commit: asked.append(commit) or served_as_pull_head)
+
+    assert allocator._source_checkout_blockers("c" * 40, allow_pushed_branch_diagnostic=True) == (
+        [] if served_as_pull_head else ["gpu_canary_remote_experimental_branch_commit_unavailable"],
+        "c" * 40,
+    )
+    assert asked == ["c" * 40]
+
+
+def test_pull_request_head_lookup_accepts_only_an_exact_served_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listing = "\n".join([f"{'a' * 40}\trefs/pull/2841/head", f"{'b' * 40}\trefs/pull/2841/merge",
+                         f"{'C' * 40}\trefs/pull/7/head"])
+    calls = []
+
+    def run(command, **_):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0, stdout=listing)
+    monkeypatch.setattr(allocator.subprocess, "run", run)
+
+    assert allocator._remote_pull_request_head_has_commit("a" * 40)
+    assert allocator._remote_pull_request_head_has_commit("c" * 40)
+    # A merge preview ref is not the pushed head; malformed commits never reach git.
+    assert not allocator._remote_pull_request_head_has_commit("b" * 40)
+    assert not allocator._remote_pull_request_head_has_commit("A" * 40)
+    assert calls[0][-3:] == ["ls-remote", "origin", "refs/pull/*/head"] and len(calls) == 3
+    monkeypatch.setattr(allocator.subprocess, "run",
+                        lambda command, **_: types.SimpleNamespace(returncode=2, stdout=listing))
+    assert not allocator._remote_pull_request_head_has_commit("a" * 40)
 
 
 def test_gpu_qualification_control_plane_identity_records_main_drift_without_blocking(
