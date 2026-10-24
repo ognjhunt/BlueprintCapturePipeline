@@ -572,11 +572,14 @@ def _verify_mutation_surface_contract() -> list[str]:
         relative = path.relative_to(ROOT).as_posix()
         source = path.read_text(encoding="utf-8")
         source_by_path[relative] = source
-        calls = _all_calls(path)
-        if "require_paid_resource_admission" in calls:
-            observed_admission_issuers.add(relative)
-        if "build_paid_lane_admission" in calls:
-            observed_lane_builders.add(relative)
+        # A call can only name an issuer whose text the source contains; skip
+        # parsing the rest so this whole-repository check stays a PR sentinel.
+        if "require_paid_resource_admission" in source or "build_paid_lane_admission" in source:
+            calls = _all_calls(path)
+            if "require_paid_resource_admission" in calls:
+                observed_admission_issuers.add(relative)
+            if "build_paid_lane_admission" in calls:
+                observed_lane_builders.add(relative)
         signals = _direct_paid_mutation_signals(source)
         if signals:
             observed_direct_mutators[relative] = signals
@@ -603,7 +606,9 @@ def _verify_mutation_surface_contract() -> list[str]:
             "_TRANSPORT_CAPABILITY_ISSUER" in source or "_TransportExecutionCapability" in source
         ):
             blockers.append("runpod_s3_transport_capability_private_state_imported")
-    for relative in sorted(_unclassified_direct_mutators(source_by_path, set(by_path))):
+    # Same set as _unclassified_direct_mutators(source_by_path, set(by_path)),
+    # from the signals already computed above.
+    for relative in sorted(set(observed_direct_mutators) - set(by_path)):
         blockers.append("unclassified_paid_resource_mutation_surface:" + relative)
     for relative in sorted(observed_direct_mutators):
         row = by_path.get(relative)

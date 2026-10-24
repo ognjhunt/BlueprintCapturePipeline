@@ -31,6 +31,9 @@ SENTINEL_TESTS = (
     "tests/test_runtime_security_controls.py::test_bounded_service_url_allows_only_loopback_plain_http",
     "tests/test_paid_resource_admission.py::test_shared_chokepoint_grants_only_exact_admitted_contract",
     "tests/test_paid_resource_allocator_verifier.py::test_unmanifested_script_mutator_is_rejected",
+    # Whole-repository release checks that ci.yml otherwise runs only on push to main.
+    "tests/test_paid_resource_allocator_verifier.py::test_repository_satisfies_paid_resource_allocator_verification",
+    "tests/test_release_quality_governance.py::test_repository_source_governance_policy_is_satisfied",
     "tests/test_release_engineering_contracts.py::test_risk_based_verification_workflows_are_bounded",
     "tests/test_lane_writer_governance.py::test_reviewed_lane_writer_manifest_is_satisfied",
 )
