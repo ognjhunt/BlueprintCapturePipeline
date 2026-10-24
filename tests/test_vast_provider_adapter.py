@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import fcntl
 import gzip
 import inspect
@@ -9,6 +10,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import urllib.error
 import zipfile
 from io import BytesIO
@@ -87,6 +89,103 @@ def _created_instance_detail(
             "dph_total": dph_total,
         }
     }
+
+
+@pytest.mark.parametrize("driver_available", [False, True])
+def test_isaac_smoke_rejects_missing_graphics_library_before_kit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, driver_available: bool,
+) -> None:
+    icd = tmp_path / "nvidia_icd.json"
+    icd.write_text(json.dumps({"ICD": {"library_path": "libGLX_nvidia.so.0"}}))
+    monkeypatch.setenv("VK_DRIVER_FILES", str(icd))
+    events: list[str] = []
+
+    def load_library(name):
+        events.append(name)
+        if not driver_available:
+            raise OSError("host graphics library absent")
+        return object()
+
+    monkeypatch.setattr(ctypes, "CDLL", load_library)
+    if driver_available:
+        exec(vpa._isaac_graphics_icd_python_source(), {})
+        assert events == ["libGLX_nvidia.so.0"]
+        assert "BLUEPRINT_VAST_ISAAC_GRAPHICS_ICD_OK" in capsys.readouterr().out
+    else:
+        with pytest.raises(RuntimeError, match="isaac_nvidia_vulkan_icd_library_unavailable"):
+            exec(vpa._isaac_graphics_icd_python_source(), {})
+        assert events == ["libGLX_nvidia.so.0"]
+        assert "BLUEPRINT_VAST_ISAAC_SMOKE_OK" not in capsys.readouterr().out
+
+
+def test_isaac_smoke_rejects_non_nvidia_icd(tmp_path: Path, monkeypatch) -> None:
+    icd = tmp_path / "software_icd.json"
+    icd.write_text(json.dumps({"ICD": {"library_path": "libvulkan_lvp.so"}}))
+    monkeypatch.setenv("VK_DRIVER_FILES", str(icd))
+    with pytest.raises(RuntimeError, match="isaac_nvidia_vulkan_icd_missing"):
+        exec(vpa._isaac_graphics_icd_python_source(), {})
+
+
+@pytest.mark.parametrize("driver_available,kit_crashes", [(False, False), (True, False), (True, True)])
+def test_isaac_graphics_probe_cannot_preload_kit_process(
+    tmp_path: Path, driver_available: bool, kit_crashes: bool,
+) -> None:
+    icd = tmp_path / "nvidia_icd.json"
+    icd.write_text(json.dumps({"ICD": {"library_path": "libGLX_nvidia.so.0"}}))
+    (tmp_path / "ctypes.py").write_text(
+        'import os\n'
+        'def CDLL(name):\n'
+        '    os.environ["BLUEPRINT_TEST_GRAPHICS_PRELOADED"] = "1"\n'
+        '    if os.environ["BLUEPRINT_TEST_GRAPHICS_AVAILABLE"] == "0":\n'
+        '        raise OSError("host library absent")\n'
+        '    return object()\n'
+    )
+    (tmp_path / "isaacsim.py").write_text(
+        'import os\n'
+        'assert "BLUEPRINT_TEST_GRAPHICS_PRELOADED" not in os.environ, "driver polluted Kit process"\n'
+        'if os.environ["BLUEPRINT_TEST_KIT_CRASH"] == "1":\n'
+        '    import resource, signal\n'
+        '    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n'
+        '    os.kill(os.getpid(), signal.SIGSEGV)\n'
+        'class SimulationApp:\n'
+        '    def __init__(self, config):\n'
+        '        with open(os.environ["BLUEPRINT_TEST_KIT_STARTED"], "w") as stream:\n'
+        '            stream.write("kit_started")\n'
+    )
+    (tmp_path / "warp.py").write_text(
+        'from types import SimpleNamespace\n'
+        'def init(): pass\n'
+        'def get_devices(): return [SimpleNamespace(is_cuda=True)]\n'
+    )
+    started = tmp_path / "kit-started"
+    script = (f"ISAAC_PY={shlex.quote(sys.executable)}; "
+              + vpa._isaac_smoke_shell_fragment() + 'exit "$irc"')
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(tmp_path), "VK_DRIVER_FILES": str(icd),
+             "PYTHONFAULTHANDLER": "", "BLUEPRINT_TEST_KIT_CRASH": "1" if kit_crashes else "0",
+             "BLUEPRINT_TEST_GRAPHICS_AVAILABLE": "1" if driver_available else "0",
+             "BLUEPRINT_TEST_KIT_STARTED": str(started)}, timeout=20)
+    passed = driver_available and not kit_crashes
+    assert (result.returncode == 0) is passed, result.stderr
+    assert started.exists() is passed
+    assert ("BLUEPRINT_VAST_ISAAC_SMOKE_OK" in result.stdout) is passed
+    if kit_crashes:
+        assert "Fatal Python error: Segmentation fault" in result.stderr
+        assert "isaacsim.py" in result.stderr
+
+
+def test_isaac_graphics_probe_precedes_bundle_download() -> None:
+    script = vpa._probe_shell_script(
+        "https://heartbeat.example", enable_isaac_smoke=True,
+        enable_blueprint_bundle=True, provider_bundle_kind="native_task_arena",
+    )
+    assert script.index("isaac_nvidia_vulkan_icd_library_unavailable") < script.index(
+        "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED"
+    )
+    assert script.index("BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:cuda_runtime_incompatible") < (
+        script.index('blueprint_download_url "$BUNDLE_URL"')
+    )
+    assert subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True).returncode == 0
 
 
 def test_gpu_sanity_requires_container_cuda_runtime_for_paid_bundles() -> None:

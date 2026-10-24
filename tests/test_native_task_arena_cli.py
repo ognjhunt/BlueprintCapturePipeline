@@ -342,7 +342,8 @@ def test_warm_authority_cli_verifies_construction_bundle(
     }
 
 
-def test_provider_zero_cli_supplies_retained_closeout_contract(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("recovery", [False, True])
+def test_provider_zero_cli_supplies_retained_closeout_contract(monkeypatch, tmp_path, recovery) -> None:
     module = _load("seal_native_task_arena_provider_zero")
     observed = {}
 
@@ -350,7 +351,9 @@ def test_provider_zero_cli_supplies_retained_closeout_contract(monkeypatch, tmp_
         observed.update(kwargs)
         return {"receipt_digest": "sha256:" + "b" * 64}
 
-    monkeypatch.setattr(module, "materialize_native_task_arena_provider_zero", fake_materialize)
+    target = ("materialize_native_task_arena_post_cleanup_closeout" if recovery
+              else "materialize_native_task_arena_provider_zero")
+    monkeypatch.setattr(module, target, fake_materialize)
     output = tmp_path / "provider-zero.json"
     result = module.main(
         [
@@ -358,7 +361,7 @@ def test_provider_zero_cli_supplies_retained_closeout_contract(monkeypatch, tmp_
             "authority.json",
             "--result",
             "result.json",
-            "--output",
+            "--post-cleanup-output-dir" if recovery else "--output",
             str(output),
         ]
     )
@@ -367,7 +370,7 @@ def test_provider_zero_cli_supplies_retained_closeout_contract(monkeypatch, tmp_
     assert observed == {
         "authority_path": "authority.json",
         "result_path": "result.json",
-        "output_path": str(output),
+        "output_dir" if recovery else "output_path": str(output),
     }
 
 

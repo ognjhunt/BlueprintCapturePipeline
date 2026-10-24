@@ -361,7 +361,7 @@ BASE_RUNTIME_DEPENDENCY_WHEELS = (
 RUNTIME_DEPENDENCY_WHEELS = (
     BASE_RUNTIME_DEPENDENCY_WHEELS + TORCH_RUNTIME_DEPENDENCY_WHEELS
 )
-RUNTIME_PROFILES = ("base", "unitree_g1")
+RUNTIME_PROFILES = ("base", "unitree_g1", "isaaclab_3_ga")
 G1_REPLACED_BASE_PACKAGES = frozenset({"onnxruntime"})
 
 
@@ -596,7 +596,7 @@ def materialize_native_task_runtime_source_packet(
     output_dir: str | Path,
     isaaclab_repo: str | Path,
     arena_repo: str | Path,
-    dependency_wheel_dir: str | Path,
+    dependency_wheel_dir: str | Path | None,
     runtime_profile: str = "base",
     generated_at: str | None = None,
     isaaclab_commit: str = ISAACLAB_COMMIT,
@@ -611,6 +611,14 @@ def materialize_native_task_runtime_source_packet(
 ) -> dict[str, Any]:
     """Create one deterministic, digest-bound released-source packet."""
 
+    if runtime_profile == "isaaclab_3_ga":
+        from .native_task_isaaclab_ga import materialize_ga_source_packet
+        if dependency_wheel_dir is None:
+            raise NativeTaskRuntimeSourcePacketError(["ga_runtime_supplemental_wheel_dir_required"])
+        return materialize_ga_source_packet(output_dir=output_dir, isaaclab_repo=isaaclab_repo,
+            arena_repo=arena_repo, dependency_wheel_dir=dependency_wheel_dir, generated_at=generated_at)
+    if dependency_wheel_dir is None:
+        raise NativeTaskRuntimeSourcePacketError(["native_task_runtime_dependency_wheel_dir_required"])
     dependency_contracts = runtime_dependency_contracts(runtime_profile)
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
@@ -1059,6 +1067,9 @@ def verify_native_task_runtime_source_packet(
                 "runtime_experience"
             ):
                 errors.append("native_task_runtime_experience_receipt_manifest_mismatch")
+            for field in ("container_image", "provisioning_mode"):
+                if manifest.get(field) != receipt.get(field):
+                    errors.append("native_task_runtime_" + field + "_receipt_manifest_mismatch")
             if set(names) != expected_names:
                 errors.append("native_task_runtime_source_archive_members_invalid")
     except (OSError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
@@ -1077,7 +1088,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--isaaclab-repo")
     parser.add_argument("--arena-repo")
-    parser.add_argument("--dependency-wheel-dir", required=True)
+    parser.add_argument("--dependency-wheel-dir")
     parser.add_argument("--extend-base-receipt")
     parser.add_argument("--runtime-profile", choices=RUNTIME_PROFILES, default="base")
     parser.add_argument("--generated-at")

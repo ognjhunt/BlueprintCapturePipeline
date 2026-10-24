@@ -1,0 +1,692 @@
+# Isaac Lab 3.0 GA runtime qualification
+
+ADP-009D Day-28 rehearsal / Day-35 simulation matrix. This opt-in experiment
+compares the retained native workcell against the pinned beta runtime. Production
+runtime defaults, PhysX, RTX, task inputs, controls and scoring remain fixed.
+Neither Newton nor standalone rendering is included in that comparison.
+
+## Separate native Newton/RTX smoke
+
+The user selected one additional native feature test on 2026-10-24. This opt-in
+ADP-009D / Day-35 compatibility experiment reuses the retained workcell and RTX
+camera path with Newton's MuJoCo-Warp solver. The existing factory and launcher
+hardwired PhysX; a sealed feature request now selects Newton explicitly at both
+boundaries without changing the production default or the paired measurements.
+
+Prepare the request and bundle with:
+
+```bash
+python -m blueprint_pipeline.native_task_runtime_comparison_cli prepare-newton-smoke \
+  --packet-dir RETAINED_PACKET --reference-construction-request GA_REQUEST \
+  --output newton-request.json
+python -m blueprint_pipeline.native_task_arena_construction_bundle \
+  --job-dir NEW_BUNDLE --packet-dir RETAINED_PACKET \
+  --runtime-source-packet-receipt GA_SOURCE_RECEIPT \
+  --implementation-commit IMMUTABLE_COMMIT --container-image PINNED_GA_IMAGE \
+  --runtime-comparison-request-path GA_REQUEST \
+  --native-feature-request-path newton-request.json
+```
+
+The canonical construction allocator, authority, watchdog, budget, TTL and
+teardown still apply. The worker reads back the actual Newton manager, solver,
+CUDA device and package versions, then checks 64 hold-position steps, finite
+joint state, three cameras before/after, and a repeated seeded reset. It retains
+joint drift and timing without assigning a task-success score. A native refusal
+is retained with its phase and an explicit media gap where applicable.
+
+The completion artifact is `native_task_newton_feature_result.v1.json`. The
+construction transport envelope always retains `construction_gate_qualified:
+false` and `qualification_effect: none`. Newton may interpret the retained USD's
+PhysX properties differently; this separate smoke cannot establish physical
+fidelity, a policy outcome or a comparable performance improvement. Native
+physics stepping remains unqualified; source tests are preparation evidence only.
+
+The first separate native attempt, Vast `57469156` on execution commit
+`cad3e2f9162b4479db8236679dacb1a50d872315`, failed before scene construction.
+Bootstrap passed in 29.006 seconds; the native Kit launch took 589.150 seconds.
+Arena then refused `env_cfg_callback changed the physics backend away from
+PhysX.` The adapter had changed the physics configuration in its callback while
+leaving Arena's environment backend selection at its PhysX default. No Newton
+physics step or camera observation occurred. The typed before-first-observation
+gap and failure traceback are retained. Instance, allocator, watchdog and staged
+objects are absent; canonical provider-zero and official billing passed at
+$0.125. Fifteen evidence files were hash-verified locally and on the host.
+
+This was a paid preflight process defect. The repair declares Newton before
+Arena adapts the embodiment and preserves Arena's released Newton solver preset,
+including its manipulation-specific manager and contact/constraint capacities.
+Bundle preparation now replays the actual pinned vendor constructor, backend
+selector, physics preset and callback guard without Kit, a GPU, geometry or a
+provider call. The old behavior reproduces the exact native assertion; the
+candidate selects Newton and enables the required physics replication. That
+replay is a preparation artifact, not a native success claim.
+
+The released Newton DROID adapter changes gravity compensation, collision and
+gripper settings. The experiment records its resulting configuration separately
+from the retained PhysX reference and leaves the source asset bytes unchanged.
+It cannot borrow the primary pair's controls or configuration-equivalence claim.
+The correctly selected rerun is recorded below.
+
+The second separate attempt executed `be697a32edb81e3c5f361f3e17c21e5bd0663262`
+on Vast `57473847`, RTX 3090 UUID
+`GPU-dbe176f1-fb1e-bcb8-b17c-c923a025b448`, driver 580.173.02. Bootstrap passed
+in 26.743 seconds and the native app launched in 146.550 seconds. The run
+reported Newton 1.6.1, MuJoCo/MuJoCo-Warp 3.12.0, Warp 1.17.0 and Torch
+2.11.0+cu130. During workcell construction, CoACD's manifold edge check was
+followed by `std::logic_error: unexpected code path was hit`; the process
+aborted with provider entrypoint exit code 134. It retained no observation
+PNGs and never reached the requested hold-step/reset probe or backend readback.
+
+The canonical outer process result is blocked. The feature JSON remains a
+`running`/`build` checkpoint after the native abort and must not be interpreted
+as a final result. All 15 evidence files, bootstrap logs and two native-log
+snapshots were retained; the final evidence and the locally copied snapshots
+were hash-verified. `newton-feature-observed-outcome-20261024.json` binds the
+raw records and explicit before-first-observation media gap without modifying
+the checkpoint. Canonical teardown/provider-zero passed, all instance,
+allocator, watchdog and staging resources are absent, and official spend is
+$0.048. This is a failed compatibility test for this scene/configuration; it
+does not qualify Newton or alter the primary PhysX pair.
+
+## Observed construction pair, 2026-10-24
+
+The GA and baseline construction replays completed on the same physical RTX
+4090, UUID `GPU-3b954a77-b580-0fc9-0149-d9990de42321`, driver 580.159.03.
+Both executed immutable source `5265bdd80b58212a3f320a5c4cb8ebfb5716459c`
+with the same retained workcell, controls, camera configuration and scoring.
+
+| Measurement | Baseline | GA | Observed GA change |
+| --- | ---: | ---: | ---: |
+| Native app startup | 16.972 s | 212.904 s | +1154.44% |
+| Environment build | 34.003 s | 41.543 s | +22.17% |
+| Median step, 218 samples each | 167.576 ms | 167.143 ms | -0.26% |
+| Median reset, 5 samples each | 73.857 ms | 67.719 ms | -8.31% |
+| Sampled device-wide peak | 6145 MiB | 6411 MiB | +4.33% |
+
+Both runs reached all ten motion targets over 150 action steps, passed all
+three camera gates and reset replay, and retained 150 task-state samples. All
+four measured contact-force channels remained at 0 N, with no collision,
+containment or joint-limit failure. Both global-IK preflights solved six of ten
+targets; actual motion reached all ten. No candidate policy was queried.
+
+All 33 camera pairs have identical intrinsics, matching raw RGB shapes and
+sources, and identical camera positions. All five recorded robot joint-position
+arrays and reset seeds match exactly. The 44 original PNGs per runtime were
+verified against their native snapshot receipts. RGB mean absolute differences
+range from 6.43 to 11.06 on a 0–255 scale. Representative reset/approach views and
+the largest-difference prealign/wrist pair have matching view geometry but
+visible texture/noise differences. Their cause and policy impact remain
+unresolved; the original robot rubber-material gap is retained.
+
+This single construction pair does not establish repeatability or an overall
+runtime improvement. Startup and build were slower and the observed memory peak
+was higher under GA. The canonical comparator reports
+`measured_pending_correctness_review`, with `improvement_qualified: false` and
+`runtime_promotion_authorized: false`. Memory remains a sampled device-wide
+lower-bound peak, including other processes.
+
+The full comparison still requires both frozen learned policies on all ten
+identical cells in each runtime: 40 episodes, complete policy-input frames,
+digest-bound manifests, derived review videos, deterministic scores and contact
+evidence. The separate Newton attempt failed before physics stepping;
+standalone rendering was not executed.
+Fresh capacity at 2026-10-24 04:29 UTC offered no qualifying US 48 GB policy GPU
+within the unchanged resource and driver limits.
+
+A subsequent read-only capacity audit found that the RT-candidate list omitted
+the RTX 5880 Ada. NVIDIA documents 48 GB and third-generation RT cores at
+https://www.nvidia.com/en-us/products/workstations/rtx-5880/. The hardware
+registry now recognizes both provider spellings and caps advertised memory at
+48 GB. This corrects hardware metadata; native qualification, driver,
+architecture, geography and total-transfer-cost gates still apply. The observed
+UK offer is not admitted by the existing US-only execution authorities.
+
+For ADP-009D's Day-35 matrix, the observed US capacity blocker justifies an
+opt-in private UK compute authority for the same admitted inputs. This is a
+capacity preparation change, not a new evaluation or provider. Existing
+authorities retain US placement. A UK internal canary must bind its exact
+runtime-input digest, named authorizer and authorization reference, unchanged
+private Vast disclosure scope, and an explicit machine constraint. Production
+team evaluations cannot use it. The authority remains digest-bound; driver,
+architecture, RT, VRAM, requested disk, total transfer cost, watchdog, output
+admission and zero-retry gates remain mandatory. Source checks alone do not
+establish transfer performance; the first observed UK attempt is recorded below.
+
+At 2026-10-24 08:30 UTC, the repaired US preparation passed the complete
+canonical billing, output-disk and allocator preflight. Its immediate dispatch
+readback then found no offer on machine `117959`; dispatch stopped before
+allocation or authority consumption. The 08:33 retained US capacity response
+had no eligible US offer, and the prepared UK host was unavailable at 08:34.
+Unsupported 595-series driver offers remain excluded.
+
+That same response listed a 48 GB RTX 6000 Ada on machine `40508` in Estonia,
+driver 580.178.04, at a quoted $0.8119/hour including 200 GB of disk. This is
+provider metadata, not an observed GPU or a charge. The owner's approval for
+the same retained comparison supports one pinned private Estonia preparation
+under the unchanged $8 cap, $1/hour limit, 7200-second TTL and zero automatic
+retries. The opt-in authority now accepts one country, either `GB` or `EE`,
+with the same input digest, named authority, private Vast disclosure scope and
+machine constraint. US remains the default; mixed and other countries remain
+refused. Inputs, controls, scoring and publisher/provider restrictions do not
+change. Fresh capacity, complete preflight, actual native execution and the
+same observed GPU UUID for baseline are still required.
+
+After the dependency repair, the 09:45 UTC Estonia preflight found no offer on
+machine `40508` and stopped without allocation or authority consumption. A
+09:48 read-only inventory found no eligible US, GB or EE offer under the same
+filters. It did identify Japan machine `57960`: an advertised 48 GB RTX 6000
+Ada, driver 580.126.09, quoted $0.5815/hour including 200 GB of disk. The
+canonical selector accepted its hardware, storage, total transfer/spend bound
+and known-supported driver when given an explicit Japan country scope.
+
+The same owner-authorized private comparison may now bind one `JP` grant as
+well as the existing `GB`/`EE` grants. Each grant still requires one country,
+the exact runtime-input digest, named authorization, private Vast disclosure
+scope and explicit machine constraints. US remains the default; mixed grants,
+other countries and production/team use are refused. The $8 cap, $1/hour
+ceiling, 7200-second TTL, one allocation, zero automatic retries, publisher
+rights, provider terms and all canonical preflight/teardown gates stay binding.
+This is a capacity preparation change; the offer and quote prove no allocation,
+GPU execution or actual charge.
+
+A baseline session authority can additionally require the GA session's observed
+physical GPU UUID. Provider input preflight checks it before checkpoint
+provisioning; the parent worker and each isolated cell recheck the one visible
+UUID before starting cells or loading learned clients. Host static preflight
+does not probe a GPU. A mismatch,
+ambiguous device inventory or failed probe records a digest-bound refusal and
+before-first-observation gap. It does not query a policy. This supplements the
+existing comparison's requirement that every scenario and both runtimes share
+the actual GPU; a machine ID alone can refer to several physical cards.
+
+The first UK policy attempt, instance `57479820`, executed source
+`bf9709aa010d8b71f2e9f270df1a87b00617dba4` on machine 49863. SSH readback
+proved RTX 5880 Ada Generation, 49,140 MiB, driver 580.159.03, UUID
+`GPU-1925818e-d48f-b7e1-8211-cef77c827d10`. Bootstrap passed in 28.2 seconds;
+the exact source packet provisioned and immutable input preflight passed.
+Before checkpoint provisioning, the entrypoint exited 86: GA's Python launcher
+added an informational stdout line to a shell-captured control-mode value.
+No policy was queried and no policy observation was produced. The original
+fallback and secondary missing-server teardown diagnostics remain unchanged.
+The derived evidence manifest records the before-first-observation gap.
+
+The repair passes control mode through a file rather than launcher stdout,
+retains the input-preflight receipt, and preserves typed prepolicy failures
+without inventing a server teardown when no receipt exists. A CPU fixture
+replay, bound to the retained provider log, reproduces exit 86 with the original
+entrypoint and reaches the worker with the candidate. Five shell-entrypoint
+checks cover both control paths and missing/invalid modes. These are software
+boundary checks with source provisioning and servers stubbed, not simulator,
+checkpoint-loading, policy-execution or runtime-improvement evidence. A native
+rerun is required. All 24 terminal evidence files were copied and hash-verified;
+provider-zero, exact staging cleanup and official $0.039 billing are closed.
+
+Vast GA instance `57459128` and baseline instance `57462894` are confirmed
+absent. Their allocators and watchdogs exited; staging cleanup and canonical
+provider-zero passed. Official charges were $0.179 and $0.263. Official Vast
+charges for all task attempts, including SimReady intake and the separate failed
+Newton attempts and the first UK policy attempt, total $1.572.
+Baseline attempt 1 allocated nothing and has a separate official $0 closeout.
+
+Retained evidence is under `output/isaaclab_ga_20261023/` locally and beneath
+`/mnt/blueprint-work/isaaclab-ga-adf55cb3f/output/` on the control-plane host.
+The GA attempt 19 and baseline attempt 2 evidence directories each contain 14
+hash-verified files. `construction-pair-20261024/` retains the comparison,
+per-frame review, original extracted PNGs and a side-by-side figure. The
+canonical comparison receipt is
+`sha256:8197110ed86e342af9f96c7d0553ee812d7cda076f4908a1047dd94bc4ed84c1`.
+
+Before these runs, 87 focused material/comparison tests and the 25 required
+policy lifecycle/import-closure tests passed on the executed source commit.
+The native run source and bundles did not change between the paired attempts.
+
+The GA profile pins Isaac Lab `e3f7d9ff1f5d7f8280de3ece9000b7117f66bcf4`,
+Arena `b5708b72b21f37f74c8c66b1ee9cedff362a424b`, and the full NVIDIA Lab 3.0.0
+image by digest in `native_task_isaaclab_ga.py`. The source archive verifies each
+file, license and tree, plus twenty-one hashed Arena supplements from the released
+lock. The image supplies Torch 2.11/CUDA 13 and Warp 1.17. Provisioning checks
+actual versions and a CUDA operation before scene execution.
+
+`native_task_runtime_comparison` instruments the existing worker without changing
+its actions, observations or scoring. It records startup/build/step/reset timing,
+device-wide GPU memory, actual reset joints, camera gates and episode/contact/media
+receipts. Timing synchronizes CUDA for steps and resets. Memory is a sampled peak
+lower bound. An exact GPU UUID is required for the paired timing comparison.
+
+Prepare a construction precursor with:
+
+```bash
+python -m blueprint_pipeline.native_task_runtime_comparison_cli prepare-construction \
+  --packet-dir RETAINED_PACKET --variant baseline --output baseline-request.json
+python -m blueprint_pipeline.native_task_runtime_comparison_cli prepare-construction \
+  --packet-dir RETAINED_PACKET --variant isaaclab_3_ga --output ga-request.json
+```
+
+Pass each request to the existing construction bundle builder using
+`--runtime-comparison-request-path`, with its matching image and source packet.
+Allocation still uses only `paid_resource_allocator gpu-canary`, a sealed
+zero-retry authority, independent watchdog, hard budget/TTL and provider-zero.
+On a host configuring `BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT`, place
+`--adp-job-dir` beneath that physical directory so the shared guard can discover
+the live watchdog. Preflight and watchdog arming reject an outside path or a
+symlinked guard root. Keep bundles and source in their existing retained paths.
+A construction replay is a precursor; it does not qualify learned-policy
+performance. Policy comparisons bind both frozen specs and identical resolved
+scenario cells. Existing paused controls remain paused.
+
+Compare retained measurement files with:
+
+```bash
+python -m blueprint_pipeline.native_task_runtime_comparison_cli compare \
+  --baseline BASELINE_MEASUREMENT --candidate GA_MEASUREMENT --output comparison.json
+python -m blueprint_pipeline.native_task_runtime_comparison_cli compare-set \
+  --baseline-root BASELINE_POLICY_OUTPUT --candidate-root GA_POLICY_OUTPUT \
+  --output policy-comparison.json
+```
+
+The comparator refuses changed inputs, different GPUs, missing measurements or
+incomplete receipts. Numerical improvement alone does not authorize promotion:
+camera, reset, contact, scoring and complete policy-media evidence need review.
+Policy measurements retain the selected scenario and seed. Set comparison
+requires every expected scenario exactly once and one GPU across the entire set.
+After observing the GA policy machine, prepare the baseline with
+`prepare-policy --allowed-machine-id MACHINE_ID`. The sealed session authority
+constrains provider selection; invalid or altered constraints are refused. The
+actual GPU UUID still has to match, because a machine can contain several GPUs.
+Preparation creates and validates a unique watchdog-compatible resource name.
+The 39 focused comparison, retained-input, lifecycle and import-closure tests
+cover mismatched, missing and duplicated scenarios plus cross-scenario GPU drift.
+Actual GPU qualification results will be recorded here after execution.
+
+Focused validation covers release identity, dependency tamper refusal, lifecycle
+close semantics, unchanged runner values, exact frozen inputs and the sealed
+provider import closure. Existing worker/bundle/lifecycle tests protect the
+unchanged production path. No test result by itself establishes runtime uplift.
+
+The first allocated GA attempt on 2026-10-23 (Vast instance 57403653)
+terminated as `stopped_before_start`, before any simulator observation. The
+provider posted $0.006 of disk cost and $0 of GPU cost. Teardown and later
+exact-object cleanup confirmed absence. The original failed result is retained;
+a digest-bound post-cleanup result preserves its blockers and nonzero cost.
+This attempt provides no startup, memory, stepping, camera, reset, contact, or
+episode measurements.
+
+When later object cleanup completes, retain a derived closeout without rewriting
+the failed result with `python scripts/seal_native_task_arena_provider_zero.py
+--authority AUTHORITY --result ORIGINAL_RESULT --post-cleanup-output-dir NEW_DIR`.
+The command verifies the original failure, costs, cleanup, watchdog and teardown.
+
+Readback of the pinned NVIDIA image configuration confirmed `User=isaaclab`.
+The Vast SSH bootstrap requires root, so this exact image now requests
+`user=root`; other images and launch modes retain their previous behavior.
+Provider polling also retains redacted startup status text. This repairs an
+observed launch-contract mismatch; the original provider log did not establish
+that it caused the failure. Focused authority/CLI/launch tests passed (55), and
+provider liveness/log-poll tests passed (29). A fresh admitted native attempt is
+still required to qualify the runtime.
+
+`native_task_runtime_comparison_cli prepare-policy` prepares the existing paired
+Quick-10 harness from retained Pi0.5/GR00T execution specs, readiness, construction,
+and control receipts. It requires the caller to name the human authorization to
+reuse the frozen task. It verifies the retained model configuration against the
+current pinned adapters, preserves the exact instruction and query limits, and
+binds every cell to the original task digest. The prompt compatibility path is
+opt-in and rejects any instruction that differs from the sealed base task.
+
+Both variants bind the same task criteria, cells, models, and historical control
+receipt. Failed historical controls remain failed diagnostic evidence; preparation
+does not qualify a policy comparison, resume the paused controls stage, or create
+a Website activation. Static preflight reports unresolved scenario/observation
+gates before allocation. The observation gate verifies the same retained prompt
+digest instead of regenerating a modern instruction. All 45 focused worker,
+lifecycle, import-closure and retained-input tests passed; native policy
+execution remains pending.
+
+The next allocated attempt (57404798) completed the pinned GA provisioning and
+native simulator startup, measured at 287.031 seconds including cold shader
+compilation. It stopped before environment construction: the complete native
+dependency matrix found `msgpack` absent. The image's source lock listed the
+package, but that did not establish installation in its environment. This was a
+preflight process defect. The source packet now carries the exact Arena-locked
+`msgpack` 1.1.0 wheel and verifies its import/version before Kit starts.
+
+The same run exposed two identical driver rows for one process/GPU memory
+sample. The reader now deduplicates identical rows and still refuses conflicting
+observations. The original measurement remains incomplete; no memory, stepping,
+camera, reset, contact, or episode qualification is claimed. Official charges
+were $0.169; teardown, provider absence and object cleanup were confirmed.
+All 80 focused source, launch, measurement, lifecycle and import tests passed
+after the repairs. The original task, source assets and controls remain frozen.
+
+Attempt 57412520 passed all 78 native dependency imports and completed simulator
+startup in 500.973 seconds, including 450 seconds of cold shader compilation.
+Environment construction then exposed Arena GA's removed
+`init_franka_arm_pose` event. No stepping, camera, reset, contact or episode result
+was produced. Provider absence, watchdog completion and object cleanup were
+verified; the official charge was $0.113.
+
+The compatibility repair preserves the retained reset event and ordering. Source
+comparison also found changed robot asset roots (6.0 to 6.2), an embedded stand,
+end-effector frames, camera parents and gripper velocity. Comparison bundles now
+carry the same original 6.0 robot USD and two texture files (28,091,506 bytes),
+verify their hashes before allocation and use the retained configuration on both
+runtimes. Normal runtime defaults remain unchanged. The measurement records the
+concrete robot configuration and refuses a pair with missing or unequal readback.
+
+The original USD references a missing `Rubber_Textured.mdl` (HTTP 404); this gap
+is retained on both sides. `OmniPBR.mdl` remains supplied by the pinned renderer.
+Camera review must establish whether the missing material affects task views;
+there is no complete-appearance or runtime-improvement qualification yet. Asset
+files belong beside each comparison request under `retained_droid_assets/`, with
+the original relative layout. Bundling does not fetch or replace them.
+
+Attempt 57418653 ended during provider container provisioning, before the
+Blueprint worker started. Its official charge was $0.016 for disk and zero for
+GPU execution. The instance and exact staged objects were confirmed absent.
+The later-cleanup receipt exposed a canonical-digest bug: a derived result had
+retained the original result digest. Recovery now validates the original digest
+and seals the derived result separately, preserving the original bytes, failure
+and costs. All 107 focused authority, CLI and spend-reconciliation tests passed.
+
+The shared guard journal later established the cause of that provisioning exit:
+it reaped instance 57418653 as unowned after its 480-second boot limit. The live
+allocator and watchdog were outside its configured evidence root. This was an
+ownership-discovery defect, not evidence of an Isaac or provider-host failure.
+For the already running replacement, an additional real watchdog was started
+under the configured root with the same exact instance, prefix and deadline;
+the deployed guard's ownership checker recognized it. No guard limit or service
+configuration was relaxed. The encoded path preflight passed 81 focused
+watchdog and native allocator tests, including dry-run refusal before artifacts
+or provider work and symlink-escape refusal. Future jobs use the registered root.
+
+Attempt 57429691 passed all 78 dependency imports and measured simulator startup
+at 173.414 seconds. Camera attachment then stopped at GA's changed render-product
+interface. The compatibility reader now accepts GA's HydraTexture path while
+retaining exact camera prim binding and rejecting conflicting identities.
+Memory sampling also exposed host/container PID mismatch; both comparison sides
+now use one visible GPU's device memory and require the worker to hold an NVIDIA
+device. This includes renderer and other process allocations and is explicitly
+labeled device-wide. The original incomplete measurement is preserved. No
+stepping, reset, camera or episode result was completed; the official charge was
+$0.054 and provider absence was verified through the existing recovery boundary.
+
+Attempt 57432938 could enumerate CUDA devices but could not create a Vulkan
+instance (`ERROR_INCOMPATIBLE_DRIVER`). Direct loading confirmed that its NVIDIA
+graphics libraries, including the library named by its Vulkan ICD, were absent.
+The CUDA-only bootstrap incorrectly continued to download the bundle. The exact
+host was destroyed after retaining the diagnostics, before the workcell started.
+This is a bootstrap preflight defect, not an Isaac comparison result. The smoke
+now loads the selected NVIDIA Vulkan ICD library before starting Kit or fetching
+the bundle. Missing libraries and software-only ICDs fail closed. Actual rendering
+still requires the native camera checks; loading a library is not rendering proof.
+Eight focused bootstrap/launch tests and changed-file lint passed for this repair.
+
+Attempt 57434567 loaded the graphics ICD, then Isaac's Python process segfaulted
+before Kit emitted diagnostics. No workcell was downloaded or executed. The
+allocator destroyed the instance; exact-object cleanup and provider absence were
+verified, and the official charge was $0.051. The same-process library preflight
+had changed Kit's native initialization conditions, so the probe now runs in a
+separate interpreter before the unchanged Kit/Warp smoke. This removes that
+interference; the retained log alone does not establish the segfault's cause.
+Ten focused tests passed, including a subprocess regression that rejects driver
+state leaking into Kit and verifies that an unavailable library prevents Kit
+startup. Changed-file lint and shell syntax checks passed. A native rerun is
+still required; no paired runtime or camera qualification is claimed.
+
+Both bootstrap interpreters enable Python's fatal-error handler so a native
+startup crash leaves its Python stack in the retained provider log. Eleven
+focused tests pass, including a controlled child-process segmentation fault
+with core dumps disabled that verifies the diagnostic reaches stderr. This
+adds diagnostic evidence without changing the workcell, actions or scoring.
+
+## Policy dependency refusal, 2026-10-24
+
+The first GA policy allocation that reached provisioning, Vast `57491120`, ran
+source `ab3ae0fc62aea459584692e8b06f22301a755deb`. Its actual RTX 6000 Ada
+UUID was `GPU-55697b98-3d04-983e-6bba-8e27570e83c4`, driver `580.178.04`,
+with 49,140 MiB total memory. The independent watchdog and shared spend guard
+recognized the allocation, and the native Isaac bootstrap completed in 25.656
+seconds. This was a startup smoke; the workcell and policy episodes did not run.
+
+OpenPI's verified upstream lock then failed installing MuJoCo 2.3.7. Provisioning
+created a system-Python 3.12.3 environment, but `uv sync` selected the image's
+Python 3.12.14 and recreated it. The locked `gym-aloha` dependency requires
+MuJoCo 2.3.7, which supplies Linux CPython 3.11 wheels but no CPython 3.12 wheel.
+Its source build refused `MUJOCO_PATH environment variable is not set`.
+
+The narrow repair uses the same Python 3.11.9 pin as the existing standalone
+OpenPI image, binds frozen sync explicitly to each candidate's own interpreter,
+and refuses a MuJoCo source build. Both runtimes must use this repaired
+provisioning before a learned-policy pair can be compared. Task inputs, model
+revisions, upstream dependency-lock bytes, controls and scoring remain fixed.
+This paid discovery was a provisioning-preflight defect; source tests alone do
+not establish a successful dependency install or a policy outcome.
+
+The original result SHA-256 is
+`96bd909bfc6061af28a2dc217726d024d38eb76a02104e63c9810cd61d0684f7`.
+The exact raw output, provisioning log, typed before-first-observation media
+gap, hardware readback and teardown records are retained. Canonical allocator
+and watchdog exit, instance absence, staging cleanup and global Vast zero were
+verified. Official billing is $0.101; there is no continuing spend from this run.
+The comparison remains unqualified, with zero learned-policy episodes.
+
+The targeted `Policy dependency replay` Linux CI job exercises this boundary
+before another paid attempt. It reproduces the exact locked MuJoCo refusal on
+Python 3.12, then consumes the generated production sync command to install the
+complete frozen OpenPI environment with the image-style `UV_PYTHON` override
+present. It checks installed dependency consistency and imports the upstream
+policy/configuration modules, MuJoCo, Torch and CPU JAX under Python 3.11.9.
+It retains command logs, installed distributions and a digest-bound
+`openpi_policy_dependency_replay.v1` result. It downloads no checkpoint, sends
+no policy observation and establishes no GPU, simulator or episode result.
+Run the same check on a fresh Linux x86-64 CPU workspace with:
+
+```bash
+PYTHONPATH=src /usr/bin/python3 scripts/replay_openpi_policy_dependencies.py \
+  --workspace /absolute/new-dependency-workspace \
+  --output /absolute/new-dependency-evidence \
+  --source-commit "$(git rev-parse HEAD)"
+```
+
+The dependency replay needs Python 3.12, the native build/import packages named
+by its CI job, and sufficient temporary disk space. It preserves existing
+directories and the original failure. A passing replay is a provisioning gate;
+the full paired policy comparison is still required.
+
+The retained construction readbacks report NumPy 2.3.1 in the baseline and
+2.5.1 in GA. OpenPI's frozen client package declares NumPy below 2, so its
+former dependency-resolving install into Kit would alter that simulator
+environment. The client now copies its exact verified source and one
+hash-locked pure-Python WebSocket wheel beside the runtime. Import activation
+precedes Kit startup; no package installer writes to Isaac's prefix, and
+scientific/model packages are refused in the client staging directory.
+
+The same CPU replay tests the production staging commands against both
+observed NumPy/MessagePack combinations (2.3.1/1.2.1 and 2.5.1/1.1.0). It
+checks that NumPy stays unchanged and exchanges synthetic lossless RGB/state
+and action packets with the frozen NumPy 1.26 policy-side codec. These are
+wire-compatibility fixtures, not model queries, simulator episodes or task
+outcomes. The actual GPU pair must still record its installed environments
+and complete policy-input media.
+
+## Weighted-server startup and funding refusal, 2026-10-24
+
+Vast `57512236` ran source
+`cb14592575d6ce8f532db541ea4359bf8c2c94ed` on RTX 5880 Ada UUID
+`GPU-1925818e-d48f-b7e1-8211-cef77c827d10`, driver `580.159.03`,
+with 49,140 MiB total memory. Native bootstrap completed in 39.163 seconds.
+The full frozen OpenPI install, staged SDK wire client, verified checkpoint
+fetch, and both weighted OpenPI and GR00T server readiness checks completed.
+Isaac's NumPy 2.3.1 stayed unchanged; the wire client used the exact MessagePack
+fallback and the SDK's existing typing_extensions. No policy query or learned
+episode is proven. The first cell started Kit but produced no retained first
+observation before the provider exited. There is no terminal runtime archive or
+worker exit code; the typed before-first-observation media gap remains explicit.
+
+The original allocator result SHA-256 is
+`f751a100ef809b754076b0cc7951e42078977ce2e66b63b83700b425e53553df`.
+The 55-file host closeout manifest is
+`4c9c3a036794ca867c1186fe6f1fca9607ac5a01a7d42cfaf4c7f2885cba9991`;
+the earlier 17-file weighted-server snapshot manifest is
+`6ae1b2b778d22d50a716031ebf24aab1db62558f0f9dd6253805b7cd384d884f`.
+Both sets were copied and hash-verified locally. Allocator and independent
+watchdog exit, instance absence, staged-object absence, and global Vast zero
+were verified. The retained official charge for this allocation was $1.633 at
+closeout; later provider postings may change reconciliation totals.
+
+The subsequent read-only account observation returned HTTP 200 and zero usable
+credit; the billing console also showed a negative balance. Funding exhaustion
+is a plausible explanation for the exit, but the provider's actual termination
+reason was not retained. The scheduled spend guard recognized the instance as
+protected and selected no reap candidate; its independent deadline had not
+expired. Do not label this an observed OOM, runtime timeout, or policy failure.
+
+The existing credit admission seam is now mandatory for policy canary sessions,
+even when the optional legacy credit setting is disabled. The full nonallocating
+preflight checks funding before consuming one-shot session authority, and the
+adapter repeats the check under its paid-launch lock before offer search.
+Insufficient, stale, malformed, or unverifiable credit refuses allocation.
+The receipt remains a balance snapshot, not a reservation or spend authority.
+No task, model, input, scoring, runtime-worker, or allocation limit changes are
+part of this funding repair. The paired policy comparison remains incomplete.
+
+## Retained constructor refusal, 2026-10-24
+
+Vast `57520002` ran source `7db0e7d6139642f47916c9f05af8f8c5f3b37de5`
+on RTX 5880 Ada UUID `GPU-f9d722da-cebf-3e33-9f39-ded64d8212de`, driver
+`580.159.03`, with 49,140 MiB total memory. Bootstrap app readiness was 29.155
+seconds. The full frozen OpenPI environment, 27 verified checkpoint files
+(12,434,530,837 bytes), and both weighted policy servers reached readiness.
+The SDK's NumPy 2.3.1 remained unchanged. These are provisioning observations,
+not policy queries or task outcomes.
+
+Cell zero completed Isaac launch after cold ray-tracing shader compilation:
+417.320414 seconds, sampled peak device memory 15,340 MiB. This incomplete
+startup measurement is not comparable to a completed workcell episode. Robot
+construction then raised `AssertionError` before any build, reset, step,
+observation or policy load completed. The original child source trace ends at
+GA Arena `droid.py:set_initial_joint_pose:228`. The parent incorrectly reported
+`droid_policy_canary_embodiment_parity_probe_failed`; no motion-parity trial ran.
+
+CPU replay of that exact setter and the sealed cell-zero robot input reproduces
+`expected 13 joint positions, got 7`. The frozen input supplies seven named
+Franka arm joints; GA changed its constructor setter to require all thirteen
+articulation joints. The repair skips that setter only for the exact ordered
+seven-arm mapping and applies the unchanged values through the retained reset
+event. The arena builder still binds the supplied named spawn state. No gripper
+values are invented, and the existing thirteen-value path remains unchanged.
+Pinned baseline and GA constructor classes and reset event functions, licenses,
+source hashes and the exact input are retained in
+`tests/fixtures/droid_constructor_replay/`. CPU tests execute the released
+method bodies with SDK configuration/asset and kernel stand-ins; this is not
+native simulation evidence. A blocked pre-policy child now also seals a blocked
+parent result with the original typed exception, source trace, raw child and
+before-first-observation media gap, before the parity gate. The gate itself is
+unchanged.
+
+Focused verification: 96 tests passed in 84.50 seconds across the released
+constructor/reset replay, frozen configuration, worker/session orchestration,
+runtime-comparison contracts, mandatory lifecycle rehearsal and isolated
+provider import closure. Changed-file Ruff and `git diff --check` passed.
+These checks cover the encoded compatibility and evidence-retention repairs;
+native workcell construction and all policy episodes remain unproven.
+
+The original allocator result SHA-256 is
+`a28f772b4e777c754353f229e8a23e9f450bfa61789a4e48b57ece5e1b541cb4`;
+the durable archive SHA-256 is
+`a5e51a61d6825689feecd2342bb495135c02a7176cdc358c79170bf177f31175`.
+All 29 runtime members and all 110 retained runtime/host/billing evidence files
+were copied and hash-verified locally, manifest
+`ea17c7892f0bd69231bc74cf601507ca0427948ea4e55e0113ec7c61715187b0`.
+The child result is
+`runtime/cell_runs/00/native_task_arena_policy_canary_session_result.v1.json`
+within the attempt-seven evidence directory; SHA-256
+`5d14afbea3fb61118a4d87220ac11f89f4fb3646d29099d6d73d80acb23bd5d7`.
+The exact captured constructor input SHA-256 is
+`5220ad77f58230d83b5e6153a7009beda624e7b824d8695ca8f98c1d20a84927`.
+
+Canonical allocator/watchdog exit, instance absence, staged-object cleanup and
+global Vast zero were verified. Official charge was $1.715 at closeout;
+later provider postings may change reconciliation totals. The original raw
+result has `candidate_policy_queried: false`; its absent scientific-execution,
+first-observation and worker-exit fields remain absent. Zero learned-policy
+episodes are proven. All forty baseline/GA learned episodes and their media,
+on the same actual physical GPU, remain required before qualification.
+
+## Native construction passes; composition refuses, 2026-10-24
+
+Attempt eight executed `56bcc4c068fb6a029a7cf76aeb93e2036f5b6ab0` on Vast
+`57527038`, GB machine `154485`. Readback proved NVIDIA RTX A6000, 49,140 MiB,
+driver `580.178.04`, physical UUID
+`GPU-c539a641-0a6e-7636-c0fd-9474e67f5c8b`. The owner added account credit;
+the agent made no credit purchase. The existing $8 execution cap, $1/hour
+ceiling, 7,200-second TTL, one allocation and zero retries remained unchanged.
+
+Blank bootstrap app readiness took 19.641 seconds. Frozen OpenPI installation,
+all 27 checkpoint files (12,434,530,837 bytes), the SDK-preserving wire client
+and both weighted policy servers reached readiness. Cell zero's full native
+startup took 104.611883 seconds and native robot/workcell construction passed
+in 64.920886 seconds, with no build errors. The retained seven-arm constructor
+repair therefore passed actual native construction. Sampled device-wide memory
+reached 18,893 MiB, including both servers; this is not an episode measurement
+or an improvement over an earlier attempt that failed before construction.
+
+The pre-policy composition gate then refused
+`external:task_object:composition_support_background_occlusion_requires_review`.
+Its external view has 216,527 task-object interior pixels after the existing
+two-pixel silhouette exclusion: 2,942 lack the task object's semantic label in
+the full scene, with another 440 differences in the silhouette band. The
+overview has 4,561 interior pixels and no missing interior pixels. Visibility
+was restored, full-scene sensor buffers refreshed, and the composition receipt
+records zero physics steps and zero policy queries between passes. Native
+construction frames, raw RGB/depth/semantic arrays and both coverage passes
+are retained. No policy was loaded by the cell or queried, no policy-input
+observation was admitted, and no learned episode completed.
+
+Missing pixels cluster near the washer's lower front and floor contact, with
+smaller regions near the door and right edge. The cause remains unproven.
+An appearance-only pass was not requested by the coverage gate, Gaussian
+distance-AOV surface equivalence remains unqualified, and RGB differences do
+not prove primary-ray contributions. The original rubber-material warning is
+retained but is not the identified refusal. No scene input, transform,
+composition threshold or Gaussian was changed or deleted.
+
+The session sealed the complete blocked observation gate and raised
+`PolicyCanarySessionError` at `execute_paired_session`. The parent's strict
+pre-policy exception recognizer accepted only an exception inside the gate
+callback with no returned gate. It rejected this returned-refusal shape as
+`policy_canary_isolated_cell_result_invalid`, hiding the cause from the root
+result. This was a paid reporting-preflight process defect. CPU replay of the
+exact archived child and the real parent lifecycle reproduces the defect
+before repair. The repair retains a digest-valid blocked gate only when the
+child also proves no loaded policy, no query, no episode, zero telemetry and
+runtime closeout. Inconsistent or successful gate shapes remain rejected;
+retaining a refusal does not pass it or admit an episode.
+
+Focused verification passed 116 tests in 105.88 seconds, including mandatory
+lifecycle and provider import closure, worker/session orchestration, runtime
+comparison, native composition and the exact archived child. A separate replay
+of the losslessly retained native masks reproduces the 2,942-pixel refusal and
+the passing overview through the unchanged composition predicate. These are
+CPU reporting/predicate checks, not native qualification or new policy evidence.
+
+The raw allocator result SHA-256 is
+`871225d21471559658bc2a9c7d3e9988bb3b0a43409acf2390c1289af20a11f8`;
+the 8,112,460-byte durable archive SHA-256 is
+`93dbaf8a3a26d72cd583b0bf10f7aef5b3d9a9cfd4638423330c76858564d7b0`.
+All 62 runtime archive members and all 152 retained runtime/host/billing files
+were copied and hash-verified locally, manifest
+`d1195f7c6cbae0175aea6ff006a915d66fc9f3913957429ce7542ddada5e2ca8`.
+The exact blocked child SHA-256 is
+`74b1953b449173a164fd5b3fa027a637b7bd63201e5f2e900705cb50bf450088`.
+The full returned gate and compressed semantic masks are committed as replay
+fixtures, with original source hashes and development-only claim limits.
+
+Canonical teardown, allocator/watchdog exit, staged-object absence and fresh
+global Vast zero passed. Official charge was $0.273 at closeout; subsequent
+provider postings may change reconciliation totals. Shared deployment
+coordination was released after durable retention. The raw result preserves
+absent/null/false fields rather than filling missing scientific results.
+The comparison remains at **0/40 valid learned episodes**. Composition must be
+resolved on evidence before a policy attempt; baseline still requires the same
+actual GPU as a valid GA session. Newton remains separately unqualified.

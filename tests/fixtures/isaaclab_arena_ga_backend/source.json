@@ -1,0 +1,33 @@
+{
+  "source_repository": "https://github.com/isaac-sim/IsaacLab-Arena",
+  "source_commit": "b5708b72b21f37f74c8c66b1ee9cedff362a424b",
+  "license": "Apache-2.0",
+  "archive_sha256": "28e03c1a95d979262dbff6e55203e019b45f149917c10dd5602e88848d0f49f5",
+  "files": [
+    {
+      "source_path": "isaaclab_arena/environments/isaaclab_arena_environment.py",
+      "sha256": "f53e566eb74f72cb0581e942781c55c7acab008f12f2b8919656d6ac317d9408",
+      "archive_member": "runtime_sources/arena/isaaclab_arena/environments/isaaclab_arena_environment.py"
+    },
+    {
+      "source_path": "isaaclab_arena/environments/arena_env_builder.py",
+      "sha256": "fcf7c088a1c08f998fff4ca6deddc835318ade0d35b38e8db0df460932b9fa79",
+      "archive_member": "runtime_sources/arena/isaaclab_arena/environments/arena_env_builder.py"
+    },
+    {
+      "source_path": "isaaclab_arena/utils/physics_backend.py",
+      "sha256": "369cd8bc4ead94cfcec58deed87e439ef53dbaea4e5f169b9691a9b356a2f054",
+      "archive_member": "runtime_sources/arena/isaaclab_arena/utils/physics_backend.py"
+    },
+    {
+      "source_path": "LICENSE.md",
+      "sha256": "1296f601b312777d3aaaf3c36a9999f489a0e0d1dc5a341fedeccf25918366f1",
+      "archive_member": "runtime_sources/arena/LICENSE.md"
+    },
+    {
+      "source_path": "isaaclab_arena/environments/isaaclab_arena_manager_based_env_cfg.py",
+      "sha256": "97196afd442adc0f8ca26dba23097d6dbeaadfea769acd97375dfca99fac93c1",
+      "archive_member": "runtime_sources/arena/isaaclab_arena/environments/isaaclab_arena_manager_based_env_cfg.py"
+    }
+  ]
+}

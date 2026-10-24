@@ -210,6 +210,13 @@ Path(sys.argv[1]).write_text(json.dumps({{
   "run_kind": "internal_policy_canary",
   "claim_ceiling": "diagnostic_policy_execution",
   "candidate_policy_queried": False,
+  "visual_evidence": {{"media_gap": {{
+    "type": "before_first_observation" if sys.argv[3] in {{
+      "policy_canary_runtime_source_provision_failed", "policy_canary_input_preflight_failed",
+      "policy_canary_control_mode_missing", "policy_canary_control_mode_invalid",
+    }} else "entrypoint_failed_without_media_receipt",
+    "reason": sys.argv[3],
+  }}}},
   "blockers": [sys.argv[3]],
   "worker_exit_code": int(sys.argv[2]),
 }}, sort_keys=True) + "\\n", encoding="utf-8")
@@ -222,6 +229,9 @@ teardown_servers() {{
   trap - EXIT INT TERM HUP
   write_fallback_result policy_canary_entrypoint_failed_without_result "$original_rc"
   for candidate in pi05_droid groot_n17_droid; do
+    if [ ! -f "$OUT_DIR/adp009d_policy_server_receipt.$candidate.json" ]; then
+      continue
+    fi
     /isaac-sim/python.sh "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
       --terminate-ready-server \
       --receipt "$OUT_DIR/adp009d_policy_server_receipt.$candidate.json" \
@@ -249,7 +259,10 @@ fi
 import json, os
 from pathlib import Path
 from adp_arena_provider_runner import preflight_policy_canary_runtime_directory
-receipt = preflight_policy_canary_runtime_directory(Path(os.environ["RUNTIME_DIR"]))
+receipt = preflight_policy_canary_runtime_directory(
+    Path(os.environ["RUNTIME_DIR"]), physical_gpu_output_root=Path(os.environ["OUT_DIR"]))
+Path(os.environ["OUT_DIR"]).joinpath("policy_canary_static_startup_preflight.v1.json").write_text(
+    json.dumps(receipt, sort_keys=True) + "\\n", encoding="utf-8")
 print(json.dumps(receipt, sort_keys=True))
 raise SystemExit(0 if receipt["status"] == "passed" else 2)
 PYINPUT
@@ -261,22 +274,30 @@ fi
 
 # Strict controls execute before either checkpoint is loaded. The second stage
 # validates and reuses these exact cell receipts after ordinary provisioning.
-strict_controls=$(/isaac-sim/python.sh - <<'PYSTRICT'
+# Isaac Lab's launcher emits informational stdout. Use a file for this protocol.
+/isaac-sim/python.sh - <<'PYSTRICT'
 import json, os
 from pathlib import Path
 from blueprint_pipeline.native_policy_canary_control_gate import controls_required
 inputs = json.loads((Path(os.environ["RUNTIME_DIR"]) / "runtime_inputs/policy_canary_runtime_inputs.json").read_text())
-print("required" if controls_required(inputs["task_success_contract"]) else "legacy")
+mode = "required" if controls_required(inputs["task_success_contract"]) else "legacy"
+Path(os.environ["OUT_DIR"]).joinpath("policy_canary_control_mode.txt").write_text(
+    mode + "\\n", encoding="utf-8")
 PYSTRICT
-)
 strict_rc=$?
 if [ $strict_rc -ne 0 ]; then exit $strict_rc; fi
+IFS= read -r strict_controls < "$OUT_DIR/policy_canary_control_mode.txt"
+if [ $? -ne 0 ]; then
+  write_fallback_result policy_canary_control_mode_missing 86
+  exit 86
+fi
 if [ "$strict_controls" = required ]; then
   BLUEPRINT_POLICY_CANARY_MATRIX_STAGE=controls /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
   controls_rc=$?
   if [ $controls_rc -ne 0 ]; then exit $controls_rc; fi
   export BLUEPRINT_POLICY_CANARY_MATRIX_STAGE=policies
 elif [ "$strict_controls" != legacy ]; then
+  write_fallback_result policy_canary_control_mode_invalid 86
   exit 86
 fi
 
@@ -309,6 +330,8 @@ def build_policy_canary_session_bundle(
     implementation_commit: str,
     hotfix_overlay_path: str | Path | None = None,
     generated_at: str | None = None,
+    container_image: str = NATIVE_TASK_ARENA_IMAGE,
+    runtime_comparison_request_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package both frozen policy servers and the warm 20-episode worker."""
 
@@ -358,6 +381,18 @@ def build_policy_canary_session_bundle(
             _read(groot_execution_spec_path), candidate="groot_n17_droid"
         ),
     }
+    comparison = None
+    comparison_assets = {}
+    if runtime_comparison_request_path is not None:
+        from .native_task_runtime_comparison import validate_comparison_request
+        comparison = validate_comparison_request(_read(runtime_comparison_request_path), inputs=inputs,
+            plan=_read(packet_receipt_path.parent / "native_task_arena_scene_plan.v1.json"), specs=specs)
+        if comparison["runtime_identity"]["container_image"] != container_image:
+            raise ValueError("runtime_comparison_image_mismatch")
+        from .native_task_droid_runtime_compat import comparison_robot_asset_inputs
+        comparison_assets = comparison_robot_asset_inputs(runtime_comparison_request_path)
+    if container_image != NATIVE_TASK_ARENA_IMAGE and comparison is None:
+        raise ValueError("alternate_runtime_requires_explicit_comparison")
     if set(specs) != set(inputs["candidate_ids"]) or set(specs) != set(authority["candidate_ids"]):
         raise ValueError("policy_canary_provider_candidate_interfaces_not_admitted")
     if any(
@@ -415,15 +450,18 @@ def build_policy_canary_session_bundle(
         implementation_commit=implementation_commit,
         execution_mode="construction_canary",
         expected_output_filename=PROVIDER_RESULT_FILENAME,
-        container_image=NATIVE_TASK_ARENA_IMAGE,
+        container_image=container_image,
         runtime_source_packet_receipt=runtime_source_packet_receipt,
         runtime_extra_files={f"blueprint_pipeline/{name}": package / name for name in CANARY_SHIPPED_PACKAGE_FILES},
         bound_runtime_inputs={
+            **comparison_assets,
             "policy_canary_runtime_inputs.json": runtime_input_manifest_path,
             "policy_canary_session_authority.json": session_authority_path,
             "policy_execution_spec.pi05_droid.json": pi05_execution_spec_path,
             "policy_execution_spec.groot_n17_droid.json": groot_execution_spec_path,
             "native_task_arena_construction_result.v1.json": construction_result_path,
+            **({"native_task_runtime_comparison_request.v1.json": runtime_comparison_request_path}
+               if comparison is not None else {}),
         },
         generated_at=generated_at,
     )
@@ -452,7 +490,10 @@ def build_policy_canary_session_bundle(
             runtime / CHECKPOINT_INVENTORY_STAGED_NAME,
         )
         entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
-        entrypoint.write_text(_entrypoint(), encoding="utf-8")
+        script = _entrypoint()
+        if comparison is not None and comparison["variant"] == "isaaclab_3_ga":
+            script = script.replace("/isaac-sim/python.sh", "/workspace/isaaclab/isaaclab.sh -p")
+        entrypoint.write_text(script, encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         manifest_path = runtime / "adp_arena_provider_manifest.json"
         manifest = _read(manifest_path)
@@ -484,6 +525,9 @@ def build_policy_canary_session_bundle(
                 },
                 "contract_python_dependencies": [contract_dependency],
                 "static_startup_preflight": static_preflight,
+                **({"runtime_comparison": {"request_digest": comparison["request_digest"],
+                    "relative_path": "runtime_inputs/native_task_runtime_comparison_request.v1.json"}}
+                   if comparison is not None else {}),
                 "input_digest": "",
             }
         )
@@ -526,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--hotfix-overlay")
     parser.add_argument("--generated-at")
+    parser.add_argument("--container-image", default=NATIVE_TASK_ARENA_IMAGE)
+    parser.add_argument("--runtime-comparison-request-path")
     args = parser.parse_args(argv)
     receipt = build_policy_canary_session_bundle(
         job_dir=args.job_dir,
@@ -539,6 +585,8 @@ def main(argv: list[str] | None = None) -> int:
         implementation_commit=args.implementation_commit,
         hotfix_overlay_path=args.hotfix_overlay,
         generated_at=args.generated_at,
+        container_image=args.container_image,
+        runtime_comparison_request_path=args.runtime_comparison_request_path,
     )
     print(json.dumps(receipt, sort_keys=True))
     return 0

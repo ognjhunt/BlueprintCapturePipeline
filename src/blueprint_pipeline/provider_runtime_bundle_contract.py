@@ -311,10 +311,26 @@ def provider_runtime_contract_blockers(
                 )
             )
         )
+        composition_runner_valid = all(
+            token in runner_text
+            for token in (
+                "native_task_arena_runtime_preflight.v1.json",
+                "fixed_native_mesh_particlefield_composition",
+                "validate_request",
+                "verify_record",
+                "build_native_task_arena_environment",
+                "run_composition_diagnostic",
+                "preflight_only",
+                "task_motion_executed",
+                "candidate_policy_queried",
+                "provider_zero_required_after_return",
+            )
+        )
         runner_valid = (
             construction_runner_valid
             or runtime_preflight_runner_valid
             or controlled_policy_runner_valid
+            or composition_runner_valid
         )
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
     elif provider_bundle_kind == "native_g1_development_campaign":

@@ -316,3 +316,36 @@ def test_camera_refuses_render_product_bound_to_another_prim(monkeypatch):
     env = SimpleNamespace(unwrapped=SimpleNamespace(scene={'robot':object(),'wrist':camera}))
     with pytest.raises(RuntimeError,match='native_camera_render_product_view_binding_mismatch'):
         install_native_wrist_camera_attachment(env=env,camera_name='wrist')
+
+
+def test_ga_tiled_render_product_preserves_camera_view_binding():
+    from blueprint_pipeline.native_task_direct_camera_aim import _camera_render_identity
+    view = _scene_view()
+    data = SimpleNamespace(spec=SimpleNamespace(camera_prim_paths=list(view.prim_paths)),
+                           render_product=SimpleNamespace(path='/Render/Products/rp_ga'))
+    camera = SimpleNamespace(_render_data=data, _view=view)
+    value = _camera_render_identity(camera)
+    assert value['render_product_paths'] == ['/Render/Products/rp_ga']
+    assert value['camera_prim_paths'] == list(view.prim_paths)
+    data.spec.camera_prim_paths = ['/World/OtherCamera']
+    with pytest.raises(RuntimeError, match='native_camera_render_product_view_binding_mismatch'):
+        _camera_render_identity(camera)
+
+
+@pytest.mark.parametrize('path', ['', 'relative/path', None])
+def test_ga_tiled_render_product_refuses_missing_or_relative_path(path):
+    from blueprint_pipeline.native_task_direct_camera_aim import _camera_render_identity
+    view = _scene_view()
+    data = SimpleNamespace(spec=SimpleNamespace(camera_prim_paths=list(view.prim_paths)),
+                           render_product=SimpleNamespace(path=path))
+    with pytest.raises(RuntimeError, match='native_camera_render_product_view_binding_mismatch'):
+        _camera_render_identity(SimpleNamespace(_render_data=data, _view=view))
+
+
+def test_camera_refuses_conflicting_legacy_and_ga_render_product_identity():
+    from blueprint_pipeline.native_task_direct_camera_aim import _camera_render_identity
+    view = _scene_view()
+    data = _render_data()
+    data.render_product = SimpleNamespace(path='/Render/Products/other')
+    with pytest.raises(RuntimeError, match='native_camera_render_product_view_binding_mismatch'):
+        _camera_render_identity(SimpleNamespace(_render_data=data, _view=view))

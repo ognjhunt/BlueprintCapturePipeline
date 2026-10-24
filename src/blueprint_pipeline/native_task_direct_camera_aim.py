@@ -58,7 +58,16 @@ def _camera_render_identity(camera):
     spec = getattr(data, 'spec', None)
     rendered = [str(path) for path in getattr(spec, 'camera_prim_paths', ())]
     delegated = [str(path) for path in camera._view.prim_paths]
-    products = [str(path) for path in getattr(data, 'render_product_paths', ())]
+    product_paths = getattr(data, 'render_product_paths', None)
+    # The pinned GA RTX renderer owns one tiled HydraTexture. The retained
+    # renderer exposes its product paths directly; both keep the camera spec.
+    product = getattr(data, 'render_product', None)
+    tiled_path = getattr(product, 'path', None)
+    if product_paths is None:
+        product_paths = [tiled_path] if tiled_path is not None else ()
+    products = [str(path) for path in product_paths]
+    if tiled_path is not None and products != [str(tiled_path)]:
+        raise RuntimeError('native_camera_render_product_view_binding_mismatch')
     if (not delegated or len(set(delegated)) != len(delegated) or rendered != delegated
         or not products or any(not path.startswith('/') for path in products)):
         raise RuntimeError('native_camera_render_product_view_binding_mismatch')

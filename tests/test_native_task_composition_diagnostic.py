@@ -1,7 +1,9 @@
 """CPU rehearsal uses real USD scopes and production lossless native AOV writer."""
 from dataclasses import replace
 from types import SimpleNamespace as NS
+import hashlib
 import json
+from pathlib import Path
 import sys
 
 import numpy as np
@@ -198,6 +200,36 @@ def test_composition_gate_retains_edge_differences_without_promoting_them_to_int
     assert result['interior_pixels_occluded_by_appearance'] == 1
 
 
+def test_retained_native_camera_masks_preserve_the_exact_composition_refusal(tmp_path):
+    from blueprint_pipeline.native_task_asset_composition_gate import assess_composition_pixels
+
+    fixture = Path(__file__).parent / 'fixtures/native_task_composition_refusal'
+    manifest = json.loads((fixture / 'manifest.json').read_text())
+    archive = fixture / 'masks.npz'
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest['compressed_array_sha256']
+    with np.load(archive, allow_pickle=False) as arrays:
+        for role, interior, intrusion, silhouette in [('external', 216527, 2942, 440),
+                                                      ('overview', 4561, 0, 0)]:
+            output = tmp_path / role
+            pixel_root = output / 'pixel_comparison'
+            pixel_root.mkdir(parents=True)
+            for row in manifest['source_files']:
+                if not row['array_key'].startswith(role + '__'):
+                    continue
+                path = pixel_root / Path(row['relative_path']).name
+                np.save(path, arrays[row['array_key']], allow_pickle=False)
+                assert hashlib.sha256(path.read_bytes()).hexdigest() == row['sha256']
+            result = assess_composition_pixels({'status': 'captured', 'blockers': []}, output_root=output)
+            assert result['support_interior_pixels'] == interior
+            assert result['interior_pixels_occluded_by_appearance'] == intrusion
+            assert result['silhouette_pixels_occluded_by_appearance'] == silhouette
+            assert result['passed'] is (role == 'overview')
+            assert result['blockers'] == ([] if role == 'overview' else [
+                'composition_support_background_occlusion_requires_review'])
+            assert result['pixel_cause_proven'] is False
+            assert result['automatic_gaussian_deletion_authorized'] is False
+
+
 @pytest.mark.parametrize('failure', ['capture', 'pose', 'settings', 'stale', 'physics'])
 def test_scope_restores_on_capture_failure_or_fixed_state_change(native, failure):
     original = native.adapters.render_and_capture
@@ -278,6 +310,63 @@ def test_composition_payload_has_complete_import_closure_without_loading_policy(
     result=subprocess.run([sys.executable,'-I','-c',probe,str(tmp_path)],capture_output=True,text=True,timeout=30)
     assert result.returncode==0,result.stderr
     assert Path(worker.__file__).name=='native_task_composition_worker.py'
+
+
+def test_sealed_composition_entrypoint_captures_three_passes_and_closes_without_policy(native, tmp_path, monkeypatch):
+    from tests.test_native_task_arena_bundle import _packet, _runtime_source_packet, _composition_inputs
+    from blueprint_pipeline.native_task_arena_runtime_preflight_bundle import build_native_task_arena_runtime_preflight_bundle
+    from blueprint_pipeline import native_task_arena_construction_worker as construction
+    from blueprint_pipeline import native_task_arena_runtime as arena
+    from blueprint_pipeline import native_task_arena_preconstruction as preconstruction
+    from blueprint_pipeline import native_task_isaaclab_launch as launch
+    from blueprint_pipeline import native_task_nurec_render_setup as renderer
+
+    packet = _packet(tmp_path, scene_id='840920')
+    request_path, plan_path = _composition_inputs(tmp_path, packet)
+    job = tmp_path / 'bundle'
+    build_native_task_arena_runtime_preflight_bundle(
+        job_dir=job, packet_dir=packet, runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit='e' * 40, composition_request_path=request_path, composition_scene_plan_path=plan_path)
+    runtime = job / 'provider_runtime'
+    # The generic builder keeps native packet bytes in the ZIP, not its staging tree.
+    import zipfile
+    with zipfile.ZipFile(job / 'native_task_arena_provider_bundle.zip') as archive:
+        archive.extractall(job)
+    native.built.plan = json.loads(plan_path.read_text())
+    calls = []
+    native.built.env.reset = lambda *, seed: calls.append(('reset', seed))
+
+    def close_env():
+        assert (native.output / worker.RESULT_FILENAME).is_file()
+        calls.append('close_env')
+
+    native.built.env.close = close_env
+    app = NS(close=lambda: calls.append('close_app'))
+    monkeypatch.setattr(worker, '__file__', str(runtime / 'blueprint_pipeline/native_task_composition_worker.py'))
+    monkeypatch.setenv('BLUEPRINT_ADP_ARENA_OUTPUT_DIR', str(native.output))
+    monkeypatch.setattr(construction, 'preflight_native_dependency_matrix', lambda **kwargs: {'all_required_available': True})
+    monkeypatch.setattr(preconstruction, 'prepare_native_task_arena_preconstruction', lambda **kwargs: {'passed': True})
+    monkeypatch.setattr(launch, 'launch_native_task_isaaclab', lambda *args, **kwargs: (app, {'passed': True}))
+
+    def build(plan, **kwargs):
+        assert plan == native.built.plan
+        calls.append('build_exact_plan')
+        return native.built
+
+    monkeypatch.setattr(arena, 'build_native_task_arena_environment', build)
+    monkeypatch.setattr(renderer, 'setup_and_warm_native_nurec_renderer', lambda *args, **kwargs: {'passed': True})
+    usd = NS(get_context=lambda: NS(get_stage=lambda: native.stage))
+    monkeypatch.setitem(sys.modules, 'omni', NS(usd=usd))
+    monkeypatch.setitem(sys.modules, 'omni.usd', usd)
+    assert worker.main(['--runtime-root', str(runtime)]) == 0
+    result = json.loads((native.output / worker.RESULT_FILENAME).read_text())
+    assert result['status'] == 'completed'
+    assert result['candidate_policy_queried'] is False and result['task_motion_executed'] is False
+    captured = result['composition_diagnostic']
+    assert [row['pass'] for row in captured['passes']] == list(diagnostic.PASSES)
+    assert captured['physics_steps_between_passes'] == captured['policy_queries'] == 0
+    assert captured['visibility_restored'] is True and captured['source_assets_mutated'] is False
+    assert calls == ['build_exact_plan', ('reset', 7), 'close_env', 'close_app']
 
 
 def test_native_semantic_ids_and_depth_dtype_are_not_narrowed_by_shared_writer(native):

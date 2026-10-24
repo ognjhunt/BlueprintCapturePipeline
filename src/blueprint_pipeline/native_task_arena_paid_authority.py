@@ -21,6 +21,10 @@ from typing import Any
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .vast_evidence_contracts import valid_vast_provider_zero_api_call
+from .native_task_arena_cleanup_recovery import (
+    _validate_post_cleanup_recovery,
+    materialize_native_task_arena_post_cleanup_closeout as materialize_native_task_arena_post_cleanup_closeout,
+)
 from .native_task_arena_authority_bundle_loader import (
     native_task_arena_bundle_loader as _bundle_loader,
 )
@@ -718,6 +722,7 @@ def validate_terminal_spend_chain(
     authority = _read(authority_file, "native_task_arena_predecessor_authority_invalid")
     result = _read(result_file, "native_task_arena_predecessor_result_invalid")
     zero = _read(zero_file, "native_task_arena_predecessor_provider_zero_invalid")
+    _validate_post_cleanup_recovery(result)
     schema = authority.get("schema_version")
     if schema == "paired_target_native_import_paid_attempt_authority.v1":
         authority_digest_field = "authorization_digest"
@@ -2145,6 +2150,7 @@ def materialize_native_task_arena_preallocation_closeout(
     }
 
 
+
 def materialize_native_task_arena_provider_zero(
     *, authority_path: str | Path, result_path: str | Path, output_path: str | Path
 ) -> dict[str, Any]:
@@ -2154,6 +2160,7 @@ def materialize_native_task_arena_provider_zero(
     result_file = Path(result_path).expanduser().resolve()
     authority = _read(authority_file, "native_task_arena_authority_unreadable")
     result = _read(result_file, "native_task_arena_result_unreadable")
+    _validate_post_cleanup_recovery(result)
     watchdog_path = Path(str(result.get("watchdog_receipt_path") or "")).resolve()
     cleanup_path = Path(str(result.get("object_store_cleanup_path") or "")).resolve()
     adapter_path = Path(str(result.get("adapter_result_path") or "")).resolve()

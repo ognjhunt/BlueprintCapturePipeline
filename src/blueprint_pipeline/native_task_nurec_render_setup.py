@@ -108,8 +108,41 @@ def appearance_render_path_from_plan(plan: Mapping[str, Any]) -> str:
     return render_path
 
 
-def apply_display_referred_particlefield_material(stage: Any) -> dict[str, Any]:
-    """Validate NVIDIA/OpenUSD's native, material-free ParticleField contract.
+def retained_particlefield_material_contract(
+    plan: Mapping[str, Any], request: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Bind the historical default MDL contract to the frozen comparison asset.
+
+    Ordinary render setup still requires the upstream unbound representation.
+    A runtime comparison may preserve an already sealed legacy asset, but must
+    not reauthor it to make a newer renderer validator pass.
+    """
+    if request is None:
+        return None
+    from .decision_evidence_contracts import canonical_digest
+
+    variant = request.get("appearance_variant") or {}
+    if variant.get("particlefield_emissive_material_binding_authored") is not True:
+        return None
+    assets = [row for row in request.get("assets", [])
+              if row.get("semantic_role") == "scene_appearance"]
+    objects = [row for row in plan.get("objects", [])
+               if row.get("semantic_role") == "scene_appearance"]
+    if (request.get("request_digest") != canonical_digest(request, digest_field="request_digest")
+            or variant.get("representation") != "particlefield_3d_gaussian_splat"
+            or variant.get("particlefield_emissive_material_inputs") != "mdl_defaults"
+            or len(assets) != 1 or len(objects) != 1
+            or not objects[0].get("sha256")
+            or (assets[0].get("source") or {}).get("sha256") != objects[0]["sha256"]):
+        raise AppearanceRenderPathError(["runtime_comparison_retained_material_binding_invalid"])
+    return {"kind": "legacy_particlefield_emissive", "inputs": "mdl_defaults",
+            "asset_sha256": objects[0]["sha256"], "request_digest": request["request_digest"]}
+
+
+def apply_display_referred_particlefield_material(
+    stage: Any, *, retained_material_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate native fields or an explicitly bound retained comparison asset.
 
     The compatibility name is retained because provider bundles import it.
     This function intentionally authors nothing on the live stage.
@@ -142,7 +175,33 @@ def apply_display_referred_particlefield_material(stage: Any) -> dict[str, Any]:
             "sorting_mode_hint": value("sortingModeHint"),
         }
         rows.append(row)
-        if targets:
+        retained_legacy = False
+        if targets and retained_material_contract is not None:
+            material = stage.GetPrimAtPath(targets[0]) if len(targets) == 1 else None
+            shader = stage.GetPrimAtPath(f"{targets[0]}/Shader") if material else None
+            source = shader.GetAttribute("info:mdl:sourceAsset").Get() if shader else None
+            row["material_shader_source_asset"] = getattr(source, "path", source)
+            row["material_shader_sub_identifier"] = (
+                shader.GetAttribute("info:mdl:sourceAsset:subIdentifier").Get() if shader else None)
+            row["material_shader_authored_inputs"] = (
+                [attr.GetName() for attr in shader.GetAuthoredAttributes()
+                 if attr.GetName().startswith("inputs:")] if shader else [])
+            row["material_surface_connections"] = (
+                [str(path) for path in material.GetAttribute("outputs:mdl:surface").GetConnections()]
+                if material else [])
+            retained_legacy = bool(
+                retained_material_contract.get("kind") == "legacy_particlefield_emissive"
+                and retained_material_contract.get("inputs") == "mdl_defaults"
+                and material and str(material.GetTypeName()) == "Material"
+                and shader and str(shader.GetTypeName()) == "Shader"
+                and row["material_shader_source_asset"] == PARTICLEFIELD_EMISSIVE_SOURCE_ASSET
+                and row["material_shader_sub_identifier"] == "ParticleFieldEmissive"
+                and row["material_surface_connections"] == [f"{targets[0]}/Shader.outputs:out"]
+                and not row["material_shader_authored_inputs"])
+        row["material_contract"] = (
+            "legacy_particlefield_emissive" if retained_legacy
+            else "invalid" if targets else "upstream_native_unbound")
+        if (targets or retained_material_contract is not None) and not retained_legacy:
             blockers.append(BLOCKER_PARTICLEFIELD_MATERIAL_MISSING)
         # NVIDIA's own LightField writer authors ``projectionModeHint`` and
         # ``sortingModeHint`` (3DGRUT ``writers/lightfield.py``); Pixar's and
@@ -160,7 +219,10 @@ def apply_display_referred_particlefield_material(stage: Any) -> dict[str, Any]:
         blockers.append(BLOCKER_PARTICLEFIELD_PRIM_MISSING)
     return {
         "schema_version": "native_task_arena_upstream_particlefield_contract.v1",
-        "authoring_implementation": "nvidia_usd_convert_gsplat",
+        "authoring_implementation": (
+            "retained_legacy_particlefield_emissive" if retained_material_contract
+            else "nvidia_usd_convert_gsplat"),
+        "retained_material_contract": dict(retained_material_contract) if retained_material_contract else None,
         "live_stage_mutated": False,
         "particlefields": rows,
         "blockers": sorted(set(blockers)),
@@ -220,6 +282,7 @@ def prepare_site_appearance_renderer(
     warmup_steps: int = OFFICIAL_NUREC_WARMUP_STEPS,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     settings_reader: Callable[[str], Any] | None = None,
+    retained_packet_request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run NVIDIA's accumulation path only for supported NuRec appearances."""
 
@@ -248,6 +311,7 @@ def prepare_site_appearance_renderer(
         require_display_referred_particlefield=(
             representation in DISPLAY_REFERRED_REPRESENTATIONS
         ),
+        retained_material_contract=retained_particlefield_material_contract(plan, retained_packet_request),
     )
     result["representation"] = representation
     return result
@@ -262,6 +326,7 @@ def setup_and_warm_native_nurec_renderer(
     progress_callback: Any = None,
     settings_reader: Callable[[str], Any] | None = None,
     require_display_referred_particlefield: bool = False,
+    retained_material_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Apply NVIDIA's shipped NuRec setup and accumulation procedure."""
 
@@ -327,10 +392,9 @@ def setup_and_warm_native_nurec_renderer(
             "passed": False,
             "blockers": tonemapping_blockers,
         }
-    # The shader override is authored before the warmup so every warmup tick
-    # and every captured frame composites the linearised field.
+    # Validate the sealed field before warmup; never mutate a live shader.
     display_referred_material = (
-        apply_display_referred_particlefield_material(stage)
+        apply_display_referred_particlefield_material(stage, retained_material_contract=retained_material_contract)
         if display_referred_required
         else None
     )
@@ -434,5 +498,6 @@ __all__ = [
     "particlefield_display_referred_blockers",
     "prepare_site_appearance_renderer",
     "read_gaussian_skip_tonemapping_setting",
+    "retained_particlefield_material_contract",
     "setup_and_warm_native_nurec_renderer",
 ]

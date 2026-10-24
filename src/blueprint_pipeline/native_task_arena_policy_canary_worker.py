@@ -60,6 +60,34 @@ _CELL_PROGRESS_STAGES = frozenset({
 _write_indexed_telemetry = _write_policy_canary_telemetry
 
 
+def _required_gpu_identity_preflight(authority: Mapping[str, Any], output_root: Path) -> dict[str, Any] | None:
+    """Refuse a different physical card before any isolated cell or model load."""
+    required = authority.get("required_gpu_uuid")
+    if required is None:
+        return None
+    observed = []
+    error = None
+    try:
+        probe = subprocess.run(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+                               capture_output=True, text=True, check=True, timeout=15)
+        observed = [line.strip() for line in probe.stdout.splitlines() if line.strip()]
+    except (OSError, subprocess.SubprocessError) as exc:
+        error = type(exc).__name__
+    passed = observed == [required] and error is None
+    result = {"schema_version": "policy_canary_required_gpu_identity.v1", "passed": passed,
+              "authority_digest": authority["authority_digest"], "required_gpu_uuid": required,
+              "observed_gpu_uuids": observed, "probe_error": error,
+              "candidate_policy_queried": False,
+              "media_gap": None if passed else {"type": "before_first_observation",
+                                               "reason": "required_physical_gpu_identity_mismatch"}}
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    output_root.mkdir(parents=True, exist_ok=True)
+    (output_root / "policy_canary_required_gpu_identity.v1.json").write_text(json.dumps(result, indent=2) + "\n")
+    if not passed:
+        raise RuntimeError("policy_canary_required_physical_gpu_identity_mismatch")
+    return result
+
+
 def _policy_camera_visibility_contract(
     snapshot: Mapping[str, Any],
     *,
@@ -414,7 +442,15 @@ def policy_observation_gate_mode(
         return "native_team_embodiment_camera"
     if profile is not None:
         from blueprint_pipeline.droid_policy_canary_embodiment import apply_droid_policy_canary_profile
-        expected = apply_droid_policy_canary_profile(resolved_plan)["policy_canary_embodiment_profile"]
+        frozen_prompt = None
+        if profile.get("task_instruction_source") == "retained_runtime_comparison":
+            frozen_prompt = (resolved_plan.get("task_spec") or {}).get("prompt")
+            if (not isinstance(frozen_prompt, str) or not frozen_prompt.strip()
+                    or profile.get("task_instruction_digest") != canonical_digest({"prompt": frozen_prompt})):
+                raise RuntimeError("policy_canary_official_camera_profile_invalid")
+        expected = apply_droid_policy_canary_profile(
+            resolved_plan, frozen_prompt=frozen_prompt
+        )["policy_canary_embodiment_profile"]
         if profile != expected:
             raise RuntimeError("policy_canary_official_camera_profile_invalid")
         return "native_official_droid_camera"
@@ -529,7 +565,9 @@ def preflight_policy_canary_static_inputs(
     }
 
 
-def preflight_policy_canary_runtime_directory(runtime_root: Path) -> dict[str, Any]:
+def preflight_policy_canary_runtime_directory(
+    runtime_root: Path, *, physical_gpu_output_root: Path | None = None
+) -> dict[str, Any]:
     missing: list[str] = []
     def read(relative: str) -> dict[str, Any]:
         try:
@@ -556,6 +594,8 @@ def preflight_policy_canary_runtime_directory(runtime_root: Path) -> dict[str, A
         missing.append("provider_manifest:" + str(exc))
     receipt["blockers"] = sorted(set([*receipt["blockers"], *missing]))
     receipt["status"] = "blocked" if receipt["blockers"] else "passed"
+    if receipt["status"] == "passed" and physical_gpu_output_root is not None:
+        _required_gpu_identity_preflight(authority, physical_gpu_output_root)
     return receipt
 
 
@@ -1179,8 +1219,7 @@ def _aggregate_isolated_cell_results(
         (str(row.get("candidate_id")), str(row.get("cell_id")), int(row.get("seed")))
         for row in episodes
     }
-    prepolicy_only = (inputs.get("run_kind") == TEAM_RUN_KIND and bool(failed_cells)
-                      and len(failed_cells) == len(child_results))
+    prepolicy_only = bool(failed_cells) and len(failed_cells) == len(child_results)
     if observed != expected or (not episodes and not prepolicy_only):
         raise RuntimeError("policy_canary_isolated_cell_pairing_invalid")
     result: dict[str, Any] = {
@@ -1350,6 +1389,7 @@ def _run_isolated_cell_processes(
     authority = validate_session_authority(
         _read(runtime / "runtime_inputs" / "policy_canary_session_authority.json")
     )
+    _required_gpu_identity_preflight(authority, output_root)
     base_scene_plan = _read(
         runtime / "native_task_packet" / "native_task_arena_scene_plan.v1.json"
     )
@@ -1443,6 +1483,30 @@ def _run_isolated_cell_processes(
                 reason="policy_canary_isolated_cell_result_unreadable", interrupted_cell_index=index)
             raise
         child_results.append(child_result)
+        if (inputs.get("run_kind") != TEAM_RUN_KIND
+                and child_result.get("status") == "blocked"
+                and child_result.get("episodes") == []):
+            # A constructor/observation-gate failure never ran the parity probe.
+            # Validate and retain that child's original failure before stopping;
+            # do not turn an absent diagnostic into a measured parity failure.
+            if _validate_isolated_cell_result(child=child_result, inputs=inputs, index=index):
+                raise RuntimeError("policy_canary_prepolicy_failure_shape_invalid")
+            result = _aggregate_isolated_cell_results(
+                authority=authority, inputs={**inputs, "cells": inputs["cells"][:len(child_results)]},
+                child_results=child_results, output_root=output_root,
+                construction_lineage_mode=construction_lineage_mode)
+            result.update(
+                status="blocked", blockers=["policy_canary_prepolicy_cell_failed"],
+                planned_episodes_per_policy=len(inputs["cells"]),
+                execution_stopped_after_cell=len(child_results),
+                session_failure_type=child_result["session_failure_type"],
+                session_failure_source_trace=child_result.get("session_failure_source_trace", []),
+                session_failure_codes=child_result.get("session_failure_codes", []),
+                media_gap={"type": "before_first_observation", "cell_index": index,
+                           "reason": "policy_canary_prepolicy_cell_failed"})
+            result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+            _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+            return 1
         if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
             # The scene failed its robot-free check in cell 0: no further team episode runs on it.
             blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
@@ -1549,6 +1613,7 @@ def _run_selected_cell(
     authority = validate_session_authority(
         _read(runtime / "runtime_inputs" / "policy_canary_session_authority.json")
     )
+    _required_gpu_identity_preflight(authority, output_root)
     provider_manifest = _validate_provider_manifest(
         _read(runtime / "adp_arena_provider_manifest.json"),
         runtime_inputs=inputs,
@@ -1575,14 +1640,10 @@ def _run_selected_cell(
         )
         for candidate in inputs["candidate_ids"]
     }
-    if set(provider_manifest.get("execution_spec_digests") or {}) != set(specs):
-        raise RuntimeError("policy_canary_execution_spec_bindings_missing")
-    for candidate, spec in specs.items():
-        if (spec.get("candidate_id") != candidate
-                or spec.get("execution_spec_digest") != canonical_digest(spec, digest_field="execution_spec_digest")
-                or spec.get("execution_spec_digest") != provider_manifest["execution_spec_digests"][candidate]
-                or spec.get("task_success_contract_digest") != inputs["task_success_contract_digest"]):
-            raise RuntimeError("policy_canary_frozen_execution_spec_mismatch:" + candidate)
+    from blueprint_pipeline.native_task_runtime_comparison import bind_policy_runtime_measurement
+    bound_runtime = bind_policy_runtime_measurement(runtime=runtime, output_root=output_root,
+        inputs=inputs, plan=base_scene_plan, specs=specs, provider_manifest=provider_manifest,
+        selected_cell_index=selected_cell_index, bound_runtime=bound_runtime)
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
     team_binding = _team_embodiment_binding(specs)

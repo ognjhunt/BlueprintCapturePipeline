@@ -326,6 +326,7 @@ def _entrypoint(
     runtime_source_packet_required: bool,
     policy_provisioning_script_name: str | None,
     policy_candidate_id: str | None = None,
+    runtime_profile: str | None = None,
 ) -> str:
     quoted = json.dumps(str(expected_output_filename))
     result_schema = json.dumps(str(expected_result_schema))
@@ -342,7 +343,7 @@ def _entrypoint(
                 len(prefix) : -len(suffix)
             ]
     candidate_id = json.dumps(resolved_candidate_id)
-    return f'''#!/usr/bin/env bash
+    script = f'''#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${{BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}}"
@@ -488,6 +489,9 @@ PY
 fi
 exit $runner_rc
 '''
+    if runtime_profile == "isaaclab_3_ga":
+        script = script.replace("/isaac-sim/python.sh", "/workspace/isaaclab/isaaclab.sh -p")
+    return script
 
 
 def build_native_task_arena_bundle(
@@ -582,6 +586,10 @@ def build_native_task_arena_bundle(
         runtime_source_receipt = verify_native_task_runtime_source_packet(
             runtime_source_packet_receipt
         )
+        if runtime_source_receipt.get("runtime_profile") == "isaaclab_3_ga":
+            from .native_task_isaaclab_ga import IMAGE
+            if image != IMAGE or runtime_source_receipt.get("container_image") != IMAGE:
+                raise NativeTaskArenaBundleError(["ga_runtime_image_source_mismatch"])
     worker = Path(worker_source).expanduser().resolve()
     if not worker.is_file():
         raise NativeTaskArenaBundleError(["native_task_arena_bundle_worker_missing"])
@@ -781,6 +789,7 @@ def build_native_task_arena_bundle(
             runtime_source_packet_required=runtime_source_receipt is not None,
             policy_provisioning_script_name=policy_provisioning_script_name,
             policy_candidate_id=policy_candidate_id,
+            runtime_profile=(runtime_source_receipt or {}).get("runtime_profile"),
         ),
         encoding="utf-8",
     )

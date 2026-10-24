@@ -1,0 +1,1662 @@
+{
+  "appearance_render_backend": {
+    "camera_frame_contract": "registered_world",
+    "conversion_identity": "blueprint_pipeline.particlefield_usd.write_particlefield_usd_from_nurec+usd-convert-gsplat:0.1.15",
+    "derived_asset_digest": "sha256:7ab9fc6f83d2ffa0da4cf7fba67a40a01cbf495ba29e02c10c9b7bae014f039b",
+    "development_only": true,
+    "kind": "particlefield_blueprint_private_tensor_conversion",
+    "launch_render_path": "particlefield_3d_gaussian_splat",
+    "receipt_digest": "sha256:5ffb442b577c5e231a4b834dd9bc587ec508c5b7fefc5a8f48f419bd01170a09",
+    "renderer_identity": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb",
+    "schema_version": "appearance_render_backend.v1",
+    "source_asset_digest": "sha256:ec44ac30ae7b7192cce35ec7b177670c6415c9860bac680fcabca03347a984bc"
+  },
+  "artifact_inventory": [
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "cell_progress.log",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:19b16b96e13c63812f36e1c37b66cc30a9dd1df0d64c3c0bbfff333a41338a7e",
+      "size_bytes": 206
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "native_task_runtime_measurement.v1.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:30b47aec297489b61cc46cc3fa5e139b0971d1453d1b17b8852502db4b07f6e1",
+      "size_bytes": 61732
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "policy_canary_static_startup_preflight.v1.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:6bbaf9a9dc202e01eadbc37e5195836783d9c3368e79b0e76810882a2a2dfc83",
+      "size_bytes": 7625
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "policy_canary_telemetry.jsonl",
+      "role": "indexed_episode_telemetry",
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "policy_canary_telemetry_index.json",
+      "role": "telemetry_index",
+      "sha256": "sha256:25e9e7592fceb727c6cd70088512a5882f2ac4df6ce9625d5f3da796384fe90e",
+      "size_bytes": 772
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "policy_canary_telemetry_schema.json",
+      "role": "telemetry_schema",
+      "sha256": "sha256:388524685e4b54a9e91febaa3ec7e05e6d6a47865f7014d0774b32395b762f8b",
+      "size_bytes": 239
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_dependency_matrix.v1.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:e9468c7244471f19a0454f8270be10f7cb36c23e275cdae9f118af30afbeee5f",
+      "size_bytes": 8431
+    },
+    {
+      "media_type": "image/png",
+      "relative_path": "prepolicy_observation_gate/construction_frames/external/selected_mount_reset.png",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:522e7f0d5524dbc60c2ec554e23d940a022833a2610b6a99bc9b1c748b82f6d1",
+      "size_bytes": 1119018
+    },
+    {
+      "media_type": "image/png",
+      "relative_path": "prepolicy_observation_gate/construction_frames/overview/selected_mount_reset.png",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:cf8ee9eab8b0fba5d58802850aeefb240a14a64fbaf82a2292f69e66dfb44114",
+      "size_bytes": 101688
+    },
+    {
+      "media_type": "image/png",
+      "relative_path": "prepolicy_observation_gate/construction_frames/wrist/selected_mount_reset.png",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:cc22d5cad6abca64b02202dcdcd2df90534a84f813da0eb72b589df4ac6d0ff4",
+      "size_bytes": 1020786
+    },
+    {
+      "media_type": "image/png",
+      "relative_path": "prepolicy_observation_gate/construction_frames/wrist/selected_mount_reset.robot_semantic_mask.png",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:5fdbfe29f932daf3db7d9017b6ca2d7244f72535909452aba9a0c30d29b5b63a",
+      "size_bytes": 2843
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/composition_gate.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:4907b7c5de89bbb684ff524f80ce18046ae57f76dcb3ea130a3e37aa929cd0a4",
+      "size_bytes": 2741
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/composition_diagnostic.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:18452bccce4377fe48c6b62c4b5aa5e5ab66e25f4f84e9182d74a2bf5a34a4f4",
+      "size_bytes": 59235
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/full/camera_frames/external/000000.distance_to_camera.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:81c1046ec415ab38f58a3fb5c773e4f93e930344d8077718cfb378fea25b7cbc",
+      "size_bytes": 3686528
+    },
+    {
+      "media_type": "image/png",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/full/camera_frames/external/000000.png",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:0d626005987d3a115b7f28c9ddafa75cb261083ba4c2138cb4fe9fc1ad597d3f",
+      "size_bytes": 1119529
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/full/camera_frames/external/000000.semantic.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:a57bbe104ce130595ec14b501efa6666bdee5446e12673a2acab55494c8a90cd",
+      "size_bytes": 3686528
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/full/capture.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:d5ab05102a8f7ff9b6fb4d0a1cdc60637be8dd4fa8fc5b4d8de7a35d96a527f2",
+      "size_bytes": 4572
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/native_meshes_only/camera_frames/external/000000.distance_to_camera.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:10dc83bcbbf6596405d8ecffa4ab843b1974a19b1067080d6f8d9347b1923280",
+      "size_bytes": 3686528
+    },
+    {
+      "media_type": "image/png",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/native_meshes_only/camera_frames/external/000000.png",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:4c7c1d8348004b2e9061cb46b0d48a4e301383a5db4c38d72b2f36ac73f14ff6",
+      "size_bytes": 213418
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/native_meshes_only/camera_frames/external/000000.semantic.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:cb436a68166ec3224865467ab9333c5140d20ba979483352882bcc5cc3d05d84",
+      "size_bytes": 3686528
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/native_meshes_only/capture.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:58a432940aa3b45aa55a0198661d176d11ce66869628bca7524af1ab7068075c",
+      "size_bytes": 4559
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/pixel_comparison/full_target_semantic_mask.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:9dcc3765b2ccfb4c51ee16d4c914a035460e0560064642badb998cf4da18c2de",
+      "size_bytes": 921728
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/pixel_comparison/full_vs_mesh_rgb_changed.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:1b13221ab70d9bf5578bd2e793ae01676efaa8ee5cd2967fea6a6577b9552236",
+      "size_bytes": 921728
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/pixel_comparison/mesh_target_occluded_in_full.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:92f9ea80b8f3d058bde3fea4c4567ed18f1bc5ea92863b004e6fa02027044090",
+      "size_bytes": 921728
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/external/task_object/pixel_comparison/native_mesh_target_semantic_mask.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:76f9ce9ee249c6396aae3b51d1222958aef2febac507567fb6b089b3ae03ce7c",
+      "size_bytes": 921728
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/composition_diagnostic.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:426baee22f81de74c9ec46022e0b8cef8c52c131e02ac6da2b7083b7e81c02ca",
+      "size_bytes": 59173
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/full/camera_frames/overview/000000.distance_to_camera.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:35b9046be089a0165ab3038209a86cdc679adcaf32f02e7fc40c60c619623820",
+      "size_bytes": 230528
+    },
+    {
+      "media_type": "image/png",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/full/camera_frames/overview/000000.png",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:893956cbab60c1200de6aff2a12187e5466dfc2b1b215fa2bc95c718b2d9d98f",
+      "size_bytes": 12722
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/full/camera_frames/overview/000000.semantic.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:1ed411b8d0fca6f385393a7197f5f580cc36b8001808e5f8e9a0291368c056f3",
+      "size_bytes": 230528
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/full/capture.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:c693ad16cd62deae31b817a199730df172a7a8bab07cfb5b7cb6f0a89b1a5848",
+      "size_bytes": 4535
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/native_meshes_only/camera_frames/overview/000000.distance_to_camera.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:35b9046be089a0165ab3038209a86cdc679adcaf32f02e7fc40c60c619623820",
+      "size_bytes": 230528
+    },
+    {
+      "media_type": "image/png",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/native_meshes_only/camera_frames/overview/000000.png",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:c199778bb3ab7c688d5f545670c1a698b9442a3055b82341ae3efe553d892466",
+      "size_bytes": 12692
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/native_meshes_only/camera_frames/overview/000000.semantic.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:1ed411b8d0fca6f385393a7197f5f580cc36b8001808e5f8e9a0291368c056f3",
+      "size_bytes": 230528
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/native_meshes_only/capture.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:7469366c76f1f9d453ed06a407067f2a47ff7106a5d715c92ff1f3ed019ea1e3",
+      "size_bytes": 4549
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/pixel_comparison/full_target_semantic_mask.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:a32e6ae279a4804de670a8a67ea49e9a569ec0b5ec7ad5261f059becd548d2bc",
+      "size_bytes": 57728
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/pixel_comparison/full_vs_mesh_rgb_changed.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:03fd6ad5448cdbb5cb616109a282ee52ede15b427f87a854cacc5b79475ad4c2",
+      "size_bytes": 57728
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/pixel_comparison/mesh_target_occluded_in_full.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:bd04990f2967547712efb64cf7ce8cd2b91a8627be77f8b758787502b9c9968b",
+      "size_bytes": 57728
+    },
+    {
+      "media_type": "application/octet-stream",
+      "relative_path": "prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/pixel_comparison/native_mesh_target_semantic_mask.npy",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:a32e6ae279a4804de670a8a67ea49e9a569ec0b5ec7ad5261f059becd548d2bc",
+      "size_bytes": 57728
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_observation_gate/native_task_camera_snapshot_diagnostics.v1.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:5b9c0f69f2670656b4fe5e51b1bffb0bb82f728d8066df0f48901cd1e83a404a",
+      "size_bytes": 1810
+    },
+    {
+      "media_type": "application/json",
+      "relative_path": "prepolicy_observation_gate/policy_canary_runtime_observation_integrity_gate.v1.json",
+      "role": "runtime_supporting_evidence",
+      "sha256": "sha256:7ce5d94961a7e2fdd2913c7723cbe223e044c4ab2ab25342a10f43f769269dfd",
+      "size_bytes": 41726
+    }
+  ],
+  "artifact_inventory_digest": "sha256:9c68d857302d20b706950d700217b8bc780a1e3201b1a668d7dd314671662473",
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "candidate_policy_queried": false,
+  "claim_ceiling": "diagnostic_policy_execution",
+  "construction_lineage_mode": "qualified_native_construction_result",
+  "episodes": [],
+  "episodes_per_policy": 10,
+  "learned_policy_rollout_count": 20,
+  "matrix_digest": "sha256:cf6c7dde04f64b165c581d045943bfe4e6cc9b4401592050d9060ed8d4404d5b",
+  "official_ranking_performed": false,
+  "policy_loads": [],
+  "preload_observation_gate": {
+    "appearance_render_backend_receipt_digest": "sha256:5ffb442b577c5e231a4b834dd9bc587ec508c5b7fefc5a8f48f419bd01170a09",
+    "asset_composition_gate": {
+      "automatic_gaussian_deletion_authorized": false,
+      "blockers": [
+        "external:task_object:composition_support_background_occlusion_requires_review"
+      ],
+      "full_scene_sensor_buffers_refreshed": true,
+      "occlusion_cause_proven": false,
+      "passed": false,
+      "physics_steps": 0,
+      "policy_queries": 0,
+      "receipt_digest": "sha256:3d034691490e832d70c77a4f9448cd4412911bc44e0027ed885534fa8e4ca191",
+      "resolved_scene_plan_digest": "sha256:0c7418369ff02ee9afad99aa5867a4111bfcaab42d317db8d92106e2d81ad1be",
+      "schema_version": "native_task_asset_composition_gate.v1",
+      "scope": "exact_reset_external_and_overview_opaque_task_asset_coverage",
+      "source_assets_mutated": false,
+      "status": "blocked",
+      "target_semantic_classes": [
+        "task_object"
+      ],
+      "views": [
+        {
+          "assessment": {
+            "automatic_gaussian_deletion_authorized": false,
+            "blockers": [
+              "composition_support_background_occlusion_requires_review"
+            ],
+            "interior_pixels_occluded_by_appearance": 2942,
+            "minimum_support_interior_pixels": 64,
+            "passed": false,
+            "pixel_cause_proven": false,
+            "silhouette_margin_pixels": 2,
+            "silhouette_pixels_occluded_by_appearance": 440,
+            "support_interior_pixels": 216527
+          },
+          "camera_role": "external",
+          "diagnostic": {
+            "path": "/workspace/adp_arena_provider_bundle/runtime_output/cell_runs/00/prepolicy_observation_gate/native_asset_composition_gate/external/task_object/composition_diagnostic.json",
+            "sha256": "sha256:18452bccce4377fe48c6b62c4b5aa5e5ab66e25f4f84e9182d74a2bf5a34a4f4",
+            "size_bytes": 59235
+          },
+          "diagnostic_digest": "sha256:c6c3e4ca2afeb5cc4dbd37f900513d6fc2d85be4d20af202a98317cd9670e941",
+          "target_semantic_class": "task_object"
+        },
+        {
+          "assessment": {
+            "automatic_gaussian_deletion_authorized": false,
+            "blockers": [],
+            "interior_pixels_occluded_by_appearance": 0,
+            "minimum_support_interior_pixels": 64,
+            "passed": true,
+            "pixel_cause_proven": false,
+            "silhouette_margin_pixels": 2,
+            "silhouette_pixels_occluded_by_appearance": 0,
+            "support_interior_pixels": 4561
+          },
+          "camera_role": "overview",
+          "diagnostic": {
+            "path": "/workspace/adp_arena_provider_bundle/runtime_output/cell_runs/00/prepolicy_observation_gate/native_asset_composition_gate/overview/task_object/composition_diagnostic.json",
+            "sha256": "sha256:426baee22f81de74c9ec46022e0b8cef8c52c131e02ac6da2b7083b7e81c02ca",
+            "size_bytes": 59173
+          },
+          "diagnostic_digest": "sha256:fe3a3011ebd934a3e63813d3ba6cf541ed1b073dae746d08932b04168614686d",
+          "target_semantic_class": "task_object"
+        }
+      ]
+    },
+    "blockers": [
+      "external:task_object:composition_support_background_occlusion_requires_review"
+    ],
+    "camera_role_qualifications": {
+      "external": {
+        "centroid_within_margin": true,
+        "minimum_pixels": 200,
+        "passed": true,
+        "pixel_count": 217702,
+        "raw_observability_passed": true,
+        "raw_render_passed": true,
+        "render_passed": true,
+        "status": "centered",
+        "wrist_robot_occlusion_qualified": false
+      },
+      "overview": {
+        "centroid_within_margin": true,
+        "minimum_pixels": 200,
+        "passed": true,
+        "pixel_count": 4935,
+        "raw_observability_passed": true,
+        "raw_render_passed": true,
+        "render_passed": true,
+        "status": "centered",
+        "wrist_robot_occlusion_qualified": false
+      },
+      "wrist": {
+        "centroid_within_margin": true,
+        "minimum_pixels": 120,
+        "passed": true,
+        "pixel_count": 47171,
+        "raw_observability_passed": true,
+        "raw_render_passed": true,
+        "render_passed": true,
+        "status": "centered",
+        "wrist_robot_occlusion_qualified": false
+      }
+    },
+    "camera_visibility": {
+      "external": true,
+      "overview": true,
+      "wrist": true
+    },
+    "candidate_policy_loaded": false,
+    "candidate_policy_queried": false,
+    "claim_ceiling": "diagnostic_policy_execution",
+    "frame_structure_passed": true,
+    "gate_digest": "sha256:a9da2b279d8c134417a9e696c801f3e8df2196e1f595c02b6f07654febadc216",
+    "human_visual_review_status": "not_required_for_internal_diagnostic_policy_execution",
+    "notices": [],
+    "official_ranking_permitted": false,
+    "policy_observation_integrity_passed": false,
+    "raw_camera_visibility": {
+      "external": true,
+      "overview": true,
+      "wrist": true
+    },
+    "reset_observation_readback": {
+      "camera_pose_backends": {
+        "external": {
+          "update_latest_camera_pose": true,
+          "use_fabric": true,
+          "view_class": "FabricFrameView"
+        },
+        "overview": {
+          "update_latest_camera_pose": true,
+          "use_fabric": true,
+          "view_class": "FabricFrameView"
+        },
+        "wrist": {
+          "update_latest_camera_pose": true,
+          "use_fabric": true,
+          "view_class": "NativeAttachedCameraView"
+        }
+      },
+      "camera_rerenders_on_reset": 1,
+      "maximum_joint_reset_error_rad": 6.993822410095163e-08,
+      "native_wrist_camera_attachment": {
+        "attachment_fixed_during_episode": true,
+        "body_from_camera_opengl": [
+          [
+            0.0023183937536863652,
+            0.3128699563162002,
+            -0.9497931435239475,
+            0.010999999940395355
+          ],
+          [
+            0.9998410586585363,
+            0.016064504285416725,
+            0.007732342636044387,
+            -0.03099999949336052
+          ],
+          [
+            0.01767717372716099,
+            -0.9496601087424715,
+            -0.31278298449924824,
+            -0.07400000095367432
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "body_name": "base_link",
+        "camera_pose_readback_source": "usd_world_transform_and_fabric_frame_view",
+        "camera_prim_paths": [
+          "/World/envs/env_0/Robot/Gripper/Robotiq_2F_85/base_link/wrist_camera"
+        ],
+        "configured_mount_orientation_preserved": true,
+        "intrinsics_preserved": true,
+        "pose_source": "native_physx_get_link_transforms",
+        "render_generation_advanced_after_pose_write": true,
+        "render_pose_writer": "native_body_to_usd_and_fabric_world_pose",
+        "render_product_binding": {
+          "camera_prim_paths": [
+            "/World/envs/env_0/Robot/Gripper/Robotiq_2F_85/base_link/wrist_camera"
+          ],
+          "render_product_paths": [
+            "/Render/OmniverseKit/HydraTextures/rp_feeb008af4f64a1ba5e38cafdd5db003"
+          ],
+          "source": "native_renderer_spec_and_scene_view_identity"
+        },
+        "schema_version": "native_task_camera_attachment.v1",
+        "source": "authored_camera_local_pose_on_native_physx_body",
+        "tracks_object_after_reset": false
+      },
+      "observed_joint_positions_rad": {
+        "panda_joint1": 0.0,
+        "panda_joint2": -0.6283185482025146,
+        "panda_joint3": 0.0,
+        "panda_joint4": -2.5132741928100586,
+        "panda_joint5": 0.0,
+        "panda_joint6": 1.884955644607544,
+        "panda_joint7": 0.0
+      },
+      "requested_joint_positions_rad": {
+        "panda_joint1": 0.0,
+        "panda_joint2": -0.6283185307179586,
+        "panda_joint3": 0.0,
+        "panda_joint4": -2.5132741228718345,
+        "panda_joint5": 0.0,
+        "panda_joint6": 1.8849555921538759,
+        "panda_joint7": 0.0
+      }
+    },
+    "run_kind": "internal_policy_canary",
+    "scene_promotion_permitted": false,
+    "schema_version": "policy_canary_runtime_observation_integrity_gate.v1",
+    "selected_wrist_camera_mount": {
+      "admitted": true,
+      "arena_source": {
+        "git_blob_sha1": "2c8566a48bed83760e204b979f76d2e58ebc8a66",
+        "path": "isaaclab_arena/embodiments/droid/droid.py",
+        "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd"
+      },
+      "blockers": [],
+      "candidate_id": "official_arena_droid_wrist_camera",
+      "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
+      "source": "official_arena_droid_embodiment"
+    },
+    "snapshot": {
+      "cameras": [
+        {
+          "intrinsic_matrix": [
+            [
+              499.9999694824219,
+              0.0,
+              640.0
+            ],
+            [
+              0.0,
+              499.9999694824219,
+              360.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "native_sensor_timestamp": null,
+          "observability": {
+            "bbox_xyxy": [
+              154,
+              0,
+              741,
+              569
+            ],
+            "blockers": [],
+            "centroid_within_margin": true,
+            "centroid_xy_fraction": [
+              0.37766893750916397,
+              0.30501257227648687
+            ],
+            "claim": "camera_observes_task_object_in_rendered_site",
+            "frame_resolution_hw": [
+              720,
+              1280
+            ],
+            "framing_expectation": null,
+            "framing_thresholds": null,
+            "measurement_authority": "native_semantic_segmentation_aov+native_rgb_frame",
+            "model_label_used": false,
+            "notices": [],
+            "passed": true,
+            "pixel_count": 217702,
+            "pixel_fraction": 0.23622178819444445,
+            "render_evidence": {
+              "appearance_fidelity_qualified": false,
+              "appearance_quality_claimed": false,
+              "blockers": [],
+              "frame": {
+                "distinct_luminance_levels": 250,
+                "dominant_rgb_pixel_fraction": 0.005317925347222223,
+                "luminance_max": 249.0,
+                "luminance_mean": 135.09900499131945,
+                "luminance_min": 0.0,
+                "luminance_std": 58.448706210165916,
+                "near_black_pixel_fraction": 0.0001247829861111111,
+                "pixel_count": 921600,
+                "saturated_channel_pixel_fraction": 0.0,
+                "void_pixel_fraction": 4.340277777777778e-06
+              },
+              "frame_rendered": true,
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_rgb_frame",
+              "notices": [],
+              "passed": true,
+              "quality_boundary": "render_presence_only_not_appearance_quality",
+              "schema_version": "native_task_camera_render_evidence.v1",
+              "site_appearance_claimed": true,
+              "site_appearance_presence_claimed": true,
+              "site_appearance_render_expected": true,
+              "site_region": {
+                "distinct_luminance_levels": 250,
+                "dominant_rgb_pixel_fraction": 0.001775825474713666,
+                "luminance_mean": 149.48911632083056,
+                "luminance_std": 50.40104936876184,
+                "pixel_count": 703898,
+                "void_pixel_fraction": 1.4206603797709327e-06
+              },
+              "site_rendered": true,
+              "target_region": {
+                "distinct_luminance_levels": 209,
+                "dominant_rgb_pixel_fraction": 0.022512425241844356,
+                "luminance_mean": 88.57131767278206,
+                "luminance_std": 58.43132179871732,
+                "pixel_count": 217702,
+                "void_pixel_fraction": 1.378030518782556e-05
+              },
+              "target_rendered": true,
+              "thresholds": {
+                "maximum_site_dominant_rgb_pixel_fraction": 0.5,
+                "maximum_site_void_pixel_fraction": 0.5,
+                "minimum_distinct_luminance_levels": 8,
+                "minimum_luminance_std": 1.0,
+                "near_black_luminance_max": 2.0
+              }
+            },
+            "render_passed": true,
+            "rgb_or_model_label_used": true,
+            "schema_version": "native_task_camera_observability.v2",
+            "semantic_passed": true,
+            "site_appearance_claimed": true,
+            "target_label": "task_object",
+            "target_semantic_ids": [
+              -9501456,
+              4285465840
+            ],
+            "thresholds": {
+              "centroid_margin_fraction": 0.05,
+              "effective_minimum_pixel_fraction": 0.003,
+              "effective_minimum_pixels": 200,
+              "minimum_pixel_fraction": 0.003,
+              "minimum_pixels": 200
+            }
+          },
+          "position_world_m": [
+            3.2184863090515137,
+            8.956664085388184,
+            0.7507820129394531
+          ],
+          "quaternion_world_opengl_xyzw": [
+            0.4200959801673889,
+            -0.14427536725997925,
+            -0.2914290428161621,
+            0.847214937210083
+          ],
+          "raw_shapes": {
+            "rgb_hdr_image_shape": null,
+            "rgb_hdr_raw_shape": null,
+            "rgb_image_shape": [
+              720,
+              1280,
+              3
+            ],
+            "rgb_raw_shape": [
+              1,
+              720,
+              1280,
+              3
+            ],
+            "rgb_source": "isaac_ldr_annotator",
+            "role": "external",
+            "scene_name": "external_camera",
+            "semantic_dtype": "int64",
+            "semantic_image_shape": [
+              720,
+              1280
+            ],
+            "semantic_label_count": 4,
+            "semantic_raw_shape": [
+              1,
+              720,
+              1280,
+              1
+            ]
+          },
+          "rgb_hdr": null,
+          "rgb_max": 253,
+          "rgb_mean": 135.09900499131945,
+          "rgb_min": 0,
+          "rgb_png": {
+            "path": "construction_frames/external/selected_mount_reset.png",
+            "sha256": "sha256:522e7f0d5524dbc60c2ec554e23d940a022833a2610b6a99bc9b1c748b82f6d1"
+          },
+          "rgb_source": "isaac_ldr_annotator",
+          "robot_semantic_mask": null,
+          "role": "external",
+          "scene_name": "external_camera",
+          "semantic_id_to_labels": {
+            "(0, 0, 0, 0)": {
+              "class": "BACKGROUND"
+            },
+            "(0, 0, 0, 255)": {
+              "class": "UNLABELLED"
+            },
+            "(240, 4, 111, 255)": {
+              "class": "task_object"
+            },
+            "(27, 186, 239, 255)": {
+              "class": "robot"
+            }
+          },
+          "semantic_label_pixels": {
+            "robot": {
+              "bbox_xyxy": [
+                795,
+                0,
+                1279,
+                719
+              ],
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 124429,
+              "pixel_fraction": 0.13501410590277776,
+              "target_label": "robot",
+              "target_semantic_ids": [
+                -1066469,
+                4293900827
+              ]
+            },
+            "task_object": {
+              "bbox_xyxy": [
+                154,
+                0,
+                741,
+                569
+              ],
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 217702,
+              "pixel_fraction": 0.23622178819444445,
+              "target_label": "task_object",
+              "target_semantic_ids": [
+                -9501456,
+                4285465840
+              ]
+            },
+            "task_support": {
+              "bbox_xyxy": null,
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 0,
+              "pixel_fraction": 0.0,
+              "target_label": "task_support",
+              "target_semantic_ids": []
+            },
+            "task_target_marker": {
+              "bbox_xyxy": null,
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 0,
+              "pixel_fraction": 0.0,
+              "target_label": "task_target_marker",
+              "target_semantic_ids": []
+            }
+          },
+          "snapshot_id": "selected_mount_reset"
+        },
+        {
+          "intrinsic_matrix": [
+            [
+              666.6666870117188,
+              0.0,
+              640.0
+            ],
+            [
+              0.0,
+              666.6666870117188,
+              360.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "native_sensor_timestamp": null,
+          "observability": {
+            "bbox_xyxy": [
+              652,
+              484,
+              1279,
+              719
+            ],
+            "blockers": [],
+            "centroid_within_margin": true,
+            "centroid_xy_fraction": [
+              0.7032613646001641,
+              0.7760201844860658
+            ],
+            "claim": "camera_observes_task_object_in_rendered_site",
+            "frame_resolution_hw": [
+              720,
+              1280
+            ],
+            "framing_expectation": null,
+            "framing_thresholds": null,
+            "measurement_authority": "native_semantic_segmentation_aov+native_rgb_frame",
+            "model_label_used": false,
+            "notices": [],
+            "passed": true,
+            "pixel_count": 47171,
+            "pixel_fraction": 0.051183810763888886,
+            "render_evidence": {
+              "appearance_fidelity_qualified": false,
+              "appearance_quality_claimed": false,
+              "blockers": [],
+              "frame": {
+                "distinct_luminance_levels": 212,
+                "dominant_rgb_pixel_fraction": 0.005907118055555555,
+                "luminance_max": 217.33333333333334,
+                "luminance_mean": 140.3850632957176,
+                "luminance_min": 0.0,
+                "luminance_std": 56.5290274155451,
+                "near_black_pixel_fraction": 0.0008430989583333333,
+                "pixel_count": 921600,
+                "saturated_channel_pixel_fraction": 0.0,
+                "void_pixel_fraction": 2.170138888888889e-05
+              },
+              "frame_rendered": true,
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_rgb_frame",
+              "notices": [],
+              "passed": true,
+              "quality_boundary": "render_presence_only_not_appearance_quality",
+              "schema_version": "native_task_camera_render_evidence.v1",
+              "site_appearance_claimed": true,
+              "site_appearance_presence_claimed": true,
+              "site_appearance_render_expected": true,
+              "site_region": {
+                "distinct_luminance_levels": 208,
+                "dominant_rgb_pixel_fraction": 0.006223489843086174,
+                "luminance_mean": 143.62941454747423,
+                "luminance_std": 54.98870476848188,
+                "pixel_count": 874429,
+                "void_pixel_fraction": 2.2872068515568447e-05
+              },
+              "site_rendered": true,
+              "target_region": {
+                "distinct_luminance_levels": 201,
+                "dominant_rgb_pixel_fraction": 0.020711878060672873,
+                "luminance_mean": 80.24313667295583,
+                "luminance_std": 50.67142168337556,
+                "pixel_count": 47171,
+                "void_pixel_fraction": 0.0
+              },
+              "target_rendered": true,
+              "thresholds": {
+                "maximum_site_dominant_rgb_pixel_fraction": 0.5,
+                "maximum_site_void_pixel_fraction": 0.5,
+                "minimum_distinct_luminance_levels": 8,
+                "minimum_luminance_std": 1.0,
+                "near_black_luminance_max": 2.0
+              }
+            },
+            "render_passed": true,
+            "rgb_or_model_label_used": true,
+            "schema_version": "native_task_camera_observability.v2",
+            "semantic_passed": true,
+            "site_appearance_claimed": true,
+            "target_label": "task_object",
+            "target_semantic_ids": [
+              -9501456,
+              4285465840
+            ],
+            "thresholds": {
+              "centroid_margin_fraction": 0.05,
+              "effective_minimum_pixel_fraction": 0.002,
+              "effective_minimum_pixels": 120,
+              "minimum_pixel_fraction": 0.002,
+              "minimum_pixels": 120
+            }
+          },
+          "position_world_m": [
+            3.819486141204834,
+            9.192367553710938,
+            0.5515488386154175
+          ],
+          "quaternion_world_opengl_xyzw": [
+            -0.002544879913330078,
+            -0.158419668674469,
+            0.9873316287994385,
+            0.008543789386749268
+          ],
+          "raw_shapes": {
+            "rgb_hdr_image_shape": null,
+            "rgb_hdr_raw_shape": null,
+            "rgb_image_shape": [
+              720,
+              1280,
+              3
+            ],
+            "rgb_raw_shape": [
+              1,
+              720,
+              1280,
+              3
+            ],
+            "rgb_source": "isaac_ldr_annotator",
+            "role": "wrist",
+            "scene_name": "wrist_camera",
+            "semantic_dtype": "int64",
+            "semantic_image_shape": [
+              720,
+              1280
+            ],
+            "semantic_label_count": 4,
+            "semantic_raw_shape": [
+              1,
+              720,
+              1280,
+              1
+            ]
+          },
+          "rgb_hdr": null,
+          "rgb_max": 218,
+          "rgb_mean": 140.3850632957176,
+          "rgb_min": 0,
+          "rgb_png": {
+            "path": "construction_frames/wrist/selected_mount_reset.png",
+            "sha256": "sha256:cc22d5cad6abca64b02202dcdcd2df90534a84f813da0eb72b589df4ac6d0ff4"
+          },
+          "rgb_source": "isaac_ldr_annotator",
+          "robot_semantic_mask": {
+            "measurement_authority": "native_semantic_segmentation_aov",
+            "path": "construction_frames/wrist/selected_mount_reset.robot_semantic_mask.png",
+            "pixel_count": 155353,
+            "sha256": "sha256:5fdbfe29f932daf3db7d9017b6ca2d7244f72535909452aba9a0c30d29b5b63a"
+          },
+          "role": "wrist",
+          "scene_name": "wrist_camera",
+          "semantic_id_to_labels": {
+            "(0, 0, 0, 0)": {
+              "class": "BACKGROUND"
+            },
+            "(0, 0, 0, 255)": {
+              "class": "UNLABELLED"
+            },
+            "(240, 4, 111, 255)": {
+              "class": "task_object"
+            },
+            "(27, 186, 239, 255)": {
+              "class": "robot"
+            }
+          },
+          "semantic_label_pixels": {
+            "robot": {
+              "bbox_xyxy": [
+                287,
+                433,
+                1279,
+                719
+              ],
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 155353,
+              "pixel_fraction": 0.16856879340277778,
+              "target_label": "robot",
+              "target_semantic_ids": [
+                -1066469,
+                4293900827
+              ]
+            },
+            "task_object": {
+              "bbox_xyxy": [
+                652,
+                484,
+                1279,
+                719
+              ],
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 47171,
+              "pixel_fraction": 0.051183810763888886,
+              "target_label": "task_object",
+              "target_semantic_ids": [
+                -9501456,
+                4285465840
+              ]
+            },
+            "task_support": {
+              "bbox_xyxy": null,
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 0,
+              "pixel_fraction": 0.0,
+              "target_label": "task_support",
+              "target_semantic_ids": []
+            },
+            "task_target_marker": {
+              "bbox_xyxy": null,
+              "frame_resolution_hw": [
+                720,
+                1280
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 0,
+              "pixel_fraction": 0.0,
+              "target_label": "task_target_marker",
+              "target_semantic_ids": []
+            }
+          },
+          "snapshot_id": "selected_mount_reset"
+        },
+        {
+          "intrinsic_matrix": [
+            [
+              172.88839721679688,
+              0.0,
+              160.0
+            ],
+            [
+              0.0,
+              172.88839721679688,
+              90.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "native_sensor_timestamp": null,
+          "observability": {
+            "bbox_xyxy": [
+              64,
+              30,
+              144,
+              123
+            ],
+            "blockers": [],
+            "centroid_within_margin": true,
+            "centroid_xy_fraction": [
+              0.3421336306149219,
+              0.4019652125678514
+            ],
+            "claim": "camera_observes_task_object_in_rendered_site",
+            "frame_resolution_hw": [
+              180,
+              320
+            ],
+            "framing_expectation": null,
+            "framing_thresholds": null,
+            "measurement_authority": "native_semantic_segmentation_aov+native_rgb_frame",
+            "model_label_used": false,
+            "notices": [],
+            "passed": true,
+            "pixel_count": 4935,
+            "pixel_fraction": 0.08567708333333333,
+            "render_evidence": {
+              "appearance_fidelity_qualified": false,
+              "appearance_quality_claimed": false,
+              "blockers": [],
+              "frame": {
+                "distinct_luminance_levels": 231,
+                "dominant_rgb_pixel_fraction": 0.002204861111111111,
+                "luminance_max": 247.0,
+                "luminance_mean": 164.13167824074077,
+                "luminance_min": 11.666666666666666,
+                "luminance_std": 53.07051689464097,
+                "near_black_pixel_fraction": 0.0,
+                "pixel_count": 57600,
+                "saturated_channel_pixel_fraction": 1.736111111111111e-05,
+                "void_pixel_fraction": 0.0
+              },
+              "frame_rendered": true,
+              "frame_resolution_hw": [
+                180,
+                320
+              ],
+              "measurement_authority": "native_rgb_frame",
+              "notices": [],
+              "passed": true,
+              "quality_boundary": "render_presence_only_not_appearance_quality",
+              "schema_version": "native_task_camera_render_evidence.v1",
+              "site_appearance_claimed": true,
+              "site_appearance_presence_claimed": true,
+              "site_appearance_render_expected": true,
+              "site_region": {
+                "distinct_luminance_levels": 230,
+                "dominant_rgb_pixel_fraction": 0.0024114687173644738,
+                "luminance_mean": 172.1346688186335,
+                "luminance_std": 46.474686803754224,
+                "pixel_count": 52665,
+                "void_pixel_fraction": 0.0
+              },
+              "site_rendered": true,
+              "target_region": {
+                "distinct_luminance_levels": 189,
+                "dominant_rgb_pixel_fraction": 0.015602836879432624,
+                "luminance_mean": 78.7259034110098,
+                "luminance_std": 42.96175741785492,
+                "pixel_count": 4935,
+                "void_pixel_fraction": 0.0
+              },
+              "target_rendered": true,
+              "thresholds": {
+                "maximum_site_dominant_rgb_pixel_fraction": 0.5,
+                "maximum_site_void_pixel_fraction": 0.5,
+                "minimum_distinct_luminance_levels": 8,
+                "minimum_luminance_std": 1.0,
+                "near_black_luminance_max": 2.0
+              }
+            },
+            "render_passed": true,
+            "rgb_or_model_label_used": true,
+            "schema_version": "native_task_camera_observability.v2",
+            "semantic_passed": true,
+            "site_appearance_claimed": true,
+            "target_label": "task_object",
+            "target_semantic_ids": [
+              -9501456,
+              4285465840
+            ],
+            "thresholds": {
+              "centroid_margin_fraction": 0.05,
+              "effective_minimum_pixel_fraction": 0.003,
+              "effective_minimum_pixels": 200,
+              "minimum_pixel_fraction": 0.003,
+              "minimum_pixels": 200
+            }
+          },
+          "position_world_m": [
+            2.6634862422943115,
+            8.15666389465332,
+            1.649999976158142
+          ],
+          "quaternion_world_opengl_xyzw": [
+            0.3894253373146057,
+            -0.16941328346729279,
+            -0.36115962266921997,
+            0.8301872611045837
+          ],
+          "raw_shapes": {
+            "rgb_hdr_image_shape": null,
+            "rgb_hdr_raw_shape": null,
+            "rgb_image_shape": [
+              180,
+              320,
+              3
+            ],
+            "rgb_raw_shape": [
+              1,
+              180,
+              320,
+              3
+            ],
+            "rgb_source": "isaac_ldr_annotator",
+            "role": "overview",
+            "scene_name": "external_camera_2",
+            "semantic_dtype": "int64",
+            "semantic_image_shape": [
+              180,
+              320
+            ],
+            "semantic_label_count": 4,
+            "semantic_raw_shape": [
+              1,
+              180,
+              320,
+              1
+            ]
+          },
+          "rgb_hdr": null,
+          "rgb_max": 255,
+          "rgb_mean": 164.13167824074074,
+          "rgb_min": 4,
+          "rgb_png": {
+            "path": "construction_frames/overview/selected_mount_reset.png",
+            "sha256": "sha256:cf8ee9eab8b0fba5d58802850aeefb240a14a64fbaf82a2292f69e66dfb44114"
+          },
+          "rgb_source": "isaac_ldr_annotator",
+          "robot_semantic_mask": null,
+          "role": "overview",
+          "scene_name": "external_camera_2",
+          "semantic_id_to_labels": {
+            "(0, 0, 0, 0)": {
+              "class": "BACKGROUND"
+            },
+            "(0, 0, 0, 255)": {
+              "class": "UNLABELLED"
+            },
+            "(240, 4, 111, 255)": {
+              "class": "task_object"
+            },
+            "(27, 186, 239, 255)": {
+              "class": "robot"
+            }
+          },
+          "semantic_label_pixels": {
+            "robot": {
+              "bbox_xyxy": [
+                151,
+                57,
+                203,
+                128
+              ],
+              "frame_resolution_hw": [
+                180,
+                320
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 1381,
+              "pixel_fraction": 0.023975694444444445,
+              "target_label": "robot",
+              "target_semantic_ids": [
+                -1066469,
+                4293900827
+              ]
+            },
+            "task_object": {
+              "bbox_xyxy": [
+                64,
+                30,
+                144,
+                123
+              ],
+              "frame_resolution_hw": [
+                180,
+                320
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 4935,
+              "pixel_fraction": 0.08567708333333333,
+              "target_label": "task_object",
+              "target_semantic_ids": [
+                -9501456,
+                4285465840
+              ]
+            },
+            "task_support": {
+              "bbox_xyxy": null,
+              "frame_resolution_hw": [
+                180,
+                320
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 0,
+              "pixel_fraction": 0.0,
+              "target_label": "task_support",
+              "target_semantic_ids": []
+            },
+            "task_target_marker": {
+              "bbox_xyxy": null,
+              "frame_resolution_hw": [
+                180,
+                320
+              ],
+              "measurement_authority": "native_semantic_segmentation_aov",
+              "pixel_count": 0,
+              "pixel_fraction": 0.0,
+              "target_label": "task_target_marker",
+              "target_semantic_ids": []
+            }
+          },
+          "snapshot_id": "selected_mount_reset"
+        }
+      ],
+      "snapshot_id": "selected_mount_reset"
+    },
+    "status": "blocked",
+    "target_semantic_visibility_passed": true,
+    "visual_gate": {
+      "appearance_reference_parity_binding": {
+        "authority_backend_receipt_digest": null,
+        "authority_present": false,
+        "backend_bound": false,
+        "session_backend_receipt_digest": null
+      },
+      "appearance_reference_parity_passed": false,
+      "blockers": [],
+      "candidate_policy_loaded": false,
+      "candidate_policy_queried": false,
+      "frame_structure_passed": true,
+      "human_visual_review": {
+        "reviewer": null,
+        "status": "pending"
+      },
+      "human_visual_review_status": "pending",
+      "measurement_authority": "exact_reset_policy_and_review_rgb_frames",
+      "passed": true,
+      "policy_observation_integrity_blockers": [
+        "native_task_appearance_reference_parity_missing",
+        "native_task_human_visual_review_not_approved"
+      ],
+      "policy_observation_integrity_passed": false,
+      "quality_boundary": "frame_structure_passed is structural and exposure only; policy_observation_integrity_passed additionally requires sealed same-pose reference parity bound to this session's appearance backend and an approved human contact-sheet review",
+      "required_views": [
+        "external",
+        "overview",
+        "wrist"
+      ],
+      "schema_version": "native_task_prepolicy_visual_gate.v2",
+      "target_semantic_visibility_passed": null,
+      "views": {
+        "external": {
+          "blockers": [],
+          "chromatic_diagnostics": {
+            "gating": "diagnostic_only_until_calibration_set_preregistered",
+            "local_chroma_outlier_fraction": 0.0,
+            "local_chroma_outlier_level": 48,
+            "mean_channel_value": 135.09900499131945,
+            "rgb_spread_level": 64,
+            "rgb_spread_pixel_fraction": 1.4105902777777777e-05
+          },
+          "frame_digest": "sha256:d6ad935e8e432ce75c0f4dd4cf7564885c62a768c19e2efda2fb8452893f17a7",
+          "maximum_near_black_pixel_fraction": 0.5,
+          "near_black_pixel_fraction": 0.0001247829861111111,
+          "passed": true,
+          "render_presence": {
+            "appearance_fidelity_qualified": false,
+            "appearance_quality_claimed": false,
+            "blockers": [],
+            "frame": {
+              "distinct_luminance_levels": 250,
+              "dominant_rgb_pixel_fraction": 0.005317925347222223,
+              "luminance_max": 249.0,
+              "luminance_mean": 135.09900499131945,
+              "luminance_min": 0.0,
+              "luminance_std": 58.448706210165916,
+              "near_black_pixel_fraction": 0.0001247829861111111,
+              "pixel_count": 921600,
+              "saturated_channel_pixel_fraction": 0.0,
+              "void_pixel_fraction": 4.340277777777778e-06
+            },
+            "frame_rendered": true,
+            "frame_resolution_hw": [
+              720,
+              1280
+            ],
+            "measurement_authority": "native_rgb_frame",
+            "notices": [],
+            "passed": true,
+            "quality_boundary": "render_presence_only_not_appearance_quality",
+            "schema_version": "native_task_camera_render_evidence.v1",
+            "site_appearance_claimed": false,
+            "site_appearance_presence_claimed": false,
+            "site_appearance_render_expected": true,
+            "site_region": null,
+            "site_rendered": null,
+            "target_region": null,
+            "target_rendered": null,
+            "thresholds": {
+              "maximum_site_dominant_rgb_pixel_fraction": 0.5,
+              "maximum_site_void_pixel_fraction": 0.5,
+              "minimum_distinct_luminance_levels": 8,
+              "minimum_luminance_std": 1.0,
+              "near_black_luminance_max": 2.0
+            }
+          },
+          "saturation": {
+            "chromatic_clip_pixel_fraction": 0.0,
+            "maximum_saturated_channel_pixel_fraction": 0.1,
+            "passed": true,
+            "pixel_count": 921600,
+            "saturated_channel_pixel_fraction": 0.0,
+            "saturated_white_pixel_fraction": 0.0,
+            "schema_version": "native_task_policy_input_frame_saturation.v1"
+          }
+        },
+        "overview": {
+          "blockers": [],
+          "chromatic_diagnostics": {
+            "gating": "diagnostic_only_until_calibration_set_preregistered",
+            "local_chroma_outlier_fraction": 0.00022569444444444443,
+            "local_chroma_outlier_level": 48,
+            "mean_channel_value": 164.13167824074074,
+            "rgb_spread_level": 64,
+            "rgb_spread_pixel_fraction": 0.008680555555555556
+          },
+          "frame_digest": "sha256:2fee87f6744752703a8aac5593684caf426a77c20d7b822939292e67bb8559bb",
+          "maximum_near_black_pixel_fraction": 0.5,
+          "near_black_pixel_fraction": 0.0,
+          "passed": true,
+          "render_presence": {
+            "appearance_fidelity_qualified": false,
+            "appearance_quality_claimed": false,
+            "blockers": [],
+            "frame": {
+              "distinct_luminance_levels": 231,
+              "dominant_rgb_pixel_fraction": 0.002204861111111111,
+              "luminance_max": 247.0,
+              "luminance_mean": 164.13167824074077,
+              "luminance_min": 11.666666666666666,
+              "luminance_std": 53.07051689464097,
+              "near_black_pixel_fraction": 0.0,
+              "pixel_count": 57600,
+              "saturated_channel_pixel_fraction": 1.736111111111111e-05,
+              "void_pixel_fraction": 0.0
+            },
+            "frame_rendered": true,
+            "frame_resolution_hw": [
+              180,
+              320
+            ],
+            "measurement_authority": "native_rgb_frame",
+            "notices": [],
+            "passed": true,
+            "quality_boundary": "render_presence_only_not_appearance_quality",
+            "schema_version": "native_task_camera_render_evidence.v1",
+            "site_appearance_claimed": false,
+            "site_appearance_presence_claimed": false,
+            "site_appearance_render_expected": true,
+            "site_region": null,
+            "site_rendered": null,
+            "target_region": null,
+            "target_rendered": null,
+            "thresholds": {
+              "maximum_site_dominant_rgb_pixel_fraction": 0.5,
+              "maximum_site_void_pixel_fraction": 0.5,
+              "minimum_distinct_luminance_levels": 8,
+              "minimum_luminance_std": 1.0,
+              "near_black_luminance_max": 2.0
+            }
+          },
+          "saturation": {
+            "chromatic_clip_pixel_fraction": 1.736111111111111e-05,
+            "maximum_saturated_channel_pixel_fraction": 0.1,
+            "passed": true,
+            "pixel_count": 57600,
+            "saturated_channel_pixel_fraction": 1.736111111111111e-05,
+            "saturated_white_pixel_fraction": 0.0,
+            "schema_version": "native_task_policy_input_frame_saturation.v1"
+          }
+        },
+        "wrist": {
+          "blockers": [],
+          "chromatic_diagnostics": {
+            "gating": "diagnostic_only_until_calibration_set_preregistered",
+            "local_chroma_outlier_fraction": 0.0,
+            "local_chroma_outlier_level": 48,
+            "mean_channel_value": 140.3850632957176,
+            "rgb_spread_level": 64,
+            "rgb_spread_pixel_fraction": 0.0
+          },
+          "frame_digest": "sha256:9aab5f7378887b6dd17f99a205aa7d366f5d835b863597e08d5a92db1187e9c7",
+          "maximum_near_black_pixel_fraction": 0.5,
+          "near_black_pixel_fraction": 0.0008430989583333333,
+          "passed": true,
+          "render_presence": {
+            "appearance_fidelity_qualified": false,
+            "appearance_quality_claimed": false,
+            "blockers": [],
+            "frame": {
+              "distinct_luminance_levels": 212,
+              "dominant_rgb_pixel_fraction": 0.005907118055555555,
+              "luminance_max": 217.33333333333334,
+              "luminance_mean": 140.3850632957176,
+              "luminance_min": 0.0,
+              "luminance_std": 56.5290274155451,
+              "near_black_pixel_fraction": 0.0008430989583333333,
+              "pixel_count": 921600,
+              "saturated_channel_pixel_fraction": 0.0,
+              "void_pixel_fraction": 2.170138888888889e-05
+            },
+            "frame_rendered": true,
+            "frame_resolution_hw": [
+              720,
+              1280
+            ],
+            "measurement_authority": "native_rgb_frame",
+            "notices": [],
+            "passed": true,
+            "quality_boundary": "render_presence_only_not_appearance_quality",
+            "schema_version": "native_task_camera_render_evidence.v1",
+            "site_appearance_claimed": false,
+            "site_appearance_presence_claimed": false,
+            "site_appearance_render_expected": true,
+            "site_region": null,
+            "site_rendered": null,
+            "target_region": null,
+            "target_rendered": null,
+            "thresholds": {
+              "maximum_site_dominant_rgb_pixel_fraction": 0.5,
+              "maximum_site_void_pixel_fraction": 0.5,
+              "minimum_distinct_luminance_levels": 8,
+              "minimum_luminance_std": 1.0,
+              "near_black_luminance_max": 2.0
+            }
+          },
+          "saturation": {
+            "chromatic_clip_pixel_fraction": 0.0,
+            "maximum_saturated_channel_pixel_fraction": 0.1,
+            "passed": true,
+            "pixel_count": 921600,
+            "saturated_channel_pixel_fraction": 0.0,
+            "saturated_white_pixel_fraction": 0.0,
+            "schema_version": "native_task_policy_input_frame_saturation.v1"
+          }
+        }
+      }
+    },
+    "wrist_camera_contact_sheet": null,
+    "wrist_camera_mount_selection_digest": "sha256:3ed4e7e9c75da3b5c01547c31ce563717340e03f2d286c359ce0d6e631a37a38"
+  },
+  "provider_allocations_observed": null,
+  "provider_zero_required_after_return": true,
+  "result_digest": "sha256:5359ebb78916d03f0e153de5c4349137f79081e48970188381aeab24023c75c2",
+  "retry_cap": 0,
+  "run_kind": "internal_policy_canary",
+  "scene_promotion_performed": false,
+  "schema_version": "native_task_arena_policy_canary_session_result.v1",
+  "selected_cell_index": 0,
+  "session_closeout": {
+    "provider_closeout_pending": true,
+    "runtime_close_deferred_until_result_sealed": true,
+    "runtime_closed": true,
+    "status": "runtime_close_committed_after_result_seal"
+  },
+  "session_failure_codes": [],
+  "session_failure_source_trace": [
+    {
+      "file": "native_task_arena_policy_canary_session.py",
+      "function": "execute_paired_session",
+      "line": 902
+    }
+  ],
+  "session_failure_type": "PolicyCanarySessionError",
+  "status": "blocked",
+  "task_success_contract": {
+    "contract_digest": "sha256:4d9801918a0e9facf428099e9302ffe12648ab1e771ccfbd9dea06dc981b51d4",
+    "criteria": {
+      "assembly_root": {
+        "mode": "required"
+      },
+      "hold": {
+        "maximum_settled_target_speed": 0.03,
+        "mode": "required",
+        "window_samples": 20
+      },
+      "locked_joints": {
+        "joint_ids": [
+          "drawer_slide",
+          "latch_coupler",
+          "selector_axis"
+        ],
+        "mode": "required",
+        "motion_tolerance": 0.01
+      },
+      "motion": {
+        "movement_epsilon": 0.01
+      },
+      "opening": {
+        "joint_hard_limits": [
+          0.0,
+          1.2
+        ],
+        "mode": "required",
+        "reset_position": 0.0,
+        "success_interval": [
+          0.7,
+          0.95
+        ]
+      },
+      "reset": {
+        "tolerance": 0.01
+      },
+      "safety": {
+        "mode": "required"
+      },
+      "target_joint": {
+        "joint_id": "door_hinge",
+        "joint_ids": [
+          "door_hinge"
+        ]
+      },
+      "temporal_invariants": {
+        "assembly_root_excursion_allowed": false,
+        "forbidden_collision_allowed": false,
+        "joint_limit_violation_allowed": false,
+        "rebound_below_threshold_allowed": false,
+        "schema_version": "articulated_task_event_ledger_expectation.v1"
+      }
+    },
+    "provenance": {
+      "author_id": "retained-task:sha256:80db79ec8f377f3ba178417f6b5eece01284bf3d6ec0adb18847965a2cbe51a4",
+      "author_source": "compatibility_default",
+      "confirmation_status": "confirmed",
+      "confirmed_by_team_id": "Nijel Hunt",
+      "proposal_digest": null
+    },
+    "schema_version": "articulated_task_success_contract.v1",
+    "scope": {
+      "site_id": "840920",
+      "task_id": "task_a_washer_door_open"
+    }
+  },
+  "task_success_contract_digest": "sha256:4d9801918a0e9facf428099e9302ffe12648ab1e771ccfbd9dea06dc981b51d4",
+  "telemetry": {
+    "artifact": {
+      "path": "policy_canary_telemetry.jsonl",
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    "attachments": [],
+    "calibration_references": [],
+    "channel_message_counts": {
+      "episode_envelopes": 0,
+      "observations": 0
+    },
+    "evidence_gaps": [],
+    "format": "typed_jsonl",
+    "index_digest": "sha256:903197faa96d98ab823466d44916d7b080c6f7752332f6d9c0e2a0e5fbc4234d",
+    "mcap_gap": "mcap_unavailable:ModuleNotFoundError",
+    "message_count": 0,
+    "schema": {
+      "path": "policy_canary_telemetry_schema.json",
+      "sha256": "sha256:388524685e4b54a9e91febaa3ec7e05e6d6a47865f7014d0774b32395b762f8b",
+      "size_bytes": 239
+    },
+    "schema_version": "policy_canary_telemetry_index.v1"
+  },
+  "warm_session_open_count": 1
+}

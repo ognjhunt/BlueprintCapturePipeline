@@ -49,6 +49,23 @@ def _approval_path(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.mark.parametrize("execute", [False, True])
+def test_watchdog_path_refused_in_full_preflight_before_artifact_or_provider_work(
+    tmp_path, monkeypatch, execute,
+):
+    root = tmp_path / "registered"
+    root.mkdir()
+    monkeypatch.setenv("BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT", str(root))
+    job = tmp_path / "outside"
+    with pytest.raises(ValueError, match="outside_spend_guard_root"):
+        arena.run_arena_native_control_vast(
+            approval_path=tmp_path / "unused.json", job_dir=job,
+            paid_resource_admission_grant=None, execute=execute,
+            require_independent_watchdog=True,
+        )
+    assert not job.exists()
+
+
 def test_policy_query_blocker_does_not_invent_query_when_receipt_is_missing() -> None:
     assert (
         _candidate_policy_query_blocker({}, blocker_prefix="adp009d")
@@ -404,11 +421,13 @@ def test_live_transport_emits_allocator_artifact_manifest(
     "provider_create_attempted,definite_refusal",
     [(False, False), (True, False), (True, True)],
 )
+@pytest.mark.parametrize("offer_search_exhausted", [False, True])
 def test_policy_transport_seals_typed_media_gap_before_first_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     provider_create_attempted: bool,
     definite_refusal: bool,
+    offer_search_exhausted: bool,
 ) -> None:
     bundle_path = tmp_path / "bundle.zip"
     bundle_path.write_bytes(b"bundle")
@@ -443,7 +462,8 @@ def test_policy_transport_seals_typed_media_gap_before_first_observation(
         }
         if definite_refusal:
             adapter.update(
-                status="failed",
+                status="blocked" if offer_search_exhausted else "failed",
+                reason="vast_offer_selection_blocked" if offer_search_exhausted else "vast_create_failed",
                 vast_side_effects_may_have_occurred=False,
                 create_failure_diagnosis={
                     "http_status_code": 410,
@@ -1173,3 +1193,53 @@ def test_failed_download_keeps_paid_remote_evidence_and_recovery_access(tmp_path
         assert 'test-only-protected-reference' not in json.dumps(result)
     else:
         assert result['status'] == 'completed' and not remote and not access.exists()
+
+
+@pytest.mark.parametrize('inventory_verified', [True, False])
+def test_refused_create_cleanup_requires_authenticated_no_instance_proof(
+    tmp_path, monkeypatch, inventory_verified,
+):
+    """A vanished offer can close staging; an uncertain create keeps recovery access."""
+    staging = tmp_path / 'stage'
+    staging.mkdir()
+    access = staging / 'provider_output_get_url.txt'
+    access.write_text('test-only-protected-reference')
+    calls = []
+    adapter = {
+        'status': 'failed',
+        'provider_create_attempted': True,
+        'vast_instance_ids': [],
+        'vast_side_effects_may_have_occurred': False,
+        'continuing_spend_from_this_run': False,
+        'create_failure_diagnosis': {
+            'http_status_code': 400,
+            'error_preview': 'no_such_ask: selected offer is not available',
+            'definite_create_refusal': True,
+            'create_inventory_verified': inventory_verified,
+            'create_inventory_http_status_code': 200,
+            'create_produced_no_instance': True,
+            'matching_attempt_instance_ids': [],
+            'attempted_labels': ['exact-render-only-attempt'],
+        },
+        'provider_attempt_classification': {
+            'classification': 'pre_execution_provider_null',
+            'scientific_attempt_consumed': False,
+        },
+    }
+
+    def cleanup(path):
+        calls.append(path)
+        access.unlink()
+        return {'status': 'completed', 'all_objects_absent': True, 'blockers': []}
+
+    monkeypatch.setattr(arena, 'cleanup_staged_wam_provider_objects', cleanup)
+    result = arena._cleanup_downloaded_provider_objects(
+        staging_dir=staging, output_zip=tmp_path / 'never-produced.zip', adapter=adapter,
+    )
+    if inventory_verified:
+        assert calls == [staging]
+        assert result['all_objects_absent'] is True
+        assert not access.exists()
+    else:
+        assert calls == [] and access.exists()
+        assert result['remote_objects_retained_for_recovery'] is True

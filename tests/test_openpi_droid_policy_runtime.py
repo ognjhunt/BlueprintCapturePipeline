@@ -842,3 +842,68 @@ def test_identity_bound_server_runs_from_the_flat_provider_runtime() -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert "--policy-spec" in completed.stdout
+
+
+def test_staged_client_paths_preserve_numpy_and_take_precedence(tmp_path, monkeypatch):
+    import sys
+    from blueprint_pipeline.openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+
+    staged = tmp_path / "openpi_client_deps"
+    staged.mkdir()
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.delitem(sys.modules, "websockets", raising=False)
+    monkeypatch.delitem(sys.modules, "openpi_client", raising=False)
+    numpy = sys.modules.get("numpy")
+    assert activate_staged_openpi_client_dependencies(str(tmp_path / "runtime.py")) == str(staged)
+    assert sys.path[0] == str(staged)
+    assert sys.modules.get("numpy") is numpy
+
+
+def test_staged_fallback_follows_sdk_dependencies(tmp_path, monkeypatch):
+    import sys
+    from blueprint_pipeline.openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+
+    staged, fallback = tmp_path / "openpi_client_deps", tmp_path / "openpi_client_fallback_deps"
+    staged.mkdir()
+    fallback.mkdir()
+    sdk = str(tmp_path / "sdk")
+    monkeypatch.setattr(sys, "path", [sdk, str(fallback), str(staged)])
+    monkeypatch.delitem(sys.modules, "websockets", raising=False)
+    monkeypatch.delitem(sys.modules, "openpi_client", raising=False)
+    activate_staged_openpi_client_dependencies(str(tmp_path / "runtime.py"))
+    assert sys.path == [str(staged), sdk, str(fallback)]
+
+
+def test_fallback_rejects_scientific_packages_even_when_sdk_would_win(tmp_path):
+    from blueprint_pipeline.openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+
+    (tmp_path / "openpi_client_deps").mkdir()
+    fallback = tmp_path / "openpi_client_fallback_deps"
+    fallback.mkdir()
+    (fallback / "numpy").mkdir()
+    with pytest.raises(RuntimeError, match="contains_scientific_runtime"):
+        activate_staged_openpi_client_dependencies(str(tmp_path / "runtime.py"))
+
+
+@pytest.mark.parametrize("name", ["numpy", "numpy-2.5.1.dist-info", "torch", "jax"])
+def test_client_staging_refuses_scientific_runtime_packages(tmp_path, name):
+    from blueprint_pipeline.openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+
+    staged = tmp_path / "openpi_client_deps"
+    staged.mkdir()
+    (staged / name).mkdir()
+    with pytest.raises(RuntimeError, match="contains_scientific_runtime"):
+        activate_staged_openpi_client_dependencies(str(tmp_path / "runtime.py"))
+
+
+def test_client_staging_refuses_an_already_loaded_external_transport(tmp_path, monkeypatch):
+    import sys
+    import types
+    from blueprint_pipeline.openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+
+    (tmp_path / "openpi_client_deps").mkdir()
+    module = types.ModuleType("websockets")
+    module.__file__ = str(tmp_path / "sdk/websockets/__init__.py")
+    monkeypatch.setitem(sys.modules, "websockets", module)
+    with pytest.raises(RuntimeError, match="preloaded_outside_staging"):
+        activate_staged_openpi_client_dependencies(str(tmp_path / "runtime.py"))

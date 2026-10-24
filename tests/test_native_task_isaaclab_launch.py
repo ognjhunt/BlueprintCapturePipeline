@@ -753,3 +753,28 @@ def test_every_arena_worker_derives_the_render_path_from_its_plan() -> None:
         for index in calls:
             window = source[index : index + 400]
             assert "appearance_render_path=" in window, (module.__name__, window)
+
+
+def test_staged_client_dependencies_activate_before_kit_launch(monkeypatch):
+    from blueprint_pipeline import native_task_isaaclab_launch as launcher
+    from blueprint_pipeline import openpi_droid_policy_runtime as client
+
+    events = []
+    monkeypatch.setattr(launcher, "verify_native_task_isaaclab_launch_contract", lambda _: {
+        "runtime_profile": "baseline", "experience": {"path": "/retained/fixture.kit"},
+    })
+    monkeypatch.setattr(client, "activate_staged_openpi_client_dependencies",
+                        lambda _: events.append("client_dependencies"))
+
+    class StopBeforeKit(Exception):
+        pass
+
+    def app(**kwargs):
+        assert events == ["client_dependencies"]
+        raise StopBeforeKit
+
+    with pytest.raises(StopBeforeKit):
+        launcher.launch_native_task_isaaclab(
+            "/retained/provisioning.json", device="cuda:0",
+            appearance_render_path="no_site_appearance", app_launcher_factory=app,
+        )

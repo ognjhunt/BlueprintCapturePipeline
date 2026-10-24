@@ -33,6 +33,32 @@ def _prefix_episode_evidence_paths(
     return value
 
 
+def _returned_observation_gate_refused(child: Mapping[str, Any]) -> bool:
+    """Recognize the sealed refusal returned before any candidate is loaded.
+
+    The session raises after the gate returns, so its traceback contains the
+    session boundary rather than a frame inside prepolicy_observation_gate.
+    Recognizing this shape preserves the refusal; it never admits the gate.
+    """
+    gate = child.get("preload_observation_gate")
+    return bool(
+        isinstance(gate, Mapping)
+        and gate.get("schema_version") == "policy_canary_runtime_observation_integrity_gate.v1"
+        and gate.get("gate_digest") == canonical_digest(gate, digest_field="gate_digest")
+        and gate.get("status") == "blocked"
+        and gate.get("policy_observation_integrity_passed") is False
+        and gate.get("candidate_policy_loaded") is False
+        and gate.get("candidate_policy_queried") is False
+        and isinstance(gate.get("frame_structure_passed"), bool)
+        and isinstance(gate.get("blockers"), list) and bool(gate["blockers"])
+        and all(isinstance(item, str) and bool(item) for item in gate["blockers"])
+        and child.get("session_failure_type") == "PolicyCanarySessionError"
+        and any(frame.get("file") == "native_task_arena_policy_canary_session.py"
+                and frame.get("function") == "execute_paired_session"
+                for frame in child.get("session_failure_source_trace") or [])
+    )
+
+
 def _validate_isolated_cell_result(*, child: Mapping[str, Any], inputs: Mapping[str, Any], index: int) -> bool:
     """Validate one completed child; False denotes the retained pre-policy failure shape."""
     candidate_ids = tuple(str(value) for value in inputs["candidate_ids"])
@@ -43,14 +69,15 @@ def _validate_isolated_cell_result(*, child: Mapping[str, Any], inputs: Mapping[
             and child.get("task_success_contract_digest") == inputs.get("task_success_contract_digest")
             and child.get("status") == "blocked" and child.get("episodes") == []
             and child.get("policy_loads") == [] and child.get("candidate_policy_queried") is False
-            and child.get("preload_observation_gate") is None
             and (child.get("session_closeout") or {}).get("runtime_closed") is True
             and (child.get("telemetry") or {}).get("message_count") == 0
             and (child.get("telemetry") or {}).get("channel_message_counts")
                 == {"observations": 0, "episode_envelopes": 0}
             and child.get("session_failure_type")
-            and any(frame.get("function") == "prepolicy_observation_gate"
-                for frame in child.get("session_failure_source_trace") or [])):
+            and (_returned_observation_gate_refused(child)
+                 or (child.get("preload_observation_gate") is None
+                     and any(frame.get("function") == "prepolicy_observation_gate"
+                             for frame in child.get("session_failure_source_trace") or [])))):
         # Retain the raw pre-policy failure separately. It is not an episode,
         # policy outcome, loaded candidate, or measured runtime identity.
         return False

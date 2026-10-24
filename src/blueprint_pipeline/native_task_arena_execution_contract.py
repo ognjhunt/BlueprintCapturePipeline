@@ -42,6 +42,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_arena_dependency_contract.py",
     "native_task_arena_import_scope.py",
     "native_task_robot_registry.py",
+    "native_task_droid_runtime_compat.py",
     "native_g1_embodiment.py",
     "native_g1_usd_dependency_closure.py",
     "gear_sonic_joint_order_contract.py",
@@ -50,6 +51,11 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_rigid_friction_scenario.py",
     "native_task_direct_camera_aim.py",
     "native_task_isaaclab_launch.py",
+    "native_task_isaaclab_ga.py",
+    "native_task_newton_feature_probe.py",
+    "native_task_ga_runtime_lock.py",
+    "native_task_runtime_comparison.py",
+    "gpu_residency_attribution.py",
     "native_task_camera_observability.py",
     "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing
@@ -87,6 +93,18 @@ RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(
             "native_task_arena_construction_worker.py",
             "native_task_wrist_camera_mount_sweep.py",
             "rigid_frame_transforms.py",
+            # The render-only composition worker shares the lossless native AOV
+            # writer. Keep this finite closure identical in builder and admission.
+            "native_task_composition_worker.py",
+            "native_task_composition_diagnostic.py",
+            "native_task_asset_composition_gate.py",
+            "adp009d_isaac_runtime.py",
+            "adp009d_approach_capture.py",
+            "adp009d_hold_trace.py",
+            "adp009d_contact_envelope.py",
+            "adp009d_physics_backend_comparison.py",
+            "adp009d_newton_gripper_drive.py",
+            "adp009d_newton_collision_adapter.py",
         }
     )
 )
@@ -151,6 +169,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_arena_import_scope.py",
     "native_task_robot_registry.py",
     "native_g1_embodiment.py",
+    "native_task_droid_runtime_compat.py",
     "native_g1_usd_dependency_closure.py",
     "gear_sonic_joint_order_contract.py",
     "native_task_arena_preconstruction.py",
@@ -160,6 +179,11 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_rigid_friction_scenario.py",
     "native_task_direct_camera_aim.py",
     "native_task_isaaclab_launch.py",
+    "native_task_isaaclab_ga.py",
+    "native_task_newton_feature_probe.py",
+    "native_task_ga_runtime_lock.py",
+    "native_task_runtime_comparison.py",
+    "gpu_residency_attribution.py",
     "native_task_camera_observability.py",
     "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing

@@ -21,6 +21,56 @@ from blueprint_pipeline.native_task_arena_runtime import (
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
+def test_builder_accepts_ga_reset_api_without_changing_retained_reset(monkeypatch):
+    _install_fake_native_runtime(monkeypatch)
+
+    class GAEmbodiment(_Embodiment):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            del self.event_config.init_franka_arm_pose
+
+        def set_initial_joint_pose(self, value):
+            self.initial_joint_pose = value
+
+    monkeypatch.setattr(sys.modules["isaaclab_arena.embodiments.droid.droid"],
+                        "DroidAbsoluteJointPositionEmbodiment", GAEmbodiment)
+    config = types.ModuleType("isaaclab.utils.configclass")
+    config.configclass = lambda cls: cls
+    monkeypatch.setitem(sys.modules, config.__name__, config)
+    franka = types.ModuleType("isaaclab_arena.embodiments.franka.franka")
+    franka.franka_stack_events = SimpleNamespace(set_default_joint_pose=object())
+    monkeypatch.setitem(sys.modules, franka.__name__, franka)
+    plan = _sealed_scene_plan()
+    plan["robot"]["joint_reset_positions_rad"] = {f"joint-{i}": i / 10 for i in range(13)}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    built = build_native_task_arena_environment(plan)
+    assert built.env == "native-env"
+    assert built.native_configuration_readback["retained_droid_configuration"] is None
+
+
+def test_newton_factory_preserves_explicit_backend_through_arena_callback(monkeypatch):
+    _install_fake_native_runtime(monkeypatch)
+    from blueprint_pipeline import native_task_newton_feature_probe as feature
+    newton = types.ModuleType("isaaclab_newton.physics")
+    marker = type("NewtonArenaMJWarpManager", (), {})
+    marker.__module__ = "isaaclab_arena.environments.isaaclab_arena_manager_based_env_cfg"
+    newton.MJWarpSolverCfg = lambda: SimpleNamespace(class_type=marker, njmax=8192)
+    newton.NewtonCfg = lambda **kwargs: SimpleNamespace(backend="newton", **kwargs)
+    monkeypatch.setitem(sys.modules, newton.__name__, newton)
+    preconstruction = {"schema_version": "native_task_arena_preconstruction.v1", "passed": True,
+                       "expected_device": "cuda:0", "physics_backend": "newton_mjwarp", "blockers": []}
+    preconstruction["receipt_digest"] = canonical_digest(preconstruction, digest_field="receipt_digest")
+    monkeypatch.setattr(feature, "prepare_newton_preconstruction", lambda **kwargs: preconstruction)
+    built = build_native_task_arena_environment(_sealed_scene_plan(), physics_backend="newton_mjwarp")
+    assert built.cfg.sim.physics.backend == "newton"
+    assert built.cfg.sim.physics.solver_cfg.njmax == 8192
+    assert _ArenaBuilder.last.args.presets is None
+    assert _ArenaBuilder.last.arena_env.default_physics_backend == "newton"
+    assert built.native_configuration_readback["physics_backend_requested"] == "newton_mjwarp"
+    with pytest.raises(NativeTaskArenaRuntimeError, match="preconstruction_receipt_invalid"):
+        build_native_task_arena_environment(_sealed_scene_plan(), preconstruction_receipt=preconstruction)
+
+
 def test_legacy_prismatic_joint_gets_readback_verified_passive_friction_only_on_derived_asset(tmp_path):
     from pxr import Usd, UsdGeom, UsdPhysics
     from blueprint_pipeline.native_task_arena_runtime import (
@@ -279,6 +329,9 @@ class _ArenaBuilder:
         cfg = SimpleNamespace(
             sim=SimpleNamespace(), seed=None, decimation=None, episode_length_s=None
         )
+        if getattr(self.arena_env, "default_physics_backend", "physx") == "newton":
+            from isaaclab_newton.physics import NewtonCfg, MJWarpSolverCfg
+            cfg.sim.physics = NewtonCfg(solver_cfg=MJWarpSolverCfg())
         self.arena_env.env_cfg_callback(cfg)
         return "native-env", cfg
 
@@ -605,6 +658,54 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         arena_env.embodiment.camera_config.external_camera_2,
     ):
         assert camera_cfg.renderer_cfg.colorize_semantic_segmentation is False
+
+
+@pytest.mark.parametrize("manager_term_class", [False, True], ids=["baseline-function", "ga-class"])
+@pytest.mark.parametrize("reset_joints", [False, True], ids=["rigid-root", "articulated-root-and-joints"])
+def test_registered_asset_reset_executes_both_native_term_interfaces(
+    monkeypatch, manager_term_class, reset_joints
+) -> None:
+    _install_fake_native_runtime(monkeypatch)
+    mdp = sys.modules["isaaclab.envs.mdp"]
+    calls = []
+    native_env = SimpleNamespace()
+    env_ids = [0]
+
+    def reset_root(env, ids, *, pose_range, velocity_range, asset_cfg):
+        assert env is native_env and ids is env_ids
+        assert pose_range == {} and velocity_range == {}
+        calls.append(("root", asset_cfg))
+
+    class RootResetTerm:
+        # Exact GA constructor/call split: pose_range is not a constructor arg.
+        def __init__(self, cfg, env):
+            assert cfg.mode == "reset" and cfg.func is RootResetTerm
+            assert env is native_env
+            self.cfg = cfg
+
+        def __call__(self, env, ids, **params):
+            assert params == self.cfg.params
+            reset_root(env, ids, **params)
+
+    def reset_joint_state(env, ids, *, position_range, velocity_range, asset_cfg):
+        assert env is native_env and ids is env_ids
+        assert position_range == velocity_range == (0.0, 0.0)
+        calls.append(("joints", asset_cfg))
+
+    mdp.reset_root_state_uniform = RootResetTerm if manager_term_class else reset_root
+    mdp.reset_joints_by_offset = reset_joint_state
+    build_native_task_arena_environment(_sealed_scene_plan())
+    asset = next(asset for asset in _ArenaBuilder.last.arena_env.scene.assets
+                 if asset.name == "task_object")
+    event = asset.reset_event_cfg
+    event.func(native_env, env_ids, **{**event.params, "reset_joints": reset_joints})
+    expected = [("root", event.params["asset_cfg"])]
+    if reset_joints:
+        expected.append(("joints", event.params["asset_cfg"]))
+    assert calls == expected
+    # A second episode must rebind the same exact asset and zero offsets.
+    event.func(native_env, env_ids, **{**event.params, "reset_joints": reset_joints})
+    assert calls == expected * 2
 
 
 def test_builder_preserves_official_droid_policy_cameras_and_adds_target_marker(

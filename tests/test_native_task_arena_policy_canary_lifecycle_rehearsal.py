@@ -1518,6 +1518,51 @@ def test_one_failed_cell_is_a_typed_gap_and_the_other_nineteen_rollouts_continue
     assert all(isaac.result_sealed_at_close is True for isaac in isaacs)
 
 
+@pytest.mark.parametrize("failure_point", ["constructor", "observation_gate"])
+def test_prepolicy_failure_seals_parent_without_claiming_parity_probe(tmp_path: Path, failure_point: str) -> None:
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    isaacs: list[FakeIsaac] = []
+
+    def failing_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
+        runtime = _rehearsal_runtime(isaac)
+
+        def build(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("expected 13 joint positions, got 7")
+
+        def blocked_gate(**kwargs: Any) -> dict[str, Any]:
+            gate = {"schema_version": "policy_canary_runtime_observation_integrity_gate.v1",
+                    "status": "blocked", "policy_observation_integrity_passed": False,
+                    "candidate_policy_loaded": False, "candidate_policy_queried": False,
+                    "frame_structure_passed": True,
+                    "blockers": ["external:task_object:composition_support_background_occlusion_requires_review"]}
+            gate["gate_digest"] = canonical_digest(gate, digest_field="gate_digest")
+            return gate
+
+        changes = ({"build_environment": build} if failure_point == "constructor"
+                   else {"prepolicy_camera_gate": blocked_gate})
+        return worker.CellRuntime(**{**runtime.__dict__, **changes})
+
+    exit_code = worker._run_isolated_cell_processes(
+        runtime_root=runtime_root, output_root=provider_output,
+        run_cell_process=lambda **kwargs: _run_cell_in_process(
+            **kwargs, isaacs=isaacs, runtime_factory=failing_runtime))
+
+    assert exit_code == 1
+    assert len(isaacs) == 1 and isaacs[0].result_sealed_at_close is True
+    result = _sealed_result(provider_output / PROVIDER_RESULT_FILENAME)
+    child = _sealed_result(provider_output / "cell_runs/00" / PROVIDER_RESULT_FILENAME)
+    assert result["status"] == "blocked"
+    assert result["session_failure_type"] == ("AssertionError" if failure_point == "constructor" else "PolicyCanarySessionError")
+    assert result["session_failure_source_trace"] == child["session_failure_source_trace"]
+    assert result["isolated_cell_failures"][0]["raw_child_result"] == child
+    assert result["planned_episodes_per_policy"] == 10
+    assert result["episodes"] == result["policy_loads"] == []
+    assert result["learned_policy_rollout_count"] == 0
+    assert result["candidate_policy_queried"] is False
+    assert result["media_gap"]["type"] == "before_first_observation"
+    assert result["blockers"] == ["policy_canary_prepolicy_cell_failed"]
+
+
 def test_unqualified_nurec_renderer_blocks_both_policies_before_query_and_seals_gap(
     tmp_path: Path,
 ) -> None:

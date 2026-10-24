@@ -56,6 +56,8 @@ from tests.provider_output_fixtures import (
 )
 from tests.test_provider_output_promotion import World
 
+pytestmark = pytest.mark.usefixtures("funded_vast_credit")
+
 RESULT = PROVIDER_RESULT_FILENAME
 PREFIX = "native_task_arena_policy_canary_session"
 # The lane-result field recording the effective delivery mode and why it was chosen.

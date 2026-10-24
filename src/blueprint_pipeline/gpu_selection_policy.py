@@ -184,6 +184,10 @@ ISAAC_RT_GPU_KEYWORDS = (
     "RTX 3090 TI",
     "RTX 3090",
     "RTX A6000",
+    # NVIDIA's RTX 5880 Ada has third-generation RT cores and 48 GB.
+    # Vast uses both the spaced and joined Ada spellings.
+    "RTX 5880 ADA",
+    "RTX 5880ADA",
     "RTX 6000 ADA",
     "RTX 6000",
     "L40S",

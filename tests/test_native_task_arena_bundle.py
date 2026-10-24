@@ -2112,6 +2112,108 @@ def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
     assert verified_manifest["execution_mode"] == "runtime_preflight"
 
 
+def _composition_inputs(tmp_path, packet):
+    from blueprint_pipeline.native_task_composition_diagnostic import PASSES, REQUEST_SCHEMA, file_record
+    plan = {"scenario": {"seed": 7}, "robot": {"robot_id": "franka_panda"},
+            "objects": [{"semantic_role": "scene_appearance", "prim_path": "{ENV_REGEX_NS}/scene_appearance"}]}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    plan_path = tmp_path / "resolved-composition-plan.json"
+    write_json(plan_path, plan)
+    request = {"schema_version": REQUEST_SCHEMA, "passes": list(PASSES),
+               "camera_role": "external", "target_semantic_class": "task_support",
+               "policy_queries_permitted": 0, "physics_steps_between_passes_permitted": 0,
+               "source_asset_mutation_permitted": False, "render_refresh_count": 4,
+               "resolved_scene_plan": file_record(plan_path), "resolved_scene_plan_digest": plan["plan_digest"],
+               "seed": 7, "packet_receipt_digest": json.loads((packet / "native_task_arena_packet_receipt.v1.json").read_text())["receipt_digest"]}
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path = tmp_path / "composition-request.json"
+    write_json(request_path, request)
+    return request_path, plan_path
+
+
+def test_composition_preflight_bundle_binds_exact_plan_and_has_isolated_import_closure(tmp_path):
+    packet = _packet(tmp_path, scene_id="840920")
+    request_path, plan_path = _composition_inputs(tmp_path, packet)
+    receipt = build_native_task_arena_runtime_preflight_bundle(
+        job_dir=tmp_path / "composition-bundle", packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="e" * 40, generated_at="fixed",
+        composition_request_path=request_path, composition_scene_plan_path=plan_path)
+    runtime = tmp_path / "composition-bundle/provider_runtime"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        assert archive.read("provider_runtime/runtime_inputs/composition_request.json") == request_path.read_bytes()
+        assert archive.read("provider_runtime/runtime_inputs/composition_scene_plan.json") == plan_path.read_bytes()
+        assert archive.read("provider_runtime/adp_arena_provider_runner.py") == (Path(__file__).parents[1] / "src/blueprint_pipeline/native_task_composition_worker.py").read_bytes()
+        assert not any("checkpoint" in name for name in archive.namelist())
+    assert receipt["policy_provisioning"] is None
+    assert receipt["policy_candidate_id"] is None and receipt["candidate_policy_queried"] is False
+    loaded = load_verified_native_task_arena_runtime_preflight_bundle(
+        tmp_path / "composition-bundle/native_task_arena_provider_bundle_receipt.v1.json",
+        expected_implementation_commit="e" * 40)
+    assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
+    probe = """import sys
+sys.path.insert(0, sys.argv[1])
+from blueprint_pipeline.native_task_composition_worker import make_native_adapters
+from blueprint_pipeline.adp009d_isaac_runtime import _save_camera
+from blueprint_pipeline.native_task_arena_construction_worker import _load_and_verify_manifest, preflight_native_dependency_matrix
+from blueprint_pipeline.native_task_arena_runtime import build_native_task_arena_environment
+from blueprint_pipeline.native_task_arena_preconstruction import prepare_native_task_arena_preconstruction
+from blueprint_pipeline.native_task_isaaclab_launch import launch_native_task_isaaclab
+from blueprint_pipeline.native_task_nurec_render_setup import setup_and_warm_native_nurec_renderer
+assert _load_and_verify_manifest(__import__('pathlib').Path(sys.argv[1]), expected_execution_mode='runtime_preflight')['candidate_policy_queried'] is False
+assert not any('groot_n17' in name or name.startswith('omni.') for name in sys.modules)
+"""
+    result = subprocess.run([sys.executable, "-I", "-c", probe, str(runtime)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    static = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "composition-static", generated_at="fixed",
+        enable_blueprint_bundle=True, enable_isaac_smoke=True, provider_bundle_kind="native_task_arena",
+        bundle_path=Path(receipt["bundle_path"]), provider_bundle_url="https://example.com/bundle.zip",
+        provider_output_put_url="https://example.com/output.zip")
+    assert static["status"] == "passed", static["blockers"]
+    from blueprint_pipeline.native_task_isaaclab_ga import IMAGE
+    changed = dict(receipt, container_image=IMAGE)
+    manifest = {key: value for key, value in changed.items() if key not in {"bundle_path", "bundle_sha256", "bundle_size_bytes"}}
+    changed["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
+    changed_path = tmp_path / "wrong-image-receipt.json"
+    write_json(changed_path, changed)
+    with pytest.raises(ValueError, match="image_source_mismatch"):
+        load_verified_native_task_arena_runtime_preflight_bundle(changed_path, expected_implementation_commit="e" * 40)
+
+
+@pytest.mark.parametrize("mutation", ["seed", "plan_digest", "packet_digest", "plan_bytes", "missing_plan", "gate_instead_of_three_passes"])
+def test_composition_preflight_refuses_unbound_or_incomplete_inputs(tmp_path, mutation):
+    packet = _packet(tmp_path, scene_id="840920")
+    request_path, plan_path = _composition_inputs(tmp_path, packet)
+    value = json.loads(request_path.read_text())
+    if mutation == "seed":
+        value["seed"] += 1
+    elif mutation == "plan_digest":
+        value["resolved_scene_plan_digest"] = "sha256:" + "0" * 64
+    elif mutation == "packet_digest":
+        value["packet_receipt_digest"] = "sha256:" + "0" * 64
+    elif mutation == "plan_bytes":
+        plan_path.write_text("{}")
+    elif mutation == "gate_instead_of_three_passes":
+        value["require_composition_gate"] = True
+    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+    write_json(request_path, value)
+    with pytest.raises(ValueError, match="composition_"):
+        build_native_task_arena_runtime_preflight_bundle(
+            job_dir=tmp_path / "composition-bundle", packet_dir=packet,
+            runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+            implementation_commit="e" * 40, composition_request_path=request_path,
+            composition_scene_plan_path=None if mutation == "missing_plan" else plan_path)
+
+
+def test_preflight_ga_image_must_match_the_pinned_source_profile():
+    from blueprint_pipeline.native_task_arena_runtime_preflight_bundle import _profile_image
+    from blueprint_pipeline.native_task_isaaclab_ga import IMAGE
+    assert _profile_image({"runtime_profile": "isaaclab_3_ga", "container_image": IMAGE}) == IMAGE
+    with pytest.raises(ValueError, match="ga_runtime_image_source_mismatch"):
+        _profile_image({"runtime_profile": "isaaclab_3_ga", "container_image": NATIVE_TASK_ARENA_IMAGE})
+
+
 def test_destination_qualification_bundle_binds_policy_free_native_inputs(
     tmp_path: Path,
 ) -> None:

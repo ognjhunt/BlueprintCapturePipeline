@@ -1,0 +1,13 @@
+{
+  "image": "nvcr.io/nvidia/isaac-lab:3.0.0@sha256:88f1d5c1b588299897eeddc5c7f6376d11d1bfb8224896ae288ea13bf6e8f1e2",
+  "platform_manifest_digest": "sha256:88f1d5c1b588299897eeddc5c7f6376d11d1bfb8224896ae288ea13bf6e8f1e2",
+  "config_digest": "sha256:c5c76f333388de6d2748cc69fb791c0f351e8ebf8d52926b6fb4c07f7bb877ba",
+  "environment": {
+    "VIRTUAL_ENV": "/opt/isaaclab-venv",
+    "UV_PROJECT_ENVIRONMENT": "/opt/isaaclab-venv",
+    "UV_PYTHON": "/opt/isaaclab-venv/bin/python",
+    "UV_PYTHON_PREFERENCE": "only-system",
+    "UV_HTTP_RETRIES": "12"
+  },
+  "inspection_only": true
+}

@@ -55,6 +55,7 @@ from .adp009d_policy_server_worker import (
 )
 from .decision_evidence_contracts import canonical_digest
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_DEVICE
+from .openpi_droid_policy_runtime import OPENPI_CLIENT_DEPS_DIRNAME, OPENPI_CLIENT_FALLBACK_DIRNAME
 
 PROVISIONING_SCHEMA_VERSION = "adp009d_policy_provisioning.v1"
 
@@ -102,6 +103,45 @@ POLICY_SOURCE_ROOT = "/opt/adp009d-policy-source"
 # separately.  The venv is built from the system interpreter so nothing
 # resolves out of Isaac's prefix.
 SYSTEM_INTERPRETER = "/usr/bin/python3"
+# OpenPI's frozen gym-aloha dependency requires MuJoCo 2.3.7, whose Linux
+# wheels stop at CPython 3.11. Reuse the interpreter pinned by our standalone
+# OpenPI image; installing that unchanged lock on Isaac's Python 3.12 attempts
+# an unsupported MuJoCo source build before any policy query can run.
+POLICY_PYTHON_REQUESTS = {"pi05_droid": "3.11.9"}
+POLICY_PYTHON_INSTALL_DIR = "/opt/adp009d-python"
+
+
+def policy_python_environment(candidate_id: str) -> dict[str, str]:
+    """Keep image-wide uv discovery restrictions out of the policy setup."""
+    managed = candidate_id in POLICY_PYTHON_REQUESTS
+    return {
+        "UV_PYTHON_INSTALL_DIR": POLICY_PYTHON_INSTALL_DIR,
+        "UV_PYTHON_PREFERENCE": "managed" if managed else "only-system",
+        "UV_PYTHON_DOWNLOADS": "automatic" if managed else "never",
+    }
+
+
+# The pure-Python wheel is one exact artifact in OpenPI's verified upstream lock.
+OPENPI_CLIENT_WEBSOCKETS_WHEEL = {
+    "url": "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/websockets-15.0.1-py3-none-any.whl",
+    "sha256": "f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f",
+    "size_bytes": 169743,
+}
+# Both artifacts occur in the same verified upstream uv.lock. Msgpack's
+# released pure-Python implementation avoids tying the SDK client to a CPython
+# extension ABI; the policy server still uses its unchanged frozen environment.
+OPENPI_CLIENT_FALLBACK_ARTIFACTS = {
+    "msgpack": {
+        "url": "https://files.pythonhosted.org/packages/cb/d0/7555686ae7ff5731205df1012ede15dd9d927f6227ea151e901c7406af4f/msgpack-1.1.0.tar.gz",
+        "sha256": "dd432ccc2c72b914e4cb77afce64aab761c1137cc698be3984eee260bcb2896e",
+        "size_bytes": 167260,
+    },
+    "typing-extensions": {
+        "url": "https://files.pythonhosted.org/packages/8b/54/b1ae86c0973cc6f0210b53d508ca3641fb6d0c56823f288d108bc7ab3cc8/typing_extensions-4.13.2-py3-none-any.whl",
+        "sha256": "a439e7c04b49fec3e5d3e2beaa21755cadbbdc391694e28ccdd36ca4a1408f8c",
+        "size_bytes": 45806,
+    },
+}
 POLICY_HOST = "127.0.0.1"
 POLICY_PORT = 8000
 GATED_BACKBONE_AUTH_ENV = "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"
@@ -125,6 +165,8 @@ BLOCKER_NOT_LOOPBACK = "policy_provisioning_endpoint_not_loopback"
 BLOCKER_CREDENTIALS = "policy_provisioning_credentials_forwarded"
 BLOCKER_GROOT_WIRE_WHEEL_LOCK = "policy_provisioning_groot_wire_wheel_lock_invalid"
 BLOCKER_DEPENDENCY_LOCK = "policy_provisioning_dependency_lock_invalid"
+BLOCKER_PYTHON_REQUEST = "policy_provisioning_python_request_invalid"
+BLOCKER_ISAAC_CLIENT = "policy_provisioning_isaac_client_staging_invalid"
 
 # These are the upstream uv.lock bytes committed at the same immutable source
 # revisions as the two active ADP-009D candidates.  A frozen source revision is
@@ -204,6 +246,57 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
     """Install this candidate's client into Isaac's interpreter."""
 
     source = f"{POLICY_SOURCE_ROOT}/{candidate_id}"
+    if candidate_id == "pi05_droid":
+        # Resolving this package into Kit requests NumPy <2, but the retained
+        # baseline/GA use NumPy 2.3.1/2.5.1. Copy the exact wire-only source and
+        # locked wire dependencies beside the runtime instead. No installer
+        # writes to Isaac's prefix and no NumPy/Pillow/model dependency resolves.
+        target = f"$RUNTIME_DIR/{OPENPI_CLIENT_DEPS_DIRNAME}"
+        fallback = f"$RUNTIME_DIR/{OPENPI_CLIENT_FALLBACK_DIRNAME}"
+        wheel = OPENPI_CLIENT_WEBSOCKETS_WHEEL
+        unpack = "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])"
+        check = (
+            "import sys; sys.path.insert(0,sys.argv[1]); "
+            "from openpi_droid_policy_runtime import check_staged_openpi_client; "
+            "check_staged_openpi_client(sys.argv[2])"
+        )
+        commands = [
+            f'test ! -e "{target}"',
+            f'test ! -e "{fallback}"',
+            f'mkdir -p "{target}"',
+            f'mkdir -p "{fallback}"',
+            f'cp -R "{source}/packages/openpi-client/src/openpi_client" "{target}/openpi_client"',
+            f'cp "{source}/LICENSE" "{target}/OPENPI_LICENSE"',
+            f'curl -LsSf {shlex.quote(wheel["url"])} -o "{target}/websockets.whl"',
+            f'printf \'%s  %s\\n\' {wheel["sha256"]} "{target}/websockets.whl" | sha256sum --check --strict -',
+            f'"{policy_venv_root(candidate_id)}/bin/python" -c {shlex.quote(unpack)} '
+            f'"{target}/websockets.whl" "{target}"',
+        ]
+        for name, artifact in OPENPI_CLIENT_FALLBACK_ARTIFACTS.items():
+            commands += [
+                f'curl -LsSf {shlex.quote(artifact["url"])} -o "{fallback}/{name}.archive"',
+                f'printf \'%s  %s\\n\' {artifact["sha256"]} "{fallback}/{name}.archive" '
+                '| sha256sum --check --strict -',
+            ]
+        extract_fallback = '''import sys,tarfile,zipfile
+from pathlib import Path
+root=Path(sys.argv[1])
+with zipfile.ZipFile(root/'typing-extensions.archive') as archive:
+    archive.extractall(root)
+with tarfile.open(root/'msgpack.archive') as archive:
+    for name in ('__init__.py','exceptions.py','ext.py','fallback.py','COPYING'):
+        source='msgpack-1.1.0/'+('msgpack/'+name if name!='COPYING' else name)
+        target=root/('msgpack/'+name if name!='COPYING' else 'MSGPACK_COPYING')
+        target.parent.mkdir(parents=True,exist_ok=True)
+        with target.open('xb') as stream:
+            stream.write(archive.extractfile(source).read())
+'''
+        return [*commands,
+            f'"{policy_venv_root(candidate_id)}/bin/python" -c {shlex.quote(extract_fallback)} '
+            f'"{fallback}"',
+            f'"{ISAAC_INTERPRETER}" -c {shlex.quote(check)} "$RUNTIME_DIR" '
+            '"$OUT_DIR/openpi_client_staging.v1.json"',
+        ]
     if candidate_id == "groot_n17_droid":
         # GR00T's upstream ``gr00t.policy`` package initializer eagerly imports
         # server/model code (including transformers).  The episode needs only
@@ -283,8 +376,11 @@ def _install_commands(candidate_id: str) -> list[str]:
         ]
         policy_install = (
             f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" sync '
-            f'--project "{source}" --active --no-dev --frozen'
+            f'--project "{source}" --active --no-dev --frozen '
+            f'--python "{policy_venv_root(candidate_id)}/bin/python"'
         )
+        if candidate_id == "pi05_droid":
+            policy_install += " --no-build-package mujoco"
     return [
         f'git clone --filter=blob:none "{repository}" "{source}"',
         f'git -C "{source}" fetch --depth 1 origin "{revision}"',
@@ -396,6 +492,10 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_gated_backbone:completed"
 '''
+    python_environment_exports = "\n".join(
+        f'export {name}="{value}"'
+        for name, value in policy_python_environment(candidate_id).items()
+    )
     return f"""#!/usr/bin/env bash
 # ADP-009D policy provisioning for {candidate_id}.  Generated, not hand-written.
 set -euo pipefail
@@ -434,6 +534,10 @@ apt-get install -y -qq \
   "$OUT_DIR/adp009d_provisioning_preflight_after.json" || true
 
 export UV_INSTALL_DIR={uv_root}
+# The GA image sets UV_PYTHON_PREFERENCE=only-system. An exact version request
+# does not override that preference: uv refuses before creating OpenPI's venv.
+# Bind discovery and downloads here, before creating the separate policy venv.
+{python_environment_exports}
 UV_ARCHIVE="$(mktemp /tmp/blueprint-adp009d-uv.XXXXXX.tar.gz)"
 trap 'rm -f "$UV_ARCHIVE"' EXIT
 curl -LsSf {UV_ARCHIVE_URL} -o "$UV_ARCHIVE"
@@ -445,7 +549,7 @@ test -x "$UV"
 test "$("$UV" --version)" = "{UV_VERSION_OUTPUT}"
 
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_venv:started"
-"$UV" venv --python "{SYSTEM_INTERPRETER}" "{venv_root}"
+"$UV" venv --python "{POLICY_PYTHON_REQUESTS.get(candidate_id, SYSTEM_INTERPRETER)}" "{venv_root}"
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_venv:completed"
 
 # Prove the venv is real and is not Isaac's interpreter before anything installs.
@@ -508,6 +612,18 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "topology": "shared_worker_separate_interpreter",
         "isaac_interpreter": ISAAC_INTERPRETER,
         "policy_interpreter": f"{policy_venv_root(candidate_id)}/bin/python",
+        "policy_python_request": POLICY_PYTHON_REQUESTS.get(candidate_id, SYSTEM_INTERPRETER),
+        "policy_python_environment": policy_python_environment(candidate_id),
+        "isaac_client_staging": (
+            {"source_revision": EXPECTED_CANDIDATES[candidate_id]["source_revision"],
+             "directory": OPENPI_CLIENT_DEPS_DIRNAME,
+             "transport_wheel": dict(OPENPI_CLIENT_WEBSOCKETS_WHEEL),
+             "fallback_directory": OPENPI_CLIENT_FALLBACK_DIRNAME,
+             "fallback_artifacts": {key: dict(value) for key, value in OPENPI_CLIENT_FALLBACK_ARTIFACTS.items()},
+             "prefer_sdk_dependencies": True,
+             "preserve_isaac_numpy": True, "model_called_in_preflight": False}
+            if candidate_id == "pi05_droid" else None
+        ),
         "uv_version": UV_VERSION,
         "uv_version_output": UV_VERSION_OUTPUT,
         "uv_archive_url": UV_ARCHIVE_URL,
@@ -739,6 +855,22 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
     interpreter = str(receipt.get("policy_interpreter", ""))
     if not interpreter or interpreter == ISAAC_INTERPRETER or "isaac-sim" in interpreter:
         errors.append(BLOCKER_SHARED_INTERPRETER)
+    if (receipt.get("policy_python_request") != POLICY_PYTHON_REQUESTS.get(
+        candidate_id, SYSTEM_INTERPRETER
+    ) or receipt.get("policy_python_environment") != policy_python_environment(candidate_id)):
+        errors.append(BLOCKER_PYTHON_REQUEST)
+    expected_client_staging = (
+        {"source_revision": EXPECTED_CANDIDATES[candidate_id]["source_revision"],
+         "directory": OPENPI_CLIENT_DEPS_DIRNAME,
+         "transport_wheel": dict(OPENPI_CLIENT_WEBSOCKETS_WHEEL),
+         "fallback_directory": OPENPI_CLIENT_FALLBACK_DIRNAME,
+         "fallback_artifacts": {key: dict(value) for key, value in OPENPI_CLIENT_FALLBACK_ARTIFACTS.items()},
+         "prefer_sdk_dependencies": True,
+         "preserve_isaac_numpy": True, "model_called_in_preflight": False}
+        if candidate_id == "pi05_droid" else None
+    )
+    if receipt.get("isaac_client_staging") != expected_client_staging:
+        errors.append(BLOCKER_ISAAC_CLIENT)
 
     if receipt.get("credentials_forwarded") is not False:
         errors.append(BLOCKER_CREDENTIALS)

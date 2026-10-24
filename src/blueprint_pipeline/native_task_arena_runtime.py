@@ -1142,9 +1142,12 @@ def build_native_task_arena_environment(
     enable_cameras: bool = True,
     include_scene_appearance: bool = True,
     render_mode: str | None = "rgb_array",
+    physics_backend: str = "isaacsim_physx",
 ) -> NativeTaskArenaEnvironment:
     """Instantiate the pinned Arena environment from one immutable plan."""
 
+    if physics_backend not in {"isaacsim_physx", "newton_mjwarp"}:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_physics_backend_invalid"])
     if (
         not isinstance(num_envs, int)
         or isinstance(num_envs, bool)
@@ -1191,13 +1194,19 @@ def build_native_task_arena_environment(
     )
 
     if preconstruction_receipt is None:
-        preconstruction_receipt = prepare_native_task_arena_preconstruction(
-            expected_device=device
-        )
+        if physics_backend == "newton_mjwarp":
+            from .native_task_newton_feature_probe import prepare_newton_preconstruction
+            preconstruction_receipt = prepare_newton_preconstruction(expected_device=device)
+        else:
+            preconstruction_receipt = prepare_native_task_arena_preconstruction(
+                expected_device=device
+            )
     try:
         preconstruction = validate_native_task_arena_preconstruction_receipt(
             preconstruction_receipt, expected_device=device
         )
+        if preconstruction.get("physics_backend", "isaacsim_physx") != physics_backend:
+            raise ValueError("native_task_arena_preconstruction_backend_mismatch")
     except ValueError as exc:
         blockers = list(preconstruction_receipt.get("blockers") or [])
         raise NativeTaskArenaRuntimeError(
@@ -1286,13 +1295,15 @@ def build_native_task_arena_environment(
         asset_cfg: Any,
         reset_joints: bool,
     ) -> None:
-        mdp.reset_root_state_uniform(
-            env,
-            env_ids,
-            pose_range={},
-            velocity_range={},
-            asset_cfg=asset_cfg,
-        )
+        root_params = {"pose_range": {}, "velocity_range": {}, "asset_cfg": asset_cfg}
+        root_reset = mdp.reset_root_state_uniform
+        if isinstance(root_reset, type):
+            # GA made this reset a ManagerTermBase class. Its constructor takes
+            # (cfg, env); the unchanged reset arguments belong to __call__.
+            root_reset = root_reset(
+                EventTerm(func=root_reset, mode="reset", params=root_params), env
+            )
+        root_reset(env, env_ids, **root_params)
         if reset_joints:
             mdp.reset_joints_by_offset(
                 env,
@@ -1309,6 +1320,8 @@ def build_native_task_arena_environment(
     robot = _resolve_portable_robot(plan, bundle_root=bundle_root)
     robot_pose = robot["base_pose_world"]
     embodiment = build_native_robot_embodiment(robot, enable_cameras=enable_cameras, pose_class=Pose)
+    from .native_task_droid_runtime_compat import freeze_comparison_droid
+    droid_comparison = freeze_comparison_droid(embodiment, bundle_root=bundle_root, robot_id=str(robot["robot_id"]))
     exact_robot_reset = dict(robot["joint_reset_positions_rad"])
     embodiment.initial_pose = None
     # Beta2's AssetBaseCfg.InitialStateCfg.rot, articulation root/body pose
@@ -1595,24 +1608,33 @@ def build_native_task_arena_environment(
         # FabricFrameView reads /physics/fabricEnabled and otherwise reads USD.
         # PhysX disables USD pose writes with Fabric enabled. Bind its legacy
         # reader before camera views are constructed, preserving live link poses.
-        from isaaclab.app.settings_manager import SettingsManager
+        from isaaclab.app import settings_manager
 
         cfg.sim.use_fabric = True
-        SettingsManager.instance().set("/physics/fabricEnabled", cfg.sim.use_fabric)
-        cfg.sim.physics = PhysxCfg(
-            solver_type=1,
-            enable_enhanced_determinism=True,
-            gpu_max_rigid_contact_count=2**23,
-            gpu_max_rigid_patch_count=2**15,
-        )
+        settings = (settings_manager.get_settings_manager()
+                    if hasattr(settings_manager, "get_settings_manager")
+                    else settings_manager.SettingsManager.instance())
+        settings.set("/physics/fabricEnabled", cfg.sim.use_fabric)
+        if physics_backend == "newton_mjwarp":
+            from .native_task_newton_feature_probe import preserve_arena_newton_physics
+            cfg.sim.physics = preserve_arena_newton_physics(cfg.sim.physics)
+        else:
+            cfg.sim.physics = PhysxCfg(
+                solver_type=1,
+                enable_enhanced_determinism=True,
+                gpu_max_rigid_contact_count=2**23,
+                gpu_max_rigid_patch_count=2**15,
+            )
         return cfg
 
+    from .native_task_newton_feature_probe import arena_backend_kwargs, newton_embodiment_configuration
     arena_env = IsaacLabArenaEnvironment(
         name="Blueprint-Native-Task-Evaluation-v1",
         scene=scene,
         embodiment=embodiment,
         task=NoTask(),
         env_cfg_callback=configure,
+        **arena_backend_kwargs(physics_backend),
     )
     builder = ArenaEnvBuilder(
         arena_env,
@@ -1708,6 +1730,11 @@ def build_native_task_arena_environment(
         camera_scene_names=camera_names,
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
+            "physics_backend_requested": physics_backend,
+            "retained_droid_configuration": droid_comparison if physics_backend == "isaacsim_physx" else None,
+            **({"retained_droid_reference_configuration": droid_comparison,
+                "newton_backend_configuration": newton_embodiment_configuration(embodiment)}
+               if physics_backend == "newton_mjwarp" else {}),
             "cameras": camera_configuration_readback,
             "direct_wrist_camera_aim": direct_camera_aim,
             "native_wrist_camera_attachment": native_camera_attachment,

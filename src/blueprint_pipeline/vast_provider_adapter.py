@@ -4249,6 +4249,13 @@ def _create_payload(
         payload["vm"] = True
     if image:
         payload["image"] = image
+    if image and image.startswith("nvcr.io/nvidia/isaac-lab:3.0.0@"):
+        from .native_task_isaaclab_ga import IMAGE as ga_image
+
+        if image == ga_image and launch_mode == "ssh_direct":
+            # NVIDIA's GA image ends with USER isaaclab. The existing Vast
+            # SSH/bootstrap installer needs root before running the workload.
+            payload["user"] = "root"
     if _string(template_hash_id):
         payload["template_hash_id"] = _string(template_hash_id)
     private_startup_script = _private_startup_environment_script(
@@ -4296,6 +4303,53 @@ def _create_payload(
     if image_login:
         payload["image_login"] = image_login
     return payload
+
+
+def _isaac_graphics_icd_python_source() -> str:
+    # CUDA can work while the container lacks the host's Vulkan libraries.
+    # Check the selected NVIDIA ICD before starting Kit or downloading assets.
+    # This is library admission only; the workcell still proves actual rendering.
+    return '''import ctypes
+import json
+import os
+from pathlib import Path
+configured = os.environ.get("VK_DRIVER_FILES") or os.environ.get("VK_ICD_FILENAMES")
+paths = ([Path(value) for value in configured.split(":") if value] if configured else
+         [path for root in ("/etc/vulkan/icd.d", "/usr/share/vulkan/icd.d")
+          for path in Path(root).glob("*nvidia*.json")])
+loaded = []
+for path in paths:
+    library = json.loads(path.read_text())["ICD"]["library_path"]
+    if "nvidia" not in Path(library).name:
+        continue
+    if "/" in library and not Path(library).is_absolute():
+        library = str(path.parent / library)
+    try:
+        loaded.append(ctypes.CDLL(library))
+    except OSError as exc:
+        raise RuntimeError("isaac_nvidia_vulkan_icd_library_unavailable") from exc
+if not loaded:
+    raise RuntimeError("isaac_nvidia_vulkan_icd_missing")
+print("BLUEPRINT_VAST_ISAAC_GRAPHICS_ICD_OK:count=%d" % len(loaded), flush=True)
+'''
+
+
+def _isaac_smoke_shell_fragment() -> str:
+    # Load graphics libraries in their own process. Preloading the driver into
+    # Kit's interpreter changes native initialization and can crash before Kit
+    # has any diagnostics. Keep the previously used Kit/Warp smoke unchanged.
+    smoke = (
+        'from isaacsim import SimulationApp; app=SimulationApp({"headless": True}); '
+        'import warp as wp; wp.init(); devices=[device for device in wp.get_devices() if device.is_cuda]; '
+        'assert devices, "isaac_warp_cuda_device_missing"; '
+        'print("BLUEPRINT_VAST_ISAAC_SMOKE_OK:cuda_devices=%d" % len(devices), flush=True); '
+        'import os; os._exit(0)'
+    )
+    return (
+        f'PYTHONFAULTHANDLER=1 $ISAAC_PY -c {shlex.quote(_isaac_graphics_icd_python_source())}; irc=$?; '
+        'if [ $irc -eq 0 ]; then '
+        f'PYTHONFAULTHANDLER=1 $ISAAC_PY -c {shlex.quote(smoke)}; irc=$?; fi; '
+    )
 
 
 def _probe_shell_script(
@@ -4528,8 +4582,8 @@ def _probe_shell_script(
             "elif [ -x /isaac-sim/python ]; then ISAAC_PY=/isaac-sim/python; "
             "elif command -v python3 >/dev/null 2>&1; then ISAAC_PY=$(command -v python3); fi; "
             'if [ -n "$ISAAC_PY" ]; then '
-            '$ISAAC_PY -c \'from isaacsim import SimulationApp; app=SimulationApp({"headless": True}); import warp as wp; wp.init(); devices=[device for device in wp.get_devices() if device.is_cuda]; assert devices, "isaac_warp_cuda_device_missing"; print("BLUEPRINT_VAST_ISAAC_SMOKE_OK:cuda_devices=%d" % len(devices), flush=True); import os; os._exit(0)\'; irc=$?; '
-            "if [ $irc -eq 0 ]; then echo BLUEPRINT_VAST_ISAAC_SMOKE_COMPLETED; "
+            + _isaac_smoke_shell_fragment()
+            + "if [ $irc -eq 0 ]; then echo BLUEPRINT_VAST_ISAAC_SMOKE_COMPLETED; "
             + (
                 "cuda_runtime_rc=0; echo BLUEPRINT_VAST_CUDA_RUNTIME_OK:isaac_simulation_app_warp; "
                 if isaac_provider_bundle
@@ -5718,6 +5772,7 @@ def _create_request_summary(
         "label": payload.get("label"),
         "disk_gb": payload.get("disk"),
         "runtype": payload.get("runtype"),
+        "container_user": payload.get("user"),
         "virtual_machine": payload.get("vm") is True,
         "target_state": payload.get("target_state"),
         "cancel_unavail": payload.get("cancel_unavail"),
@@ -5895,6 +5950,7 @@ def _instance_liveness_from_payload(
                 "ssh_port": connection["ssh_port"],
             }
             terminal_startup_error = _terminal_startup_error(row)
+            result["status_message"] = _string(row.get("status_msg"))[:4096]
             if terminal_startup_error:
                 # Retain a stable classification, never the provider's raw
                 # daemon text.  The latter can be long, host-specific, and is
@@ -6582,6 +6638,9 @@ def _request_logs_and_fetch(
                 "container_missing_marker_observed": container_missing,
                 "container_missing_observed_count": container_missing_count,
                 "instance_status": last_instance_liveness.get("status"),
+                "instance_status_message": _redact_text(
+                    _string(last_instance_liveness.get("status_message")), secret_values
+                ),
                 "terminal_startup_error": last_instance_liveness.get(
                     "terminal_startup_error"
                 ),
@@ -8167,7 +8226,10 @@ def run_vast_provider_adapter(
     )
     prelaunch_inventory_blockers = _string_list(prelaunch_inventory_guard.get("blockers"))
     from .provider_credit_admission import record_vast_credit_admission
-    credit_guard = record_vast_credit_admission(resolved_job_dir, api_key, hard_cap_usd)
+    credit_guard = record_vast_credit_admission(
+        resolved_job_dir, api_key, hard_cap_usd,
+        required=provider_bundle_kind == "native_task_arena_policy_canary_session",
+    )
     prelaunch_inventory_blockers.extend(credit_guard["blockers"])
     base_result["provider_credit_admission"] = credit_guard
     base_result.update(

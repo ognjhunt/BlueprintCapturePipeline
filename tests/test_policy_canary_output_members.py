@@ -105,11 +105,13 @@ def _set_delivery(monkeypatch, tmp_path: Path, setting: str | None, *, configure
         monkeypatch.setenv(members.DELIVERY_ENV, setting)
 
 
-def _run_session(context, tmp_path, monkeypatch, *, execute=True, lane=None):
+def _run_session(context, tmp_path, monkeypatch, *, execute=True, lane=None, allowed_machine_ids=None):
     """The Quick-10 session up to its lane call, with the authority and bundle checks stubbed."""
     _, bundle_path, binding = context
     authority = {**binding, "hard_cap_usd": 4.0, "hard_ttl_seconds": 9000,
                  "resource_name": "blueprint-native-task-policy-canary-test"}
+    if allowed_machine_ids is not None:
+        authority["allowed_machine_ids"] = allowed_machine_ids
     bundle = {"implementation_commit": binding["implementation_commit"],
               "bundle_sha256": binding["provider_bundle_sha256"], "container_image": "immutable-image",
               "bundle_path": str(bundle_path), "bundle_size_bytes": bundle_path.stat().st_size}
@@ -125,6 +127,34 @@ def _run_session(context, tmp_path, monkeypatch, *, execute=True, lane=None):
 
 def _forbidden(*_args, **_kwargs):
     raise AssertionError("the session authority was consumed or the lane ran before the mode was resolved")
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_unfunded_session_refuses_before_authority_or_lane(
+    context, tmp_path, monkeypatch, funded_vast_credit, execute,
+):
+    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
+    monkeypatch.setenv("BLUEPRINT_VAST_CREDIT_GUARD_ENABLED", "false")
+    funded_vast_credit["credit"] = 0.0
+    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
+
+    result = _run_session(context, tmp_path, monkeypatch, execute=execute, lane=_forbidden)
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["provider_credit_insufficient"]
+    assert proves_no_provider_allocation(result)
+    assert result["provider_mutations_performed"] == 0
+    assert not (tmp_path / "allocator" / "policy_canary_session_consumption.json").exists()
+    receipt = json.loads((tmp_path / "allocator" / "provider_credit_admission.json").read_text())
+    assert receipt == result["provider_credit_admission"]
+    assert receipt["required_before_policy_canary"] is True
+
+
+@pytest.mark.parametrize("machines", [None, [1234]])
+def test_machine_constraint_reaches_provider_selection(context, tmp_path, monkeypatch, machines):
+    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
+    forwarded = _run_session(context, tmp_path, monkeypatch, execute=False, allowed_machine_ids=machines)
+    assert forwarded["allowed_machine_ids"] == (() if machines is None else (1234,))
 
 
 @pytest.mark.parametrize("value", ["STREAM", "stream ", "upload", "1", "auto", "Download"])

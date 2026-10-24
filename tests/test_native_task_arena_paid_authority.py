@@ -2051,3 +2051,55 @@ def test_the_no_allocation_seal_demands_proof_that_nothing_was_allocated(
             result_path=result_path,
             output_path=tmp_path / "invalid_continuing.json",
         )
+
+
+@pytest.mark.parametrize("sealed", [False, True])
+def test_later_cleanup_preserves_failed_attempt_and_cost(tmp_path, sealed):
+    authority = {"schema_version": paid.AUTHORITY_SCHEMA_VERSION, "authorization_digest": ""}
+    authority["authorization_digest"] = canonical_digest(authority, digest_field="authorization_digest")
+    write_json(tmp_path / "authority.json", authority)
+    write_json(tmp_path / "cleanup.json", {
+        "schema_version": "wam_provider_object_store_cleanup.v1", "status": "completed",
+        "generated_at": "2026-10-23T18:00:00+00:00", "all_objects_absent": True,
+        "signed_url_files_removed": True,
+    })
+    write_json(tmp_path / "adapter.json", {"continuing_spend_from_this_run": False})
+    write_json(tmp_path / "teardown.json", {"continuing_spend_from_this_run": False})
+    write_json(tmp_path / "watchdog.json", {
+        "status": "provider_terminal", "provider_absence_confirmed": True,
+        "final_global_inventory": {"api_confirmed": True, "live_resource_count": 0},
+    })
+    result = {
+        "schema_version": "native_task_arena_vast_run.v1", "status": "blocked",
+        "generated_at": "2026-10-23T17:00:00+00:00", "all_staged_objects_absent": None,
+        "authorization_consumption": {"authorization_digest": authority["authorization_digest"]},
+        "continuing_spend_from_this_run": False, "estimated_cost_usd": 0.030486,
+        "blockers": ["vast_heartbeat_instance_exited", "object_store_provider_zero_not_proven"],
+        **{key: str(tmp_path / filename) for key, filename in (
+            ("object_store_cleanup_path", "cleanup.json"), ("adapter_result_path", "adapter.json"),
+            ("teardown_manifest_path", "teardown.json"), ("watchdog_receipt_path", "watchdog.json"))},
+    }
+    if sealed:
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    source = tmp_path / "result.json"
+    write_json(source, result)
+    original = source.read_bytes()
+    zero = paid.materialize_native_task_arena_post_cleanup_closeout(
+        authority_path=tmp_path / "authority.json", result_path=source, output_dir=tmp_path / "closeout")
+    assert zero["provider_zero_confirmed"] is True
+    assert source.read_bytes() == original
+    derived = json.loads((tmp_path / "closeout/native_task_arena_post_cleanup_result.json").read_text())
+    assert derived["status"] == "blocked" and derived["blockers"] == result["blockers"]
+    assert derived["estimated_cost_usd"] == 0.030486
+    if sealed:
+        from blueprint_pipeline.same_goal_spend_reconciliation import _source
+        assert derived["result_digest"] != result["result_digest"]
+        assert _source("terminal_result", tmp_path / "closeout/native_task_arena_post_cleanup_result.json",
+                       derived)["record"]["receipt_digest"] == derived["result_digest"]
+    derived["estimated_cost_usd"] = 0
+    with pytest.raises(ValueError, match="post_cleanup_recovery_invalid"):
+        paid._validate_post_cleanup_recovery(derived)
+    derived["estimated_cost_usd"] = 0.030486
+    source.write_text('{}')
+    with pytest.raises(ValueError, match="original_result_unbound"):
+        paid._validate_post_cleanup_recovery(derived)

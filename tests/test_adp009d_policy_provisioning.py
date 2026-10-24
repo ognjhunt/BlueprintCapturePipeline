@@ -15,6 +15,7 @@ from blueprint_pipeline.adp009d_policy_provisioning import (
     BLOCKER_DEPENDENCY_LOCK,
     BLOCKER_JAX_PREALLOCATION,
     BLOCKER_NOT_LOOPBACK,
+    BLOCKER_PYTHON_REQUEST,
     BLOCKER_SHARED_INTERPRETER,
     ISAAC_INTERPRETER,
     ISAAC_PYTHON_EXECUTABLE,
@@ -295,17 +296,20 @@ def test_provisioning_agrees_with_the_standup_and_materialization_contracts() ->
         assert provisioning["isaac_interpreter"] == standup["isaac_interpreter"]
 
 
-def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
-    """A worker run measured both interpreters; use the one outside Isaac's prefix."""
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_policy_venv_uses_its_admitted_interpreter(candidate_id: str) -> None:
+    """The policy stays outside Isaac with an explicit interpreter selection."""
 
     from blueprint_pipeline.adp009d_policy_provisioning import (
         ISAAC_INTERPRETER,
+        POLICY_PYTHON_REQUESTS,
         SYSTEM_INTERPRETER,
     )
 
-    script = build_provisioning_script("pi05_droid")
+    script = build_provisioning_script(candidate_id)
 
-    assert f'venv --python "{SYSTEM_INTERPRETER}"' in script
+    requested = POLICY_PYTHON_REQUESTS.get(candidate_id, SYSTEM_INTERPRETER)
+    assert f'venv --python "{requested}"' in script
     assert SYSTEM_INTERPRETER == "/usr/bin/python3"
     # Never Isaac's own interpreter, and never its measured real path either.
     # Isaac's interpreter may appear -- the preflight checker runs under it --
@@ -319,19 +323,22 @@ def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:
     install_lines = [
         line
         for line in script.splitlines()
-        if f'VIRTUAL_ENV="{policy_venv_root("pi05_droid")}"' in line
+        if f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}"' in line
     ]
     assert install_lines
     for line in install_lines:
         assert '"$UV" sync' in line
-        assert f'--project "{POLICY_SOURCE_ROOT}/pi05_droid"' in line
+        assert f'--project "{POLICY_SOURCE_ROOT}/{candidate_id}"' in line
     client_install_lines = [
         line
         for line in script.splitlines()
         if f'--python "{ISAAC_PYTHON_EXECUTABLE}"' in line
     ]
-    assert client_install_lines
-    assert all('"$UV" pip install' in line for line in client_install_lines)
+    if candidate_id == "groot_n17_droid":
+        assert client_install_lines
+    else:
+        assert not client_install_lines
+        assert "check_staged_openpi_client" in script
 
 
 def test_the_pinned_policy_source_is_verified_not_merely_cloned() -> None:
@@ -498,7 +505,7 @@ def test_provisioning_reports_progress_at_every_long_step() -> None:
         assert "{candidate_id}" not in script
 
 
-def test_the_policy_client_is_installed_into_isaacs_interpreter() -> None:
+def test_openpi_client_is_staged_without_resolving_isaacs_numpy() -> None:
     """The client has to be importable from Isaac, not from the policy venv.
 
     The separate-interpreter design keeps the server's dependency tree away
@@ -516,10 +523,19 @@ def test_the_policy_client_is_installed_into_isaacs_interpreter() -> None:
     script = build_provisioning_script("pi05_droid")
     # Only the thin client, from the same pinned revision as the server, so
     # the two cannot drift apart.
-    assert (
-        f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" -e' in script
-    )
-    assert "packages/openpi-client" in script
+    assert "packages/openpi-client/src/openpi_client" in script
+    assert "openpi_client_deps" in script
+    assert "check_staged_openpi_client" in script
+    assert f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}"' not in script
+    from blueprint_pipeline.adp009d_policy_provisioning import OPENPI_CLIENT_WEBSOCKETS_WHEEL
+    assert OPENPI_CLIENT_WEBSOCKETS_WHEEL["url"] in script
+    assert OPENPI_CLIENT_WEBSOCKETS_WHEEL["sha256"] in script
+    from blueprint_pipeline.adp009d_policy_provisioning import OPENPI_CLIENT_FALLBACK_ARTIFACTS
+    for artifact in OPENPI_CLIENT_FALLBACK_ARTIFACTS.values():
+        assert artifact["url"] in script
+        assert artifact["sha256"] in script
+    assert "msgpack-1.1.0/" in script
+    assert "openpi_client_fallback_deps" in script
     # The wrapper is correct for running Isaac, but not for pip build
     # subprocesses: C83's pi05 setup lost the stdlib and failed importing json.
     assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
@@ -601,6 +617,65 @@ def test_active_candidate_dependency_lock_drift_is_refused() -> None:
     }
 
     assert BLOCKER_DEPENDENCY_LOCK in validate_provisioning(receipt)
+
+
+def test_provisioning_refuses_a_client_contract_that_can_replace_isaac_numpy() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import BLOCKER_ISAAC_CLIENT
+
+    receipt = describe_provisioning("pi05_droid")
+    receipt["isaac_client_staging"]["preserve_isaac_numpy"] = False
+    assert BLOCKER_ISAAC_CLIENT in validate_provisioning(receipt)
+
+
+def test_openpi_lock_uses_the_existing_cp311_interpreter_pin() -> None:
+    """The retained CPython 3.12 run tried to build MuJoCo 2.3.7 from source."""
+    from pathlib import Path
+
+    from blueprint_pipeline.adp009d_policy_provisioning import POLICY_PYTHON_REQUESTS
+
+    pin = POLICY_PYTHON_REQUESTS["pi05_droid"]
+    dockerfile = Path(__file__).parents[1] / "deploy/docker/policy_ranking_openpi/Dockerfile"
+    assert f"uv venv --python {pin} " in dockerfile.read_text()
+    script = build_provisioning_script("pi05_droid")
+    assert f'"$UV" venv --python "{pin}"' in script
+    assert "--no-build-package mujoco" in script
+    receipt = describe_provisioning("pi05_droid")
+    assert receipt["policy_python_request"] == pin
+    receipt["policy_python_request"] = "/opt/isaaclab-venv/bin/python"
+    assert BLOCKER_PYTHON_REQUEST in validate_provisioning(receipt)
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+def test_frozen_sync_cannot_rediscover_the_image_python(candidate_id: str) -> None:
+    """VIRTUAL_ENV alone lost to the GA image's inherited UV_PYTHON setting."""
+    import shlex
+
+    line = next(
+        line for line in build_provisioning_script(candidate_id).splitlines()
+        if '"$UV" sync ' in line
+    )
+    argv = shlex.split(line)
+    assert argv[argv.index("--python") + 1] == f"{policy_venv_root(candidate_id)}/bin/python"
+
+
+@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
+@pytest.mark.parametrize("mutation", ["missing", "preference", "downloads", "directory"])
+def test_policy_interpreter_discovery_settings_are_admission_bound(candidate_id: str, mutation: str) -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import BLOCKER_PYTHON_REQUEST
+
+    receipt = describe_provisioning(candidate_id)
+    assert validate_provisioning(receipt) == []
+    if mutation == "missing":
+        receipt.pop("policy_python_environment")
+    else:
+        settings = receipt["policy_python_environment"]
+        if mutation == "preference":
+            settings["UV_PYTHON_PREFERENCE"] = "only-system" if candidate_id == "pi05_droid" else "managed"
+        elif mutation == "downloads":
+            settings["UV_PYTHON_DOWNLOADS"] = "never" if candidate_id == "pi05_droid" else "automatic"
+        else:
+            settings["UV_PYTHON_INSTALL_DIR"] = "/opt/isaaclab-venv"
+    assert BLOCKER_PYTHON_REQUEST in validate_provisioning(receipt)
 
 
 def test_the_client_install_follows_the_verified_checkout() -> None:

@@ -41,6 +41,18 @@ def resolved_scene_plan(
     task_success_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     plan = deepcopy(dict(base))
+    prompt_binding = cell.get("retained_runtime_comparison_prompt")
+    frozen_prompt = None
+    if prompt_binding is not None:
+        expected = {
+            "base_plan_digest": base.get("plan_digest"),
+            "task_digest": canonical_digest({"value": base.get("task_spec")}),
+            "prompt": (base.get("task_spec") or {}).get("prompt"),
+        }
+        if (not isinstance(prompt_binding, Mapping) or dict(prompt_binding) != expected
+                or not isinstance(expected["prompt"], str) or not expected["prompt"].strip()):
+            raise RuntimeError("runtime_comparison_retained_prompt_binding_invalid")
+        frozen_prompt = expected["prompt"]
     aim = cell.get("operator_wrist_camera_aim")
     if aim is not None:
         if not isinstance(aim, Mapping) or aim.get("mode") != "point_at_task_object_then_rigidly_follow_wrist" or not str(aim.get("authorized_by") or "").strip() or aim.get("authority_digest") != canonical_digest(aim, digest_field="authority_digest"):
@@ -211,7 +223,7 @@ def resolved_scene_plan(
         apply_droid_policy_canary_profile,
     )
 
-    return apply_droid_policy_canary_profile(plan)
+    return apply_droid_policy_canary_profile(plan, frozen_prompt=frozen_prompt)
 
 
 __all__ = ["resolved_scene_plan"]

@@ -136,6 +136,9 @@ def verify_native_task_isaaclab_launch_contract(
         raise NativeTaskIsaacLabLaunchError(
             ["native_task_isaaclab_provisioning_receipt_invalid"]
         ) from exc
+    if isinstance(provisioning, Mapping) and provisioning.get("runtime_profile") == "isaaclab_3_ga":
+        from .native_task_isaaclab_ga import verify_ga_launch
+        return verify_ga_launch(provisioning)
     errors: list[str] = []
     if (
         not isinstance(provisioning, Mapping)
@@ -346,13 +349,21 @@ def launch_native_task_isaaclab(
     receipt = verify_native_task_isaaclab_launch_contract(
         provisioning_receipt_path
     )
+    from .openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+
+    client_dependencies = activate_staged_openpi_client_dependencies(__file__)
+    if client_dependencies is not None:
+        receipt["openpi_client_dependency_path"] = client_dependencies
     requested_device = str(device).strip()
     if not requested_device:
         raise NativeTaskIsaacLabLaunchError(["native_task_isaaclab_device_missing"])
     if app_launcher_factory is None:
-        from isaaclab.app import AppLauncher
-
-        app_launcher_factory = AppLauncher
+        if receipt.get("runtime_profile") == "isaaclab_3_ga":
+            from .native_task_isaaclab_ga import ga_app_launcher
+            app_launcher_factory = ga_app_launcher
+        else:
+            from isaaclab.app import AppLauncher
+            app_launcher_factory = AppLauncher
     launcher = app_launcher_factory(
         headless=True,
         device=requested_device,
@@ -482,7 +493,8 @@ def launch_native_task_isaaclab(
         raise NativeTaskIsaacLabLaunchError(nurec_errors, diagnostics=nurec)
     nurec["status"] = "qualified"
     receipt["launch"] = {
-        "launcher": "isaaclab.app.AppLauncher",
+        "launcher": ("isaaclab.app.launch_simulation" if receipt.get("runtime_profile") == "isaaclab_3_ga"
+                     else "isaaclab.app.AppLauncher"),
         "requested_device": requested_device,
         "enable_cameras": bool(enable_cameras),
         "device_configured_by_launcher": True,
