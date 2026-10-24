@@ -319,6 +319,13 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
     planned = {row["frame_id"] for row in repairs}
     repairs = [*repairs, *({"frame_id": frame_id, "instruction": CAMERA_CHANGED_INSTRUCTION}
                            for frame_id in camera_changed if frame_id not in planned)]
+    # A view flagged in an earlier round stays reference-free; the reference
+    # would pull it back to the copied camera after a consistency rejection.
+    prior = failed_review.get("prior_failed_review")
+    while isinstance(prior, Mapping):
+        camera_changed += [frame_id for frame_id in (prior.get("review") or {}).get("camera_changed_frame_ids", ())
+                           if frame_id in sources and frame_id not in camera_changed]
+        prior = prior.get("prior_failed_review")
     if not repairs:
         return list(map(dict, selected)), {**failed_review, "repair_plan": receipt["plan"]}
     repaired_ids = {row["frame_id"] for row in repairs}
