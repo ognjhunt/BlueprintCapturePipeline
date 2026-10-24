@@ -299,6 +299,91 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
     return recovered, report
 
 
+def adopt_recorded_recoveries(*, root, frames, pose, automation, context, source_survey_path):
+    """Adopt completed capture-bound source stages before planning another repair.
+
+    Camera-plan IDs may change. Approved source pixels, reviewed removal,
+    canonical-world registration and their receipts remain reusable.
+    """
+    from .atlas_scene_recovery import _frame_binding
+    from .atlas_depth_splat import load_posed_rgbd
+    from .atlas_background_automation import _prepared_background
+
+    paths = sorted(root.glob('*/result-v2.json'))
+    if not paths:
+        return list(frames), []
+    survey = json.loads(Path(source_survey_path).read_text())
+    if (survey.get('digest') != canonical_digest(survey, digest_field='digest')
+            or survey.get('source_video_digest') != pose['binding']['source_video_digest']
+            or survey.get('heldout_pixels_included') is not False):
+        raise ValueError('atlas_retained_source_capture_changed')
+    candidates = []
+    for path in paths:
+        value = json.loads(path.read_text())
+        if path.is_symlink() or value.get('digest') != canonical_digest(value, digest_field='digest'):
+            raise ValueError('atlas_retained_source_receipt_changed')
+        if (value.get('schema_version') == 'atlas_recorded_source_recovery.v2'
+                and value.get('status') == 'completed' and value.get('target_pose_digest') == pose['digest']
+                and value['binding'].get('task_context_digest') == context['context_digest']):
+            candidates.append((path, value))
+    known, reports, current_automation = list(frames), [], automation
+    while True:
+        matches = [(path, value) for path, value in candidates
+                   if value['binding'].get('source_pose_digest') == pose['digest']
+                   and value['binding'].get('automation_digest') == canonical_digest(current_automation)
+                   and value['binding'].get('target_frame_bindings') == [_frame_binding(f) for f in known]]
+        if not matches:
+            return known, reports
+        # Prefer the most complete compatible reviewed stage. Conflicting
+        # equally complete branches require a decision rather than an mtime guess.
+        count = max(len(value['frame_bindings']) for _, value in matches)
+        matches = [(path, value) for path, value in matches if len(value['frame_bindings']) == count]
+        if len({canonical_digest({'frames': value['frame_bindings']}) for _, value in matches}) != 1:
+            raise ValueError('atlas_retained_source_recovery_ambiguous')
+        path, value = matches[0]
+        directory = path.parent
+        candidate_survey = json.loads((directory / 'survey.json').read_text())
+        if (candidate_survey.get('digest') != canonical_digest(candidate_survey, digest_field='digest')
+                or candidate_survey.get('source_video_digest') != survey['source_video_digest']):
+            raise ValueError('atlas_retained_source_capture_changed')
+        recorded = {r['frame_id']: r for r in candidate_survey['frames']}
+        current = {r['frame_id']: r for r in survey['frames']}
+        for key in value['recovered_frame_ids']:
+            if (key not in current or key not in recorded
+                    or current[key]['source_image_digest'] != recorded[key]['source_image_digest']
+                    or _sha256_file(Path(current[key]['source_image_path'])) != current[key]['source_image_digest']):
+                raise ValueError('atlas_retained_source_pixels_changed')
+        background_path, pose_root = Path(value['background_path']), Path(value['context_pose_root'])
+        if not all(p.resolve().is_relative_to(directory.resolve()) for p in (background_path, pose_root)):
+            raise ValueError('atlas_retained_source_path_changed')
+        saved = json.loads(background_path.read_text())
+        if (saved['binding'].get('source_video_digest') != survey['source_video_digest']
+                or saved['binding'].get('task_context_digest') != canonical_digest(dict(context))):
+            raise ValueError('atlas_retained_source_background_changed')
+        _prepared_background(background_path, saved['binding'])
+        new_pose, new_frames = load_posed_rgbd(pose_root)
+        alignment = json.loads((directory / 'alignment.json').read_text())
+        if (new_pose['digest'] != value['pose_result_digest']
+                or new_pose['binding']['source_video_digest'] != survey['source_video_digest']
+                or alignment.get('digest') != canonical_digest(alignment, digest_field='digest')
+                or alignment['digest'] != value['alignment_digest']
+                or alignment['binding'] != {'source_pose_digest': new_pose['digest'],
+                    'target_pose_digest': pose['digest'], 'source_frames': [_frame_binding(f) for f in new_frames],
+                    'target_frames': [_frame_binding(f) for f in known]}):
+            raise ValueError('atlas_retained_source_registration_changed')
+        recovered = aligned_recorded_frames(new_frames, alignment['fit'])
+        added, refreshed = set(value['recovered_frame_ids']), set(value['refreshed_frame_ids'])
+        existing = {f['frame_id'] for f in known}
+        if (not added or added & existing or refreshed != existing
+                or {f['frame_id'] for f in recovered} != added | existing
+                or [_frame_binding(f) for f in recovered] != value['frame_bindings']
+                or {r['frame_id'] for r in saved['background']['frames']} != added | existing):
+            raise ValueError('atlas_retained_source_frames_changed')
+        known, current_automation = recovered, value['expanded_automation']
+        reports.append(value)
+        candidates = [(p, v) for p, v in candidates if p != path]
+
+
 def merge_source_frames(current, updates):
     """Replace refreshed IDs once, preserving order and unrelated native repairs."""
     by_id = {f['frame_id']: f for f in updates}

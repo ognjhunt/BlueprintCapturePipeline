@@ -313,7 +313,9 @@ def run_automation(
                 # Adopt the last passed completion in the same pose frame.
                 # Completed geometry stays in the base and cannot be regenerated.
                 original_frames = derived_frames
-                from .atlas_recorded_source_recovery import recover_recorded_sources, merge_source_frames
+                from .atlas_recorded_source_recovery import (
+                    recover_recorded_sources, merge_source_frames, adopt_recorded_recoveries,
+                )
                 recovery_background_path = output_root / 'background/prepared_background.json'
                 recovery_automation = automation
                 recovery_context_pose_root = None
@@ -337,7 +339,23 @@ def run_automation(
                         recovery_context_pose_digest = source_report.get('pose_result_digest', recovery_context_pose_digest)
                     return recovered, source_report
 
-                recorded_frames, recorded_reports = [], []
+                retained, recorded_reports = adopt_recorded_recoveries(
+                    root=output_root / 'recorded_source_recovery', frames=original_frames,
+                    pose=effective_pose, automation=automation, context=task_context,
+                    source_survey_path=source_survey_path)
+                original_ids = {f['frame_id'] for f in original_frames}
+                original_frames = [f for f in retained if f['frame_id'] in original_ids]
+                recorded_frames = [f for f in retained if f['frame_id'] not in original_ids]
+                if recorded_reports:
+                    last = recorded_reports[-1]
+                    recovery_background_path = Path(last['background_path'])
+                    recovery_automation = last['expanded_automation']
+                    recovery_context_pose_root = last['context_pose_root']
+                    recovery_context_pose_digest = last['pose_result_digest']
+                    if checkpoint:
+                        checkpoint('automation_reuse_recorded_sources',
+                            source_frame_ids=[f['frame_id'] for f in retained],
+                            recovery_count=len(recorded_reports))
                 prior_frames, prior_reports = [], []
                 for prior in sorted(output_root.glob('scene_completion-v[0-9]*'),
                                     key=lambda p: int(p.name.rsplit('v', 1)[1])):
@@ -357,8 +375,17 @@ def run_automation(
                     visual_digest = canonical_digest({'reviews': [visual_digest, prior_report['review']]})
                     generated_roots.extend(Path(p) for p in prior_report['generated_roots'])
                 background['adopted_completion_digests'] = [p['digest'] for p in prior_reports]
+                # Preserve the original evidence order so a worker restart
+                # adopts the exact previously built source-conditioned export.
+                for source_report in recorded_reports:
+                    provenance.append(source_report['digest'])
+                    visual_digest = canonical_digest({'previous': visual_digest,
+                                                       'recovery': source_report['digest']})
 
                 completion_root = output_root / f"scene_completion-{COMPLETION_REVISION}"
+                if recorded_reports:
+                    completion_root = output_root / 'source_conditioned_completion' / canonical_digest(
+                        {'recoveries': [r['digest'] for r in recorded_reports]})[7:23]
                 while True:
                     generated, completion = complete_scene(
                         pose_root=effective_root, pose=effective_pose,
