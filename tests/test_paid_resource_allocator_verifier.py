@@ -25,6 +25,13 @@ VAST_PROVIDER_ADAPTER = "src/blueprint_pipeline/vast_provider_adapter.py"
 VAST_PROVIDER_ADAPTER_CLI = "src/blueprint_pipeline/vast_provider_adapter_cli.py"
 
 
+def test_repository_satisfies_paid_resource_allocator_verification():
+    # main's lint job runs this script only after merge. A PR that merged with
+    # a blocker (#2841 -> #2842) stopped the signed deploy artifact, so the
+    # impacted lane runs the same whole-repository check as a sentinel.
+    assert verifier.verify() == []
+
+
 def test_recorded_source_recovery_delegates_planning_to_the_canonical_allocator():
     root = SCRIPT.parent.parent
     recovery = 'src/blueprint_pipeline/atlas_recorded_source_recovery.py'

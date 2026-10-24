@@ -13,6 +13,11 @@ hosted diagnostics or claim-specific release evidence. They remain visible and
 must be green when their claim or promotion scope requires them, but they are
 not blanket merge gates for every ordinary PR.
 
+The sentinels include the whole-repository paid-resource allocator
+verification and the module line-budget governance policy. `ci.yml` runs those
+scripts only on push to `main`, where a failure blocks the signed deploy
+artifact after merge, so the required PR gate checks them first.
+
 `python -m blueprint_pipeline.impacted_test_selection` is the shared selector
 and runner. Its local build-loop default is a hard 120-second wall-time limit.
 CI runs the same plan
