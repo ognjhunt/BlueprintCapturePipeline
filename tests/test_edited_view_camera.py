@@ -3,12 +3,14 @@
 The 2026-10-22 dishwasher concept run accepted three reframed or copied edits
 of six; these synthetic cases reproduce both patterns without a provider.
 """
+import json
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 import pytest
 
 from blueprint_pipeline import website_image_completion as completion
-from blueprint_pipeline.edited_view_camera import edited_view_camera
+from blueprint_pipeline.edited_view_camera import edited_view_camera, main as audit_main
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 
 SIZE = (480, 640)  # height, width
@@ -115,3 +117,20 @@ def test_changed_mask_bytes_fail_closed(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="review_source_changed"):
         completion.verify_completed_background(frames=edited, original_frames=originals,
                                                plan={"targets": []}, output_root=tmp_path / "review")
+
+
+def test_audit_flags_an_approved_background_view_that_left_its_camera(tmp_path, capsys):
+    rows = []
+    for name, edit in (("kept", lambda o, m: repaint(o, m)), ("copied", lambda o, m: repaint(scene(2), m))):
+        root = tmp_path / name
+        root.mkdir()
+        paths = case(root, edit(scene(1), removal_mask()))
+        edited, originals = frames(paths)
+        rows.append({**edited[0], "frame_id": name, "original_image_path": originals[0]["image_path"],
+                     "original_image_digest": originals[0]["image_digest"]})
+    rows.append({"frame_id": "unedited", "image_path": rows[0]["original_image_path"]})
+    retained = tmp_path / "prepared_background.json"
+    retained.write_text(json.dumps({"background": {"frames": rows}}))
+    assert audit_main([str(retained)]) == 2
+    status = {row["frame_id"]: row["status"] for row in json.loads(capsys.readouterr().out)}
+    assert status == {"kept": "kept", "copied": "moved", "unedited": "not_edited"}

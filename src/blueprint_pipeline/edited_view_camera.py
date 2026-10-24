@@ -12,11 +12,15 @@ of the original's keypoints there must reappear within a few pixels.
 """
 from __future__ import annotations
 
+import argparse
+import json
 import math
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from .local_reconstruction_adapters import _sha256_file
 
 CHECK_REVISION = "edited_view_camera_v1"
 # Excludes the shadows and reflections an edit may change next to the object.
@@ -73,3 +77,33 @@ def edited_view_camera(original_path: Path, edited_path: Path, mask_path: Path) 
     fraction = kept / len(original_points)
     return {**result, "status": "kept" if fraction >= MIN_KEPT_FRACTION else "moved",
             "kept_matches": kept, "kept_fraction": round(fraction, 4)}
+
+
+def audit_prepared_background(path: Path) -> list[dict[str, Any]]:
+    """Re-check every edited view a retained background approved. Reads files only."""
+    saved = json.loads(Path(path).read_text())
+    rows = []
+    for frame in saved.get("background", saved)["frames"]:
+        if not frame.get("generated_pixels_present") or not frame.get("remaining_mask_path"):
+            rows.append({"frame_id": frame["frame_id"], "status": "not_edited"})
+            continue
+        paths = (Path(frame["original_image_path"]), Path(frame["image_path"]), Path(frame["remaining_mask_path"]))
+        expected = (frame.get("original_image_digest"), frame.get("image_digest"), frame.get("remaining_mask_digest"))
+        if any(digest and (not path.is_file() or _sha256_file(path) != digest) for path, digest in zip(paths, expected)):
+            rows.append({"frame_id": frame["frame_id"], "status": "unverifiable", "reason": "retained_bytes_changed"})
+            continue
+        rows.append({"frame_id": frame["frame_id"], **edited_view_camera(*paths)})
+    return rows
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Re-check a retained prepared background's edited views "
+                                                 "for a changed camera. No provider calls.")
+    parser.add_argument("prepared_background", type=Path, help="prepared_background.json")
+    rows = audit_prepared_background(parser.parse_args(argv).prepared_background)
+    print(json.dumps(rows, indent=2, sort_keys=True))
+    return 2 if any(row["status"] == "moved" for row in rows) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
