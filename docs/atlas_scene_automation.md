@@ -95,6 +95,16 @@ The production Atlas controller runs the following for a new scene plan:
    attractive RGB fill cannot hide a failed 3D repair. Passed native generations
    and their verified fused pixels are adopted without another purchase.
 
+   The post-export review uses separate full-frame geometry previews and records
+   `environment_surfaces` for the complete connected local work fixture: its
+   worktop, outer faces, ends, edges, supports, and operating floor as applicable.
+   A `sufficient` decision requires geometry-preview evidence and cannot contain
+   a material gap or unresolved required surface. Minor seams/speckles and real
+   openings are acceptable; concealed interiors, distant scenery, and physical
+   fit/force qualification remain separate unknowns. A narrow old task-extent
+   summary does not excuse a large missing part of its support fixture. The
+   earlier planner inputs and completed native repair receipts remain retained.
+
 When a refinement adds source views, its parent prepared-background manifest
 can seed the expanded set. Source video, task context and original RGB pixels
 must match, and the accepted edits stay byte-identical. Only missing views are

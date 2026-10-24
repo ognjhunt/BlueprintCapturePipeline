@@ -65,9 +65,9 @@ def test_selection_budget_preserves_generated_coverage_before_buying_pose(tmp_pa
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=.11)
 
 
-@pytest.mark.parametrize("mode", ["scene", "completion", "scale", "recovery"])
+@pytest.mark.parametrize("mode", ["scene", "completion", "export_coverage", "scale", "recovery"])
 def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_path, monkeypatch, mode):
-    completion_mode = mode == "completion"
+    completion_mode = mode in {"completion", "export_coverage"}
     path, _, proposal, policy = fixture(tmp_path)
     if mode == "recovery":
         policy["maximum_review_cost_usd"] = 2
@@ -83,6 +83,11 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
                     'scene_caption': 'The same room with a continuous bare floor.',
                     'view_gap_reasons': [{'camera_id': 'a-wide', 'reason': 'Keep the task anchor'},
                                         {'camera_id': 'b-lower', 'reason': 'Complete nearby floor'}]}
+        if mode == 'export_coverage':
+            proposal['environment_surfaces'] = [{'component': 'support assembly', 'surface': 'end face',
+                'required_for_local_environment': True, 'coverage': 'material_gap',
+                'source_frame_ids': ['0'], 'evidence_camera_ids': ['a-wide'], 'gap_ids': [],
+                'reason': 'A large part of the photographed support is absent from the export'}]
     elif mode == "scale":
         proposal = {"status": "abstained", "scale_references": [], "summary": "No defensible visible reference"}
     elif mode == "recovery":
@@ -104,6 +109,8 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
         output_root=tmp_path / "plans", invoker=Invoker(), release_blockers=lambda: ("c" * 40, []))
     if completion_mode:
         options["completion"] = {"previews": [], "candidate_camera_ids": ["a-wide", "b-lower"]}
+        if mode == 'export_coverage':
+            options['completion']['post_export_coverage'] = {}
     elif mode == "scale":
         options["scaling"] = {"previews": [], "previous_measurement_digest": "old"}
     elif mode == "recovery":
@@ -116,6 +123,20 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
     with pytest.raises(ValueError, match="reconciliation"):
         planner.review_survey(**options)
     assert len(calls) == 1
+
+
+def test_full_frame_export_review_reserves_for_each_image_not_each_sheet(tmp_path, monkeypatch):
+    path, _, _, policy = fixture(tmp_path)
+    captured = []
+    from blueprint_pipeline import openai_prompt_cache
+    monkeypatch.setattr(openai_prompt_cache, 'worst_case_reservation_usd',
+                        lambda **kw: captured.append(kw) or 1.)
+    # The unaffordable quote stops before any paid reservation/model invocation.
+    with pytest.raises(ValueError, match='token_budget_exceeded'):
+        planner.review_survey(survey_path=path, task_context={}, configuration={'policy': policy},
+            output_root=tmp_path, completion={'scope': 'missing_surfaces_within_captured_scene',
+                'post_export_coverage': {}, 'previews': [{'kind': 'geometry_gap_survey'}] * 12})
+    assert captured[0]['input_token_ceiling'] >= 24_000 + 3000 * (3 + 12)
 
 
 def test_unpriced_or_overbudget_model_refused_before_reservation(tmp_path):
@@ -237,6 +258,59 @@ def test_completion_sheets_keep_every_camera_and_leave_source_images_unchanged(t
     Path(previews[-1]['path']).write_bytes(b'changed')
     with pytest.raises(ValueError, match='preview_changed'):
         planner._input(survey, {'description': 'task'}, feedback)
+
+
+def test_post_export_reviews_use_separate_readable_geometry_previews(tmp_path):
+    import base64
+    from io import BytesIO
+
+    _, survey, _, _ = fixture(tmp_path)
+    path = tmp_path / 'gap.png'
+    Image.new('RGB', (1280, 720), 'magenta').save(path)
+    feedback = {'scope': 'missing_surfaces_within_captured_scene', 'post_export_coverage': {},
+                'previews': [{'path': str(path), 'sha256': _sha256_file(path),
+                              'source_frame_id': 's', 'camera_id': 'side', 'kind': 'geometry_gap_survey'}]}
+    content = planner._input(survey, {'description': 'task'}, feedback)[0]['content']
+    assert json.loads(content[-2]['text'])['camera_id'] == 'side'
+    with Image.open(BytesIO(base64.b64decode(content[-1]['image_url'].split(',')[1]))) as image:
+        assert image.size == (1024, 576), 'The material-gap review must not use a 256px tile'
+
+
+@pytest.mark.parametrize('coverage', ['present', 'minor_defects', 'physical_opening'])
+def test_complete_local_environment_may_stop_without_physical_qualification(coverage):
+    value = planner.CoverageCompletionProposal.model_validate({
+        'status': 'sufficient', 'selected_camera_ids': [], 'gap_assessment': ['Local fixture covered'],
+        'remaining_unknowns': ['Unseen interior and physical fit remain unverified'],
+        'environment_surfaces': [{'component': 'work fixture', 'surface': 'outer end face',
+            'required_for_local_environment': True, 'coverage': coverage,
+            'source_frame_ids': ['s'], 'evidence_camera_ids': ['side'], 'gap_ids': [],
+            'reason': 'Checked this surface in the exported geometry and source photo'}]})
+    assert value.status == 'sufficient'
+
+
+@pytest.mark.parametrize('change', [
+    {'coverage': 'material_gap'}, {'coverage': 'unknown'},
+    {'required_for_local_environment': False}, {'evidence_camera_ids': []},
+])
+def test_enough_task_context_cannot_excuse_an_unfinished_local_fixture(change):
+    row = {'component': 'work fixture', 'surface': 'outer end face',
+           'required_for_local_environment': True, 'coverage': 'present',
+           'source_frame_ids': ['s'], 'evidence_camera_ids': ['side'], 'gap_ids': [],
+           'reason': 'Enough context to perform the task'}
+    with pytest.raises(ValueError, match='sufficient_with_unresolved_environment_surface'):
+        planner.CoverageCompletionProposal.model_validate({
+            'status': 'sufficient', 'selected_camera_ids': [], 'gap_assessment': ['Enough task context'],
+            'remaining_unknowns': [], 'environment_surfaces': [{**row, **change}]})
+
+
+def test_post_export_schema_requires_an_actual_surface_assessment():
+    from agents import AgentOutputSchema
+
+    assert AgentOutputSchema(planner.CoverageCompletionProposal).is_strict_json_schema()
+    with pytest.raises(ValueError, match='environment_surfaces'):
+        planner.CoverageCompletionProposal.model_validate({
+            'status': 'sufficient', 'selected_camera_ids': [], 'gap_assessment': ['Enough task context'],
+            'remaining_unknowns': []})
 
 
 def test_unselected_blurry_candidate_does_not_invalidate_sharp_static_inputs(tmp_path):
