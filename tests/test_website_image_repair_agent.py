@@ -349,6 +349,21 @@ def test_camera_changed_views_are_reedited_without_the_copied_reference(tmp_path
     assert review["repaired_frame_ids"] == sorted(edits) and review["status"] == "passed"
 
 
+@pytest.mark.parametrize("planned", [["f0", "f1"], ["f0"]])
+def test_a_view_flagged_earlier_stays_reference_free_after_a_consistency_rejection(tmp_path, website, planned):
+    later = {**FAILED, "prior_failed_review": {**FAILED, "prior_failed_review": CAMERA_FAILED}}
+    plan = {"repairs": [{"frame_id": frame_id, "instruction": "Keep the bay consistent"} for frame_id in planned],
+            "summary": "bay differs"}
+    _, (frames, review) = _run(tmp_path, _Invoker(plan), failed_review=later)
+    edits = {call["frames"][0]["frame_id"]: call for call in website["edit"]}
+    # Only the current review forces a repair; an earlier camera flag only removes the reference.
+    assert sorted(edits) == planned
+    assert Path(edits["f0"]["repair_reference_path"]).name == "edited-2.png"
+    if "f1" in edits:
+        assert edits["f1"]["repair_reference_path"] is None
+        assert edits["f1"]["repair_instruction"] == "Keep the bay consistent"
+
+
 def test_empty_plan_keeps_the_rejection_and_edits_nothing(tmp_path, website):
     _, (frames, review) = _run(tmp_path, _Invoker({"repairs": [], "summary": "nothing fixable"}))
     assert review["status"] == "blocked" and not website["edit"] and not website["review"]
