@@ -208,6 +208,7 @@ def run_automation(
     checkpoint=None,
     edit_scope="required_and_additional",
     prior_background_path=None,
+    source_survey_path=None,
 ):
     from .atlas_scene_measurements import load_views, estimate_sizes
     from .atlas_background_automation import run_background
@@ -337,7 +338,9 @@ def run_automation(
                     review=review, root=output_root / f"scene_completion-{COMPLETION_REVISION}", context=task_context,
                     configuration=configuration, task_runner=task_runner, release_blockers=release_blockers,
                     planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint,
-                    existing_geometry_frames=prior_frames)
+                    existing_geometry_frames=prior_frames, source_survey_path=source_survey_path)
+                if completion.get('status') in {'source_recovery_required', 'source_review_required'}:
+                    return completion
                 if completion["status"] == "processing":
                     return completion
                 if generated is None:
@@ -399,7 +402,8 @@ def run_automation(
                     region_plan=region_plan, splat_root=splat_root, output_root=output_root,
                     review=review, context=task_context, configuration=configuration,
                     task_runner=task_runner, planner_runner=planner_runner,
-                    release_blockers=release_blockers, max_polls=max_polls, checkpoint=checkpoint)
+                    release_blockers=release_blockers, max_polls=max_polls, checkpoint=checkpoint,
+                    source_survey_path=source_survey_path)
                 if refined is None:
                     return coverage
                 derived_frames, splat, splat_root = refined

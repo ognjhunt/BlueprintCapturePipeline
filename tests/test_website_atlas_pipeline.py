@@ -222,7 +222,10 @@ def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatc
     (root / "survey").mkdir(parents=True)
     video = tmp_path / "source.mov"
     video.write_bytes(b"source")
-    survey = {"source_video_digest": pipeline._sha256_file(video)}
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    survey = {"schema_version": "atlas_video_survey.v1", "source_video_digest": pipeline._sha256_file(video),
+              "display_rotation_degrees": 0, "heldout_pixels_included": False, "frames": []}
+    survey['digest'] = canonical_digest(survey, digest_field='digest')
     (root / "survey/atlas_video_survey.json").write_text(json.dumps(survey))
     (root / "selection_binding.json").write_text(json.dumps({"survey_relative_path": "survey/atlas_video_survey.json",
         "review": review, "planner_receipt": {"model": "agent"}}))
@@ -239,6 +242,8 @@ def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatc
     result = pipeline.run_atlas_pipeline(source_video=video, output_root=root,
                                         task_context={"capture_id": "c", "context_digest": "task"})
     assert seen[0]["pose_root"] is None and not result["splat_available"]
+    source_survey = json.loads(seen[0]['source_survey_path'].read_text())
+    assert source_survey['basis'] == 'full_video_candidates_plus_dense_task_state_candidates'
     assert result["blockers"] == ["atlas_background_review_required"]
 
 
@@ -256,7 +261,11 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
     (root / "survey").mkdir(parents=True)
     video = tmp_path / "source.mov"
     video.write_bytes(b"source")
-    (root / "survey/atlas_video_survey.json").write_text(json.dumps({"source_video_digest": pipeline._sha256_file(video)}))
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    survey = {"schema_version": "atlas_video_survey.v1", "source_video_digest": pipeline._sha256_file(video),
+              "display_rotation_degrees": 0, "heldout_pixels_included": False, "frames": []}
+    survey['digest'] = canonical_digest(survey, digest_field='digest')
+    (root / "survey/atlas_video_survey.json").write_text(json.dumps(survey))
     review = {"automation": {"objects": [{"disposition": "remove"}]}}
     (root / "selection_binding.json").write_text(json.dumps({"survey_relative_path": "survey/atlas_video_survey.json",
         "review": review, "planner_receipt": {"model": "agent"}}))

@@ -330,12 +330,20 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         # things in the edited views are erased here too; the raw path below
         # never receives a frame showing one.
         from .paid_resource_allocator import run_sponsored_website_atlas_automation
+        from .atlas_source_gap_evidence import combine_source_surveys
+        full_source_survey = combine_source_surveys(
+            survey_paths=[(Path(feedback['parent_root']) / 'survey/atlas_video_survey.json'
+                           if feedback is not None else base_root / 'atlas_video_survey.json'), survey_path],
+            output=output_root / 'capture_source_survey.json')
         check("reviewed_background")
         automation = run_sponsored_website_atlas_automation(
             pose_root=None, inputs=inputs, review=review, output_root=output_root / "automation",
             task_context=task_context, configuration=load_configuration(task_context, source_digest),
             experimental=experimental, max_polls=max_polls, checkpoint=checkpoint, edit_scope=edit_scope,
+            source_survey_path=full_source_survey,
             **reuse_options)
+        if automation.get('status') in {'source_recovery_required', 'source_review_required'}:
+            return automation
         if automation["status"] == "processing":
             return automation
         complete = automation["status"] == "completed"
