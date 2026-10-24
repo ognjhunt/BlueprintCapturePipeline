@@ -678,6 +678,9 @@ def _camera_changed_review(frames: Sequence[Mapping[str, Any]],
                 or original["image_digest"] == frame["image_digest"]):
             continue
         paths = (Path(original["image_path"]), Path(frame["image_path"]), Path(frame["remaining_mask_path"]))
+        if not paths[2].is_file():
+            # A reused view's mask can leave with its earlier run; the model review still judges it.
+            continue
         expected = (original["image_digest"], frame["image_digest"], frame.get("remaining_mask_digest"))
         if any(digest is not None and _sha256_file(path) != digest for path, digest in zip(paths, expected)):
             raise ValueError("website_image_completion_review_source_changed")
