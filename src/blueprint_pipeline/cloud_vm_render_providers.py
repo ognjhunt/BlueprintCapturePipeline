@@ -747,7 +747,7 @@ class GCPRenderProvider(GpuRenderProvider):
             require_paid_resource_admission_grant(paid_resource_admission_grant, resource_class="gpu_render")
         except PaidResourceAdmissionBlocked as exc:
             return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
-        from blueprint_pipeline.gcp_monthly_budget_guard import project_admission_blockers
+        from blueprint_pipeline.gcp_monthly_budget_admission import project_admission_blockers
 
         blockers = [
             *_string_list(request.get("configuration_blockers")),

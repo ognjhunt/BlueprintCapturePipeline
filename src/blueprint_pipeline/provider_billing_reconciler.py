@@ -32,15 +32,17 @@ from blueprint_pipeline.provider_billing_audit_retention import (
     audit_root_lock,
     retain_billing_response,
 )
+from blueprint_pipeline.provider_billing_source import (
+    BILLING_SOURCE_SCHEMA_VERSION,
+    MAX_RESPONSE_BYTES,
+    VAST_CHARGES_URL,
+)
 
 BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
-BILLING_SOURCE_SCHEMA_VERSION = "blueprint.provider_billing_source_receipt.v1"
 BILLING_SCOPE = "blueprint_beta_100_user_cohort"
 PROVIDERS = ("runpod", "vast", "digitalocean", "aws", "gcp")
 RUNPOD_BILLING_URL = "https://rest.runpod.io/v1/billing"
-VAST_CHARGES_URL = "https://console.vast.ai/api/v0/charges/"
 DIGITALOCEAN_API_URL = "https://api.digitalocean.com/v2"
-MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_PAGES = 100
 AWS_BILLING_UNAVAILABLE_REASON = "aws_billing_unavailable_paid_api_collection_removed"
 # DigitalOcean documents its current invoice preview as a daily artifact.  A

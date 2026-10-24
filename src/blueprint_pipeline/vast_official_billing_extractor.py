@@ -15,7 +15,7 @@ from typing import Any
 
 from .vast_official_charge_period import VastOfficialBillingExtractionError, validate_charge_period as _validate_charge_period
 from .decision_evidence_contracts import canonical_digest
-from .provider_billing_reconciler import (
+from .provider_billing_source import (
     BILLING_SOURCE_SCHEMA_VERSION,
     MAX_RESPONSE_BYTES,
     VAST_CHARGES_URL,
