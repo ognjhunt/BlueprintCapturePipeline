@@ -47,3 +47,32 @@ refresh failure is retained alongside the original error instead of hiding it.
 CPU USD-notice tests prove native colliders receive no visibility edits; the next
 native run must still establish that the simulator failure is resolved. This is
 ADP-009D day-14/day-28 development evidence, not captured-room integration proof.
+
+For the ADP-009D Day-35 runtime comparison, the existing no-policy preflight
+bundle can now bind a standalone three-pass request and an exact resolved cell
+plan. This supplies the missing appearance-only view from a retained coverage
+refusal without repeating policy dependency/checkpoint/server setup. Both files,
+the seed, plan digest and original packet receipt must agree before bundling;
+the worker verifies them again. The pinned baseline or GA image is selected from
+the verified runtime-source profile, and receipt loading rechecks that image
+against the original source receipt inside the immutable archive. The canonical
+`native-task-arena-runtime-preflight` allocator, US/Ada selection, spend,
+watchdog and teardown rules remain unchanged.
+
+```bash
+python -m blueprint_pipeline.native_task_arena_runtime_preflight_bundle \
+  --job-dir NEW_BUNDLE --packet-dir RETAINED_PACKET \
+  --runtime-source-packet-receipt EXACT_RUNTIME_SOURCE_RECEIPT \
+  --implementation-commit IMMUTABLE_COMMIT \
+  --composition-request COMPOSITION_REQUEST \
+  --composition-scene-plan EXACT_RESOLVED_CELL_PLAN
+```
+
+This diagnostic remains no-motion, zero-policy and development-only. A captured
+background distance AOV does not establish a Gaussian physical surface or
+authorize deletion. The coverage gate and its any-interior-pixel refusal are
+unchanged. Tests drive the actual sealed entrypoint and existing three-pass
+capture with CPU USD/kernel stand-ins, verify its isolated import closure and
+close order, and reject mismatched image, seed, plan, packet, bytes or incomplete
+request pairs. Actual native attribution remains unproven until the admitted
+diagnostic executes and its retained readbacks are reviewed.

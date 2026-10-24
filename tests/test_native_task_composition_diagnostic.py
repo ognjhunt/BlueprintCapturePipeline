@@ -312,6 +312,63 @@ def test_composition_payload_has_complete_import_closure_without_loading_policy(
     assert Path(worker.__file__).name=='native_task_composition_worker.py'
 
 
+def test_sealed_composition_entrypoint_captures_three_passes_and_closes_without_policy(native, tmp_path, monkeypatch):
+    from tests.test_native_task_arena_bundle import _packet, _runtime_source_packet, _composition_inputs
+    from blueprint_pipeline.native_task_arena_runtime_preflight_bundle import build_native_task_arena_runtime_preflight_bundle
+    from blueprint_pipeline import native_task_arena_construction_worker as construction
+    from blueprint_pipeline import native_task_arena_runtime as arena
+    from blueprint_pipeline import native_task_arena_preconstruction as preconstruction
+    from blueprint_pipeline import native_task_isaaclab_launch as launch
+    from blueprint_pipeline import native_task_nurec_render_setup as renderer
+
+    packet = _packet(tmp_path, scene_id='840920')
+    request_path, plan_path = _composition_inputs(tmp_path, packet)
+    job = tmp_path / 'bundle'
+    build_native_task_arena_runtime_preflight_bundle(
+        job_dir=job, packet_dir=packet, runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit='e' * 40, composition_request_path=request_path, composition_scene_plan_path=plan_path)
+    runtime = job / 'provider_runtime'
+    # The generic builder keeps native packet bytes in the ZIP, not its staging tree.
+    import zipfile
+    with zipfile.ZipFile(job / 'native_task_arena_provider_bundle.zip') as archive:
+        archive.extractall(job)
+    native.built.plan = json.loads(plan_path.read_text())
+    calls = []
+    native.built.env.reset = lambda *, seed: calls.append(('reset', seed))
+
+    def close_env():
+        assert (native.output / worker.RESULT_FILENAME).is_file()
+        calls.append('close_env')
+
+    native.built.env.close = close_env
+    app = NS(close=lambda: calls.append('close_app'))
+    monkeypatch.setattr(worker, '__file__', str(runtime / 'blueprint_pipeline/native_task_composition_worker.py'))
+    monkeypatch.setenv('BLUEPRINT_ADP_ARENA_OUTPUT_DIR', str(native.output))
+    monkeypatch.setattr(construction, 'preflight_native_dependency_matrix', lambda **kwargs: {'all_required_available': True})
+    monkeypatch.setattr(preconstruction, 'prepare_native_task_arena_preconstruction', lambda **kwargs: {'passed': True})
+    monkeypatch.setattr(launch, 'launch_native_task_isaaclab', lambda *args, **kwargs: (app, {'passed': True}))
+
+    def build(plan, **kwargs):
+        assert plan == native.built.plan
+        calls.append('build_exact_plan')
+        return native.built
+
+    monkeypatch.setattr(arena, 'build_native_task_arena_environment', build)
+    monkeypatch.setattr(renderer, 'setup_and_warm_native_nurec_renderer', lambda *args, **kwargs: {'passed': True})
+    usd = NS(get_context=lambda: NS(get_stage=lambda: native.stage))
+    monkeypatch.setitem(sys.modules, 'omni', NS(usd=usd))
+    monkeypatch.setitem(sys.modules, 'omni.usd', usd)
+    assert worker.main(['--runtime-root', str(runtime)]) == 0
+    result = json.loads((native.output / worker.RESULT_FILENAME).read_text())
+    assert result['status'] == 'completed'
+    assert result['candidate_policy_queried'] is False and result['task_motion_executed'] is False
+    captured = result['composition_diagnostic']
+    assert [row['pass'] for row in captured['passes']] == list(diagnostic.PASSES)
+    assert captured['physics_steps_between_passes'] == captured['policy_queries'] == 0
+    assert captured['visibility_restored'] is True and captured['source_assets_mutated'] is False
+    assert calls == ['build_exact_plan', ('reset', 7), 'close_env', 'close_app']
+
+
 def test_native_semantic_ids_and_depth_dtype_are_not_narrowed_by_shared_writer(native):
     original = native.camera.update
     exact_id = 2**40 + 7
