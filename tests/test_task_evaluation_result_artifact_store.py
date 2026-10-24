@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import stat
+import time
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -116,6 +117,13 @@ def apply(f, **kwargs):
     return offload.offload_result_artifacts(
         run_root=f.root, apply=True, ack=offload.APPLY_ACK, hot_window_seconds=0, **kwargs
     )
+
+
+def test_zero_hot_window_ignores_a_registry_stamped_ahead_of_the_clock(setup):
+    f = setup
+    ahead = time.time() + 5
+    os.utime(f.registry_path, (ahead, ahead))
+    assert apply(f)["status"] == "applied"
 
 
 def test_dry_run_then_verified_eviction_signed_download_and_range(setup):

@@ -310,6 +310,46 @@ def test_rejected_anchor_never_calls_atlas_or_splat_builder(tmp_path, monkeypatc
     assert stages == ["automation_segmentation", "automation_anchor", "automation_anchor_review"]
 
 
+def test_reframed_anchor_is_reedited_once_with_its_camera_named(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_image_completion as image_edit
+    from blueprint_pipeline.website_image_repair_agent import CAMERA_CHANGED_INSTRUCTION
+
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: None)
+    frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
+    monkeypatch.setattr(
+        edits, "segment_objects", lambda **_: [{**plan()["objects"][0], **track(frames)}]
+    )
+    monkeypatch.setattr(
+        image_edit,
+        "_validated_backend",
+        lambda *a, **k: ({}, {"pricing_binding": {"max_cost_per_request_usd": 0.2}}, "b"),
+    )
+    edited = []
+    monkeypatch.setattr(image_edit, "complete_background_images",
+                        lambda **k: edited.append(k["repair_instruction"]) or k["frames"])
+    reviews = iter([{"status": "blocked", "basis": "deterministic_view_geometry",
+                     "review": {"camera_changed_frame_ids": ["a"]}},
+                    {"status": "blocked", "review": {"task_objects_removed": False}}])
+    monkeypatch.setattr(image_edit, "verify_completed_background", lambda **_: next(reviews))
+
+    def forbidden(**_):
+        raise AssertionError("Rejected pixels reached Atlas")
+
+    stages = []
+    result = edits.run_background(
+        frames=frames, objects=plan()["objects"], automation=plan(),
+        inputs={"frames": [{"frame_id": f["frame_id"]} for f in frames]}, pose={"digest": "pose"},
+        root=tmp_path / "run", context={}, policy={"rgbd_view_cost_usd": 0.05}, source_digest="source",
+        task_runner=forbidden, release_blockers=lambda: ("commit", []),
+        configuration={"remaining_cost_usd": 10}, checkpoint=stages.append,
+    )
+    # One camera re-edit, then the independent review's verdict stands.
+    assert edited == [plan()["removal_instruction"], plan()["removal_instruction"] + " " + CAMERA_CHANGED_INSTRUCTION]
+    assert result["status"] == "quality_rejected" and result["stage"] == "anchor"
+    assert stages == ["automation_segmentation", "automation_anchor", "automation_anchor_review",
+                      "automation_anchor_camera_reedit"]
+
+
 def test_insufficient_entire_path_budget_refuses_before_sam(tmp_path, monkeypatch):
     from blueprint_pipeline import website_image_completion as image_edit
 

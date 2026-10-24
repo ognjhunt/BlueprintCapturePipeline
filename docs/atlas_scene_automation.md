@@ -45,6 +45,28 @@ The production Atlas controller runs the following for a new scene plan:
    as many repairs as this scene needs, using the passed anchor as its fixed
    reference; every call stays on the same source allowance. A fresh independent
    review of the complete set decides whether reconstruction can proceed.
+   Repairs restore the original source mask's pixel count rather than copying
+   the completed edit's zero-remaining marker. Original image/mask digests,
+   binary mask values and grid alignment are checked before buying a repair
+   plan. Completed correction receipts remain reusable on restart; the original
+   source cannot silently substitute for a requested correction. An unchanged
+   correction retains the failed verdict without buying the same review again.
+   Each repair plan has its own inference audit directory. Returned plans are
+   saved before audit finalization. For a legacy lost output, only a validated
+   SDK completion paired with the exact input reservation can establish a
+   completed charge and permit an explicitly bound replacement plan. Its charge
+   is retained; missing or uncertain completion evidence still blocks a retry.
+   Before that review is bought, a deterministic camera check
+   (`edited_view_camera.py`) compares each edited view with its original outside
+   the dilated removal mask. An edit that reframed the scene or copied another
+   view's camera keeps almost none of the original's keypoints there (measured
+   0.00-0.01 against 0.6 for faithful edits), so it is rejected without a paid
+   review, with `camera_changed_frame_ids`. The repair agent re-edits those views
+   from their original without the anchor reference they copied, and a rejected
+   anchor is re-edited once with its camera named. Views with too few features
+   outside the mask, or whose retained mask is gone, stay with the model review.
+   `python -m blueprint_pipeline.edited_view_camera <prepared_background.json>`
+   re-checks an already approved set without provider calls.
 6. The agent surveys missing surfaces across the captured scene and chooses
    named gaps and candidate cameras, including modest translated viewpoints.
    Additional scene-depth-relative viewpoints stay inside source-observed free

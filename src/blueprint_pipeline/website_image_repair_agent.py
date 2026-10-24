@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import fcntl
 import json
+import math
 import os
 from io import BytesIO
 from pathlib import Path
@@ -33,6 +34,9 @@ MAX_INPUT_TOKENS = 32_000
 MAX_COST_USD = 0.5
 PREVIEW_LONG_SIDE = 768
 CAPABILITY = "website_image_repair_planner"
+CAMERA_CHANGED_INSTRUCTION = (
+    "Keep this view's exact original camera: the same framing, zoom, perspective and visible edges. "
+    "Do not recompose the scene; change only the removed objects and the surfaces they hid.")
 INSTRUCTIONS = (
     "You plan repairs for rejected image edits of ONE room. An independent review rejected the prepared "
     "views; its reasons are below. For each view you see the ORIGINAL and the EDITED image. The edits must "
@@ -71,6 +75,27 @@ def _preview(path: Path) -> str:
     return "data:image/png;base64," + base64.b64encode(stream.getvalue()).decode()
 
 
+def _original_repair_source(frame: Mapping[str, Any]) -> dict[str, Any]:
+    """Restore original removal intent when a completed edit is reused.
+
+    A completed image has zero *remaining* pixels, while its retained source
+    mask still describes the original target. A requested re-edit must not
+    interpret that completion marker as permission to return the raw image.
+    Validate the source mask before purchasing the repair plan.
+    """
+    image_path = Path(frame["original_image_path"])
+    mask_path = Path(frame["remaining_mask_path"])
+    if (_sha256_file(image_path) != frame["original_image_digest"]
+            or _sha256_file(mask_path) != frame["remaining_mask_digest"]):
+        raise ValueError("website_image_repair_source_changed")
+    with Image.open(image_path) as image, Image.open(mask_path) as mask:
+        histogram = mask.convert("L").histogram()
+        if mask.size != image.size or any(histogram[1:255]):
+            raise ValueError("website_image_repair_mask_invalid")
+    return {**frame, "image_path": str(image_path), "image_digest": frame["original_image_digest"],
+            "remaining_pixel_count": histogram[255], "generated_pixels_present": False}
+
+
 def _agent_input(*, frames: Sequence[Mapping[str, Any]], originals: Mapping[str, Mapping[str, Any]],
                  review: Mapping[str, Any], targets: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     content: list[dict[str, Any]] = [{"type": "input_text", "text": (
@@ -94,6 +119,47 @@ def _default_invoker():
     return OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(
         model=MODEL, max_turns=1, max_output_tokens=MAX_OUTPUT_TOKENS, max_input_tokens=MAX_INPUT_TOKENS,
         allow_live_invocation=True, tracing_disabled=True, max_inference_cost_usd=MAX_COST_USD))
+
+
+def _completed_plan_without_output(*, root, digest, binding, frames, originals, failed_review, targets):
+    """Reconcile a conclusively completed SDK call; never infer an uncertain call's outcome."""
+    from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
+
+    matches = []
+    for audit_root in (root, root / f"inference-{digest[7:]}"):
+        for path in (audit_root / "inference_reservations/completed").glob("*.json"):
+            value = json.loads(path.read_text())
+            if value.get("run_id") == digest[7:23]:
+                matches.append((audit_root, path, value))
+    if len(matches) != 1:
+        raise ValueError("website_image_repair_requires_reconciliation")
+    audit_root, completion_path, completion = matches[0]
+    audit = InferenceReservationAudit(run_root=audit_root, run_id=digest[7:23])
+    if completion_path != audit._completion_path(completion["reservation_id"]):
+        raise ValueError("website_image_repair_completed_call_invalid")
+    # This is an idempotent validation of the existing completion and its paired
+    # reservation; an existing identical completion is never rewritten.
+    audit.record_completion(completion)
+    reservation = json.loads(audit._reservation_path(completion["reservation_id"]).read_text())
+    identity_keys = ["run_id", "capability", "model", "input_digest", "max_turns", "max_output_tokens"]
+    identity_keys += [k for k in ("provider", "reasoning_effort", "cache_policy_digest") if k in reservation]
+    expected_input = canonical_digest({"input": _agent_input(
+        frames=frames, originals=originals, review=failed_review, targets=targets)})
+    cost = completion.get("reconciled_actual_cost_usd")
+    if (canonical_digest({k: reservation[k] for k in identity_keys}) != completion["reservation_id"]
+            or reservation.get("input_digest") != expected_input
+            or completion.get("capability") != CAPABILITY or completion.get("model") != binding["model"]
+            or reservation.get("max_turns") != 1
+            or reservation.get("max_output_tokens") != binding["max_output_tokens"]
+            or not completion.get("structured_output_digest")
+            or not completion.get("usage", {}).get("provider_response_id")
+            or isinstance(cost, bool) or not isinstance(cost, (int, float))
+            or not math.isfinite(cost) or not 0 <= cost <= MAX_COST_USD):
+        raise ValueError("website_image_repair_completed_call_invalid")
+    return {"status": "completed_output_unavailable", "binding_digest": digest,
+            "inference_completion_digest": completion["inference_completion_digest"],
+            "structured_output_digest": completion["structured_output_digest"],
+            "usage": completion["usage"], "cost_usd": cost, "model": completion["model"]}
 
 
 def plan_image_repairs(*, frames: Sequence[Mapping[str, Any]], originals: Mapping[str, Mapping[str, Any]],
@@ -120,32 +186,47 @@ def plan_image_repairs(*, frames: Sequence[Mapping[str, Any]], originals: Mappin
     digest = canonical_digest(binding)
     root = output_root / "repair_agent"
     root.mkdir(parents=True, exist_ok=True)
-    path = root / f"plan-{digest[7:]}.json"
-    with (root / f"plan-{digest[7:]}.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ValueError("website_image_repair_in_progress") from exc
-        if path.is_file():
-            receipt = json.loads(path.read_text())
-            if receipt.get("status") != "completed":
-                # An uncertain plan call is never bought again.
-                raise ValueError("website_image_repair_requires_reconciliation")
-            if (receipt.get("binding_digest") != digest
-                    or receipt.get("plan_digest") != canonical_digest(receipt.get("plan"))):
-                raise ValueError("website_image_repair_receipt_invalid")
-        else:
-            receipt = _buy_plan(path=path, root=root, digest=digest, binding=binding, frames=frames,
-                                originals=originals, failed_review=failed_review, targets=targets,
-                                task_context=task_context, invoker=invoker,
-                                reserve=reserve_website_preparation_spend)
-    settlement_path = root / f"plan-{digest[7:]}.settlement.json"
-    if not settlement_path.is_file():
+    reconciled = []
+    while True:
+        path = root / f"plan-{digest[7:]}.json"
+        with (root / f"plan-{digest[7:]}.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ValueError("website_image_repair_in_progress") from exc
+            if path.is_file():
+                receipt = json.loads(path.read_text())
+                if receipt.get("binding_digest") != digest or receipt.get("binding") != binding:
+                    raise ValueError("website_image_repair_receipt_invalid")
+                if receipt.get("status") != "completed":
+                    lost = _completed_plan_without_output(root=root, digest=digest, binding=binding,
+                        frames=frames, originals=originals, failed_review=failed_review, targets=targets)
+                    # Keep the original intent and its actual charge. The new
+                    # paid plan explicitly binds the verified completed call it
+                    # replaces; unknown or in-flight calls still refuse above.
+                    write_json(root / f"lost-output-{digest[7:]}.json", lost)
+                    reconciled.append((digest, lost))
+                    binding = {**binding, "completed_plan_recovery": {
+                        "binding_digest": digest, "inference_completion_digest": lost["inference_completion_digest"]}}
+                    digest = canonical_digest(binding)
+                    continue
+                if receipt.get("plan_digest") != canonical_digest(receipt.get("plan")):
+                    raise ValueError("website_image_repair_receipt_invalid")
+            else:
+                receipt = _buy_plan(path=path, root=root, digest=digest, binding=binding, frames=frames,
+                                    originals=originals, failed_review=failed_review, targets=targets,
+                                    task_context=task_context, invoker=invoker,
+                                    reserve=reserve_website_preparation_spend)
+        break
+    for settlement_digest, completed in [*reconciled, (digest, receipt)]:
+        settlement_path = root / f"plan-{settlement_digest[7:]}.settlement.json"
+        if settlement_path.is_file():
+            continue
         # Release the unused quote; the request count is never replenished.
-        command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": digest,
+        command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": settlement_digest,
                    "provider": "openai", "completed_request_count": 1,
-                   "provider_charge_amount_usd": round(min(float(receipt["cost_usd"]), MAX_COST_USD), 6),
-                   "usage_receipt_digest": canonical_digest({"usage": receipt["usage"]})}
+                   "provider_charge_amount_usd": round(min(float(completed["cost_usd"]), MAX_COST_USD), 6),
+                   "usage_receipt_digest": canonical_digest({"usage": completed["usage"]})}
         settlement = website_webapp_request(capture_id=task_context["capture_id"],
             operation="preparation-settlement", payload={"request_id": task_context["request_id"],
                 "scene_id": task_context["scene_id"], "settlement": command})
@@ -172,7 +253,7 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
     selected_invoker = invoker if invoker is not None else _default_invoker()
-    audit = InferenceReservationAudit(run_root=root, run_id=digest[7:23])
+    audit = InferenceReservationAudit(run_root=root / f"inference-{digest[7:]}", run_id=digest[7:23])
     selected_invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
         record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
     output_type = RepairPlan
@@ -187,21 +268,23 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
         output_type=output_type)
     try:
         invocation = selected_invoker.invoke(spec, input_value)
+        plan = output_type.model_validate(invocation.output).model_dump(mode="json")
+        frame_ids = [frame["frame_id"] for frame in frames]
+        requested = [row["frame_id"] for row in plan["repairs"]]
+        if len(set(requested)) != len(requested) or any(frame_id not in frame_ids for frame_id in requested):
+            raise ValueError("website_image_repair_plan_frames_invalid")
+        cost = float(invocation.cost_usd)
+        receipt = {"status": "completed", "binding_digest": digest, "binding": binding, "admission": admission,
+                   "plan": plan, "plan_digest": canonical_digest(plan), "model": invocation.model,
+                   "usage": invocation.usage, "cost_usd": cost, "basis": "model_repair_plan",
+                   "approves_views": False}
+        temporary = path.with_suffix(".tmp")
+        write_json(temporary, receipt)
+        os.replace(temporary, path)
     finally:
+        # Persist the returned plan first so an audit-finalization failure can
+        # never erase a paid structured result and force another model call.
         audit.write_manifest()
-    plan = output_type.model_validate(invocation.output).model_dump(mode="json")
-    frame_ids = [frame["frame_id"] for frame in frames]
-    requested = [row["frame_id"] for row in plan["repairs"]]
-    if len(set(requested)) != len(requested) or any(frame_id not in frame_ids for frame_id in requested):
-        raise ValueError("website_image_repair_plan_frames_invalid")
-    cost = float(invocation.cost_usd)
-    receipt = {"status": "completed", "binding_digest": digest, "binding": binding, "admission": admission,
-               "plan": plan, "plan_digest": canonical_digest(plan), "model": invocation.model,
-               "usage": invocation.usage, "cost_usd": cost, "basis": "model_repair_plan",
-               "approves_views": False}
-    temporary = path.with_suffix(".tmp")
-    write_json(temporary, receipt)
-    os.replace(temporary, path)
     return receipt
 
 
@@ -220,6 +303,7 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
         source = sources.get(frame["frame_id"])
         if source is None:
             raise ValueError("website_image_repair_source_missing")
+        source = sources[frame["frame_id"]] = _original_repair_source(source)
         originals[frame["frame_id"]] = {"image_path": source["original_image_path"],
                                         "image_digest": source["original_image_digest"]}
     receipt = plan_image_repairs(frames=selected, originals=originals, failed_review=failed_review,
@@ -227,6 +311,21 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
                                  output_root=output_root, invoker=invoker,
                                  max_repairs=max_repairs, source_video_digest=source_video_digest)
     repairs = receipt["plan"]["repairs"]
+    # The deterministic camera check names views whose edit reframed or copied
+    # the reference view's camera. Re-edit each from its original, planned or not,
+    # and without that reference, which is what the editor copied.
+    camera_changed = [frame_id for frame_id in (failed_review.get("review") or {}).get("camera_changed_frame_ids", ())
+                      if frame_id in sources]
+    planned = {row["frame_id"] for row in repairs}
+    repairs = [*repairs, *({"frame_id": frame_id, "instruction": CAMERA_CHANGED_INSTRUCTION}
+                           for frame_id in camera_changed if frame_id not in planned)]
+    # A view flagged in an earlier round stays reference-free; the reference
+    # would pull it back to the copied camera after a consistency rejection.
+    prior = failed_review.get("prior_failed_review")
+    while isinstance(prior, Mapping):
+        camera_changed += [frame_id for frame_id in (prior.get("review") or {}).get("camera_changed_frame_ids", ())
+                           if frame_id in sources and frame_id not in camera_changed]
+        prior = prior.get("prior_failed_review")
     if not repairs:
         return list(map(dict, selected)), {**failed_review, "repair_plan": receipt["plan"]}
     repaired_ids = {row["frame_id"] for row in repairs}
@@ -239,16 +338,23 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
     for row in repairs:
         index = next(i for i, frame in enumerate(result) if frame["frame_id"] == row["frame_id"])
         source = sources[row["frame_id"]]
+        if not source["remaining_pixel_count"]:
+            raise ValueError("website_image_repair_mask_empty")
         edited = complete_background_images(
             frames=[source], task_digest=plan["task_context_sha256"], output_root=output_root / "repairs",
             admission={}, token=os.getenv("OPENAI_API_KEY", ""), targets=plan["targets"],
             task_context=task_context, repair_instruction=row["instruction"],
-            repair_reference_path=(repair_reference_path if repair_reference_path is not None
+            repair_reference_path=(None if row["frame_id"] in camera_changed
+                                   else repair_reference_path if repair_reference_path is not None
                                    else Path(anchor["image_path"]) if anchor is not None else None),
             source_video_digest=source_video_digest, mask_guidance=True)[0]
         result[index] = {**edited, "repair_instruction": row["instruction"]}
-    review = verify_completed_background(frames=result, original_frames=original_frames, plan=plan,
-                                         output_root=output_root, task_context=task_context,
-                                         source_video_digest=source_video_digest)
+    same_images = all((before["frame_id"], before["image_digest"]) == (after["frame_id"], after["image_digest"])
+                      for before, after in zip(selected, result, strict=True))
+    # A no-op correction cannot change the verdict or authorize another purchase
+    # of the same review under a different repair-round directory.
+    review = failed_review if same_images else verify_completed_background(
+        frames=result, original_frames=original_frames, plan=plan,
+        output_root=output_root, task_context=task_context, source_video_digest=source_video_digest)
     return result, {**review, "prior_failed_review": failed_review, "repair_plan": receipt["plan"],
                     "repair_plan_digest": receipt["plan_digest"], "repaired_frame_ids": sorted(repaired_ids)}
