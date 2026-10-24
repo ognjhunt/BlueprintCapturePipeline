@@ -2,13 +2,70 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from .decision_evidence_contracts import canonical_digest
 from .task_object_authoring_contracts import require, verified_file, read_json, file_record, write_json, verify_construction_request
-from .task_object_artisan_exports import validate_final_usd
+from .task_object_artisan_exports import adapt_usd, validate_final_usd, validated_sdk_exports
+
+SDK_CANDIDATE_SCHEMA = "task_object_artisan_sdk_candidate.v1"
+
+
+def package_validated_sdk_candidate(*, request_path, manifest_path, model_path, blueprint_path,
+                                    output_root, sdk_source_commit, controller, program_dependencies=(),
+                                    annotations_path=None):
+    """Beta scene preparation / ADP-040 day 28: reuse a reviewed SDK candidate.
+
+    This only packages retained bytes. It cannot launch generation, register an
+    upstream asset, or grant native physics and scene-placement qualification.
+    Its ordinary stage-3 candidate can be adopted by the existing stage driver.
+    """
+    require(isinstance(sdk_source_commit, str) and re.fullmatch(r"[0-9a-f]{40}", sdk_source_commit)
+            and isinstance(controller, str) and controller.strip(), "artisan_sdk_controller_identity_required")
+    request_path, output_root = Path(request_path), Path(output_root)
+    request = read_json(request_path)
+    verify_construction_request(request)
+    exports = validated_sdk_exports(manifest_path=Path(manifest_path), model_path=Path(model_path),
+                                    blueprint_path=Path(blueprint_path))
+    dependencies = [file_record(Path(path)) for path in program_dependencies]
+    require(not output_root.exists(), "artisan_candidate_output_exists")
+    output_root.mkdir(parents=True)
+    asset = output_root / "replacement_asset.usdz"
+    adaptation = adapt_usd(Path(exports["usd"]["path"]), asset, request,
+                          annotations_path=Path(annotations_path) if annotations_path is not None else None)
+    observed = adaptation["final_readback"]
+    articulated = bool(observed["articulation_graph"]["joints"])
+    graph = {"schema_version": "task_evaluation_articulated_replacement_graph.v1" if articulated
+             else "task_evaluation_rigid_replacement_graph.v1", "backend": "artisan_v1",
+             "asset_id": request["replacement_identity"]["id"],
+             "asset_version": request["replacement_identity"]["version"],
+             "articulation_graph": observed["articulation_graph"], "final_readback": observed,
+             "construction_request": file_record(request_path), "physics_authority_granted": False,
+             "single_rigid_candidate": not articulated}
+    graph_path = output_root / "replacement_graph_spec.v1.json"
+    write_json(graph_path, graph)
+    receipt = {"schema_version": SDK_CANDIDATE_SCHEMA, "backend": "artisan_v1",
+        "status": "authored_candidate_pending_qualification",
+        "asset_kind": "articulated_assembly" if articulated else "rigid_body",
+        "replacement_identity": request["replacement_identity"],
+        "source_candidate_digest": request["source_candidate"]["digest"],
+        "source_candidate_claim": "source_geometry_not_observed_truth_or_physics_authority",
+        "source_object_identity": request["source_object_identity"], "request_digest": request["request_digest"],
+        "construction_request": file_record(request_path),
+        "upstream_runtime": {"controller": controller, "sdk_source_commit": sdk_source_commit,
+                             "execution": "retained_validated_sdk_export", "packaging_provider_calls": 0},
+        "program_dependencies": dependencies, "upstream_artifacts": exports, "export_adaptation": adaptation,
+        "output_usd": file_record(asset), "graph_sha256": file_record(graph_path)["sha256"],
+        "physics_authority_granted": False, "claim_ceiling": "development_only", "native_import_qualified": False,
+        "scene_placement_qualified": False, "physical_equivalence_proven": False}
+    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+    receipt_path = output_root / "replacement_authoring_receipt.v1.json"
+    write_json(receipt_path, receipt)
+    verify_artisan_candidate(receipt=receipt, graph=graph, asset=asset)
+    return {"asset": file_record(asset), "graph": file_record(graph_path), "receipt": file_record(receipt_path)}
 
 
 def verify_artisan_candidate(*, receipt, graph, asset, configuration=None, source_candidate_digest=None):
-    require(receipt.get("schema_version") == "task_object_artisan_candidate.v1"
+    require(receipt.get("schema_version") in {"task_object_artisan_candidate.v1", SDK_CANDIDATE_SCHEMA}
             and receipt.get("backend") == graph.get("backend") == "artisan_v1"
             and receipt.get("status") == "authored_candidate_pending_qualification"
             and receipt.get("physics_authority_granted") is False
@@ -23,6 +80,19 @@ def verify_artisan_candidate(*, receipt, graph, asset, configuration=None, sourc
         verified_file(artifacts[name])
     for record in artifacts["exports"].values():
         verified_file(record)
+    if receipt["schema_version"] == SDK_CANDIDATE_SCHEMA:
+        runtime = receipt.get("upstream_runtime") or {}
+        require("upstream_terminal" not in receipt
+                and runtime.get("execution") == "retained_validated_sdk_export"
+                and runtime.get("packaging_provider_calls") == 0
+                and isinstance(runtime.get("controller"), str) and runtime["controller"].strip()
+                and re.fullmatch(r"[0-9a-f]{40}", str(runtime.get("sdk_source_commit", ""))),
+                "artisan_sdk_controller_identity_required")
+        checked = validated_sdk_exports(manifest_path=verified_file(artifacts["candidate_manifest"]),
+            model_path=verified_file(artifacts["program"]), blueprint_path=verified_file(artifacts["blueprint"]))
+        require(checked == artifacts, "artisan_sdk_export_binding_changed")
+        for record in receipt["program_dependencies"]:
+            verified_file(record)
     require(request["request_digest"] == receipt["request_digest"]
             and graph["construction_request"] == receipt["construction_request"]
             and request["replacement_identity"] == receipt["replacement_identity"]
@@ -55,7 +125,16 @@ def qualify_artisan_asset_static(*, asset_path, graph_spec, authoring_receipt, r
                 "artisan_coupled_joint_requires_native_adapter_support")
         handles = observed["handle_prim_paths"]
         require(handles, "artisan_static_task_handle_missing")
+        from pxr import Usd, UsdGeom
+        from .task_object_artisan_exports import _bounds
+        stage = Usd.Stage.Open(str(asset))
+        child_id = observed["task_joint"]["child_link_id"]
+        child = stage.GetPrimAtPath(observed["links"][child_id]["prim_path"])
+        handle_bounds = _bounds([stage.GetPrimAtPath(path) for path in handles],
+            cache=UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]),
+            frame=UsdGeom.XformCache().GetLocalToWorldTransform(child).GetInverse())
         contact = {"handle_prim_paths": handles,
+                   "contact_link_id": child_id, "handle_bounds_link_frame_m": handle_bounds,
                    "provenance": "generated_geometry_matched_to_retained_task_handle_observations",
                    "contact_point_link_m": request["configuration"].get("task_contact_point_link_m")
                         or observed["handle_grasp_point_link_m"],
@@ -79,7 +158,8 @@ def qualify_artisan_asset_static(*, asset_path, graph_spec, authoring_receipt, r
         "replacement_usd": file_record(asset), "checks": dict(ARTISAN_ARTICULATED_STATIC_CHECKS if articulated else STATIC_CHECKS),
         "observed_structure": structure, **extra, "authored_structure_statically_qualified": True,
         "structural_findings": [], "source_constraints": observed,
-        "upstream_candidate_id": authoring_receipt["upstream_terminal"]["candidate_id"],
+        "upstream_candidate_id": authoring_receipt["upstream_artifacts"]["manifest"]["candidate_id"],
+        "authoring_execution": (authoring_receipt.get("upstream_runtime") or {}).get("execution", "artisan_cli"),
         "claim_boundary": {"native_simulator_import_qualified": False, "physical_equivalence_proven": False,
                            "generated_geometry_is_observed_truth": False, "joint_travel_is_measured": False}}
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
