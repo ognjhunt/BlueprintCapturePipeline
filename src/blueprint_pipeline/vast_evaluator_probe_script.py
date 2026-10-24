@@ -13,13 +13,15 @@ EVALUATOR_REQUIRED_ENTRIES = {
 
 def evaluator_provider_probe_script(common_start: str) -> str:
     """Return the evaluator bundle execution and upload shell fragment."""
+    # Both archive directions use Python's stdlib; an absent unzip binary must
+    # not trigger an unneeded package install on an otherwise qualified image.
     return (
         common_start + "RUNTIME_PY=''; "
         "if command -v apt-get >/dev/null 2>&1 && "
         "{ ! command -v python3 >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || "
-        "! command -v unzip >/dev/null 2>&1 || ! command -v ffmpeg >/dev/null 2>&1; }; then "
+        "! command -v ffmpeg >/dev/null 2>&1; }; then "
         "apt-get update >/tmp/blueprint_vast_apt_update.log 2>&1 && "
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 curl unzip ffmpeg >/tmp/blueprint_vast_apt_install.log 2>&1; "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 curl ffmpeg >/tmp/blueprint_vast_apt_install.log 2>&1; "
         "fi; "
         "if [ -x /opt/conda/bin/python ]; then RUNTIME_PY=/opt/conda/bin/python; "
         "elif [ -x /usr/local/bin/python ]; then RUNTIME_PY=/usr/local/bin/python; "

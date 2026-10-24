@@ -264,8 +264,9 @@ def test_canary_delivery_seals_downloads_and_terminal_closure(tmp_path: Path) ->
     assert record["sha256"] == report["digest"]
 
 
+@pytest.mark.parametrize("include_adapter_metadata", [False, True])
 def test_canary_delivery_projects_non_authoritative_episode_interpretation(
-    tmp_path: Path,
+    tmp_path: Path, include_adapter_metadata: bool,
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
@@ -297,6 +298,20 @@ def test_canary_delivery_projects_non_authoritative_episode_interpretation(
         },
         "receipt_digest": "",
     }
+    if include_adapter_metadata:
+        receipt["input_bundle_digest"] = "sha256:" + "1" * 64
+        receipt["interpreter_identity_digest"] = "sha256:" + "2" * 64
+        receipt["adapter_metadata"] = {
+            "schema_version": "flora_episode_reward_evidence.v1",
+            "input_bundle_digest": receipt["input_bundle_digest"],
+            "interpreter_identity_digest": receipt["interpreter_identity_digest"],
+            "model_input_digest": "sha256:" + "3" * 64,
+            "research_only": True, "learned_interpretation_only": True,
+            "ranking_or_promotion_effect": "none", "confidence_calibrated": False,
+            "rewards": {"terminal": {"score": 2}}, "apparent_pass": False,
+            "raw_outputs": {"terminal": {"local_path": "/private/runtime/video.mp4"}},
+            "runtime_config": {"source_root": "/private/model/source"},
+        }
     receipt["receipt_digest"] = canonical_digest(
         receipt, digest_field="receipt_digest"
     )
@@ -377,6 +392,13 @@ def test_canary_delivery_projects_non_authoritative_episode_interpretation(
     )
     assert projection["episode_interpretation"]["disagreement_count"] == 1
     assert projection["episodes"][0]["interpretation"]["receipt"]["artifact_id"]
+    if include_adapter_metadata:
+        projected = projection["episodes"][0]["interpretation"]
+        assert "adapter_metadata" not in projected
+        assert "/private/" not in json.dumps(projected)
+        retained = json.loads(receipt_path.read_text())
+        assert retained["adapter_metadata"]["rewards"]["terminal"]["score"] == 2
+        assert retained["adapter_metadata"]["research_only"] is True
 
 
 @pytest.mark.parametrize("runtime_gaps", [None, [], ["unapplied_scenario:bounded_physics"]])

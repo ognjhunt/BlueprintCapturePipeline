@@ -534,6 +534,9 @@ def test_policy_transport_seals_typed_media_gap_before_first_observation(
     assert result["candidate_policy_queried"] is False
     assert result["first_observation_reached"] is False
     assert result["scientific_attempt_started"] is False
+    assert result["provider_closeout"]["all_staged_objects_absent"] is (
+        not provider_create_attempted or definite_refusal
+    )
     from blueprint_pipeline.task_evaluation_scene_execution_authority import proves_no_provider_allocation
     assert proves_no_provider_allocation(result) is (not provider_create_attempted)
     assert result["visual_evidence"] == {
@@ -1069,6 +1072,49 @@ def test_native_pre_spend_stale_wait_is_bounded(monkeypatch: pytest.MonkeyPatch)
     assert len(attempts) == 17 and sleeps == [15] * 16
 
 
+@pytest.mark.parametrize("opt_in", [False, True])
+def test_evaluator_spend_lock_wait_requires_explicit_opt_in(tmp_path, monkeypatch, opt_in):
+    calls, sleeps = [], []
+    def preflight(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise arena.PreSpendPreflightBlocked({"blockers": ["spend_admission:spend_admission_lock_stale"]})
+        return {"status": "PASS", "blockers": []}
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    monkeypatch.setattr(arena.time, "sleep", sleeps.append)
+    kwargs = {"provider_bundle_kind": "evaluator", "preflight_args": {"record_dir": tmp_path},
+              "wait_for_fresh_spend_lock": opt_in}
+    if opt_in:
+        assert arena._require_native_pre_spend_preflight(**kwargs)["status"] == "PASS"
+        assert len(calls) == 2 and sleeps == [15]
+        assert len(list((tmp_path / "spend_lock_wait").glob("*/*.json"))) == 2
+    else:
+        with pytest.raises(arena.PreSpendPreflightBlocked):
+            arena._require_native_pre_spend_preflight(**kwargs)
+        assert len(calls) == 1 and sleeps == []
+
+
+@pytest.mark.parametrize("opt_in", [False, True])
+def test_transport_forwards_stale_lock_wait_before_staging(tmp_path, monkeypatch, opt_in):
+    bundle_path = tmp_path / "fixture.zip"
+    bundle_path.write_bytes(b"hermetic preflight-only bundle")
+    bundle = {"status": "ready", "bundle_path": str(bundle_path), "bundle_sha256": arena._file_sha256(bundle_path)}
+    seen = []
+    def refuse(**kwargs):
+        seen.append(kwargs)
+        raise arena.PreSpendPreflightBlocked({"blockers": ["fixture_spend_blocked"]})
+    monkeypatch.setattr(arena, "_require_native_pre_spend_preflight", refuse)
+    monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", lambda **_: pytest.fail("staging while blocked"))
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", lambda **_: pytest.fail("provider mutation while blocked"))
+    monkeypatch.setattr(arena, "_vast_credential_file_present", lambda: True)
+    result = arena.run_arena_native_control_vast(approval_path=tmp_path / "unused.json", job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(), execute=True, prepared_bundle=bundle,
+        provider_bundle_kind="evaluator", wait_for_fresh_spend_lock=opt_in)
+    assert seen[0]["wait_for_fresh_spend_lock"] is opt_in
+    assert seen[0]["provider_bundle_kind"] == "evaluator"
+    assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
+
+
 def test_download_extraction_does_not_use_the_paired_stream_size_limits(tmp_path, monkeypatch):
     from blueprint_pipeline import arena_provider_output_streaming as streamed
     from blueprint_pipeline import policy_canary_output_members as members
@@ -1173,3 +1219,83 @@ def test_failed_download_keeps_paid_remote_evidence_and_recovery_access(tmp_path
         assert 'test-only-protected-reference' not in json.dumps(result)
     else:
         assert result['status'] == 'completed' and not remote and not access.exists()
+
+
+@pytest.mark.parametrize(
+    "create_evidence",
+    [
+        "definite_refusal", "empty_400", "unverified_inventory", "matching_instance",
+        "continuing_spend", "missing_create_identity", "unknown_create_status",
+    ],
+)
+def test_failed_create_cleans_staging_only_after_definite_refusal_and_verified_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_evidence: str
+) -> None:
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    access = staging / "provider_output_get_url.txt"
+    access.write_text("test-only-protected-reference", encoding="utf-8")
+    access.chmod(0o600)
+    remote = {"input": b"bootstrap"}
+    adapter = {
+        "status": "failed",
+        "provider_create_attempted": True,
+        "vast_instance_ids": [],
+        "vast_side_effects_may_have_occurred": False,
+        "continuing_spend_from_this_run": False,
+        "create_failure_diagnosis": {
+            "http_status_code": 400,
+            "error_preview": "invalid_args: no_such_ask Instance type is not available",
+            "definite_create_refusal": True,
+            "create_inventory_verified": True,
+            "create_inventory_http_status_code": 200,
+            "create_produced_no_instance": True,
+            "matching_attempt_instance_ids": [],
+            "attempted_labels": ["blueprint-task-evaluation-flora-test"],
+        },
+        "provider_attempt_classification": {
+            "classification": "pre_execution_provider_null",
+            "scientific_attempt_consumed": False,
+        },
+    }
+    diagnosis = adapter["create_failure_diagnosis"]
+    if create_evidence == "empty_400":
+        diagnosis["error_preview"] = ""
+        diagnosis["definite_create_refusal"] = False
+    elif create_evidence == "unverified_inventory":
+        diagnosis["create_inventory_verified"] = False
+    elif create_evidence == "matching_instance":
+        diagnosis["matching_attempt_instance_ids"] = [48650527]
+        diagnosis["create_produced_no_instance"] = False
+        adapter["vast_instance_ids"] = [48650527]
+    elif create_evidence == "continuing_spend":
+        adapter["continuing_spend_from_this_run"] = True
+    elif create_evidence == "missing_create_identity":
+        diagnosis["attempted_labels"] = []
+    elif create_evidence == "unknown_create_status":
+        adapter.pop("provider_create_attempted")
+
+    cleanup_path = staging / "wam_provider_object_store_cleanup.json"
+
+    def cleanup(path: Path) -> dict:
+        assert path == staging
+        remote.clear()
+        access.unlink()
+        result = {"status": "completed", "all_objects_absent": True, "blockers": []}
+        write_json(cleanup_path, result)
+        return result
+
+    monkeypatch.setattr(arena, "cleanup_staged_wam_provider_objects", cleanup)
+    result = arena._cleanup_downloaded_provider_objects(
+        staging_dir=staging, output_zip=tmp_path / "missing-output.zip", adapter=adapter
+    )
+    if create_evidence == "definite_refusal":
+        assert result["all_objects_absent"] is True
+        assert json.loads(cleanup_path.read_text(encoding="utf-8")) == result
+        assert not remote and not access.exists()
+    else:
+        assert result["status"] == "blocked"
+        assert result["remote_objects_retained_for_recovery"] is True
+        assert remote == {"input": b"bootstrap"} and access.is_file()
+        assert not cleanup_path.exists()
+        assert "test-only-protected-reference" not in json.dumps(result)

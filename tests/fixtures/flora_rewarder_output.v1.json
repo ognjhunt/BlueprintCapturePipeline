@@ -1,0 +1,213 @@
+{
+  "fixture_kind": "hermetic_upstream_schema_only",
+  "learned_model_executed": false,
+  "source_model": "nvidia/Flora-Rewarder",
+  "source_revision": "7de68d22c4a9decec5ddb7f86ddcaee8f82d3367",
+  "rubric": [
+    {
+      "action": "Move the cup",
+      "grading": [
+        {
+          "label": "Not moved",
+          "points": 0.0
+        },
+        {
+          "label": "Moved",
+          "points": 0.25
+        }
+      ]
+    },
+    {
+      "action": "Place on the green target",
+      "grading": [
+        {
+          "label": "Not placed",
+          "points": 0.0
+        },
+        {
+          "label": "Placed",
+          "points": 0.75
+        }
+      ]
+    }
+  ],
+  "records": {
+    "terminal": {
+      "id": "fixture-episode",
+      "task": "Move the cup to the green target.",
+      "score": 5,
+      "rationale": "The cup appears settled on the target.",
+      "expected_score": 5.0,
+      "progress": 1.0,
+      "probabilities": {
+        "1": 0.0,
+        "2": 0.0,
+        "3": 0.0,
+        "4": 0.0,
+        "5": 1.0
+      },
+      "duration_s": 2.0,
+      "sampled_frames": 20,
+      "output": "Rationale: The cup appears settled on the target.\n\nScore: 5"
+    },
+    "dense": {
+      "id": "fixture-episode",
+      "task": "Move the cup to the green target.",
+      "fps": 4.0,
+      "num_frames": 8,
+      "duration_s": 2.0,
+      "worst_score": 3,
+      "mean_score": 3.0,
+      "fraction": {
+        "failure": 0.0,
+        "suboptimal": 0.0,
+        "normal": 1.0
+      },
+      "segments": [
+        {
+          "start_frame": 0,
+          "end_frame": 8,
+          "start_s": 0.0,
+          "end_s": 2.0,
+          "score": 3,
+          "label": "normal",
+          "rationale": null
+        }
+      ],
+      "per_second": [
+        3,
+        3
+      ],
+      "clips": [
+        {
+          "start_s": 0.0,
+          "end_s": 1.75,
+          "quality": "33333333333333333333333333333333",
+          "regions": [
+            {
+              "first_group": 1,
+              "last_group": 32,
+              "score": 3,
+              "label": "normal",
+              "start_s": 0.0,
+              "end_s": 1.75,
+              "rationale": null
+            }
+          ],
+          "valid": true,
+          "output": "Worst: 3\nQuality:\n33333333333333333333333333333333\nRationales:"
+        }
+      ],
+      "invalid_clips": 0,
+      "frame_scores": [
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3
+      ]
+    },
+    "rubric": {
+      "id": "fixture-episode",
+      "task": "Move the cup to the green target.",
+      "steps": [
+        "Move the cup",
+        "Place on the green target"
+      ],
+      "scores": [
+        0.25,
+        0.75
+      ],
+      "total": 1.0,
+      "medoid_sample": 0,
+      "parsed_samples": 9,
+      "samples": [
+        {
+          "scores": [
+            0.25,
+            0.75
+          ],
+          "parsed": true,
+          "answer": "ANSWER: [0.25, 0.75]",
+          "generated_tokens": 40
+        },
+        {
+          "scores": [
+            0.25,
+            0.75
+          ],
+          "parsed": true,
+          "answer": "ANSWER: [0.25, 0.75]",
+          "generated_tokens": 40
+        },
+        {
+          "scores": [
+            0.25,
+            0.75
+          ],
+          "parsed": true,
+          "answer": "ANSWER: [0.25, 0.75]",
+          "generated_tokens": 40
+        },
+        {
+          "scores": [
+            0.25,
+            0.75
+          ],
+          "parsed": true,
+          "answer": "ANSWER: [0.25, 0.75]",
+          "generated_tokens": 40
+        },
+        {
+          "scores": [
+            0.25,
+            0.75
+          ],
+          "parsed": true,
+          "answer": "ANSWER: [0.25, 0.75]",
+          "generated_tokens": 40
+        },
+        {
+          "scores": [
+            0.25,
+            0.75
+          ],
+          "parsed": true,
+          "answer": "ANSWER: [0.25, 0.75]",
+          "generated_tokens": 40
+        },
+        {
+          "scores": [
+            0.25,
+            0.75
+          ],
+          "parsed": true,
+          "answer": "ANSWER: [0.25, 0.75]",
+          "generated_tokens": 40
+        },
+        {
+          "scores": [
+            0.25,
+            0.75
+          ],
+          "parsed": true,
+          "answer": "ANSWER: [0.25, 0.75]",
+          "generated_tokens": 40
+        },
+        {
+          "scores": [
+            0.25,
+            0.75
+          ],
+          "parsed": true,
+          "answer": "ANSWER: [0.25, 0.75]",
+          "generated_tokens": 40
+        }
+      ],
+      "prompt_tokens": 100
+    }
+  }
+}

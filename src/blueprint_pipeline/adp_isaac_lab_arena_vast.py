@@ -9,6 +9,7 @@ import os
 import shutil
 import stat
 import time
+import uuid
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -242,18 +243,42 @@ def _bounded_spend_gate_open(
 
 
 def _require_native_pre_spend_preflight(
-    *, provider_bundle_kind: str, preflight_args: Mapping[str, Any]
+    *, provider_bundle_kind: str, preflight_args: Mapping[str, Any],
+    wait_for_fresh_spend_lock: bool = False,
+    refresh_preflight_args: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Wait only for a new billing-backed lock, without waiving any blocker."""
+    started = time.monotonic()
+    deadline = started + 240
+    evidence_root = (
+        Path(preflight_args["record_dir"]) / "spend_lock_wait" / uuid.uuid4().hex
+        if wait_for_fresh_spend_lock and preflight_args.get("record_dir") else None
+    )
+    last_error: PreSpendPreflightBlocked | None = None
     for stale_attempt in range(17):
+        if last_error is not None and time.monotonic() >= deadline:
+            raise last_error
         try:
-            return require_pre_spend_preflight(**preflight_args)
+            current_args = refresh_preflight_args() if refresh_preflight_args else preflight_args
+            if last_error is not None and time.monotonic() >= deadline:
+                raise last_error
+            result = require_pre_spend_preflight(**current_args)
         except PreSpendPreflightBlocked as error:
-            if (provider_bundle_kind != "native_task_arena"
+            if evidence_root is not None:
+                write_json(evidence_root / f"{stale_attempt:03d}.json", error.preflight)
+            if ((provider_bundle_kind != "native_task_arena" and not wait_for_fresh_spend_lock)
                     or error.preflight.get("blockers") != ["spend_admission:spend_admission_lock_stale"]
                     or stale_attempt == 16):
                 raise
-            time.sleep(15)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            last_error = error
+            time.sleep(min(15, remaining))
+        else:
+            if evidence_root is not None:
+                write_json(evidence_root / f"{stale_attempt:03d}.json", result)
+            return result
     raise AssertionError("native_pre_spend_retry_exhausted")
 
 
@@ -349,8 +374,12 @@ def build_arena_native_control_bundle(
 
 def _cleanup_downloaded_provider_objects(*, staging_dir: Path, output_zip: Path,
                                          adapter: Mapping[str, Any]) -> dict[str, Any]:
-    """Never discard the paid run's remote result when local collection was refused."""
-    if output_zip.is_file() or adapter.get("provider_create_attempted") is False:
+    """Clean after collection or proven non-allocation; preserve ambiguous results."""
+    if (
+        output_zip.is_file()
+        or adapter.get("provider_create_attempted") is False
+        or definite_create_refusal_without_instance(adapter)
+    ):
         return cleanup_staged_wam_provider_objects(staging_dir)
     return {"status": "blocked", "blockers": ["provider_output_uncollected_objects_retained"],
             "remote_objects_retained_for_recovery": True, "signed_url_files_preserved": True,
@@ -459,6 +488,7 @@ def run_arena_native_control_vast(
     hard_ttl_seconds: int = 14_400,
     expected_output_filename: str = "adp_arena_native_canary.json",
     container_image: str = DEFAULT_IMAGE,
+    ngc_image_login_mode: str = "always",
     provider_bundle_kind: str = "adp_arena",
     result_schema_version: str = RESULT_SCHEMA_VERSION,
     object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
@@ -499,6 +529,8 @@ def run_arena_native_control_vast(
     provider_output_member_contract: Any | None = None,
     provider_output_reservation: Any | None = None,
     provider_output_delivery_resolution: Mapping[str, str] | None = None,
+    require_direct_port: bool | None = None,
+    wait_for_fresh_spend_lock: bool = False,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog.
 
@@ -645,6 +677,7 @@ def run_arena_native_control_vast(
         # publish a fresh one while this native launch remains unallocated.
         pre_spend_preflight = _require_native_pre_spend_preflight(
             provider_bundle_kind=provider_bundle_kind, preflight_args=preflight_args,
+            wait_for_fresh_spend_lock=wait_for_fresh_spend_lock,
         )
     except PreSpendPreflightBlocked as exc:
         observed_preflight_blockers = [
@@ -858,7 +891,7 @@ def run_arena_native_control_vast(
                 session_max_live_minutes=hard_ttl_seconds // 60,
                 public_image=container_image,
                 isaac_image=container_image,
-                ngc_image_login_mode="always",
+                ngc_image_login_mode=ngc_image_login_mode,
                 provider_bundle=str(bundle_path),
                 expected_provider_bundle_sha256=str(bundle["bundle_sha256"]),
                 provider_bundle_url=bundle_url,
@@ -870,6 +903,7 @@ def run_arena_native_control_vast(
                 enable_blueprint_bundle=True,
                 provider_bundle_kind=provider_bundle_kind,
                 vast_launch_mode="ssh_direct",
+                require_direct_port=require_direct_port,
                 allow_cold_isaac_image_pull=True,
                 min_cold_isaac_pull_live_minutes=30,
                 disk_gb=200,

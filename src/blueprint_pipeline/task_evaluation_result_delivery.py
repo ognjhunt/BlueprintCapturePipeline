@@ -1340,6 +1340,16 @@ def materialize_policy_canary_result_delivery(
                 "authoritative_task_success_unchanged": True,
                 "ranking_or_promotion_effect": "none",
             }
+            if "adapter_metadata" in interpretation_receipt:
+                from .episode_interpretation import validate_interpreter_adapter_metadata
+
+                validate_interpreter_adapter_metadata(
+                    interpretation_receipt["adapter_metadata"],
+                    input_bundle_digest=str(interpretation_receipt.get("input_bundle_digest") or ""),
+                    interpreter_identity_digest=str(interpretation_receipt.get("interpreter_identity_digest") or ""),
+                )
+                # Full research rewards remain in the authenticated receipt.
+                # Preserve the existing strict Website interpretation contract.
         rich_episodes.append(
             {
                 "episode_id": episode_id,

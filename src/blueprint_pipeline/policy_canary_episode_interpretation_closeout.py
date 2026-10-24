@@ -26,6 +26,7 @@ from .episode_interpretation import (
     OpenAIMultimodalEpisodeInterpreter,
     build_episode_interpretation_request,
     interpret_episode,
+    interpreter_prompt_identity,
     materialize_episode_interpretation_abstention,
     validate_episode_interpretation_rights,
 )
@@ -44,6 +45,7 @@ from .task_evaluation_supervisor.inference_reservations import InferenceReservat
 SCHEMA_VERSION = "policy_canary_episode_interpretation_closeout.v1"
 PLAN_SCHEMA_VERSION = "policy_canary_episode_interpretation_plan.v1"
 PROFILE_SCHEMA_VERSION = "policy_canary_episode_interpreter_profile.v1"
+FLORA_PROFILE_SCHEMA_VERSION = "policy_canary_episode_interpreter_profile.flora.v1"
 BATCH_AUTHORITY_ENV = (
     "BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETATION_BATCH_AUTHORITY_FILE"
 )
@@ -66,6 +68,42 @@ class EpisodeInterpretationRunner(Protocol):
         rights_attestation_path: Path,
         output_path: Path,
     ) -> Mapping[str, Any]: ...
+
+
+class AdapterEpisodeInterpretationRunner:
+    """Use a provider-neutral interpreter through the canonical sealed receipt path."""
+
+    def __init__(self, interpreter: Any, *, profile: Mapping[str, Any]) -> None:
+        self.interpreter = interpreter
+        self.profile = dict(profile)
+
+    @property
+    def identity(self) -> InterpreterIdentity:
+        return self.interpreter.identity
+
+    def prompt_identity(self) -> dict[str, str]:
+        return interpreter_prompt_identity(self.interpreter)
+
+    def __call__(self, *, request, rights_attestation_path, output_path):
+        return interpret_episode(
+            request=request, interpreter=self.interpreter,
+            rights_attestation_path=rights_attestation_path, output_path=output_path,
+        )
+
+
+def build_flora_episode_runner(
+    profile: Mapping[str, Any], *, output_root: Path | None = None,
+) -> AdapterEpisodeInterpretationRunner:
+    """Configure the optional research adapter without running inference or allocating."""
+    from .flora_episode_interpretation import (
+        FloraEpisodeInterpreter, validate_flora_interpreter_profile,
+    )
+
+    validated = validate_flora_interpreter_profile(profile)
+    return AdapterEpisodeInterpretationRunner(
+        FloraEpisodeInterpreter.from_profile(validated, output_root=output_root),
+        profile=validated,
+    )
 
 
 class _RightsOnlyInterpreter:
@@ -199,7 +237,10 @@ def _episode_evidence_root(*, run_evidence_root: Path, manifest_path: Path, view
     raise ValueError("episode_interpretation_frame_root_unresolved")
 
 
-def _validated_receipt(path: Path, *, input_bundle_digest: str) -> dict[str, Any] | None:
+def _validated_receipt(
+    path: Path, *, input_bundle_digest: str, identity: InterpreterIdentity | None = None,
+    raw_artifact_root: Path | None = None,
+) -> dict[str, Any] | None:
     try:
         value = _read(path)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
@@ -212,8 +253,17 @@ def _validated_receipt(path: Path, *, input_bundle_digest: str) -> dict[str, Any
         or value.get("proof_boundary", {}).get("ranking_or_promotion_effect") != "none"
         or value.get("proof_boundary", {}).get("authoritative_task_success_unchanged")
         is not True
+        or (identity is not None and value.get("interpreter") != identity.__dict__)
     ):
         return None
+    metadata = value.get("adapter_metadata")
+    if isinstance(metadata, Mapping) and metadata.get("schema_version") == "flora_episode_interpretation_metadata.v1":
+        from .flora_episode_interpretation import verify_flora_raw_artifacts
+
+        try:
+            verify_flora_raw_artifacts(metadata, artifact_root=raw_artifact_root)
+        except (OSError, TypeError, ValueError):
+            return None
     return value
 
 
@@ -309,13 +359,47 @@ def _abstain(
     reason: str,
     path: Path,
     identity: InterpreterIdentity | None,
+    prompt_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return materialize_episode_interpretation_abstention(
         request=request,
         reason=reason,
         output_path=path,
         interpreter_identity=identity,
+        prompt_identity=prompt_identity,
     )
+
+
+def _interpretation_plan(*, request, identity, profile, rights_path, reason):
+    plan = {
+        "schema_version": PLAN_SCHEMA_VERSION,
+        "episode_id": request.episode_id,
+        "candidate_policy_id": request.candidate_policy_id,
+        "input_bundle_digest": request.input_receipt["input_bundle_digest"],
+        "interpreter": identity.__dict__ if identity is not None else None,
+        "interpreter_identity_digest": (
+            canonical_digest(identity.__dict__) if identity is not None else None
+        ),
+        "interpreter_profile_digest": profile.get("profile_digest") if profile else None,
+        "rights_attestation_digest": _validated_rights_digest(rights_path),
+        "execution_status": "eligible" if reason is None else "abstain",
+        "abstention_reason": reason,
+        "score_or_ranking_effect": "none",
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+def _attempt_marker(input_digest):
+    marker = {
+        "schema_version": "policy_canary_episode_interpretation_attempt.v1",
+        "input_bundle_digest": input_digest,
+        "attempt_permitted_once": True,
+        "attempt_digest": "",
+    }
+    marker["attempt_digest"] = canonical_digest(marker, digest_field="attempt_digest")
+    return marker
 
 
 def materialize_policy_canary_episode_interpretations(
@@ -343,13 +427,34 @@ def materialize_policy_canary_episode_interpretations(
     unavailable_reason: str | None = None
     selected_runner = runner
     managed_profile = None
+    flora_profile = None
     if selected_runner is None and env.get("BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE"):
         try:
-            candidate_profile = _read(Path(env["BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE"]))
+            candidate_profile_path = Path(env["BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE"])
+            if not candidate_profile_path.is_absolute():
+                raise ValueError("interpreter_profile_invalid")
+            candidate_profile = _read(candidate_profile_path)
         except (OSError, ValueError):
             candidate_profile = {}
         if candidate_profile.get("schema_version") == "policy_canary_episode_interpreter_profile.v2":
             managed_profile = candidate_profile
+        elif candidate_profile.get("schema_version") == FLORA_PROFILE_SCHEMA_VERSION:
+            flora_profile = candidate_profile
+    elif getattr(selected_runner, "profile", {}).get("schema_version") == FLORA_PROFILE_SCHEMA_VERSION:
+        flora_profile = dict(selected_runner.profile)
+    if flora_profile is not None:
+        # Bind the profile before appending the exact input-bundle key below. A
+        # historical OpenAI receipt must never stand in for a new FLORA run.
+        namespace = canonical_digest({"profile": flora_profile}).removeprefix("sha256:")
+        interpretation_root = interpretation_root / "flora" / namespace
+        try:
+            if selected_runner is None:
+                selected_runner = build_flora_episode_runner(
+                    flora_profile, output_root=interpretation_root / "runtime",
+                )
+            profile = dict(selected_runner.profile)
+        except (ImportError, OSError, TypeError, ValueError):
+            unavailable_reason = "flora_interpreter_profile_invalid"
     rights = (
         Path(rights_root).expanduser().resolve()
         if rights_root is not None
@@ -357,7 +462,7 @@ def materialize_policy_canary_episode_interpretations(
         if env.get("BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETATION_RIGHTS_ROOT")
         else None
     )
-    if selected_runner is None and managed_profile is None:
+    if selected_runner is None and managed_profile is None and flora_profile is None:
         profile, unavailable_reason = _load_profile(env)
         unavailable_reason = unavailable_reason or _production_prerequisite_reason(
             env, rights_root=rights
@@ -452,6 +557,11 @@ def materialize_policy_canary_episode_interpretations(
         if profile.get("interpreter_id") == ADAPTER_ID:
             identity = default_video_identity()
             offline_argus_default = True
+    prompt_identity = (
+        selected_runner.prompt_identity()
+        if selected_runner is not None and hasattr(selected_runner, "prompt_identity")
+        else None
+    )
     interpreter: OpenAIMultimodalEpisodeInterpreter | None = None
     cost_gate = None
     audit: InferenceReservationAudit | None = None
@@ -601,9 +711,59 @@ def materialize_policy_canary_episode_interpretations(
     provider_invocation_attempt_count = 0
     provider_invocation_error_type: str | None = None
     reused_count = 0
+    batch_prepared_inputs: set[str] = set()
+    batch_failure_inputs: set[str] = set()
+    raw_artifact_root = None
+    if flora_profile is not None:
+        if env.get("BLUEPRINT_FLORA_RAW_ARTIFACT_ROOT"):
+            raw_artifact_root = Path(env["BLUEPRINT_FLORA_RAW_ARTIFACT_ROOT"]).expanduser().resolve()
+        elif (interpretation_root / "runtime").is_dir():
+            raw_artifact_root = interpretation_root / "runtime"
+    flora_interpreter = getattr(selected_runner, "interpreter", None) if flora_profile is not None else None
+    batch_method = getattr(flora_interpreter, "run_batch", None)
+    if batch_method is not None and unavailable_reason is None and rights is not None:
+        eligible_batch = []
+        batch_rights = {}
+        for _, request, plan_path, receipt_path, marker_path in requests:
+            input_digest = request.input_receipt["input_bundle_digest"]
+            if not request.review_video_paths:
+                continue
+            if _validated_receipt(receipt_path, input_bundle_digest=input_digest, identity=identity,
+                                  raw_artifact_root=raw_artifact_root) is not None:
+                continue
+            if marker_path.exists() or receipt_path.exists():
+                continue
+            rights_path = rights / f"{input_digest.removeprefix('sha256:')}.json"
+            try:
+                validate_episode_interpretation_rights(
+                    rights_path=rights_path, request=request, interpreter=flora_interpreter,
+                )
+                if identity is None or identity.principal_kind != "independent_interpreter" or (
+                    identity.interpreter_id == request.candidate_policy_id
+                    or identity.model == request.candidate_policy_id
+                ):
+                    raise ValueError("candidate_policy_self_grading_forbidden")
+            except (OSError, TypeError, ValueError):
+                invalid_rights_inputs.add(input_digest)
+                continue
+            _write_once(plan_path, _interpretation_plan(
+                request=request, identity=identity, profile=profile, rights_path=rights_path, reason=None,
+            ))
+            _write_once(marker_path, _attempt_marker(input_digest))
+            batch_prepared_inputs.add(input_digest)
+            eligible_batch.append(request)
+            batch_rights[request.episode_id] = rights_path
+        if eligible_batch:
+            try:
+                # One model load per reward mode for the admitted cohort. Each
+                # subsequent interpret() consumes this adapter's verified cache.
+                batch_method(eligible_batch, rights_attestation_paths=batch_rights)
+            except Exception:
+                batch_failure_inputs.update(batch_prepared_inputs)
     for row, request, plan_path, receipt_path, marker_path in requests:
         input_digest = str(request.input_receipt["input_bundle_digest"])
-        existing = _validated_receipt(receipt_path, input_bundle_digest=input_digest)
+        existing = _validated_receipt(receipt_path, input_bundle_digest=input_digest, identity=identity,
+                                      raw_artifact_root=raw_artifact_root)
         if existing is not None:
             receipt = existing
             reused_count += 1
@@ -627,12 +787,22 @@ def materialize_policy_canary_episode_interpretations(
                     )
                 )
         else:
+            retained_receipt_invalid = receipt_path.exists()
+            if retained_receipt_invalid:
+                # Preserve the prior sealed receipt. A new derived abstention
+                # records that its retained evidence can no longer be verified.
+                retained_record = _artifact(receipt_path, root=evidence, role="episode_interpretation_retained_unverified_receipt")
+                artifacts.append(retained_record)
+                receipt_path = (interpretation_root / "integrity_abstentions" /
+                    f"{input_digest.removeprefix('sha256:')}-{retained_record['sha256'].removeprefix('sha256:')}.json")
             rights_path = (
                 rights / f"{input_digest.removeprefix('sha256:')}.json"
                 if rights is not None
                 else None
             )
             reason = unavailable_reason
+            if input_digest in batch_failure_inputs:
+                reason = "interpreter_batch_execution_unavailable"
             if input_digest in invalid_rights_inputs:
                 reason = "rights_attestation_invalid"
             if (
@@ -644,29 +814,14 @@ def materialize_policy_canary_episode_interpretations(
                 )
             ):
                 reason = "candidate_policy_self_grading_forbidden"
-            if marker_path.exists():
+            if marker_path.exists() and input_digest not in batch_prepared_inputs:
                 reason = "prior_interpretation_execution_ambiguous"
             elif not offline_argus_default and (rights_path is None or not rights_path.is_file()):
                 reason = "rights_attestation_unavailable"
-            plan = {
-                "schema_version": PLAN_SCHEMA_VERSION,
-                "episode_id": request.episode_id,
-                "candidate_policy_id": request.candidate_policy_id,
-                "input_bundle_digest": input_digest,
-                "interpreter": identity.__dict__ if identity is not None else None,
-                "interpreter_identity_digest": (
-                    canonical_digest(identity.__dict__) if identity is not None else None
-                ),
-                "interpreter_profile_digest": profile.get("profile_digest") if profile else None,
-                "rights_attestation_digest": (
-                    _validated_rights_digest(rights_path)
-                ),
-                "execution_status": "eligible" if reason is None else "abstain",
-                "abstention_reason": reason,
-                "score_or_ranking_effect": "none",
-                "plan_digest": "",
-            }
-            plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+            if retained_receipt_invalid:
+                reason = "retained_interpretation_evidence_invalid"
+            plan = _interpretation_plan(request=request, identity=identity, profile=profile,
+                                        rights_path=rights_path, reason=reason)
             if plan_path.exists():
                 artifacts.append(
                     _artifact(
@@ -685,16 +840,12 @@ def materialize_policy_canary_episode_interpretations(
                     )
                 )
             if reason is not None:
-                receipt = _abstain(request, reason=reason, path=receipt_path, identity=identity)
+                if input_digest in batch_prepared_inputs:
+                    artifacts.append(_artifact(marker_path, root=evidence, role="episode_interpretation_attempt"))
+                receipt = _abstain(request, reason=reason, path=receipt_path, identity=identity,
+                                   prompt_identity=prompt_identity)
             else:
-                marker = {
-                    "schema_version": "policy_canary_episode_interpretation_attempt.v1",
-                    "input_bundle_digest": input_digest,
-                    "attempt_permitted_once": True,
-                    "attempt_digest": "",
-                }
-                marker["attempt_digest"] = canonical_digest(marker, digest_field="attempt_digest")
-                _write_once(marker_path, marker)
+                _write_once(marker_path, _attempt_marker(input_digest))
                 artifacts.append(
                     _artifact(
                         marker_path,
@@ -728,6 +879,7 @@ def materialize_policy_canary_episode_interpretations(
                         reason="interpreter_execution_unavailable",
                         path=receipt_path,
                         identity=identity,
+                        prompt_identity=prompt_identity,
                     )
         receipt_record = _artifact(
             receipt_path, root=evidence, role="episode_interpretation_receipt"
@@ -894,6 +1046,9 @@ if __name__ == "__main__":  # pragma: no cover
 __all__ = [
     "BATCH_AUTHORITY_ENV",
     "EpisodeInterpretationRunner",
+    "AdapterEpisodeInterpretationRunner",
+    "build_flora_episode_runner",
+    "FLORA_PROFILE_SCHEMA_VERSION",
     "PLAN_SCHEMA_VERSION",
     "PROFILE_SCHEMA_VERSION",
     "SCHEMA_VERSION",

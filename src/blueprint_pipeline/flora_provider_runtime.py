@@ -1,0 +1,234 @@
+"""GPU worker for nvidia/Flora-Rewarder; development_only_episode_diagnostic."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+from typing import Any
+
+
+def _write(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def _verify(root: Path, manifest: dict[str, Any]) -> None:
+    files = manifest.get("files")
+    if not isinstance(files, dict) or not files:
+        raise ValueError("flora_runtime_member_manifest_missing")
+    for name, expected in files.items():
+        path = (root / name).resolve()
+        if not path.is_relative_to(root) or not path.is_file() or path.is_symlink():
+            raise ValueError("flora_runtime_member_invalid")
+        h = hashlib.sha256()
+        with path.open("rb") as stream:
+            for part in iter(lambda: stream.read(1024 * 1024), b""):
+                h.update(part)
+        if "sha256:" + h.hexdigest() != expected:
+            raise ValueError("flora_runtime_member_digest_mismatch:" + name)
+
+
+def _benchmark_execution_summary(report: dict[str, Any]) -> dict[str, Any]:
+    """A saved partial/fixture report is not proof that the model ran."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    if (report.get("report_digest") != canonical_digest(report, digest_field="report_digest")
+            or report.get("runtime_execution_verified") is not True
+            or report.get("inference_performed") is not True
+            or report.get("fixture_episode_count") != 0 or report.get("unknown_episode_count") != 0
+            or type(report.get("live_episode_count")) is not int or report["live_episode_count"] <= 0
+            or report.get("status") not in {"completed", "partial"}):
+        raise ValueError("flora_benchmark_real_model_execution_unverified")
+    return {"runtime_execution_verified": True, "inference_performed": True,
+            "benchmark_status": report["status"], "benchmark_grades_complete": report["status"] == "completed",
+            "live_episode_count": report["live_episode_count"], "benchmark_metrics": report.get("metrics")}
+
+
+_INPUT_PREFLIGHT = r'''
+import pathlib, sys
+source = pathlib.Path(sys.argv.pop(1)).resolve()
+sys.path.insert(0, str(source))
+def offline(event, args):
+    if event.startswith("socket."):
+        raise RuntimeError("flora_input_preflight_network_forbidden")
+sys.addaudithook(offline)
+from blueprint_pipeline.flora_episode_benchmark import main
+code = main()
+import rfc8785
+if not pathlib.Path(rfc8785.__file__).resolve().is_relative_to(source):
+    raise RuntimeError("flora_contract_dependency_not_bundled")
+raise SystemExit(code)
+'''
+
+
+def _offline_benchmark_input_preflight(
+    root: Path, output: Path, inputs: dict[str, Any], expected: dict[str, Any],
+) -> dict[str, Any]:
+    """Run the actual worker CLI's complete input path before downloads."""
+    benchmark = root / "benchmark"
+    preflight_root = output / "benchmark_input_preflight"
+    environment = {**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+                   "HF_HUB_DISABLE_TELEMETRY": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    command = [sys.executable, "-I", "-B", "-c", _INPUT_PREFLIGHT, str(root / "provider_runtime/source/src"),
+        "preflight", "--manifest", str(benchmark / inputs["manifest_relative_path"]),
+        "--profile", str(benchmark / inputs["profile_relative_path"]),
+        "--rights-root", str(benchmark / inputs["rights_relative_path"]), "--output-dir", str(preflight_root)]
+    with (output / "benchmark_input_preflight.log").open("x") as log:
+        process = subprocess.run(command, cwd=benchmark, env=environment, stdout=log,
+                                 stderr=subprocess.STDOUT, timeout=600, check=False)
+    records = list((preflight_root / "input_preflights").glob("*.json"))
+    if process.returncode != 0 or len(records) != 1:
+        raise ValueError("flora_benchmark_input_preflight_failed")
+    preflight = json.loads(records[0].read_text())
+    if (preflight != expected or preflight.get("status") != "inputs_verified"
+            or type(preflight.get("eligible_episode_count")) is not int
+            or preflight["eligible_episode_count"] <= 0
+            or preflight["eligible_episode_count"] != preflight.get("selected_episode_count")
+            or preflight.get("blockers") != [] or preflight.get("inference_performed") is not False
+            or preflight.get("runtime_execution_verified") is not False):
+        raise ValueError("flora_benchmark_input_preflight_binding_invalid")
+    return preflight
+
+
+def _run_benchmark_with_progress(command: list[str], *, benchmark: Path, output: Path,
+                                 environment: dict[str, str], progress: Any) -> int:
+    """Keep the existing child/log while observing actual artifact advancement."""
+    with (output / "benchmark.log").open("w") as log:
+        with subprocess.Popen(command, cwd=benchmark, env=environment,
+                              stdout=log, stderr=subprocess.STDOUT) as process:
+            monitoring_failed = False
+
+            def observe() -> None:
+                nonlocal monitoring_failed
+                try:
+                    progress.poll()
+                except Exception as exc:
+                    # Observation cannot change the benchmark's result. A lost
+                    # progress channel remains subject to the unchanged guards.
+                    if not monitoring_failed:
+                        log.write("FLORA_PROGRESS_OBSERVATION_UNAVAILABLE:" + type(exc).__name__ + "\n")
+                        log.flush()
+                        monitoring_failed = True
+
+            try:
+                while True:
+                    observe()
+                    try:
+                        returncode = process.wait(timeout=5)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                observe()
+            except BaseException:
+                # Preserve subprocess.run's cancellation/exception cleanup.
+                process.kill()
+                process.wait()
+                raise
+    return returncode
+
+
+def main() -> int:
+    root = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_BUNDLE_DIR"]).resolve()
+    output = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_OUTPUT_DIR"]).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    result: dict[str, Any] = {
+        "schema_version": "flora_provider_runtime.v1", "status": "blocked", "blockers": [],
+        "model_id": "nvidia/Flora-Rewarder", "claim_class": "development_only_episode_diagnostic",
+        "candidate_policy_queried": False, "physical_truth_claimed": False,
+        "official_ranking_performed": False,
+    }
+    try:
+        runtime = json.loads((root / "provider_runtime/evaluator_provider_runtime_manifest.json").read_text())
+        _verify(root, runtime)
+        inputs = json.loads((root / "provider_runtime/evaluator_input_manifest.json").read_text())
+        if inputs.get("model_id") != "nvidia/Flora-Rewarder" or inputs.get("model_revision") != "7de68d22c4a9decec5ddb7f86ddcaee8f82d3367":
+            raise ValueError("flora_runtime_model_identity_invalid")
+        sys.path.insert(0, str(root / "provider_runtime/source/src"))
+        from blueprint_pipeline.flora_runtime_progress import FloraArtifactProgress, progress_marker
+        benchmark = root / "benchmark"
+        result["benchmark_input_preflight"] = _offline_benchmark_input_preflight(
+            root, output, inputs, runtime.get("input_preflight") or {})
+        from blueprint_pipeline.flora_dependency_bootstrap import (
+            FloraDependencyBootstrapError, ensure_flora_runtime_dependencies,
+        )
+        try:
+            result["dependency_bootstrap"] = ensure_flora_runtime_dependencies(
+                output_root=output / "dependency_bootstrap")
+        except FloraDependencyBootstrapError as exc:
+            result["dependency_bootstrap"] = exc.receipt
+            raise
+        versions = {}
+        for package, module in {"vllm":"vllm", "transformers":"transformers", "qwen-vl-utils":"qwen_vl_utils",
+                "decord":"decord", "av":"av", "numpy":"numpy", "Pillow":"PIL", "huggingface_hub":"huggingface_hub"}.items():
+            versions[package] = importlib.metadata.version(package)
+            importlib.import_module(module)
+        for package, expected in {"vllm":"0.24.0", "transformers":"5.8.1", "qwen-vl-utils":"0.0.14", "decord":"0.6.0", "av":"16.1.0"}.items():
+            if versions[package] != expected:
+                raise ValueError("flora_image_dependency_version_mismatch:" + package)
+        _write(output / "runtime_dependency_versions.json", versions)
+        from huggingface_hub import snapshot_download
+        model = snapshot_download(repo_id=inputs["model_id"], revision=inputs["model_revision"],
+            cache_dir=str(root / "model_cache"), allow_patterns=["*.json", "*.safetensors", "*.py", "*.jinja", "*.txt", "*.model"])
+        profile = json.loads((benchmark / inputs["profile_relative_path"]).read_text())
+        config = profile["runtime_config"]
+        for key, expected in {"model_path":"/opt/blueprint/flora/model", "source_root":"/opt/blueprint/flora/source"}.items():
+            if config.get(key) != expected:
+                raise ValueError("flora_provider_profile_runtime_path_invalid:" + key)
+            link = Path(expected)
+            link.parent.mkdir(parents=True, exist_ok=True)
+            if link.exists() or link.is_symlink():
+                if link.resolve() != Path(model).resolve():
+                    raise ValueError("flora_provider_existing_model_path_conflict")
+            else:
+                link.symlink_to(Path(model).resolve(), target_is_directory=True)
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        _write(output / "model_snapshot_receipt.json", {"model_id": inputs["model_id"],
+            "revision": inputs["model_revision"], "snapshot_directory_name": Path(model).name,
+            "source_commit": runtime["source_commit"]})
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        dataset = json.loads((benchmark / inputs["manifest_relative_path"]).read_text())
+        input_digests = [row["input_bundle_digest"] for row in dataset["episodes"]]
+        episode_ids = {"episode-" + value.split(":")[1][:32] for value in input_digests}
+        if len(episode_ids) != result["benchmark_input_preflight"]["eligible_episode_count"]:
+            raise ValueError("flora_progress_cohort_binding_invalid")
+        cohort = canonical_digest({"inputs": input_digests}).split(":")[1][:24]
+        progress = FloraArtifactProgress(batch_root=output / "benchmark/raw" / ("batch-" + cohort),
+            episode_ids=episode_ids, instruction=profile["task"]["instruction"])
+        environment = {**os.environ, "PYTHONPATH": str(root / "provider_runtime/source/src")}
+        command = [sys.executable, "-m", "blueprint_pipeline.flora_episode_benchmark", "run",
+            "--manifest", str(benchmark / inputs["manifest_relative_path"]),
+            "--profile", str(benchmark / inputs["profile_relative_path"]),
+            "--rights-root", str(benchmark / inputs["rights_relative_path"]),
+            "--output-dir", str(output / "benchmark")]
+        # Start typed tracking after model download, preserving the existing
+        # download monitor while making the silent benchmark artifact-driven.
+        print(progress_marker("startup", 1, 1), flush=True)
+        returncode = _run_benchmark_with_progress(command, benchmark=benchmark, output=output,
+                                                environment=environment, progress=progress)
+        result["benchmark_exit_code"] = returncode
+        report = output / "benchmark/benchmark_report.json"
+        if returncode != 0 or not report.is_file():
+            raise ValueError("flora_benchmark_failed_or_report_missing")
+        result.update(_benchmark_execution_summary(json.loads(report.read_text())))
+        result.update({"status": "completed", "benchmark_report_path": "benchmark/benchmark_report.json",
+            "benchmark_report_sha256": "sha256:" + hashlib.sha256(report.read_bytes()).hexdigest(),
+            "source_commit": runtime["source_commit"], "model_revision": inputs["model_revision"]})
+    except Exception as exc:
+        result["blockers"] = [str(exc) if isinstance(exc, ValueError) else type(exc).__name__]
+    result["wall_seconds"] = round(time.time() - started, 3)
+    _write(output / "evaluator_runtime_result.json", result)
+    return 0 if result["status"] == "completed" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

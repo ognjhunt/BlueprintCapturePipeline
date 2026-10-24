@@ -55,6 +55,7 @@ from .provider_credentials import (
 )
 
 from .vast_offer_selection_helpers import _approved_vast_offer_matches, geolocation_selection_kwargs
+from .gpu_selection_policy import required_gpu_count
 from blueprint_pipeline.paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
@@ -1971,6 +1972,7 @@ class VastRenderProvider(GpuRenderProvider):
         allowed_machine_ids = _string_list(req.get("allowed_machine_ids"))
         excluded_machine_ids = _string_list(req.get("excluded_machine_ids"))
         required_search_payload = _search_payload(
+            gpu_count=required_gpu_count(req.get("gpu_selection_policy")),
             limit=100,
             max_hourly_rate=max_rate,
             allowed_machine_ids=allowed_machine_ids,
@@ -2230,6 +2232,7 @@ class VastRenderProvider(GpuRenderProvider):
         search_payload = {
             **_mapping(request.get("search_payload")),
             **_search_payload(
+                gpu_count=required_gpu_count(request.get("gpu_selection_policy")),
                 limit=100,
                 max_hourly_rate=max_rate,
                 allowed_machine_ids=allowed_machine_ids,
