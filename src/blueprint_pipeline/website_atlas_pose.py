@@ -92,6 +92,15 @@ READY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0, 16.0)
 RESEND_LIMIT = 3
 UNCERTAIN_RESEND_WINDOW_SECONDS = 3600
 CREDIT_RESEND_INTERVAL_SECONDS = 300
+# Terminal operation failures that a new submission may clear, by (google.rpc
+# code, ErrorInfo reason). https://atlas-beta.worldlabs.ai/docs/errors (read
+# 2026-10-24): THROTTLED means "submit a new task later with backoff" and an
+# EXECUTION_TIMEOUT retry "is a new task submission"; code 4 alone can also mean
+# an expired task. EXECUTION_FAILED says to investigate first, so it stays final.
+RESUBMITTABLE_FAILURES = frozenset({(14, "TRANSIENT_UPSTREAM"), (8, "THROTTLED"), (4, "EXECUTION_TIMEOUT")})
+# Each pose attempt is separately reserved; a failure above starts at most this many.
+MAX_POSE_ATTEMPTS = 3
+RESUBMIT_BACKOFF_SECONDS = 30
 ADMISSION_MARGIN_SECONDS = 120
 #: Operations are kept this long. Before then a 404 is not proof one is gone.
 OPERATION_RETENTION_SECONDS = 30 * 86400
@@ -480,6 +489,17 @@ def refuse_closed_or_uncertain_attempt(state: Mapping[str, Any] | None, now: flo
             raise ValueError("website_atlas_pose_resend_not_due")
     if status == "failed":
         raise ValueError("website_atlas_pose_attempt_failed")
+
+
+def resubmittable_terminal_failure(state: Mapping[str, Any] | None) -> bool:
+    """A finished operation whose documented failure a new, separate submission may clear."""
+    operation = (state or {}).get("terminal_operation") or {}
+    error = operation.get("error") or {}
+    return bool(state) and (state.get("status") == "failed" and operation.get("done") is True
+            and operation.get("id") == state.get("operation_id")
+            and any((error.get("code"), row.get("reason")) in RESUBMITTABLE_FAILURES
+                    and row.get("domain") == "api.worldlabs.ai"
+                    for row in error.get("details", []) if isinstance(row, dict)))
 
 
 def _refuse_state_conflict(state: Mapping[str, Any] | None, binding: Mapping[str, Any]) -> None:
@@ -1008,7 +1028,8 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
     retention decision, a reviewed price, then the WebApp-signed spend grant.
     The state check, the reservation and the submission share one lock.
     Polling and retaining an already-submitted operation are reads and need
-    none of them.
+    none of them. A documented resubmittable failure closes its attempt; a
+    new, separately reserved attempt follows, at most ``MAX_POSE_ATTEMPTS``.
     """
     from .website_task_context import reserve_website_preparation_spend
     from .website_task_context_contracts import validate_website_task_context
@@ -1020,41 +1041,56 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
                                   purpose="scene_preparation")
     base_url, api_key = atlas_api_config()
     client = AtlasClient(base_url=base_url, api_key=api_key, transport=transport)
-    with _locked(output_root):
-        state = atlas_pose_submission_state(output_root)
-        if needs_atlas_pose_reconciliation(state, now()):
-            state = reconcile_atlas_pose_submission(output_root, client=client, now=now())
-        refuse_closed_or_uncertain_attempt(state, now())
-        if not (state and state.get("operation_id")):
-            pose_inputs = load_pending_atlas_pose_inputs(output_root)
-            retention = atlas_provider_retention()
-            commit, blockers = release_blockers()
-            if blockers:
-                raise ValueError("website_atlas_pose_release_not_admitted:" + ",".join(blockers))
-            grid = atlas_pose_target_resolution(pose_inputs)
-            spend = atlas_pose_spend_line(planned_input_count=len(pose_inputs["frames"]), target_resolution=grid)
-            binding = atlas_pose_request_binding(
-                pose_inputs=pose_inputs, spend=spend, task_context=task_context, target_resolution=grid,
-                provider_retention=retention, attempt=_attempt_number(output_root))
-            # Refused before reserving: the adapter would refuse it anyway,
-            # after the sponsorship had been charged for it.
-            _refuse_state_conflict(state, binding)
-            retained_path = output_root / "atlas_pose" / "controller_admission.json"
-            retained = json.loads(retained_path.read_text()) if retained_path.is_file() else None
-            admission, grant = reserve_website_preparation_spend(
-                task_context=task_context, binding_digest=canonical_digest(binding),
-                maximum_cost_usd=spend["maximum_cost_usd"], request_count=1,
-                resource_class=RESOURCE_CLASS, provider=PROVIDER, retained_admission=retained,
-                source_video_digest=pose_inputs["binding"]["source_video_digest"],
-                retain_admission=lambda value: _write_state(retained_path, {**value, "source_commit": commit}))
-            if admission.get("provider_retention", retention) != retention:
-                raise ValueError("website_atlas_provider_retention_admission_mismatch")
-            admission = {**admission, "source_commit": commit}
-            _write_state(retained_path, admission)
-            submit_atlas_pose_operation(pose_inputs=pose_inputs, output_root=output_root, client=client,
-                                        binding=binding, admission=admission, grant=grant, sleep=sleep, now=now)
-    result = collect_atlas_pose_operation(output_root=output_root, client=client, sleep=sleep, now=now,
-                                          max_polls=max_polls, poll_interval_seconds=poll_interval_seconds)
+
+    def resubmit_due() -> bool:
+        # The archive itself refuses an attempt that could have bought more than its failed operation.
+        return (resubmittable_terminal_failure(atlas_pose_submission_state(output_root))
+                and _attempt_number(output_root) + 1 < MAX_POSE_ATTEMPTS)
+    while True:
+        if resubmit_due():
+            sleep(RESUBMIT_BACKOFF_SECONDS)
+            archive_closed_atlas_pose_attempt(output_root)
+        with _locked(output_root):
+            state = atlas_pose_submission_state(output_root)
+            if needs_atlas_pose_reconciliation(state, now()):
+                state = reconcile_atlas_pose_submission(output_root, client=client, now=now())
+            refuse_closed_or_uncertain_attempt(state, now())
+            if not (state and state.get("operation_id")):
+                pose_inputs = load_pending_atlas_pose_inputs(output_root)
+                retention = atlas_provider_retention()
+                commit, blockers = release_blockers()
+                if blockers:
+                    raise ValueError("website_atlas_pose_release_not_admitted:" + ",".join(blockers))
+                grid = atlas_pose_target_resolution(pose_inputs)
+                spend = atlas_pose_spend_line(planned_input_count=len(pose_inputs["frames"]), target_resolution=grid)
+                binding = atlas_pose_request_binding(
+                    pose_inputs=pose_inputs, spend=spend, task_context=task_context, target_resolution=grid,
+                    provider_retention=retention, attempt=_attempt_number(output_root))
+                # Refused before reserving: the adapter would refuse it anyway,
+                # after the sponsorship had been charged for it.
+                _refuse_state_conflict(state, binding)
+                retained_path = output_root / "atlas_pose" / "controller_admission.json"
+                retained = json.loads(retained_path.read_text()) if retained_path.is_file() else None
+                admission, grant = reserve_website_preparation_spend(
+                    task_context=task_context, binding_digest=canonical_digest(binding),
+                    maximum_cost_usd=spend["maximum_cost_usd"], request_count=1,
+                    resource_class=RESOURCE_CLASS, provider=PROVIDER, retained_admission=retained,
+                    source_video_digest=pose_inputs["binding"]["source_video_digest"],
+                    retain_admission=lambda value: _write_state(retained_path, {**value, "source_commit": commit}))
+                if admission.get("provider_retention", retention) != retention:
+                    raise ValueError("website_atlas_provider_retention_admission_mismatch")
+                admission = {**admission, "source_commit": commit}
+                _write_state(retained_path, admission)
+                submit_atlas_pose_operation(pose_inputs=pose_inputs, output_root=output_root, client=client,
+                                            binding=binding, admission=admission, grant=grant, sleep=sleep, now=now)
+        try:
+            result = collect_atlas_pose_operation(output_root=output_root, client=client, sleep=sleep, now=now,
+                                                  max_polls=max_polls, poll_interval_seconds=poll_interval_seconds)
+        except ValueError as exc:
+            if str(exc) == "website_atlas_pose_operation_failed" and resubmit_due():
+                continue
+            raise
+        break
     if result.get("status") == "processing":
         return result
     receipt = result["operation_receipt"]

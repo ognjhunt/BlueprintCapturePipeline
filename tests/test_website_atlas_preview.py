@@ -561,6 +561,18 @@ def test_cleanup_collects_nested_automation_outputs(tmp_path):
     assert atlas_asset_ids(tmp_path) == ["asset_masked_output"]
 
 
+def test_cleanup_collects_a_resubmitted_pose_attempt_set_aside(tmp_path):
+    from blueprint_pipeline.website_atlas_preview import atlas_asset_ids
+    archived = tmp_path / "pose" / "atlas_pose_attempts" / "000"
+    archived.mkdir(parents=True)
+    (archived / "submission.json").write_text(json.dumps({"status": "failed", "created_assets": ["asset_frame_0"],
+        "uploads": [{"frame_id": "f0", "asset_id": "asset_frame_0"}]}))
+    current = tmp_path / "pose" / "atlas_pose"
+    current.mkdir()
+    (current / "submission.json").write_text(json.dumps({"created_assets": ["asset_frame_1"]}))
+    assert atlas_asset_ids(tmp_path) == ["asset_frame_0", "asset_frame_1"]
+
+
 def test_cleanup_covers_duplicate_purchases_that_reconciliation_found(tmp_path):
     stage = tmp_path / "generated" / "atlas_pose"
     stage.mkdir(parents=True)

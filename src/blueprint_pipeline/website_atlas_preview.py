@@ -262,7 +262,9 @@ def atlas_asset_ids(job_dir: Path) -> list[str]:
         elif isinstance(value, list):
             for item in value:
                 walk(item)
+    # A resubmitted pose sets its failed attempt aside, uploads and all, under atlas_pose_attempts/.
     for path in sorted({*job_dir.rglob("atlas_pose/submission.json"), *job_dir.rglob("result.json"),
+                        *job_dir.rglob("atlas_pose_attempts/*/submission.json"),
                         *job_dir.rglob("atlas_posed_rgbd_result.json")}):
         if not path.is_symlink():
             walk(json.loads(path.read_text()))

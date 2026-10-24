@@ -861,6 +861,53 @@ def test_failed_operation_is_recorded_and_yields_no_result(atlas_case):
     assert atlas.archive_closed_atlas_pose_attempt(atlas_case.root) == 1
 
 
+class FailingFirstAtlas(FakeAtlas):
+    """The first ``failures`` bought operations finish with one documented error, later ones succeed."""
+
+    def __init__(self, events, *, failures, code, reason, **kwargs):
+        super().__init__(events, **kwargs)
+        self.failures = failures
+        self.error = {"code": code, "message": "synthetic", "details": [
+            {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "domain": "api.worldlabs.ai", "reason": reason}]}
+
+    def __call__(self, method, url, headers, data):
+        match = re.fullmatch(re.escape(BASE) + r"/operations/([A-Za-z0-9_]+)", url)
+        if method == "GET" and match:
+            order = [operation_id for operation_id, _ in self.bought]
+            index = order.index(match.group(1)) if match.group(1) in order else 0
+            self.operation_error = self.error if index < self.failures else None
+        return super().__call__(method, url, headers, data)
+
+
+@pytest.mark.parametrize("code,reason", [(14, "TRANSIENT_UPSTREAM"), (8, "THROTTLED"), (4, "EXECUTION_TIMEOUT")])
+def test_documented_resubmittable_pose_failure_starts_a_separately_reserved_attempt(atlas_case, code, reason):
+    fake = FailingFirstAtlas(atlas_case.events, failures=1, code=code, reason=reason)
+    result = atlas_case.run(fake, max_polls=2)
+    assert result["status"] == "completed" and result["operation_id"] == "op_atlas_1_1"
+    # The failed attempt is set aside intact; the new one has its own reservation and key.
+    assert (atlas_case.root / "atlas_pose_attempts" / "000" / "submission.json").is_file()
+    assert len(atlas_case.webapp.reserved) == 2 and len({key for _, key in fake.submissions}) == 2
+    assert atlas_case.run(fake, max_polls=2) == result and len(fake.submissions) == 2
+
+
+@pytest.mark.parametrize("code,reason", [(13, "EXECUTION_FAILED"), (4, "THROTTLED"), (3, "CONTENT_POLICY")])
+def test_other_pose_failures_stay_final(atlas_case, code, reason):
+    fake = FailingFirstAtlas(atlas_case.events, failures=9, code=code, reason=reason)
+    with pytest.raises(ValueError, match="website_atlas_pose_operation_failed"):
+        atlas_case.run(fake, max_polls=2)
+    assert len(fake.submissions) == 1 and not (atlas_case.root / "atlas_pose_attempts").exists()
+
+
+def test_resubmittable_pose_failures_stop_after_three_attempts_across_restarts(atlas_case):
+    fake = FailingFirstAtlas(atlas_case.events, failures=9, code=14, reason="TRANSIENT_UPSTREAM")
+    with pytest.raises(ValueError, match="website_atlas_pose_operation_failed"):
+        atlas_case.run(fake, max_polls=2)
+    assert len(fake.submissions) == atlas.MAX_POSE_ATTEMPTS == 3 and len(atlas_case.webapp.reserved) == 3
+    with pytest.raises(ValueError, match="website_atlas_pose_attempt_failed"):
+        atlas_case.run(fake, max_polls=2)
+    assert len(fake.submissions) == 3
+
+
 def test_a_missing_operation_is_gone_only_after_the_retention_period(atlas_case):
     atlas_case.webapp.lifetime_seconds = 40 * 86400
     fake = FakeAtlas(atlas_case.events, mutations={"gone"})
