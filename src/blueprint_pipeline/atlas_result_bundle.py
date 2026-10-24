@@ -42,6 +42,94 @@ def _completed_task(root: Path, source_video_digest: str, label: str) -> dict:
     return value
 
 
+def retained_mesh_for_splat(*, mesh_root: Path, splat_root: Path,
+                            source_video_digest: str, task_context_digest: str) -> dict:
+    """Adopt the exact completed mesh, including a verified mesh-only reduction.
+
+    Attempt paths are deliberately not rewritten: the original upload, operation
+    and accounting receipts continue to identify the paid request.
+    """
+    spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    splat = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
+    mesh = _completed_task(mesh_root, source_video_digest, "mesh")
+    state = json.loads((mesh_root / "atlas_pose/submission.json").read_text())
+    binding = mesh["binding"]
+    if (splat.get("digest") != canonical_digest(splat, digest_field="digest")
+            or spec.get("source_video_digest") != source_video_digest
+            or mesh.get("task") != "splats2Mesh" or binding.get("task") != "splats2Mesh"
+            or binding.get("task_context_digest") != task_context_digest
+            or binding.get("request_template") != spec.get("request")
+            or state.get("binding") != binding
+            or mesh.get("request_digest") != canonical_digest(binding)
+            or state.get("request_digest") != mesh.get("request_digest")
+            or state.get("operation_id") != mesh.get("operation", {}).get("id")):
+        raise ValueError("atlas_retained_mesh_binding_changed")
+    source = spec["uploads"]["splat"]
+    upload = binding.get("uploads", {}).get("splat", {})
+    source_path, upload_path = Path(source["path"]), Path(upload.get("path", ""))
+    if (source_path.is_symlink() or not source_path.is_file()
+            or _sha256_file(source_path) != source["sha256"]
+            or upload_path.is_symlink() or not upload_path.is_file()
+            or _sha256_file(upload_path) != upload.get("sha256")):
+        raise ValueError("atlas_retained_mesh_input_changed")
+    if upload["sha256"] != source["sha256"]:
+        receipt_path = upload_path.parent / "mesh_input.json"
+        if receipt_path.is_symlink() or not receipt_path.is_file():
+            raise ValueError("atlas_retained_mesh_reduction_missing")
+        reduction = json.loads(receipt_path.read_text())
+        if (reduction.get("schema_version") != "atlas_splats2mesh_input.v1"
+                or reduction.get("source_sha256") != source["sha256"]
+                or reduction.get("source_gaussian_count") != splat.get("gaussian_count")
+                or reduction.get("path") != str(upload_path)
+                or reduction.get("sha256") != upload["sha256"]):
+            raise ValueError("atlas_retained_mesh_reduction_changed")
+    for row in mesh["outputs"]:
+        path = mesh_root / row["path"]
+        if (path.is_symlink() or not path.resolve().is_relative_to(mesh_root.resolve())
+                or not path.is_file() or path.stat().st_size != row["bytes"]
+                or _sha256_file(path) != row["sha256"]):
+            raise ValueError("atlas_retained_mesh_output_changed")
+    registration_path = mesh_root / "registered/atlas_mesh_registration.json"
+    if registration_path.is_symlink() or not registration_path.is_file():
+        raise ValueError("atlas_retained_mesh_registration_missing")
+    registration = json.loads(registration_path.read_text())
+    if (registration.get("digest") != canonical_digest(registration, digest_field="digest")
+            or registration.get("splat_manifest_digest") != splat["digest"]
+            or registration.get("source_glb_sha256") not in {row["sha256"] for row in mesh["outputs"]}):
+        raise ValueError("atlas_retained_mesh_registration_changed")
+    for row in registration["outputs"]:
+        path = mesh_root / "registered" / row["path"]
+        if (path.is_symlink() or not path.resolve().is_relative_to((mesh_root / "registered").resolve())
+                or not path.is_file() or _sha256_file(path) != row["sha256"]):
+            raise ValueError("atlas_retained_mesh_output_changed")
+    return mesh
+
+
+def find_retained_mesh_root(*, output_root: Path, splat_root: Path,
+                            source_video_digest: str, task_context_digest: str) -> Path | None:
+    """Find a same-job export without relying on its historical directory name.
+
+    This is discovery only. The caller must validate it with
+    ``retained_mesh_for_splat`` before adoption; matching corrupt state must not
+    silently cause a second purchase.
+    """
+    splat = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
+    for path in sorted(output_root.glob('*/registered/atlas_mesh_registration.json')):
+        root = path.parent.parent
+        if root.is_symlink() or path.is_symlink() or not (root / 'result.json').is_file():
+            continue
+        registration = json.loads(path.read_text())
+        if registration.get('splat_manifest_digest') != splat['digest']:
+            continue
+        mesh = json.loads((root / 'result.json').read_text())
+        binding = mesh.get('binding', {})
+        if (mesh.get('status') == 'completed' and mesh.get('task') == 'splats2Mesh'
+                and binding.get('source_video_digest') == source_video_digest
+                and binding.get('task_context_digest') == task_context_digest):
+            return root
+    return None
+
+
 def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=(), splat_root: Path | None = None,
                        mesh_root: Path | None = None, analysis_paths=()) -> dict:
     pose_root = pose_root.resolve()
