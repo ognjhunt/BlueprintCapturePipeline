@@ -503,6 +503,10 @@ def reconcile_provider_billing(
                     "provider_mutation_performed": False,
                     "raw_secret_values_recorded": False,
                 }
+                if min(source_times) != current:
+                    # Bind the older export observation without re-dating the
+                    # provider report or the actual collection receipt.
+                    source_receipt["billing_export_generated_at"] = min(source_times).isoformat()
                 source_receipt["receipt_digest"] = _canonical_digest(
                     source_receipt, digest_field="receipt_digest"
                 )
