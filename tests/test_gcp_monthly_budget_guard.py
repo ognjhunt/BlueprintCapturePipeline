@@ -226,3 +226,14 @@ def test_production_reconstruction_uses_project_guard_without_per_run_override(p
     grant = require_paid_resource_admission(build_paid_lane_admission(resource_class="gpu_canary"),
         resource_class="gpu_canary", expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
     assert grant.resource_class == "gpu_canary"
+
+
+def test_service_preserves_operator_owned_group_accessible_lock(policy, monkeypatch):
+    import os
+
+    lock = Path(policy["state_path"]).with_suffix(".lock")
+    lock.touch(mode=0o660)
+    owner = lock.stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+    monkeypatch.setattr(os, "fchmod", lambda *args: pytest.fail("service cannot chmod another owner's lock"))
+    assert guard.run_guard(policy, client=Client(policy), now=NOW)["admission_allowed"]

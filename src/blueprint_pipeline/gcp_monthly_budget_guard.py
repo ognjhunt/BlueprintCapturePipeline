@@ -179,7 +179,11 @@ def run_guard(policy: Mapping[str, Any], *, client=None, now: datetime | None = 
     lock.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o660)
     try:
-        os.fchmod(descriptor, 0o660)
+        status = os.fstat(descriptor)
+        if status.st_uid == os.geteuid():
+            os.fchmod(descriptor, 0o660)
+        elif status.st_mode & 0o007:
+            raise ValueError("budget_lock_permissions_unsafe")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
