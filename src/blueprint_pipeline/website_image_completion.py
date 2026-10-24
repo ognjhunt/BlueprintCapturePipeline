@@ -655,10 +655,54 @@ def _review_contents(*, client, types, pairs, prompt, output_root, binding_diges
             write_json(receipt_path, receipt)
 
 
+CAMERA_CHANGED_REASON = (
+    "These edited views no longer line up with their ORIGINAL outside the removed object: the editor "
+    "reframed, zoomed or copied another view's camera. Re-edit each from its ORIGINAL and keep its exact "
+    "framing, zoom and perspective; use reference images only for the revealed surfaces.")
+
+
+def _camera_changed_review(frames: Sequence[Mapping[str, Any]],
+                           original_frames: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """A blocked review, bought from no one, when an edit left its source camera."""
+    from .edited_view_camera import CHECK_REVISION, edited_view_camera
+
+    originals = {frame["frame_id"]: frame for frame in original_frames}
+    for frame in frames:
+        if frame.get("original_image_path"):
+            originals[frame["frame_id"]] = {"image_path": frame["original_image_path"],
+                                              "image_digest": frame["original_image_digest"]}
+    checks = []
+    for frame in frames:
+        original = originals.get(frame["frame_id"])
+        if (original is None or not frame.get("generated_pixels_present") or not frame.get("remaining_mask_path")
+                or original["image_digest"] == frame["image_digest"]):
+            continue
+        paths = (Path(original["image_path"]), Path(frame["image_path"]), Path(frame["remaining_mask_path"]))
+        expected = (original["image_digest"], frame["image_digest"], frame.get("remaining_mask_digest"))
+        if any(digest is not None and _sha256_file(path) != digest for path, digest in zip(paths, expected)):
+            raise ValueError("website_image_completion_review_source_changed")
+        checks.append({"frame_id": frame["frame_id"], "image_digest": frame["image_digest"],
+                       "original_image_digest": original["image_digest"],
+                       "mask_digest": frame.get("remaining_mask_digest"), **edited_view_camera(*paths)})
+    moved = [check["frame_id"] for check in checks if check["status"] == "moved"]
+    if not moved:
+        return None
+    binding = {"kind": "edited_view_camera_check", "revision": CHECK_REVISION, "checks": checks}
+    return {"status": "blocked", "binding": binding, "request_digest": canonical_digest(binding),
+            "basis": "deterministic_view_geometry", "physical_evidence": False,
+            "review": {"consistent_background": False, "camera_changed_frame_ids": moved,
+                       "reason": CAMERA_CHANGED_REASON}}
+
+
 def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original_frames: Sequence[Mapping[str, Any]],
                                 plan: Mapping[str, Any], output_root: Path,
                                 task_context: Mapping[str, Any] | None = None,
                                 source_video_digest: str | None = None) -> dict[str, Any]:
+    # A reframed or copied camera fails before any paid review, with a reason
+    # the repair planner can act on; views that cannot be judged still go there.
+    moved = _camera_changed_review(frames, original_frames)
+    if moved is not None:
+        return moved
     if not (task_context or {}).get("capture_id"):
         return _verify_completed_background(frames=frames, original_frames=original_frames,
                                             plan=plan, output_root=output_root)
