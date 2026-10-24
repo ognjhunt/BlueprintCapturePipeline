@@ -421,11 +421,13 @@ def test_live_transport_emits_allocator_artifact_manifest(
     "provider_create_attempted,definite_refusal",
     [(False, False), (True, False), (True, True)],
 )
+@pytest.mark.parametrize("offer_search_exhausted", [False, True])
 def test_policy_transport_seals_typed_media_gap_before_first_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     provider_create_attempted: bool,
     definite_refusal: bool,
+    offer_search_exhausted: bool,
 ) -> None:
     bundle_path = tmp_path / "bundle.zip"
     bundle_path.write_bytes(b"bundle")
@@ -460,7 +462,8 @@ def test_policy_transport_seals_typed_media_gap_before_first_observation(
         }
         if definite_refusal:
             adapter.update(
-                status="failed",
+                status="blocked" if offer_search_exhausted else "failed",
+                reason="vast_offer_selection_blocked" if offer_search_exhausted else "vast_create_failed",
                 vast_side_effects_may_have_occurred=False,
                 create_failure_diagnosis={
                     "http_status_code": 410,

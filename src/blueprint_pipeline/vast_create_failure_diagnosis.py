@@ -123,8 +123,12 @@ def definite_create_refusal_without_instance(adapter: Mapping[str, Any]) -> bool
     explicit_refusal = code in {404, 409, 410} or (
         code == 400 and "no_such_ask" in str(diagnosis.get("error_preview") or "").lower()
     )
+    terminal_status = adapter.get("status") == "failed" or (
+        adapter.get("status") == "blocked"
+        and adapter.get("reason") == "vast_offer_selection_blocked"
+    )
     return bool(
-        adapter.get("status") == "failed"
+        terminal_status
         and adapter.get("provider_create_attempted") is True
         and adapter.get("vast_instance_ids") == []
         and adapter.get("vast_side_effects_may_have_occurred") is False
