@@ -117,7 +117,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                    task_runner, planner_runner, release_blockers, max_polls, checkpoint=None,
                    existing_geometry_frames=(), expected_frames=(), splat_root=None,
                    reference_frames=None, coverage_feedback=None, source_survey_path=None,
-                   recorded_frames=()):
+                   recorded_frames=(), context_pose_root=None, context_pose_digest=None):
     """Plan -> generate RGBD -> independent review, all resumable under one cap."""
     from .website_image_completion import verify_completed_background
 
@@ -134,7 +134,18 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
             from .atlas_scene_gaps import retained_completion
             return retained_completion(root=root, pose_digest=pose['digest'])
     from .atlas_context_fov import verify_pose_context_fov
-    fov = verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=root)
+    pixel_root = Path(context_pose_root) if context_pose_root is not None else pose_root
+    pixel_pose = (json.loads((pixel_root / 'atlas_posed_rgbd_result.json').read_text())
+                  if context_pose_root is not None else pose)
+    if context_pose_root is not None and pixel_pose.get('digest') != canonical_digest(pixel_pose, digest_field='digest'):
+        raise ValueError('atlas_completion_refreshed_context_changed')
+    if context_pose_root is not None and (
+            pixel_pose.get('digest') != context_pose_digest
+            or pixel_pose['binding']['source_video_digest'] != pose['binding']['source_video_digest']
+            or {row['frame_id'] for row in pixel_pose['operation_receipt']['input_usage']['frames']}
+            != {frame['frame_id'] for frame in frames}):
+        raise ValueError('atlas_completion_refreshed_context_identity_changed')
+    fov = verify_pose_context_fov(pose_root=pixel_root, frames=frames, output_root=root)
     camera_pool = camera_candidates(frames)
     # The initial pass already surveyed the full topology. A feedback pass
     # checks every source/reviewed view, then aims at its remaining holes;
@@ -227,11 +238,11 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         raise ValueError('atlas_completion_no_context_supported_gap_camera')
     originals = {}
     survey_frames = []
-    usage = pose["operation_receipt"]["input_usage"]["frames"]
+    usage = pixel_pose["operation_receipt"]["input_usage"]["frames"]
     for index, row in enumerate(usage):
         asset = next(value for value in row["outputs"] if value["role"] == "image")
-        path = pose_root / asset["path"]
-        if (path.is_symlink() or not path.resolve().is_relative_to(pose_root.resolve())
+        path = pixel_root / asset["path"]
+        if (path.is_symlink() or not path.resolve().is_relative_to(pixel_root.resolve())
                 or _sha256_file(path) != asset["sha256"]):
             raise ValueError("atlas_completion_context_changed")
         originals[row["frame_id"]] = {"image_path": str(path), "image_digest": asset["sha256"]}
