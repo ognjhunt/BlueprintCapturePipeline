@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import shlex
 import stat
 import subprocess
@@ -1483,7 +1484,9 @@ def _task_evaluation_watchdog_owned_ids(
                     or not (type(deadline) is int or type(deadline) is float) or not now < deadline < now + 86400
                     or not isinstance(prefix, str)
                     or not (prefix.startswith("blueprint-task-evaluation-")
-                            or prefix == "blueprint-native-task-policy-canary-")
+                            or prefix == "blueprint-native-task-policy-canary-"
+                            or (prefix.startswith("blueprint-native-task-policy-canary-")
+                                and re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", prefix)))
                     or value.get("name_prefix") != prefix
                     or (path.parent / "groot_oscar_runpod_canary_watchdog_cancel.json").exists()):
                 continue
