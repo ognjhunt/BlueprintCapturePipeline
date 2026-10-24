@@ -182,6 +182,54 @@ def test_no_gap_returns_existing_scene_without_planner_or_provider_purchase(tmp_
     assert actual == [] and report['status'] == 'passed' and report['generated_roots'] == []
 
 
+def test_post_export_zero_masks_still_receive_a_complete_surface_review_before_stopping(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_scene_completion, atlas_context_fov
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    cam = {'intrinsics': {'width': 32, 'height': 18, 'fx': 30., 'fy': 30., 'cx': 16., 'cy': 9.},
+           'extrinsics': {'position': [0, 0, 0], 'quaternion': [0, 0, 0, 1], 'coordinateSystem': 'rub'}}
+    source = posed_frame(frame_id='source', rgb=np.full((18, 32, 3), 50, np.uint8),
+        depth=np.full((18, 32), 2., np.float32), confidence=np.ones((18, 32)), camera=cam)
+    image = tmp_path/'source.png'
+    Image.fromarray(source['rgb']).save(image)
+    digest = _sha256_file(image)
+    pose = {'digest': 'pose', 'binding': {'source_video_digest': 'video'},
+            'operation_receipt': {'input_usage': {'frames': [{'frame_id': 'source',
+                'outputs': [{'role': 'image', 'path': image.name, 'sha256': digest}]}]}}}
+    survey = {'schema_version': 'atlas_video_survey.v1', 'source_video_digest': 'video',
+        'heldout_pixels_included': False, 'display_rotation_degrees': 0,
+        'frames': [{'frame_id': 'source', 'timestamp_seconds': 0.,
+                    'source_image_path': str(image), 'source_image_digest': digest}]}
+    survey['digest'] = canonical_digest(survey, digest_field='digest')
+    survey_path = tmp_path/'source-survey.json'
+    survey_path.write_text(json.dumps(survey))
+    monkeypatch.setattr(atlas_context_fov, 'verify_pose_context_fov', lambda **_: {'digest': 'fov'})
+    decisions = []
+    def review(**kwargs):
+        feedback = kwargs['completion']
+        views = feedback['gap_survey']['views']
+        assert all(not row['gaps'] for row in views)
+        assert {p['camera_id'] for p in feedback['previews'] if p['kind'] == 'geometry_gap_survey'}
+        camera_id = views[0]['camera_id']
+        decisions.append(camera_id)
+        return {'proposal': {'status': 'sufficient', 'selected_camera_ids': [],
+            'gap_assessment': ['Complete connected support checked against the actual export'],
+            'remaining_unknowns': ['Physical fidelity unverified'], 'environment_surfaces': [
+                {'component': 'work fixture', 'surface': 'support face',
+                 'required_for_local_environment': True, 'coverage': 'present',
+                 'source_frame_ids': ['source'], 'evidence_camera_ids': [camera_id], 'gap_ids': [],
+                 'reason': 'The actual exported support surface is continuous'}]}}
+    def forbidden(**_):
+        pytest.fail('No new generation is needed after a sufficient surface review')
+    actual, result = atlas_scene_completion.complete_scene(pose_root=tmp_path, pose=pose, frames=[source],
+        review={'automation': {'objects': [], 'removal_instruction': 'Cleared task area'}},
+        root=tmp_path/'completion', context={}, configuration={'remaining_cost_usd': 5},
+        task_runner=forbidden, planner_runner=review, release_blockers=forbidden, max_polls=1,
+        source_survey_path=survey_path, coverage_feedback={})
+    assert len(decisions) == 1 and actual == []
+    assert result['review']['reason'] == 'agent_found_no_material_task_gap'
+
+
 def test_gap_survey_reuses_verified_projection_and_refuses_changed_geometry(tmp_path, monkeypatch):
     from blueprint_pipeline import atlas_scene_chisel
 

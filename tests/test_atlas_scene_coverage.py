@@ -39,7 +39,7 @@ def fixture(tmp_path):
     return dict(pose_root=tmp_path, pose=pose, frames=[source], geometry_frames=[source],
         reviewed_views=reviewed, region_plan=plan, splat_root=root, output_root=tmp_path,
         review={}, context={'context_digest': 'task-context'}, configuration={'remaining_cost_usd': 5},
-        task_runner=object(), planner_runner=object(), release_blockers=object(), max_polls=1)
+        task_runner=object(), planner_runner=object(), pose_runner=object(), release_blockers=object(), max_polls=1)
 
 
 def report(reason=None):
@@ -106,6 +106,59 @@ def test_pretty_image_with_no_usable_depth_does_not_trigger_repeated_purchases(t
     assert len(calls) == 1 and root == args['splat_root']
     assert result['stop_reason'] == 'generated_views_added_no_exportable_geometry'
     assert result['task_coverage_sufficient'] is False
+
+
+def test_an_empty_numerical_mask_alone_does_not_qualify_task_surface_coverage(tmp_path, monkeypatch):
+    args = fixture(tmp_path)
+    monkeypatch.setattr(completion, 'complete_scene', lambda **_: ([], report('no_eligible_geometry_gaps')))
+    _, result = coverage.refine_scene_coverage(**args)
+    assert result['stop_reason'] == 'no_eligible_geometry_gaps'
+    assert result['task_coverage_sufficient'] is False
+
+
+def test_native_image_is_registered_and_remasked_against_export_before_fusion(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_scene_recovery, atlas_scene_task_regions
+
+    args = fixture(tmp_path)
+    registered = deepcopy(args['reviewed_views'][0]['frame'])
+    registered['frame_id'] = 'registered-view'
+    raw = deepcopy(registered)
+    raw['frame_id'] = 'raw-requested-view'
+    raw['position'] += 100  # A requested metadata pose must not reach the export.
+    calls = []
+    def complete(**kw):
+        calls.append('complete')
+        if calls.count('complete') == 1:
+            native_report = report()
+            native_report['generated_roots'] = ['native-result-retained']
+            native_report['digest'] = canonical_digest(native_report, digest_field='digest')
+            return [raw], native_report
+        assert 'registered-view' in {f['frame_id'] for f in kw['reference_frames']}
+        return [], report('agent_found_no_material_task_gap')
+    def register(**kw):
+        calls.append('register')
+        assert kw['pose_runner'] is args['pose_runner']
+        assert [f['frame_id'] for f in kw['frames']] == ['source']
+        return [{'frame': registered, 'native_result_digest': 'native', 'native_frame_index': 2,
+                 'review_digest': 'review', 'registration_digest': 'registration'}], {
+            'digest': 'registration', 'preservation_paths': [], 'depth_basis': 'joint_pose_registered'}
+    def regions(**kw):
+        calls.append('regions')
+        value = deepcopy(args['region_plan'])
+        value['native_bindings'] = {'registered-view': canonical_digest(_frame_binding(registered))}
+        value['proposal']['views'][0]['frame_id'] = 'registered-view'
+        value['plan_path'] = str(tmp_path/'registered-regions.json')
+        value['digest'] = canonical_digest(value, digest_field='digest')
+        (tmp_path/'registered-regions.json').write_text(json.dumps(value))
+        return value
+    monkeypatch.setattr(completion, 'complete_scene', complete)
+    monkeypatch.setattr(atlas_scene_recovery, 'register_generated_completion', register)
+    monkeypatch.setattr(atlas_scene_task_regions, 'plan_task_regions', regions)
+    (frames, manifest, _), receipt = coverage.refine_scene_coverage(**args)
+    assert calls == ['complete', 'register', 'regions', 'complete']
+    assert {f['frame_id'] for f in frames} == {'source', 'registered-view'}
+    assert 'registration' in manifest['generated_result_digests']
+    assert receipt['completion_reports'][0]['registered_geometry_recovery']['exportable_samples'] > 0
 
 
 def test_pending_generation_resumes_through_the_same_operation(tmp_path, monkeypatch):

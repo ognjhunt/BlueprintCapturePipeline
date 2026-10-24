@@ -201,9 +201,10 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False, e
             right /= np.linalg.norm(right)
             up = np.cross(right, forward)
             target = deepcopy(original)
-            identity_data = {'gap': gap['gap_id'], 'focus': focus.tolist(), 'origin': origin.tolist()}
+            identity_data = {'gap': gap['gap_id'], 'focus': focus.tolist(), 'origin': origin.tolist(),
+                             'framing': 'source_fov_reaimed_at_gap_v2'}
             if source_centred:
-                identity_data['framing'] = 'source_centred'
+                identity_data['framing'] = 'source_centred_full_fov_v2'
             identity = canonical_digest(identity_data)
             target.update(camera_id='gap-target-' + identity[7:23], purpose='gap_target',
                           source_gap_ids=[gap['gap_id']], target_world_estimate=focus.tolist(),
@@ -223,19 +224,16 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False, e
             zz, uu, vv, _ = _project(boundary, target['camera'])
             if not np.isfinite(uu).all() or not np.isfinite(vv).all() or np.any(zz <= 0):
                 continue
-            # Frame the missing patch plus surrounding context, rather than
-            # asking for another whole-room image. This changes only the output
-            # camera; every source RGBD reference keeps its full field of view.
+            # The named mask already limits what may be added. Zooming the
+            # output to a small patch can remove the connected fixture and
+            # layout needed to interpret that patch. Keep this source camera's
+            # field of view while re-aiming; adapt to its actual intrinsics,
+            # rather than imposing one field of view on every capture.
             target_k = target['camera']['intrinsics']
-            zoom = (1. if source_centred else max(1., min(.5 * k['width'] / max(float(np.ptp(uu)), 1.),
-                                                        .5 * k['height'] / max(float(np.ptp(vv)), 1.))))
-            target_k.update(fx=target_k['fx'] * zoom, fy=target_k['fy'] * zoom)
-            uu = (uu - target_k['cx']) * zoom + target_k['cx']
-            vv = (vv - target_k['cy']) * zoom + target_k['cy']
             target.update(gap_target_polygon_pixels=np.column_stack((uu, vv)).tolist(),
                           gap_domain='projected_scene_outline_hypothesis',
                           target_extent_basis='source_gap_box_at_neighbouring_depth_estimate',
-                          target_framing=('source_fov_reaimed_at_gap' if source_centred else 'gap_plus_surrounding_context'),
+                          target_framing='source_fov_reaimed_at_gap',
                           target_vertical_fov_degrees=float(np.degrees(2 * np.arctan(
                               target_k['height'] / (2 * target_k['fy'])))))
             result.append(target)

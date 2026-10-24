@@ -460,7 +460,7 @@ def run_automation(
                     geometry_frames=derived_frames, reviewed_views=reviewed_views,
                     region_plan=region_plan, splat_root=splat_root, output_root=output_root,
                     review=review, context=task_context, configuration=configuration,
-                    task_runner=task_runner, planner_runner=planner_runner,
+                    task_runner=task_runner, planner_runner=planner_runner, pose_runner=pose_runner,
                     release_blockers=release_blockers, max_polls=max_polls, checkpoint=checkpoint,
                     source_survey_path=source_survey_path, source_recovery_runner=recover_sources,
                     **({'context_pose_root': recovery_context_pose_root,

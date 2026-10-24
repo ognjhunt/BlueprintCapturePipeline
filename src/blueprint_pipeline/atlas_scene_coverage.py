@@ -34,7 +34,7 @@ def reviewed_reference_frames(reviewed_views, region_plan):
 def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_views,
                           region_plan, splat_root, output_root, review, context,
                           configuration, task_runner, planner_runner, release_blockers,
-                          max_polls, checkpoint=None, source_survey_path=None,
+                          max_polls, pose_runner, checkpoint=None, source_survey_path=None,
                           source_recovery_runner=None, recorded_frames=(), recorded_source_reports=(),
                           context_pose_root=None, context_pose_digest=None):
     """Survey -> choose necessary gaps -> generate -> fuse -> re-survey.
@@ -47,6 +47,8 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
     from .atlas_scene_completion import complete_scene
     from .atlas_recorded_source_recovery import merge_source_frames
 
+    if pose_runner is None:
+        raise ValueError('atlas_generated_registration_canonical_pose_runner_required')
     frames = list(frames)
     references = reviewed_reference_frames(reviewed_views, region_plan)
     geometry = list(geometry_frames)
@@ -61,7 +63,7 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
     references.extend(recorded)
     paths.extend(p for report in source_reports for p in report.get('preservation_paths', []))
     while references:
-        binding = {'revision': 'v2-paired-depth', 'export_digest': manifest['digest'],
+        binding = {'revision': 'v3-complete-surface-review', 'export_digest': manifest['digest'],
                    'task_region_plan_digest': region_plan['digest'],
                    'task_context_digest': context['context_digest']}
         identity = canonical_digest(binding)
@@ -130,9 +132,37 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
             continue
         if generated is None:
             return None, report
-        reports.append(report)
         from .atlas_source_gap_evidence import repair_depth_outcomes
         depth_outcomes.extend(repair_depth_outcomes(generated, report))
+        registered_references = []
+        if generated and report.get('generated_roots'):
+            from .atlas_scene_recovery import register_generated_completion, recover_reviewed_geometry
+            from .atlas_scene_task_regions import plan_task_regions
+
+            registered, registration = register_generated_completion(frames=sources, completion=report,
+                root=root / 'joint-registration', pose=pose, context=context, configuration=configuration,
+                pose_runner=pose_runner, max_polls=max_polls, checkpoint=checkpoint)
+            if registered is None:
+                return None, registration
+            regions = plan_task_regions(frames=sources, reviewed_views=registered, pose=pose,
+                context=context, configuration=configuration, root=root / 'registered-task-regions',
+                planner_runner=planner_runner, checkpoint=checkpoint)
+            generated, recovery = recover_reviewed_geometry(frames=sources, geometry_frames=geometry,
+                reviewed_views=registered, region_plan=regions, exported_splat_root=splat_root,
+                root=root / 'registered-export-recovery', checkpoint=checkpoint)
+            registered_references = reviewed_reference_frames(registered, regions)
+            report = {**report, 'native_completion_report_digest': report['digest'],
+                      'generated_view_registration': registration, 'registered_geometry_recovery': recovery,
+                      'preservation_paths': [*report.get('preservation_paths', []),
+                          *registration['preservation_paths'], *recovery['preservation_paths']],
+                      'generated_frame_ids': [f['frame_id'] for f in generated]}
+            report['digest'] = canonical_digest(report, digest_field='digest')
+            depth_outcomes.append({'registration_digest': registration['digest'],
+                'registered_geometry_recovery_digest': recovery['digest'],
+                'added_geometry_pixels': recovery['added_geometry_pixels'],
+                'exportable_samples': recovery['exportable_samples'],
+                'depth_basis': registration['depth_basis'], 'native_depth_is_unmodified': True})
+        reports.append(report)
         paths.extend(report.get('preservation_paths', []))
         paths.append(str(root / 'completion.json'))
         # Keep the agent's exact input/decision and coverage overlays alongside
@@ -158,8 +188,11 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
             stop = 'generated_views_added_no_exportable_geometry'
             break
         geometry.extend(contributions)
-        references.extend(contributions)
+        references.extend(registered_references or contributions)
         provenance.append(report['generation_result_digest'])
+        if report.get('generated_view_registration'):
+            provenance.extend([report['generated_view_registration']['digest'],
+                               report['registered_geometry_recovery']['digest']])
         visual = canonical_digest({'previous': visual, 'review': report['review']})
         splat_root = output_root / ('background_refined_splat-' + identity[7:23])
         saved = splat_root / 'atlas_depth_splat_manifest.json'
@@ -182,7 +215,7 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
               'completion_reports': reports, 'generated_roots': generated_roots,
               **({'recorded_source_recoveries': source_reports} if source_reports else {}),
               'preservation_paths': list(dict.fromkeys(paths)), 'stop_reason': stop,
-              'task_coverage_sufficient': stop in {'agent_found_no_material_task_gap', 'no_eligible_geometry_gaps',
+              'task_coverage_sufficient': stop in {'agent_found_no_material_task_gap',
                                                    'source_review_found_physical_openings'},
               'whole_scene_complete': False, 'metric_measurement_proven': False,
               'simulation_qualified': False, 'claim_ceiling': 'development_only'}

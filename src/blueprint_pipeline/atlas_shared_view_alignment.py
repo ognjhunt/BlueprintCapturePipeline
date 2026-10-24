@@ -129,12 +129,15 @@ def _similarity(a: np.ndarray, b: np.ndarray) -> tuple[float, np.ndarray, np.nda
 
 
 def shared_view_alignment(source_frames: Sequence[Mapping[str, Any]],
-                          target_frames: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+                          target_frames: Sequence[Mapping[str, Any]], *,
+                          estimated_depth_tolerance: bool = False) -> dict[str, Any] | None:
     """The similarity taking the source pose's world to the target pose's, from their shared views' depth.
 
     Frames are ``atlas_depth_splat.posed_frame`` records. Returns None unless at
     least two views agree on one well-supported fit.
     """
+    if type(estimated_depth_tolerance) is not bool:
+        raise ValueError('atlas_shared_alignment_tolerance_invalid')
     targets = {frame["frame_id"]: frame for frame in target_frames}
     shared = [frame for frame in source_frames if frame["frame_id"] in targets]
     rng = np.random.default_rng(607)
@@ -155,6 +158,15 @@ def shared_view_alignment(source_frames: Sequence[Mapping[str, Any]],
     if not math.isfinite(extent) or extent <= 0:
         return None
     threshold = INLIER_FRACTION_OF_EXTENT * extent
+    median_limit = MAX_MEDIAN_RESIDUAL_FRACTION * extent
+    if estimated_depth_tolerance:
+        # Development completion compares two independently estimated scenes.
+        # Allow the sum of their existing relative fit allowances. This remains
+        # a scene-scaled heuristic for candidate geometry, never calibrated
+        # measurement accuracy. Source-priority/free-space checks still apply
+        # downstream; the default registration rule remains unchanged.
+        threshold *= 2
+        median_limit *= 2
     probe = rng.choice(len(a), min(len(a), RANSAC_PROBE), replace=False)
     best = None
     for _ in range(RANSAC_ITERATIONS):
@@ -181,10 +193,14 @@ def shared_view_alignment(source_frames: Sequence[Mapping[str, Any]],
     agreeing = sum(1 for index in range(len(lifted)) if inliers[view == index].mean() >= MIN_VIEW_AGREEMENT)
     if (not SCALE_BOUNDS[0] <= scale <= SCALE_BOUNDS[1] or agreeing < MIN_AGREEING_VIEWS
             or inliers.mean() < MIN_INLIER_FRACTION
-            or float(np.median(residual)) > MAX_MEDIAN_RESIDUAL_FRACTION * extent):
+            or float(np.median(residual)) > median_limit):
         return None
     return {"scale": scale, "rotation": rotation, "translation": translation,
             "shared_frame_count": len(shared), "registered_frame_count": registered,
             "agreeing_frame_count": agreeing, "pair_count": int(len(a)),
             "inlier_fraction": float(inliers.mean()),
-            "median_residual_fraction": float(np.median(residual)) / extent}
+            "median_residual_fraction": float(np.median(residual)) / extent,
+            **({'tolerance_basis': 'development_estimated_depth_cross_view_uncertainty',
+                'inlier_distance_limit': threshold, 'median_distance_limit': median_limit,
+                'metric_measurement_proven': False, 'claim_ceiling': 'development_only'}
+               if estimated_depth_tolerance else {})}

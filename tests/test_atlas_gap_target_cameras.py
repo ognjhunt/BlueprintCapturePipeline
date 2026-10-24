@@ -41,7 +41,9 @@ def test_camera_points_at_actual_gap_with_parallax_and_keeps_all_context(tmp_pat
     target = result[0]
     assert target['source_gap_ids'] == ['source-gap-1']
     assert np.asarray(target['gap_target_polygon_pixels']).shape == (4, 2)
-    assert target['camera']['intrinsics']['fx'] > pool[0]['camera']['intrinsics']['fx']
+    assert target['camera']['intrinsics']['fx'] == pool[0]['camera']['intrinsics']['fx']
+    assert target['camera']['intrinsics']['fy'] == pool[0]['camera']['intrinsics']['fy']
+    assert target['target_framing'] == 'source_fov_reaimed_at_gap'
     assert np.ptp(np.asarray(target['gap_target_polygon_pixels'])[:, 1]) <= 40.00001
     # Its estimated centre lies on the known 2-unit plane, on the right of the image.
     focus = np.array(target['target_world_estimate'])

@@ -234,6 +234,11 @@ these components to the actual site; do not assume a particular room or object.
 A narrow task_extent_summary or old required_surface_hypotheses list is not a
 complete environment checklist. Task-object mechanics, fit, forces and physical
 qualification are separate unknowns, not reasons to omit visible fixture surfaces.
+An empty numerical gap mask does not establish a complete surface. The two-
+dimensional survey may not see an absent back face or a missing connected part.
+Inspect every supported exported view, including views with zero labeled gaps.
+Compare the complete fixture across all sources and name any unresolved face.
+Only status=sufficient after this surface assessment may close the repair loop.
 For every assessment identify the component, surface, whether it is required for
 the recognizable local environment, source_frame_ids, evidence_camera_ids from
 the actual geometry previews, exact gap_ids when applicable, and a concrete reason.
