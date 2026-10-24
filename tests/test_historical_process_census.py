@@ -409,14 +409,27 @@ def test_continually_disappearing_fd_exhausts_original_three_complete_attempts(
 
 
 @pytest.mark.parametrize('operation', ['stat', 'readlink'])
-def test_enoent_without_missing_fd_in_second_census_cannot_retry(
+def test_enoent_on_a_reused_fd_number_restarts_a_complete_census(
+    disappearing_descriptor, operation,
+):
+    # A busy process closed and reopened that number between listing and stat
+    # (2026-10-24 CI flake). The incomplete pass is discarded, never cleared.
+    state = disappearing_descriptor
+    state.operation, state.remove = operation, False
+    run(state)
+    assert state.inspections == ['1', '2', '3', '1', '2', '3']
+    assert state.fd_censuses == 4 and state.failures == [1]
+
+
+@pytest.mark.parametrize('operation', ['stat', 'readlink'])
+def test_continually_reused_fd_numbers_still_refuse_after_three_passes(
     disappearing_descriptor, operation,
 ):
     state = disappearing_descriptor
-    state.operation, state.remove = operation, False
+    state.operation, state.remove, state.repeat = operation, False, True
     with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
         run(state)
-    assert state.inspections == ['1', '2'] and state.fd_censuses == 2
+    assert state.inspections == ['1', '2', '3'] * 3 and state.failures == [1, 3, 5]
 
 
 @pytest.mark.parametrize('operation', ['stat', 'readlink'])
@@ -429,9 +442,11 @@ def test_other_fd_errors_cannot_retry_or_skip_process(disappearing_descriptor, o
     assert state.inspections == ['1', '2'] and state.fd_censuses == 1
 
 
+@pytest.mark.parametrize('remove', [True, False])
 @pytest.mark.parametrize('reference', ['previous_fd', 'cwd', 'same_stat_inode'])
-def test_disappearing_fd_keeps_every_already_observed_reference(disappearing_descriptor, reference):
+def test_disappearing_fd_keeps_every_already_observed_reference(disappearing_descriptor, reference, remove):
     state = disappearing_descriptor
+    state.remove = remove
     selected = state.proc.parent / 'selected'
     selected.mkdir()
     state.manifest['target_path'] = str(selected)
