@@ -447,12 +447,20 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
         return result
 
 
+# Terminal operation failures that a new submission may clear, by (google.rpc
+# code, ErrorInfo reason). https://atlas-beta.worldlabs.ai/docs/errors (read
+# 2026-10-24): THROTTLED means "submit a new task later with backoff" and an
+# EXECUTION_TIMEOUT retry "is a new task submission"; code 4 alone can also mean
+# an expired task. EXECUTION_FAILED says to investigate first, so it stays final.
+RESUBMITTABLE_FAILURES = frozenset({(14, "TRANSIENT_UPSTREAM"), (8, "THROTTLED"), (4, "EXECUTION_TIMEOUT")})
+
+
 def _transient_upstream_failure(state):
     operation = state.get("terminal_operation") or {}
     error = operation.get("error") or {}
     return (state.get("status") == "failed" and operation.get("done") is True
-            and operation.get("id") == state.get("operation_id") and error.get("code") == 14
-            and any(row.get("reason") == "TRANSIENT_UPSTREAM"
+            and operation.get("id") == state.get("operation_id")
+            and any((error.get("code"), row.get("reason")) in RESUBMITTABLE_FAILURES
                     and row.get("domain") == "api.worldlabs.ai"
                     for row in error.get("details", []) if isinstance(row, dict)))
 

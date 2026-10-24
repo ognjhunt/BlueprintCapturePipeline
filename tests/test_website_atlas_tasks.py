@@ -118,9 +118,9 @@ def test_retains_all_outputs_and_returns_replayed_result_without_another_purchas
 
 
 class TransientFake(Fake):
-    def __init__(self, failures=1, code=14):
+    def __init__(self, failures=1, code=14, reason="TRANSIENT_UPSTREAM"):
         super().__init__()
-        self.failures, self.code = failures, code
+        self.failures, self.code, self.reason = failures, code, reason
         self.admissions, self.keys = {}, []
 
     def reserve(self, *, capture_id, operation, payload):
@@ -144,7 +144,7 @@ class TransientFake(Fake):
             if index <= self.failures:
                 return 200, json.dumps({"id": f"op_task_{index}", "done": True,
                     "error": {"code": self.code, "message": "upstream unavailable",
-                              "details": [{"domain": "api.worldlabs.ai", "reason": "TRANSIENT_UPSTREAM"}]}}).encode()
+                              "details": [{"domain": "api.worldlabs.ai", "reason": self.reason}]}}).encode()
             return 200, json.dumps({"id": f"op_task_{index}", "done": not self.pending,
                 "response": {"frames": [{"imageAsset": {"assetId": "asset_output"}, "camera": camera(.1),
                     "depth": {"depthAsset": {"assetId": "asset_depth"},
@@ -152,9 +152,9 @@ class TransientFake(Fake):
         return super().transport(method, url, headers, data)
 
 
-def transient_case(case, monkeypatch, failures=1, code=14):
+def transient_case(case, monkeypatch, failures=1, code=14, reason="TRANSIENT_UPSTREAM"):
     _, _, _, run = case
-    fake = TransientFake(failures, code)
+    fake = TransientFake(failures, code, reason)
     monkeypatch.setattr(control, "website_webapp_request", fake.reserve)
     # The fixture closure intentionally uses Fake.transport; replace its target.
     original = case[0]
@@ -218,6 +218,23 @@ def test_nontransient_terminal_failure_never_retries(case, monkeypatch):
     with pytest.raises(ValueError, match="atlas_task_operation_failed"):
         run()
     assert fake.posts == fake.reservations == 1
+
+
+@pytest.mark.parametrize("code,reason,resubmitted", [
+    (8, "THROTTLED", True), (4, "EXECUTION_TIMEOUT", True),
+    # The provider says to investigate an execution failure before resubmitting it.
+    (13, "EXECUTION_FAILED", False),
+    # A reason is resubmittable only with its documented code; code 4 alone can mean expiry.
+    (4, "THROTTLED", False), (8, "EXECUTION_TIMEOUT", False)])
+def test_documented_resubmittable_failures_retry_with_new_spend(case, monkeypatch, code, reason, resubmitted):
+    fake, run = transient_case(case, monkeypatch, code=code, reason=reason)
+    if resubmitted:
+        assert run()["operation"]["id"] == "op_task_2"
+        assert fake.posts == fake.reservations == len(set(fake.keys)) == 2
+    else:
+        with pytest.raises(ValueError, match="atlas_task_operation_failed"):
+            run()
+        assert fake.posts == fake.reservations == 1
 
 
 def test_transient_retry_requires_new_budget_and_release_admission(case, monkeypatch):
