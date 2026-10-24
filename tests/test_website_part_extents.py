@@ -433,7 +433,7 @@ def _fixture_background():
 
 
 def _cabinet_inputs(root: Path):
-    from tests.test_website_task_preparation import _masks
+    from tests.test_website_task_preparation import _masks, _task_context
 
     views = [("frame-0", _translated(0.0), "closed"), ("frame-1", _translated(0.0), "open"),
              ("frame-2", _translated(0.1), "open")]
@@ -459,7 +459,8 @@ def _cabinet_inputs(root: Path):
                                              parts=coverage.fixed_interior_parts(classified, articulation_kind="revolute"))
     seeds, reasons = coverage.measurement_seeds(rows, body, extents)
     target["authoring_coverage"] = coverage.coverage_record(
-        target_id=target["target_id"], binding=coverage.coverage_binding(target=target, source_geometry=geometry),
+        target_id=target["target_id"], binding=coverage.coverage_binding(target=target, source_geometry=geometry,
+                                                                     task_context=_task_context()),
         articulation_kind="revolute", classified=classified,
         selected=coverage.select_reference_frames(rows, seed_frame_ids=seeds, seed_reasons=reasons),
         body_bounds=body, body_blockers=blockers, candidate_count=len(rows), part_extents=extents)
