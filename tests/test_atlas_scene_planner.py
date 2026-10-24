@@ -584,3 +584,43 @@ def test_transient_targets_never_collide_with_reviewed_objects(tmp_path):
     proposal.update(static_intervals_seconds=[[0, 1.5]], automation=automation, transient_frame_ids=["0"])
     with pytest.raises(ValueError, match="transients_invalid"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+
+
+def test_budget_fitted_export_review_is_admitted_by_a_budgeted_invoker(tmp_path, monkeypatch):
+    # 2026-10-24 live run: the fitted request was checked with the unfitted quote and refused.
+    path, _, _, policy = fixture(tmp_path)
+    from blueprint_pipeline import openai_prompt_cache
+    from blueprint_pipeline import paid_resource_admission as admission
+    from blueprint_pipeline import website_task_context as control
+    monkeypatch.setattr(admission, "require_paid_resource_admission_grant", lambda *_, **__: None)
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", lambda **kwargs: ({}, object()))
+    monkeypatch.setattr(control, "website_webapp_request", lambda **kwargs: {"status": "settled"})
+    quotes = []
+    monkeypatch.setattr(openai_prompt_cache, "worst_case_reservation_usd",
+                        lambda **kw: quotes.append(kw) or (10.0 if len(quotes) == 1 else .1))
+    proposal = {"status": "proposed", "selected_camera_ids": ["a-wide", "b-lower"],
+                "gap_assessment": ["Complete floor"], "remaining_unknowns": ["Hidden wall"],
+                "scene_caption": "The same room with a continuous bare floor.",
+                "view_gap_reasons": [{"camera_id": "a-wide", "reason": "Keep the task anchor"},
+                                     {"camera_id": "b-lower", "reason": "Complete nearby floor"}],
+                "environment_surfaces": [{"component": "support assembly", "surface": "end face",
+                    "required_for_local_environment": True, "coverage": "material_gap",
+                    "source_frame_ids": ["0"], "evidence_camera_ids": ["a-wide"], "gap_ids": [],
+                    "reason": "A large part of the photographed support is absent from the export"}]}
+
+    class BudgetedInvoker:
+        config = SimpleNamespace(max_inference_cost_usd=policy["maximum_review_cost_usd"])
+
+        def configure_reservation_audit(self, **_):
+            pass
+
+        def invoke(self, spec, input_value):
+            return SimpleNamespace(output=proposal, cost_usd=.03, usage={"input_tokens": 100},
+                                   model=spec.model, sdk_version="test")
+
+    result = planner.review_survey(
+        survey_path=path, task_context={"description": "test task", "context_digest": "sha256:" + "b" * 64,
+            "request_id": "r", "scene_id": "s", "capture_id": "c"}, configuration={"policy": policy},
+        output_root=tmp_path / "plans", invoker=BudgetedInvoker(), release_blockers=lambda: ("c" * 40, []),
+        completion={"previews": [], "candidate_camera_ids": ["a-wide", "b-lower"], "post_export_coverage": {}})
+    assert result["status"] == "completed" and quotes[0] != quotes[-1]
