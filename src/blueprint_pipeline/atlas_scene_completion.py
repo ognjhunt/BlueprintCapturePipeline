@@ -116,11 +116,22 @@ def load_generated_views(root: Path, frame_ids):
 def complete_scene(*, pose_root, pose, frames, review, root, context, configuration,
                    task_runner, planner_runner, release_blockers, max_polls, checkpoint=None,
                    existing_geometry_frames=(), expected_frames=(), splat_root=None,
-                   reference_frames=None, coverage_feedback=None):
+                   reference_frames=None, coverage_feedback=None, source_survey_path=None):
     """Plan -> generate RGBD -> independent review, all resumable under one cap."""
     from .website_image_completion import verify_completed_background
 
     root.mkdir(parents=True, exist_ok=True)
+    # Completed native generation and its admission remain reusable. A new
+    # source-first decision governs future purchases, not another purchase of
+    # the same images or a replay of their finished geometry work.
+    saved_report = root / 'completion.json'
+    if saved_report.is_file():
+        saved = json.loads(saved_report.read_text())
+        native_roots = saved.get('generated_roots', [])
+        if (saved.get('status') == 'passed' and native_roots
+                and all((Path(p) / 'result.json').is_file() for p in native_roots)):
+            from .atlas_scene_gaps import retained_completion
+            return retained_completion(root=root, pose_digest=pose['digest'])
     from .atlas_context_fov import verify_pose_context_fov
     fov = verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=root)
     camera_pool = camera_candidates(frames)
@@ -251,6 +262,15 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         feedback['previews'].extend({'path': p['image_path'], 'sha256': p['image_digest'],
             'source_frame_id': p['source_frame_id'], 'camera_id': p['source_frame_id'],
             'kind': 'reviewed_rgbd_reference_depth_is_a_hypothesis'} for p in photos)
+    from .atlas_source_gap_evidence import source_gallery, source_actions
+    gallery, source_previews = source_gallery(
+        survey_path=source_survey_path, source_video_digest=pose['binding']['source_video_digest'],
+        conditioned_frame_ids=[f['frame_id'] for f in frames], root=root / 'original-capture')
+    feedback['original_capture_gallery'] = gallery
+    feedback['previews'].extend(source_previews)
+    # Source review can be added to a retained, unfinished pass without
+    # overwriting its older planner input or repurchasing finished native work.
+    feedback_path = root / ('plan-inputs-source-' + gallery['survey_digest'][7:23] + '.json')
     baseline_path = root.parent / "background_splat/atlas_depth_splat_manifest.json"
     if baseline_path.is_file():
         baseline = json.loads(baseline_path.read_text())
@@ -310,6 +330,39 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     if (not proposal.get('scene_caption', '').strip() or len(reasons) != len(entries)
             or set(reasons) != set(ids) or any(not value.strip() for value in reasons.values())):
         raise ValueError('atlas_completion_task_gap_plan_missing')
+    audit = source_actions(entries, gallery)
+    write_json(root / 'source-evidence.json', audit)
+    if audit['additional_source_frame_ids'] or audit['unresolved_gap_ids']:
+        report = {'schema_version': 'atlas_source_gap_action.v1',
+                  'status': ('source_recovery_required' if audit['additional_source_frame_ids']
+                             else 'source_review_required'),
+                  'reason': ('atlas_recorded_source_views_must_be_recovered_before_generation'
+                             if audit['additional_source_frame_ids'] else 'atlas_source_visibility_uncertain'),
+                  'source_evidence': audit, 'planner': planned, 'new_atlas_generation_calls': 0,
+                  'claim_ceiling': 'development_only'}
+        report['digest'] = canonical_digest(report, digest_field='digest')
+        write_json(root / 'source-action.json', report)
+        return None, report
+    # Empty space is not missing material. Keep its evidence and exclude it
+    # from the actual masks handed to the generation adapter.
+    entries = [{**row, 'gap_ids': [key for key in row['gap_ids']
+                 if key not in audit['physical_opening_gap_ids'].get(row['camera_id'], [])]}
+               for row in entries]
+    entries = [row for row in entries if row['gap_ids']]
+    ids = [row['camera_id'] for row in entries]
+    selected = [by_id[key] for key in ids]
+    reasons = {row['camera_id']: row['reason'] for row in entries}
+    if not selected:
+        report = {'status': 'passed', 'generation_result_digest': audit['digest'],
+                  'generated_roots': [], 'generated_frame_ids': [], 'planner': planned,
+                  'preservation_paths': [str(root / 'source-evidence.json')],
+                  'review': {'status': 'not_required', 'reason': 'source_review_found_physical_openings'},
+                  'source_evidence': audit, 'new_atlas_generation_calls': 0,
+                  'generated_geometry_ready': True, 'whole_scene_complete': False,
+                  'claim_ceiling': 'development_only'}
+        report['digest'] = canonical_digest(report, digest_field='digest')
+        write_json(root / 'completion.json', report)
+        return [], report
     gap_views = {row['camera_id']: row for row in gaps['views']}
     entries_by_id = {row['camera_id']: row for row in entries}
     for index, view in enumerate(selected):
@@ -353,12 +406,14 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     report = {"status": "passed" if visual["status"] == "passed" else "needs_input",
               "planner": planned, "context_fov_audit_digest": fov["digest"],
               "generation_result_digest": generation["digest"], "generated_roots": generation["generated_roots"],
-              "generation": generation, "preservation_paths": generation["preservation_paths"],
+              "generation": generation,
+              "preservation_paths": [*generation["preservation_paths"], str(root / 'source-evidence.json')],
               "generated_frame_ids": [row["frame_id"] for row in generated], "review": visual,
               "selected_camera_ids": ids, "target_cameras": [row["camera"] for row in selected],
               "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": proposal["remaining_unknowns"],
               "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "identified_missing_geometry_only",
               'gap_survey_digest': gaps['digest'],
+              'source_evidence': audit,
               "generation_extent": extent, "scene_caption": proposal['scene_caption'],
               "view_gap_reasons": reasons,
               "claim_ceiling": "development_only",

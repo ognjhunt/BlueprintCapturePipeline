@@ -153,7 +153,21 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
         views = {row['camera_id']: row for row in kw['completion']['gap_survey']['views']}
         for entry in proposal['view_gap_reasons']:
             entry['gap_ids'] = [views[entry['camera_id']]['gaps'][0]['gap_id']]
+            entry.setdefault('source_evidence', [{
+                'gap_id': entry['gap_ids'][0], 'visibility': 'observed_in_conditioning',
+                'source_frame_ids': ['a'], 'reason': 'Recorded support surface; its depth is missing.'}])
         return {'proposal': proposal}
+    source_survey = {'schema_version': 'atlas_video_survey.v1', 'source_video_digest': 'source',
+                     'heldout_pixels_included': False, 'display_rotation_degrees': 0,
+                     'frames': [{'frame_id': row['frame_id'], 'timestamp_seconds': index,
+                                 'source_image_path': row['image_path'],
+                                 'source_image_digest': row['image_digest']}
+                                for index, row in enumerate(sources)]}
+    # An additional recorded angle is available without being an Atlas input.
+    source_survey['frames'].append({**source_survey['frames'][0], 'frame_id': 'unselected-angle'})
+    source_survey['digest'] = canonical_digest(source_survey, digest_field='digest')
+    source_path = tmp_path / 'source-survey.json'
+    source_path.write_text(json.dumps(source_survey))
     args = dict(pose_root=tmp_path, pose=pose, frames=frames,
         review={"automation": {"objects": [], "removal_instruction": "The dishwasher bay is empty"}},
         root=tmp_path / "complete", context={"description": "test"},
@@ -161,9 +175,9 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
             "rate_card_reference": "rates", "reviewed_on": "2026-10-22", "reviewed_by": "test"}},
         task_runner=lambda **kw: pytest.fail('Unconstrained generation bypassed preservation'),
         planner_runner=planner,
-        release_blockers=lambda: ("commit", []), max_polls=1)
+        release_blockers=lambda: ("commit", []), max_polls=1, source_survey_path=source_path)
     output, report = completion.complete_scene(**args)
-    feedback = json.loads((tmp_path / 'complete/plan-inputs.json').read_text())
+    feedback = json.loads(next((tmp_path / 'complete').glob('plan-inputs-source-*.json')).read_text())
     assert feedback['baseline_geometry_comparable'] is False and 'baseline_geometry_gaps' not in feedback
     assert len(output) == len(proposal["selected_camera_ids"]) and report["generated_geometry_ready"] is True
     assert len(calls) == 1 and [row['camera_id'] for row in calls[0]['selected']] == proposal['selected_camera_ids']
@@ -176,6 +190,19 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert all(row['completion_gap_ids'] for row in calls[0]['selected'])
     assert report['generation_extent']['additional_space_beyond_observed_bounds'] is False
     assert calls[0]['scene_caption'] == proposal['scene_caption']
+    assert feedback['original_capture_gallery']['reviewed_source_frame_ids'] == ['a', 'b', 'unselected-angle']
+    assert report['source_evidence']['source_coverage_is_not_depth_coverage'] is True
+    proposal['view_gap_reasons'][0]['source_evidence'][0].update(
+        visibility='observed_elsewhere_in_capture', source_frame_ids=['unselected-angle'])
+    output, source_action = completion.complete_scene(**args)
+    assert output is None and source_action['status'] == 'source_recovery_required'
+    assert source_action['source_evidence']['additional_source_frame_ids'] == ['unselected-angle']
+    assert source_action['new_atlas_generation_calls'] == 0 and len(calls) == 1
+    for entry in proposal['view_gap_reasons']:
+        entry['source_evidence'][0].update(visibility='physical_opening', source_frame_ids=['a'])
+    output, openings = completion.complete_scene(**args)
+    assert output == [] and openings['review']['reason'] == 'source_review_found_physical_openings'
+    assert len(calls) == 1, 'A real opening is not a missing panel to generate'
     proposal['view_gap_reasons'].pop()
     with pytest.raises(ValueError, match="task_gap_plan_missing"):
         completion.complete_scene(**args)

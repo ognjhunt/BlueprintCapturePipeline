@@ -34,7 +34,7 @@ def reviewed_reference_frames(reviewed_views, region_plan):
 def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_views,
                           region_plan, splat_root, output_root, review, context,
                           configuration, task_runner, planner_runner, release_blockers,
-                          max_polls, checkpoint=None):
+                          max_polls, checkpoint=None, source_survey_path=None):
     """Survey -> choose necessary gaps -> generate -> fuse -> re-survey.
 
     Repeated calls adopt identical completed stages. The shared provider allowance
@@ -50,7 +50,7 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
     if (manifest.get('digest') != canonical_digest(manifest, digest_field='digest')
             or manifest.get('pose_result_digest') != pose['digest']):
         raise ValueError('atlas_coverage_export_changed')
-    reports, paths, generated_roots = [], [], []
+    reports, paths, generated_roots, depth_outcomes = [], [], [], []
     provenance = list(manifest.get('generated_result_digests', []))
     visual = manifest.get('visual_review_digest')
     while references:
@@ -69,21 +69,25 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
             coverage_feedback={**binding,
                 'required_surface_hypotheses': region_plan['proposal']['remaining_required_surfaces'],
                 'task_extent_summary': region_plan['proposal']['task_extent_summary'],
+                'previous_repair_outcomes': depth_outcomes,
                 'small_distortions_acceptable': True, 'scene_complete_is_not_implied': True},
             review=review, root=root, context=context, configuration=configuration,
             task_runner=task_runner, planner_runner=planner_runner, release_blockers=release_blockers,
-            max_polls=max_polls, checkpoint=checkpoint)
+            max_polls=max_polls, checkpoint=checkpoint, source_survey_path=source_survey_path)
         if report.get('status') == 'processing':
             return None, report
         if generated is None:
             return None, report
         reports.append(report)
+        from .atlas_source_gap_evidence import repair_depth_outcomes
+        depth_outcomes.extend(repair_depth_outcomes(generated, report))
         paths.extend(report.get('preservation_paths', []))
         paths.append(str(root / 'completion.json'))
         # Keep the agent's exact input/decision and coverage overlays alongside
         # the generated RGBD, so future sessions can resume this repair.
         paths.extend(str(p) for name in ('plan-inputs.json', 'survey.json', 'context-fov-audit.json',
                                         'gap-target-survey.json') if (p := root / name).is_file())
+        paths.extend(str(p) for p in root.glob('plan-inputs-source-*.json'))
         paths.extend(str(p) for p in (root / 'planner').glob('*.json'))
         paths.extend(str(p) for p in (root / 'reviewed-references').glob('*.png'))
         for directory in ('gaps', 'gap-targets', 'gap-target-context-fallback'):
@@ -121,7 +125,8 @@ def refine_scene_coverage(*, pose_root, pose, frames, geometry_frames, reviewed_
               'splat_root': str(splat_root), 'splat_manifest_digest': manifest['digest'],
               'completion_reports': reports, 'generated_roots': generated_roots,
               'preservation_paths': list(dict.fromkeys(paths)), 'stop_reason': stop,
-              'task_coverage_sufficient': stop in {'agent_found_no_material_task_gap', 'no_eligible_geometry_gaps'},
+              'task_coverage_sufficient': stop in {'agent_found_no_material_task_gap', 'no_eligible_geometry_gaps',
+                                                   'source_review_found_physical_openings'},
               'whole_scene_complete': False, 'metric_measurement_proven': False,
               'simulation_qualified': False, 'claim_ceiling': 'development_only'}
     result['digest'] = canonical_digest(result, digest_field='digest')
