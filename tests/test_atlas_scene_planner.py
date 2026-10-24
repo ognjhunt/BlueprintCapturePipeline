@@ -270,6 +270,49 @@ def test_retry_loop_keeps_the_allocator_as_the_only_paid_review_caller():
         sources, verifier.ATLAS_PLAN_CAPABILITIES) == verifier.APPROVED_ATLAS_PLAN_CALLERS
 
 
+class AccountingInvoker:
+    """Mirrors OpenAIAgentsSDKInvoker's balance: it only grows and is bounded by its budget."""
+
+    def __init__(self, proposal, budget):
+        self.proposal, self.balance, self.calls = proposal, 0.0, []
+        self.config = SimpleNamespace(max_inference_cost_usd=budget)
+
+    def configure_reservation_audit(self, *, record_completion, restored_reserved_cost_usd, **_):
+        if restored_reserved_cost_usd < self.balance:
+            raise ValueError("agents_sdk_restored_reservation_cannot_decrease")
+        self.balance, self.record = restored_reserved_cost_usd, record_completion
+
+    def invoke(self, spec, inputs):
+        from agents.exceptions import ModelBehaviorError
+        self.calls.append(spec.max_output_tokens)
+        if len(self.calls) == 1:
+            self.balance += .02
+            self.record({"status": "invalid_structured_output", "reconciled_actual_cost_usd": .02,
+                         "usage": {"output_tokens": spec.max_output_tokens, "cost_is_actual": True}})
+            raise ModelBehaviorError("Invalid JSON when parsing a response cut off mid-object")
+        return SimpleNamespace(output=self.proposal, cost_usd=.03, usage={"output_tokens": 10},
+                               model=spec.model, sdk_version="test")
+
+
+def test_supplied_invoker_keeps_its_balance_across_a_cut_off_retry(tmp_path, monkeypatch):
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    _, _, proposal, _ = fixture(tmp_path)
+    options["invoker"] = invoker = AccountingInvoker(proposal, budget=1)
+    result = planner.review_survey(**options)
+    # The reused invoker's charge carries into the retry; resetting it would refuse after spending.
+    assert result["status"] == "completed" and invoker.calls == [4000, 8000]
+    assert invoker.balance >= .02 and len(calls["reserved"]) == 2
+
+
+def test_supplied_invoker_without_budget_refuses_before_spend(tmp_path, monkeypatch):
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    _, _, proposal, _ = fixture(tmp_path)
+    options["invoker"] = AccountingInvoker(proposal, budget=0.0)
+    with pytest.raises(ValueError, match="invoker_budget_exhausted"):
+        planner.review_survey(**options)
+    assert calls["reserved"] == [] and not list((tmp_path / "plans").glob("*.json"))
+
+
 def test_invalid_review_that_was_not_cut_off_still_needs_reconciliation(tmp_path, monkeypatch):
     from agents.exceptions import ModelBehaviorError
     options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=1, output_tokens=900)
