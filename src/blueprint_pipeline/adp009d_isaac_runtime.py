@@ -4603,6 +4603,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+    except ModuleNotFoundError:
+        from .openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+    activate_staged_openpi_client_dependencies(__file__)
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-dir", required=True)
     parser.add_argument("--output-dir", required=True)

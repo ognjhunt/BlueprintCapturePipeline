@@ -334,9 +334,11 @@ def test_policy_venv_uses_its_admitted_interpreter(candidate_id: str) -> None:
         for line in script.splitlines()
         if f'--python "{ISAAC_PYTHON_EXECUTABLE}"' in line
     ]
-    assert client_install_lines
-    if candidate_id == "pi05_droid":
-        assert all('"$UV" pip install' in line for line in client_install_lines)
+    if candidate_id == "groot_n17_droid":
+        assert client_install_lines
+    else:
+        assert not client_install_lines
+        assert "check_staged_openpi_client" in script
 
 
 def test_the_pinned_policy_source_is_verified_not_merely_cloned() -> None:
@@ -503,7 +505,7 @@ def test_provisioning_reports_progress_at_every_long_step() -> None:
         assert "{candidate_id}" not in script
 
 
-def test_the_policy_client_is_installed_into_isaacs_interpreter() -> None:
+def test_openpi_client_is_staged_without_resolving_isaacs_numpy() -> None:
     """The client has to be importable from Isaac, not from the policy venv.
 
     The separate-interpreter design keeps the server's dependency tree away
@@ -521,10 +523,13 @@ def test_the_policy_client_is_installed_into_isaacs_interpreter() -> None:
     script = build_provisioning_script("pi05_droid")
     # Only the thin client, from the same pinned revision as the server, so
     # the two cannot drift apart.
-    assert (
-        f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}" -e' in script
-    )
-    assert "packages/openpi-client" in script
+    assert "packages/openpi-client/src/openpi_client" in script
+    assert "openpi_client_deps" in script
+    assert "check_staged_openpi_client" in script
+    assert f'"$UV" pip install --python "{ISAAC_PYTHON_EXECUTABLE}"' not in script
+    from blueprint_pipeline.adp009d_policy_provisioning import OPENPI_CLIENT_WEBSOCKETS_WHEEL
+    assert OPENPI_CLIENT_WEBSOCKETS_WHEEL["url"] in script
+    assert OPENPI_CLIENT_WEBSOCKETS_WHEEL["sha256"] in script
     # The wrapper is correct for running Isaac, but not for pip build
     # subprocesses: C83's pi05 setup lost the stdlib and failed importing json.
     assert f'"{ISAAC_INTERPRETER}" -m pip' not in script
@@ -606,6 +611,14 @@ def test_active_candidate_dependency_lock_drift_is_refused() -> None:
     }
 
     assert BLOCKER_DEPENDENCY_LOCK in validate_provisioning(receipt)
+
+
+def test_provisioning_refuses_a_client_contract_that_can_replace_isaac_numpy() -> None:
+    from blueprint_pipeline.adp009d_policy_provisioning import BLOCKER_ISAAC_CLIENT
+
+    receipt = describe_provisioning("pi05_droid")
+    receipt["isaac_client_staging"]["preserve_isaac_numpy"] = False
+    assert BLOCKER_ISAAC_CLIENT in validate_provisioning(receipt)
 
 
 def test_openpi_lock_uses_the_existing_cp311_interpreter_pin() -> None:

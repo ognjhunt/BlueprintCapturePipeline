@@ -7,6 +7,8 @@ on:
   pull_request:
     paths:
       - src/blueprint_pipeline/adp009d_policy_provisioning.py
+      - src/blueprint_pipeline/openpi_droid_policy_runtime.py
+      - src/blueprint_pipeline/native_task_isaaclab_launch.py
       - scripts/replay_openpi_policy_dependencies.py
       - tests/test_policy_dependency_replay.py
       - .github/workflows/policy-dependency-replay.yml

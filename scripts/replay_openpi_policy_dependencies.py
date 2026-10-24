@@ -30,6 +30,9 @@ from blueprint_pipeline.adp009d_policy_provisioning import (
     POLICY_SOURCE_ROOT,
     UV_ARCHIVE_SHA256,
     UV_ARCHIVE_URL,
+    ISAAC_INTERPRETER,
+    OPENPI_CLIENT_WEBSOCKETS_WHEEL,
+    _isaac_client_commands,
     build_provisioning_script,
     policy_venv_root,
 )
@@ -182,8 +185,95 @@ print(json.dumps({'python': sys.version, 'mujoco': mujoco.mj_versionString(),
  'numpy': numpy.__version__, 'jax': jax.__version__, 'torch': torch.__version__,
  'openpi': metadata.version('openpi'), 'upstream_policy_imports': True}))
 """])
-        result.update(status="passed", full_environment_installed=True,
+        result.update(full_environment_installed=True,
                       native_imports=json.loads(probe.stdout.strip().splitlines()[-1]))
+        locked_websockets = next(p for p in tomllib.loads(lock.read_text())["package"]
+                                 if p["name"] == "websockets")
+        if not any(row["url"] == OPENPI_CLIENT_WEBSOCKETS_WHEEL["url"]
+                   and row["hash"] == "sha256:" + OPENPI_CLIENT_WEBSOCKETS_WHEEL["sha256"]
+                   and row["size"] == OPENPI_CLIENT_WEBSOCKETS_WHEEL["size_bytes"]
+                   for row in locked_websockets["wheels"]):
+            raise ValueError("policy_dependency_replay_client_wheel_not_in_frozen_lock")
+        result["isaac_client_matrix"] = []
+        for numpy_version, msgpack_version in (("2.3.1", "1.2.1"), ("2.5.1", "1.1.0")):
+            label = "isaac-client-numpy-" + numpy_version
+            client = workspace / label
+            run(label + "-venv", [str(uv), "venv", "--python", sys.executable, str(client)])
+            client_python = client / "bin/python"
+            run(label + "-host-dependencies", [str(uv), "pip", "install", "--python", str(client_python),
+                "--only-binary", ":all:", f"numpy=={numpy_version}", f"msgpack=={msgpack_version}",
+                "typing-extensions==4.13.2"])
+            runtime, client_output = workspace / (label + "-runtime"), output / label
+            runtime.mkdir()
+            client_output.mkdir()
+            blueprint_source = Path(__file__).resolve().parents[1] / "src/blueprint_pipeline"
+            for name in ("openpi_droid_policy_runtime.py", "droid_policy_bridge.py"):
+                shutil.copy2(blueprint_source / name, runtime / name)
+            env.update(RUNTIME_DIR=str(runtime), OUT_DIR=str(client_output))
+            commands = "set -euo pipefail\n" + "\n".join(_isaac_client_commands(CANDIDATE))
+            commands = commands.replace(f"{POLICY_SOURCE_ROOT}/{CANDIDATE}", str(source))
+            commands = commands.replace(policy_venv_root(CANDIDATE), str(positive))
+            commands = commands.replace(ISAAC_INTERPRETER, str(client_python))
+            run(label + "-production-staging", ["bash", "-c", commands])
+            client_receipt = client_output / "openpi_client_staging.v1.json"
+            staging = json.loads(client_receipt.read_text())
+            if staging["isaac_numpy_version"] != numpy_version or staging["isaac_numpy_unchanged"] is not True:
+                raise ValueError("policy_dependency_replay_isaac_numpy_changed")
+            request, response = workspace / (label + ".request"), workspace / (label + ".response")
+            encode = """
+import sys, hashlib, json, inspect
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+activate_staged_openpi_client_dependencies()
+import numpy as np
+from openpi_client import msgpack_numpy as codec
+from websockets.sync.client import connect
+inspect.signature(connect).bind('ws://127.0.0.1:1', compression=None, max_size=None,
+ additional_headers=None, open_timeout=30, ping_timeout=None, close_timeout=5)
+image=np.arange(180*320*3,dtype=np.uint8).reshape(180,320,3)
+raw=codec.packb({'exterior':image,'wrist':image.copy(),
+ 'state':np.arange(8,dtype=np.float64)/128,'scalar':np.float32(.25)})
+Path(sys.argv[2]).write_bytes(raw)
+print(json.dumps({'synthetic_wire_fixture':True,'numpy':np.__version__,
+ 'request_sha256':hashlib.sha256(raw).hexdigest(),'model_called':False}))
+"""
+            run(label + "-encode", [str(client_python), "-c", encode, str(runtime), str(request)])
+            decode = """
+import sys, json, hashlib, numpy as np
+from pathlib import Path
+from openpi_client import msgpack_numpy as codec
+raw=Path(sys.argv[1]).read_bytes();decoded=codec.unpackb(raw)
+assert codec.packb(decoded)==raw
+assert decoded['exterior'].shape==(180,320,3)
+assert decoded['state'].dtype==np.float64
+response=codec.packb({'actions':np.arange(80,dtype=np.float32).reshape(10,8)/128})
+Path(sys.argv[2]).write_bytes(response)
+print(json.dumps({'server_numpy':np.__version__,'lossless_request_roundtrip':True,
+ 'request_sha256':hashlib.sha256(raw).hexdigest(),'response_sha256':hashlib.sha256(response).hexdigest()}))
+"""
+            run(label + "-server-codec", [str(positive / "bin/python"), "-c", decode, str(request), str(response)])
+            verify = """
+import sys, json, numpy as np
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+activate_staged_openpi_client_dependencies()
+from openpi_client import msgpack_numpy as codec
+actions=codec.unpackb(Path(sys.argv[2]).read_bytes())['actions']
+assert actions.dtype==np.float32 and actions.shape==(10,8)
+assert np.array_equal(actions,np.arange(80,dtype=np.float32).reshape(10,8)/128)
+print(json.dumps({'client_numpy':np.__version__,'lossless_action_roundtrip':True,'model_called':False}))
+"""
+            run(label + "-decode", [str(client_python), "-c", verify, str(runtime), str(response)])
+            result["isaac_client_matrix"].append({
+                "numpy_version": numpy_version, "msgpack_version": msgpack_version,
+                "isaac_numpy_unchanged": True, "wire_roundtrip_passed": True,
+                "staging_receipt_path": str(client_receipt.relative_to(output)),
+                "staging_receipt_sha256": hashlib.sha256(client_receipt.read_bytes()).hexdigest(),
+                "model_called": False,
+            })
+        result["status"] = "passed"
     except Exception as exc:
         result.update(status="blocked", blocker=f"{type(exc).__name__}:{exc}")
         raise

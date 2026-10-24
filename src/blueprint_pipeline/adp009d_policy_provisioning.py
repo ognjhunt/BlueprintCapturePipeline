@@ -55,6 +55,7 @@ from .adp009d_policy_server_worker import (
 )
 from .decision_evidence_contracts import canonical_digest
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_DEVICE
+from .openpi_droid_policy_runtime import OPENPI_CLIENT_DEPS_DIRNAME
 
 PROVISIONING_SCHEMA_VERSION = "adp009d_policy_provisioning.v1"
 
@@ -108,6 +109,12 @@ SYSTEM_INTERPRETER = "/usr/bin/python3"
 # an unsupported MuJoCo source build before any policy query can run.
 POLICY_PYTHON_REQUESTS = {"pi05_droid": "3.11.9"}
 POLICY_PYTHON_INSTALL_DIR = "/opt/adp009d-python"
+# The pure-Python wheel is one exact artifact in OpenPI's verified upstream lock.
+OPENPI_CLIENT_WEBSOCKETS_WHEEL = {
+    "url": "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/websockets-15.0.1-py3-none-any.whl",
+    "sha256": "f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f",
+    "size_bytes": 169743,
+}
 POLICY_HOST = "127.0.0.1"
 POLICY_PORT = 8000
 GATED_BACKBONE_AUTH_ENV = "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"
@@ -132,6 +139,7 @@ BLOCKER_CREDENTIALS = "policy_provisioning_credentials_forwarded"
 BLOCKER_GROOT_WIRE_WHEEL_LOCK = "policy_provisioning_groot_wire_wheel_lock_invalid"
 BLOCKER_DEPENDENCY_LOCK = "policy_provisioning_dependency_lock_invalid"
 BLOCKER_PYTHON_REQUEST = "policy_provisioning_python_request_invalid"
+BLOCKER_ISAAC_CLIENT = "policy_provisioning_isaac_client_staging_invalid"
 
 # These are the upstream uv.lock bytes committed at the same immutable source
 # revisions as the two active ADP-009D candidates.  A frozen source revision is
@@ -211,6 +219,31 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
     """Install this candidate's client into Isaac's interpreter."""
 
     source = f"{POLICY_SOURCE_ROOT}/{candidate_id}"
+    if candidate_id == "pi05_droid":
+        # Resolving this package into Kit requests NumPy <2, but the retained
+        # baseline/GA use NumPy 2.3.1/2.5.1. Copy the exact wire-only source and
+        # one locked transport wheel beside the runtime instead. No installer
+        # writes to Isaac's prefix and no NumPy/Pillow/model dependency resolves.
+        target = f"$RUNTIME_DIR/{OPENPI_CLIENT_DEPS_DIRNAME}"
+        wheel = OPENPI_CLIENT_WEBSOCKETS_WHEEL
+        unpack = "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])"
+        check = (
+            "import sys; sys.path.insert(0,sys.argv[1]); "
+            "from openpi_droid_policy_runtime import check_staged_openpi_client; "
+            "check_staged_openpi_client(sys.argv[2])"
+        )
+        return [
+            f'test ! -e "{target}"',
+            f'mkdir -p "{target}"',
+            f'cp -R "{source}/packages/openpi-client/src/openpi_client" "{target}/openpi_client"',
+            f'cp "{source}/LICENSE" "{target}/OPENPI_LICENSE"',
+            f'curl -LsSf {shlex.quote(wheel["url"])} -o "{target}/websockets.whl"',
+            f'printf \'%s  %s\\n\' {wheel["sha256"]} "{target}/websockets.whl" | sha256sum --check --strict -',
+            f'"{policy_venv_root(candidate_id)}/bin/python" -c {shlex.quote(unpack)} '
+            f'"{target}/websockets.whl" "{target}"',
+            f'"{ISAAC_INTERPRETER}" -c {shlex.quote(check)} "$RUNTIME_DIR" '
+            '"$OUT_DIR/openpi_client_staging.v1.json"',
+        ]
     if candidate_id == "groot_n17_droid":
         # GR00T's upstream ``gr00t.policy`` package initializer eagerly imports
         # server/model code (including transformers).  The episode needs only
@@ -520,6 +553,13 @@ def describe_provisioning(candidate_id: str) -> dict[str, Any]:
         "isaac_interpreter": ISAAC_INTERPRETER,
         "policy_interpreter": f"{policy_venv_root(candidate_id)}/bin/python",
         "policy_python_request": POLICY_PYTHON_REQUESTS.get(candidate_id, SYSTEM_INTERPRETER),
+        "isaac_client_staging": (
+            {"source_revision": EXPECTED_CANDIDATES[candidate_id]["source_revision"],
+             "directory": OPENPI_CLIENT_DEPS_DIRNAME,
+             "transport_wheel": dict(OPENPI_CLIENT_WEBSOCKETS_WHEEL),
+             "preserve_isaac_numpy": True, "model_called_in_preflight": False}
+            if candidate_id == "pi05_droid" else None
+        ),
         "uv_version": UV_VERSION,
         "uv_version_output": UV_VERSION_OUTPUT,
         "uv_archive_url": UV_ARCHIVE_URL,
@@ -755,6 +795,15 @@ def validate_provisioning(receipt: Mapping[str, Any]) -> list[str]:
         candidate_id, SYSTEM_INTERPRETER
     ):
         errors.append(BLOCKER_PYTHON_REQUEST)
+    expected_client_staging = (
+        {"source_revision": EXPECTED_CANDIDATES[candidate_id]["source_revision"],
+         "directory": OPENPI_CLIENT_DEPS_DIRNAME,
+         "transport_wheel": dict(OPENPI_CLIENT_WEBSOCKETS_WHEEL),
+         "preserve_isaac_numpy": True, "model_called_in_preflight": False}
+        if candidate_id == "pi05_droid" else None
+    )
+    if receipt.get("isaac_client_staging") != expected_client_staging:
+        errors.append(BLOCKER_ISAAC_CLIENT)
 
     if receipt.get("credentials_forwarded") is not False:
         errors.append(BLOCKER_CREDENTIALS)

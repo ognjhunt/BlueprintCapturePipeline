@@ -15,6 +15,7 @@ import dataclasses
 import hashlib
 import json
 import math
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -46,6 +47,8 @@ OPENPI_INFERENCE_RESPONSE_KEYS = frozenset({"actions", "policy_timing", "server_
 OPENPI_STARTUP_TIMEOUT_SECONDS = 30.0
 OPENPI_INFERENCE_TIMEOUT_SECONDS = 300.0
 OPENPI_CLOSE_TIMEOUT_SECONDS = 5.0
+OPENPI_CLIENT_DEPS_DIRNAME = "openpi_client_deps"
+OPENPI_CLIENT_WEBSOCKETS_VERSION = "15.0.1"
 LOCAL_VERIFICATION_FIELDS = frozenset(
     {
         "local_checkpoint_verified",
@@ -57,6 +60,60 @@ LOCAL_VERIFICATION_FIELDS = frozenset(
 ARENA_CANDIDATE_POLICY_IDS = {
     "pi05_droid": "pi05_droid_jointpos_polaris",
 }
+
+
+def activate_staged_openpi_client_dependencies(module_file: str = __file__) -> str | None:
+    """Expose only the frozen wire client; keep Isaac's NumPy and model packages."""
+    root = Path(module_file).resolve().parent
+    staged = root / OPENPI_CLIENT_DEPS_DIRNAME
+    if not staged.exists():
+        return None
+    if staged.is_symlink() or not staged.resolve().is_relative_to(root):
+        raise RuntimeError("openpi_client_staging_path_invalid")
+    if any(p.name.startswith(("numpy", "torch", "jax")) for p in staged.iterdir()):
+        raise RuntimeError("openpi_client_staging_contains_scientific_runtime")
+    for name in ("openpi_client", "websockets"):
+        loaded = sys.modules.get(name)
+        if loaded is not None and not Path(getattr(loaded, "__file__", "")).resolve().is_relative_to(staged):
+            raise RuntimeError(f"openpi_client_dependency_preloaded_outside_staging:{name}")
+    location = str(staged)
+    while location in sys.path:
+        sys.path.remove(location)
+    sys.path.insert(0, location)
+    return location
+
+
+def check_staged_openpi_client(output_path: str | Path, module_file: str = __file__) -> dict[str, Any]:
+    """Import the real client without connecting or modifying Isaac's NumPy."""
+    import numpy as np
+
+    before = (np.__version__, np.__file__)
+    staged = activate_staged_openpi_client_dependencies(module_file)
+    if staged is None:
+        raise RuntimeError("openpi_client_staging_missing")
+    import websockets
+    from openpi_client import websocket_client_policy
+
+    if any(not Path(module.__file__).resolve().is_relative_to(staged)
+           for module in (websockets, websocket_client_policy)):
+        raise RuntimeError("openpi_client_imported_outside_staging")
+    if websockets.__version__ != OPENPI_CLIENT_WEBSOCKETS_VERSION:
+        raise RuntimeError("openpi_client_websockets_version_mismatch")
+    if (np.__version__, np.__file__) != before or Path(np.__file__).resolve().is_relative_to(staged):
+        raise RuntimeError("openpi_client_changed_isaac_numpy")
+    result = {
+        "schema_version": "openpi_client_staging.v1", "status": "ready",
+        "source_revision": OPENPI_SOURCE_REVISION,
+        "isaac_numpy_version": np.__version__, "isaac_numpy_path": np.__file__,
+        "websockets_version": websockets.__version__, "websockets_path": websockets.__file__,
+        "client_path": websocket_client_policy.__file__,
+        "isaac_numpy_unchanged": True, "model_called": False,
+    }
+    result["receipt_digest"] = "sha256:" + canonical_sha256(result)
+    with Path(output_path).open("x") as stream:
+        stream.write(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(result), flush=True)
+    return result
 
 
 def canonical_sha256(value: Any) -> str:
@@ -508,6 +565,7 @@ class OpenPIWebsocketDroidPolicyClient:
         if not host.strip() or not 1 <= int(port) <= 65535:
             raise ValueError("invalid_policy_server_endpoint")
         if client_factory is None:
+            activate_staged_openpi_client_dependencies()
             try:
                 from openpi_client import websocket_client_policy
                 from openpi_client import msgpack_numpy

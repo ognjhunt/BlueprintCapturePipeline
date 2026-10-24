@@ -474,3 +474,19 @@ The dependency replay needs Python 3.12, the native build/import packages named
 by its CI job, and sufficient temporary disk space. It preserves existing
 directories and the original failure. A passing replay is a provisioning gate;
 the full paired policy comparison is still required.
+
+The retained construction readbacks report NumPy 2.3.1 in the baseline and
+2.5.1 in GA. OpenPI's frozen client package declares NumPy below 2, so its
+former dependency-resolving install into Kit would alter that simulator
+environment. The client now copies its exact verified source and one
+hash-locked pure-Python WebSocket wheel beside the runtime. Import activation
+precedes Kit startup; no package installer writes to Isaac's prefix, and
+scientific/model packages are refused in the client staging directory.
+
+The same CPU replay tests the production staging commands against both
+observed NumPy/MessagePack combinations (2.3.1/1.2.1 and 2.5.1/1.1.0). It
+checks that NumPy stays unchanged and exchanges synthetic lossless RGB/state
+and action packets with the frozen NumPy 1.26 policy-side codec. These are
+wire-compatibility fixtures, not model queries, simulator episodes or task
+outcomes. The actual GPU pair must still record its installed environments
+and complete policy-input media.

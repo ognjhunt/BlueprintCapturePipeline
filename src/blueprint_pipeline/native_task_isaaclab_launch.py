@@ -349,6 +349,11 @@ def launch_native_task_isaaclab(
     receipt = verify_native_task_isaaclab_launch_contract(
         provisioning_receipt_path
     )
+    from .openpi_droid_policy_runtime import activate_staged_openpi_client_dependencies
+
+    client_dependencies = activate_staged_openpi_client_dependencies(__file__)
+    if client_dependencies is not None:
+        receipt["openpi_client_dependency_path"] = client_dependencies
     requested_device = str(device).strip()
     if not requested_device:
         raise NativeTaskIsaacLabLaunchError(["native_task_isaaclab_device_missing"])
