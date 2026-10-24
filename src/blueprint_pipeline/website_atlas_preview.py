@@ -439,12 +439,13 @@ _NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video
 
 
 def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time) -> dict[str, Any]:
-    """Resume one failed job once its cause is fixed in the deployed release.
+    """Resume one failed or stopped job once its cause is fixed in the deployed release.
 
     An operator action, never automatic. The next tick resumes at the first
     unfinished stage, so the survey, plans and other receipts already bought are
-    reused, not bought again. A withdrawn capture, or a job that is not failed or
-    cannot recover, is refused.
+    reused, not bought again. A job stopped for input (a background that needs
+    review) resumes the same way. A withdrawn capture, a job that only a new
+    capture can help, or one that cannot recover, is refused.
     """
     with (path.parent / LOCK_FILE).open("a") as lock:
         try:
@@ -452,7 +453,8 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time) -> dic
         except BlockingIOError:
             raise ValueError("atlas_preview_job_busy") from None
         job = _read(path)
-        if job["state"] != "failed" or job["reason"] in _NOT_RETRYABLE:
+        if (job["state"] not in {"failed", "needs_input"} or job["reason"] in _NOT_RETRYABLE
+                or job["reason"] in _NEEDS_NEW_CAPTURE):
             raise ValueError("atlas_preview_retry_requires_recoverable_failure")
         if _withdrawn(path.parents[2]):
             raise ValueError("website_capture_withdrawn")
