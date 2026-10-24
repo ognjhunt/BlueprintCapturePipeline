@@ -327,6 +327,28 @@ def test_lost_output_reconciles_only_completed_exact_input_and_preserves_its_cha
     assert path.read_bytes() == original
 
 
+CAMERA_FAILED = {"status": "blocked", "request_digest": "sha256:" + "c" * 64,
+                 "basis": "deterministic_view_geometry",
+                 "review": {"consistent_background": False, "camera_changed_frame_ids": ["f1"]}}
+
+
+@pytest.mark.parametrize("planned", [[], [{"frame_id": "f0", "instruction": "Keep the towels"}],
+                                     [{"frame_id": "f1", "instruction": "Keep the cabinet edge"}]])
+def test_camera_changed_views_are_reedited_without_the_copied_reference(tmp_path, website, planned):
+    _, (frames, review) = _run(tmp_path, _Invoker({"repairs": planned, "summary": "camera"}),
+                               failed_review=CAMERA_FAILED)
+    edits = {call["frames"][0]["frame_id"]: call for call in website["edit"]}
+    # The flagged view is re-edited from its original even if the planner skipped it,
+    # and never with the reference view the editor copied.
+    assert edits["f1"]["frames"][0]["image_path"].endswith("original-1.png")
+    assert edits["f1"]["repair_reference_path"] is None
+    assert edits["f1"]["repair_instruction"] == (planned[0]["instruction"] if planned and planned[0]["frame_id"] == "f1"
+                                                 else repair.CAMERA_CHANGED_INSTRUCTION)
+    if "f0" in edits:
+        assert Path(edits["f0"]["repair_reference_path"]).name == "edited-2.png"
+    assert review["repaired_frame_ids"] == sorted(edits) and review["status"] == "passed"
+
+
 def test_empty_plan_keeps_the_rejection_and_edits_nothing(tmp_path, website):
     _, (frames, review) = _run(tmp_path, _Invoker({"repairs": [], "summary": "nothing fixable"}))
     assert review["status"] == "blocked" and not website["edit"] and not website["review"]
