@@ -25,6 +25,19 @@ VAST_PROVIDER_ADAPTER = "src/blueprint_pipeline/vast_provider_adapter.py"
 VAST_PROVIDER_ADAPTER_CLI = "src/blueprint_pipeline/vast_provider_adapter_cli.py"
 
 
+def test_recorded_source_recovery_delegates_planning_to_the_canonical_allocator():
+    root = SCRIPT.parent.parent
+    recovery = 'src/blueprint_pipeline/atlas_recorded_source_recovery.py'
+    paths = [recovery, 'src/blueprint_pipeline/paid_resource_allocator.py']
+    sources = {p: (root / p).read_text() for p in paths}
+    # Even a local data variable with a capability's name is a retained handle
+    # to this conservative verifier. Keep data names distinct; no new issuer.
+    assert verifier._s3_transport_capability_callers(
+        sources, verifier.ATLAS_PLAN_CAPABILITIES) == verifier.APPROVED_ATLAS_PLAN_CALLERS
+    calls = verifier._reachable_calls(sources[recovery], 'recover_recorded_sources')
+    assert 'planner_runner' in calls and 'require_paid_resource_admission' not in calls
+
+
 def test_atlas_task_retry_attempt_cannot_be_called_outside_the_allocator_adapter():
     root = SCRIPT.parent.parent
     paths = ["src/blueprint_pipeline/website_atlas_tasks.py",
