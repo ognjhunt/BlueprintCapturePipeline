@@ -27,6 +27,8 @@ UTC = timezone.utc
 
 
 @pytest.mark.parametrize("prefix", ["blueprint-task-evaluation-scene-config-fixture-",
+                                  "blueprint-adp009d-20261024t195756351225000-",
+                                  "blueprint-adp009d-policy-smoke-20261024t195756351225000-",
                                   "blueprint-native-task-policy-canary-",
                                   "blueprint-native-task-policy-canary-runtime-cdeae8e82d16498eb07369fc4d300a11"])
 @pytest.mark.parametrize("fault", [None, "expired", "dead_owner", "wrong_deadline", "cancelled", "terminal",
@@ -72,6 +74,11 @@ def test_task_evaluation_watchdog_protects_only_its_live_bounded_owner(tmp_path,
     (root / "groot_oscar_runpod_canary_watchdog.json").write_text(json.dumps(record))
     protected = guard.find_protected_pod_ids([tmp_path], process_cmdlines=[command], now=now)
     assert protected == ({"50204295"} if fault is None else set())
+    loading = guard.GpuInstance(
+        provider="vast", id="50204295", name=prefix + "1792871882",
+        state="loading", booted=False, live=True, age_seconds=588,
+    )
+    assert guard.is_reapable(loading, max_boot_seconds=480, protected_ids=protected) is (fault is not None)
 
 
 def _epoch(*args: int) -> float:
