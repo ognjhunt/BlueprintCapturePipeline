@@ -179,6 +179,50 @@ def test_request_rejects_policy_leakage_and_driven_joint_lock(tmp_path: Path) ->
     assert "articulated_native_request_locked_joints_invalid" in excinfo.value.codes
 
 
+def test_fixed_connections_and_passive_slides_have_separate_dof_count(tmp_path: Path) -> None:
+    asset = _asset(tmp_path / "mixed.usda")
+    stage = Usd.Stage.Open(str(asset))
+    for name in ("trim", "shelf"):
+        prim = UsdGeom.Xform.Define(stage, f"/Asset/{name}").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+    fixed = UsdPhysics.FixedJoint.Define(stage, "/Asset/joints/trim_fixed")
+    fixed.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+    fixed.CreateBody1Rel().SetTargets(["/Asset/trim"])
+    slide = UsdPhysics.PrismaticJoint.Define(stage, "/Asset/joints/shelf_slide")
+    slide.CreateAxisAttr("Y")
+    slide.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+    slide.CreateBody1Rel().SetTargets(["/Asset/shelf"])
+    stage.GetRootLayer().Save()
+    request = _request(asset)
+    request.pop("request_digest")
+    request['articulation'].update(expected_joint_count=4, expected_dof_count=3)
+    request_path = tmp_path / 'request.json'
+    request_path.write_text(json.dumps(build_articulated_native_diagnostic_request(request)))
+    harness = tmp_path / 'harness.json'
+    harness.write_text('{"schema_version":"fixture"}')
+    args = dict(job_dir=tmp_path / 'bundle', asset_path=asset, request_path=request_path,
+                harness_manifest_path=harness, implementation_commit=_implementation_commit())
+    bundle = build_articulated_native_diagnostic_bundle(**args)
+    assert len(bundle['static_inventory']['joint_prim_paths']) == 4
+    assert len(bundle['static_inventory']['movable_joint_prim_paths']) == 3
+    request['articulation']['expected_dof_count'] = 2
+    request_path.write_text(json.dumps(build_articulated_native_diagnostic_request(request)))
+    with pytest.raises(ArticulatedNativeDiagnosticError) as excinfo:
+        build_articulated_native_diagnostic_bundle(**args)
+    assert 'articulated_native_dof_count_mismatch' in excinfo.value.codes
+
+
+@pytest.mark.parametrize('count', [True, 0, 1, 3, 2.5])
+def test_request_rejects_incoherent_movable_joint_count(tmp_path: Path, count) -> None:
+    asset = _asset(tmp_path / 'asset.usda')
+    request = _request(asset)
+    request.pop('request_digest')
+    request['articulation']['expected_dof_count'] = count
+    with pytest.raises(ArticulatedNativeDiagnosticError) as excinfo:
+        build_articulated_native_diagnostic_request(request)
+    assert 'articulated_native_request_dof_count_invalid' in excinfo.value.codes
+
+
 def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
     asset = _asset(tmp_path / "asset.usda")
     request_path = tmp_path / "request.json"

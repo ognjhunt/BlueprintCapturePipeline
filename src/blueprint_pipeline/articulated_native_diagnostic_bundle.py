@@ -134,6 +134,11 @@ def build_articulated_native_diagnostic_request(
             and expected_count < len(locked) + 1
         ):
             errors.append("articulated_native_request_joint_count_invalid")
+        dof_count = task.get("expected_dof_count", expected_count)
+        if (isinstance(dof_count, bool) or not isinstance(dof_count, int)
+                or not isinstance(expected_count, int) or not 1 <= dof_count <= expected_count
+                or isinstance(locked, list) and dof_count < len(locked) + 1):
+            errors.append("articulated_native_request_dof_count_invalid")
         angles = task.get("commanded_angles_degrees")
         if (
             not isinstance(angles, list)
@@ -264,6 +269,12 @@ def _inspect_bound_asset(asset_path: Path, request: Mapping[str, Any]) -> dict[s
         errors.append("articulated_native_driven_revolute_joint_missing")
     if len(joints) != articulation["expected_joint_count"]:
         errors.append("articulated_native_joint_count_mismatch")
+    movable = [prim for prim in joints if not prim.IsA(UsdPhysics.FixedJoint)]
+    if "expected_dof_count" in articulation:
+        if (len(movable) != articulation["expected_dof_count"]
+                or any(not (prim.IsA(UsdPhysics.RevoluteJoint)
+                            or prim.IsA(UsdPhysics.PrismaticJoint)) for prim in movable)):
+            errors.append("articulated_native_dof_count_mismatch")
     for path in locked_paths:
         prim = stage.GetPrimAtPath(path)
         if not prim.IsValid() or not prim.IsA(UsdPhysics.RevoluteJoint):
@@ -287,6 +298,7 @@ def _inspect_bound_asset(asset_path: Path, request: Mapping[str, Any]) -> dict[s
         "articulation_root_prim_path": str(root.GetPath()),
         "fixed_base_body_prim_path": str(fixed.GetPath()),
         "joint_prim_paths": sorted(str(prim.GetPath()) for prim in joints),
+        "movable_joint_prim_paths": sorted(str(prim.GetPath()) for prim in movable),
         "rigid_body_prim_paths": sorted(
             str(prim.GetPath())
             for prim in stage.Traverse()

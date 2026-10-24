@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from pxr import Gf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_object_authoring_contracts import AuthoringContractError, file_record
@@ -179,6 +179,50 @@ def test_fixed_door_handle_has_assembly_mass_and_grasp_point_in_door_frame(tmp_p
     changed["configuration"]["required_output"]["task_part_mass_kg_bounds"] = [1.9, 2.1]
     with pytest.raises(AuthoringContractError, match="artisan_mass_outside_admitted_bounds"):
         validate_final_usd(final, changed)
+
+
+def test_physics_namespace_keeps_joint_frames_and_parent_scene_placement(tmp_path):
+    from blueprint_pipeline.task_object_artisan_exports import _flatten_nested_physics_links, _display_color_surface
+
+    path = tmp_path / 'nested.usda'
+    stage = Usd.Stage.CreateNew(str(path))
+    root = UsdGeom.Xform.Define(stage, '/Asset')
+    stage.SetDefaultPrim(root.GetPrim())
+    parent = UsdGeom.Xform.Define(stage, '/Asset/base')
+    parent.AddTranslateOp().Set(Gf.Vec3d(.1, .2, .3))
+    parent.AddRotateZOp().Set(30)
+    child = UsdGeom.Xform.Define(stage, '/Asset/base/panel')
+    child.AddTranslateOp().Set(Gf.Vec3d(.4, .5, .6))
+    for body in (parent, child):
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+    visual = UsdGeom.Cube.Define(stage, '/Asset/base/panel/visual')
+    visual.CreateDisplayColorAttr([Gf.Vec3f(.2, .4, .6)])
+    color_before = visual.GetDisplayColorAttr().Get()
+    joint = UsdPhysics.RevoluteJoint.Define(stage, '/Asset/hinge')
+    joint.CreateBody0Rel().SetTargets([parent.GetPath()])
+    joint.CreateBody1Rel().SetTargets([child.GetPath()])
+    joint.CreateLocalPos0Attr(Gf.Vec3f(.2, .3, .4))
+    before = UsdGeom.XformCache().GetLocalToWorldTransform(child.GetPrim())
+    overlay = _flatten_nested_physics_links(stage)
+    assert overlay == [{'before': '/Asset/base/panel', 'after': '/Asset/BlueprintPhysicsLinks/panel'}]
+    moved = stage.GetPrimAtPath(overlay[0]['after'])
+    assert UsdGeom.XformCache().GetLocalToWorldTransform(moved) == before
+    assert str(joint.GetBody1Rel().GetTargets()[0]) == str(moved.GetPath())
+    assert joint.GetLocalPos0Attr().Get() == Gf.Vec3f(.2, .3, .4)
+    placement = root.AddTranslateOp()
+    placement.Set(Gf.Vec3d(1, 2, 3))
+    expected = before * placement.GetOpTransform(Usd.TimeCode.Default())
+    assert UsdGeom.XformCache().GetLocalToWorldTransform(moved) == expected
+    assert _flatten_nested_physics_links(stage) == []
+    appearance = _display_color_surface(stage)
+    assert appearance['bound_visual_count'] == 1
+    moved_visual = stage.GetPrimAtPath(str(moved.GetPath()) + '/visual')
+    assert UsdGeom.Gprim(moved_visual).GetDisplayColorAttr().Get() == color_before
+    material, _ = UsdShade.MaterialBindingAPI(moved_visual).ComputeBoundMaterial()
+    assert material.GetSurfaceOutput().HasConnectedSource()
+    reader = UsdShade.Shader(stage.GetPrimAtPath(appearance['material_path'] + '/reader'))
+    assert reader.GetInput('varname').Get() == 'displayColor'
+    assert _display_color_surface(stage)['bound_visual_count'] == 0
 
 
 def test_fixed_interior_mass_keeps_its_own_admission():

@@ -208,6 +208,71 @@ def _material_overlay(stage, configuration, *, colliders):
     return provenance
 
 
+def _flatten_nested_physics_links(stage):
+    """Keep body-local joint frames and asset placement valid in PhysX.
+
+    A reset stack on each nested body would discard the scene's placement too.
+    Instead, move nested bodies beside their ancestors and preserve their exact
+    asset-space transforms. NamespaceEditor also updates joint relationships.
+    """
+    from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+    cache = UsdGeom.XformCache()
+    root_inverse = cache.GetLocalToWorldTransform(stage.GetDefaultPrim()).GetInverse()
+    nested = []
+    for prim in stage.Traverse():
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI) and _owner(prim.GetParent(), UsdPhysics) is not None:
+            nested.append((str(prim.GetPath()), cache.GetLocalToWorldTransform(prim) * root_inverse))
+    if nested:
+        UsdGeom.Scope.Define(stage, '/Asset/BlueprintPhysicsLinks')
+    moved = []
+    for before, matrix in sorted(nested, key=lambda row: row[0].count('/'), reverse=True):
+        prim = stage.GetPrimAtPath(before)
+        # Make inherited material bindings explicit before leaving that parent.
+        for purpose in ('', 'preview', 'full', 'physics'):
+            material, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial(materialPurpose=purpose)
+            if material:
+                UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, materialPurpose=purpose)
+        after = '/Asset/BlueprintPhysicsLinks/' + prim.GetName()
+        require(not stage.GetPrimAtPath(after).IsValid(), 'artisan_physics_link_namespace_collision')
+        editor = Usd.NamespaceEditor(stage)
+        require(editor.MovePrimAtPath(before, after) and editor.CanApplyEdits()
+                and editor.ApplyEdits(), 'artisan_physics_link_namespace_refused')
+        body = UsdGeom.Xformable(stage.GetPrimAtPath(after))
+        body.ClearXformOpOrder()
+        body.AddTransformOp().Set(matrix)
+        moved.append({'before': before, 'after': after})
+    return moved
+
+
+def _display_color_surface(stage):
+    """Translate the SDK's authored display colours into a native render material."""
+    from pxr import Sdf, UsdGeom, UsdPhysics, UsdShade
+    material = None
+    count = 0
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Gprim) or prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        existing, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+        if existing and existing.GetSurfaceOutput().HasConnectedSource():
+            continue
+        if not UsdGeom.Gprim(prim).GetDisplayColorAttr().Get():
+            continue
+        if material is None:
+            material = UsdShade.Material.Define(stage, '/Asset/BlueprintDisplayColor')
+            reader = UsdShade.Shader.Define(stage, '/Asset/BlueprintDisplayColor/reader')
+            reader.CreateIdAttr('UsdPrimvarReader_float3')
+            reader.CreateInput('varname', Sdf.ValueTypeNames.Token).Set('displayColor')
+            reader.CreateOutput('result', Sdf.ValueTypeNames.Float3)
+            shader = UsdShade.Shader.Define(stage, '/Asset/BlueprintDisplayColor/surface')
+            shader.CreateIdAttr('UsdPreviewSurface')
+            shader.CreateInput('diffuseColor', Sdf.ValueTypeNames.Color3f).ConnectToSource(reader.ConnectableAPI(), 'result')
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), 'surface')
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+        count += 1
+    return {'basis': 'upstream_display_color', 'bound_visual_count': count,
+            'material_path': str(material.GetPath()) if material else None}
+
+
 def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_path: Path | None = None) -> dict:
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils
     stage = Usd.Stage.Open(str(source), load=Usd.Stage.LoadAll)
@@ -231,6 +296,8 @@ def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_pat
         require(annotations_path is not None, "artisan_cavity_annotations_required")
         annotations = read_json(annotations_path)
         root.SetCustomDataByKey("blueprint:sourceConstraintAnnotations", json.dumps(annotations, allow_nan=False, sort_keys=True))
+    physics_namespace = _flatten_nested_physics_links(stage)
+    appearance = _display_color_surface(stage)
     colliders = [p for p in stage.Traverse() if p.HasAPI(UsdPhysics.CollisionAPI)]
     properties = _material_overlay(stage, request["configuration"], colliders=colliders)
     mechanism = request["configuration"].get("mechanism") or {}
@@ -275,6 +342,7 @@ def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_pat
     return {"schema_version": "artisan_export_adaptation.v1", "original_usd": file_record(source),
             "final_usd": file_record(destination), "namespace_root_before": original_root,
             "namespace_root_after": "/Asset", "geometry_scale_applied": False,
+            "physics_namespace_overlay": physics_namespace, "appearance_overlay": appearance,
             "material_overlay": properties, "final_readback": observed,
             "candidate_annotations": file_record(annotations_path) if annotations is not None else None,
             "upstream_physics_report_certifies_overlay": False,
@@ -301,6 +369,8 @@ def validate_final_usd(path: Path, request: dict) -> dict:
             "artisan_source_identity_changed")
     prims = list(stage.Traverse())
     bodies = [p for p in prims if p.HasAPI(UsdPhysics.RigidBodyAPI)]
+    require(all(_owner(p.GetParent(), UsdPhysics) is None for p in bodies),
+            'artisan_native_nested_rigid_body')
     colliders = [p for p in prims if p.HasAPI(UsdPhysics.CollisionAPI)]
     visuals = [p for p in prims if p.IsA(UsdGeom.Gprim) and p not in colliders]
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render,
