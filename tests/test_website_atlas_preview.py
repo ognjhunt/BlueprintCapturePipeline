@@ -473,12 +473,17 @@ def test_a_failed_job_resumes_once_an_operator_retries_it_after_a_fix(monkeypatc
     world = World(monkeypatch, site, [ValueError("atlas_scene_planner_transients_invalid"), _completed])
     assert world.advance() == "failed"
     failed = _job(site)
+    assert failed["provider_cleanup"]["state"] == "complete" and world.deleted == []  # nothing made yet
     assert world.advance() == "failed" and len(world.runs) == 1  # a failure is final until retried
     world.clock += 60
     job = preview.retry_failed_job(site.job, now=world.now)
     assert (job["state"], job["reason"], job["revision"]) == ("processing", None, failed["revision"] + 1)
     assert job["retries"] == [{"reason": "atlas_scene_planner_transients_invalid", "at_epoch": world.clock}]
+    assert job["provider_cleanup"]["state"] == "pending"
     assert world.advance() == "ready" and len(world.runs) == 2
+    # The resumed run's assets are deleted at World Labs, not left behind.
+    assert sorted(world.deleted) == ["gone1", "mesh1", "splat1", "upload1", "view1"]
+    assert _job(site)["provider_cleanup"]["state"] == "complete"
     assert world.pushed[-1]["state"] == "ready" and world.pushed[-1]["revision"] > job["revision"]
     # Only a recoverable failure can be retried.
     with pytest.raises(ValueError, match="requires_recoverable_failure"):
