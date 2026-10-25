@@ -43,7 +43,8 @@ SCRIPTS = REPO_ROOT / "scripts"
 #: It may fall and never rise.
 #:
 #: #2908 pushed it to 70: the articulated construction inputs and the native
-#: continuation controls input landed with no command line. Both now have one.
+#: continuation controls input landed with no command line. Both now have one,
+#: and with #2920's two camera-start producers reachable it is 66.
 #:
 #: It went to 76 once, when the semantic-teacher image-edit lane landed with all
 #: three of its terminal materializers -- result, provider zero, and the
@@ -56,7 +57,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 #: Naming all 73 individually would be a list nobody maintains; the population
 #: is rediscovered every run and only its size is pinned, so a new unreachable
 #: materializer fails here even though no name was ever written down.
-UNREACHABLE_MATERIALIZER_BUDGET = 68
+UNREACHABLE_MATERIALIZER_BUDGET = 66
 
 
 _TOP_LEVEL_MATERIALIZER = re.compile(r"^def\s+materialize_", re.MULTILINE)
