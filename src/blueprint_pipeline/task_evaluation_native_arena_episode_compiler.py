@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .common import write_json
+from .native_articulated_construction_inputs import materialize_articulated_construction_inputs
 from .task_evaluation_articulated_open_close_native_adapter import (
     adapt_articulated_open_close_task_template,
 )
@@ -1422,6 +1423,20 @@ def compile_native_arena_episode(
             _derive_runtime_prismatic_friction_overlay(
                 task_spec=task_spec, task_definition=task_definition,
                 replacement_path=runtime_replacement_path, output_root=root))
+    construction_inputs = None
+    task_state_binding = task_definition.get("task_state_binding")
+    if articulated:
+        construction_inputs = materialize_articulated_construction_inputs(
+            task_spec=task_spec,
+            definition=task_definition,
+            asset=runtime_replacement_path,
+            asset_digest=_sha256_and_size(runtime_replacement_path)[0],
+            link_prim_paths=task_adapter["source_documents"]["documents"][
+                "scene.configured_revision.replacement.static_qualification"
+            ]["link_prim_paths"],
+        )
+        task_spec = construction_inputs["task_spec"]
+        task_state_binding = construction_inputs["task_state_binding"]
     packet_assets = []
     for role, semantic_role in (
         ("appearance", "scene_appearance"),
@@ -1502,7 +1517,11 @@ def compile_native_arena_episode(
         "task_id": request["task"]["identity"]["id"],
         "task_spec": task_spec,
         "task_joint_bindings": task_definition.get("task_joint_bindings") or [],
-        "task_state_binding": task_definition.get("task_state_binding"),
+        "task_state_binding": task_state_binding,
+        "articulated_kinematic_path_receipt": (
+            construction_inputs["articulated_kinematic_path_receipt"]
+            if construction_inputs is not None else None
+        ),
         "assets": packet_assets,
         "robot_base_pose_world": base.get("pose_world"),
         "robot_joint_reset_positions_rad": robot.get("joint_reset_positions_rad"),

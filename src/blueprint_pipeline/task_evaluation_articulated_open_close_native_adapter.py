@@ -13,6 +13,7 @@ drawer is the policy's job.
 """
 from __future__ import annotations
 
+import copy
 import math
 import re
 from collections.abc import Mapping
@@ -32,7 +33,8 @@ from .task_evaluation_rigid_relocation_native_adapter import (
     NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH, SOURCE_OBJECT_CONTRACT_PATH,
     STATIC_QUALIFICATION_CONTRACT_PATH, SUCCESS_CONTRACT_PATH,
     SUPPORT_PLANE_CONTRACT_PATH, DEFINITION_CONTRACT_PATH,
-    _source_document, _vector,
+    _source_document, _vector, _diagnostic_source_documents,
+    TaskEvaluationRigidRelocationNativeAdapterError,
 )
 
 SCHEMA_VERSION = "task_evaluation_articulated_open_close_native_adapter.v1"
@@ -249,57 +251,74 @@ def adapt_articulated_open_close_task_template(
     request: Mapping[str, Any] | None = None,
     configured_revision: Mapping[str, Any] | None = None,
     materialized_references: Mapping[str, Mapping[str, Any]],
+    diagnostic_controls_input: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return one digest-bound native view of the exact configured articulated task."""
+    """Adapt exact articulated inputs while preserving diagnostic authority."""
 
-    try:
-        revision = validate_configured_scene_revision(configured_revision or {})
-        validated_request = (
-            validate_launch_preparation_request(request) if request is not None else None
-        )
-    except (
-        TaskEvaluationLaunchPreparationContractError,
-        TaskEvaluationConfiguredSceneRevisionError,
-    ) as exc:
-        raise _error("authority_invalid") from exc
-    if validated_request is None:
-        task = _revision_bound_task(
-            revision=revision, materialized_references=materialized_references
-        )
+    diagnostic = diagnostic_controls_input is not None
+    if diagnostic:
+        if request is not None or configured_revision is not None:
+            raise _error("diagnostic_authority_invalid")
+        try:
+            documents, bindings = _diagnostic_source_documents(
+                diagnostic_controls_input, source_schemas=SOURCE_SCHEMAS,
+            )
+        except TaskEvaluationRigidRelocationNativeAdapterError as exc:
+            raise _error(f"diagnostic_inputs_invalid:{exc}") from exc
+        template = documents[DEFINITION_CONTRACT_PATH]
+        task = {"identity": template.get("task_identity"),
+                "subject": {"identity": template.get("object_identity")}}
+        replacement_identity = template.get("object_identity")
     else:
-        task = validated_request["task"]
-        if (
-            validated_request["run_mode"] != "episode_evaluation"
-            or task["binding_mode"] != "reuse_configured_template"
-            or task["kind"] != "articulated_manipulation"
-            or task["strategy"] != "articulated_open_close"
-            or task["identity"] != revision["task_template"]["identity"]
-            or task["subject"]["identity"] != revision["replacement"]["identity"]
-            or task["configured_scene_revision_digest"] != revision["revision_digest"]
+        try:
+            revision = validate_configured_scene_revision(configured_revision or {})
+            validated_request = (
+                validate_launch_preparation_request(request) if request is not None else None
+            )
+        except (
+            TaskEvaluationLaunchPreparationContractError,
+            TaskEvaluationConfiguredSceneRevisionError,
+        ) as exc:
+            raise _error("authority_invalid") from exc
+        if validated_request is None:
+            task = _revision_bound_task(
+                revision=revision, materialized_references=materialized_references
+            )
+        else:
+            task = validated_request["task"]
+            if (
+                validated_request["run_mode"] != "episode_evaluation"
+                or task["binding_mode"] != "reuse_configured_template"
+                or task["kind"] != "articulated_manipulation"
+                or task["strategy"] != "articulated_open_close"
+                or task["identity"] != revision["task_template"]["identity"]
+                or task["subject"]["identity"] != revision["replacement"]["identity"]
+                or task["configured_scene_revision_digest"] != revision["revision_digest"]
+            ):
+                raise _error("request_binding_mismatch")
+        documents: dict[str, dict[str, Any]] = {}
+        bindings: list[dict[str, Any]] = []
+        for contract_path, expected_reference in (
+            (DEFINITION_CONTRACT_PATH, revision["task_template"]["definition"]),
+            (SUCCESS_CONTRACT_PATH, revision["task_template"]["success_criteria"]),
+            (EXECUTION_CONTRACT_PATH, revision["task_template"]["execution"]),
+            (SUPPORT_PLANE_CONTRACT_PATH, revision["registration"]["support_plane"]),
+            (SOURCE_OBJECT_CONTRACT_PATH, revision["replacement"]["source_object"]),
+            (STATIC_QUALIFICATION_CONTRACT_PATH, revision["replacement"]["static_qualification"]),
+            (
+                NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH,
+                revision["replacement"]["native_import_qualification"],
+            ),
         ):
-            raise _error("request_binding_mismatch")
-    documents: dict[str, dict[str, Any]] = {}
-    bindings: list[dict[str, Any]] = []
-    for contract_path, expected_reference in (
-        (DEFINITION_CONTRACT_PATH, revision["task_template"]["definition"]),
-        (SUCCESS_CONTRACT_PATH, revision["task_template"]["success_criteria"]),
-        (EXECUTION_CONTRACT_PATH, revision["task_template"]["execution"]),
-        (SUPPORT_PLANE_CONTRACT_PATH, revision["registration"]["support_plane"]),
-        (SOURCE_OBJECT_CONTRACT_PATH, revision["replacement"]["source_object"]),
-        (STATIC_QUALIFICATION_CONTRACT_PATH, revision["replacement"]["static_qualification"]),
-        (
-            NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH,
-            revision["replacement"]["native_import_qualification"],
-        ),
-    ):
-        document, binding = _source_document(
-            materialized_references,
-            contract_path=contract_path,
-            expected_reference=expected_reference,
-            expected_schema=SOURCE_SCHEMAS[contract_path],
-        )
-        documents[contract_path] = document
-        bindings.append(binding)
+            document, binding = _source_document(
+                materialized_references,
+                contract_path=contract_path,
+                expected_reference=expected_reference,
+                expected_schema=SOURCE_SCHEMAS[contract_path],
+            )
+            documents[contract_path] = document
+            bindings.append(binding)
+        replacement_identity = revision["replacement"]["identity"]
     template = documents[DEFINITION_CONTRACT_PATH]
     success = documents[SUCCESS_CONTRACT_PATH]
     execution = documents[EXECUTION_CONTRACT_PATH]
@@ -346,7 +365,7 @@ def adapt_articulated_open_close_task_template(
     mechanism = _qualified_mechanism(
         static=documents[STATIC_QUALIFICATION_CONTRACT_PATH],
         native_import=documents[NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH],
-        replacement_identity=revision["replacement"]["identity"],
+        replacement_identity=replacement_identity,
         template=template,
     )
     if mechanism["target_joint_type"] != success.get("joint_type"):
@@ -362,7 +381,10 @@ def adapt_articulated_open_close_task_template(
         "bindings": bindings,
         "documents": documents,
     }
-    graph = mechanism["graph"]
+    qualified_graph_digest = canonical_digest(dict(mechanism["graph"]))
+    graph = copy.deepcopy(mechanism["graph"])
+    graph["success_predicate"]["joint_intervals"][mechanism["target_joint_id"]] = list(mechanism["target_success_interval"])
+    graph = validate_articulation_graph(graph)
     graph_digest = canonical_digest(dict(graph))
     # The runtime identifies assets by a name a simulator prim can carry, while
     # the configured identity keeps its own spelling. Bind both, exactly as the
@@ -408,6 +430,7 @@ def adapt_articulated_open_close_task_template(
         "visible_target_label": str(template.get("visible_target_label") or ""),
         "articulation_graph": graph,
         "articulation_graph_digest": graph_digest,
+        "qualified_articulation_graph_digest": qualified_graph_digest,
         "interaction_affordance": affordance,
         "settle_window_samples": settle_window_samples,
         "maximum_settled_target_speed": _number(success["maximum_settled_target_speed"]),
@@ -519,7 +542,6 @@ def adapt_articulated_open_close_task_template(
         "external_task_kind": "articulated_manipulation",
         "native_task_kind": "articulated_open_close",
         "manipulation_strategy": "articulated_open_close",
-        "configured_scene_revision_digest": revision["revision_digest"],
         "source_documents": source_documents,
         "native_task_definition": native_definition,
         "native_success_criteria": {
@@ -554,6 +576,17 @@ def adapt_articulated_open_close_task_template(
         },
         "adapter_digest": "",
     }
+    if diagnostic:
+        result.update(
+            schema_version="task_evaluation_articulated_open_close_diagnostic_native_adapter.v1",
+            diagnostic_controls_input_receipt_digest=diagnostic_controls_input["receipt_digest"],
+            claim_ceiling="development_only_downstream_construction_and_controls_diagnostic",
+            qualification_eligible=False,
+            configured_revision_publication_permitted=False,
+            evaluation_ready_promotion_permitted=False,
+        )
+    else:
+        result["configured_scene_revision_digest"] = revision["revision_digest"]
     result["adapter_digest"] = canonical_digest(result, digest_field="adapter_digest")
     return result
 
