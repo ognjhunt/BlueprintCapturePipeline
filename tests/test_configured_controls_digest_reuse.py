@@ -1,4 +1,5 @@
 """ADP-030: retained robot bytes are hashed once per CPU operation, not per ancestor."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -119,3 +120,74 @@ def test_reused_adoption_rechecks_owner_seal_and_reopened_bytes(tmp_path):
         _json(result_path, {**json.loads(result_path.read_text()), "rewritten": True})
         with pytest.raises(ValueError, match="completed_placement_adoption_reference_changed"):
             retained.validate_placement_adoption(adoption)
+
+
+def test_reused_adoption_rereads_evidence_behind_its_checkpoint(tmp_path):
+    _, cancellation = _lineage(tmp_path / "history", "gpt-6-sol")
+    adoption = cancellation["completed_placement_adoption"]
+    with digests.file_digest_scope():
+        retained.validate_placement_adoption(adoption)
+        checkpoint = json.loads(Path(adoption["source_agent_checkpoint"]["path"]).read_text())
+        receipt = Path(checkpoint["receipt_path"])  # pinned only inside the checkpoint
+        _json(receipt, {**json.loads(receipt.read_text()), "rewritten": True})
+        with pytest.raises(ValueError, match="completed_placement_adoption_checkpoint_changed"):
+            retained.validate_placement_adoption(adoption)
+
+
+def test_reused_adoption_rereads_cost_evidence(tmp_path):
+    _, cancellation = _lineage(tmp_path / "history", "gpt-6-sol")
+    adoption = cancellation["completed_placement_adoption"]
+    with digests.file_digest_scope():
+        retained.validate_placement_adoption(adoption)
+        _json(tmp_path / "history" / "reservation.json", {"fixture": "altered"})
+        with pytest.raises((ValueError, RuntimeError), match="configured_controls_autostart_result_invalid"):
+            retained.validate_placement_adoption(adoption)
+
+
+def test_reused_ancestor_is_reproven_by_every_descendant(tmp_path):
+    _, cancellation = _lineage(tmp_path / "history", "gpt-6-sol")
+    adoption = cancellation["completed_placement_adoption"]
+    parent = json.loads(Path(adoption["source_intent"]["path"]).read_text())["completed_placement_adoption"]
+    with digests.file_digest_scope():
+        retained.validate_placement_adoption(parent)
+        retained.validate_placement_adoption(adoption)  # reuses the parent's verdict inside
+        ancestor = Path(parent["source_intent"]["path"])  # never read by the descendant itself
+        _json(ancestor, {**json.loads(ancestor.read_text()), "rewritten": True})
+        with pytest.raises(ValueError, match="completed_placement_adoption_reference_changed"):
+            retained.validate_placement_adoption(adoption)
+
+
+def test_reproof_rejects_changed_bytes_and_new_listing_entries(tmp_path):
+    plans = tmp_path / "deferred-inputs"
+    first = plans / "first" / "native_trajectory_plan.v1.json"
+    first.parent.mkdir(parents=True)
+    first.write_text("{}")
+    record = tmp_path / "record.json"
+    record.write_text('{"fixture": 1}')
+    pattern = "*/native_trajectory_plan.v1.json"
+    consulted = {str(record): "sha256:" + hashlib.sha256(record.read_bytes()).hexdigest(),
+                 ("listing", str(plans), pattern): (str(first),)}
+    assert retained._reproven((dict(consulted), []))
+    second = plans / "second" / "native_trajectory_plan.v1.json"
+    second.parent.mkdir()
+    second.write_text("{}")
+    assert not retained._reproven((dict(consulted), []))
+    second.unlink()
+    record.write_text('{"fixture": 2}')
+    assert not retained._reproven((dict(consulted), []))
+
+
+def test_reproof_rehashes_small_files_and_refuses_symlinked_parents(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    small = real / "cameras.json"
+    small.write_text('{"fov": 60}')
+    row = {"path": str(small), "identity": list(digests._identity(small.lstat())),
+           "sha256": "sha256:" + hashlib.sha256(small.read_bytes()).hexdigest()}
+    assert retained._reproven(({}, [row]))
+    small.write_text('{"fov": 61}')  # same size, new bytes
+    assert not retained._reproven(({}, [row]))
+    (tmp_path / "link").symlink_to(real, target_is_directory=True)
+    through_link = {**row, "path": str(tmp_path / "link" / "cameras.json"),
+                    "sha256": "sha256:" + hashlib.sha256(small.read_bytes()).hexdigest()}
+    assert not retained._reproven(({}, [through_link]))
