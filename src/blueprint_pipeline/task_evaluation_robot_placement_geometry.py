@@ -775,23 +775,22 @@ def _parallel_geometry_gates(
             (index, proposals, target_position_world_m, robot_id, prefilter_nonpassing)
         )
     active_workers = min(workers, len(proposals))
-    chunk_size = math.ceil(len(proposals) / active_workers)
     work = [
         (
             index,
-            [dict(proposal) for proposal in proposals[offset : offset + chunk_size]],
+            [dict(proposal) for proposal in proposals[offset::active_workers]],
             list(target_position_world_m),
             robot_id,
             prefilter_nonpassing,
         )
-        for offset in range(0, len(proposals), chunk_size)
+        for offset in range(active_workers)
     ]
     context = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(
         max_workers=active_workers, mp_context=context
     ) as executor:
-        chunks = executor.map(_geometry_gate_chunk_worker, work)
-        return [gate for chunk in chunks for gate in chunk]
+        chunks = list(executor.map(_geometry_gate_chunk_worker, work))
+        return [chunks[i % active_workers][i // active_workers] for i in range(len(proposals))]
 
 
 def _parallel_trajectory_gates(
@@ -1007,100 +1006,123 @@ def enumerate_robot_placement_geometry_candidates(
             considered.append(surface)
             considered_ids.add(surface.surface_id)
 
-    for surface_index, surface in enumerate(considered):
-        for radius_index, radius in enumerate(radii):
-            for angle_index in range(72):
-                angle = 2.0 * math.pi * angle_index / 72.0
-                position = [
-                    float(target[0] - radius * math.cos(angle)),
-                    float(target[1] - radius * math.sin(angle)),
-                    float(surface.height_m),
-                ]
-                proposal = {
-                    "candidate_id": (
-                        f"geometry_{surface_index:02d}_{radius_index:02d}_"
-                        f"{surface.height_m:.3f}_"
-                        f"{float(radius):.3f}_{angle_index:02d}"
-                    ),
-                    "support_surface_id": surface.surface_id,
-                    "pose": {
-                        "position_world_m": position,
-                        "orientation_xyzw": [
-                            0.0,
-                            0.0,
-                            math.sin(angle / 2.0),
-                            math.cos(angle / 2.0),
-                        ],
-                    },
-                }
-                geometry_work.append(
-                    (proposal, surface, float(radius), angle_index)
-                )
-
-    geometry_gates = _parallel_geometry_gates(
-        index=index,
-        proposals=[row[0] for row in geometry_work],
-        target_position_world_m=target,
-        robot_id=robot_id,
-        worker_count=geometry_worker_count,
-        prefilter_nonpassing=True,
-    )
-    prequalified = [
-        (proposal, gate, surface, radius, angle_index)
-        for (proposal, surface, radius, angle_index), gate in zip(
-            geometry_work, geometry_gates, strict=True
-        )
-        if gate["status"] == "passed"
-    ]
-
-    trajectory_gates = _parallel_trajectory_gates(
-        proposals=[row[0] for row in prequalified],
-        trajectory_waypoints_world_m=trajectory_waypoints_world_m,
-        trajectory_phase_ids=trajectory_phase_ids,
-        trajectory_orientations_world_xyzw=trajectory_orientations_world_xyzw,
-        worker_count=trajectory_worker_count,
-    )
+    remaining = [surface for surface in surfaces if surface.surface_id not in considered_ids]
+    all_geometry_gates: list[dict[str, Any]] = []
+    all_trajectory_gates: list[dict[str, Any]] = []
+    geometry_passing_count = 0
+    searched_surface_count = 0
+    search_pass_count = 0
     candidates: list[tuple[tuple[float, ...], dict[str, Any], dict[str, Any]]] = []
-    for (
-        proposal,
-        _cheap_gate,
-        surface,
-        radius,
-        angle_index,
-    ), trajectory_gate in zip(prequalified, trajectory_gates, strict=True):
-        gate = validate_robot_placement_geometry_candidate(
+    for support_batch in (considered, remaining):
+        if not support_batch:
+            continue
+        considered = support_batch
+        geometry_work = []
+        for surface_index, surface in enumerate(considered, start=searched_surface_count):
+            for radius_index, radius in enumerate(radii):
+                for angle_index in range(72):
+                    angle = 2.0 * math.pi * angle_index / 72.0
+                    position = [
+                        float(target[0] - radius * math.cos(angle)),
+                        float(target[1] - radius * math.sin(angle)),
+                        float(surface.height_m),
+                    ]
+                    proposal = {
+                        "candidate_id": (
+                            f"geometry_{surface_index:02d}_{radius_index:02d}_"
+                            f"{surface.height_m:.3f}_"
+                            f"{float(radius):.3f}_{angle_index:02d}"
+                        ),
+                        "support_surface_id": surface.surface_id,
+                        "pose": {
+                            "position_world_m": position,
+                            "orientation_xyzw": [
+                                0.0,
+                                0.0,
+                                math.sin(angle / 2.0),
+                                math.cos(angle / 2.0),
+                            ],
+                        },
+                    }
+                    geometry_work.append(
+                        (proposal, surface, float(radius), angle_index)
+                    )
+
+        geometry_gates = _parallel_geometry_gates(
             index=index,
-            proposal=proposal,
+            proposals=[row[0] for row in geometry_work],
             target_position_world_m=target,
             robot_id=robot_id,
-            trajectory_gate_override=trajectory_gate,
+            worker_count=geometry_worker_count,
+            prefilter_nonpassing=True,
         )
-        if gate["status"] != "passed":
-            continue
-        score = (
-            -float(
-                gate["trajectory_position_ik_gate"]["minimum_manipulability"]
-                or 0.0
-            ),
-            abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
-            abs(radius - 0.45),
-            gate["shoulder_to_target_distance_m"],
-            float(angle_index),
+        prequalified = [
+            (proposal, gate, surface, radius, angle_index)
+            for (proposal, surface, radius, angle_index), gate in zip(
+                geometry_work, geometry_gates, strict=True
+            )
+            if gate["status"] == "passed"
+        ]
+
+        trajectory_gates = _parallel_trajectory_gates(
+            proposals=[row[0] for row in prequalified],
+            trajectory_waypoints_world_m=trajectory_waypoints_world_m,
+            trajectory_phase_ids=trajectory_phase_ids,
+            trajectory_orientations_world_xyzw=trajectory_orientations_world_xyzw,
+            worker_count=trajectory_worker_count,
         )
-        candidates.append((score, proposal, gate))
+        candidates = []
+        for (
+            proposal,
+            _cheap_gate,
+            surface,
+            radius,
+            angle_index,
+        ), trajectory_gate in zip(prequalified, trajectory_gates, strict=True):
+            gate = validate_robot_placement_geometry_candidate(
+                index=index,
+                proposal=proposal,
+                target_position_world_m=target,
+                robot_id=robot_id,
+                trajectory_gate_override=trajectory_gate,
+            )
+            if gate["status"] != "passed":
+                continue
+            score = (
+                -float(
+                    gate["trajectory_position_ik_gate"]["minimum_manipulability"]
+                    or 0.0
+                ),
+                abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
+                abs(radius - 0.45),
+                gate["shoulder_to_target_distance_m"],
+                float(angle_index),
+            )
+            candidates.append((score, proposal, gate))
+        all_geometry_gates.extend(geometry_gates)
+        all_trajectory_gates.extend(trajectory_gates)
+        geometry_passing_count += len(prequalified)
+        searched_surface_count += len(considered)
+        search_pass_count += 1
+        if candidates:
+            break
     candidates.sort(key=lambda item: item[0])
     if diagnostics is not None:
         diagnostics.update({
-            "proposal_count": len(geometry_work),
-            "support_or_reach_prefilter_rejected_count": sum(len(gate) == 1 for gate in geometry_gates),
-            "detailed_geometry_tested_count": sum(len(gate) > 1 for gate in geometry_gates),
+            "proposal_count": len(all_geometry_gates),
+            "support_or_reach_prefilter_rejected_count": sum(len(gate) == 1 for gate in all_geometry_gates),
+            "detailed_geometry_tested_count": sum(len(gate) > 1 for gate in all_geometry_gates),
             "detailed_geometry_blocker_counts": dict(Counter(
-                blocker for gate in geometry_gates for blocker in gate.get("blockers", [])
+                blocker for gate in all_geometry_gates for blocker in gate.get("blockers", [])
             )),
-            "geometry_passing_count": len(prequalified),
+            "geometry_passing_count": geometry_passing_count,
             "trajectory_waypoint_count": len(trajectory_waypoints_world_m),
-            "trajectory_rejected_count": sum(gate["status"] == "rejected" for gate in trajectory_gates),
+            "trajectory_rejected_count": sum(gate["status"] == "rejected" for gate in all_trajectory_gates),
             "candidate_count": min(len(candidates), int(maximum_candidates)),
+            "support_search_pass_count": search_pass_count,
+            "searched_support_surface_count": searched_surface_count,
+            "available_support_surface_count": len(surfaces),
+            "support_search_exhausted": searched_surface_count == len(surfaces),
         })
     return [
         {
