@@ -28,6 +28,7 @@ from blueprint_pipeline.team_evaluation_worker_retention import (
 from blueprint_pipeline.team_embodiment import apply_team_embodiment, is_team_plan
 from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan as _resolved_scene_plan
 from blueprint_pipeline.policy_canary_worker_evidence import (
+    _prepolicy_refusal_result,
     _write_episode_failure_gap, _write_episode_json_artifact,
     _write_indexed_telemetry as _write_policy_canary_telemetry,
 )
@@ -1481,26 +1482,8 @@ def _run_isolated_cell_processes(
             _seal_result(result_path=output_root / GATE_FILENAME, result=diagnostic_continuation_gate)
             if diagnostic_continuation_gate["status"] != "passed":
                 if diagnostic_continuation_gate.get("failure_stage") == "prepolicy_observation":
-                    # This is a retained scene refusal, not a missing pair of
-                    # policy episodes. Preserve its inventory for streaming and
-                    # close normally so the bootstrap does not invent a fallback.
-                    result = deepcopy(child_result)
-                    result.pop("selected_cell_index", None)
-                    inventory = [{**row, "relative_path": f"cell_runs/{index:02d}/" + row["relative_path"]}
-                                 for row in child_result["artifact_inventory"]]
-                    telemetry, parent_artifacts = _write_policy_canary_telemetry(output_root, [])
-                    # Server logs remain open until bootstrap teardown. Retain
-                    # the verified child files and these newly sealed parent
-                    # records, rather than hashing live server logs as evidence.
-                    inventory.extend(row for row in parent_artifacts if row["relative_path"] == GATE_FILENAME
-                        or row["role"] in {"indexed_episode_telemetry", "telemetry_schema", "telemetry_index"})
-                    result.update(status="blocked", episodes_per_policy=0,
-                        planned_episodes_per_policy=len(inputs["cells"]), learned_policy_rollout_count=0,
-                        blockers=list(diagnostic_continuation_gate["blockers"]),
-                        diagnostic_continuation_gate=diagnostic_continuation_gate,
-                        isolated_simulation_process_count=1, stopped_before_next_cell=True,
-                        telemetry=telemetry, artifact_inventory=inventory, artifact_inventory_digest=_digest(inventory))
-                    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+                    result = _prepolicy_refusal_result(child=child_result, gate=diagnostic_continuation_gate,
+                        output_root=output_root, cell_index=index, planned_cells=len(inputs["cells"]), gate_filename=GATE_FILENAME)
                     _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
                     return 1
                 raise RuntimeError("diagnostic_continuation_first_cell_blocked:" + ",".join(diagnostic_continuation_gate["blockers"]))
