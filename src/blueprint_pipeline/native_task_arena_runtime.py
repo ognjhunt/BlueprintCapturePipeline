@@ -747,7 +747,14 @@ def author_grounded_articulation(
     from pxr import Sdf, Usd, UsdPhysics
 
     source = Path(source_usd).expanduser().resolve()
-    stage = Usd.Stage.Open(str(source))
+    output = Path(destination).expanduser().resolve()
+    if output == source:
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_grounding_would_mutate_source"]
+        )
+    # USD layers are shared in process. Mutate a private composition so a
+    # retained source stage cannot silently become grounded in memory.
+    stage = Usd.Stage.Open(Usd.Stage.Open(str(source)).Flatten())
     root = stage.GetDefaultPrim()
     if not root:
         raise NativeTaskArenaRuntimeError(
@@ -769,7 +776,6 @@ def author_grounded_articulation(
     )
     joint.GetBody1Rel().SetTargets([Sdf.Path(fixed_base)])
 
-    output = Path(destination).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     stage.GetRootLayer().Export(str(output))
 
@@ -786,6 +792,33 @@ def author_grounded_articulation(
         ),
         "derived_from_sha256": _sha256(source),
     }
+
+
+def verify_grounded_articulation_overlay(
+    source_usd: str | Path, staged_usd: str | Path, declared: Mapping[str, Any],
+) -> None:
+    """Reproduce the permitted physics-only derivative from the sealed source."""
+    source = Path(source_usd).expanduser().resolve()
+    if _sha256(source) != declared.get("derived_from_sha256"):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_source_mismatch"])
+    with tempfile.TemporaryDirectory(prefix="blueprint-grounding-replay-") as scratch:
+        expected = Path(scratch) / "grounded.usda"
+        adaptation = author_grounded_articulation(source, expected)
+        if adaptation is None or any(declared.get(k) != v for k, v in adaptation.items()):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_declaration_mismatch"])
+        friction = declared.get("passive_joint_friction")
+        if friction is not None:
+            if not isinstance(friction, Mapping):
+                raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_friction_invalid"])
+            with_friction = Path(scratch) / "passive.usda"
+            replayed = author_passive_joint_friction_overlay(
+                expected, with_friction,
+                joint_prim_path=str(friction.get("joint_prim_path") or ""))
+            if replayed is None or replayed != friction:
+                raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_friction_mismatch"])
+            expected = with_friction
+        if _sha256(expected) != _sha256(Path(staged_usd)):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_derivative_mismatch"])
 
 
 def verify_grounded_articulation(staged_usd: str | Path) -> dict[str, Any]:

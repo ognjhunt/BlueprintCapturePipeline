@@ -126,6 +126,8 @@ def _answer(binding, *, hinge="bottom"):
         if set(row["visible_parts"]) & MOVING:
             witnesses.setdefault(row["task_part_state"], row["frame_id"])
     return {"hinge_edge": hinge, "task_part_components": moving, "frames": frames,
+            "assembly_mounting": {"mode": "unknown", "source_frame_ids": [],
+                "reason": "These fixture views do not establish mounting."},
             "required_motions": [{"motion_id": "primary_motion", "part_ids": moving,
                 "joint_type": "revolute", "task_actions": ["open", "close"],
                 "source_frame_ids": list(witnesses.values())}] if moving else []}
@@ -182,6 +184,33 @@ def _run(tmp_path, target, geometry, **overrides):
                      articulation_kind="revolute", registry=_registry(), source_geometry=geometry,
                      task_context=_context(), source_video=tmp_path / "clip.mov", output_root=tmp_path / "coverage")
     return coverage.assembly_coverage(**{**arguments, **overrides})
+
+
+def test_mounting_review_survives_selection_and_legacy_records_stay_reusable(tmp_path, model):
+    _, state = model
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    def answer(binding):
+        value = _answer(binding)
+        value["assembly_mounting"] = {"mode": "fixed_in_scene",
+            "source_frame_ids": [binding["images"][0]["frame_id"]],
+            "reason": "Visible installation."}
+        return value
+    state["answer"] = answer
+    record = _run(tmp_path, target, geometry)
+    mounting = record["assembly_mounting"]
+    assert set(mounting["source_frame_ids"]) <= {r["frame_id"] for r in record["selected_frames"]}
+    assert coverage.assembly_constraints(record, task_part="door")["assembly_mounting"] == mounting
+    legacy = json.loads(json.dumps(record))
+    legacy.pop("assembly_mounting")
+    legacy["binding"]["prompt_digest"] = canonical_digest({"prompt": coverage.PROMPT,
+        "revolute": coverage.REVOLUTE_PROMPT, "prismatic": coverage.PRISMATIC_PROMPT,
+        "motions": coverage.MOTIONS_PROMPT, "response": coverage.LEGACY_RESPONSE_SHAPE})
+    legacy["digest"] = canonical_digest(legacy, digest_field="digest")
+    assert coverage.coverage_matches(legacy, target=target, source_geometry=geometry, task_context=_context())
+    legacy["assembly_mounting"] = mounting
+    legacy["digest"] = canonical_digest(legacy, digest_field="digest")
+    assert not coverage.coverage_matches(legacy, target=target, source_geometry=geometry, task_context=_context())
 
 
 def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp_path, model):
@@ -497,6 +526,15 @@ def test_malformed_classification_is_a_typed_incomplete_record_never_rebought(tm
     assert len(record["classifier"]["receipts"]) == 1 and record["candidate_frame_count"] > 0
     assert _run(tmp_path, target, geometry) == record
     assert len(calls) == 1
+
+
+def test_new_reviews_explicitly_report_mounting_even_when_unknown(tmp_path, model):
+    _, state = model
+    state["answer"] = lambda binding: {k: v for k, v in _answer(binding).items() if k != "assembly_mounting"}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track), geometry)
+    assert record["status"] == "incomplete"
+    assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
 
 
 def test_malformed_classification_is_held_every_tick_until_a_revision_bump(tmp_path, model, monkeypatch):

@@ -139,6 +139,46 @@ def _identity(path: Path) -> dict[str, object]:
     }
 
 
+def test_adapter_requires_exact_grounding_replay_and_rejects_geometry_tampering(tmp_path: Path) -> None:
+    from pxr import Usd, UsdGeom
+    from blueprint_pipeline.native_task_arena_runtime import author_grounded_articulation
+    from tests.test_task_object_artisan_exports import mounted_fixture
+
+    value, configured, packet, receipt = _passive_joint_overlay_binding(tmp_path)
+    fixture_root = tmp_path / "authoring"
+    source, _, _ = mounted_fixture(fixture_root)
+    derived = tmp_path / "grounded.usda"
+    adaptation = author_grounded_articulation(source, derived)
+    assert adaptation is not None
+    staged = packet / "assets/task_object.usd"
+    staged.write_bytes(derived.read_bytes())
+    configured["replacement"]["asset"] = _identity(source)
+    contract_path = packet / "native_task_runtime_contract.v1.json"
+    contract = json.loads(contract_path.read_text())
+    contract["objects"][0]["articulation_adaptation"] = adaptation
+    binding = next(row for row in receipt["source_bindings"] if row["semantic_role"] == "task_object")
+
+    def refresh_staged_identity():
+        digest, size = _identity(staged)["digest"], staged.stat().st_size
+        contract["objects"][0]["sha256"] = digest
+        contract_path.write_text(json.dumps(contract))
+        binding.update(staged_sha256=digest, staged_size_bytes=size,
+                       source={"sha256": digest, "size_bytes": size})
+
+    refresh_staged_identity()
+    arguments = dict(request=value, configured_revision=configured,
+                     packet_root=packet, packet_receipt=receipt)
+    with pytest.raises(TaskEvaluationNativeArenaAdapterError, match="overlay_invalid"):
+        _verify_task_subject_binding(**arguments)
+    _verify_task_subject_binding(**arguments, sealed_task_asset_source=source)
+    stage = Usd.Stage.Open(str(staged))
+    UsdGeom.Cube.Define(stage, "/Asset/unadmitted_geometry")
+    stage.GetRootLayer().Save()
+    refresh_staged_identity()
+    with pytest.raises(TaskEvaluationNativeArenaAdapterError, match="overlay_invalid"):
+        _verify_task_subject_binding(**arguments, sealed_task_asset_source=source)
+
+
 def _bundles(
     tmp_path: Path, *, empty_runtime_marker: bool = False,
 ) -> tuple[dict[str, object], dict[str, object], Path, Path]:

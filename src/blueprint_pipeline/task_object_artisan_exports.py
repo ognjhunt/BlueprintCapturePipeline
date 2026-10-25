@@ -295,6 +295,46 @@ def _declared_joint_dynamics(configuration):
     return result
 
 
+def _assembly_mounting_overlay(stage, request, *, author):
+    """Carry an explicit capture-reviewed fixture constraint into the export."""
+    from pxr import UsdPhysics
+    from .task_object_required_motions import assembly_mounting
+
+    declaration = (request.get("construction_constraints") or {}).get("assembly_mounting")
+    if declaration is None:
+        return None
+    # Production source_frames are file records; frame identities live in the
+    # retained handoff manifest. Bind cited identities to admitted image hashes.
+    admitted = {row["sha256"] for row in request.get("source_frames", []) if isinstance(row.get("sha256"), str)}
+    known_frames = [row["frame_id"] for row in (request.get("source_frame_manifest") or {}).get("frames", [])
+                    if (row.get("image") or {}).get("sha256", (row.get("image") or {}).get("digest")) in admitted]
+    try:
+        mounting = assembly_mounting(declaration, source_frame_ids=known_frames)
+    except ValueError as exc:
+        raise AuthoringContractError(str(exc)) from exc
+    bodies = {str(p.GetPath()): p for p in stage.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)}
+    children = {str(path) for p in stage.Traverse() if p.IsA(UsdPhysics.Joint)
+                for path in UsdPhysics.Joint(p).GetBody1Rel().GetTargets()}
+    roots = set(bodies) - children
+    require(len(roots) == 1, "artisan_mounting_root_ambiguous")
+    base = bodies[roots.pop()]
+    body = UsdPhysics.RigidBodyAPI(base)
+    if author and mounting["mode"] == "fixed_in_scene":
+        body.CreateKinematicEnabledAttr(True)
+    if mounting["mode"] != "unknown":
+        require(bool(body.GetKinematicEnabledAttr().Get()) == (mounting["mode"] == "fixed_in_scene"),
+                "artisan_mounting_constraint_changed")
+    root = stage.GetDefaultPrim()
+    if author:
+        root.SetCustomDataByKey("blueprint:assemblyMounting", json.dumps(mounting, sort_keys=True))
+    else:
+        require(root.GetCustomDataByKey("blueprint:assemblyMounting") == json.dumps(mounting, sort_keys=True),
+                "artisan_mounting_annotation_changed")
+    return {**mounting, "root_body_prim_path": str(base.GetPath()),
+            "base_kinematic_enabled": bool(body.GetKinematicEnabledAttr().Get()),
+            "basis": "capture_review_construction_candidate", "physical_mount_measured": False}
+
+
 def _passive_joint_dynamics(stage, configuration, *, author):
     """Carry the admitted, unactuated resistance into imported and read-back USD."""
     from pxr import Sdf, UsdPhysics
@@ -408,6 +448,7 @@ def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_pat
                 axis = list(UsdGeom.XformCache().GetLocalToWorldTransform(stage.GetPrimAtPath(parent[0])).TransformDir(Gf.Vec3d(*axis)))
                 prim.SetCustomDataByKey("blueprint:graphAxis", Gf.Vec3d(*axis))
     joint_dynamics = _passive_joint_dynamics(stage, request['configuration'], author=True)
+    mounting = _assembly_mounting_overlay(stage, request, author=True)
     stage.GetRootLayer().Save()
     require(UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(working)), str(destination)), "artisan_usdz_packaging_failed")
     # Checks apply to the final package bytes after every overlay/namespace edit.
@@ -417,6 +458,7 @@ def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_pat
             "namespace_root_after": "/Asset", "geometry_scale_applied": False,
             "physics_namespace_overlay": physics_namespace, "appearance_overlay": appearance,
             "material_overlay": properties, "joint_dynamics_overlay": joint_dynamics, "final_readback": observed,
+            **({"assembly_mounting_overlay": mounting} if mounting is not None else {}),
             "candidate_annotations": file_record(annotations_path) if annotations is not None else None,
             "upstream_physics_report_certifies_overlay": False,
             "native_import_qualification_required": True}
@@ -474,6 +516,7 @@ def validate_final_usd(path: Path, request: dict) -> dict:
                     in {"convexHull", "convexDecomposition"}, "artisan_uncooked_dynamic_collision")
     configuration = request["configuration"]
     _passive_joint_dynamics(stage, configuration, author=False)
+    mounting = _assembly_mounting_overlay(stage, request, author=False)
     joints = [p for p in prims if p.IsA(UsdPhysics.Joint)]
     articulated = configuration["schema_version"] == "articulated_replacement_authoring_configuration.v1"
     articulation_roots = [p for p in prims if p.HasAPI(UsdPhysics.ArticulationRootAPI)]
@@ -571,7 +614,9 @@ def validate_final_usd(path: Path, request: dict) -> dict:
         principal_axes = [float(principal.GetReal()), *map(float, principal.GetImaginary())]
         require(_finite([mass, *center, *inertia]) and mass > 0 and all(v > 0 for v in inertia)
                 and _finite(principal_axes) and math.isclose(sum(v*v for v in principal_axes), 1, abs_tol=1e-5)
-                and UsdPhysics.RigidBodyAPI(body).GetKinematicEnabledAttr().Get() is not True
+                and (UsdPhysics.RigidBodyAPI(body).GetKinematicEnabledAttr().Get() is not True
+                     or mounting is not None and mounting["mode"] == "fixed_in_scene"
+                     and mounting["root_body_prim_path"] == str(body.GetPath()))
                 and UsdPhysics.RigidBodyAPI(body).GetRigidBodyEnabledAttr().Get() is not False, "artisan_physics_properties_invalid")
         measured_mass = _measured(configuration, "mass_kg") if not articulated else None
         require(measured_mass is None or math.isclose(mass, measured_mass, rel_tol=1e-6), "artisan_measured_mass_changed")
@@ -645,4 +690,5 @@ def validate_final_usd(path: Path, request: dict) -> dict:
         "handle_grasp_point_link_m": handle_point,
         "interior_cavity_readback": cavity_readback,
         "required_motion_readback": motion_readback,
+        **({"assembly_mounting": mounting} if mounting is not None else {}),
         "physics_authority_granted": False, "physical_equivalence_proven": False}

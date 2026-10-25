@@ -94,6 +94,54 @@ def annotations(root, request):
     return path
 
 
+def mounted_fixture(root, mode="fixed_in_scene"):
+    from PIL import Image
+    request = construction_request(articulated=True)
+    root.mkdir(exist_ok=True)
+    image = root / "installation.png"
+    Image.new("RGB", (4, 4)).save(image)
+    request["source_frames"] = [file_record(image)]
+    image_reference = {"digest": file_record(image)["sha256"], "size_bytes": image.stat().st_size,
+                       "path": image.name}
+    request["source_frame_manifest"] = {"frames": [{"frame_id": "installation-view", "image": image_reference}]}
+    request["source_frame_manifest_digest"] = canonical_digest(request["source_frame_manifest"])
+    request["construction_constraints"] = {"assembly_mounting": {
+        "mode": mode, "source_frame_ids": ["installation-view"],
+        "reason": "Capture-reviewed construction candidate."}}
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    source = usd_fixture(root, articulated=True)
+    digest = file_record(source)["sha256"]
+    destination = root / "mounted.usdz"
+    result = adapt_usd(source, destination, request, annotations_path=annotations(root, request))
+    assert file_record(source)["sha256"] == digest
+    return destination, request, result
+
+
+@pytest.mark.parametrize("mode", ["fixed_in_scene", "free", "unknown"])
+def test_mounting_only_constrains_the_declared_base_and_preserves_geometry(tmp_path, mode):
+    destination, request, result = mounted_fixture(tmp_path, mode)
+    observed = result["final_readback"]
+    mounting = observed["assembly_mounting"]
+    assert mounting["mode"] == mode and mounting["physical_mount_measured"] is False
+    assert mounting["base_kinematic_enabled"] is (mode == "fixed_in_scene")
+    assert observed["dimensions_m"] == pytest.approx([1, 1, 1])
+    assert observed["articulation_graph"]["joints"][0]["limits"] == pytest.approx([0, 1.5])
+    stage = Usd.Stage.Open(str(destination))
+    bodies = [p for p in stage.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)]
+    assert len(bodies) == 2
+    assert [str(p.GetPath()) for p in bodies if UsdPhysics.RigidBodyAPI(p).GetKinematicEnabledAttr().Get()] == (
+        [mounting["root_body_prim_path"]] if mode == "fixed_in_scene" else [])
+    changed = deepcopy(request)
+    changed["construction_constraints"]["assembly_mounting"]["mode"] = "free" if mode == "fixed_in_scene" else "fixed_in_scene"
+    with pytest.raises(AuthoringContractError, match="mounting_constraint_changed|mounting_annotation_changed"):
+        validate_final_usd(destination, changed)
+    if mode != "unknown":
+        changed = deepcopy(request)
+        changed["source_frame_manifest"]["frames"][0]["image"]["digest"] = "sha256:" + "0" * 64
+        with pytest.raises(AuthoringContractError, match="assembly_mounting_invalid"):
+            validate_final_usd(destination, changed)
+
+
 def test_rigid_final_bytes_preserve_dimensions_identity_and_do_not_invent_joint(tmp_path):
     request = construction_request()
     result = adapt_usd(usd_fixture(tmp_path), tmp_path / "final.usdz", request)

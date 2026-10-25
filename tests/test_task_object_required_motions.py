@@ -3,8 +3,27 @@ from copy import deepcopy
 import pytest
 
 from blueprint_pipeline.task_object_required_motions import (
-    merge_required_motions, motion_graph_readback, required_motions,
+    assembly_mounting, merge_assembly_mounting, merge_required_motions,
+    motion_graph_readback, required_motions,
 )
+
+
+def test_mounting_is_evidence_bound_and_conflicting_reviews_remain_unknown():
+    fixed = {"mode": "fixed_in_scene", "source_frame_ids": ["installed"],
+             "reason": "The base is installed within a fixed surround."}
+    free = {"mode": "free", "source_frame_ids": ["moving"],
+            "reason": "The base moves independently."}
+    assert assembly_mounting(None) is None
+    assert assembly_mounting(fixed, source_frame_ids=["installed"]) == fixed
+    for bad in ({**fixed, "source_frame_ids": []}, {**fixed, "mode": []}):
+        with pytest.raises(ValueError, match="assembly_mounting_invalid"):
+            assembly_mounting(bad)
+    with pytest.raises(ValueError, match="assembly_mounting_invalid"):
+        assembly_mounting(fixed, source_frame_ids=["other"])
+    assert merge_assembly_mounting([fixed, free])["mode"] == "unknown"
+    unknown = {"mode": "unknown", "source_frame_ids": [], "reason": "Mount is not visible."}
+    assert merge_assembly_mounting([unknown, fixed]) == fixed
+    assert merge_assembly_mounting([unknown])["mode"] == "unknown"
 
 
 def motion(name, parts, kind="prismatic", frames=None):
