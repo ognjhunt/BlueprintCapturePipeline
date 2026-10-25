@@ -1488,12 +1488,18 @@ def _run_isolated_cell_processes(
                     result.pop("selected_cell_index", None)
                     inventory = [{**row, "relative_path": f"cell_runs/{index:02d}/" + row["relative_path"]}
                                  for row in child_result["artifact_inventory"]]
+                    telemetry, parent_artifacts = _write_policy_canary_telemetry(output_root, [])
+                    # Server logs remain open until bootstrap teardown. Retain
+                    # the verified child files and these newly sealed parent
+                    # records, rather than hashing live server logs as evidence.
+                    inventory.extend(row for row in parent_artifacts if row["relative_path"] == GATE_FILENAME
+                        or row["role"] in {"indexed_episode_telemetry", "telemetry_schema", "telemetry_index"})
                     result.update(status="blocked", episodes_per_policy=0,
                         planned_episodes_per_policy=len(inputs["cells"]), learned_policy_rollout_count=0,
                         blockers=list(diagnostic_continuation_gate["blockers"]),
                         diagnostic_continuation_gate=diagnostic_continuation_gate,
                         isolated_simulation_process_count=1, stopped_before_next_cell=True,
-                        artifact_inventory=inventory, artifact_inventory_digest=_digest(inventory))
+                        telemetry=telemetry, artifact_inventory=inventory, artifact_inventory_digest=_digest(inventory))
                     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
                     _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
                     return 1

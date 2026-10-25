@@ -333,6 +333,8 @@ def test_real_parent_preserves_prepolicy_refusal_and_zero_executed_rollouts(tmp_
     _complete_fixture_native_channels(monkeypatch)
     calls, isaacs = [], []
     reason = 'external:task_object:composition_contact_background_occlusion_requires_review'
+    server_log = output / 'adp009d_policy_server.pi05_droid.log'
+    server_log.write_text('ready\n')
     def factory(isaac):
         def gate(**_kwargs):
             value = {'schema_version': 'policy_canary_runtime_observation_integrity_gate.v1',
@@ -358,8 +360,16 @@ def test_real_parent_preserves_prepolicy_refusal_and_zero_executed_rollouts(tmp_
     assert result['learned_policy_rollout_count'] == 0 and result['planned_episodes_per_policy'] == 10
     assert reason in result['blockers']
     assert result['artifact_inventory']
+    server_log.write_text('ready\nclosed after the worker returned\n')
+    assert all(row['relative_path'] != server_log.name for row in result['artifact_inventory'])
+    assert result['telemetry']['message_count'] == 0
+    assert result['telemetry']['index_digest'] == canonical_digest(result['telemetry'], digest_field='index_digest')
+    for key in ('artifact', 'schema'):
+        row = result['telemetry'][key]
+        assert row['sha256'] == 'sha256:' + hashlib.sha256((output / row['path']).read_bytes()).hexdigest()
     for row in result['artifact_inventory']:
-        assert row['relative_path'].startswith('cell_runs/00/')
+        assert row['relative_path'].startswith('cell_runs/00/') or row['role'] in {
+            'indexed_episode_telemetry', 'telemetry_schema', 'telemetry_index'} or row['relative_path'] == GATE_FILENAME
         path = output / row['relative_path']
         assert row['size_bytes'] == path.stat().st_size
         assert row['sha256'] == 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
