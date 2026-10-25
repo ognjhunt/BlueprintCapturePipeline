@@ -230,6 +230,7 @@ def provision_scene_configuration_release(
     artisan_root: str | Path | None = None,
     artisan_site_packages_root: str | Path | None = None,
     artisan_blender_root: str | Path | None = None,
+    artisan_vendor_reuse_plan: str | Path | None = None,
 ) -> dict[str, Any]:
     """Publish or reopen the two immutable runtime trees for one release."""
 
@@ -314,7 +315,8 @@ def provision_scene_configuration_release(
                 build_artisan_scene_configuration_component(repository_root=repository,
                     expected_blueprint_commit=source_commit, artisan_root=artisan_root,
                     site_packages_root=artisan_site_packages_root, blender_root=artisan_blender_root,
-                    output_root=component_packages["content_agents_rigid_replacement"])
+                    output_root=component_packages["content_agents_rigid_replacement"],
+                    artisan_vendor_reuse_plan=artisan_vendor_reuse_plan)
             else:
                 build_content_agents_scene_configuration_component(
                     repository_root=repository, expected_blueprint_commit=source_commit,
@@ -385,6 +387,7 @@ def main() -> int:
     parser.add_argument("--artisan-root", default=os.getenv("BLUEPRINT_ARTISAN_UPSTREAM_ROOT"))
     parser.add_argument("--artisan-site-packages-root", default=os.getenv("BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT"))
     parser.add_argument("--artisan-blender-root", default=os.getenv("BLUEPRINT_ARTISAN_BLENDER_ROOT"))
+    parser.add_argument("--artisan-vendor-reuse-plan")
     parser.add_argument("--readback-user", required=True)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, _terminated)
@@ -418,6 +421,7 @@ def _provision_from_arguments(args: argparse.Namespace, readback: Readback) -> d
         artisan_root=getattr(args, "artisan_root", None),
         artisan_site_packages_root=getattr(args, "artisan_site_packages_root", None),
         artisan_blender_root=getattr(args, "artisan_blender_root", None),
+        artisan_vendor_reuse_plan=getattr(args, "artisan_vendor_reuse_plan", None),
         readback=readback,
         readback_actor=f"service-account:{args.readback_user}",
     )
