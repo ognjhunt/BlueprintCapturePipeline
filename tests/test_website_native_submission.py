@@ -241,10 +241,10 @@ def test_new_signed_website_drawer_selects_sol_managed_runtime_without_spend(tmp
     assert request["spend"]["hard_cap_usd"] == 31.0
 
 
-@pytest.mark.parametrize("ceiling,admitted", [(20, False), (30.99, False), (31, True)])
+@pytest.mark.parametrize("ceiling,admitted", [(20, False), (25, False), (30.99, True), (31, True)])
 def test_articulated_stage_quote_is_admitted_only_under_a_scene_ceiling_that_covers_it(
         tmp_path, monkeypatch, ceiling, admitted):
-    """Provider compute ($6) plus the shared $25 authoring pool; nothing lower admits it."""
+    """Keep the frozen authoring pool and bound prospective compute to the owner cap."""
     from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
         MAX_ASTRA_AUTHORING_SPEND_USD, MAX_PROVIDER_COMPUTE_SPEND_USD,
     )
@@ -255,11 +255,42 @@ def test_articulated_stage_quote_is_admitted_only_under_a_scene_ceiling_that_cov
     if not admitted:
         with pytest.raises(ValueError, match="website_native_construction_budget_exceeds_authority"):
             materialize_website_submission(**kwargs)
-        assert not (kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").exists()
+        assert not kwargs["staging_root"].exists()
         return
     materialize_website_submission(**kwargs)
     request = json.loads((kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())
-    assert request["spend"]["hard_cap_usd"] == 31.0
+    spend = request["spend"]
+    assert spend["hard_cap_usd"] == pytest.approx(min(ceiling, 31.0), abs=0.0000011)
+    assert spend["hard_cap_usd"] <= ceiling
+    assert spend["external_service_caps"]["openai"]["maximum_cost_usd"] == 25.0
+    assert spend["maximum_hourly_rate_usd"] * spend["hard_ttl_seconds"] / 3600 <= spend["provider_compute_spend_cap_usd"]
+
+
+@pytest.mark.parametrize("ceiling,admitted", [(15, False), (20, True)])
+def test_artisan_owner_ceiling_bounds_compute_before_any_staging(tmp_path, monkeypatch, ceiling, admitted):
+    monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")
+    monkeypatch.setenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", "15")
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=ceiling,
+                      authoring_backend="artisan_v1")
+    authority_path = Path(kwargs["task"]["scene_intent_authority"]["path"])
+    authority_bytes = authority_path.read_bytes()
+    if not admitted:
+        with pytest.raises(ValueError, match="website_native_construction_budget_exceeds_authority"):
+            materialize_website_submission(**kwargs)
+        assert not kwargs["staging_root"].exists()
+    else:
+        materialize_website_submission(**kwargs)
+        root = kwargs["staging_root"]
+        request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+        spend = request["spend"]
+        assert spend["hard_cap_usd"] == 20
+        assert spend["provider_compute_spend_cap_usd"] == 5
+        assert spend["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 15
+        from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import REQUIRED_PARENT_TTL_SECONDS
+        assert spend["hard_ttl_seconds"] == REQUIRED_PARENT_TTL_SECONDS
+        assert spend["maximum_hourly_rate_usd"] * REQUIRED_PARENT_TTL_SECONDS / 3600 <= 5
+        assert _validated_inventory(root, SHA)[1]
+    assert authority_path.read_bytes() == authority_bytes
 
 
 def test_owner_grant_admits_the_articulated_quote_above_the_consented_ceiling(tmp_path, monkeypatch):

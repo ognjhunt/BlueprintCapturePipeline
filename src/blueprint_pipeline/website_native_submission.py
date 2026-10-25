@@ -94,6 +94,24 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                                   release_admission_mode, staging_root):
     intent, preparation, context, rights, construction, paths = verified_submission_inputs(task)
     owner_task = intent["request"]["task"]
+    from .task_evaluation_scene_execution_budget_evidence import effective_execution_budget
+    authorized = effective_execution_budget(Path(task["scene_intent_authority"]["path"]).parent, intent)
+    authoring = construction["configurations"][2]
+    articulated = owner_task["strategy"] == "articulated_open_close"
+    try:
+        spend = records.spend_block(authoring["authoring_backend"],
+            authoring_max_cost_usd=(frozen_authoring_cap(authoring)
+                if authoring["authoring_backend"] == ARTISAN_BACKEND
+                else None if not articulated else 7.0
+                if authoring.get("authoring_model_provider") == "anthropic"
+                else MAX_ASTRA_AUTHORING_SPEND_USD),
+            requires_artifixer=False,
+            authoring_provider=authoring.get("authoring_model_provider", "openai"),
+            maximum_total_spend_usd=authorized["max_total_spend_usd"])
+    except ValueError as exc:
+        if str(exc) == "scene_configuration_compute_budget_missing":
+            raise ValueError("website_native_construction_budget_exceeds_authority") from None
+        raise
     from .website_development_test import environment
     development = environment(preparation)
     scene_id = construction["scene_identity"]["id"]
@@ -293,23 +311,13 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         # maximum. The separately signed Claude lane keeps its own $7 ceiling.
         # An ARTISAN stage quotes exactly the cap its configuration froze; the
         # stage preflight refuses any other quote.
-        "spend": records.spend_block(
-            construction["configurations"][2]["authoring_backend"],
-            authoring_max_cost_usd=(frozen_authoring_cap(construction["configurations"][2])
-                if construction["configurations"][2]["authoring_backend"] == ARTISAN_BACKEND
-                else None if not articulated else 7.0
-                if construction["configurations"][2].get("authoring_model_provider") == "anthropic"
-                else MAX_ASTRA_AUTHORING_SPEND_USD),
-            requires_artifixer=False,
-            authoring_provider=construction["configurations"][2].get("authoring_model_provider", "openai"))}
+        "spend": spend}
     request["replacement_authoring_backend"] = construction["configurations"][2]["authoring_backend"]
     if construction["configurations"][2].get("authoring_model_provider") == "anthropic":
         request["replacement_authoring_model_provider"] = "anthropic"
     if construction["configurations"][2].get("authoring_agent_runtime") == "openai_agents_api":
         request["replacement_authoring_agent_runtime"] = "openai_agents_api"
         request["replacement_authoring_model"] = "gpt-6.1-sol"
-    from .task_evaluation_scene_execution_budget_evidence import effective_execution_budget
-    authorized = effective_execution_budget(Path(task["scene_intent_authority"]["path"]).parent, intent)
     require(request["spend"]["hard_cap_usd"] <= authorized["max_total_spend_usd"],
             "website_native_construction_budget_exceeds_authority")
     validate_launch_preparation_request(request)
