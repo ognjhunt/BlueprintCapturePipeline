@@ -2333,15 +2333,15 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
             },
         ),
         (
-            "attempt-cap-not-canonical",
+            "attempt-underfunded",
             {
                 "hard_cap_usd": 9.9,
                 "provider_compute_spend_cap_usd": 5.9,
             },
         ),
         (
-            "compute-cap-not-canonical",
-            {"provider_compute_spend_cap_usd": 5.9},
+            "compute-cap-exceeds-profile",
+            {"provider_compute_spend_cap_usd": 6.01},
         ),
     ):
         with pytest.raises(
@@ -2355,6 +2355,16 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
                     "output_path": tmp_path / f"authority-{suffix}.json",
                 }
             )
+
+    tighter = authority_module.materialize_scene_configuration_paid_authority(
+        **{**authority_arguments, "provider_compute_spend_cap_usd": 5.9,
+           "hard_cap_usd": round(5.9 + MIN_EXTERNAL_SERVICE_SPEND_USD, 6),
+           "output_path": tmp_path / "authority-tighter-compute.json"}
+    )
+    assert tighter["provider_compute_spend_cap_usd"] == 5.9
+    assert authority_module.validate_scene_configuration_paid_authority(
+        tighter, bundle_receipt=receipt
+    ) == tighter
 
     assert authority["retry_cap"] == 0
     # Prior spend remains reconciled and receipt-bound, but it no longer
@@ -2440,7 +2450,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
             )
     for field, value in (
         ("hard_attempt_spend_cap_usd", 9.9),
-        ("provider_compute_spend_cap_usd", 5.9),
+        ("provider_compute_spend_cap_usd", 6.01),
     ):
         noncanonical = json.loads(json.dumps(authority))
         noncanonical[field] = value
