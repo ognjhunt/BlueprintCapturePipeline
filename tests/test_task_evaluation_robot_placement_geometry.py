@@ -6,6 +6,7 @@ import numpy as np
 from pxr import Gf, Usd, UsdGeom
 
 from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
+    _overlapping_scene_triangle_indices,
     _parallel_geometry_gates,
     _parallel_trajectory_gates,
     _supported_sample_count,
@@ -16,6 +17,55 @@ from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
     validate_robot_placement_geometry_candidate,
     validate_robot_placement_trajectory_position_ik,
 )
+
+
+def test_spatial_collision_lookup_matches_exhaustive_boxes() -> None:
+    random = np.random.default_rng(8062)
+    for offset in (0.0, 1.0e6):
+        robot_minimum = random.uniform(-2.0, 2.0, (350, 3)) + offset
+        robot_maximum = robot_minimum + random.uniform(0.0, 0.4, (350, 3))
+        scene_minimum = random.uniform(-3.0, 3.0, (180, 3)) + offset
+        scene_maximum = scene_minimum + random.uniform(0.0, 0.8, (180, 3))
+        # Include a touching point and a very elongated box, then retain a
+        # non-sorted subset to check inclusive boundaries and result ordering.
+        scene_minimum[0] = robot_maximum[0]
+        scene_maximum[0] = robot_maximum[0]
+        scene_minimum[1] = [-100.0 + offset, offset, offset]
+        scene_maximum[1] = [100.0 + offset, offset, offset]
+        selected = np.r_[0, 1, random.permutation(np.arange(2, 180))[:90]]
+        expected = [
+            int(index)
+            for index in selected
+            if np.any(
+                np.all(
+                    (robot_maximum >= scene_minimum[index])
+                    & (robot_minimum <= scene_maximum[index]),
+                    axis=1,
+                )
+            )
+        ]
+
+        assert _overlapping_scene_triangle_indices(
+            scene_minimum=scene_minimum,
+            scene_maximum=scene_maximum,
+            scene_indices=selected,
+            robot_minimum=robot_minimum,
+            robot_maximum=robot_maximum,
+        ) == expected
+        assert 0 in expected
+
+
+def test_spatial_collision_lookup_handles_empty_geometry() -> None:
+    empty = np.empty((0, 3), dtype=np.float64)
+    point = np.zeros((1, 3), dtype=np.float64)
+    for selected, robot in ((np.asarray([], dtype=int), point), (np.asarray([0]), empty)):
+        assert _overlapping_scene_triangle_indices(
+            scene_minimum=point,
+            scene_maximum=point,
+            scene_indices=selected,
+            robot_minimum=robot,
+            robot_maximum=robot,
+        ) == []
 
 
 def test_support_coverage_batches_samples_against_all_triangles() -> None:
@@ -121,6 +171,28 @@ def _proposal(surface_id, position=(0.0, 0.0, 0.0), yaw=0.0):
             "orientation_xyzw": [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)],
         },
     }
+
+
+def test_enumeration_prefilter_preserves_every_passing_gate(tmp_path) -> None:
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene, robot_asset_usd_path=robot
+    )
+    floor = next(s for s in index.support_surfaces if s.prim_path == "/Scene/Floor")
+    proposals = [
+        _proposal(floor.surface_id, position=position, yaw=yaw)
+        for position in ((0.0, 0.0, 0.0), (1.5, 0.0, 0.0), (2.1, 0.0, 0.0), (0.0, 0.0, 0.1))
+        for yaw in (0.0, math.pi / 2, math.pi)
+    ]
+    arguments = dict(index=index, proposals=proposals, target_position_world_m=[0.8, 0.0, 0.5],
+                     robot_id="franka_panda", worker_count=1)
+    complete = _parallel_geometry_gates(**arguments)
+    filtered = _parallel_geometry_gates(**arguments, prefilter_nonpassing=True)
+    assert [g for g in complete if g["status"] == "passed"]
+    assert [g for g in filtered if g["status"] == "passed"] == [
+        g for g in complete if g["status"] == "passed"
+    ]
+    assert any(len(g) == 1 for g in filtered)
 
 
 def test_geometry_gate_uses_batched_support_coverage(tmp_path, monkeypatch) -> None:
