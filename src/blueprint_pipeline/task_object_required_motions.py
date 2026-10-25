@@ -8,6 +8,35 @@ from collections.abc import Mapping, Sequence
 from .decision_evidence_contracts import canonical_digest
 
 
+def assembly_mounting(value, *, source_frame_ids=None):
+    """A capture-reviewed base constraint is a candidate, not measured mounting."""
+    if value is None:
+        return None
+    if (not isinstance(value, Mapping) or set(value) != {"mode", "source_frame_ids", "reason"}
+            or not isinstance(value["mode"], str) or value["mode"] not in {"fixed_in_scene", "free", "unknown"}
+            or not isinstance(value["reason"], str) or not value["reason"].strip()
+            or not isinstance(value["source_frame_ids"], list)
+            or any(not isinstance(i, str) or not i for i in value["source_frame_ids"])
+            or len(set(value["source_frame_ids"])) != len(value["source_frame_ids"])
+            or value["mode"] != "unknown" and not value["source_frame_ids"]
+            or source_frame_ids is not None and not set(value["source_frame_ids"]) <= set(source_frame_ids)):
+        raise ValueError("task_object_assembly_mounting_invalid")
+    return {**value, "source_frame_ids": sorted(value["source_frame_ids"])}
+
+
+def merge_assembly_mounting(rows):
+    """Conflicting visible base constraints stay unknown; object names do not vote."""
+    rows = [assembly_mounting(row) for row in rows if row is not None]
+    if not rows:
+        return None
+    modes = {row["mode"] for row in rows} - {"unknown"}
+    mode = next(iter(modes)) if len(modes) == 1 else "unknown"
+    evidence = [row for row in rows if row["mode"] == mode] if mode != "unknown" else rows
+    return {"mode": mode, "source_frame_ids": sorted({i for row in evidence for i in row["source_frame_ids"]}),
+            "reason": ("Conflicting capture reviews; mounting remains unknown." if len(modes) > 1 else
+                       " ".join(dict.fromkeys(row["reason"] for row in evidence)))}
+
+
 def required_motions(value, *, known_parts=None, source_frame_ids=None):
     """Requirements describe intent and visible parts, never measured mechanics."""
     if not isinstance(value, list):

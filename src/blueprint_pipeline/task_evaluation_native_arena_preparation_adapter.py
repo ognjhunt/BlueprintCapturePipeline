@@ -176,6 +176,7 @@ def _verify_task_subject_binding(
     configured_revision: Mapping[str, Any],
     packet_root: Path,
     packet_receipt: Mapping[str, Any],
+    sealed_task_asset_source: str | Path | None = None,
 ) -> None:
     """Bind the customer task/object declaration to the admitted packet bytes.
 
@@ -266,10 +267,8 @@ def _verify_task_subject_binding(
     source_binding = binding.get("source")
     adaptation = runtime_object.get("articulation_adaptation")
     if staged_digest != asset["digest"] or staged_size != asset["size_bytes"]:
-        # Only the compiler's declared passive-friction overlay may differ
-        # from the sealed configured asset. The packet verifier has already
-        # checked the staged bytes against this binding; reopen the joint so
-        # the declaration cannot paper over a missing or altered PhysX value.
+        # Only a verified physics overlay may differ from the configured
+        # asset. Grounding must replay exactly from its sealed source bytes.
         friction = (
             adaptation.get("passive_joint_friction")
             if isinstance(adaptation, Mapping)
@@ -278,15 +277,14 @@ def _verify_task_subject_binding(
         if (
             task["kind"] != "articulated_manipulation"
             or not isinstance(adaptation, Mapping)
-            or adaptation.get("adaptation") != "estimated_passive_joint_friction_overlay"
+            or adaptation.get("adaptation") not in {
+                "estimated_passive_joint_friction_overlay", "usd_authored_world_fixed_base"}
             or adaptation.get("candidate_bytes_modified") is not False
             or adaptation.get("derived_from_sha256") != asset["digest"]
             or (
                 adaptation.get("fixed_base_body_prim_path") is not None
                 and not isinstance(adaptation.get("fixed_base_body_prim_path"), str)
             )
-            or not isinstance(friction, Mapping)
-            or friction.get("source_sha256") != asset["digest"]
             or not isinstance(source_binding, Mapping)
             or source_binding.get("sha256") != staged_digest
             or source_binding.get("size_bytes") != staged_size
@@ -298,12 +296,24 @@ def _verify_task_subject_binding(
             )
         from .native_task_arena_runtime import (
             verify_grounded_articulation,
+            verify_grounded_articulation_overlay,
             verify_passive_joint_friction_overlay,
         )
 
         staged_path = packet_root / str(binding.get("staged_relative_path") or "")
         try:
-            verify_passive_joint_friction_overlay(staged_path, friction)
+            if adaptation["adaptation"] == "usd_authored_world_fixed_base":
+                if (sealed_task_asset_source is None
+                        or Path(sealed_task_asset_source).is_symlink()
+                        or Path(sealed_task_asset_source).stat().st_size != asset["size_bytes"]
+                        or _sha256_file(Path(sealed_task_asset_source)) != asset["digest"]):
+                    raise ValueError("sealed_task_asset_source_missing_or_changed")
+                verify_grounded_articulation_overlay(
+                    sealed_task_asset_source, staged_path, adaptation)
+            else:
+                if not isinstance(friction, Mapping) or friction.get("source_sha256") != asset["digest"]:
+                    raise ValueError("passive_joint_source_mismatch")
+                verify_passive_joint_friction_overlay(staged_path, friction)
             grounding = verify_grounded_articulation(staged_path)
         except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             raise TaskEvaluationNativeArenaAdapterError(
@@ -313,7 +323,8 @@ def _verify_task_subject_binding(
             raise TaskEvaluationNativeArenaAdapterError(
                 "task_evaluation_adapter_task_subject_overlay_invalid"
             )
-    elif isinstance(adaptation, Mapping) and adaptation.get("adaptation") == "estimated_passive_joint_friction_overlay":
+    elif isinstance(adaptation, Mapping) and adaptation.get("adaptation") in {
+        "estimated_passive_joint_friction_overlay", "usd_authored_world_fixed_base"}:
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_task_subject_binding_mismatch"
         )
@@ -817,6 +828,7 @@ def materialize_native_arena_adapter(
             configured_revision=revision,
             packet_root=packet_root,
             packet_receipt=packet_receipt,
+            sealed_task_asset_source=(external_layers or {}).get(revision["replacement"]["asset"]["digest"]),
         )
         runtime_receipt_path = (
             runtime_root / "native_task_runtime_source_packet.v1.json"

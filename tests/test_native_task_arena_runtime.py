@@ -1229,6 +1229,29 @@ def test_the_anchor_survives_reference_composition(tmp_path: Path) -> None:
     )
 
 
+def test_grounding_and_passive_resistance_replay_together_without_source_mutation(tmp_path):
+    from pxr import Usd, UsdPhysics
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_grounded_articulation, author_passive_joint_friction_overlay,
+        verify_grounded_articulation_overlay,
+    )
+    source = tmp_path / "sealed.usda"
+    source.write_text(KINEMATIC_ARTICULATION_USDA)
+    stage = Usd.Stage.Open(str(source))
+    joint = UsdPhysics.PrismaticJoint.Define(stage, "/Asset/door_hinge")
+    joint_path = str(joint.GetPath())
+    stage.GetRootLayer().Save()
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    grounded, passive = tmp_path / "grounded.usda", tmp_path / "passive.usda"
+    adaptation = author_grounded_articulation(source, grounded)
+    assert adaptation is not None
+    adaptation["passive_joint_friction"] = author_passive_joint_friction_overlay(
+        grounded, passive, joint_prim_path=joint_path)
+    assert adaptation["passive_joint_friction"] is not None
+    verify_grounded_articulation_overlay(source, passive, adaptation)
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == digest
+
+
 def test_the_physics_backend_is_stated_not_inherited(monkeypatch) -> None:
     """The build must name PhysX rather than inherit whatever the snapshot defaults to.
 
