@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-from pxr import Usd, UsdGeom
+from pxr import Gf, Usd, UsdGeom
 from scipy.spatial import cKDTree
 
 from .decision_evidence_contracts import canonical_digest
@@ -71,6 +71,8 @@ class RobotPlacementGeometryIndex:
     support_surfaces: tuple[SupportSurface, ...]
     robot_local_bounds_minimum_m: tuple[float, float, float]
     robot_local_bounds_maximum_m: tuple[float, float, float]
+    background_collision_digest: str
+    task_asset_bindings: tuple[Mapping[str, Any], ...]
 
 
 def _sha256(path: Path) -> str:
@@ -95,18 +97,47 @@ def _triangulate(counts: Sequence[int], indices: Sequence[int]) -> np.ndarray:
 def _stage_triangles(stage: Usd.Stage, *, root_prim: Usd.Prim | None = None) -> tuple[np.ndarray, tuple[str, ...]]:
     triangles: list[np.ndarray] = []
     prim_paths: list[str] = []
-    prims = (Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies())
-             if root_prim is not None else stage.Traverse())
+    prims = Usd.PrimRange(
+        root_prim if root_prim is not None else stage.GetPseudoRoot(),
+        Usd.TraverseInstanceProxies(),
+    )
     for prim in prims:
-        if not prim.IsA(UsdGeom.Mesh):
+        if prim.IsA(UsdGeom.Mesh):
+            mesh = UsdGeom.Mesh(prim)
+            points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=np.float64)
+            counts = list(mesh.GetFaceVertexCountsAttr().Get() or [])
+            indices = list(mesh.GetFaceVertexIndicesAttr().Get() or [])
+            if len(points) < 3 or not counts or not indices:
+                continue
+            faces = _triangulate(counts, indices)
+        elif any(prim.IsA(schema) for schema in (
+            UsdGeom.Cube, UsdGeom.Cylinder, UsdGeom.Capsule,
+            UsdGeom.Cone, UsdGeom.Sphere,
+        )):
+            # USD/PhysX analytic shapes are geometry too. Use their computed
+            # local envelope, then the exact USD transform. This is exact for
+            # cubes and conservative for curved shapes; native contact remains
+            # required. Never silently omit an authored rack, panel or mount.
+            extent = UsdGeom.Boundable.ComputeExtentFromPlugins(
+                UsdGeom.Boundable(prim), Usd.TimeCode.Default()
+            )
+            if extent is None or len(extent) != 2:
+                raise RobotPlacementGeometryError("robot_placement_primitive_extent_missing")
+            low, high = np.asarray(extent, dtype=np.float64)
+            if not np.all(np.isfinite([low, high])) or np.any(high <= low):
+                raise RobotPlacementGeometryError("robot_placement_primitive_extent_invalid")
+            points = np.asarray([
+                [low[0], low[1], low[2]], [high[0], low[1], low[2]],
+                [high[0], high[1], low[2]], [low[0], high[1], low[2]],
+                [low[0], low[1], high[2]], [high[0], low[1], high[2]],
+                [high[0], high[1], high[2]], [low[0], high[1], high[2]],
+            ])
+            faces = _triangulate(
+                [4] * 6, [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4,
+                          1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7],
+            )
+        else:
             continue
-        mesh = UsdGeom.Mesh(prim)
-        points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=np.float64)
-        counts = list(mesh.GetFaceVertexCountsAttr().Get() or [])
-        indices = list(mesh.GetFaceVertexIndicesAttr().Get() or [])
-        if len(points) < 3 or not counts or not indices:
-            continue
-        faces = _triangulate(counts, indices)
         if not len(faces):
             continue
         matrix = np.asarray(
@@ -200,11 +231,11 @@ def _watertight_prim_bounds(
     """Identify closed triangle shells for conservative inside-volume checks."""
 
     result = []
-    for prim_path in sorted(set(prim_paths)):
-        indices = np.asarray(
-            [index for index, value in enumerate(prim_paths) if value == prim_path],
-            dtype=np.int64,
-        )
+    grouped_indices: dict[str, list[int]] = {}
+    for index, prim_path in enumerate(prim_paths):
+        grouped_indices.setdefault(prim_path, []).append(index)
+    for prim_path, group in sorted(grouped_indices.items()):
+        indices = np.asarray(group, dtype=np.int64)
         selected = triangles[indices]
         if len(selected) < 4:
             continue
@@ -225,8 +256,64 @@ def _watertight_prim_bounds(
     return tuple(result)
 
 
+def _placed_task_asset_triangles(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[np.ndarray], list[str], tuple[Mapping[str, Any], ...]]:
+    triangles: list[np.ndarray] = []
+    paths: list[str] = []
+    bindings: list[Mapping[str, Any]] = []
+    asset_ids: set[str] = set()
+    for ordinal, row in enumerate(rows):
+        asset_id = str(row.get("asset_id") or "")
+        if not asset_id or asset_id in asset_ids:
+            raise RobotPlacementGeometryError("robot_placement_task_asset_id_invalid")
+        asset_ids.add(asset_id)
+        asset_path = Path(str(row.get("asset_usd_path") or "")).expanduser().resolve(strict=True)
+        asset_digest = _sha256(asset_path)
+        if row.get("asset_digest") != asset_digest:
+            raise RobotPlacementGeometryError("robot_placement_task_asset_digest_mismatch")
+        pose = row.get("pose")
+        if not isinstance(pose, Mapping):
+            raise RobotPlacementGeometryError("robot_placement_task_asset_pose_invalid")
+        position = np.asarray(pose.get("position_world_m"), dtype=np.float64)
+        quaternion = np.asarray(pose.get("orientation_xyzw"), dtype=np.float64)
+        if (position.shape != (3,) or quaternion.shape != (4,)
+            or not np.all(np.isfinite(position)) or not np.all(np.isfinite(quaternion))
+            or abs(float(np.linalg.norm(quaternion)) - 1.0) > 1.0e-5):
+            raise RobotPlacementGeometryError("robot_placement_task_asset_pose_invalid")
+        stage = Usd.Stage.CreateInMemory()
+        actor = UsdGeom.Xform.Define(stage, f"/TaskActors/Actor_{ordinal:04d}")
+        source = UsdGeom.Xform.Define(stage, f"{actor.GetPath()}/Asset")
+        if not source.GetPrim().GetReferences().AddReference(str(asset_path)):
+            raise RobotPlacementGeometryError("robot_placement_task_asset_reference_invalid")
+        actor.AddTranslateOp().Set(Gf.Vec3d(*position))
+        actor.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(
+            Gf.Quatd(float(quaternion[3]), Gf.Vec3d(*quaternion[:3]))
+        )
+        actor_triangles, actor_paths = _stage_triangles(stage)
+        triangles.append(actor_triangles)
+        paths.extend(actor_paths)
+        # Hash each loaded external USD layer as well as package containers.
+        # A root layer digest alone does not bind referenced collision meshes.
+        layer_paths = {asset_path}
+        for layer in stage.GetUsedLayers():
+            if not layer.anonymous:
+                layer_paths.add(Path(layer.realPath.split("[", 1)[0]).resolve(strict=True))
+        bindings.append({
+            "asset_id": asset_id, "asset_usd_path": str(asset_path),
+            "asset_digest": asset_digest,
+            "pose": {"position_world_m": position.tolist(), "orientation_xyzw": quaternion.tolist()},
+            "collision_layers": [
+                {"path": str(path), "digest": _sha256(path)} for path in sorted(layer_paths)
+            ],
+            "triangle_count": len(actor_triangles),
+        })
+    return triangles, paths, tuple(bindings)
+
+
 def build_robot_placement_geometry_index(
-    *, scene_collision_usd_path: str | Path, robot_asset_usd_path: str | Path
+    *, scene_collision_usd_path: str | Path, robot_asset_usd_path: str | Path,
+    task_assets: Sequence[Mapping[str, Any]] = (),
 ) -> RobotPlacementGeometryIndex:
     scene_path = Path(scene_collision_usd_path).expanduser().resolve(strict=True)
     robot_path = Path(robot_asset_usd_path).expanduser().resolve(strict=True)
@@ -237,6 +324,20 @@ def build_robot_placement_geometry_index(
     if robot_stage is None:
         raise RobotPlacementGeometryError("robot_placement_robot_usd_invalid")
     triangles, prim_paths = _stage_triangles(scene_stage)
+    # Task actors are obstacles at their actual scene poses. They do not become
+    # mounting/support surfaces merely by having a horizontal panel or rack.
+    support_surfaces = _support_surfaces(triangles, prim_paths)
+    actor_triangles, actor_paths, actor_bindings = _placed_task_asset_triangles(task_assets)
+    background_digest = _sha256(scene_path)
+    scene_digest = background_digest
+    if actor_bindings:
+        triangles = np.concatenate([triangles, *actor_triangles], axis=0)
+        prim_paths = (*prim_paths, *actor_paths)
+        scene_digest = canonical_digest({
+            "schema_version": "robot_placement_collision_context.v1",
+            "background_collision_digest": background_digest,
+            "task_assets": actor_bindings,
+        })
     minimum = triangles.min(axis=1)
     maximum = triangles.max(axis=1)
     edges_a = triangles[:, 1] - triangles[:, 0]
@@ -262,7 +363,7 @@ def build_robot_placement_geometry_index(
         raise RobotPlacementGeometryError("robot_placement_robot_preview_triangles_missing")
     return RobotPlacementGeometryIndex(
         scene_path=str(scene_path),
-        scene_digest=_sha256(scene_path),
+        scene_digest=scene_digest,
         robot_asset_path=str(robot_path),
         robot_asset_digest=_sha256(robot_path),
         robot_triangles=robot_triangles,
@@ -272,9 +373,11 @@ def build_robot_placement_geometry_index(
         triangle_maximum=maximum,
         triangle_normal_abs_z=normal_abs_z,
         watertight_prim_bounds=_watertight_prim_bounds(triangles, prim_paths),
-        support_surfaces=_support_surfaces(triangles, prim_paths),
+        support_surfaces=support_surfaces,
         robot_local_bounds_minimum_m=robot_minimum,
         robot_local_bounds_maximum_m=robot_maximum,
+        background_collision_digest=background_digest,
+        task_asset_bindings=actor_bindings,
     )
 
 
@@ -292,6 +395,9 @@ def summarize_robot_placement_geometry(
     result: dict[str, Any] = {
         "schema_version": GEOMETRY_SUMMARY_SCHEMA_VERSION,
         "scene_collision_digest": index.scene_digest,
+        "background_collision_digest": index.background_collision_digest,
+        "task_assets": list(index.task_asset_bindings),
+        "analytic_primitive_collision_method": "transformed_conservative_local_envelope",
         "robot_asset_digest": index.robot_asset_digest,
         "robot_id": robot_id,
         "target_position_world_m": target,
