@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 from pxr import Usd, UsdGeom
+from scipy.spatial import cKDTree
 
 from .decision_evidence_contracts import canonical_digest
 from .franka_kinematics import solve_world_position_ik
@@ -375,6 +376,106 @@ def _rotated_bounds(
     return world.min(axis=0), world.max(axis=0)
 
 
+def _overlapping_scene_triangle_indices(
+    *,
+    scene_minimum: np.ndarray,
+    scene_maximum: np.ndarray,
+    scene_indices: np.ndarray,
+    robot_minimum: np.ndarray,
+    robot_maximum: np.ndarray,
+) -> list[int]:
+    """Apply the exact AABB predicate after a conservative spatial lookup.
+
+    Overlapping boxes have center distance in each axis at most the sum of
+    their half extents. The infinity-norm search therefore cannot discard an
+    overlapping pair; the original inclusive comparisons decide every match.
+    Querying one scene triangle at a time also bounds temporary storage.
+    """
+
+    if not len(scene_indices) or not len(robot_minimum):
+        return []
+    robot_centers = (robot_minimum + robot_maximum) * 0.5
+    robot_radii = np.max((robot_maximum - robot_minimum) * 0.5, axis=1)
+    # Separate triangle size scales so a few large faces cannot inflate every
+    # lookup for the much more numerous small faces in a detailed robot asset.
+    exponents = np.frexp(robot_radii)[1]
+    groups = []
+    for exponent in np.unique(exponents):
+        indices = np.flatnonzero(exponents == exponent)
+        groups.append(
+            (indices, cKDTree(robot_centers[indices]), float(np.max(robot_radii[indices])))
+        )
+    coordinate_scale = max(
+        1.0,
+        float(np.max(np.abs(robot_minimum))),
+        float(np.max(np.abs(robot_maximum))),
+        float(np.max(np.abs(scene_minimum[scene_indices]))),
+        float(np.max(np.abs(scene_maximum[scene_indices]))),
+    )
+    padding = 16.0 * np.finfo(np.float64).eps * coordinate_scale
+    result: list[int] = []
+    for scene_index in scene_indices:
+        minimum = scene_minimum[int(scene_index)]
+        maximum = scene_maximum[int(scene_index)]
+        center = (minimum + maximum) * 0.5
+        radius = float(np.max((maximum - minimum) * 0.5))
+        for indices, tree, robot_radius in groups:
+            nearby = tree.query_ball_point(center, radius + robot_radius + padding, p=np.inf)
+            if nearby:
+                selected = indices[nearby]
+                if np.any(
+                    np.all(
+                        (robot_maximum[selected] >= minimum)
+                        & (robot_minimum[selected] <= maximum),
+                        axis=1,
+                    )
+                ):
+                    result.append(int(scene_index))
+                    break
+    return result
+
+
+def _candidate_support_and_reach_can_pass(
+    *,
+    index: RobotPlacementGeometryIndex,
+    proposal: Mapping[str, Any],
+    target: np.ndarray,
+    robot_id: str,
+    support_triangles: dict[str, np.ndarray],
+) -> bool:
+    """Reject necessary support/reach failures before detailed collision work."""
+
+    pose = proposal["pose"]
+    position = np.asarray(pose["position_world_m"], dtype=np.float64)
+    yaw, upright = _yaw_from_quaternion(pose["orientation_xyzw"])
+    profile = get_robot_profile(robot_id)
+    shoulder = position + np.asarray([0.0, 0.0, profile.shoulder_above_root_m])
+    half_x, half_y = profile.footprint_half_extent_xyz[:2]
+    delta = target[:2] - position[:2]
+    target_yaw = math.atan2(float(delta[1]), float(delta[0]))
+    facing_error = abs(math.atan2(math.sin(target_yaw - yaw), math.cos(target_yaw - yaw)))
+    if (
+        not upright
+        or float(np.linalg.norm(target - shoulder)) > profile.max_shoulder_to_affordance_m()
+        or float(np.linalg.norm(delta)) <= max(half_x, half_y) + profile.probe_clearance_m
+        or math.degrees(facing_error) > profile.max_facing_error_deg
+    ):
+        return False
+    surface_id = str(proposal.get("support_surface_id") or "")
+    surface = next((s for s in index.support_surfaces if s.surface_id == surface_id), None)
+    if surface is None or abs(float(position[2]) - surface.height_m) > 0.02:
+        return False
+    rotation = np.asarray([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
+    samples = np.asarray(
+        [[0.0, 0.0], [-half_x, -half_y], [-half_x, half_y], [half_x, -half_y], [half_x, half_y]]
+    ) @ rotation.T + position[:2]
+    if surface_id not in support_triangles:
+        support_triangles[surface_id] = index.triangles[
+            np.asarray(surface.triangle_indices, dtype=np.int64)
+        ]
+    return _supported_sample_count(samples, support_triangles[surface_id]) == len(samples)
+
+
 def validate_robot_placement_geometry_candidate(
     *,
     index: RobotPlacementGeometryIndex,
@@ -463,14 +564,13 @@ def validate_robot_placement_geometry_candidate(
         robot_triangles_world = index.robot_triangles @ rotation_3d.T + position
         robot_triangle_minimum = robot_triangles_world.min(axis=1)
         robot_triangle_maximum = robot_triangles_world.max(axis=1)
-        for scene_index in broad_collision_indices:
-            scene_minimum = index.triangle_minimum[int(scene_index)]
-            scene_maximum = index.triangle_maximum[int(scene_index)]
-            if np.any(np.all(
-                (robot_triangle_maximum >= scene_minimum)
-                & (robot_triangle_minimum <= scene_maximum), axis=1,
-            )):
-                collision_indices.append(int(scene_index))
+        collision_indices = _overlapping_scene_triangle_indices(
+            scene_minimum=index.triangle_minimum,
+            scene_maximum=index.triangle_maximum,
+            scene_indices=broad_collision_indices,
+            robot_minimum=robot_triangle_minimum,
+            robot_maximum=robot_triangle_maximum,
+        )
     robot_center = 0.5 * (robot_minimum + robot_maximum)
     containing_prim_paths = []
     containment_tolerance_m = 1.0e-4
@@ -593,18 +693,29 @@ def _geometry_gate_chunk_worker(
         Sequence[Mapping[str, Any]],
         Sequence[float],
         str,
+        bool,
     ],
 ) -> list[dict[str, Any]]:
-    index, proposals, target, robot_id = work
-    return [
-        validate_robot_placement_geometry_candidate(
+    index, proposals, target, robot_id, prefilter = work
+    support_triangles: dict[str, np.ndarray] = {}
+    target_array = np.asarray(target, dtype=np.float64)
+    result = []
+    for proposal in proposals:
+        if prefilter and not _candidate_support_and_reach_can_pass(
+            index=index, proposal=proposal, target=target_array, robot_id=robot_id,
+            support_triangles=support_triangles,
+        ):
+            # Internal enumeration sentinel only. Every retained candidate gets
+            # the complete gate below, including the unchanged collision rule.
+            result.append({"status": "rejected"})
+            continue
+        result.append(validate_robot_placement_geometry_candidate(
             index=index,
             proposal=proposal,
             target_position_world_m=target,
             robot_id=robot_id,
-        )
-        for proposal in proposals
-    ]
+        ))
+    return result
 
 
 def _validated_worker_count(worker_count: int, *, blocker: str) -> int:
@@ -624,6 +735,7 @@ def _parallel_geometry_gates(
     target_position_world_m: Sequence[float],
     robot_id: str,
     worker_count: int,
+    prefilter_nonpassing: bool = False,
 ) -> list[dict[str, Any]]:
     """Evaluate complete geometry gates concurrently, retaining proposal order."""
 
@@ -632,7 +744,7 @@ def _parallel_geometry_gates(
     )
     if workers == 1 or len(proposals) <= 1:
         return _geometry_gate_chunk_worker(
-            (index, proposals, target_position_world_m, robot_id)
+            (index, proposals, target_position_world_m, robot_id, prefilter_nonpassing)
         )
     active_workers = min(workers, len(proposals))
     chunk_size = math.ceil(len(proposals) / active_workers)
@@ -642,6 +754,7 @@ def _parallel_geometry_gates(
             [dict(proposal) for proposal in proposals[offset : offset + chunk_size]],
             list(target_position_world_m),
             robot_id,
+            prefilter_nonpassing,
         )
         for offset in range(0, len(proposals), chunk_size)
     ]
@@ -901,6 +1014,7 @@ def enumerate_robot_placement_geometry_candidates(
         target_position_world_m=target,
         robot_id=robot_id,
         worker_count=geometry_worker_count,
+        prefilter_nonpassing=True,
     )
     prequalified = [
         (proposal, gate, surface, radius, angle_index)
