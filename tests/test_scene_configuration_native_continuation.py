@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -99,6 +100,10 @@ def test_exact_bundle_rehearsal_never_restores_over_the_controller_prefix(tmp_pa
     envelope, configurations, output, capsule, _, chain, _ = prefix(tmp_path)
     source = Path(__file__).resolve().parents[1]
     monkeypatch.setattr(continuation, "_source_root", lambda commit: source)
+    # This fixture exercises storage/checkpoint transport, not asset authoring.
+    # Real USD composition and refusal coverage is tested separately below.
+    monkeypatch.setattr(continuation, "preflight_native_prefix_composition", lambda capsule, transport:
+        {"status": "passed", "native_isaac_executed": False, "physics_executed": False})
     # The production host's system python3 lacks NumPy; the caller's venv is
     # the admitted host environment. Never depend on a lucky shell PATH.
     poison = tmp_path / "unqualified-system-python"
@@ -249,6 +254,41 @@ def test_native_continuation_uses_the_pinned_runtime_driver_and_normal_paid_tran
         transport.run_adp009d_native_microcheck_vast(job_dir=tmp_path,
             prepared_bundle={**receipt, "candidate_policy_queried": True},
             paid_resource_admission_grant=None, execute=True)
+
+
+@pytest.mark.parametrize("fault", [None, "changed_asset", "empty_asset"])
+def test_controller_import_preflight_uses_exact_rigid_usd_bytes(tmp_path, fault):
+    from pxr import Usd, UsdGeom, UsdPhysics
+    asset = tmp_path / "rigid.usda"
+    stage = Usd.Stage.CreateNew(str(asset))
+    root = UsdGeom.Xform.Define(stage, "/Asset").GetPrim()
+    stage.SetDefaultPrim(root)
+    if fault != "empty_asset":
+        body = UsdGeom.Cube.Define(stage, "/Asset/Body").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        UsdPhysics.CollisionAPI.Apply(body)
+    stage.GetRootLayer().Save()
+    receipt = {"asset_kind": "rigid_object"}
+    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+    items = [("statically_qualified_replacement_asset", "rigid.usda", asset.read_bytes()),
+             ("static_qualification_receipt", "static.json", json.dumps(receipt).encode())]
+    records = [{"role": role, "path": "/retained/stages/stage-4/adapter/" + name,
+                "digest": "sha256:" + hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+               for role, name, data in items]
+    capsule = tmp_path / "prefix.zip"
+    with zipfile.ZipFile(capsule, "w") as archive:
+        archive.writestr("stages/stage-4/completed_stage_checkpoint.json", json.dumps({"stage_result": {"output_artifacts": records}}))
+        for role, name, data in items:
+            archive.writestr("stages/stage-4/adapter/" + name,
+                data + b"changed" if fault == "changed_asset" and name == "rigid.usda" else data)
+    transport = {"output_root": "/retained", "transport_digest": "sha256:" + "a" * 64}
+    if fault:
+        with pytest.raises(ValueError, match="static_preflight_.*invalid|static_preflight_artifact_changed"):
+            continuation.preflight_native_prefix_composition(capsule, transport)
+    else:
+        result = continuation.preflight_native_prefix_composition(capsule, transport)
+        assert result["status"] == "passed" and result["link_count"] == 1
+        assert result["native_isaac_executed"] is False and result["physics_executed"] is False
 
 
 def test_native_continuation_has_complete_vast_script_environment_and_recovery(tmp_path):

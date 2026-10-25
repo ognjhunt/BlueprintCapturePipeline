@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -362,7 +363,15 @@ def _articulated_structure_observation(
             raise RuntimeError("scene_configuration_native_import_fixed_joint_body_invalid")
     task["moving_link_prim_path"] = moving_link_path
     handle_paths = sorted(_imported_path(path) for path in static_receipt["task_contact"]["handle_prim_paths"])
-    if (not handle_paths or any(path not in link_readback[graph_target["child_link_id"]]["collision_prim_paths"] for path in handle_paths)):
+    # A graspable feature may be its own rigid part bolted to the moving link.
+    # Use the same fixed assembly the static authoring contract admitted;
+    # crossing another movable joint must never admit an unrelated handle.
+    moving_assembly = {graph_target["child_link_id"]}
+    if static_receipt.get("backend") == "artisan_v1":
+        from .task_object_artisan_exports import _fixed_descendants
+        moving_assembly = _fixed_descendants(graph_target["child_link_id"], static_receipt["articulation_graph"]["joints"])
+    moving_collisions = {path for link_id in moving_assembly for path in link_readback[link_id]["collision_prim_paths"]}
+    if not handle_paths or any(path not in moving_collisions for path in handle_paths):
         raise RuntimeError("scene_configuration_native_import_handle_mismatch")
     task["task_joint_axis"] = axis
     return {
@@ -945,6 +954,11 @@ def _run_native_import(
                     required_motion_probe=required_plan)
                 observation["required_motion_probe"] = extra["required_motion_probe"]
         return dict(observation_consumer(observation))
+    except Exception:
+        # Fast Kit shutdown can exit Python with code 0 before an exception
+        # reaches the process entrypoint. Retain its real predicate first.
+        traceback.print_exc()
+        raise
     finally:
         app.close()
 

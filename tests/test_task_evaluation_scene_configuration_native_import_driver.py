@@ -287,6 +287,27 @@ def test_native_driver_rejects_invalid_bounds_before_runtime(tmp_path: Path) -> 
     assert executed is False
 
 
+def test_native_failure_predicate_is_printed_before_fast_isaac_shutdown(monkeypatch, capsys):
+    class FastShutdown:
+        def __init__(self, _config):
+            pass
+
+        def close(self):
+            raise SystemExit(0)
+
+    monkeypatch.setattr(driver, "_bind_isaac_runtime_environment", lambda: None)
+    monkeypatch.setattr(driver, "_import_simulation_app", lambda: FastShutdown)
+    monkeypatch.setattr(driver, "_observe_isaac_runtime_identity", lambda app: {"engine_version": "6.0.1"})
+    def refuse(**kwargs):
+        raise RuntimeError("scene_configuration_native_import_handle_mismatch")
+    monkeypatch.setattr(driver, "_one_native_settle", refuse)
+    with pytest.raises(SystemExit):
+        driver._run_native_import(asset_path=Path("retained.usdz"),
+            required_checks={"state_digest_repeat_count": 3, "gravity_settle_seconds": 3},
+            observation_consumer=lambda row: row)
+    assert "RuntimeError: scene_configuration_native_import_handle_mismatch" in capsys.readouterr().err
+
+
 # --- supplemental passive destination imported in the same Isaac session -----
 
 DESTINATION_IDENTITY = {"id": "document-tray", "version": "v1"}

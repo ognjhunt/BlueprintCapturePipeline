@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 
@@ -225,6 +226,50 @@ def _validated_configurations(runtime, manifest, envelope):
     return records
 
 
+def preflight_native_prefix_composition(capsule, transport):
+    """Replay imported USD structure on the controller before any rental."""
+    from pxr import Usd, UsdPhysics
+    from .task_evaluation_scene_configuration_native_import_driver import _articulated_structure_observation
+
+    with zipfile.ZipFile(capsule) as archive, tempfile.TemporaryDirectory(prefix="blueprint-native-static-") as raw:
+        rows = json.loads(archive.read("stages/stage-4/completed_stage_checkpoint.json"))["stage_result"]["output_artifacts"]
+        records = {}
+        for role in ("statically_qualified_replacement_asset", "static_qualification_receipt"):
+            matches = [row for row in rows if row["role"] == role]
+            _require(len(matches) == 1, "static_preflight_artifact_missing:" + role)
+            record = matches[0]
+            member = Path(record["path"]).relative_to(Path(transport["output_root"])).as_posix()
+            data = archive.read(member)
+            _require(len(data) == record["size_bytes"] and
+                     "sha256:" + hashlib.sha256(data).hexdigest() == record["digest"], "static_preflight_artifact_changed")
+            records[role] = (record, data)
+        asset_record, data = records["statically_qualified_replacement_asset"]
+        suffix = Path(asset_record["path"]).suffix.lower()
+        _require(suffix in {".usd", ".usda", ".usdc", ".usdz"}, "static_preflight_asset_type_invalid")
+        asset = Path(raw) / ("retained_asset" + suffix)
+        asset.write_bytes(data)
+        receipt_record, receipt_data = records["static_qualification_receipt"]
+        receipt = json.loads(receipt_data)
+        _require(receipt.get("result_digest") == canonical_digest(receipt, digest_field="result_digest"),
+                 "static_preflight_receipt_changed")
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/World/Placement/Replacement", "Xform").GetReferences().AddReference(str(asset), "/Asset")
+        stage.Load()
+        articulated = receipt.get("asset_kind") == "articulated_assembly"
+        if articulated:
+            observed = _articulated_structure_observation(stage=stage, usd_physics=UsdPhysics, static_receipt=receipt)
+        else:
+            observed = {"rigid_body_paths": [str(p.GetPath()) for p in stage.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)],
+                "collision_paths": [str(p.GetPath()) for p in stage.Traverse() if p.HasAPI(UsdPhysics.CollisionAPI)]}
+            _require(len(observed["rigid_body_paths"]) == 1 and bool(observed["collision_paths"]),
+                     "static_preflight_rigid_structure_invalid")
+        return {"schema_version": "scene_configuration_native_static_import_preflight.v1", "status": "passed",
+            "prefix_transport_digest": transport["transport_digest"], "asset_digest": asset_record["digest"],
+            "static_receipt_digest": receipt_record["digest"], "imported_structure_digest": canonical_digest(observed),
+            "articulated": articulated, "link_count": len(observed["rigid_body_paths"]),
+            "native_isaac_executed": False, "physics_executed": False, "claim_ceiling": "development_only"}
+
+
 def native_import_producer_registry(*, implementation_commit):
     """One fixed, repository-owned native producer; no generated entrypoint."""
     from .task_evaluation_scene_configuration_stage_producers import (
@@ -339,6 +384,7 @@ def build_native_continuation_bundle(*, job_dir, inputs_path, implementation_com
     envelope = _json(envelope_path)
     _require(envelope["envelope_digest"] == canonical_digest(envelope, digest_field="envelope_digest"), "envelope_changed")
     transport = validate_native_prefix(capsule_path, envelope)
+    static_preflight = preflight_native_prefix_composition(capsule_path, transport)
     job = Path(job_dir).resolve()
     if job.exists():
         prior = _json(job / "native_continuation_bundle_receipt.json")
@@ -381,6 +427,7 @@ def build_native_continuation_bundle(*, job_dir, inputs_path, implementation_com
         "maximum_driver_exclusive": MAXIMUM_DRIVER_EXCLUSIVE,
         "construction_envelope_digest": envelope["envelope_digest"], "run_id": envelope["run_id"],
         "prefix": {**_record(Path(capsule_path)), "member": CAPSULE}, "prefix_transport": transport,
+        "host_static_import_preflight": static_preflight,
         "configurations": configs, "candidate_policy_queried": False, "policy_candidate_id": None,
         "model_calls_performed": 0, "generated_tool_runtime_used": False,
         "private_data_uploaded": True, "captured_frame_derivatives_in_bundle": True,
