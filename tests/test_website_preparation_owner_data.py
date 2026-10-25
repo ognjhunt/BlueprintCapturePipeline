@@ -200,6 +200,9 @@ def test_pending_status_requires_current_grant_and_keeps_null_account_data(
     if current_grant == "stale_proposal":
         grant["assessment_preparation_proposal"]["capture_id"] = "stale-capture"
     elif current_grant == "expired":
+        # A served grant this clock finds expired still refuses. Only the WebApp's
+        # typed consent_expired refusal reads as an ended grant
+        # (tests/test_website_preparation_expired_grant.py).
         grant["expires_at_epoch"] = time.time() - 0.5
     elif current_grant == "withdrawn":
         task["capture_rights"]["consent_revoked"] = True
