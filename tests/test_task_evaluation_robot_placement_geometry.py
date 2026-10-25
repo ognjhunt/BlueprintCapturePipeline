@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import hashlib
 
 import numpy as np
 import pytest
@@ -11,6 +12,9 @@ from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
     _parallel_geometry_gates,
     _parallel_trajectory_gates,
     _supported_sample_count,
+    _stage_triangles,
+    _placed_task_asset_triangles,
+    RobotPlacementGeometryError,
     build_robot_placement_geometry_index,
     enumerate_robot_placement_geometry_candidates,
     render_robot_placement_geometry_previews,
@@ -172,6 +176,84 @@ def _proposal(surface_id, position=(0.0, 0.0, 0.0), yaw=0.0):
             "orientation_xyzw": [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)],
         },
     }
+
+
+@pytest.mark.parametrize("schema", [UsdGeom.Cube, UsdGeom.Cylinder, UsdGeom.Capsule, UsdGeom.Sphere, UsdGeom.Cone])
+def test_analytic_shapes_are_conservative_transformed_geometry(schema):
+    stage = Usd.Stage.CreateInMemory()
+    shape = schema.Define(stage, "/Shape")
+    xform = UsdGeom.Xformable(shape)
+    xform.AddTranslateOp().Set(Gf.Vec3d(3.0, -2.0, 1.0))
+    xform.AddRotateZOp().Set(35.0)
+    xform.AddScaleOp().Set(Gf.Vec3f(0.3, 0.5, 0.7))
+    triangles, paths = _stage_triangles(stage)
+    bounds = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"]).ComputeWorldBound(shape.GetPrim()).ComputeAlignedRange()
+    assert len(triangles) == 12
+    assert set(paths) == {"/Shape"}
+    np.testing.assert_allclose(triangles.min(axis=(0, 1)), list(bounds.GetMin()), atol=1.e-7)
+    np.testing.assert_allclose(triangles.max(axis=(0, 1)), list(bounds.GetMax()), atol=1.e-7)
+
+
+def _task_asset(tmp_path):
+    path = tmp_path / "task.usda"
+    stage = Usd.Stage.CreateNew(str(path))
+    stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Task").GetPrim())
+    panel = UsdGeom.Cube.Define(stage, "/Task/Panel")
+    panel.CreateSizeAttr(0.5)
+    stage.GetRootLayer().Save()
+    return {
+        "asset_id": "task-actor",
+        "asset_usd_path": str(path),
+        "asset_digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        "pose": {"position_world_m": [0., 0., 0.4], "orientation_xyzw": [0., 0., 0., 1.]},
+    }
+
+
+def test_placed_task_actor_blocks_previously_clear_robot_pose(tmp_path):
+    scene, robot = _assets(tmp_path)
+    background = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot)
+    floor = next(s for s in background.support_surfaces if s.prim_path == "/Scene/Floor")
+    arguments = dict(proposal=_proposal(floor.surface_id), target_position_world_m=[0.8, 0., 0.5])
+    assert validate_robot_placement_geometry_candidate(index=background, **arguments)["status"] == "passed"
+    actor = _task_asset(tmp_path)
+    combined = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot, task_assets=[actor])
+    gate = validate_robot_placement_geometry_candidate(index=combined, **arguments)
+    assert gate["collision_passed"] is False
+    assert any(path.startswith("/TaskActors/") for path in gate["scene_overlap_prim_paths"])
+    assert combined.support_surfaces == background.support_surfaces
+    assert combined.scene_digest != background.scene_digest
+    actor["pose"]["position_world_m"] = [-1., 0., 0.4]
+    moved = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot, task_assets=[actor])
+    assert moved.scene_digest != combined.scene_digest
+    assert validate_robot_placement_geometry_candidate(index=moved, **arguments)["status"] == "passed"
+
+
+def test_task_actor_rejects_changed_source_bytes(tmp_path):
+    scene, robot = _assets(tmp_path)
+    actor = _task_asset(tmp_path)
+    with open(actor["asset_usd_path"], "a") as stream:
+        stream.write("\n# changed source\n")
+    with pytest.raises(RobotPlacementGeometryError, match="task_asset_digest_mismatch"):
+        build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot, task_assets=[actor])
+
+
+def test_actor_pose_preserves_asset_root_transform_and_binds_referenced_layer(tmp_path):
+    actor = _task_asset(tmp_path)
+    path = actor["asset_usd_path"]
+    stage = Usd.Stage.Open(path)
+    root = UsdGeom.Xformable(stage.GetDefaultPrim())
+    root.AddTranslateOp().Set(Gf.Vec3d(0.2, 0., 0.))
+    stage.GetRootLayer().Save()
+    wrapper = tmp_path / "wrapper.usda"
+    outer = Usd.Stage.CreateNew(str(wrapper))
+    outer.SetDefaultPrim(UsdGeom.Xform.Define(outer, "/Wrapper").GetPrim())
+    outer.GetDefaultPrim().GetReferences().AddReference(path)
+    outer.GetRootLayer().Save()
+    actor.update(asset_usd_path=str(wrapper), asset_digest="sha256:" + hashlib.sha256(wrapper.read_bytes()).hexdigest())
+    actor["pose"] = {"position_world_m": [1., 2., 3.], "orientation_xyzw": [0., 0., math.sqrt(.5), math.sqrt(.5)]}
+    triangles, _, bindings = _placed_task_asset_triangles([actor])
+    np.testing.assert_allclose(triangles[0].mean(axis=(0, 1)), [1., 2.2, 3.], atol=1.e-7)
+    assert {row["path"] for row in bindings[0]["collision_layers"]} == {path, str(wrapper)}
 
 
 def test_enumeration_prefilter_preserves_every_passing_gate(tmp_path) -> None:

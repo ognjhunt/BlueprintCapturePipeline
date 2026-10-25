@@ -139,6 +139,13 @@ def run_robot_placement_cli(
 ) -> dict[str, Any]:
     if not render_geometry_previews and not deterministic_selection:
         raise ValueError('robot_placement_visual_previews_required')
+    task_assets = scene_binding.get("task_assets", ())
+    if not isinstance(task_assets, (list, tuple)) or not all(
+        isinstance(row, Mapping) for row in task_assets
+    ):
+        raise ValueError("robot_placement_task_assets_invalid")
+    if task_binding.get("asset_scene_pose") is not None and not task_assets:
+        raise ValueError("robot_placement_task_asset_collision_context_required")
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError("robot_placement_output_not_empty")
@@ -148,6 +155,7 @@ def run_robot_placement_cli(
     index = build_robot_placement_geometry_index(
         scene_collision_usd_path=scene_collision_usd,
         robot_asset_usd_path=robot_asset_usd,
+        task_assets=task_assets,
     )
     summary = summarize_robot_placement_geometry(
         index,
