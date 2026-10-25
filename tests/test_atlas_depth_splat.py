@@ -524,3 +524,22 @@ def test_a_correction_never_crosses_an_occlusion_edge():
     for before, after in zip(frames, rescaled):
         assert np.array_equal(after["depth"][:, :46], before["depth"][:, :46]), "the agreeing foreground stays one sheet"
     assert np.median(np.abs(rescaled[0]["depth"][:, 60:] - rescaled[1]["depth"][:, 60:])) < 0.02
+
+
+def test_masked_repair_views_beside_a_view_never_crowd_out_the_view_that_overlaps_it():
+    # Repair views sit beside each full view but keep only a few pixels each; the
+    # production export gave one full view seven of them as its eight nearest cameras.
+    a = camera(width=96, height=128, focal=120.0)
+    b = camera((0.6, 0.0, 0.0), yaw_degrees=15.0, width=96, height=128, focal=120.0)
+    frames = [frame(a, plane_depth(a) * 1.015, "a"), frame(b, plane_depth(b) * 0.985, "b")]
+    patch = np.zeros((128, 96), np.float32)
+    patch[60:64, 44:48] = 1.0
+    for anchor, x in (("a", 0.0), ("b", 0.6)):
+        for index in range(depth_splat.CROSS_VIEW_NEIGHBOURS):
+            cam = camera((x + 0.01 * index - 0.04, 0.02, 0.0), width=96, height=128, focal=120.0)
+            repair = frame(cam, plane_depth(cam), f"{anchor}-repair-{index}")
+            frames.append({**repair, "confidence": patch})
+    rescaled, report = depth_splat.consensus_depths(frames)
+    for view, cam in ((0, a), (1, b)):
+        assert np.median(np.abs(rescaled[view]["depth"] / plane_depth(cam) - 1.0)) < 0.003
+    assert report["median_voting_views_by_pass"][0] >= 1

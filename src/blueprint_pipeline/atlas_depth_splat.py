@@ -35,7 +35,7 @@ from .gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from .local_reconstruction_adapters import _sha256_file
 
 SCHEMA_VERSION = "atlas_depth_splat.v1"
-FUSION_REVISION = "local-plane-slant-aware-consensus-v3"
+FUSION_REVISION = "local-plane-slant-aware-consensus-v4"
 POSE_RESULT = "atlas_posed_rgbd_result.json"
 SH_C0 = 0.28209479177387814
 # A 5 % depth jump between neighbouring pixels is a discontinuity: a continuous
@@ -62,13 +62,18 @@ DEPTH_SMOOTHING_TOLERANCE = 0.03
 # Each view's depth carries its own low-frequency error: overlapping Atlas views
 # disagreed by a median 1.9 % (measured 2026-10-24), which fused into layered
 # sheets about five times thicker than one view's. Each pass rescales every
-# frame towards the median of what its nearest views see along its pixels;
-# another view's surface votes only within the gate, so occluders never do.
+# frame towards the median of what the views sharing its surface see along its
+# pixels; another view's surface votes only within the gate, so occluders never do.
 DEPTH_CONSENSUS_PASSES = 3
 DEPTH_CONSENSUS_GATE = 0.05
 DEPTH_CONSENSUS_STRIDE = 4
 DEPTH_CONSENSUS_SIGMA = 2.0  # in consensus-grid pixels
 DEPTH_CONSENSUS_MIN_WEIGHT = 0.25
+# Voters are the views with the most samples inside the gate, not the nearest
+# cameras: 27 of the production export's 37 views were repair views keeping
+# 0-5 % of their pixels beside a full view (2026-10-25), and they took most
+# full views' nearest slots. Ranking reads this many samples per candidate.
+DEPTH_CONSENSUS_RANKING_SAMPLES = 2_000
 DISC_THICKNESS_RATIO = 0.1
 SPLATS2MESH_MAX_RENDER = 1024
 SPLATS2MESH_MIN_RENDER = 64
@@ -382,6 +387,31 @@ def _inverse_depth_at(frame: Mapping[str, Any], column: np.ndarray, row: np.ndar
     return out
 
 
+def _seen_ratio(view: Mapping[str, Any], points: np.ndarray) -> np.ndarray:
+    """Depth the view sees along each point's ray over the point's own distance; NaN where it sees nothing usable."""
+    k = view["intrinsics"]
+    local = (points - view["position"]) @ view["rotation"]
+    distance = np.where(local[:, 2] < 0, -local[:, 2], np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return 1.0 / (_inverse_depth_at(view, local[:, 0] / distance * k["fx"] + k["cx"],
+                                        -local[:, 1] / distance * k["fy"] + k["cy"]) * distance)
+
+
+def _voting_views(frames: Sequence[Mapping[str, Any]], index: int, points: np.ndarray,
+                  centres: np.ndarray) -> list[int]:
+    """The views with the most of these points inside the gate, nearest first among equals."""
+    if not len(points):
+        return []
+    pick = points[np.linspace(0, len(points) - 1, min(DEPTH_CONSENSUS_RANKING_SAMPLES, len(points))).astype(np.int64)]
+    order = np.argsort(np.linalg.norm(centres - centres[index], axis=1), kind="stable")
+    counted = []
+    with np.errstate(invalid="ignore"):
+        for other in order[order != index]:
+            counted.append((int((np.abs(_seen_ratio(frames[other], pick) - 1.0) <= DEPTH_CONSENSUS_GATE).sum()), int(other)))
+    ranked = sorted(counted, key=lambda row: -row[0])
+    return [other for count, other in ranked[:CROSS_VIEW_NEIGHBOURS] if count]
+
+
 def _surface_smoothed(correction: np.ndarray, voted: np.ndarray, depth: np.ndarray) -> np.ndarray:
     """Gaussian-weighted mean of the voted corrections over grid pixels on each pixel's own surface.
 
@@ -426,10 +456,11 @@ def _upsampled_on_surface(ratio: np.ndarray, grid_depth: np.ndarray, depth: np.n
 
 
 def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Rescale each frame's depth towards the median of its nearest views' depth along its pixels.
+    """Rescale each frame's depth towards the median of the depth its overlapping views see along its pixels.
 
-    A pixel's world point is projected into each nearest view; that view's depth there
-    over the point's own distance from it is one vote, kept only within the gate, so an
+    A pixel's world point is projected into each voting view, the views with the
+    most of the frame's samples inside the gate; that view's depth there over the
+    point's own distance from it is one vote, kept only within the gate, so an
     occluder or a surface seen past an edge never votes. The median with the frame's
     own vote of 1 is smoothed over its own surface and applied at full resolution on
     that surface only: the correction is low-frequency, leaves surface detail alone and
@@ -439,9 +470,9 @@ def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str
     frames = [dict(frame) for frame in frames]
     centres = np.array([frame["position"] for frame in frames])
     start, stride = DEPTH_CONSENSUS_STRIDE // 2, DEPTH_CONSENSUS_STRIDE
-    voted_by_pass = []
+    voted_by_pass, voters_by_pass = [], []
     for _ in range(DEPTH_CONSENSUS_PASSES):
-        ratios, voted = [], []
+        ratios, voted, voters = [], [], []
         for index, frame in enumerate(frames):
             k = frame["intrinsics"]
             depth = frame["depth"][start::stride, start::stride].astype(np.float64)
@@ -452,15 +483,12 @@ def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str
             v = (rows * stride + start + 0.5 - k["cy"]) / k["fy"]
             points = np.stack([u * z, -v * z, -z], axis=1) @ frame["rotation"].T + frame["position"]
             votes = [np.ones(len(z))]
-            order = np.argsort(np.linalg.norm(centres - centres[index], axis=1), kind="stable")
-            for other in (frames[i] for i in order[order != index][:CROSS_VIEW_NEIGHBOURS]):
-                ko = other["intrinsics"]
-                local = (points - other["position"]) @ other["rotation"]
-                distance = np.where(local[:, 2] < 0, -local[:, 2], np.nan)
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    seen = 1.0 / (_inverse_depth_at(other, local[:, 0] / distance * ko["fx"] + ko["cx"],
-                                                    -local[:, 1] / distance * ko["fy"] + ko["cy"]) * distance)
+            chosen = _voting_views(frames, index, points, centres)
+            for other in chosen:
+                seen = _seen_ratio(frames[other], points)
+                with np.errstate(invalid="ignore"):
                     votes.append(np.where(np.abs(seen - 1.0) <= DEPTH_CONSENSUS_GATE, seen, np.nan))
+            voters.append(len(chosen))
             stack = np.stack(votes)
             counted = np.isfinite(stack).sum(axis=0) >= 2
             correction, voted_grid = np.zeros(depth.shape), np.zeros(depth.shape, bool)
@@ -473,10 +501,13 @@ def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str
             full = _upsampled_on_surface(ratio, grid_depth, frame["depth"])
             frame["depth"] = (frame["depth"] * full).astype(frame["depth"].dtype)
         voted_by_pass.append(round(float(np.median(voted)), 4))
-    return frames, {"basis": "median_of_nearest_views", "passes": DEPTH_CONSENSUS_PASSES,
+        voters_by_pass.append(float(np.median(voters)))
+    return frames, {"basis": "median_of_most_agreeing_views", "passes": DEPTH_CONSENSUS_PASSES,
                     "neighbours": CROSS_VIEW_NEIGHBOURS, "relative_gate": DEPTH_CONSENSUS_GATE,
                     "stride_pixels": stride, "sigma_grid_pixels": DEPTH_CONSENSUS_SIGMA,
-                    "median_voted_grid_share_by_pass": voted_by_pass}
+                    "ranking_samples": DEPTH_CONSENSUS_RANKING_SAMPLES,
+                    "median_voted_grid_share_by_pass": voted_by_pass,
+                    "median_voting_views_by_pass": voters_by_pass}
 
 
 def _voxel_keys(points: np.ndarray, voxel: float) -> np.ndarray:
@@ -794,7 +825,8 @@ def fusion_profile() -> dict[str, Any]:
             "depth_consensus_gate": DEPTH_CONSENSUS_GATE,
             "depth_consensus_stride": DEPTH_CONSENSUS_STRIDE,
             "depth_consensus_sigma": DEPTH_CONSENSUS_SIGMA,
-            "depth_consensus_min_weight": DEPTH_CONSENSUS_MIN_WEIGHT}
+            "depth_consensus_min_weight": DEPTH_CONSENSUS_MIN_WEIGHT,
+            "depth_consensus_ranking_samples": DEPTH_CONSENSUS_RANKING_SAMPLES}
 
 
 def build_depth_splat(pose_root: Path, output_root: Path, *, voxel_footprint_multiple: float = 2.0) -> dict[str, Any]:
