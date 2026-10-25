@@ -179,12 +179,24 @@ def _qualified_mechanism(
     interval = graph["success_predicate"]["joint_intervals"].get(target["joint_id"])
     if not interval or float(interval[0]) <= float(target["reset_position"]):
         raise _error("success_interval_invalid")
-    # The template only declares the intended opening fraction; the executable
-    # threshold comes from the qualified joint limit, and the two must agree.
+    # The task owns its opening goal. SDK exports carry a generic diagnostic
+    # success predicate; use their qualified travel limits to resolve the
+    # already-frozen task fraction rather than replacing it with that default.
+    # Older packages encode the task predicate itself and keep its exact check.
     declared = (template.get("success") or {}).get("minimum_opening_fraction_of_usable_travel")
     if declared is not None:
-        expected = float(declared) * limits[1]
-        if abs(expected - float(interval[0])) > max(1e-4, 1e-3 * abs(limits[1])):
+        if isinstance(declared, bool):
+            raise _error("success_fraction_outside_joint_limits")
+        fraction = _number(declared)
+        if fraction > 1:
+            raise _error("success_fraction_outside_joint_limits")
+        normalized = (static.get("source_constraints") or {}).get("schema_version") == "artisan_final_source_constraints.v1"
+        if normalized:
+            if (template.get("success") or {}).get("threshold_binding") != "frozen_from_qualified_asset_joint_limit_before_any_episode":
+                raise _error("success_threshold_binding_invalid")
+            reset = float(target["reset_position"])
+            interval = [reset + fraction * (limits[1] - reset), limits[1]]
+        elif abs(fraction * limits[1] - float(interval[0])) > max(1e-4, 1e-3 * abs(limits[1])):
             raise _error("success_threshold_disagrees_with_qualified_limit")
     return {
         "graph": graph,

@@ -205,8 +205,11 @@ def test_adapter_refuses_a_threshold_that_contradicts_the_qualified_joint_limit(
             configured_revision=configured, materialized_references=references)
 
 
-def test_normalized_sdk_assembly_keeps_capture_heading_through_native_adaptation(tmp_path: Path) -> None:
-    case = _case(tmp_path)
+@pytest.mark.parametrize("opening_fraction", [OPENING_FRACTION, 0.95])
+def test_normalized_sdk_assembly_keeps_capture_heading_and_task_goal(
+    tmp_path: Path, opening_fraction: float,
+) -> None:
+    case = _case(tmp_path, opening_fraction=opening_fraction)
     case["documents"][DEFINITION]["mechanism"]["estimated_front_normal_world"] = [0.0, 1.0, 0.0]
     static = case["documents"][STATIC]
     static["source_constraints"] = {
@@ -231,6 +234,9 @@ def test_normalized_sdk_assembly_keeps_capture_heading_through_native_adaptation
     assert pose["orientation_xyzw"] == pytest.approx([0, 0, math.sqrt(0.5), math.sqrt(0.5)])
     assert pose["position_world_m"][:2] == [0.4, 0.1]
     assert pose["position_world_m"][2] == pytest.approx(SUPPORT_TOP_Z_M, abs=1e-9)
+    interval = result["native_task_definition"]["task_spec"]["executable_opening_threshold"]["success_interval"]
+    assert interval == pytest.approx([opening_fraction * case["plan"]["task_joint"]["limits_m"][1],
+                                      case["plan"]["task_joint"]["limits_m"][1]])
     materialize_contract_and_plan(case, result, tmp_path)
 
 
@@ -246,6 +252,20 @@ def test_normalized_sdk_pose_anchors_the_local_base_instead_of_subtracting_captu
     # An older package already contains scene-oriented geometry and keeps its existing placement.
     legacy = _assembly_root_pose(template=template, static={}, support_top=1.3)
     assert legacy["position_world_m"] == [2.0, -3.0, 0.0]
+
+
+@pytest.mark.parametrize("fraction", [0.0, -0.1, 1.01, True, float("nan")])
+def test_normalized_sdk_task_goal_stays_inside_qualified_joint_travel(tmp_path, fraction):
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import _qualified_mechanism
+    case = _case(tmp_path)
+    static = case["documents"][STATIC]
+    static["source_constraints"] = {"schema_version": "artisan_final_source_constraints.v1"}
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    template = copy.deepcopy(case["documents"][DEFINITION])
+    template["success"]["minimum_opening_fraction_of_usable_travel"] = fraction
+    with pytest.raises(TaskEvaluationArticulatedOpenCloseNativeAdapterError):
+        _qualified_mechanism(static=static, native_import=case["documents"][NATIVE_IMPORT],
+                             replacement_identity=static["replacement_identity"], template=template)
 
 
 def test_adapter_refuses_an_unqualified_or_driven_assembly(tmp_path: Path) -> None:
