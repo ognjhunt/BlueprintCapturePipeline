@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -98,6 +99,13 @@ def test_exact_bundle_rehearsal_never_restores_over_the_controller_prefix(tmp_pa
     envelope, configurations, output, capsule, _, chain, _ = prefix(tmp_path)
     source = Path(__file__).resolve().parents[1]
     monkeypatch.setattr(continuation, "_source_root", lambda commit: source)
+    # The production host's system python3 lacks NumPy; the caller's venv is
+    # the admitted host environment. Never depend on a lucky shell PATH.
+    poison = tmp_path / "unqualified-system-python"
+    poison.mkdir()
+    (poison / "python3").write_text("#!/bin/sh\nexit 86\n")
+    (poison / "python3").chmod(0o750)
+    monkeypatch.setenv("PATH", str(poison) + os.pathsep + os.environ["PATH"])
     envelope_path = tmp_path / "envelope.json"
     envelope_path.write_text(json.dumps(envelope))
     inputs = tmp_path / "inputs.json"
