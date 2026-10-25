@@ -201,30 +201,19 @@ def test_prepared_scene_enters_webapp_outbox_not_a_forged_local_owner_intent(mon
         module.enqueue_website_prepared_scene(task_context=context(), request=request)
 
 
-def test_visual_scene_publishes_only_viewer_assets_and_checks_receipt(monkeypatch):
-    value = context()
-    descriptor = {"capture_id": value["capture_id"], "scene_id": value["scene_id"], "metadata": {
-        "capture_entry_source": "browser_self_capture", "site_task_context": value,
-        "clean_plate": {"privacy_verified": True}}}
-    world = {"world_id": "world-1", "world_marble_url": "https://marble.worldlabs.ai/world/1",
-             "assets": {"thumbnail_url": "https://cdn.example/thumb.png", "imagery": {"pano_url": "https://cdn.example/pano.jpg"},
-                        "mesh": {"collider_mesh_url": "not-needed-for-first-view"}}}
-    calls = []
-    def post(**kwargs):
-        calls.append(kwargs)
-        return {"state": "ready", "world_id": "world-1", "task_context_digest": value["context_digest"]}
-    monkeypatch.setattr(module, "website_webapp_request", post)
-    assert module.publish_website_visual_scene(descriptor=descriptor, world=world, operation_id="op-1")["state"] == "ready"
-    assert calls[0]["operation"] == "visual-scene"
-    assert calls[0]["payload"]["thumbnail_url"] == "https://cdn.example/thumb.png"
-    assert "collider" not in json.dumps(calls)
-    descriptor["metadata"]["clean_plate"]["privacy_verified"] = False
-    with pytest.raises(ValueError, match="preparation_missing"):
-        module.publish_website_visual_scene(descriptor=descriptor, world=world, operation_id="op-1")
-    assert len(calls) == 1
+def test_a_marble_reservation_is_refused_before_any_request(monkeypatch):
+    # Owner decision 2026-10-22: website captures never buy a Marble world.
+    with pytest.raises(ValueError, match="control_operation_invalid"):
+        module.website_webapp_request(capture_id="c", operation="visual-scene", payload={})
+    monkeypatch.setattr(module, "website_webapp_request", lambda **_: pytest.fail("requested a reservation"))
+    with pytest.raises(ValueError, match="provider_resource_mismatch"):
+        module.reserve_website_preparation_spend(
+            task_context=context(), binding_digest="sha256:" + "a" * 64, maximum_cost_usd=2.48,
+            request_count=1, provider="world_labs", resource_class="provider_reconstruction_api")
 
 
-def test_sam_spend_uses_signed_current_capture_reservation(monkeypatch):
+@pytest.mark.parametrize("source_digest", [None, "sha256:" + "9" * 64])
+def test_sam_spend_uses_signed_current_capture_reservation(monkeypatch, source_digest):
     from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
     calls = []
     def post(**kwargs):
@@ -234,14 +223,16 @@ def test_sam_spend_uses_signed_current_capture_reservation(monkeypatch):
     monkeypatch.setattr(module, "website_webapp_request", post)
     digest = "sha256:" + "a" * 64
     receipt, grant = module.reserve_website_sam_spend(task_context=context(), binding_digest=digest,
-                                                     maximum_cost_usd=0.02, request_count=2)
+                                                     maximum_cost_usd=0.02, request_count=2, source_video_digest=source_digest)
     require_paid_resource_admission_grant(grant, resource_class="evaluator_api", allocation_binding_digest=digest,
                                           require_allocation_binding=True)
     assert calls[0]["operation"] == "preparation-spend"
     assert receipt["maximum_cost_usd"] == .02
+    assert receipt.get("atlas_auxiliary", False) is (source_digest is not None)
     monkeypatch.setattr(module, "website_webapp_request", lambda **kw: {**receipt, "allocation_binding_digest": "sha256:" + "b" * 64})
     with pytest.raises(ValueError, match="receipt_invalid"):
-        module.reserve_website_sam_spend(task_context=context(), binding_digest=digest, maximum_cost_usd=.02, request_count=2)
+        module.reserve_website_sam_spend(task_context=context(), binding_digest=digest, maximum_cost_usd=.02, request_count=2,
+                                       source_video_digest=source_digest)
 
 
 def test_new_sponsorship_expiry_uses_signed_issuance_not_request_start(monkeypatch):
@@ -259,11 +250,38 @@ def test_new_sponsorship_expiry_uses_signed_issuance_not_request_start(monkeypat
             module.load_website_scene_sponsorship(task_context=context(), now=1000)
 
 
+def test_vast_gpu_preparation_reservation_uses_the_same_exact_signed_cap(monkeypatch):
+    from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
+    calls = []
+
+    def post(**kwargs):
+        calls.append(kwargs)
+        return {**kwargs["payload"]["spend"], "schema_version": "paid_lane_admission.v1", "status": "admitted",
+                "blockers": [], "external_disclosure_allowed": True, "expires_at_epoch": 9_999_999_999}
+
+    monkeypatch.setattr(module, "website_webapp_request", post)
+    digest = "sha256:" + "a" * 64
+    receipt, grant = module.reserve_website_preparation_spend(task_context=context(), binding_digest=digest,
+        maximum_cost_usd=1.7, request_count=1, resource_class="gpu_render", provider="vast")
+    require_paid_resource_admission_grant(grant, resource_class="gpu_render",
+        allocation_binding_digest=digest, require_allocation_binding=True)
+    assert calls[0]["operation"] == "preparation-spend"
+    assert receipt["maximum_cost_usd"] == 1.7 and receipt["request_count"] == 1
+    monkeypatch.setattr(module, "website_webapp_request", lambda **kwargs: {
+        **receipt, "allocation_binding_digest": "sha256:" + "b" * 64})
+    with pytest.raises(ValueError, match="receipt_invalid"):
+        module.reserve_website_preparation_spend(task_context=context(), binding_digest=digest,
+            maximum_cost_usd=1.7, request_count=1, resource_class="gpu_render", provider="vast")
+    with pytest.raises(ValueError, match="provider_resource_mismatch"):
+        module.reserve_website_preparation_spend(task_context=context(), binding_digest=digest,
+            maximum_cost_usd=1.7, request_count=1, resource_class="evaluator_api", provider="vast")
+
+
 @pytest.mark.parametrize('fault', [None, 'missing', 'changed', 'wrong-provider', 'expired'])
-def test_only_exact_retained_marble_admission_can_resume_before_submission(monkeypatch, fault):
+def test_only_exact_retained_atlas_admission_can_resume_before_submission(monkeypatch, fault):
     import time
     task = context()
-    provider, resource = ('meta', 'evaluator_api') if fault == 'wrong-provider' else ('world_labs', 'provider_reconstruction_api')
+    provider, resource = ('meta', 'evaluator_api') if fault == 'wrong-provider' else ('world_labs_atlas', 'provider_reconstruction_api')
     command = dict(task_context_digest=task['context_digest'], allocation_binding_digest='sha256:'+'a'*64,
                    maximum_cost_usd=2.48, request_count=1, provider=provider, resource_class=resource)
     retained = {**command, 'schema_version':'paid_lane_admission.v1', 'status':'admitted', 'blockers':[],
@@ -284,3 +302,25 @@ def test_only_exact_retained_marble_admission_can_resume_before_submission(monke
     else:
         admission, grant = module.reserve_website_preparation_spend(**kwargs)
         assert admission == retained and grant.allocation_binding_digest == command['allocation_binding_digest']
+
+
+@pytest.mark.parametrize("fault", [
+    {"status": "already_reserved"}, {"status": "blocked"}, {"blockers": ["rights_missing"]},
+    {"schema_version": "invalid"}, {"allocation_binding_digest": "sha256:" + "0" * 64},
+    {"external_disclosure_allowed": False}, {"expires_at_epoch": 0},
+])
+def test_invalid_remote_admission_cannot_be_retained_as_restart_authority(monkeypatch, fault):
+    task = context()
+    command = dict(task_context_digest=task["context_digest"], allocation_binding_digest="sha256:" + "a" * 64,
+                   maximum_cost_usd=.15, request_count=1, provider="world_labs_atlas",
+                   resource_class="provider_reconstruction_api")
+    value = {**command, "schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+             "external_disclosure_allowed": True, "expires_at_epoch": 9_999_999_999, **fault}
+    monkeypatch.setattr(module, "website_webapp_request", lambda **_: value)
+    retained = []
+    with pytest.raises((ValueError, RuntimeError)):
+        module.reserve_website_preparation_spend(
+            task_context=task, binding_digest=command["allocation_binding_digest"], maximum_cost_usd=.15,
+            request_count=1, provider=command["provider"], resource_class=command["resource_class"],
+            retain_admission=retained.append)
+    assert retained == []

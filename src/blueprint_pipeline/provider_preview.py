@@ -549,9 +549,14 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             if selected_video_uri
             else None
         )
+        model = self._string(os.getenv("WORLDLABS_DEFAULT_MODEL")) or self.provider_model
+        if not model.lower().startswith("marble"):
+            # worlds:generate serves Marble models only. Atlas is a task API
+            # (website_atlas_pose); any other name must not reach this request.
+            raise ValueError(f"worldlabs_model_not_a_world_model:{model[:64]}")
         generation_request = {
             "display_name": display_name or f"Blueprint {self._string(descriptor.get('capture_id'))}",
-            "model": self._string(os.getenv("WORLDLABS_DEFAULT_MODEL")) or self.provider_model,
+            "model": model,
             "permission": "private",
             "tags": tags,
             "world_prompt": {
@@ -683,13 +688,8 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
     ) -> Dict[str, Any]:
         started_at = time.time()
         if is_website_entry_source((descriptor.get("metadata") or {}).get("capture_entry_source")):
-            from .website_worldlabs import submit_website_prepared_views
-
-            return submit_website_prepared_views(
-                descriptor=descriptor, capture_root=capture_root,
-                api_request=_worldlabs_api_request, upload=_presigned_upload,
-                admission_grant=(provider_adapter_input or {}).get("paid_resource_admission_grant"),
-            )
+            # Website scenes come from the capture's Atlas job; Marble is never bought for them.
+            raise ValueError("website_marble_reconstruction_retired")
         request_manifest = self._build_request_manifest(
             descriptor=descriptor,
             capture_root=capture_root,
@@ -918,11 +918,7 @@ def run_preview_provider(
     provider: PreviewProvider | None = None
     try:
         provider = resolve_preview_provider(provider_name)
-        if (isinstance(provider, WorldLabsPreviewProvider)
-                and is_website_entry_source((descriptor.get("metadata") or {}).get("capture_entry_source"))):
-            from .paid_resource_allocator import submit_sponsored_website_reconstruction
-            submitted = submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=capture_root)
-        elif provider_adapter_input is not None:
+        if provider_adapter_input is not None:
             submitted = provider.submit(
                 descriptor=descriptor,
                 capture_root=capture_root,
@@ -983,19 +979,6 @@ def run_preview_provider(
                 normalized["worldlabs_world_manifest_uri"] = str(worldlabs_world_manifest_path)
             normalized["operation_terminal_status"] = poll_result.get("operation_terminal_status") or poll_result.get("status")
 
-            if (normalized.get("status") == "ready" and isinstance(worldlabs_world, Mapping)
-                    and is_website_entry_source((descriptor.get("metadata") or {}).get("capture_entry_source"))):
-                from .website_task_context import publish_website_visual_scene
-                try:
-                    publication = publish_website_visual_scene(descriptor=descriptor, world=worldlabs_world,
-                                                               operation_id=operation_id)
-                except Exception as exc:
-                    # Retain the ready world and retry this idempotent callback
-                    # when the existing controller resumes the same operation.
-                    publication = {"state": "pending", "world_id": normalized.get("world_id"),
-                                   "blocker": str(exc) if isinstance(exc, ValueError) else type(exc).__name__}
-                normalized["website_visual_publication"] = publication
-                write_json(pipeline_dir / "website_visual_publication.json", publication)
 
         worldlabs_asset_materialization: Dict[str, Any] | None = None
         if (
@@ -1010,7 +993,6 @@ def run_preview_provider(
                 worldlabs_asset_materialization = materialize_worldlabs_assets(
                     capture_root=capture_root,
                     world_manifest=worldlabs_world_manifest_path,
-                    scene_preparation=is_website_entry_source((descriptor.get("metadata") or {}).get("capture_entry_source")),
                 )
                 artifact_uris = dict(normalized.get("artifact_uris") or {})
                 artifact_uris.update(
@@ -1116,7 +1098,6 @@ def run_preview_provider(
                 normalized.get("worldlabs_asset_materialization") or {}
             ),
             "marble_sim_asset_handoff": normalized.get("marble_sim_asset_handoff") or {},
-            "website_visual_publication": normalized.get("website_visual_publication"),
             "labeling": dict(normalized.get("labeling") or {}),
             "provenance": provenance,
         }

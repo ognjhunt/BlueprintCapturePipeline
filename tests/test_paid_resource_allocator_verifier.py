@@ -25,6 +25,40 @@ VAST_PROVIDER_ADAPTER = "src/blueprint_pipeline/vast_provider_adapter.py"
 VAST_PROVIDER_ADAPTER_CLI = "src/blueprint_pipeline/vast_provider_adapter_cli.py"
 
 
+def test_repository_satisfies_paid_resource_allocator_verification():
+    # main's lint job runs this script only after merge. A PR that merged with
+    # a blocker (#2841 -> #2842) stopped the signed deploy artifact, so the
+    # impacted lane runs the same whole-repository check as a sentinel.
+    assert verifier.verify() == []
+
+
+def test_recorded_source_recovery_delegates_planning_to_the_canonical_allocator():
+    root = SCRIPT.parent.parent
+    recovery = 'src/blueprint_pipeline/atlas_recorded_source_recovery.py'
+    paths = [recovery, 'src/blueprint_pipeline/paid_resource_allocator.py']
+    sources = {p: (root / p).read_text() for p in paths}
+    # Even a local data variable with a capability's name is a retained handle
+    # to this conservative verifier. Keep data names distinct; no new issuer.
+    assert verifier._s3_transport_capability_callers(
+        sources, verifier.ATLAS_PLAN_CAPABILITIES) == verifier.APPROVED_ATLAS_PLAN_CALLERS
+    calls = verifier._reachable_calls(sources[recovery], 'recover_recorded_sources')
+    assert 'planner_runner' in calls and 'require_paid_resource_admission' not in calls
+
+
+def test_atlas_task_retry_attempt_cannot_be_called_outside_the_allocator_adapter():
+    root = SCRIPT.parent.parent
+    paths = ["src/blueprint_pipeline/website_atlas_tasks.py",
+             "src/blueprint_pipeline/paid_resource_allocator.py"]
+    sources = {p: (root / p).read_text() for p in paths}
+    capabilities = verifier.ATLAS_TASK_CAPABILITIES
+    assert verifier._s3_transport_capability_callers(sources, capabilities) == verifier.APPROVED_ATLAS_TASK_CALLERS
+    sources["scripts/bypass.py"] = (
+        "from blueprint_pipeline.website_atlas_tasks import _run_admitted_atlas_task_attempt as attempt\n"
+        "def bypass():\n    return attempt()\n")
+    assert verifier._s3_transport_capability_callers(sources, capabilities) - verifier.APPROVED_ATLAS_TASK_CALLERS == {
+        ("scripts/bypass.py", "bypass")}
+
+
 def test_selected_g1_controller_is_a_registered_canonical_admission_surface():
     path = "src/blueprint_pipeline/native_g1_team_paid_policy.py"
     manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text())
@@ -466,6 +500,26 @@ def test_remote_cpu_object_store_writers_have_only_approved_callers() -> None:
     observed = verifier._s3_transport_capability_callers(
         {**production, "src/blueprint_pipeline/new_writer.py": wrapper}, writers)
     assert observed - approved == {("src/blueprint_pipeline/new_writer.py", "ungated")}
+
+
+def test_only_the_canonical_allocator_reaches_the_atlas_pose_adapter() -> None:
+    production = {
+        path.relative_to(verifier.ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in verifier._production_python_paths()
+    }
+    capabilities = verifier.ATLAS_POSE_CAPABILITIES
+    approved = verifier.APPROVED_ATLAS_POSE_CALLERS
+    assert verifier._s3_transport_capability_callers(production, capabilities) == approved
+    # A second entry could hand the adapter a release gate that always passes.
+    hook = (
+        "from .website_atlas_pose import run_admitted_atlas_pose\n\n\n"
+        "def operator_hook(root, capture_id, context):\n"
+        "    return run_admitted_atlas_pose(output_root=root, capture_id=capture_id, task_context=context,\n"
+        "                                   release_blockers=lambda: ('', []))\n"
+    )
+    observed = verifier._s3_transport_capability_callers(
+        {**production, "src/blueprint_pipeline/atlas_operator_hook.py": hook}, capabilities)
+    assert observed - approved == {("src/blueprint_pipeline/atlas_operator_hook.py", "operator_hook")}
 
 
 def test_module_and_class_level_calls_to_object_store_writers_are_callers() -> None:

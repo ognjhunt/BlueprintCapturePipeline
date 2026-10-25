@@ -1035,18 +1035,6 @@
     {
       "disposition": "mitigated_by_control",
       "expires_on": "2026-11-05",
-      "filename": "src/blueprint_pipeline/website_mapanything_bootstrap.py",
-      "fingerprint": "de922595d34f3749cb8ba9d957a0d9a84532409ad4859e93b829f0d372f4005d",
-      "line_number": 283,
-      "owner": "Codex /root/independent_review",
-      "reason": "Exact disposable allocator-admitted worker image, fresh exist_okFalse private runtime root; sealed release/source/request/digest/size runtime files and hash-locked dependency install before imported operation. install_runtime and main ASTs unchanged from main20159. Scope excludes generic shared hosts; no live allocator/image/adoption evidence claimed. The fixed root exists only in the allocator-admitted exact disposable worker image. mkdir(exist_ok=False) refuses preexisting directories and symlinks; exact operation/source/image/request receipt SHA256, bundle SHA256/size/member rules and pip --require-hashes --no-deps precede execution of bundle code.",
-      "reviewed_on": "2026-10-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2026-11-05",
       "filename": "scripts/scene_retirement_continuous_bootstrap.py",
       "fingerprint": "df02c152bd0727a04d26db2079c7c6bc907bae852f20e3dc825ab69a5cc4566a",
       "line_number": 248,

@@ -1,0 +1,159 @@
+{
+  "fixture_scope": "development_only_synthetic_usd_software_contract",
+  "request": {
+    "embodiment_id": "universal_robots_ur5e",
+    "robot_embodiment": {
+      "schema_version": "blueprint.robot_embodiment.v1",
+      "embodiment_id": "universal_robots_ur5e",
+      "form": "fixed_base_arm",
+      "model": {
+        "format": "usd",
+        "url": "https://models.acme-robotics.example/acme_arm.usda",
+        "sha256": "sha256:78f8fd0d9a5bd747bd8c8d40886b45d0d0392e78147052ca4d220c9064ca8caf"
+      },
+      "base": {
+        "mode": "fixed"
+      },
+      "joints": [
+        {
+          "name": "test_joint_0",
+          "control": "position",
+          "lower": -3.0,
+          "upper": 3.0,
+          "max_velocity": 2.0
+        },
+        {
+          "name": "test_joint_1",
+          "control": "position",
+          "lower": -3.0,
+          "upper": 3.0,
+          "max_velocity": 2.0
+        },
+        {
+          "name": "test_joint_2",
+          "control": "position",
+          "lower": -3.0,
+          "upper": 3.0,
+          "max_velocity": 2.0
+        },
+        {
+          "name": "test_joint_3",
+          "control": "position",
+          "lower": -3.0,
+          "upper": 3.0,
+          "max_velocity": 2.0
+        },
+        {
+          "name": "test_joint_4",
+          "control": "position",
+          "lower": -3.0,
+          "upper": 3.0,
+          "max_velocity": 2.0
+        },
+        {
+          "name": "test_joint_5",
+          "control": "position",
+          "lower": -3.0,
+          "upper": 3.0,
+          "max_velocity": 2.0
+        }
+      ],
+      "gripper": {
+        "joints": [
+          {
+            "name": "finger_joint",
+            "open": 0.04,
+            "closed": 0.0
+          }
+        ],
+        "max_width_m": 0.08,
+        "contact_links": [
+          "left_finger",
+          "right_finger"
+        ]
+      },
+      "tool_link": "wrist",
+      "reset_joint_positions": {
+        "test_joint_0": 0.0,
+        "test_joint_1": 0.0,
+        "test_joint_2": 0.0,
+        "test_joint_3": 0.0,
+        "test_joint_4": 0.0,
+        "test_joint_5": 0.0,
+        "finger_joint": 0.04
+      },
+      "actuator": {
+        "stiffness": 400.0,
+        "damping": 40.0
+      },
+      "cameras": [
+        {
+          "name": "wrist_rgb",
+          "mount_link": "wrist",
+          "position_m": [
+            0.0,
+            0.05,
+            0.02
+          ],
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "width": 320,
+          "height": 240,
+          "horizontal_fov_deg": 90.0
+        },
+        {
+          "name": "scene_rgb",
+          "mount_link": null,
+          "position_m": [
+            1.0,
+            0.0,
+            1.2
+          ],
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "width": 320,
+          "height": 240,
+          "horizontal_fov_deg": 60.0
+        }
+      ],
+      "control_hz": 30,
+      "action_chunk_rows": 4,
+      "reach_m": 3.0
+    }
+  },
+  "response": {
+    "schema_version": "deployment_embodiment_configuration_preflight.v1",
+    "claim_ceiling": "configuration_only",
+    "status": "configured_not_executed",
+    "embodiment_id": "universal_robots_ur5e",
+    "request_digest": "sha256:96f1e3d7021fc9796a9b70cd85029de061ee8564888a5eab3f6a6e44c81756f1",
+    "catalog_digest": "sha256:59155484465c65490e0e7f7d4a1be00bed7bd1761934bffe78ba04547955b2bf",
+    "embodiment_digest": "sha256:f8e48b3313bb3ed16f46226f0905cf49bc19f961c0eca04aaef5ee5b1d426daa",
+    "model": {
+      "sha256": "sha256:78f8fd0d9a5bd747bd8c8d40886b45d0d0392e78147052ca4d220c9064ca8caf",
+      "size_bytes": 959
+    },
+    "model_file_digest_verified": true,
+    "structure": {
+      "joint_count": 7,
+      "rigid_body_count": 4
+    },
+    "blockers": [],
+    "limitations": [
+      "Source provenance and use rights remain required.",
+      "Task fit, controller, reset and independent episode scoring are not established by a model inspection.",
+      "Policy access, runtime qualification and spending authority use the existing run admission."
+    ],
+    "execution_authorized": false,
+    "provider_mutation_performed": false,
+    "preflight_digest": "sha256:bdf6061cfa443d1e6fcaaca09e69c32d17395c35a95d5467da72a00b4d1bfc53"
+  }
+}

@@ -168,14 +168,6 @@
       "expires_on": "2027-08-15",
       "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
     },
-    "certifi==2026.6.17": {
-      "license_expression": "MPL-2.0",
-      "approved": true,
-      "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-09",
-      "expires_on": "2027-07-09",
-      "source": "installed distribution license classifier"
-    },
     "certifi==2026.7.22": {
       "license_expression": "MPL-2.0",
       "approved": true,
@@ -263,14 +255,6 @@
       "reviewed_on": "2026-08-15",
       "expires_on": "2027-08-15",
       "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
-    },
-    "exceptiongroup==1.3.1": {
-      "license_expression": "MIT",
-      "approved": true,
-      "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-09",
-      "expires_on": "2027-07-09",
-      "source": "locked distribution project license"
     },
     "fastapi==0.139.0": {
       "license_expression": "MIT",
@@ -704,14 +688,6 @@
       "expires_on": "2027-08-15",
       "source": "PyPI JSON BSD-3-Clause license text and BSD classifier retrieved 2026-08-15; pre-vendored-expression numpy release"
     },
-    "numpy==2.2.6": {
-      "license_expression": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
-      "approved": true,
-      "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-09",
-      "expires_on": "2027-07-09",
-      "source": "locked conditional resolution distribution License-Expression"
-    },
     "numpy==2.3.1": {
       "license_expression": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
       "approved": true,
@@ -872,29 +848,29 @@
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License"
     },
-    "opentelemetry-api==1.43.0": {
+    "opentelemetry-api==1.45.1": {
       "license_expression": "Apache-2.0",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-08-01",
-      "expires_on": "2027-08-01",
-      "source": "installed distribution metadata License-Expression and license file"
+      "reviewed_on": "2026-10-22",
+      "expires_on": "2027-10-22",
+      "source": "Exact locked release metadata: https://pypi.org/project/opentelemetry-api/1.45.1/ declares Apache-2.0; verified 2026-10-22, unchanged from prior reviewed release"
     },
-    "opentelemetry-sdk==1.43.0": {
+    "opentelemetry-sdk==1.45.1": {
       "license_expression": "Apache-2.0",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-08-01",
-      "expires_on": "2027-08-01",
-      "source": "installed distribution metadata License-Expression and license file"
+      "reviewed_on": "2026-10-22",
+      "expires_on": "2027-10-22",
+      "source": "Exact locked release metadata: https://pypi.org/project/opentelemetry-sdk/1.45.1/ declares Apache-2.0; verified 2026-10-22, unchanged from prior reviewed release"
     },
-    "opentelemetry-semantic-conventions==0.64b0": {
+    "opentelemetry-semantic-conventions==0.66b1": {
       "license_expression": "Apache-2.0",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-08-01",
-      "expires_on": "2027-08-01",
-      "source": "installed distribution metadata License-Expression and license file"
+      "reviewed_on": "2026-10-22",
+      "expires_on": "2027-10-22",
+      "source": "Exact locked release metadata: https://pypi.org/project/opentelemetry-semantic-conventions/0.66b1/ declares Apache-2.0; verified 2026-10-22, unchanged from prior reviewed release"
     },
     "packaging==26.2": {
       "license_expression": "Apache-2.0 OR BSD-2-Clause",
@@ -1128,14 +1104,6 @@
       "expires_on": "2027-08-15",
       "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
     },
-    "rpds-py==0.30.0": {
-      "license_expression": "MIT",
-      "approved": true,
-      "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-29",
-      "expires_on": "2027-07-29",
-      "source": "locked distribution project license"
-    },
     "rpds-py==2026.6.3": {
       "license_expression": "MIT",
       "approved": true,
@@ -1159,14 +1127,6 @@
       "reviewed_on": "2026-08-15",
       "expires_on": "2027-08-15",
       "source": "PyPI JSON License-Expression 'BSD-3-Clause' retrieved 2026-08-15"
-    },
-    "scipy==1.15.3": {
-      "license_expression": "BSD-3-Clause",
-      "approved": true,
-      "owner": "@ognjhunt",
-      "reviewed_on": "2026-08-02",
-      "expires_on": "2027-08-02",
-      "source": "locked distribution license text and classifier"
     },
     "scipy==1.17.1": {
       "license_expression": "BSD-3-Clause",
@@ -1311,14 +1271,6 @@
       "reviewed_on": "2026-08-15",
       "expires_on": "2027-08-15",
       "source": "PyPI JSON metadata License 'BSD-3-Clause' retrieved 2026-08-15"
-    },
-    "tomli==2.4.1": {
-      "license_expression": "MIT",
-      "approved": true,
-      "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-09",
-      "expires_on": "2027-07-09",
-      "source": "locked distribution project license"
     },
     "torch==2.4.1+cu124": {
       "license_expression": "BSD-3-Clause",
@@ -1631,6 +1583,22 @@
       "reviewed_on": "2026-10-06",
       "expires_on": "2027-10-06",
       "source": "Human approval 2026-10-06 10:12 UTC after exact-version license review; docs/runtime_dependency_license_approval_20261006.md"
+    },
+    "certifi==2026.10.19": {
+      "license_expression": "MPL-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-10-21",
+      "expires_on": "2027-10-21",
+      "source": "Human exact-version approval 2026-10-21; docs/runtime_dependency_license_approval_20261021.md. https://pypi.org/pypi/certifi/2026.10.19/json; exact deployment wheel SHA256 42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b; complete embedded LICENSE SHA256 e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7 is byte-identical to previously approved certifi==2026.6.17; verified 2026-10-21."
+    },
+    "pillow==13.0.0": {
+      "license_expression": "MIT-CMU",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-10-21",
+      "expires_on": "2027-10-21",
+      "source": "Human exact-version approval 2026-10-21; docs/runtime_dependency_license_approval_20261021.md. https://pypi.org/pypi/pillow/13.0.0/json; exact deployment wheel SHA256 42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca; complete embedded LICENSE SHA256 dda12a98c1979cf3d94df1cff45d27a4cb3f04a60c76f76902ac54cac03ec0ce is byte-identical to previously approved pillow==12.3.0; verified 2026-10-21."
     }
   }
 }

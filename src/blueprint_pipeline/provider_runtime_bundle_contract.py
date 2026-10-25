@@ -24,6 +24,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp009d_policy_runtime_smoke",
     "adp009d_isaac",
     "adp009d_articulated_native",
+    "scene_configuration_native_continuation",
     "native_task_arena",
     "native_task_arena_policy_canary_session",
     "native_g1_development_campaign",
@@ -54,7 +55,9 @@ def provider_command_execute_fallback_allowed(kind: str, *, configured_override:
 
 
 def g1_provider_output_contract(kind: str) -> tuple[str | None, bool, tuple[str, ...]]:
-    """Retain lossless G1 evidence while excluding downloaded execution inputs."""
+    """Retain required review evidence while excluding downloaded execution inputs."""
+    if kind == "scene_configuration_native_continuation":
+        return "adp009d_native_microcheck.json", True, ()
     if kind == "native_g1_team_policy":
         return "native_g1_team_provider_result.v1.json", True, ()
     if kind == "native_g1_development_campaign":
@@ -221,6 +224,19 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp009d_isaac_runtime_contract"
+    elif provider_bundle_kind == "scene_configuration_native_continuation":
+        entrypoint_valid = (
+            "/isaac-sim/python.sh" in entrypoint_text
+            and "blueprint_pipeline.task_evaluation_scene_configuration_native_continuation" in entrypoint_text
+            and "native_continuation_process_exited_without_result" in entrypoint_text
+            and "adp009d_native_microcheck.json" in entrypoint_text
+        )
+        runner_valid = all(token in runner_text for token in (
+            "consume_stage_prefix_capsule", "validate_native_prefix",
+            "execute_scene_configuration_stage_chain", "native_import_producer_registry",
+            "execute_native_import_component", '"development_only"',
+        ))
+        runner_blocker = "provider_runner_missing_native_continuation_runtime_contract"
     elif provider_bundle_kind == "adp009d_articulated_native":
         entrypoint_valid = (
             "articulated_native_runner_failed_without_runtime_result" in entrypoint_text

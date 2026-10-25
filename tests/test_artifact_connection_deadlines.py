@@ -9,14 +9,13 @@ import pytest
 
 from blueprint_pipeline import artifact_http_transport as transport
 from blueprint_pipeline import native_g1_team_vm_system_packages as native
-from blueprint_pipeline import website_mapanything_bootstrap as website
 from tests.test_artifact_https_transports import registry
 from tests import test_controlled_http_connection_deadlines as control_fixtures
 
 local_peer = control_fixtures.local_peer
 tls_contexts = control_fixtures.tls_contexts
 
-MODULES = [transport, native, website, registry]
+MODULES = [transport, native, registry]
 
 
 @pytest.mark.parametrize("module", MODULES)

@@ -20,6 +20,13 @@ from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_usd_dependency_closure import G1_KIT_RUNTIME_ASSETS
+from .native_articulation_root_frame import (
+    NativeArticulationRootFrameError,
+    convert_root_pose,
+    derive_root_frame_binding,
+    rebind_root_frame_after_overlay,
+    root_bound_usd_spawner,
+)
 
 #: Every logical contact sensor the scene plan is allowed to emit.
 #:
@@ -408,6 +415,22 @@ def _resolve_portable_robot(
     if not isinstance(bindings, list):
         raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_missing"])
     runtime_assets = robot.get("usd_runtime_asset_dependencies")
+    team_closure = robot.get("usd_dependency_closure")
+    if team_closure is not None:
+        from .team_embodiment import TeamEmbodimentError, validate_model_dependency_closure
+
+        try:
+            if robot.get("robot_id") != "team_embodiment":
+                raise ValueError("wrong_robot")
+            closure = validate_model_dependency_closure(team_closure, model_record={
+                "sha256": robot.get("usd_sha256"), "size_bytes": robot.get("usd_size_bytes")})
+        except (TeamEmbodimentError, ValueError, TypeError) as exc:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_team_dependency_closure_invalid"]) from exc
+        expected_bindings = [{"relative_path": "team_embodiment/" + record["path"],
+                              "sha256": record["sha256"], "size_bytes": record["size_bytes"]}
+                             for record in closure["files"] if record["path"] != closure["model_path"]]
+        if (path != "team_embodiment/" + closure["model_path"] or bindings != expected_bindings or runtime_assets != []):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_team_dependency_closure_binding_mismatch"])
     if (
         not isinstance(runtime_assets, list)
         or any(not isinstance(asset, str) for asset in runtime_assets)
@@ -425,7 +448,7 @@ def _resolve_portable_robot(
             not relative_path
             or dep_path.is_absolute()
             or ".." in dep_path.parts
-            or dep_path.parts[0] != "assets"
+            or dep_path.parts[0] != ("team_embodiment" if team_closure is not None else "assets")
             or relative_path in seen
             or relative_path == path
         ):
@@ -444,6 +467,19 @@ def _resolve_portable_robot(
             or _sha256(dep_resolved) != binding.get("sha256")
         ):
             raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_identity_mismatch"])
+    if team_closure is not None:
+        # The source was admitted before staging; independently recheck its
+        # actual reachable file set after transport, not just listed hashes.
+        from .native_g1_usd_dependency_closure import robot_usd_dependency_sources
+
+        try:
+            inspected = robot_usd_dependency_sources(resolved)
+        except ValueError as exc:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_team_dependency_closure_unresolved"]) from exc
+        actual = [relative.as_posix() for _, relative in inspected.sources]
+        expected = [record["path"] for record in team_closure["files"] if record["path"] != team_closure["model_path"]]
+        if actual != expected or inspected.runtime_assets:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_team_dependency_closure_inventory_mismatch"])
     robot["usd_path"] = str(resolved)
     return robot
 
@@ -1101,6 +1137,16 @@ def _validate_articulation_adaptability(
                     f"{row.get('name') or row.get('semantic_role')}"
                 ]
             )
+        binding = (declared or {}).get("native_root_frame_binding")
+        if not isinstance(binding, Mapping):
+            raise NativeTaskArenaRuntimeError(
+                [f"native_task_arena_articulation_root_binding_missing:{row.get('name') or row.get('semantic_role')}"]
+            )
+        try:
+            if derive_root_frame_binding(usd) != binding:
+                raise NativeArticulationRootFrameError("native_articulation_spawn_binding_mismatch")
+        except NativeArticulationRootFrameError as exc:
+            raise NativeTaskArenaRuntimeError([str(exc)]) from exc
 
 
 def build_native_task_arena_environment(
@@ -1154,6 +1200,11 @@ def build_native_task_arena_environment(
             value=float(application["expected_native_value"]),
         )
         subject["usd_path"] = override["derived_usd"]
+        root_binding = (subject.get("articulation_adaptation") or {}).get("native_root_frame_binding")
+        if root_binding is not None:
+            subject["articulation_adaptation"]["native_root_frame_binding"] = (
+                rebind_root_frame_after_overlay(root_binding, subject["usd_path"])
+            )
         material_override_readbacks[application["parameter_id"]] = override
 
     from blueprint_pipeline.native_task_arena_preconstruction import (
@@ -1367,15 +1418,17 @@ def build_native_task_arena_environment(
         task_subject = row.get("task_subject") is True or role == "task_object"
         spawn_addon: dict[str, Any] = {"visible": bool(row["visible"])}
         adaptation = row.get("articulation_adaptation")
+        native_pose = row["pose_world"]
         if row["object_type"] == "ARTICULATION" and isinstance(adaptation, Mapping):
-            # The staged asset already carries the probe-proven grounding --
-            # base link dynamic plus a world PhysicsFixedJoint authored in the
-            # USD itself -- so no Isaac Lab articulation-root override is
-            # needed here. (fix_root_link raises NotImplementedError for a
-            # root Xform that is not itself a rigid body, which every sealed
-            # asset here is; attempt r5 paid for that discovery.) Record the
-            # adaptation so the readback shows what was spawned.
+            # A namespace ArticulationRootAPI lets PhysX select a moving link.
+            # New plans bind one explicit body while preserving fixed/floating
+            # semantics and the original source bytes. Legacy sealed plans
+            # remain replayable without inventing an unsealed frame binding.
             articulation_adaptations[runtime_name] = dict(adaptation)
+            root_binding = adaptation.get("native_root_frame_binding")
+            if root_binding is not None:
+                native_pose = convert_root_pose(native_pose, root_binding, to_native=True)
+                spawn_addon["func"] = root_bound_usd_spawner(root_binding)
         if task_subject:
             spawn_addon["semantic_tags"] = [("class", "task_object")]
         elif role == "task_support":
@@ -1388,6 +1441,8 @@ def build_native_task_arena_environment(
             "object_type": ObjectType[row["object_type"]],
             "usd_path": row["usd_path"],
             "initial_pose": Pose(
+                # Arena's bounding-box/relationship API describes the USD
+                # namespace. Only its native config/reset uses the body pose.
                 position_xyz=tuple(row["pose_world"]["position_world_m"]),
                 rotation_xyzw=tuple(row["pose_world"]["orientation_xyzw"]),
             ),
@@ -1416,10 +1471,10 @@ def build_native_task_arena_environment(
         # gate claimed its root still matched.
         obj.object_cfg.init_state = obj.object_cfg.init_state.replace(
             pos=tuple(
-                float(value) for value in row["pose_world"]["position_world_m"]
+                float(value) for value in native_pose["position_world_m"]
             ),
             rot=tuple(
-                contract_xyzw_to_native_xyzw(row["pose_world"]["orientation_xyzw"])
+                contract_xyzw_to_native_xyzw(native_pose["orientation_xyzw"])
             ),
         )
         if row["object_type"] == "ARTICULATION":

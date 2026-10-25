@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest, can
 from blueprint_pipeline.task_object_authoring_backend import ARTISAN_BACKEND, ARTISAN_REVISION, ARTISAN_TREE
 from blueprint_pipeline.task_object_authoring_contracts import require, file_record
 from blueprint_pipeline.task_evaluation_scene_configuration_artisan_runtime import MANIFEST, SCHEMA
+from blueprint_pipeline.artisan_vendor_reuse import SITE_IGNORE, vendor_copy_function
 from scripts.build_task_evaluation_scene_configuration_component_package import build_scene_configuration_component_package
 
 BRIDGE_MODULES = ("asset_authoring_sandbox", "asset_landlock", "task_object_artisan_hooks",
@@ -87,10 +89,27 @@ def _git(root: Path, *args) -> str:
                           capture_output=True, text=True).stdout.strip()
 
 
+def _seal_staging_files(staging: Path) -> None:
+    """Seal owned copies so the package publisher can hard-link their bytes.
+
+    This runs after the isolated import check. Vendor installations are never
+    chmodded; the private staging tree is deleted after the package is sealed.
+    """
+    paths = list(staging.rglob("*"))
+    require(not any(path.is_symlink() for path in paths), "artisan_staging_symlink_forbidden")
+    for path in paths:
+        if path.is_file():
+            mode = 0o555 if path.stat().st_mode & 0o111 else 0o444
+            if path.stat().st_mode & 0o777 != mode:
+                path.chmod(mode)
+
+
 def build_artisan_scene_configuration_component(*, repository_root, expected_blueprint_commit,
-                                               artisan_root, site_packages_root, blender_root, output_root):
+                                               artisan_root, site_packages_root, blender_root, output_root,
+                                               artisan_vendor_reuse_plan=None):
     repository, upstream = Path(repository_root).resolve(), Path(artisan_root).resolve()
     libraries, blender = Path(site_packages_root).resolve(), Path(blender_root).resolve()
+    reuse = json.loads(Path(artisan_vendor_reuse_plan).read_text()) if artisan_vendor_reuse_plan else None
     require(_git(repository, "rev-parse", "HEAD") == expected_blueprint_commit
             and not _git(repository, "status", "--porcelain"), "artisan_blueprint_source_not_clean")
     require(_git(upstream, "rev-parse", "HEAD") == ARTISAN_REVISION
@@ -133,11 +152,17 @@ def build_artisan_scene_configuration_component(*, repository_root, expected_blu
         subprocess.run(["git", "apply", "--check", str(patch)], cwd=source, check=True)
         subprocess.run(["git", "apply", str(patch)], cwd=source, check=True)
         shutil.copyfile(patch, staging / "upstream.patch")
-        shutil.copytree(libraries, staging / "runtime/site_packages", ignore=shutil.ignore_patterns(
-            "__pycache__", "*.pyc", "*.pth", "__editable__*", "artisan_assets-*.dist-info"))
+        site_copy = vendor_copy_function(reuse, kind="site_packages", source_root=libraries) if reuse else None
+        shutil.copytree(libraries, staging / "runtime/site_packages", ignore=SITE_IGNORE,
+                        **({"copy_function": site_copy} if site_copy else {}))
         # Reject source/runtime links to private or ambient files; flatten only
         # in-root vendor links, which the immutable component publisher seals.
-        shutil.copytree(blender, staging / "runtime/blender")
+        blender_copy = vendor_copy_function(reuse, kind="blender", source_root=blender) if reuse else None
+        shutil.copytree(blender, staging / "runtime/blender",
+                        **({"copy_function": blender_copy} if blender_copy else {}))
+        if reuse:
+            site_copy.require_complete()
+            blender_copy.require_complete()
         bridge = staging / "bridge/blueprint_pipeline"
         bridge.mkdir(parents=True)
         (bridge / "__init__.py").write_text("")
@@ -160,6 +185,7 @@ def build_artisan_scene_configuration_component(*, repository_root, expected_blu
                  "claim_ceiling": "development_only"}
         value["manifest_digest"] = canonical_digest(value, digest_field="manifest_digest")
         (staging / MANIFEST).write_text(canonical_json(value) + "\n")
+        _seal_staging_files(staging)
         return build_scene_configuration_component_package(adapter_id="content_agents_rigid_replacement",
             source_root=staging, driver_entrypoint="run", source_repository="https://github.com/ognjhunt/BlueprintCapturePipeline",
             source_commit=expected_blueprint_commit, source_license="Blueprint integration; ARTISAN Apache-2.0; upstream dependency notices",

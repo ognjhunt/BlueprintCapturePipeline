@@ -4,3 +4,4 @@ include SECURITY.md
 include uv.lock
 include requirements.txt
 include requirements-geometry.txt
+include src/blueprint_pipeline/_catalog_data/deployment_embodiment_support.v1.json

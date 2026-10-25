@@ -27,6 +27,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,14 @@ _SPEC = importlib.util.spec_from_file_location(
 deploy = importlib.util.module_from_spec(_SPEC)
 assert _SPEC.loader is not None
 _SPEC.loader.exec_module(deploy)
+
+
+@pytest.fixture(autouse=True)
+def _private_temporary_directory(tmp_path_factory, monkeypatch):
+    """The deploy sweeps stale provision scratch in the temporary directory; never the host's."""
+    scratch = tmp_path_factory.mktemp("temporary")
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    return scratch
 
 
 def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(monkeypatch, tmp_path):
@@ -653,6 +662,10 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-control-plane\n",
         encoding="utf-8",
     )
+    preview_service = unit_dir / "blueprint-website-atlas-preview.service"
+    preview_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-website-atlas-preview\n", encoding="utf-8")
+    preview_timer = unit_dir / "blueprint-website-atlas-preview.timer"
+    preview_timer.write_text("[Timer]\nOnUnitInactiveSec=60s\n", encoding="utf-8")
     additional_sources = []
     for name in (
         "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
@@ -724,6 +737,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         preflight_timer,
         control_plane_service,
         intake_service,
+        preview_service,
+        preview_timer,
     ):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
@@ -810,6 +825,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-control-plane-preflight.timer",
         "blueprint-pipeline-control-plane.service",
         "blueprint-pipeline-intake.service",
+        "blueprint-website-atlas-preview.service",
+        "blueprint-website-atlas-preview.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
@@ -833,6 +850,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-completed-replay-cache-gc.timer",
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.timer",
+        "blueprint-website-atlas-preview.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
         "blueprint-task-evaluation-sam31-preparation-execution.path",
@@ -1106,6 +1124,32 @@ def test_cli_sigterm_unwinds_deploy_and_restores_signal_handler(tmp_path, monkey
     assert signal.getsignal(signal.SIGTERM) is original
 
 
+def test_a_follow_up_signal_cannot_abort_deploy_rollback(tmp_path, monkeypatch, capsys):
+    # Stopping a deploy unit sends SIGINT, then SIGTERM to whatever is left once
+    # its main process exits; that second signal used to abort the watcher
+    # rollback and left 15 production timers stopped (2026-10-25).
+    original = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)
+    rolled_back = []
+
+    def interrupted(**_kwargs):
+        try:
+            signal.raise_signal(signal.SIGINT)
+        finally:
+            signal.raise_signal(signal.SIGTERM)
+            rolled_back.append(True)
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", interrupted)
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"),
+    ]) == 2
+    assert "deploy_interrupted:SIGINT" in capsys.readouterr().out
+    assert rolled_back == [True]
+    assert {number: signal.getsignal(number) for number in original} == original
+
+
 def test_cli_defers_sigterm_during_active_release_transition(tmp_path, monkeypatch):
     original = signal.getsignal(signal.SIGTERM)
     monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)
@@ -1323,6 +1367,65 @@ def test_door_and_iteration_wrappers_use_trusted_sources() -> None:
         assert "--source-repo $CP " in text, wrapper
 
 
+@pytest.mark.parametrize("failure", [None, "install", "readback", "timeout", "interrupt"])
+def test_shared_runtime_sync_uses_hashed_release_delta_as_service_user(tmp_path, monkeypatch, failure):
+    manifest = tmp_path / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("certifi==2026.10.19 \\\n    --hash=sha256:" + "b" * 64 + "\npillow==13.0.0 \\\n    --hash=sha256:" + "a" * 64 + "\n")
+    calls, killed, reaped = [], [], []
+
+    def start(argv, **kwargs):
+        calls.append(argv)
+        assert argv[:4] == ["/usr/sbin/runuser", "-u", "blueprint", "--"]
+        assert argv[4:6] == [str(Path(sys.executable).absolute()), "-I"]
+        assert kwargs["cwd"] == "/"
+        assert set(kwargs["env"]) == {"PATH", "HOME", "LC_ALL", "PIP_CONFIG_FILE"}
+        assert kwargs["start_new_session"] is True
+
+        def communicate(*, input, timeout):
+            if "pip" in argv:
+                assert "--require-hashes" in argv and "--no-deps" in argv
+                assert "--only-binary=:all:" in argv
+                assert argv[-1] == str(manifest)
+                assert input is None and timeout == 180
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                if failure == "interrupt":
+                    raise KeyboardInterrupt()
+                return "", "private child details"
+            assert json.loads(input) == ["certifi", "pillow"]
+            return json.dumps({"certifi": "2026.10.19", "pillow": "12.3.0" if failure == "readback" else "13.0.0"}), ""
+
+        return SimpleNamespace(pid=1000 + len(calls), returncode=1 if failure == "install" else 0,
+            communicate=communicate, wait=lambda **_kwargs: reaped.append(len(calls)),
+            stdout=io.StringIO(), stderr=io.StringIO())
+
+    monkeypatch.setattr(deploy.subprocess, "Popen", start)
+    monkeypatch.setattr(deploy.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    if failure:
+        expected = KeyboardInterrupt if failure == "interrupt" else deploy.ControlPlaneDeployError
+        with pytest.raises(expected):
+            deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
+    else:
+        receipt = deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
+        assert receipt["versions"] == {"certifi": "2026.10.19", "pillow": "13.0.0"}
+        assert receipt["account"] == "blueprint"
+    assert len(calls) == (1 if failure in {"install", "timeout", "interrupt"} else 2)
+    assert killed == [(1001 + index, signal.SIGKILL) for index in range(len(calls))]
+    assert len(reaped) == len(calls)
+
+
+@pytest.mark.parametrize("extra", ["usd-core==26.5", "https://example.invalid/unrelated.whl"])
+def test_shared_runtime_sync_refuses_unrelated_bootstrap_pin_before_install(tmp_path, monkeypatch, extra):
+    manifest = tmp_path / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    manifest.parent.mkdir(parents=True)
+    source = REPO_ROOT / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    manifest.write_text(source.read_text() + extra + " \\\n    --hash=sha256:" + "c" * 64 + "\n")
+    monkeypatch.setattr(deploy.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("unrelated install started"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_shared_runtime_dependency_sync_failed$"):
+        deploy._synchronize_shared_control_plane_dependencies(release_path=tmp_path)
+
+
 def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, object]:
     """Replace every host-touching deploy step with a no-op; return deploy arguments."""
 
@@ -1362,6 +1465,7 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_prepare_scene_retirement_runtime": lambda **_kwargs: {
             "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False,
         },
+        "_synchronize_shared_control_plane_dependencies": lambda **_kwargs: {"status": "test_host_step_stub"},
         "_install_configured_controls_runtime_prerequisites": lambda: {},
         "_install_configured_controls_autostart_registry": lambda **_kwargs: {},
         "_install_intake_runtime_identity_drop_in": lambda *_args, **_kwargs: {},
@@ -1386,6 +1490,30 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "scene_preparation_bootstrap_file": tmp_path / "absent-bootstrap.json",
         "controls_autoprovision_bootstrap_file": tmp_path / "absent-controls-bootstrap.json",
     }
+
+
+@pytest.mark.parametrize("fail_sync", [False, True])
+def test_shared_dependency_sync_precedes_source_switch_and_restart(tmp_path, monkeypatch, fail_sync):
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    steps = []
+
+    def sync(**_kwargs):
+        steps.append("sync")
+        if fail_sync:
+            raise deploy.ControlPlaneDeployError("deploy_shared_runtime_dependency_sync_failed")
+        return {"status": "synchronized"}
+
+    monkeypatch.setattr(deploy, "_synchronize_shared_control_plane_dependencies", sync)
+    monkeypatch.setattr(deploy, "_move_source_checkout", lambda *_args: steps.append("source"))
+    monkeypatch.setattr(deploy, "_restart_units", lambda _units: steps.append("restart") or [])
+    if fail_sync:
+        with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_shared_runtime_dependency_sync_failed"):
+            deploy.deploy_control_plane_commit(**arguments)
+        assert steps == ["sync"]
+    else:
+        receipt = deploy.deploy_control_plane_commit(**arguments)
+        assert steps == ["sync", "source", "restart"]
+        assert receipt["shared_runtime_dependencies"]["status"] == "synchronized"
 
 
 @pytest.mark.parametrize("failure", [None, "disk_admission", "paid_gate", "intake_identity"])
@@ -2556,12 +2684,17 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     reserve_calls: list[dict] = []
     observed_bytes: list[int] = []
 
+    released: list[str] = []
+
     class Reservation:
         def receipt(self):
             return {"reservation_token": "deploy-test"}
 
         def observe(self, _bytes):
             observed_bytes.append(_bytes)
+
+        def release(self, *, outcome="completed"):
+            released.append(outcome)
 
         def __enter__(self):
             return self
@@ -2604,6 +2737,8 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     monkeypatch.setattr(deploy, "_install_scene_retirement_stores",
         lambda: (assert_lock_held("scene_retirement_disabled_stores") or {
             "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False}))
+    monkeypatch.setattr(deploy, "_synchronize_shared_control_plane_dependencies",
+        lambda **_kwargs: (assert_lock_held("shared_runtime_dependencies") or {"status": "test_host_step_stub"}))
     monkeypatch.setattr(
         deploy,
         "_restart_units",
@@ -2678,6 +2813,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert observed == [
         "path_quiesce",
         "scene_retirement_runtime_prepare",
+        "shared_runtime_dependencies",
         "scene_retirement_disabled_stores",
         "restart",
         "runtime_probe",
@@ -2691,6 +2827,13 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert receipt["disk_reservation_estimate"]["basis"] == "declared_default"
     assert reserve_calls[0]["expected_bytes"] == receipt["disk_reservation_estimate"]["bytes"]
     assert reserve_calls[0]["workload"] == "control_plane_release"
+    # No toolchain is published for this commit, so its rebuild under the
+    # temporary directory is admitted too, and freed once provisioning ends.
+    staging = receipt["disk_reservation_estimate"]["scene_configuration_staging"]
+    assert staging["basis"] == "declared_default"
+    assert reserve_calls[1]["workload"] == "scene_configuration_staging"
+    assert reserve_calls[1]["expected_bytes"] == deploy.SCENE_CONFIGURATION_STAGING_DECLARED_BYTES
+    assert released == ["completed"]
     assert len(observed_bytes) == 1 and observed_bytes[0] > 0
     assert receipt["storage_pins_runtime"] == storage_pins_receipt
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
@@ -2976,6 +3119,86 @@ def test_release_estimate_falls_back_to_the_role_footprint_without_a_git_tree(
     assert estimate["basis"] == "declared_default"
     assert estimate["bytes"] == 2 * 1024**3
     assert estimate["tree_bytes"] is None and estimate["file_count"] is None
+
+
+def _published_toolchain(runtimes: Path, commit: str, sizes: list[int], *, mtime: float) -> None:
+    root = runtimes / "scene-configuration" / commit
+    root.mkdir(parents=True)
+    manifest = root / deploy.SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST
+    manifest.write_text(json.dumps({"files": [{"size_bytes": size} for size in sizes]}))
+    os.utime(manifest, (mtime, mtime))
+
+
+def test_staging_estimate_is_the_newest_published_toolchain(tmp_path: Path) -> None:
+    import math
+    import tempfile
+
+    runtimes = tmp_path / "system-runtimes"
+    _published_toolchain(runtimes, "a" * 40, [1, 2], mtime=1_000)
+    _published_toolchain(runtimes, "b" * 40, [6_000, 4_000], mtime=2_000)
+    estimate = deploy._scene_configuration_staging_estimate(runtimes, "c" * 40)
+    assert estimate == {
+        "bytes": math.ceil(10_000 * deploy.SCENE_CONFIGURATION_STAGING_HEADROOM) + 2 * 4096,
+        "basis": "published_toolchain:" + "b" * 40,
+        "file_count": 2,
+        "target_root": tempfile.gettempdir(),
+    }
+    # A published commit's toolchain is reused, so nothing is staged for it.
+    assert deploy._scene_configuration_staging_estimate(runtimes, "b" * 40) is None
+
+
+def test_staging_estimate_declares_a_full_build_without_a_toolchain(tmp_path: Path) -> None:
+    estimate = deploy._scene_configuration_staging_estimate(tmp_path / "absent", "c" * 40)
+    assert estimate["basis"] == "declared_default"
+    assert estimate["bytes"] == deploy.SCENE_CONFIGURATION_STAGING_DECLARED_BYTES
+
+
+def test_deploy_refuses_before_staging_a_toolchain_the_disk_cannot_hold(tmp_path, monkeypatch) -> None:
+    """2026-10-23: a 10.4 GB provision copy started with 11.7 GB free on root."""
+
+    commit = "d" * 40
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    arguments["disk_reservation_root"] = tmp_path / "disk-reservations"
+    _published_toolchain(arguments["scene_configuration_runtime_root"], "a" * 40, [10_000], mtime=1_000)
+    monkeypatch.setattr(deploy, "_install_disk_reservation_runtime_prerequisites", lambda _root: {})
+    monkeypatch.setattr(deploy, "_release_footprint_estimate", lambda *_args, **_kwargs: {
+        "bytes": 4096, "basis": "test_estimate",
+    })
+    monkeypatch.setattr(deploy, "_provision_scene_configuration_from_release",
+                        lambda **_kwargs: pytest.fail("staged without admission"))
+    calls: list[tuple[str, int]] = []
+    released: list[tuple[str, str]] = []
+
+    class Reservation:
+        def __init__(self, workload: str) -> None:
+            self.workload = workload
+
+        def release(self, *, outcome="completed"):
+            released.append((self.workload, outcome))
+
+    def reserve(role, **kwargs):
+        assert role == "control_plane_deploy"
+        calls.append((kwargs["workload"], kwargs["expected_bytes"]))
+        if kwargs["workload"] == "scene_configuration_staging":
+            raise deploy.ControlPlaneDiskBudgetError("insufficient_headroom")
+        return Reservation(kwargs["workload"])
+
+    monkeypatch.setattr(deploy, "reserve_control_plane_disk", reserve)
+    # A stopped deploy's scratch from hours ago is reclaimed before admission.
+    old = time.time() - 7 * 3600
+    dead = [Path(tempfile.gettempdir()) / "scene-configuration-components-dead",
+            arguments["scene_configuration_runtime_root"] / "scene-configuration" / f".{'e' * 40}.8ouxnrg0"]
+    for path in dead:
+        path.mkdir(parents=True)
+        os.utime(path, (old, old))
+    with pytest.raises(deploy.ControlPlaneDeployError,
+                       match="deploy_disk_budget_exceeded:insufficient_headroom"):
+        deploy.deploy_control_plane_commit(**arguments)
+    assert not any(path.exists() for path in dead)
+    staged = deploy._scene_configuration_staging_estimate(arguments["scene_configuration_runtime_root"], commit)
+    assert calls == [("control_plane_release", 4096), ("scene_configuration_staging", staged["bytes"])]
+    # The release's own reservation does not outlive the refusal.
+    assert released == [("control_plane_release", "blocked")]
 
 
 def test_storage_pins_runtime_repairs_root_owned_directory_and_reports_receipt(
@@ -3291,6 +3514,8 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
     })
     monkeypatch.setattr(deploy, "_install_scene_retirement_stores", lambda: {
         "status": "test_host_step_stub", "authority_issued": False, "cleanup_enabled": False})
+    monkeypatch.setattr(deploy, "_synchronize_shared_control_plane_dependencies",
+        lambda **_kwargs: {"status": "test_host_step_stub"})
     watcher = "blueprint-scene-object-discovery.path"
     restored: list[dict[str, object]] = []
     monkeypatch.setattr(

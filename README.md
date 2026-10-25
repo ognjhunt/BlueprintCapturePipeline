@@ -5,7 +5,12 @@
 > Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
 
 
-> Current owner direction (2026-10-14, recorded in AGENTS.md and the shared doctrine): **two programs are active.** The free beta's evaluated, recommended pilot is the customer-facing program: invited robot teams' own policies are evaluated in simulations built from website site captures, and Blueprint recommends one team whose run passed. Arm Decision Proof v1 below is the evidence program and keeps sole authority over physical-validation claims. Multi-site beta operation, the team evaluation runtime, and the robot-team journey are active work, not frozen. The frozen north-star v3 contract keeps its historical `status: sole_active_program`; this decision supersedes that label without reopening the contract.
+> Current owner direction (2026-10-21, recorded in AGENTS.md and canonical shared doctrine): the free beta is a **job-first automation service** alongside Arm Decision Proof v1. The site records or uploads video of one recurring job; the existing video analysis drafts the brief and assessment cannot advance without retained video (owner correction, 2026-10-21). Blueprint agrees the brief, prepares the capture-backed simulation, runs supported configurations it can access, reports explicit capability gaps, and helps compare real delivery proposals. Customer selection, both-party pilot agreement and reported outcomes are separate records. ADP retains its frozen two-candidate scientific protocol and authoritative physical-proof boundary; the historical `sole_active_program` label does not override the owner direction.
+
+For capture-derived evaluations, the
+[supervised beta runbook](docs/runbooks/first-site-team-beta.md) covers exact
+runtime delivery, simulation qualification, results and recovery. It is a
+conditional evidence route rather than a required stage for every job.
 
 ## Evidence Program: Arm Decision Proof v1
 
@@ -38,17 +43,17 @@ are not independent roadmap authority.
 
 ## Product Boundary
 
-Capture and assessment prepare a reusable task environment, scenarios, scoring
-definitions, and robot-team setup requirements. They stop before policy
-execution, measured scores, or performance recommendations. A robot team must
-separately request evaluation and bind its hardware, policy, sensors, and
-embodiment constraints to the shared job. `blueprint-run-robot-eval-job` and the
-authenticated team evaluation route preserve that later capability; capture
-delivery never consumes the evaluation inbox. Registered Franka/G1 profiles
-remain configurations, while mobile manipulator and wheeled humanoid setup
-requirements remain unresolved until concrete supported bindings exist.
+A job assessment can use existing evidence without creating a capture,
+testbed or run. WebApp owns briefs, proposals, customer choice, pilot agreement
+records and permitted customer-reported outcomes. Pipeline owns scientific
+evidence planning and execution, normalized results, uncertainty and abstention.
 
-Blueprint has one customer-facing product: a **Task Evaluation Run**.
+When new technical evidence is useful, reuse the Decision/Evidence Router and
+existing bounded **Task Evaluation Run**. Blueprint can operate supported
+licensed policies itself; approved team-supplied endpoints and integrations
+remain available. A model or robot profile does not establish executable
+compatibility, delivery support or physical performance. Capture delivery does
+not itself start evaluation or authorize spending.
 
 | Term | Meaning |
 | --- | --- |
@@ -175,8 +180,8 @@ python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <ar
 
 Before accepting work, answer:
 
-1. Which Arm Decision Proof backlog item and day-7/day-14/day-21/day-28/day-35/day-42
-   gate does it unblock?
+1. Which beta journey step and observed blocker, or Arm Decision Proof backlog
+   item and day gate, does it unblock?
 2. What observed artifact proves the blocker is removed?
 3. Why is existing infrastructure insufficient?
 4. What is the smallest reversible change?

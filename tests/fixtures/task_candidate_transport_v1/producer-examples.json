@@ -1,0 +1,371 @@
+{
+  "decision": {
+    "accepted": true,
+    "already_exists": false,
+    "approved_task_definition": {
+      "approval_actor": {
+        "identity": "firebase:buyer-123",
+        "role": "customer"
+      },
+      "approval_decision_digest": "sha256:ef0c614f2beefc0849dcf9f7c078996e0b1c87c348d642a96cc9bb2e7a98ac98",
+      "approval_decision_id": "task-decision-4e08fbce5ec647ab15ef",
+      "approval_status": "approved",
+      "approved_task_digest": "sha256:dcb702aed5224e50cb0fccb37d9e2ccfe2f79b096e455c739649a8d1b76a7d60",
+      "approved_task_id": "approved-task-de5e3121a5041ccda435",
+      "candidate_digest": "sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210",
+      "discovery_digest": "sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a",
+      "discovery_id": "software-transport-discovery",
+      "intent_source": "customer_edited_candidate",
+      "prohibited_evaluator_identities": [
+        "provider:model-a"
+      ],
+      "proposer_identity": "provider:model-a",
+      "schema_version": "approved_task_definition.v1",
+      "source_capture": {
+        "capture_authority_profile": "camera_360_equirectangular",
+        "capture_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "intake_id": "intake-1"
+      },
+      "task": {
+        "description": "Move the observed blue tote into the marked box.",
+        "measurable_success_conditions": [
+          {
+            "metric": "object_center_distance",
+            "operator": "<=",
+            "threshold": 1.0,
+            "units": "m"
+          }
+        ],
+        "reset_contract": {
+          "description": "Restore the observed tote and marked box.",
+          "position_tolerance_m": 1.0
+        },
+        "task_family": "rigid_object_pick_place"
+      },
+      "task_candidate_id": "task-candidate-c67e3e91aa78e117df26"
+    },
+    "approved_task_definition_canonical_json": "{\"approval_actor\":{\"identity\":\"firebase:buyer-123\",\"role\":\"customer\"},\"approval_decision_digest\":\"sha256:ef0c614f2beefc0849dcf9f7c078996e0b1c87c348d642a96cc9bb2e7a98ac98\",\"approval_decision_id\":\"task-decision-4e08fbce5ec647ab15ef\",\"approval_status\":\"approved\",\"approved_task_id\":\"approved-task-de5e3121a5041ccda435\",\"candidate_digest\":\"sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210\",\"discovery_digest\":\"sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a\",\"discovery_id\":\"software-transport-discovery\",\"intent_source\":\"customer_edited_candidate\",\"prohibited_evaluator_identities\":[\"provider:model-a\"],\"proposer_identity\":\"provider:model-a\",\"schema_version\":\"approved_task_definition.v1\",\"source_capture\":{\"capture_authority_profile\":\"camera_360_equirectangular\",\"capture_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"intake_id\":\"intake-1\"},\"task\":{\"description\":\"Move the observed blue tote into the marked box.\",\"measurable_success_conditions\":[{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":1.0,\"units\":\"m\"}],\"reset_contract\":{\"description\":\"Restore the observed tote and marked box.\",\"position_tolerance_m\":1.0},\"task_family\":\"rigid_object_pick_place\"},\"task_candidate_id\":\"task-candidate-c67e3e91aa78e117df26\"}",
+    "capture_session_id": "capture-review-1",
+    "command_request_id": "task-command-1",
+    "decision_evidence_request": null,
+    "intake_id": "intake-1",
+    "pipeline_approval_status": "approved",
+    "pipeline_task_decision": {
+      "action": "edit_and_approve",
+      "actor": {
+        "identity": "firebase:buyer-123",
+        "role": "customer"
+      },
+      "candidate_digest": "sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210",
+      "decision_digest": "sha256:ef0c614f2beefc0849dcf9f7c078996e0b1c87c348d642a96cc9bb2e7a98ac98",
+      "decision_id": "task-decision-4e08fbce5ec647ab15ef",
+      "discovery_digest": "sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a",
+      "discovery_id": "software-transport-discovery",
+      "edited_task": {
+        "description": "Move the observed blue tote into the marked box.",
+        "measurable_success_conditions": [
+          {
+            "metric": "object_center_distance",
+            "operator": "<=",
+            "threshold": 1.0,
+            "units": "m"
+          }
+        ],
+        "reset_contract": {
+          "description": "Restore the observed tote and marked box.",
+          "position_tolerance_m": 1.0
+        },
+        "task_family": "rigid_object_pick_place"
+      },
+      "idempotency_key": "approve-task-candidate-1",
+      "rationale": "This is the exact task we want evaluated.",
+      "schema_version": "task_candidate_decision.v1",
+      "task_candidate_id": "task-candidate-c67e3e91aa78e117df26"
+    },
+    "pipeline_task_decision_canonical_json": "{\"action\":\"edit_and_approve\",\"actor\":{\"identity\":\"firebase:buyer-123\",\"role\":\"customer\"},\"candidate_digest\":\"sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210\",\"decision_id\":\"task-decision-4e08fbce5ec647ab15ef\",\"discovery_digest\":\"sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a\",\"discovery_id\":\"software-transport-discovery\",\"edited_task\":{\"description\":\"Move the observed blue tote into the marked box.\",\"measurable_success_conditions\":[{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":1.0,\"units\":\"m\"}],\"reset_contract\":{\"description\":\"Restore the observed tote and marked box.\",\"position_tolerance_m\":1.0},\"task_family\":\"rigid_object_pick_place\"},\"idempotency_key\":\"approve-task-candidate-1\",\"rationale\":\"This is the exact task we want evaluated.\",\"schema_version\":\"task_candidate_decision.v1\",\"task_candidate_id\":\"task-candidate-c67e3e91aa78e117df26\"}",
+    "processed_at_iso": "2026-10-21T12:00:00Z",
+    "proof_boundary": {
+      "approved_task_exists": true,
+      "comparative_policy_ranking_verdict": "thesis_not_supported",
+      "decision_evidence_request_compiled": false,
+      "physical_success_established": false,
+      "pipeline_decision_recorded": true,
+      "task_success_established": false,
+      "testbed_required_before_request_compilation": true,
+      "webapp_command_is_pipeline_approval": false
+    },
+    "schema_version": "task_candidate_decision_processing_result.v1",
+    "status": "processed",
+    "submission_fingerprint_sha256": "sha256:9a640bac7439d983dc76e1afeb594f4f7dc7c902201c3c2abc29d363cd269cd9"
+  },
+  "provenance": {
+    "clock_fixed_for_reproducibility": true,
+    "generator": "tests/fixtures/task_candidate_transport_v1/generate.py",
+    "physical_evidence": false,
+    "provider_execution": false,
+    "scope": "development_only"
+  },
+  "publication": {
+    "capture_session_id": "capture-review-1",
+    "discovery_digest": "sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a",
+    "intake_id": "intake-1",
+    "pipeline_task_candidate_canonical_json": {
+      "sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210": "{\"approval_status\":\"approval_required\",\"assumptions\":[\"The tote is movable.\"],\"confidence\":1.0,\"coverage\":{\"task_object\":0.8},\"description\":\"Move the blue tote into the marked box.\",\"estimated_evaluation_cost_usd\":0.0,\"expected_customer_value\":null,\"likely_task_family\":\"rigid_object_pick_place\",\"missing_evidence\":[\"Rear grasp surface is occluded.\"],\"observed_objects\":[{\"label\":\"blue tote\",\"object_id\":\"tote-1\",\"observation_fact_ids\":[\"fact-tote\"]}],\"prohibited_claims\":[\"physical_task_success\"],\"proposal_method\":{\"implementation_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"method_id\":\"local-task-proposer\",\"origin\":\"model_provider\",\"proposer_identity\":\"provider:model-a\",\"version\":\"1\"},\"proposed_measurable_success_condition\":{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":1.0,\"units\":\"m\"},\"required_robot_capabilities\":[\"rigid-object grasp\"],\"required_site_reset\":\"Return the tote to the table marker.\",\"supporting_3d_regions\":[\"box-1\",\"region-table\"],\"supporting_frames\":[\"frame-10\"],\"target_regions\":[{\"label\":\"marked box\",\"region_id\":\"box-1\"}],\"task_candidate_id\":\"task-candidate-c67e3e91aa78e117df26\"}"
+    },
+    "pipeline_task_discovery": {
+      "approval_state": "task_approval_required",
+      "capture_qa_report_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "claim_boundaries": {
+        "candidate_is_customer_intent": false,
+        "candidate_is_task_success_evidence": false,
+        "generated_or_inferred_content_upgrades_capture_authority": false
+      },
+      "discovery_digest": "sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a",
+      "discovery_id": "software-transport-discovery",
+      "proposal_method": {
+        "implementation_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "method_id": "local-task-proposer",
+        "origin": "model_provider",
+        "proposer_identity": "provider:model-a",
+        "version": "1"
+      },
+      "scene_analysis": {
+        "hazards": [],
+        "inferred_objects_and_affordances": [],
+        "observed_site_facts": [
+          {
+            "confidence": 0.98,
+            "description": "A blue tote is directly visible on the table.",
+            "fact_id": "fact-tote",
+            "observation_status": "directly_observed",
+            "row_digest": "sha256:5af77737a0c03dfba813f08b1be6314b83e0a997797406448b77112181e319f6",
+            "supporting_3d_regions": [
+              "region-table"
+            ],
+            "supporting_frames": [
+              "frame-10"
+            ]
+          }
+        ],
+        "privacy_sensitive_areas": [],
+        "unsupported_or_occluded_regions": []
+      },
+      "schema_version": "task_candidate_discovery.v1",
+      "source_capture": {
+        "capture_authority_profile": "camera_360_equirectangular",
+        "capture_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "intake_id": "intake-1"
+      },
+      "task_candidates": [
+        {
+          "approval_status": "approval_required",
+          "assumptions": [
+            "The tote is movable."
+          ],
+          "candidate_digest": "sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210",
+          "confidence": 1.0,
+          "coverage": {
+            "task_object": 0.8
+          },
+          "description": "Move the blue tote into the marked box.",
+          "estimated_evaluation_cost_usd": 0.0,
+          "expected_customer_value": null,
+          "likely_task_family": "rigid_object_pick_place",
+          "missing_evidence": [
+            "Rear grasp surface is occluded."
+          ],
+          "observed_objects": [
+            {
+              "label": "blue tote",
+              "object_id": "tote-1",
+              "observation_fact_ids": [
+                "fact-tote"
+              ]
+            }
+          ],
+          "prohibited_claims": [
+            "physical_task_success"
+          ],
+          "proposal_method": {
+            "implementation_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "method_id": "local-task-proposer",
+            "origin": "model_provider",
+            "proposer_identity": "provider:model-a",
+            "version": "1"
+          },
+          "proposed_measurable_success_condition": {
+            "metric": "object_center_distance",
+            "operator": "<=",
+            "threshold": 1.0,
+            "units": "m"
+          },
+          "required_robot_capabilities": [
+            "rigid-object grasp"
+          ],
+          "required_site_reset": "Return the tote to the table marker.",
+          "supporting_3d_regions": [
+            "box-1",
+            "region-table"
+          ],
+          "supporting_frames": [
+            "frame-10"
+          ],
+          "target_regions": [
+            {
+              "label": "marked box",
+              "region_id": "box-1"
+            }
+          ],
+          "task_candidate_id": "task-candidate-c67e3e91aa78e117df26"
+        }
+      ]
+    },
+    "pipeline_task_discovery_canonical_json": "{\"approval_state\":\"task_approval_required\",\"capture_qa_report_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"claim_boundaries\":{\"candidate_is_customer_intent\":false,\"candidate_is_task_success_evidence\":false,\"generated_or_inferred_content_upgrades_capture_authority\":false},\"discovery_id\":\"software-transport-discovery\",\"proposal_method\":{\"implementation_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"method_id\":\"local-task-proposer\",\"origin\":\"model_provider\",\"proposer_identity\":\"provider:model-a\",\"version\":\"1\"},\"scene_analysis\":{\"hazards\":[],\"inferred_objects_and_affordances\":[],\"observed_site_facts\":[{\"confidence\":0.98,\"description\":\"A blue tote is directly visible on the table.\",\"fact_id\":\"fact-tote\",\"observation_status\":\"directly_observed\",\"row_digest\":\"sha256:5af77737a0c03dfba813f08b1be6314b83e0a997797406448b77112181e319f6\",\"supporting_3d_regions\":[\"region-table\"],\"supporting_frames\":[\"frame-10\"]}],\"privacy_sensitive_areas\":[],\"unsupported_or_occluded_regions\":[]},\"schema_version\":\"task_candidate_discovery.v1\",\"source_capture\":{\"capture_authority_profile\":\"camera_360_equirectangular\",\"capture_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"intake_id\":\"intake-1\"},\"task_candidates\":[{\"approval_status\":\"approval_required\",\"assumptions\":[\"The tote is movable.\"],\"candidate_digest\":\"sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210\",\"confidence\":1.0,\"coverage\":{\"task_object\":0.8},\"description\":\"Move the blue tote into the marked box.\",\"estimated_evaluation_cost_usd\":0.0,\"expected_customer_value\":null,\"likely_task_family\":\"rigid_object_pick_place\",\"missing_evidence\":[\"Rear grasp surface is occluded.\"],\"observed_objects\":[{\"label\":\"blue tote\",\"object_id\":\"tote-1\",\"observation_fact_ids\":[\"fact-tote\"]}],\"prohibited_claims\":[\"physical_task_success\"],\"proposal_method\":{\"implementation_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"method_id\":\"local-task-proposer\",\"origin\":\"model_provider\",\"proposer_identity\":\"provider:model-a\",\"version\":\"1\"},\"proposed_measurable_success_condition\":{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":1.0,\"units\":\"m\"},\"required_robot_capabilities\":[\"rigid-object grasp\"],\"required_site_reset\":\"Return the tote to the table marker.\",\"supporting_3d_regions\":[\"box-1\",\"region-table\"],\"supporting_frames\":[\"frame-10\"],\"target_regions\":[{\"label\":\"marked box\",\"region_id\":\"box-1\"}],\"task_candidate_id\":\"task-candidate-c67e3e91aa78e117df26\"}]}",
+    "proof_boundary": {
+      "candidate_is_customer_intent": false,
+      "decision_evidence_request_compiled": false,
+      "task_success_established": false
+    },
+    "schema_version": "task_candidate_discovery_publication.v1"
+  },
+  "replay": {
+    "accepted": true,
+    "already_exists": true,
+    "approved_task_definition": {
+      "approval_actor": {
+        "identity": "firebase:buyer-123",
+        "role": "customer"
+      },
+      "approval_decision_digest": "sha256:ef0c614f2beefc0849dcf9f7c078996e0b1c87c348d642a96cc9bb2e7a98ac98",
+      "approval_decision_id": "task-decision-4e08fbce5ec647ab15ef",
+      "approval_status": "approved",
+      "approved_task_digest": "sha256:dcb702aed5224e50cb0fccb37d9e2ccfe2f79b096e455c739649a8d1b76a7d60",
+      "approved_task_id": "approved-task-de5e3121a5041ccda435",
+      "candidate_digest": "sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210",
+      "discovery_digest": "sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a",
+      "discovery_id": "software-transport-discovery",
+      "intent_source": "customer_edited_candidate",
+      "prohibited_evaluator_identities": [
+        "provider:model-a"
+      ],
+      "proposer_identity": "provider:model-a",
+      "schema_version": "approved_task_definition.v1",
+      "source_capture": {
+        "capture_authority_profile": "camera_360_equirectangular",
+        "capture_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "intake_id": "intake-1"
+      },
+      "task": {
+        "description": "Move the observed blue tote into the marked box.",
+        "measurable_success_conditions": [
+          {
+            "metric": "object_center_distance",
+            "operator": "<=",
+            "threshold": 1.0,
+            "units": "m"
+          }
+        ],
+        "reset_contract": {
+          "description": "Restore the observed tote and marked box.",
+          "position_tolerance_m": 1.0
+        },
+        "task_family": "rigid_object_pick_place"
+      },
+      "task_candidate_id": "task-candidate-c67e3e91aa78e117df26"
+    },
+    "approved_task_definition_canonical_json": "{\"approval_actor\":{\"identity\":\"firebase:buyer-123\",\"role\":\"customer\"},\"approval_decision_digest\":\"sha256:ef0c614f2beefc0849dcf9f7c078996e0b1c87c348d642a96cc9bb2e7a98ac98\",\"approval_decision_id\":\"task-decision-4e08fbce5ec647ab15ef\",\"approval_status\":\"approved\",\"approved_task_id\":\"approved-task-de5e3121a5041ccda435\",\"candidate_digest\":\"sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210\",\"discovery_digest\":\"sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a\",\"discovery_id\":\"software-transport-discovery\",\"intent_source\":\"customer_edited_candidate\",\"prohibited_evaluator_identities\":[\"provider:model-a\"],\"proposer_identity\":\"provider:model-a\",\"schema_version\":\"approved_task_definition.v1\",\"source_capture\":{\"capture_authority_profile\":\"camera_360_equirectangular\",\"capture_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"intake_id\":\"intake-1\"},\"task\":{\"description\":\"Move the observed blue tote into the marked box.\",\"measurable_success_conditions\":[{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":1.0,\"units\":\"m\"}],\"reset_contract\":{\"description\":\"Restore the observed tote and marked box.\",\"position_tolerance_m\":1.0},\"task_family\":\"rigid_object_pick_place\"},\"task_candidate_id\":\"task-candidate-c67e3e91aa78e117df26\"}",
+    "capture_session_id": "capture-review-1",
+    "command_request_id": "task-command-1",
+    "decision_evidence_request": null,
+    "intake_id": "intake-1",
+    "pipeline_approval_status": "approved",
+    "pipeline_task_decision": {
+      "action": "edit_and_approve",
+      "actor": {
+        "identity": "firebase:buyer-123",
+        "role": "customer"
+      },
+      "candidate_digest": "sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210",
+      "decision_digest": "sha256:ef0c614f2beefc0849dcf9f7c078996e0b1c87c348d642a96cc9bb2e7a98ac98",
+      "decision_id": "task-decision-4e08fbce5ec647ab15ef",
+      "discovery_digest": "sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a",
+      "discovery_id": "software-transport-discovery",
+      "edited_task": {
+        "description": "Move the observed blue tote into the marked box.",
+        "measurable_success_conditions": [
+          {
+            "metric": "object_center_distance",
+            "operator": "<=",
+            "threshold": 1.0,
+            "units": "m"
+          }
+        ],
+        "reset_contract": {
+          "description": "Restore the observed tote and marked box.",
+          "position_tolerance_m": 1.0
+        },
+        "task_family": "rigid_object_pick_place"
+      },
+      "idempotency_key": "approve-task-candidate-1",
+      "rationale": "This is the exact task we want evaluated.",
+      "schema_version": "task_candidate_decision.v1",
+      "task_candidate_id": "task-candidate-c67e3e91aa78e117df26"
+    },
+    "pipeline_task_decision_canonical_json": "{\"action\":\"edit_and_approve\",\"actor\":{\"identity\":\"firebase:buyer-123\",\"role\":\"customer\"},\"candidate_digest\":\"sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210\",\"decision_id\":\"task-decision-4e08fbce5ec647ab15ef\",\"discovery_digest\":\"sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a\",\"discovery_id\":\"software-transport-discovery\",\"edited_task\":{\"description\":\"Move the observed blue tote into the marked box.\",\"measurable_success_conditions\":[{\"metric\":\"object_center_distance\",\"operator\":\"<=\",\"threshold\":1.0,\"units\":\"m\"}],\"reset_contract\":{\"description\":\"Restore the observed tote and marked box.\",\"position_tolerance_m\":1.0},\"task_family\":\"rigid_object_pick_place\"},\"idempotency_key\":\"approve-task-candidate-1\",\"rationale\":\"This is the exact task we want evaluated.\",\"schema_version\":\"task_candidate_decision.v1\",\"task_candidate_id\":\"task-candidate-c67e3e91aa78e117df26\"}",
+    "processed_at_iso": "2026-10-21T12:00:00Z",
+    "proof_boundary": {
+      "approved_task_exists": true,
+      "comparative_policy_ranking_verdict": "thesis_not_supported",
+      "decision_evidence_request_compiled": false,
+      "physical_success_established": false,
+      "pipeline_decision_recorded": true,
+      "task_success_established": false,
+      "testbed_required_before_request_compilation": true,
+      "webapp_command_is_pipeline_approval": false
+    },
+    "schema_version": "task_candidate_decision_processing_result.v1",
+    "status": "processed",
+    "submission_fingerprint_sha256": "sha256:9a640bac7439d983dc76e1afeb594f4f7dc7c902201c3c2abc29d363cd269cd9"
+  },
+  "submission": {
+    "capture_session_id": "capture-review-1",
+    "command": {
+      "action": "edit_and_approve",
+      "actor": {
+        "identity": "firebase:buyer-123",
+        "role": "customer"
+      },
+      "candidate_digest": "sha256:e036b2997845014f5f26395f3330e223e36b9a3d53e9d2b2d64f81da6bd56210",
+      "capture_session_id": "capture-review-1",
+      "command_request_id": "task-command-1",
+      "created_at_iso": "2026-07-29T21:00:00Z",
+      "discovery_digest": "sha256:c29378c59ad0dc9802c7927caf95e438b9a0f32d35a8b17655aee99d8211b95a",
+      "edited_task": {
+        "description": "Move the observed blue tote into the marked box.",
+        "measurable_success_conditions": [
+          {
+            "metric": "object_center_distance",
+            "operator": "<=",
+            "threshold": 1.0,
+            "units": "m"
+          }
+        ],
+        "reset_contract": {
+          "description": "Restore the observed tote and marked box.",
+          "position_tolerance_m": 1.0
+        },
+        "task_family": "rigid_object_pick_place"
+      },
+      "idempotency_key": "approve-task-candidate-1",
+      "intake_id": "intake-1",
+      "pipeline_approval_status": "pending_pipeline_validation",
+      "rationale": "This is the exact task we want evaluated.",
+      "request_fingerprint_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "requester_user_id": "buyer-123",
+      "schema_version": "task_candidate_decision_command_record.v1",
+      "task_candidate_id": "task-candidate-c67e3e91aa78e117df26"
+    },
+    "intake_id": "intake-1",
+    "schema_version": "task_candidate_decision_submission.v1"
+  }
+}

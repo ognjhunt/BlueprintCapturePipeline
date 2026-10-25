@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .core.immutable_file import write_file_exclusive
 from .decision_evidence_contracts import (
     DecisionEvidenceRequest,
     EvidenceMethodProfile,
@@ -37,10 +38,8 @@ def _run_root(root: str | Path, run_id: str) -> Path:
 
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> None:
     payload = (canonical_json(value) + "\n").encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with path.open("xb") as stream:
-            stream.write(payload)
+        write_file_exclusive(path, payload)
     except FileExistsError:
         if path.read_bytes() != payload:
             raise TaskEvaluationRunControlPlaneError(
@@ -225,6 +224,8 @@ def authorize_task_evaluation_run(
     except ValueError as exc:
         raise TaskEvaluationRunControlPlaneError(str(exc)) from exc
     root = _run_root(state_root, run_id)
+    if (root / "artifacts" / "job_evidence_cancellation.json").is_file():
+        raise TaskEvaluationRunControlPlaneError("job_evidence_cancelled")
     plan = EvidencePlan.from_mapping(_read(root / "artifacts" / "evidence_plan.json")).to_mapping()
     if plan["plan_digest"] != plan_digest:
         raise TaskEvaluationRunControlPlaneError("authorization_plan_digest_mismatch")
@@ -305,6 +306,8 @@ def execute_and_aggregate_task_evaluation_run(
         raise TaskEvaluationRunControlPlaneError(str(exc)) from exc
     root = _run_root(state_root, run_id)
     artifacts = root / "artifacts"
+    if (artifacts / "job_evidence_cancellation.json").is_file():
+        raise TaskEvaluationRunControlPlaneError("job_evidence_cancelled")
     request = DecisionEvidenceRequest.from_mapping(_read(artifacts / "request.json")).to_mapping()
     testbed = MaintainedSiteTaskTestbed.from_mapping(_read(artifacts / "testbed.json")).to_mapping()
     plan = EvidencePlan.from_mapping(_read(artifacts / "evidence_plan.json")).to_mapping()

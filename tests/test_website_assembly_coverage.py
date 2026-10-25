@@ -31,6 +31,26 @@ def _runs(mask):
     return [{"start": int(a), "length": int(b - a)} for a, b in zip(edges[::2], edges[1::2])]
 
 
+def test_dense_closed_front_fits_inside_a_bounded_factorization_workspace(monkeypatch):
+    # Model a constrained CPU worker rather than allocating the rejected N x N
+    # matrix. The real reduced factorization must still recover this tilted plane.
+    svd = np.linalg.svd
+    def budgeted_svd(a, *args, **kwargs):
+        rows, columns = a.shape
+        left_columns = rows if kwargs.get("full_matrices", True) else min(rows, columns)
+        if rows * left_columns * a.itemsize > 1024 * 1024:
+            raise MemoryError("factorization workspace exceeds the CPU replay budget")
+        return svd(a, *args, **kwargs)
+    monkeypatch.setattr(np.linalg, "svd", budgeted_svd)
+    xy = np.random.default_rng(901).uniform(-0.5, 0.5, (4000, 2))
+    points = np.column_stack([xy, 1.2 + 0.2 * xy[:, 0] - 0.1 * xy[:, 1]])
+    expected = np.array([-0.2, 0.1, 1.0])
+    expected /= np.linalg.norm(expected)
+    normal, offset = coverage._front_plane(points, np.array([0.0, 0.0, 3.0]))
+    np.testing.assert_allclose(normal, expected, atol=1e-8)
+    np.testing.assert_allclose(points @ normal, offset, atol=1e-8)
+
+
 def _box(rows, cols):
     mask = np.zeros((HEIGHT, WIDTH), dtype=bool)
     mask[rows[0]:rows[1], cols[0]:cols[1]] = True
@@ -100,7 +120,15 @@ def _answer(binding, *, hinge="bottom"):
     frames = [dict(zip(("task_part_state", "view", "visible_parts"), _label(int(i[8:]))), frame_id=i,
                    label_text=["BOSCH", "800 Series"] if int(i[8:]) < 40 else []) for i in ids]
     visible = {part for row in frames for part in row["visible_parts"]}
-    return {"hinge_edge": hinge, "task_part_components": sorted(MOVING & visible), "frames": frames}
+    moving = sorted(MOVING & visible)
+    witnesses = {}
+    for row in frames:
+        if set(row["visible_parts"]) & MOVING:
+            witnesses.setdefault(row["task_part_state"], row["frame_id"])
+    return {"hinge_edge": hinge, "task_part_components": moving, "frames": frames,
+            "required_motions": [{"motion_id": "primary_motion", "part_ids": moving,
+                "joint_type": "revolute", "task_actions": ["open", "close"],
+                "source_frame_ids": list(witnesses.values())}] if moving else []}
 
 
 def _no_brand(binding):
@@ -135,6 +163,9 @@ def model(monkeypatch):
     monkeypatch.setattr(receipts, "retained_gemini_call", retained)
 
     def decode(*, video, video_digest, rotation, frames, output_root):
+        # Original-video decoding must resolve its own orientation, even when
+        # Atlas geometry was constructed from already-upright source images.
+        assert rotation is None
         output_root.mkdir(parents=True, exist_ok=True)
         result = {}
         for row in frames:
@@ -162,7 +193,8 @@ def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp
     assert record["status"] == "complete", record["blockers"]
     assert record["digest"] == canonical_digest(record, digest_field="digest")
     selected = record["selected_frames"]
-    assert len(selected) == coverage.MAX_REFERENCE_FRAMES == 12
+    assert len(selected) <= record["reference_frame_cap"]
+    assert record["reference_frame_cap"] == record["candidate_frame_count"]
     shown = {part for row in selected for part in row["visible_parts"]}
     assert shown == set(record["observed_parts"]) == set(FRONT_PARTS + OPEN_PARTS + ["left_side", "right_side"])
     assert record["missing_parts"] == []
@@ -192,7 +224,7 @@ def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp
     readings = record["label_readings"]
     assert readings and all(row["label_text"] == ["BOSCH", "800 Series"] and int(row["frame_id"][8:]) < 40
                             and Path(row["path"]).is_file() for row in readings)
-    assert "label_text" in calls[0]["prompt"] and record["classifier"]["revision"] == 3
+    assert "label_text" in calls[0]["prompt"] and record["classifier"]["revision"] == coverage.CLASSIFIER_REVISION
     assert "part_boxes" in calls[0]["prompt"] and "box_xywh_normalized" in calls[0]["prompt"]
     # Retained receipts: a restart buys nothing and reproduces the record.
     assert _run(tmp_path, target, geometry, registry=_registry(600)) == record
@@ -497,6 +529,70 @@ def test_inconsistent_hinge_is_a_blocker(tmp_path, model):
     assert record["blockers"] == ["website_assembly_hinge_edge_inconsistent"]
 
 
+def test_full_task_secondary_motions_reach_authoring_and_their_evidence_is_selected(tmp_path, model):
+    calls, state = model
+    def answer(binding):
+        value = _answer(binding)
+        visible = {part for row in value["frames"] for part in row["visible_parts"]}
+        for name in ("upper_rack", "lower_rack"):
+            if name in visible:
+                parts = [name] + (["cutlery_basket"] if name == "lower_rack" and "cutlery_basket" in visible else [])
+                witness = next(row["frame_id"] for row in value["frames"] if name in row["visible_parts"])
+                value["required_motions"].append({"motion_id": "slide_" + name, "part_ids": parts,
+                    "joint_type": "prismatic", "task_actions": ["extend", "retract"], "source_frame_ids": [witness]})
+        return value
+    state["answer"] = answer
+    context = {**_context(), "description": "Open and close the door and slide both racks."}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    record = _run(tmp_path, target, geometry, task_context=context)
+    assert record["status"] == "complete"
+    assert {row["motion_id"] for row in record["required_motions"]} == {
+        "primary_motion", "slide_upper_rack", "slide_lower_rack"}
+    constraints = coverage.assembly_constraints(record, task_part="door")
+    assert not {"upper_rack", "lower_rack", "cutlery_basket"} & set(constraints["fixed_parts"])
+    assert set(constraints["task_part_components"]) == MOVING  # Secondary motions cannot inflate door sizing.
+    shown = {row["frame_id"] for row in record["selected_frames"]}
+    assert all(set(row["source_frame_ids"]) <= shown for row in record["required_motions"])
+    assert context["description"] in calls[0]["prompt"]
+    assert coverage.coverage_matches(record, target=target, source_geometry=geometry, task_context=context)
+    changed = {**context, "description": "Only open the door."}
+    changed["context_digest"] = canonical_digest(changed, digest_field="context_digest")
+    assert not coverage.coverage_matches(record, target=target, source_geometry=geometry, task_context=changed)
+
+
+def test_a_later_batch_need_not_repeat_a_task_motion_already_identified(tmp_path, model):
+    calls, state = model
+    named = []
+
+    def answer(binding):
+        value = _answer(binding)
+        # The prompt lists earlier motions as already identified; a later batch
+        # that shows the door may answer with only what is new.
+        if named and value["task_part_components"]:
+            value["required_motions"] = []
+        named.extend(row["motion_id"] for row in value["required_motions"])
+        return value
+    state["answer"] = answer
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track, frames=600), geometry, registry=_registry(600))
+    door_batches = [binding for binding in calls if set(MOVING) & {part for row in _answer(binding)["frames"]
+                                                                   for part in row["visible_parts"]}]
+    assert len(door_batches) > 1 and named == ["primary_motion"]
+    assert record["status"] == "complete", record["blockers"]
+    assert [row["motion_id"] for row in record["required_motions"]] == ["primary_motion"]
+
+
+def test_a_clip_that_never_names_a_motion_for_the_task_part_is_refused(tmp_path, model):
+    _, state = model
+    state["answer"] = lambda binding: {**_answer(binding), "required_motions": []}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track, frames=600), geometry, registry=_registry(600))
+    assert record["status"] == "incomplete"
+    assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
+
+
 def test_each_articulated_target_gets_its_own_record_and_uncaptured_ones_are_not_complete(tmp_path, model):
     calls, _ = model
     geometry, track = _source_geometry(tmp_path / "geometry")
@@ -530,12 +626,13 @@ def test_each_articulated_target_gets_its_own_record_and_uncaptured_ones_are_not
 
 
 def test_uncaptured_target_is_held_by_the_preparation_gate(tmp_path):
-    from tests.test_website_task_preparation import _assembly_inputs, _compile
+    from tests.test_website_task_preparation import _assembly_inputs, _compile, _task_context
     inputs = _assembly_inputs(tmp_path, covered=False)
     masks = inputs["task_masks"]
     target = masks["targets"][0]
     record = coverage.empty_record(target_id=target["target_id"],
-        binding=coverage.coverage_binding(target=target, source_geometry=inputs["source_geometry"]),
+        binding=coverage.coverage_binding(target=target, source_geometry=inputs["source_geometry"],
+                                          task_context=_task_context()),
         articulation_kind="prismatic", status="not_captured", blocker="website_assembly_not_captured")
     masks["targets"][0] = {**target, "authoring_coverage": record}
     masks["digest"] = canonical_digest(masks, digest_field="digest")
@@ -545,7 +642,8 @@ def test_uncaptured_target_is_held_by_the_preparation_gate(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
-def test_decoder_returns_exact_indices_rotated_upright(tmp_path):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_decoder_returns_exact_indices_rotated_upright(tmp_path, automatic):
     colors = [(40 * i, 255 - 40 * i, 7 * i) for i in range(6)]
     for i, color in enumerate(colors):
         image = Image.new("RGB", (32, 16), color)
@@ -554,8 +652,15 @@ def test_decoder_returns_exact_indices_rotated_upright(tmp_path):
     video = tmp_path / "clip.mov"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-framerate", "10", "-i", str(tmp_path / "in-%02d.png"),
                     "-c:v", "png", str(video)], check=True, capture_output=True, timeout=60)
+    if automatic:
+        rotated = tmp_path / "phone.mov"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-display_rotation", "-90", "-i", str(video),
+                        "-c", "copy", str(rotated)],
+                       check=True, capture_output=True, timeout=60)
+        video = rotated
     frames = [{"frame_id": f"decoded-{i:09d}", "decoded_index": i} for i in (4, 1)]
-    result = coverage.decode_upright_frames(video=video, video_digest=_sha256_file(video), rotation=-90,
+    result = coverage.decode_upright_frames(video=video, video_digest=_sha256_file(video),
+                                            rotation=None if automatic else -90,
                                             frames=frames, output_root=tmp_path / "out")
     for i in (1, 4):
         row = result[f"decoded-{i:09d}"]
@@ -564,7 +669,8 @@ def test_decoder_returns_exact_indices_rotated_upright(tmp_path):
             assert image.getpixel((8, 16)) == colors[i]
             assert image.getpixel((15, 0)) == (255, 255, 255)  # Stored top-left, turned clockwise.
     assert json.loads((next((tmp_path / "out").glob("*/upright_frames.json"))).read_text())["frames"] == result
-    assert coverage.decode_upright_frames(video=video, video_digest=_sha256_file(video), rotation=-90,
+    assert coverage.decode_upright_frames(video=video, video_digest=_sha256_file(video),
+                                          rotation=None if automatic else -90,
                                           frames=frames, output_root=tmp_path / "out") == result
 
 
@@ -607,7 +713,9 @@ def _fake_genai(monkeypatch, answer):
         def generate_content(self, *, model, contents, config):
             calls.append({"model": model, "contents": contents, "config": config})
             text, reason = answer(contents)
-            return NS(candidates=[NS(finish_reason=reason)], text=text)
+            return NS(candidates=[NS(finish_reason=reason)], text=text,
+                      usage_metadata=NS(prompt_token_count=1234, candidates_token_count=1000,
+                                        thoughts_token_count=7192, total_token_count=9426))
 
     class Client:
         def __init__(self, **_):
@@ -621,6 +729,7 @@ def _fake_genai(monkeypatch, answer):
 
     genai, types_module = module_types.ModuleType("google.genai"), module_types.ModuleType("google.genai.types")
     types_module.HttpOptions = types_module.HttpRetryOptions = types_module.GenerateContentConfig = lambda **k: k
+    types_module.ThinkingConfig = lambda **k: k
     types_module.Part = NS(from_bytes=lambda data, mime_type: ("image", len(data)))
     genai.Client, genai.types = Client, types_module
     google = sys.modules.get("google") or module_types.ModuleType("google")
@@ -668,6 +777,11 @@ def test_the_real_classifier_call_repairs_malformed_json_in_the_same_receipt(tmp
     assert record["status"] == "complete", record.get("blockers")
     repairs = [call for call in calls if "is not valid JSON" in call["contents"][0]]
     assert repairs and all(len(call["contents"]) == 1 for call in repairs)  # text only, no images
+    classifications = [call for call in calls if '{"assembly"' in call["contents"][0]]
+    assert classifications
+    for call in classifications + repairs:
+        assert call["config"]["thinking_config"] == {"thinking_level": "LOW"}
+        assert call["config"]["max_output_tokens"] == 16384
     receipts_dir = next((tmp_path / "coverage").rglob("receipts"))
     stored = [json.loads(path.read_text()) for path in receipts_dir.glob("*.json")]
     assert stored and all(row["status"] == "completed" for row in stored)
@@ -679,4 +793,9 @@ def test_a_cut_off_classification_is_retained_invalid_not_left_uncertain(tmp_pat
     assert record["status"] == "incomplete"
     assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
     receipts_dir = next((tmp_path / "coverage").rglob("receipts"))
-    assert all(json.loads(path.read_text())["status"] == "completed" for path in receipts_dir.glob("*.json"))
+    stored = [json.loads(path.read_text()) for path in receipts_dir.glob("*.json")]
+    assert stored and all(row["status"] == "completed" for row in stored)
+    assert all(row["result"]["finish_reason"] == "MAX_TOKENS" for row in stored)
+    assert all(len(row["result"]["partial_output"]) == 500 for row in stored)
+    assert all(row["request"]["binding"]["thinking_level"] == "LOW" for row in stored)
+    assert all(row["result"]["token_usage"]["thoughts_token_count"] == 7192 for row in stored)

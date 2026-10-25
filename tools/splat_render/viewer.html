@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><title>Blueprint scene inspection</title>
+<style>
+body{margin:0;background:#10131a;color:#f4f4f5;font:14px system-ui}canvas{display:block}
+#controls{position:fixed;top:12px;left:12px;right:12px;background:#161b25eb;padding:14px;border-radius:8px}
+select,button{font:inherit;padding:6px;margin:4px;background:#293244;color:white;border:1px solid #667085;border-radius:4px}
+small{display:block;color:#c7cbd4;margin-top:6px}
+</style>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/","@sparkjsdev/spark":"/node_modules/@sparkjsdev/spark/dist/spark.module.js"}}</script>
+<div id="controls"><strong>Dishwasher reconstruction</strong>
+<select id="mode"><option value="splat">Depth splat</option><option value="mesh">Supported mesh</option><option value="wire">Mesh wireframe</option></select>
+<select id="camera" aria-label="Captured viewpoint"></select><button id="all">Frame whole scene</button>
+<span id="status">Loading…</span>
+<small>Drag to orbit · scroll to zoom · right-drag to pan. Development draft; scale and simulation fidelity are unverified.</small></div>
+<script type="module" src="/src/viewer_entry.mjs"></script>
+</html>

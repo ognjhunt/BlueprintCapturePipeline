@@ -4,7 +4,8 @@ This directory is the **one editable place** for doctrine shared across
 `BlueprintCapture`, `BlueprintCapturePipeline`, and `Blueprint-WebApp`.
 
 The shared doctrine names two active programs across all three repos: the free
-beta's evaluated, recommended pilot and Arm Decision Proof v1. Broader historical strategies are recoverable from git
+beta's job-first automation service (owner update 2026-10-21) and Arm Decision
+Proof v1. Broader historical strategies are recoverable from git
 history but are not active doctrine.
 
 Edit here. Never edit a shared block in a repo's `PLATFORM_CONTEXT.md`,

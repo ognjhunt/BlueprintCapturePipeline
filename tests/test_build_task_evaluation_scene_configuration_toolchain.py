@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import immutable_file_digest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.immutable_file_digest import immutable_file_digest_cache
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
     SCHEMA_VERSION as COMPONENT_PACKAGE_SCHEMA_VERSION,
 )
@@ -25,6 +27,15 @@ from scripts.build_task_evaluation_scene_configuration_toolchain import (
 
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def publication_digest_scope(monkeypatch):
+    """Exercise full-byte readback and refusal cases under the production scope."""
+    clock = immutable_file_digest._now_ns
+    monkeypatch.setattr(immutable_file_digest, "_now_ns", lambda: clock() + 10_000_000_000)
+    with immutable_file_digest_cache():
+        yield
 
 
 def _component_packages(tmp_path: Path, *, empty_file: bool = False) -> dict[str, Path]:
@@ -237,6 +248,22 @@ def test_toolchain_publication_fails_closed_on_existing_or_bad_readback(
             component_packages=_component_packages(tmp_path / "bad"),
         )
     assert not failed.exists()
+
+
+def test_a_stopped_toolchain_publication_leaves_no_staging(tmp_path: Path) -> None:
+    def stopped(_path: Path) -> bytes:
+        raise KeyboardInterrupt
+
+    root = tmp_path / "scene-configuration"
+    with pytest.raises(KeyboardInterrupt):
+        build_published_scene_configuration_toolchain(
+            source_commit="b" * 40,
+            output_root=root / ("b" * 40),
+            readback=stopped,
+            readback_actor="service-account:test-runner",
+            component_packages=_component_packages(tmp_path / "packages"),
+        )
+    assert list(root.iterdir()) == []
 
 
 @pytest.mark.parametrize("case,reuses_previous", [

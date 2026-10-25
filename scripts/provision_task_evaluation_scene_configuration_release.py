@@ -14,7 +14,9 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import stat
+import sys
 import tempfile
 import urllib.request
 from collections.abc import Callable
@@ -31,6 +33,11 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     VGG16_WEIGHTS_SOURCE_URL,
 )
 from blueprint_pipeline.service_account_reader import ServiceAccountReader
+from blueprint_pipeline.immutable_file_digest import immutable_file_digest_cache
+from blueprint_pipeline.provision_staging_sweep import (  # the provision CLI's startup sweep
+    remove_tree as _remove_tree,
+    sweep_stale_staging,
+)
 from blueprint_pipeline.task_evaluation_splat_render_runtime import (
     validate_splat_render_runtime,
 )
@@ -196,16 +203,13 @@ def reconcile_legacy_vgg16_runtime_storage(
     }
 
 
-def _remove_tree(root: Path) -> None:
-    if not root.exists() or root.is_symlink():
-        return
-    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        if path.is_dir():
-            path.chmod(0o700)
-    root.chmod(0o700)
-    shutil.rmtree(root)
+def _terminated(signum: int, _frame: Any) -> None:
+    # systemctl stop sends SIGTERM. Leaving through SystemExit runs every
+    # finally block, so this run's staging is removed instead of leaked.
+    raise SystemExit(128 + signum)
 
 
+@immutable_file_digest_cache()
 def provision_scene_configuration_release(
     *,
     repository_root: str | Path,
@@ -222,11 +226,11 @@ def provision_scene_configuration_release(
     readback: Readback,
     readback_actor: str,
     astra_blender_archive_path: str | Path | None = None,
-    website_mapanything_template: str | Path | None = None,
     authoring_backend: str | None = None,
     artisan_root: str | Path | None = None,
     artisan_site_packages_root: str | Path | None = None,
     artisan_blender_root: str | Path | None = None,
+    artisan_vendor_reuse_plan: str | Path | None = None,
 ) -> dict[str, Any]:
     """Publish or reopen the two immutable runtime trees for one release."""
 
@@ -311,7 +315,8 @@ def provision_scene_configuration_release(
                 build_artisan_scene_configuration_component(repository_root=repository,
                     expected_blueprint_commit=source_commit, artisan_root=artisan_root,
                     site_packages_root=artisan_site_packages_root, blender_root=artisan_blender_root,
-                    output_root=component_packages["content_agents_rigid_replacement"])
+                    output_root=component_packages["content_agents_rigid_replacement"],
+                    artisan_vendor_reuse_plan=artisan_vendor_reuse_plan)
             else:
                 build_content_agents_scene_configuration_component(
                     repository_root=repository, expected_blueprint_commit=source_commit,
@@ -334,13 +339,6 @@ def provision_scene_configuration_release(
             )
         finally:
             _remove_tree(component_parent)
-    website_environment = {}
-    if website_mapanything_template is not None:
-        from scripts.provision_website_geometry_runtime import provision_website_geometry_runtime
-        profile = provision_website_geometry_runtime(
-            repository_root=repository, source_commit=source_commit, runtime_root=runtimes,
-            template_path=Path(website_mapanything_template), readback=readback)
-        website_environment["BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE"] = str(profile)
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "ready",
@@ -348,7 +346,6 @@ def provision_scene_configuration_release(
         "splat_render_runtime": splat_receipt,
         "scene_configuration_toolchain": toolchain_receipt,
         "environment": {
-            **website_environment,
             "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT": str(splat_root),
             "BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT": str(
                 toolchain_root
@@ -390,12 +387,13 @@ def main() -> int:
     parser.add_argument("--artisan-root", default=os.getenv("BLUEPRINT_ARTISAN_UPSTREAM_ROOT"))
     parser.add_argument("--artisan-site-packages-root", default=os.getenv("BLUEPRINT_ARTISAN_SITE_PACKAGES_ROOT"))
     parser.add_argument("--artisan-blender-root", default=os.getenv("BLUEPRINT_ARTISAN_BLENDER_ROOT"))
-    parser.add_argument("--website-mapanything-template", default=os.getenv(
-        "BLUEPRINT_WEBSITE_MAPANYTHING_DEPLOYMENT_TEMPLATE",
-        "/etc/blueprint/website-mapanything-runtime.json"
-        if Path("/etc/blueprint/website-mapanything-runtime.json").exists() else None))
+    parser.add_argument("--artisan-vendor-reuse-plan")
     parser.add_argument("--readback-user", required=True)
     args = parser.parse_args()
+    signal.signal(signal.SIGTERM, _terminated)
+    removed = sweep_stale_staging(runtime_root=Path(args.runtime_root))
+    if removed:
+        print("removed stale provision staging: " + ", ".join(removed), file=sys.stderr, flush=True)
     readback = service_account_readback(args.readback_user)
     try:
         value = _provision_from_arguments(args, readback)
@@ -423,7 +421,7 @@ def _provision_from_arguments(args: argparse.Namespace, readback: Readback) -> d
         artisan_root=getattr(args, "artisan_root", None),
         artisan_site_packages_root=getattr(args, "artisan_site_packages_root", None),
         artisan_blender_root=getattr(args, "artisan_blender_root", None),
-        website_mapanything_template=args.website_mapanything_template,
+        artisan_vendor_reuse_plan=getattr(args, "artisan_vendor_reuse_plan", None),
         readback=readback,
         readback_actor=f"service-account:{args.readback_user}",
     )

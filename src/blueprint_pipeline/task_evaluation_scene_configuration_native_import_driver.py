@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import os
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -362,7 +364,15 @@ def _articulated_structure_observation(
             raise RuntimeError("scene_configuration_native_import_fixed_joint_body_invalid")
     task["moving_link_prim_path"] = moving_link_path
     handle_paths = sorted(_imported_path(path) for path in static_receipt["task_contact"]["handle_prim_paths"])
-    if (not handle_paths or any(path not in link_readback[graph_target["child_link_id"]]["collision_prim_paths"] for path in handle_paths)):
+    # A graspable feature may be its own rigid part bolted to the moving link.
+    # Use the same fixed assembly the static authoring contract admitted;
+    # crossing another movable joint must never admit an unrelated handle.
+    moving_assembly = {graph_target["child_link_id"]}
+    if static_receipt.get("backend") == "artisan_v1":
+        from .task_object_artisan_exports import _fixed_descendants
+        moving_assembly = _fixed_descendants(graph_target["child_link_id"], static_receipt["articulation_graph"]["joints"])
+    moving_collisions = {path for link_id in moving_assembly for path in link_readback[link_id]["collision_prim_paths"]}
+    if not handle_paths or any(path not in moving_collisions for path in handle_paths):
         raise RuntimeError("scene_configuration_native_import_handle_mismatch")
     task["task_joint_axis"] = axis
     return {
@@ -681,6 +691,7 @@ def _one_native_settle(
     articulated: bool = False,
     static_receipt: Mapping[str, Any] | None = None,
     robot_free_probe: Mapping[str, Any] | None = None,
+    required_motion_probe: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     import omni.physx as omni_physx  # type: ignore
     import omni.usd  # type: ignore
@@ -758,6 +769,13 @@ def _one_native_settle(
         raise RuntimeError("scene_configuration_native_import_structure_invalid")
     else:
         body_path = rigid_paths[0]
+    if required_motion_probe is not None:
+        from .articulated_required_motion_probe import DIAGNOSTIC_DRIVE
+        from .articulated_native_diagnostic_runtime import _author_fixed_base_anchor, _configure_required_motion_drives
+        assert static_receipt is not None
+        base_id = _receipt_mechanism(static_receipt)["root_link_id"]
+        _author_fixed_base_anchor(stage, _imported_path(static_receipt["link_prim_paths"][base_id]), UsdPhysics)
+        _configure_required_motion_drives(stage, required_motion_probe, UsdPhysics, DIAGNOSTIC_DRIVE)
     body = stage.GetPrimAtPath(body_path)
     contact_api = PhysxSchema.PhysxContactReportAPI.Apply(body)
     contact_api.CreateThresholdAttr().Set(0.0)
@@ -824,6 +842,13 @@ def _one_native_settle(
         probe_samples += _robot_free_drive_and_release(
             simulation=simulation, articulation=articulation, joint_name=joint_observation["task_joint_name"],
             plan=robot_free_probe, timestep_seconds=timestep_seconds, first_step_index=step_count)
+    required_motion_result = None
+    if required_motion_probe is not None:
+        from isaacsim.core.utils.types import ArticulationAction  # type: ignore
+        from .articulated_native_diagnostic_runtime import _execute_native_required_motions
+        required_motion_result = _execute_native_required_motions(
+            required_motion_probe, articulation=articulation, action_type=ArticulationAction,
+            simulation=simulation, settle_steps=max(1, int(round(2.0 / timestep_seconds))))
     simulation.stop()
     del contact_subscription
     if callable(clear_instance):
@@ -862,6 +887,7 @@ def _one_native_settle(
         "position_trace_digest": canonical_digest(
             {"position_trace_m": [[round(v, 7) for v in row] for row in trace]}
         ),
+        **({"required_motion_probe": required_motion_result} if required_motion_result is not None else {}),
         **({"task_joint_trace_digest": canonical_digest(
             {"task_joint_position_m": [round(value, 7) for value in joint_trace]}
         )} if articulated else {}),
@@ -886,10 +912,14 @@ def _run_native_import(
 ) -> dict[str, Any]:
     # Isaac allows one SimulationApp per process, so a supplemental destination
     # is settled inside the same session right after the subject replacement.
-    _bind_isaac_runtime_environment()
-    SimulationApp = _import_simulation_app()
-    app = SimulationApp({"headless": True, "fast_shutdown": True})
+    app = None
+    exit_code = 1
     try:
+        _bind_isaac_runtime_environment()
+        SimulationApp = _import_simulation_app()
+        print("BLUEPRINT_NATIVE_IMPORT_SIMULATION_APP_STARTING", flush=True)
+        app = SimulationApp({"headless": True, "fast_shutdown": True})
+        print("BLUEPRINT_NATIVE_IMPORT_SIMULATION_APP_READY", flush=True)
         runtime_identity = _observe_isaac_runtime_identity(app)
         repeat_count = int(required_checks["state_digest_repeat_count"])
         duration = float(required_checks["gravity_settle_seconds"])
@@ -921,9 +951,33 @@ def _run_native_import(
             observation["robot_free_success_probe"] = record_robot_free_probe(
                 settle=_one_native_settle, asset_path=asset_path, duration_seconds=duration,
                 static_receipt=static_receipt)
-        return dict(observation_consumer(observation))
+            from .articulated_required_motion_probe import required_motion_plan_from_static_receipt
+            required_plan = required_motion_plan_from_static_receipt(static_receipt)
+            if required_plan is not None:
+                extra = _one_native_settle(asset_path=asset_path, duration_seconds=duration,
+                    timestep_seconds=1.0 / 60.0, articulated=True, static_receipt=static_receipt,
+                    required_motion_probe=required_plan)
+                observation["required_motion_probe"] = extra["required_motion_probe"]
+        result = dict(observation_consumer(observation))
+        exit_code = 0
+        return result
+    except BaseException as error:
+        # Fast Kit shutdown can exit Python with code 0 before an exception
+        # reaches the process entrypoint. Retain its real predicate first.
+        if isinstance(error, SystemExit) and isinstance(error.code, int) and error.code != 0:
+            exit_code = error.code
+        elif isinstance(error, KeyboardInterrupt):
+            exit_code = 130
+        traceback.print_exc()
+        raise
     finally:
-        app.close()
+        if app is not None:
+            # Isaac 6.0.1 can otherwise replace a validation failure with a
+            # successful process exit during fast shutdown.
+            if "exit_code" in inspect.signature(app.close).parameters:
+                app.close(exit_code=exit_code)
+            else:
+                app.close()
 
 
 def execute_native_import_component(
@@ -1013,10 +1067,10 @@ def execute_native_import_component(
         if not isinstance(repeats, list) or len(repeats) != 3:
             raise TaskEvaluationSceneConfigurationNativeImportDriverError(code)
         state_digests = [str(row.get("final_state_digest") or "") for row in repeats]
-        maximum_translation = max(
-            float(row.get("settle_translation_m", math.inf)) for row in repeats
-        )
-        maximum_rotation = max(float(row.get("settle_rotation_rad", math.inf)) for row in repeats)
+        translations = [float(row.get("settle_translation_m", math.inf)) for row in repeats]
+        rotations = [float(row.get("settle_rotation_rad", math.inf)) for row in repeats]
+        maximum_translation = max(translations)
+        maximum_rotation = max(rotations)
         if articulated:
             assert static_receipt is not None
             expected_links = static_receipt["observed_structure"]["links"]
@@ -1082,18 +1136,21 @@ def execute_native_import_component(
             )
         else:
             structure_ok = all(len(row.get("rigid_body_paths") or []) == 1 for row in repeats)
-        qualified = (
-            len(set(state_digests)) == 1
-            and all(row.get("asset_imported") is True for row in repeats)
-            and all(row.get("support_contact_observed") is True for row in repeats)
-            and structure_ok
-            and all(bool(row.get("collision_paths")) for row in repeats)
-            and maximum_translation <= float(checks["maximum_settle_translation_m"])
-            and maximum_rotation <= float(checks["maximum_settle_rotation_rad"])
-        )
-        if not qualified:
+        predicates = {
+            "deterministic_reset": len(set(state_digests)) == 1,
+            "asset_imported": all(row.get("asset_imported") is True for row in repeats),
+            "support_contact": all(row.get("support_contact_observed") is True for row in repeats),
+            "structure_matches_static": structure_ok,
+            "colliders_present": all(bool(row.get("collision_paths")) for row in repeats),
+            "settle_translation": all(math.isfinite(value) for value in translations)
+                and maximum_translation <= float(checks["maximum_settle_translation_m"]),
+            "settle_rotation": all(math.isfinite(value) for value in rotations)
+                and maximum_rotation <= float(checks["maximum_settle_rotation_rad"]),
+        }
+        failed = [name for name, passed in predicates.items() if not passed]
+        if failed:
             raise TaskEvaluationSceneConfigurationNativeImportDriverError(
-                "scene_configuration_native_import_qualification_failed"
+                "scene_configuration_native_import_qualification_failed:" + ",".join(failed)
             )
         return state_digests, maximum_translation, maximum_rotation
 
@@ -1109,6 +1166,7 @@ def execute_native_import_component(
         maximum_translation: float,
         maximum_rotation: float,
         robot_free_probe: Any = None,
+        required_motion_probe: Any = None,
     ) -> dict[str, Any]:
         runtime_result: dict[str, Any] = {
             "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
@@ -1169,6 +1227,8 @@ def execute_native_import_component(
             # never part of import qualification.
             if isinstance(robot_free_probe, Mapping) and robot_free_probe.get("schema_version") == ROBOT_FREE_PROBE_SCHEMA:
                 runtime_result["robot_free_success_probe"] = dict(robot_free_probe)
+            if required_motion_probe is not None:
+                runtime_result["required_motion_probe"] = dict(required_motion_probe)
         runtime_result["result_digest"] = canonical_digest(
             runtime_result, digest_field="result_digest"
         )
@@ -1186,6 +1246,21 @@ def execute_native_import_component(
 
     def _seal_observation(observation: Mapping[str, Any]) -> dict[str, Any]:
         observed = dict(observation)
+        # A failed gate must retain the actual simulator data for offline
+        # replay. This is deliberately ungraded, never a qualified artifact.
+        raw = {"schema_version": "scene_configuration_native_import_observation.v1", "status": "ungraded",
+            "stage_input_digest": _sha256(stage_input_path), "asset_digest": asset_record["digest"],
+            "static_qualification_digest": static_record["digest"], "observation": observed,
+            "claim_ceiling": "development_only"}
+        try:
+            raw_text = json.dumps(raw, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError) as error:
+            # Nonfinite or malformed simulator output remains inspectable,
+            # while the normal validator still refuses its original values.
+            raw_text = canonical_json({**{k: v for k, v in raw.items() if k != "observation"},
+                "status": "unserializable_observation", "serialization_error_type": type(error).__name__,
+                "observation_repr": repr(observed)[:2_000_000]})
+        (output_root / "native_import_observation.v1.json").write_text(raw_text + "\n", encoding="utf-8")
         runtime_identity = observed.get("runtime_identity")
         if (
             not isinstance(runtime_identity, Mapping)
@@ -1199,6 +1274,18 @@ def execute_native_import_component(
             repeats, code="scene_configuration_native_import_execution_invalid",
             articulated=articulated,
         )
+        required_result = None
+        if articulated and static_receipt is not None:
+            from .articulated_required_motion_probe import (
+                required_motion_plan_from_static_receipt, validate_required_motion_probe_result,
+            )
+            required_plan = required_motion_plan_from_static_receipt(static_receipt)
+            if required_plan is not None:
+                try:
+                    required_result = validate_required_motion_probe_result(observed.get("required_motion_probe"), required_plan)
+                except (ValueError, TypeError, KeyError) as exc:
+                    raise TaskEvaluationSceneConfigurationNativeImportDriverError(
+                        "scene_configuration_native_import_required_motion_probe_failed") from exc
         artifacts = [
             _write_artifact(
                 role="native_import_runtime_result",
@@ -1214,6 +1301,7 @@ def execute_native_import_component(
                     maximum_translation=maximum_translation,
                     maximum_rotation=maximum_rotation,
                     robot_free_probe=observed.get("robot_free_success_probe"),
+                    required_motion_probe=required_result,
                 ),
             )
         ]

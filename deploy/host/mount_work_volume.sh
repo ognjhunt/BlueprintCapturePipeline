@@ -111,6 +111,7 @@ WORKER_UNITS=(
   blueprint-agent-run-dispatcher.timer
   blueprint-existing-policy-canary-continuation.timer
   blueprint-gpu-spend-guard.timer
+  blueprint-website-atlas-preview.timer
   blueprint-task-evaluation-launch-preparation.service
   blueprint-task-evaluation-sam31-preparation-execution.service
   blueprint-task-evaluation-episode-compilation.service
@@ -137,6 +138,7 @@ WORKER_UNITS=(
   blueprint-existing-policy-canary-continuation.service
   blueprint-existing-policy-canary-watchdog.service
   blueprint-gpu-spend-guard.service
+  blueprint-website-atlas-preview.service
 )
 
 # Units whose sandbox can write under /var/lib/blueprint but that keep running

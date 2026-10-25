@@ -51,7 +51,12 @@ from .controlled_policy_configuration import canonical_request_digest
 from .decision_evidence_contracts import canonical_digest
 from .droid_https_policy_client import INTERFACE_ID, METADATA_SCHEMA, SUPPORTED_ACTION_CHUNK_ROWS
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
+from .dreamlabs_policy_client import (
+    ENDPOINT_URL as DREAM_ENDPOINT, METADATA_URL as DREAM_METADATA,
+    INTERFACE_ID as DREAM_INTERFACE, discover_model_metadata, validate_robot_contract,
+)
 from .native_task_arena_policy_canary_session import PROBE_KIND, TEAM_RUN_KIND
+from .policy_interface_binding import TEAM_HTTPS_INTERFACES, TEAM_ROBOT_INTERFACES
 from .team_candidate_quick10_admission import (
     CANDIDATE_SCHEMA,
     FOUNDER_SCHEMA,
@@ -147,7 +152,7 @@ def request_embodiment(request: Mapping[str, Any]) -> dict[str, Any] | None:
     """The team's own robot (validated manifest) on ``blueprint_policy_https.v1``, None on DROID; raise if invalid."""
 
     payload = _endpoint(request)
-    if payload.get("policy_interface_id") != TEAM_ROBOT_INTERFACE:
+    if payload.get("policy_interface_id") not in TEAM_ROBOT_INTERFACES:
         return None
     return validate_embodiment_manifest(_m(payload.get("robot_embodiment")))
 
@@ -166,10 +171,16 @@ def team_request_blockers(request: Mapping[str, Any], row: Mapping[str, Any]) ->
     url = urlsplit(str(payload.get("endpoint_url") or ""))
     blockers = []
     try:
-        request_embodiment(request)
+        manifest = request_embodiment(request)
+        if payload.get("policy_interface_id") == DREAM_INTERFACE:
+            validate_robot_contract(manifest or {}, payload.get("policy_config"))
+            if payload.get("endpoint_url") != DREAM_ENDPOINT or payload.get("metadata_url", DREAM_METADATA) != DREAM_METADATA:
+                blockers.append("agent_execution_dream_endpoint_invalid")
     except TeamEmbodimentError as exc:
         blockers.extend(exc.blockers)
-    if (purpose is None or payload.get("policy_interface_id") not in (INTERFACE_ID, TEAM_ROBOT_INTERFACE)
+    except (TypeError, ValueError, KeyError):
+        blockers.append("agent_execution_dream_contract_invalid")
+    if (purpose is None or payload.get("policy_interface_id") not in TEAM_HTTPS_INTERFACES
             or payload.get("credential_kind") != "bearer"
             or re.fullmatch(r"policy-credential-[0-9a-f-]{36}", str(payload.get("credential_ref") or "")) is None
             or url.scheme != "https" or not url.hostname or url.username or url.password or url.fragment):
@@ -221,6 +232,19 @@ def _team_metadata(endpoint_url: str, origin: str, token: str, transport: Callab
     return value
 
 
+def _dream_metadata(payload: Mapping[str, Any], token: str, transport: Callable[..., bytes] | None,
+                    manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Only Dream's official models API may receive the API-origin lease here."""
+    config = validate_robot_contract(manifest, payload.get("policy_config"))
+    if payload.get("endpoint_url") != DREAM_ENDPOINT or payload.get("metadata_url", DREAM_METADATA) != DREAM_METADATA:
+        raise TeamCandidateLaunchError("agent_execution_dream_endpoint_invalid")
+    try:
+        metadata = discover_model_metadata(model_id=config["model_id"], bearer_token=token, transport=transport)
+    except (TypeError, ValueError):
+        raise TeamCandidateLaunchError("team_candidate_dream_model_discovery_failed") from None
+    return {**metadata, "action_chunk_rows": manifest["action_chunk_rows"], "policy_config": config}
+
+
 def _funding(row: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
     funding = _m(_m(row.get("execution_admission")).get("funding"))
     try:
@@ -243,18 +267,23 @@ def _candidate_records(*, row: Mapping[str, Any], request: Mapping[str, Any], pr
     candidate_id = f"team-{team_id}.{checkpoint_id}"
     rows = int(metadata["action_chunk_rows"])
     manifest = request_embodiment(request)
+    interface = str(payload["policy_interface_id"])
+    dream = interface == DREAM_INTERFACE
     candidate = {"schema_version": CANDIDATE_SCHEMA, "team_id": team_id, "checkpoint_id": checkpoint_id,
                  "candidate_id": candidate_id,
                  "embodiment_preset_id": DROID_POLICY_CANARY_PRESET_ID if manifest is None else TEAM_ROBOT_ID,
-                 "policy_interface_id": INTERFACE_ID if manifest is None else TEAM_ROBOT_INTERFACE,
+                 "policy_interface_id": interface,
                  **({} if manifest is None else {"embodiment": manifest}),
-                 "delivery": {"mode": "https_policy", "endpoint_url": endpoint, "metadata_url": endpoint,
+                 "delivery": {"mode": "https_policy", "endpoint_url": endpoint,
+                              "metadata_url": DREAM_METADATA if dream else endpoint,
                               "action_chunk_rows": rows,
                               # A team's own robot executes its whole declared chunk before the next query.
-                              "open_loop_horizon": (min(int(facts["open_loop_horizon"]), rows) if manifest is None
-                                                    else rows),
+                              "open_loop_horizon": (min(30, rows) if dream else
+                                                    min(int(facts["open_loop_horizon"]), rows) if manifest is None else rows),
                               "model_identity_digest": metadata["model_identity_digest"],
-                              "team_policy_id": metadata["policy_id"]}}
+                              "team_policy_id": candidate_id if dream else metadata["policy_id"],
+                              **({"policy_config": metadata["policy_config"],
+                                  "provider_model_metadata": metadata["provider_model_record"]} if dream else {})}}
     lease = {"schema_version": LEASE_SCHEMA, "kind": "kms_bearer_lease", "status": "available", "single_use": True,
              "lease_id": bearer_lease_id(credential_ref=access["credential_ref"], job_id=request["job_id"],
                                          pipeline_run_id=pipeline_run_id),
@@ -350,6 +379,8 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
         # The team's chunk runs whole at its own rate over the scene's time budget.
         plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
         steps = int(plan["cadence"]["maximum_action_steps"]) * hz // 15
+        if admission["policy_interface_id"] == DREAM_INTERFACE:
+            steps = steps * 20 // hz  # Dream rows are 20 Hz; native holds each for three 60 Hz ticks.
         max_queries = -(-steps // int(admission["delivery"]["open_loop_horizon"]))
     if facts.get("probe") is None:
         raise TeamCandidateLaunchError("team_evaluation_robot_free_probe_receipt_missing")
@@ -362,7 +393,7 @@ def _stage_shard(*, job_dir: Path, index: int, cells: Sequence[Mapping[str, Any]
         runtime_source_packet_receipt=facts["runtime_source_packet_receipt"],
         runtime_input_manifest_path=paths["runtime_inputs"], session_authority_path=paths["session_authority"],
         execution_spec_path=paths["execution_spec"], implementation_commit=commit,
-        team_robot_model_path=job_dir / EMBODIMENT_MODEL_PATH if binding else None)
+        team_robot_model_path=job_dir / binding["model"]["bundle_path"] if binding else None)
     argv = ["gpu-canary", "--provider", "vast", "--probe-kind", PROBE_KIND,
             "--native-task-arena-policy-canary-session-authority", str(paths["session_authority"]),
             "--native-task-arena-policy-canary-session-bundle-receipt",
@@ -407,13 +438,20 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     checkpoint_id = str(_m(row.get("checkpoint")).get("checkpoint_id") or "")
     validate_candidate_rights(rights_record(profile, team_id=team_id, checkpoint_id=checkpoint_id) or {},
                               team_id=team_id, checkpoint_id=checkpoint_id,
-                              candidate_id=f"team-{team_id}.{checkpoint_id}")
+                              candidate_id=f"team-{team_id}.{checkpoint_id}",
+                              policy_interface_id=payload.get("policy_interface_id"),
+                              model_id=_m(payload.get("policy_config")).get("model_id"),
+                              scene_revision_digest=facts["scene"]["scene_revision_digest"])
     manifest = request_embodiment(request)
+    robot_binding = None
     if manifest is not None:
-        _stage_robot_model(job_dir=job_dir, manifest=manifest, facts=facts, fetch=hooks.get("model_fetch"))
+        robot_binding = _stage_robot_model(job_dir=job_dir, manifest=manifest, facts=facts, fetch=hooks.get("model_fetch"),
+                                           profile=profile, team_id=team_id, checkpoint_id=checkpoint_id,
+                                           storage_client=hooks.get("model_storage_client"))
     from .site_task_simulation_qualification import qualification_for_execution
     qualification = qualification_for_execution(row=row, request=request, operator_profile=profile,
-        facts=facts, robot_model_path=job_dir / EMBODIMENT_MODEL_PATH)
+        facts=facts, robot_model_path=job_dir / robot_binding["model"]["bundle_path"] if robot_binding
+        else job_dir / EMBODIMENT_MODEL_PATH)
     zero = dict(hooks["provider_zero"]())
     _write(job_dir / "initial_provider_zero.json", zero)
     if zero.get("provider_zero_verified") is not True:
@@ -443,7 +481,9 @@ def _stage(*, row: Mapping[str, Any], request: Mapping[str, Any], job_dir: Path,
     token = token.strip()
     endpoint = str(payload["endpoint_url"])
     origin = f"{urlsplit(endpoint).scheme}://{urlsplit(endpoint).netloc}"
-    metadata = _team_metadata(endpoint, origin, token, hooks.get("metadata_transport"), manifest)
+    metadata = (_dream_metadata(payload, token, hooks.get("metadata_transport"), manifest)
+                if payload["policy_interface_id"] == DREAM_INTERFACE
+                else _team_metadata(endpoint, origin, token, hooks.get("metadata_transport"), manifest))
     records = _candidate_records(row=row, request=request, profile=profile, facts=facts, funding=funding,
                                  access=access, metadata=metadata, pipeline_run_id=pipeline_run_id, purpose=purpose)
     admission = admit_team_candidate(**records, scene=facts["scene"], probe_receipt=facts.get("probe_receipt"),
@@ -522,13 +562,29 @@ def _fetch_model(url: str, target: Path) -> None:
 
 
 def _stage_robot_model(*, job_dir: Path, manifest: Mapping[str, Any], facts: Mapping[str, Any],
-                       fetch: Callable[[str, Path], None] | None) -> dict[str, Any]:
+                       fetch: Callable[[str, Path], None] | None, profile: Mapping[str, Any] | None = None,
+                       team_id: str = "", checkpoint_id: str = "", storage_client=None) -> dict[str, Any]:
     """Fetch the team's robot USD once, verify it is the declared file, and seal its binding to the scene."""
 
     target = job_dir / EMBODIMENT_MODEL_PATH
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
-    (fetch or _fetch_model)(str(manifest["model"]["url"]), target)
+    from .team_robot_model_delivery import stage_prepared_robot_model, stage_private_robot_model
+    delivery = stage_prepared_robot_model(profile=profile or {}, manifest=manifest, team_id=team_id,
+                                          checkpoint_id=checkpoint_id, target_directory=target.parent)
+    closure = delivery["dependency_closure"] if delivery is not None else None
+    if delivery is not None:
+        target = target.parent / closure["model_path"]
+    else:
+        delivery = stage_private_robot_model(profile=profile or {}, manifest=manifest, team_id=team_id,
+            checkpoint_id=checkpoint_id, target=target, storage_client=storage_client)
+    if delivery is None:
+        (fetch or _fetch_model)(str(manifest["model"]["url"]), target)
+    else:
+        _write(job_dir / "team_robot_model_delivery.json", delivery)
     record = verify_model_file(manifest, target)
+    if closure is not None:
+        record["dependency_closure"] = closure
+        record["source_import_provenance"] = delivery["source_import_provenance"]
     plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
     stance = None
     if manifest["base"]["mode"] == "free":

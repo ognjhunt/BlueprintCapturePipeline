@@ -6,6 +6,7 @@ import json
 import hashlib
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,10 @@ def rehearse_provider_bundle_entrypoint(
         output = Path(raw) / "runtime_output"
         output.mkdir()
         environment = os.environ.copy()
+        # The caller's environment owns the installed host dependencies. An
+        # unqualified system python3 may lack them even when this caller has
+        # passed the import checks (for example NumPy on the control plane).
+        environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", "")
         environment.update(
             {
                 "BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL": "1",

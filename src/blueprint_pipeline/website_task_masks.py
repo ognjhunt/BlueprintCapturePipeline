@@ -333,6 +333,36 @@ def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[
         {"frame_id": frame["source_frame_id"], "timestamp_seconds": frame["decoded_pts_seconds"]}])
 
 
+# One capture video may show the task object being carried. Model depth from
+# view to view stays well inside this distance; a held or moved object goes
+# farther. Only the views where the object rests in one place describe it.
+RESTING_TOLERANCE_M = 0.10
+
+
+def resting_views(views: list[np.ndarray]) -> list[np.ndarray]:
+    """The views that agree on where the object rests, earliest place first.
+
+    Each view's observed surfaces are reduced to a median point. A still object
+    seen from opposite sides puts those points up to its own size apart, so the
+    tolerance is the largest extent any view observed (5th to 95th percentile
+    diagonal), never less than ``RESTING_TOLERANCE_M``. Only an object moved
+    farther than its own size leaves views behind. Views within the tolerance of
+    the best supported view form its resting place. Without a place seen in at
+    least a third of the views, nothing is dropped: there is no rest to prefer.
+    """
+    if len(views) < 3:
+        return views
+    centers = np.array([np.median(view, axis=0) for view in views])
+    extent = max(float(np.linalg.norm(np.subtract(*np.quantile(view, [0.95, 0.05], axis=0))))
+                 for view in views)
+    together = np.linalg.norm(centers[:, None] - centers[None], axis=2) <= max(RESTING_TOLERANCE_M, extent)
+    counts = together.sum(axis=1)
+    best = int(np.argmax(counts))
+    if counts[best] < max(2, -(-len(views) // 3)):
+        return views
+    return [view for view, keep in zip(views, together[best]) if keep]
+
+
 def masked_source_points(track: Mapping[str, Any], frames: list[Mapping[str, Any]]) -> np.ndarray:
     by_id = {frame["frame_id"]: frame for frame in frames}
     points = []
@@ -354,7 +384,7 @@ def masked_source_points(track: Mapping[str, Any], frames: list[Mapping[str, Any
         points.append(camera_points @ pose[:3, :3].T + pose[:3, 3])
     if not points:
         raise ValueError("task_target_has_no_estimated_geometry")
-    return np.concatenate(points)
+    return np.concatenate(resting_views(points))
 
 
 def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]],
@@ -803,6 +833,39 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
     return complete
 
 
+def _same_frame_sample(task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> bool:
+    """Tracks started from the very frames the geometry was estimated on."""
+    binding = source_geometry["binding"]
+    return (task_masks["binding"].get("geometry_input_digest")
+            == binding.get("tracking_input_digest", binding.get("input_digest"))
+            and (binding.get("tracking_input_digest") is None
+                 or binding.get("task_masks_digest") == task_masks["digest"]))
+
+
+def _registry_frames(task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> bool:
+    """Tracks on the source video's timeline name each geometry frame by its decoded index and time.
+
+    Both hosted-SAM modes, the continuous video and the selected original views,
+    keep the full decoded-frame registry. A geometry estimated on any decoded
+    frames of the same video then needs no shared sample: each frame must be the
+    registry frame of that index, at the same presentation time and upright size.
+    Only frames a track observed contribute; a target with none still fails.
+    """
+    if task_masks["binding"].get("mask_input_pixels") not in {"continuous_source_video_v1",
+                                                              "selected_original_views_v1"}:
+        return False
+    registry = {row["source_frame_id"]: row for row in task_masks.get("source_frame_registry") or []}
+    for frame in source_geometry["frames"]:
+        row = registry.get(frame["frame_id"])
+        if row is None or abs(float(row["decoded_pts_seconds"]) - float(frame["timestamp_seconds"])) > 0.002:
+            return False
+        rotation = int(frame.get("display_rotation_degrees") or 0) % 180
+        size = (frame.get("source_width"), frame.get("source_height"))
+        if (row.get("width"), row.get("height")) != (size[::-1] if rotation else size):
+            return False
+    return True
+
+
 def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> dict[str, Any]:
     """Lift the retained selected tracks after reconstruction; never call SAM again."""
     if task_masks.get("deferred_target_ids"):
@@ -810,10 +873,8 @@ def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometr
     if (task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
             or source_geometry.get("digest") != canonical_digest(source_geometry, digest_field="digest")
             or task_masks.get("source_video_digest") != source_geometry["binding"].get("source_video_digest")
-            or task_masks["binding"].get("geometry_input_digest") != source_geometry["binding"].get(
-                "tracking_input_digest", source_geometry["binding"].get("input_digest"))
-            or (source_geometry["binding"].get("tracking_input_digest") is not None
-                and source_geometry["binding"].get("task_masks_digest") != task_masks["digest"])):
+            or not (_same_frame_sample(task_masks, source_geometry)
+                    or _registry_frames(task_masks, source_geometry))):
         raise ValueError("website_task_geometry_binding_mismatch")
     frames = source_geometry["frames"]
     ids = {frame["frame_id"] for frame in frames}
@@ -822,7 +883,10 @@ def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometr
         source_track = target["source_track"]
         track = track_at_geometry_resolution({**source_track, "observations": [row for row in source_track["observations"]
                                             if row["source_frame_id"] in ids]}, frames)
-        targets.append({**target, "track": track, "estimated_visible_bounds": estimate_target_bounds(track, frames)})
+        # A removed person is masked out of the views, never rebuilt or placed,
+        # and geometry views are chosen without people: no bounds are needed.
+        bounds = None if is_person_removal(target) else estimate_target_bounds(track, frames)
+        targets.append({**target, "track": track, "estimated_visible_bounds": bounds})
     value = {**task_masks, "targets": targets, "source_geometry_digest": source_geometry["digest"],
              "binding": {**task_masks["binding"], "geometry_digest": source_geometry["digest"]}}
     value["digest"] = canonical_digest(value, digest_field="digest")

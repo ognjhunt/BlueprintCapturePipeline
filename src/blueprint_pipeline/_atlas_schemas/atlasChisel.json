@@ -1,0 +1,448 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/components/schemas/AtlasChiselRequest",
+  "components": {
+    "schemas": {
+      "AtlasChiselModelParameters": {
+        "properties": {
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 42
+          },
+          "numSteps": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100,
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "AtlasChiselRequest": {
+        "properties": {
+          "webhookUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "purgeContentOnOperationCompletion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contextFrames": {
+            "items": {
+              "$ref": "#/components/schemas/PosedDepthAsset"
+            },
+            "type": "array"
+          },
+          "sourceFrames": {
+            "items": {
+              "$ref": "#/components/schemas/PosedRGBAsset"
+            },
+            "type": "array"
+          },
+          "targetCameras": {
+            "items": {
+              "$ref": "#/components/schemas/PinholeCamera"
+            },
+            "type": "array",
+            "maxItems": 32,
+            "minItems": 1
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "enhancePrompt": {
+            "type": "boolean",
+            "default": true
+          },
+          "voxelSize": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "voxelGridOrientation": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "world",
+                  "gauge"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modelParameters": {
+            "$ref": "#/components/schemas/AtlasChiselModelParameters"
+          },
+          "returnDepth": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "targetCameras",
+          "prompt"
+        ]
+      },
+      "CoordinateFrame": {
+        "properties": {
+          "position": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 3,
+            "minItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "quaternion": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "items": {
+              "type": "number"
+            }
+          },
+          "coordinateSystem": {
+            "type": "string",
+            "enum": [
+              "rub",
+              "rdf"
+            ],
+            "default": "rub"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "position",
+          "quaternion"
+        ]
+      },
+      "LinearDepthBufferAsset": {
+        "properties": {
+          "confidenceAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "depthAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "depthAsset"
+        ]
+      },
+      "LogDepthBufferAsset": {
+        "properties": {
+          "confidenceAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "logDepthAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          },
+          "zMin": {
+            "type": "number"
+          },
+          "zMax": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "logDepthAsset",
+          "zMin",
+          "zMax"
+        ]
+      },
+      "PinholeCamera": {
+        "properties": {
+          "extrinsics": {
+            "$ref": "#/components/schemas/CoordinateFrame"
+          },
+          "intrinsics": {
+            "$ref": "#/components/schemas/PinholeCameraIntrinsics"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "extrinsics",
+          "intrinsics"
+        ]
+      },
+      "PinholeCameraIntrinsics": {
+        "properties": {
+          "fx": {
+            "type": "number"
+          },
+          "fy": {
+            "type": "number"
+          },
+          "cx": {
+            "type": "number"
+          },
+          "cy": {
+            "type": "number"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "fx",
+          "fy",
+          "cx",
+          "cy",
+          "width",
+          "height"
+        ]
+      },
+      "PosedDepthAsset": {
+        "properties": {
+          "imageAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maskAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "camera": {
+            "$ref": "#/components/schemas/PinholeCamera"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LogDepthBufferAsset"
+              },
+              {
+                "$ref": "#/components/schemas/LinearDepthBufferAsset"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "camera",
+          "depth"
+        ]
+      },
+      "PosedRGBAsset": {
+        "properties": {
+          "imageAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          },
+          "maskAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "camera": {
+            "$ref": "#/components/schemas/PinholeCamera"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LogDepthBufferAsset"
+              },
+              {
+                "$ref": "#/components/schemas/LinearDepthBufferAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "imageAsset",
+          "camera"
+        ]
+      },
+      "TaskAsset": {
+        "properties": {
+          "assetId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "AtlasChiselResponse": {
+        "properties": {
+          "frames": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PosedRGBAsset"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "promptUsed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  "x-source-url": "https://atlas-beta.worldlabs.ai/docs/api-reference/atlas-chisel",
+  "x-source-document-sha256": "21ad33dad0bef723468b68b29a8b70e932cdca7968e5d039cc7dc8dd28771553",
+  "x-retrieved-on": "2026-10-21",
+  "x-response-schema": "#/components/schemas/AtlasChiselResponse"
+}

@@ -8,6 +8,7 @@ import json
 from typing import Any, Callable, Literal, Mapping
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 
@@ -29,6 +30,38 @@ def canonical_json(value: Any) -> str:
 
 def digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+# The production worker re-reads every retained task record on each tick, and
+# the 2020-12 metaschema check of its output schema dominated that work. The
+# check is pure, so a schema that passed once is not checked again.
+_CHECKED_OUTPUT_SCHEMAS: set[str] = set()
+_MAX_CHECKED_OUTPUT_SCHEMAS = 1024
+
+
+def _plain_json(value: Any) -> bool:
+    """Values whose canonical JSON is injective, e.g. no tuple standing in for a list."""
+
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _plain_json(item) for key, item in value.items())
+    if isinstance(value, list):
+        return all(_plain_json(item) for item in value)
+    return value is None or isinstance(value, (str, int, float))
+
+
+def _check_output_schema(schema: dict[str, Any]) -> None:
+    identity = digest(schema) if _plain_json(schema) else None
+    if identity is None or identity not in _CHECKED_OUTPUT_SCHEMAS:
+        try:
+            Draft202012Validator.check_schema(schema)
+        except SchemaError:
+            # A stable refusal, not a schema-quoting upstream message. As a
+            # ValueError it also stays a per-record refusal for the worker.
+            raise ValueError("agent_output_schema_malformed") from None
+        if identity is not None:
+            if len(_CHECKED_OUTPUT_SCHEMAS) >= _MAX_CHECKED_OUTPUT_SCHEMAS:
+                _CHECKED_OUTPUT_SCHEMAS.clear()
+            _CHECKED_OUTPUT_SCHEMAS.add(identity)
 
 
 class AgentExecutionError(RuntimeError):
@@ -116,7 +149,7 @@ class AgentTask(BaseModel):
         if self.parent_task_id == self.task_id:
             raise ValueError("agent_task_cannot_continue_itself")
         canonical_json(self.input)
-        Draft202012Validator.check_schema(self.output_schema)
+        _check_output_schema(self.output_schema)
         if self.output_schema.get("type") != "object":
             raise ValueError("agent_output_schema_must_be_object")
         if not set(self.input_digests) <= set(self.admission.allowed_input_digests):

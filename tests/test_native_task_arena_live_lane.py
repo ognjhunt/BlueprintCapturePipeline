@@ -461,6 +461,8 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     task = assets / "task.usda"
     lane_adaptation = author_grounded_articulation(sealed, task)
     assert lane_adaptation is not None
+    from blueprint_pipeline.native_articulation_root_frame import derive_root_frame_binding
+    lane_adaptation["native_root_frame_binding"] = derive_root_frame_binding(task)
     staged.append(task)
     scene_plan = _sealed_scene_plan()
     scene_plan["scene_id"] = SCENE_ID

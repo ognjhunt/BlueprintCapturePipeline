@@ -1,7 +1,8 @@
-"""Prepare task-aware website images before a single reconstruction.
+"""Prepare the task analysis a website scene is built from.
 
-Website inputs retain original frames, bind SAM3.1 task masks, and edit selected
-objects out of original-resolution frames. MapAnything runs after visual publication.
+Website inputs retain original frames and bind SAM3.1 task masks. The scene and
+its source geometry come from the capture's Atlas job, which erases the task
+objects from its own selected views; nothing here edits pixels.
 Legacy capture keeps its existing opt-in behavior. All inferred geometry and
 repairs remain development evidence (ADP-009B, public_scene_day_14).
 """
@@ -29,17 +30,8 @@ from .common import (
     write_json,
 )
 from .local_capture import resolve_local_capture_context
-from .decision_evidence_contracts import canonical_digest
 from .website_scene_geometry import prepare_website_source_frames
-from .website_mask_view_plan import prepare_mask_view_plan
 from .website_task_masks import run_website_task_masks
-from .website_object_removal import prepare_object_removal_frames, select_reconstruction_frames, reconstruction_source_frames, replace_unmasked_task_views
-from .website_removal_view_corroboration import corroborate_removal_views
-from .website_reconstruction_profile import reconstruction_profile
-from .website_image_completion import (
-    complete_background_images, diagnose_inconsistent_background, verify_completed_background,
-)
-from .website_image_repair_agent import image_repair_enabled, repair_rejected_views
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
@@ -54,21 +46,6 @@ CLAIM_CEILING = "development_only"
 STAGE_MANIFEST_SCHEMA_VERSION = "clean_plate_stage_manifest.v1"
 REMOVAL_MANIFEST_SCHEMA_VERSION = "clean_plate_removal_manifest.v1"
 
-
-def anchor_reconstruction_views_to_geometry(*, frames: list[dict[str, Any]],
-                                            source_geometry: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Put a source-geometry view first, so the provider's camera anchor is registered.
-
-    Image reconstruction accepts distinct views in submission order. Its first
-    view defines the world origin, and the later MapAnything registration needs
-    that exact original frame. Keep all reviewed views and their original IDs.
-    """
-    geometry_ids = {row["frame_id"] for row in source_geometry["frames"]}
-    anchor = next((index for index, frame in enumerate(frames)
-                   if frame["frame_id"] in geometry_ids), None)
-    if anchor is None:
-        raise ValueError("website_reconstruction_anchor_geometry_frame_missing")
-    return [frames[anchor], *frames[:anchor], *frames[anchor + 1:]]
 
 CLEAN_PLATE_DIRNAME = "clean_plate"
 REMOVAL_PLAN_FILENAME = "removal_plan.json"
@@ -164,32 +141,25 @@ def _resolve_input_video(pipeline_root: Path, capture_root: Path) -> Optional[Pa
 
 
 def apply_clean_plate_to_reconstruction_input(
-    worldlabs_input: Mapping[str, Any], clean_plate: Mapping[str, Any], *, required: bool,
+    worldlabs_input: Mapping[str, Any], clean_plate: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    """Never let a task-analysis hold fall back to the unedited source video."""
+    """Legacy capture: never let a task-analysis hold fall back to the unedited source video."""
     result = dict(worldlabs_input)
     status = clean_plate.get("status")
-    if required and result.get("status") == "blocked":
-        return {**result, "output_video_uri": None, "prepared_views": None}
-    # Preserve the disabled legacy path; website preparation is mandatory.
-    if status == "disabled" and not required:
+    if status == "disabled":
         return result
     passed = (
         status in {"noop", "objects_removed"}
         and clean_plate.get("privacy_verified") is True
         and not clean_plate.get("blockers")
     )
-    views = clean_plate.get("prepared_views")
-    image_input_ready = isinstance(views, Mapping) and views.get("status") == "ready"
-    if status == "objects_removed" and not clean_plate.get("clean_plate_video_uri") and not image_input_ready:
+    if status == "objects_removed" and not clean_plate.get("clean_plate_video_uri"):
         passed = False
     if not passed:
         return {**result, "status": "blocked", "output_video_uri": None,
                 "reason": clean_plate.get("reason") or "task_scene_preparation_required",
                 "clean_plate_blockers": list(clean_plate.get("blockers") or [])}
-    if image_input_ready:
-        result.update(status="ready", output_video_uri=None, prepared_views=dict(views), clean_plate_applied=True)
-    elif status == "objects_removed":
+    if status == "objects_removed":
         result.update(output_video_uri=clean_plate["clean_plate_video_uri"], clean_plate_applied=True)
     return result
 
@@ -271,13 +241,11 @@ def validate_clean_plate_stage_manifest(manifest: Mapping[str, Any]) -> list[str
         for key, value in _boundary_flags().items():
             if boundary.get(key) is not value:
                 errors.append(f"clean_plate_stage_boundary_{key}_elevated")
-    # This stage emits images; legacy video output is not implemented here.
+    # This stage edits no pixels; legacy video output is not implemented here.
     if manifest.get("clean_plate_video_uri") not in (None, ""):
         errors.append("clean_plate_stage_video_uri_unexpected_in_scaffold")
     if manifest.get("generated_regions_present") is not False:
-        views = manifest.get("prepared_views") or {}
-        if views.get("generated_pixels_present") is not True or (views.get("completion_review") or {}).get("status") != "passed":
-            errors.append("clean_plate_stage_generated_regions_require_review")
+        errors.append("clean_plate_stage_generated_regions_unexpected")
     return errors
 
 
@@ -295,18 +263,15 @@ def run_clean_plate_stage(
     worldlabs_input: Optional[Mapping[str, Any]] = None,
     task_context: Optional[Mapping[str, Any]] = None,
     website_source_video: Optional[Path] = None,
-    image_edit_admission: Optional[Mapping[str, Any]] = None,
-    image_edit_admission_grant: Any = None,
     meta_sam_admission: Optional[Mapping[str, Any]] = None,
     meta_sam_admission_grant: Any = None,
-    reconstruction_capabilities: Optional[Mapping[str, Any]] = None,
     policy: Optional[CleanPlatePolicy] = None,
     force_rebuild: bool = False,
 ) -> Dict[str, Any]:
     """Run (or no-op) the clean-plate stage for one capture.
 
-    Website reconstruction consumes only ready prepared images. The original
-    source and estimated placement remain available for asset composition.
+    A website capture is ready once its removal plan, source frames and task
+    masks exist; the original source stays available for asset composition.
     """
 
     policy = policy or (CleanPlatePolicy(enabled=True) if website_source_video is not None else CleanPlatePolicy.from_env())
@@ -341,10 +306,6 @@ def run_clean_plate_stage(
     reason: Optional[str] = None
     source_geometry: Optional[Dict[str, Any]] = None
     task_masks: Optional[Dict[str, Any]] = None
-    object_removal_frames: Optional[list[Dict[str, Any]]] = None
-    prepared_views: Optional[Dict[str, Any]] = None
-    mask_view_plan: Optional[Dict[str, Any]] = None
-    profile: Optional[Dict[str, Any]] = None
 
     if privacy_status == "failed_closed":
         # Fail safe: never proceed on a capture whose privacy pipeline failed.
@@ -414,164 +375,23 @@ def run_clean_plate_stage(
         for target in task_plan.get("targets", [])
     ):
         try:
-            profile = reconstruction_profile(reconstruction_capabilities)
-            if website_source_video is not None and parse_bool(
-                    os.getenv("BLUEPRINT_WEBSITE_VIEW_FIRST_SAM"), default=False):
-                mask_view_plan = prepare_mask_view_plan(
-                    source_video=website_source_video, source_geometry=source_geometry, plan=task_plan,
-                    source_geometry_root=clean_plate_root / "source_geometry",
-                    output_root=clean_plate_root / "mask_view_plan", limit=profile["max_input_images"])
             task_masks = run_website_task_masks(plan=task_plan, source_geometry=source_geometry, defer_kept_static=True,
                                                 output_root=clean_plate_root / "task_masks",
                                                 meta_admission=meta_sam_admission,
                                                 meta_admission_grant=meta_sam_admission_grant,
                                                 task_context=task_context,
-                                                source_video=website_source_video, view_plan=mask_view_plan)
+                                                source_video=website_source_video)
         except Exception as exc:
             status, mode = "blocked", "task_masks_blocked"
             reason = "website_task_masks_unavailable"
             blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
 
-    if task_masks is not None and source_geometry is not None and not blockers:
-        try:
-            reconstruction_frames = (mask_view_plan["frames"] if mask_view_plan else
-                reconstruction_source_frames(source_geometry=source_geometry, task_masks=task_masks,
-                    source_video=website_source_video, limit=profile["max_input_images"],
-                    output_root=clean_plate_root / "reconstruction_source_frames"))
-            # A track proved on one frame is not proved on every frame. Drop the
-            # views where a second look says the mask has left the target,
-            # before the editor is paid to erase whatever it covers.
-            reconstruction_frames, corroboration = corroborate_removal_views(
-                frames=reconstruction_frames, task_masks=task_masks, task_context=task_context,
-                output_root=clean_plate_root / "removal_view_corroboration")
-            object_removal_frames = prepare_object_removal_frames(
-                frames=reconstruction_frames, task_masks=task_masks,
-                output_root=clean_plate_root / "object_removal_frames",
-            )
-        except Exception as exc:
-            status, mode = "blocked", "object_removal_frames_blocked"
-            reason = "website_object_removal_frames_unavailable"
-            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
-
-    if object_removal_frames is not None and not blockers:
-        try:
-            selected = select_reconstruction_frames(frames=object_removal_frames, task_masks=task_masks,
-                                                    limit=profile["max_input_images"])
-            completion_review = None
-            if any(frame["remaining_pixel_count"] for frame in selected):
-                selected = complete_background_images(
-                    frames=selected, task_digest=plan["task_context_sha256"],
-                    output_root=clean_plate_root / "image_completion", admission=image_edit_admission or {},
-                    token=os.getenv("OPENAI_API_KEY", ""), admission_grant=image_edit_admission_grant,
-                    targets=task_plan["targets"], task_context=task_context)
-                selected = replace_unmasked_task_views(selected=selected, frames=object_removal_frames,
-                    task_masks=task_masks, targets=task_plan["targets"], limit=profile["max_input_images"])
-                completion_review = verify_completed_background(
-                    frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
-                    output_root=clean_plate_root / "image_completion", task_context=task_context)
-                review = completion_review.get("review") or {}
-                unrelated_loss_ids = review.get("unrelated_object_loss_frame_ids") or []
-                generated_ids = {frame["frame_id"] for frame in selected
-                                 if frame.get("generated_pixels_present")}
-                # A full-frame edit can remove an unrelated object in one
-                # viewpoint, and break that view's background with it. Exclude
-                # only the exact generated view named by the independent
-                # reviewer, then review the whole set again.
-                # A missing obstacle in an unedited view cannot be repaired by
-                # discarding model output and remains a blocking finding.
-                if (completion_review.get("status") == "blocked"
-                        and isinstance(review.get("consistent_background"), bool)
-                        and review.get("unrelated_objects_preserved") is False
-                        and unrelated_loss_ids and set(unrelated_loss_ids) <= generated_ids
-                        and len(selected) - len(unrelated_loss_ids) >= 2):
-                    first_review = completion_review
-                    selected = [frame for frame in selected
-                                if frame["frame_id"] not in unrelated_loss_ids]
-                    completion_review = verify_completed_background(
-                        frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
-                        output_root=clean_plate_root / "image_completion", task_context=task_context)
-                    completion_review = {**completion_review, "prior_unrelated_review": first_review,
-                                         "excluded_unrelated_loss_frame_ids": sorted(unrelated_loss_ids)}
-                review = completion_review.get("review") or {}
-                remaining_ids = review.get("remaining_task_object_frame_ids") or []
-                # A missing SAM mask cannot justify keeping a visibly unremoved
-                # task object. The independent review may name exact unedited
-                # views to omit; never conceal a failed edit or another review
-                # failure. One more review verifies the resulting set.
-                if (completion_review.get("status") == "blocked"
-                        and review.get("task_objects_removed") is False
-                        and all(review.get(field) is True for field in (
-                            "consistent_background", "unrelated_objects_preserved"))
-                        and remaining_ids and set(remaining_ids) <= {frame["frame_id"] for frame in selected}
-                        and all(not frame.get("generated_pixels_present") for frame in selected
-                                if frame["frame_id"] in remaining_ids)):
-                    retained = [frame for frame in selected if frame["frame_id"] not in remaining_ids]
-                    if len(retained) >= 2:
-                        first_review = completion_review
-                        selected = retained
-                        completion_review = verify_completed_background(
-                            frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
-                            output_root=clean_plate_root / "image_completion", task_context=task_context)
-                        completion_review = {**completion_review, "prior_failed_review": first_review,
-                                             "excluded_unmasked_frame_ids": sorted(remaining_ids)}
-                # A failed background-consistency review is not approval. Ask
-                # one separately retained diagnosis for the exact bad view,
-                # exclude only that generated view, then independently review
-                # the whole remaining set. Never retry this branch in a loop.
-                review = completion_review.get("review") or {}
-                if (completion_review.get("status") == "blocked"
-                        and review.get("consistent_background") is False
-                        and all(review.get(field) is True for field in (
-                            "task_objects_removed", "unrelated_objects_preserved"))
-                        and review.get("remaining_task_object_frame_ids") == []):
-                    diagnosis = diagnose_inconsistent_background(
-                        frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
-                        failed_review=completion_review, output_root=clean_plate_root / "image_completion",
-                        task_context=task_context)
-                    inconsistent_id = diagnosis["diagnosis"]["inconsistent_background_frame_ids"][0]
-                    offending = next(frame for frame in selected if frame["frame_id"] == inconsistent_id)
-                    if not offending.get("generated_pixels_present") or len(selected) < 3:
-                        raise ValueError("website_background_consistency_exclusion_invalid")
-                    prior_review = completion_review
-                    selected = [frame for frame in selected if frame["frame_id"] != inconsistent_id]
-                    completion_review = verify_completed_background(
-                        frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
-                        output_root=clean_plate_root / "image_completion", task_context=task_context)
-                    completion_review = {**completion_review,
-                                         "prior_failed_review": prior_review.get("prior_failed_review", prior_review),
-                                         "excluded_unmasked_frame_ids": prior_review.get("excluded_unmasked_frame_ids", []),
-                                         "prior_inconsistent_review": prior_review,
-                                         "inconsistency_diagnosis": diagnosis,
-                                         "excluded_inconsistent_frame_ids": [inconsistent_id]}
-                # Opt-in: one bounded repair plan for the still-rejected set. The
-                # planner never approves; the independent review decides again.
-                if (completion_review.get("status") != "passed" and task_context is not None
-                        and image_repair_enabled()):
-                    selected, completion_review = repair_rejected_views(
-                        selected=selected, object_removal_frames=object_removal_frames,
-                        original_frames=source_geometry["frames"], plan=task_plan,
-                        failed_review=completion_review, output_root=clean_plate_root / "image_completion",
-                        task_context=task_context)
-                if completion_review.get("status") != "passed":
-                    raise ValueError("website_image_completion_review_failed")
-            if website_source_video is not None:
-                selected = anchor_reconstruction_views_to_geometry(
-                    frames=selected, source_geometry=source_geometry)
-            prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
-                              "reconstruction_profile": profile,
-                              "mask_view_plan_digest": mask_view_plan["digest"] if mask_view_plan else None,
-                              "task_context_sha256": plan.get("task_context_sha256"),
-                              "source_geometry_digest": None,
-                              "source_frames_digest": (source_geometry or {}).get("digest"),
-                              "generated_pixels_present": any(f.get("generated_pixels_present") for f in selected),
-                              "completion_review": completion_review,
-                              "view_corroboration": corroboration, "claim_ceiling": CLAIM_CEILING}
-            prepared_views["digest"] = canonical_digest(prepared_views, digest_field="digest")
-            status = "objects_removed" if int(plan.get("movable_removal_count") or 0) else "noop"
-            mode, reason = "prepared_images", None
-        except Exception as exc:
-            status, mode, reason = "blocked", "website_images_blocked", "website_prepared_images_unavailable"
-            blockers.append(str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__)
+    if task_masks is not None and not blockers:
+        # Scene preparation needs the plan, the source frames and the task
+        # masks; the scene itself comes from the capture's Atlas job, which
+        # erases the task objects and people from its own selected views.
+        status = "objects_removed" if int(plan.get("movable_removal_count") or 0) else "noop"
+        mode, reason = "task_masks_ready", None
 
     removal_manifest = _build_removal_manifest(plan)
 
@@ -600,18 +420,12 @@ def run_clean_plate_stage(
         "target_count": int(plan.get("target_count") or 0),
         "movable_removal_count": int(plan.get("movable_removal_count") or 0),
         "person_target_count": int(plan.get("person_target_count") or 0),
-        # Generated image repairs are separate from the retained originals.
         "clean_plate_video_uri": None,
-        "generated_regions_present": bool((prepared_views or {}).get("generated_pixels_present")),
+        "generated_regions_present": False,
         "originals_retained": True,
         "source_geometry": None,
         "source_frames": source_geometry,
         "task_masks": task_masks,
-        "mask_view_plan": {"digest": mask_view_plan["digest"],
-                           "selected_frame_ids": mask_view_plan["binding"]["selected_frame_ids"]}
-                          if mask_view_plan else None,
-        "object_removal_frames": object_removal_frames,
-        "prepared_views": prepared_views,
         "removal_plan_uri": _stage_uri(ctx, REMOVAL_PLAN_FILENAME),
         "removal_manifest_uri": _stage_uri(ctx, REMOVAL_MANIFEST_FILENAME),
         "stage_manifest_uri": _stage_uri(ctx, STAGE_MANIFEST_FILENAME),
@@ -648,8 +462,6 @@ def run_clean_plate_stage(
         "source_frames": source_geometry,
         "input_video_path": str(input_video_path) if input_video_path else None,
         "task_masks": task_masks,
-        "object_removal_frames": object_removal_frames,
-        "prepared_views": prepared_views,
         "target_count": stage_manifest["target_count"],
         "movable_removal_count": stage_manifest["movable_removal_count"],
         "person_target_count": stage_manifest["person_target_count"],

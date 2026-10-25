@@ -2,12 +2,18 @@
 
 This package contains materialization, package assembly, provider adapters,
 privacy and geometry lanes, runtime support, launch gates, and WebApp sync. Two
-programs are active, the free beta's evaluated, recommended pilot and Arm
+programs are active, the free beta's job-first automation service and Arm
 Decision Proof v1; other lanes remain compatibility unless a recorded blocker in
 one of them requires their smallest reusable component.
 
-Beta work converges on invited teams' own policies evaluated on website site
-scenes for enough episodes to judge them. ADP work converges on one
+Beta work serves an agreed job brief, drafted from retained job video, and
+supportable delivery options. Assessment waits for retained video; reuse
+existing evidence and run the supported configurations or the smallest
+qualified test that resolves material uncertainty. Existing licensed Blueprint-managed
+execution and approved team-supplied endpoints remain valid. Preserve
+independent scoring and controlled observations. Commercial proposal selection,
+both-party agreement and reported outcomes cannot create scientific authority.
+ADP work converges on one
 partner-owned fixed-arm task, two frozen
 candidates, a qualified candidate MSER, complete condition-level receipts, a
 sealed prospective decision, and an exact held-out Physical Outcome Join.

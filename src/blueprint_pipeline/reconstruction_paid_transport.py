@@ -138,7 +138,6 @@ def prepare_reconstruction_paid_transport(
         "external_scene_isaac_canary",
     }
     scientific = operation in {
-        "website_mapanything",
         "pose_canary",
         "trainer_canary",
         "measurement_isaac_canary",

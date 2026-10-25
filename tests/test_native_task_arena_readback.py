@@ -807,3 +807,34 @@ def test_native_scenario_parameter_readback_uses_live_object_and_camera_state(ri
     assert report["parameters"][1]["absolute_error_native_unit"] == pytest.approx(
         0.01
     )
+
+
+def test_rigid_two_tool_readback_retains_separate_native_positions_and_contact_forces():
+    built = _built()
+    built.plan["task_kind"] = "rigid_pick_place"
+    built.plan["task_sample_binding"] = {"joint_ids": []}
+    built.plan["task_spec"] = {"task_kind": "rigid_pick_place", "interaction_affordance": {
+        "asset_root_from_scoring_frame": {"position_m": [0.0, 0.0, 0.0],
+                                          "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}}}
+    built.plan["articulation"]["non_support_scene_contact_body_paths"] = []
+    built.contact_sensor_names["task_support_contact"] = ("task_scene_contact",)
+    del built.contact_sensor_names["task_scene_contact"]
+    scene = built.env.unwrapped.scene
+    scene["robot"].data.body_names += ["left_tool", "right_tool", "right_finger_a", "right_finger_b"]
+    scene["robot"].data.body_pose_w[0] += [
+        [1, 2, 3, 0, 0, 0, 1], [4, 5, 6, 0, 0, 0, 1],
+        [4, 5.1, 6, 0, 0, 0, 1], [4, 4.9, 6, 0, 0, 0, 1]]
+    built.plan["robot"]["gripper_channels"] = [
+        {"name": "left", "tool_link": "left_tool", "contact_links": ["left_inner_finger", "right_inner_finger"],
+         "task_contact_sensor_instances": ["left_tool_contact"]},
+        {"name": "right", "tool_link": "right_tool", "contact_links": ["right_finger_a", "right_finger_b"],
+         "task_contact_sensor_instances": ["right_tool_contact"]}]
+    scene["left_tool_contact"] = SimpleNamespace(data=SimpleNamespace(force_matrix_w=[[[[0, 0, 0]]]]))
+    scene["right_tool_contact"] = SimpleNamespace(data=SimpleNamespace(force_matrix_w=[[[[0, 3, 4]]]]))
+    sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+    left, right = sample["tool_readback"]
+    assert left["tool_link_position_world_m"] == [1, 2, 3]
+    assert right["tool_link_position_world_m"] == [4, 5, 6]
+    assert [left["task_contact_peak_force_n"], right["task_contact_peak_force_n"]] == [0.0, 5.0]
+    assert right["contact_link_positions_world_m"]["right_finger_a"] == [4, 5.1, 6]
+    assert right["position_source"] == "native_declared_body_origins_not_calibrated_grasp_frames"

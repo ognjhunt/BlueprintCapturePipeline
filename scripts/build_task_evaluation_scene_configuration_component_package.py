@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-import hashlib
 import json
 import os
 import re
@@ -24,6 +23,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest, can
 from blueprint_pipeline.immutable_directory_publication import (
     publish_staged_immutable_directory,
 )
+from blueprint_pipeline.immutable_file_digest import sha256_file
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
     SCHEMA_VERSION,
     validate_scene_configuration_component_package,
@@ -37,11 +37,7 @@ _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return sha256_file(path)
 
 
 def _copy_source_tree(source: Path, destination: Path) -> None:

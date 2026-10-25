@@ -109,22 +109,27 @@ unknown allocator outcomes and missing/tampered worker output cannot establish
 that no episode occurred. Raw partial receipts remain available and cannot
 qualify a recommendation.
 
-## Qualification gap
+## Qualification and current proof boundary
 
-No site-qualified result or live team-policy success is created by this release.
-Current admissions keep `evidence_scope: "development_only"`, and result scoring
-keeps `claim_ceiling: "diagnostic_policy_execution"`.
+The original recovery release did not create site-qualified results or live
+team-policy success. Its development admissions and diagnostic result ceiling
+remain valid for those retained runs.
 
-The WebApp's future qualified-result contract requires the distinct
+The current qualified-result contract requires the distinct
 `site_task_simulation` claim ceiling and actual registration/fidelity receipt
 bindings in `scoring.site_task_qualification` (`capture_id`,
 `scene_revision_digest`, `registration_receipt_digest`,
-`fidelity_review_receipt_digest`, `evidence_scope: "simulation"`). This Pipeline
-does not manufacture those fields. Its website registration currently states
-that physical scale/registration are unproven; the canonical 3DGS registration
-producer qualifies appearance/frame alignment only. A complete measured
-site-task registration/fidelity producer and actual evidence remain prerequisites
-to a site-specific recommendation. Owner acceptance alone cannot supply them.
+`fidelity_review_receipt_digest`, `evidence_scope: "simulation"`). The
+[evidence-consuming producer](beta-site-task-simulation-qualification.md) now
+exists and binds actual independent/simulator measurements, frozen criteria and
+authorized review to the exact site/capture/scene/task/robot/interface. Missing
+or stale evidence preserves the diagnostic ceiling. Appearance/frame alignment
+alone does not prove physical scale, task dynamics or observation fidelity.
+The default DROID asset remains diagnostic without retained model-byte proof;
+the team's verified declared model supports the qualified path. Owner acceptance
+alone cannot supply measurements. See the
+[first-site/team runbook](runbooks/first-site-team-beta.md) for current onboarding
+and replacement capture requirements.
 
 ## Release order and verification
 

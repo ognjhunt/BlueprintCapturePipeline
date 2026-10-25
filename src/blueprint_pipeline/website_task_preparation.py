@@ -4,8 +4,8 @@ Steps 10-14 of the website design already exist as the Task Evaluation
 scene-configuration run: Content Agents/Astra replacement authoring, SimReady
 static and native Isaac qualification, scene assembly, configured-scene
 publication, and the Franka DROID controls. This module only compiles the
-website preparation (confirmed task, SAM 3.1 masks, MapAnything estimates,
-clean-plate removal manifest, Marble world) into that path's typed inputs.
+website preparation (confirmed task, SAM 3.1 masks, Atlas source geometry,
+clean-plate removal manifest, Atlas or Marble scene) into that path's typed inputs.
 Every scale here is estimated, or published for the identified product or its
 category; nothing is promoted to a physical measurement.
 """
@@ -31,7 +31,7 @@ from .external_scene_frame_registration import _axis_rotations, _sample, _trimme
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
-from .website_support_geometry import ground_on_observed_floor, support_under
+from .website_support_geometry import ground_on_observed_floor, same_support_surface, support_under
 
 
 class RegistrationRefusal(ValueError):
@@ -201,15 +201,28 @@ def _observed_declared_ground(source: np.ndarray, camera_to_world: np.ndarray, o
 
 
 def _anchor_prior(source_geometry: Mapping[str, Any], anchor: Mapping[str, Any]) -> tuple[float, np.ndarray]:
-    """The provider world is anchored at its first input view's camera, in the same OpenCV convention."""
-    frame = next((row for row in source_geometry["frames"] if row["frame_id"] == anchor.get("frame_id")), None)
-    if frame is None:
-        raise ValueError("website_registration_anchor_frame_missing")
+    """A rigid map from source metres to the provider world in metres, and the provider's metres per unit.
+
+    Marble's world is anchored at its first input view's camera, in the same
+    OpenCV convention. An Atlas world is aligned to the source pose by the
+    cameras both poses share (``source_world_alignment``).
+    """
     mpu = anchor.get("meters_per_unit")
     if isinstance(mpu, bool) or not isinstance(mpu, (int, float)) or not math.isfinite(mpu) or mpu <= 0:
         raise ValueError("website_base_scene_scale_invalid")
     if anchor.get("up_axis") not in _UP_INDEX:
         raise ValueError("website_registration_anchor_frame_invalid")
+    if anchor.get("kind") == "source_world_alignment":
+        transform = np.asarray(anchor.get("source_world_to_provider_m"), dtype=np.float64)
+        if (transform.shape != (4, 4) or not np.isfinite(transform).all()
+                or not np.allclose(transform[3], [0, 0, 0, 1])
+                or not np.allclose(transform[:3, :3] @ transform[:3, :3].T, np.eye(3), atol=1e-6)
+                or np.linalg.det(transform[:3, :3]) <= 0):
+            raise ValueError("website_registration_anchor_frame_invalid")
+        return float(mpu), transform
+    frame = next((row for row in source_geometry["frames"] if row["frame_id"] == anchor.get("frame_id")), None)
+    if frame is None:
+        raise ValueError("website_registration_anchor_frame_missing")
     return float(mpu), np.linalg.inv(np.asarray(frame["world_from_camera"], dtype=np.float64))
 
 
@@ -284,7 +297,10 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         mpu, camera_from_world = anchor_pose
         up = _UP_INDEX[anchor["up_axis"]]
         offset = anchor.get("ground_plane_offset_m")
-        floor = (None if offset is None else
+        # An Atlas world arrives levelled on its own floor at y = 0
+        # (atlas_world_levelling) and the alignment already carries the source
+        # into it; only a world anchored at its first camera is levelled here.
+        floor = (None if offset is None or anchor.get("kind") == "source_world_alignment" else
                  _observed_declared_ground(source, np.linalg.inv(camera_from_world), float(offset)))
         if floor is None:
             # No observed floor at the declared height: the camera frame is the only prior.
@@ -340,7 +356,7 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         same_pose = [row for row in better if same_hypothesis(row)]
         if same_pose:
             best = min(same_pose, key=lambda row: row[0])
-        anchor_report = {"kind": anchor.get("kind"), "frame_id": anchor["frame_id"], "roll_degrees": roll,
+        anchor_report = {"kind": anchor.get("kind"), "frame_id": anchor.get("frame_id"), "roll_degrees": roll,
                          "hypothesis_axis": "camera_optical" if floor is None else "declared_up",
                          "levelled_tilt_degrees": _rotation_degrees(level, np.eye(3)),
                          "rotation_deviation_degrees": _rotation_degrees(best[2], prior[1]),
@@ -607,15 +623,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     request_id, capture_id = str(task_context["request_id"]), str(task_context["capture_id"])
     if not _IDENTIFIER.fullmatch(capture_id) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", request_id):
         raise ValueError("website_identity_invalid")
-    development_seed = base_scene.get("mode") == "development_fixture_seed"
-    if development_seed:
-        from .website_development_test import enabled
-        if (not enabled(task_context["context_digest"])
-                or base_scene.get("reconstruction_blocker") != "website_reconstruction_failed"
-                or base_scene.get("provider") != "blueprint_authored_development_seed"):
-            raise ValueError("website_development_fixture_seed_not_authorized")
-    for path_key, digest_key in (("collision_mesh_path", "collision_mesh_digest"),) if development_seed else (
-            ("splat_path", "splat_digest"), ("collision_mesh_path", "collision_mesh_digest")):
+    for path_key, digest_key in (("splat_path", "splat_digest"), ("collision_mesh_path", "collision_mesh_digest")):
         if _sha256_file(Path(base_scene[path_key])) != base_scene[digest_key]:
             raise ValueError("website_base_scene_changed")
     up = _UP_INDEX[base_scene["up_axis"]]
@@ -637,8 +645,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                   "ground_plane_offset_m": base_scene.get("ground_plane_offset_m")}
     independent_object = False
     try:
-        if development_seed:
-            raise ValueError("website_reconstruction_failed")
         registration = register_source_to_runtime(source_geometry=source_geometry,
             collision_mesh_path=Path(base_scene["collision_mesh_path"]),
             anchor=anchor, focus_bounds=subject_target["estimated_visible_bounds"])
@@ -658,8 +664,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         blockers.append(str(exc))
         independent_object = True
         up, up_sign, declared_mpu = 2, 1, 1.0
-    # With browser video, use MapAnything's estimated metres to scale the
-    # generated world. A provider's declared factor is an estimate too, and
+    # With browser video, use the source geometry's estimated metres to scale
+    # the generated world. A provider's declared factor is an estimate too, and
     # the two must agree; neither is a physical measurement.
     mpu = 1.0 / registration["scale"] if declared_mpu is None else float(declared_mpu)
     if not independent_object and declared_mpu is not None and anchor is None and not 0.75 <= registration["scale"] * mpu <= 4.0 / 3.0:
@@ -675,7 +681,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     articulated = articulation_kind in {"prismatic", "revolute"}
     coverage = subject_target.get("authoring_coverage") if articulated else None
     coverage_bound = coverage is not None and coverage_matches(coverage, target=subject_target,
-                                                               source_geometry=source_geometry)
+                                                               source_geometry=source_geometry,
+                                                               task_context=task_context)
     body = coverage["body_bounds"] if coverage_bound and coverage["status"] == "complete" else None
     # Source-estimate units to simulator metres.
     scale = abs(float(np.linalg.det(runtime_to_sim[:3, :3] @ matrix[:3, :3]))) ** (1 / 3)
@@ -707,7 +714,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     ground = registration.get("ground_plane") or {}
     if (support is None and articulated and body is not None and not independent_object
             and anchor is not None and ground.get("checked") is True):
-        floor = float(ground["observed_floor_offset_m"]) / mpu
+        # A levelled Atlas world declares its collider's own floor; the
+        # footage's lowest band only checks it, a few centimetres low with
+        # depth noise (7 cm on the 2026-10-23 dishwasher).
+        floor = float(ground["declared_offset_m" if anchor.get("kind") == "source_world_alignment"
+                             else "observed_floor_offset_m"]) / mpu
         grounding = ground_on_observed_floor(collider, subject_min, subject_max, up=up, meters_per_unit=mpu,
                                              floor_height=floor if base_scene["up_axis"] == "-Y" else -floor,
                                              up_sign=up_sign)
@@ -776,7 +787,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                 meters_per_unit=mpu, up_sign=up_sign)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
-            elif destination_support["face_indices"] != support["face_indices"]:
+            elif not same_support_surface(destination_support, support):
                 blockers.append("task_distinct_destination_surface_binding_required")
             else:
                 position[up] = destination_support["top_runtime_units"]
@@ -1043,10 +1054,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         blockers.append("website_scene_processing_rights_required")
     request = {
         "schema_version": intake.REQUEST_SCHEMA, "submission_id": capture_id, "owner": owner,
-        "source": ({"kind": "mesh", "binding_id": base_scene["collision_binding_id"],
-                    "content_digest": base_scene["collision_mesh_digest"]} if development_seed else
-                   {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
-                    "content_digest": base_scene["splat_digest"]}),
+        "source": {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
+                   "content_digest": base_scene["splat_digest"]},
         # The preparation below binds the reconstructed collider and estimated
         # registration. This is not an owner-uploaded companion mesh or an
         # owner declaration of its coordinate frame.
@@ -1102,8 +1111,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "binding": {"task_context_digest": task_context["context_digest"], "task_masks_digest": task_masks["digest"],
                     "source_geometry_digest": source_geometry["digest"],
                     "removal_manifest_digest": canonical_digest(removal_manifest),
-                    **({"development_seed_mesh_digest": base_scene["collision_mesh_digest"]} if development_seed else
-                       {"splat_digest": base_scene["splat_digest"]}),
+                    "splat_digest": base_scene["splat_digest"],
                     "collision_mesh_digest": base_scene["collision_mesh_digest"],
                     "provider": base_scene.get("provider"), "operation_id": base_scene.get("operation_id")},
         "registration": registration, "coordinate_frame": {"declared_meters_per_unit": mpu,

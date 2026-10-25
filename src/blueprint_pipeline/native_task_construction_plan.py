@@ -836,12 +836,24 @@ def materialize_graph_articulated_construction_phase_plan(
     )
     subject_resets = (subject.get("reset_state") or {}).get("joint_positions")
     graph_resets = normalized_spec["joint_reset_positions"]
+    # Fixed joints are graph constraints, not native articulation DOFs. The
+    # scene compiler already binds the exact native reset names to graph IDs.
+    joint_paths = (plan.get("articulation") or {}).get("task_joint_prim_paths") or {}
+    expected_resets = {}
+    reset_tolerances = {}
+    for row in joints:
+        if row["joint_type"] == "fixed":
+            continue
+        joint_id = str(row["joint_id"])
+        native_name = str(joint_paths.get(joint_id) or joint_id).rsplit("/", 1)[-1]
+        expected_resets[native_name] = graph_resets[joint_id]
+        reset_tolerances[native_name] = normalized_spec["joint_reset_tolerances"][joint_id]
     if not isinstance(subject_resets, Mapping) or set(subject_resets) != set(
-        graph_resets
+        expected_resets
     ) or any(
         abs(float(subject_resets[joint_id]) - float(reset))
-        > float(normalized_spec["joint_reset_tolerances"][joint_id])
-        for joint_id, reset in graph_resets.items()
+        > float(reset_tolerances[joint_id])
+        for joint_id, reset in expected_resets.items()
     ):
         raise NativeTaskConstructionPlanError(
             ["native_articulated_graph_construction_subject_reset_mismatch"]

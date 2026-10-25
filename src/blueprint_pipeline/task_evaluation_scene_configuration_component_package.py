@@ -10,7 +10,6 @@ construction envelope and are never embedded in this platform package.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import Mapping
@@ -18,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .immutable_file_digest import sha256_file
 from .task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
 )
@@ -38,11 +38,7 @@ class TaskEvaluationSceneConfigurationComponentPackageError(ValueError):
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return sha256_file(path)
 
 
 def _relative_file(root: Path, value: Any) -> Path:

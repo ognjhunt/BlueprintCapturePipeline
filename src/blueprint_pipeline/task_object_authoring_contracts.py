@@ -191,9 +191,23 @@ def source_joint_constraints(configuration: Mapping) -> dict:
     if axis is not None:
         require(len(axis) == 3 and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in axis)
                 and math.isclose(sum(v*v for v in axis), 1., abs_tol=1e-6), "authoring_joint_axis_invalid")
+    from .task_object_required_motions import required_motions
+    construction = configuration.get("construction_constraints") or {}
+    parts = configuration.get("required_part_ids") or [r["part_id"] for r in configuration.get("required_parts") or []]
+    try:
+        motions = required_motions(construction.get("required_motions", []), known_parts=parts or None)
+    except ValueError as exc:
+        raise AuthoringContractError(str(exc)) from exc
+    require(not motions or kind in {"revolute", "prismatic"}, "authoring_task_motion_requires_articulated_configuration")
+    required_parts = {part for motion in motions for part in motion["part_ids"]}
+    require(not required_parts & set(construction.get("fixed_parts") or []), "authoring_task_motion_marked_fixed")
+    primary = set(construction.get("task_part_components") or [])
+    require(all(not primary.intersection(motion["part_ids"]) or motion["joint_type"] == kind for motion in motions),
+            "authoring_primary_task_motion_type_changed")
     return {"physical_joint_axis_asset_frame": axis, "axis_basis": basis,
             "pull_direction_asset_frame": mechanism.get("opening_axis_asset_frame"),
-            "pivot_asset_m": mechanism.get("pivot_asset_m"), "travel_authority": mechanism.get("travel_authority")}
+            "pivot_asset_m": mechanism.get("pivot_asset_m"), "travel_authority": mechanism.get("travel_authority"),
+            **({"required_motions": motions} if motions else {})}
 
 
 def verify_construction_request(request: Mapping) -> None:
@@ -244,6 +258,14 @@ def artisan_prompt(request: Mapping) -> str:
             "simulation and repair loop. Rigid objects have exactly one body and no joints. "
             "Build an articulated assembly as one model, preserving the admitted passive and "
             "coupled joints, hollow interiors, handle access and full required travel. "
+            "Read the entire task in construction_constraints. Every joint_constraints.required_motions "
+            "entry must have a usable joint of its requested type carrying all its part_ids, including "
+            "secondary task parts. Distinct independent motions need distinct joints. Fixed child "
+            "features may share their carrier's motion; a decorative fixed mesh does not satisfy a "
+            "requested motion. Keep these parts movable even when only the primary joint is the "
+            "current task scorer's target. Label unmeasured secondary axes and travel as estimates. "
+            "Legacy required_parts sizing/mass roles such as fixed_interior do not override required_motions; "
+            "construction_constraints.fixed_parts excludes the parts explicitly required to move. "
             "All dimensions below are in metres. Match the nominal dimensions within "
             "maximum_export_error_m; uncertainty is source uncertainty, not permission to "
             "change dimensions. Use the supplied origin and axes. Measurement authority, "

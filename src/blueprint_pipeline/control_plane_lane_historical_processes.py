@@ -345,10 +345,10 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
                 channels.add('fd')
         after_names = scan.names(descriptors, 16384)
         # A failed FD observation alone is not membership or process-exit proof.
-        # Corroborate disappearance on the same retained FD directory, then run
-        # every final process/view check before discarding this entire pass.
-        _require(missing_descriptor is None or missing_descriptor not in after_names)
-        descriptor_census_changed = after_names != names
+        # Whether its number is gone or was reused by a busy process, this scan
+        # stopped there, so it can only discard the pass after every final
+        # process/view check. A fresh complete stable census must still clear.
+        descriptor_census_changed = after_names != names or missing_descriptor is not None
         if descriptor_census_changed:
             # An observed reference is terminal even when descriptors churn.
             # Otherwise this incomplete observation can only start a fresh

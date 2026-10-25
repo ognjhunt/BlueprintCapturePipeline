@@ -77,6 +77,23 @@ def _fingerprint(value: Mapping[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(canonical_json(value).encode('utf-8')).hexdigest()}"
 
 
+def _artifact_body(value: Mapping[str, Any], digest_field: str) -> str:
+    return canonical_json({key: child for key, child in value.items() if key != digest_field})
+
+
+def _decision_transport(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Add byte-preserving verification data without rewriting native records."""
+    result = dict(value)
+    result["pipeline_task_decision_canonical_json"] = _artifact_body(
+        result["pipeline_task_decision"], "decision_digest"
+    )
+    approved = result.get("approved_task_definition")
+    result["approved_task_definition_canonical_json"] = (
+        _artifact_body(approved, "approved_task_digest") if isinstance(approved, Mapping) else None
+    )
+    return result
+
+
 def publish_task_candidate_discovery(
     *,
     state_root: str | Path,
@@ -172,6 +189,11 @@ def build_task_discovery_webapp_publication(
         "intake_id": expected_intake_id,
         "discovery_digest": verified["discovery_digest"],
         "pipeline_task_discovery": verified,
+        "pipeline_task_discovery_canonical_json": _artifact_body(verified, "discovery_digest"),
+        "pipeline_task_candidate_canonical_json": {
+            candidate["candidate_digest"]: _artifact_body(candidate, "candidate_digest")
+            for candidate in verified["task_candidates"]
+        },
         "proof_boundary": {
             "candidate_is_customer_intent": False,
             "decision_evidence_request_compiled": False,
@@ -363,7 +385,7 @@ def process_task_candidate_decision_submission(
                 raise TaskCandidateControlPlaneError(
                     "command_request_id_idempotency_conflict", status_code=409
                 )
-            return {**existing, "already_exists": True}
+            return _decision_transport({**existing, "already_exists": True})
 
         state = _read_mapping(state_path)
         if not state:
@@ -457,7 +479,7 @@ def process_task_candidate_decision_submission(
                 "proof_boundary": result["proof_boundary"],
             },
         )
-    return result
+    return _decision_transport(result)
 
 
 def load_task_candidate_control_plane_state(
@@ -484,4 +506,4 @@ def load_latest_task_candidate_decision_result(
     )
     if not result:
         raise TaskCandidateControlPlaneError("task_decision_result_missing", status_code=500)
-    return result
+    return _decision_transport(result)

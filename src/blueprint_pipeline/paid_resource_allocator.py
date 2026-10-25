@@ -243,6 +243,7 @@ from .adp009d_policy_runtime_smoke_bundle import build_policy_runtime_smoke_bund
 from .articulated_native_diagnostic_bundle import (
     build_articulated_native_diagnostic_bundle,
 )
+from . import task_evaluation_scene_configuration_native_continuation as native_continuation
 from .adp009d_physics_backend_comparison import (
     build_backend_profile,
     validate_newton_canary_admission,
@@ -731,52 +732,91 @@ def _current_remote_branch_commit(branch: str) -> str:
     return commit
 
 
-def run_sponsored_website_geometry(*, input_manifest: Path, output_root: Path,
-                                   task_context: Mapping[str, Any]) -> dict[str, Any]:
-    """Use the existing GPU admission/worker from the normal website controller."""
-    from .website_geometry_dispatch import dispatch_geometry
-    commit, _, _ = _current_checkout_source_state()
-    blockers, _ = _source_checkout_blockers(commit)
-    if blockers:
-        raise ValueError("website_mapanything_release_not_admitted:" + ",".join(blockers))
-    return dispatch_geometry(input_manifest=input_manifest, output_root=output_root,
-        task_context=task_context, source_commit=commit, allocate=_run_reconstruction_gpu_canary)
+def _remote_pull_request_head_has_commit(commit: str) -> bool:
+    """Whether origin serves ``commit`` as a pull request's head.
+
+    Merging deletes the experiment branch, but GitHub keeps every
+    ``refs/pull/<n>/head`` and refuses pushes to it.
+    """
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-remote", "origin", "refs/pull/*/head"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and any(
+        len(fields) == 2 and fields[0].lower() == commit and re.fullmatch(r"refs/pull/[0-9]+/head", fields[1])
+        for fields in (line.split() for line in result.stdout.splitlines())
+    )
 
 
-def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
-    """Canonical allocator entry retaining the provider operation across restarts."""
-    from .provider_preview import WorldLabsPreviewProvider, _worldlabs_api_key
-    from .website_task_context import reserve_website_preparation_spend
-    from .website_worldlabs import (MAX_GENERATION_COST_USD, validate_website_prepared_views,
-                                    website_reconstruction_retry_state)
+def run_sponsored_website_atlas_pose(*, output_root: Path, capture_id: str, task_context: Mapping[str, Any],
+                                     experimental: bool = False,
+                                     **options: Any) -> dict[str, Any]:
+    """Canonical allocator entry for one admitted Atlas images2PosedRGBD operation.
 
-    _, binding = validate_website_prepared_views(descriptor=descriptor, capture_root=capture_root)
-    root = capture_root / "pipeline" / "website_reconstruction"
-    provider = WorldLabsPreviewProvider()
-    binding, retry_digest, retained_result, attempt = website_reconstruction_retry_state(
-        descriptor=descriptor, capture_root=capture_root, base_binding=binding, provider=provider)
-    if retained_result is not None:
-        return retained_result
-    commit, _, _ = _current_checkout_source_state()
-    blockers, _ = _source_checkout_blockers(commit)
-    if blockers:
-        raise ValueError("website_reconstruction_release_not_admitted:" + ",".join(blockers))
-    if not _worldlabs_api_key():
-        raise ValueError("website_reconstruction_api_key_missing")
-    retained_path = root / ("controller_admission.json" if attempt == 0 else f"controller_admission_retry_{attempt}.json")
-    retained = json.loads(retained_path.read_text()) if retained_path.is_file() else None
-    admission, grant = reserve_website_preparation_spend(
-        task_context=descriptor["metadata"]["site_task_context"], binding_digest=canonical_digest(binding),
-        maximum_cost_usd=MAX_GENERATION_COST_USD, request_count=1,
-        resource_class="provider_reconstruction_api", provider="world_labs", retained_admission=retained)
-    admission = {**admission, "source_commit": commit}
-    root.mkdir(parents=True, exist_ok=True)
-    write_json(retained_path, admission)
-    prepared = {**descriptor, "metadata": {**descriptor["metadata"],
-        "website_reconstruction_admission": admission,
-        **({"website_reconstruction_retry_digest": retry_digest} if retry_digest else {})}}
-    return provider.submit(descriptor=prepared, capture_root=capture_root,
-                           provider_adapter_input={"paid_resource_admission_grant": grant})
+    Only an explicit controller decision calls this; see website_atlas_pose.
+    """
+    from .website_atlas_pose import run_admitted_atlas_pose
+
+    def release_blockers() -> tuple[str, list[str]]:
+        commit, _, _ = _current_checkout_source_state()
+        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
+
+    return run_admitted_atlas_pose(output_root=output_root, capture_id=capture_id, task_context=task_context,
+                                   release_blockers=release_blockers, **options)
+
+
+def run_sponsored_website_atlas_task(*, experimental: bool = False, **options: Any) -> dict[str, Any]:
+    """Canonical allocator for Atlas view/edit/mesh tasks under the same source cap."""
+    from .website_atlas_tasks import run_admitted_atlas_task
+
+    def release_blockers() -> tuple[str, list[str]]:
+        commit, _, _ = _current_checkout_source_state()
+        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
+
+    return run_admitted_atlas_task(release_blockers=release_blockers, **options)
+
+
+def run_sponsored_website_atlas_automation(*, experimental: bool = False, **options: Any) -> dict[str, Any]:
+    """The existing source gate protects SAM, editor and Atlas automation alike."""
+    from .atlas_scene_automation import run_automation
+
+    def release_blockers():
+        commit, _, _ = _current_checkout_source_state()
+        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
+
+    from .paid_resource_admission import PaidResourceAdmissionBlocked
+    try:
+        return run_automation(release_blockers=release_blockers,
+            task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
+            planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw),
+            pose_runner=lambda **kw: run_sponsored_website_atlas_pose(experimental=experimental, **kw), **options)
+    except PaidResourceAdmissionBlocked as exc:
+        from .gcp_monthly_budget_admission import stale_report_wait
+        waiting = (stale_report_wait() if exc.blockers == ["gcp_monthly_budget_admission_blocked"] else None)
+        if waiting is None:
+            raise
+        # Completed stages and their reservation bindings remain in the same
+        # output root. The next controller tick must pass admission again.
+        return {"status": "processing", "stage": "paid_admission_wait", **waiting}
+
+
+def run_sponsored_website_atlas_plan(*, experimental: bool = False, **options: Any) -> dict[str, Any]:
+    """Source review uses the same allocator release gate and WebApp test cap."""
+    from .atlas_scene_planner import review_survey
+
+    def release_blockers() -> tuple[str, list[str]]:
+        commit, _, _ = _current_checkout_source_state()
+        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
+
+    return review_survey(release_blockers=release_blockers, **options)
 
 
 def _source_checkout_blockers(
@@ -801,7 +841,10 @@ def _source_checkout_blockers(
         if not branch.startswith("codex/"):
             blockers.append("gpu_canary_experimental_branch_not_codex_namespaced")
         if not remote_branch_commit:
-            blockers.append("gpu_canary_remote_experimental_branch_commit_unavailable")
+            # A merge mid-run deleted the branch three times on 2026-10-24 and
+            # stopped live Atlas runs. Its pushed head stays served as a PR ref.
+            if not (branch.startswith("codex/") and _remote_pull_request_head_has_commit(checkout_commit)):
+                blockers.append("gpu_canary_remote_experimental_branch_commit_unavailable")
         elif checkout_commit != remote_branch_commit:
             blockers.append("gpu_canary_checkout_not_pushed_experimental_branch")
     else:
@@ -1509,7 +1552,7 @@ def _run_reconstruction_gpu_canary(
         admission.get("execution_adapter_id") or ""
     ) in WINDOWS_TRAINER_ADAPTER_IDS:
         return {"status": "blocked", "blockers": ["aws_provider_integration_removed"], "provider_mutations_performed": 0}
-    elif operation in {"pose_canary", "trainer_canary", "website_mapanything"}:
+    elif operation in {"pose_canary", "trainer_canary"}:
         result = run_reconstruction_vast_operation(
             bound_request=_load(args.bound_request_out),
             bundle_receipt=operation_bundle_receipt,
@@ -1811,6 +1854,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
+    native_continuation.add_allocator_arguments(gpu)
     gpu.add_argument(
         "--adp009d-articulated-diagnostic-asset",
         help=(
@@ -1822,6 +1866,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument(
         "--adp009d-articulated-diagnostic-request",
         help="Frozen articulated_native_diagnostic_request.v1 JSON.",
+    )
+    gpu.add_argument(
+        "--adp009d-articulated-diagnostic-static-receipt",
+        help="Exact static qualification receipt required by an all-motion diagnostic request.",
     )
     gpu.add_argument(
         "--adp009d-physics-backend",
@@ -2177,19 +2225,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
     if args.command == "provider-reconstruction":
-        if args.provider == "world_labs":
-            from .website_worldlabs_allocator import run_website_worldlabs
-            result = run_website_worldlabs(args, load_json=_load, source_checkout_blockers=_source_checkout_blockers,
-                                           admission_issuer=require_paid_resource_admission)
-            success = result.get("status") in {"dry_run_ready", "submitted"}
-        else:
-            result = run_teleport_provider(
-                args,
-                load_json=_load,
-                source_checkout_blockers=_source_checkout_blockers,
-                credential_loader=load_teleport_credentials,
-            )
-            success = result.get("status") in {"dry_run_ready", "succeeded_unqualified"}
+        result = run_teleport_provider(
+            args,
+            load_json=_load,
+            source_checkout_blockers=_source_checkout_blockers,
+            credential_loader=load_teleport_credentials,
+        )
+        success = result.get("status") in {"dry_run_ready", "succeeded_unqualified"}
     elif args.command == "cpu-build":
         if args.execution_plane == "local":
             missing = [
@@ -5700,23 +5742,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == ADP009D_NATIVE_MICROCHECK_PROBE_KIND:
+            native_continuation_requested = bool(args.adp009d_native_continuation_inputs)
             policy_runtime_smoke_requested = bool(
                 args.adp009d_policy_runtime_smoke
             )
             articulated_native_requested = bool(
                 args.adp009d_articulated_diagnostic_asset
                 or args.adp009d_articulated_diagnostic_request
+                or args.adp009d_articulated_diagnostic_static_receipt
             )
             missing = [
                 name
                 for name in (
                     ("adp_job_dir",)
-                    if policy_runtime_smoke_requested
+                    if policy_runtime_smoke_requested or native_continuation_requested
                     else ("adp009d_harness_manifest", "adp_job_dir")
                 )
                 if not getattr(args, name, None)
             ]
-            if policy_runtime_smoke_requested:
+            if native_continuation_requested:
+                pass
+            elif policy_runtime_smoke_requested:
                 pass
             elif articulated_native_requested:
                 missing.extend(
@@ -5755,6 +5801,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     bool(args.adp009d_diagnostic_only),
                 )
             )
+            if native_continuation_requested and native_continuation.allocator_mode_conflict(args):
+                blockers.append("adp009d_native_continuation_mode_conflict")
             if execution_modes == 0:
                 blockers.append("adp009d_execution_mode_missing")
             elif args.adp009d_diagnostic_only and execution_modes != 1:
@@ -5865,7 +5913,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared_bundle = None
             if not blockers:
                 try:
-                    if policy_runtime_smoke_requested:
+                    if native_continuation_requested:
+                        prepared_bundle = native_continuation.build_native_continuation_bundle(
+                            job_dir=Path(args.adp_job_dir) / "bundle",
+                            inputs_path=args.adp009d_native_continuation_inputs,
+                            implementation_commit=control_identity["orchestrator_source_commit"],
+                        )
+                    elif policy_runtime_smoke_requested:
                         prepared_bundle = build_policy_runtime_smoke_bundle(
                             job_dir=Path(args.adp_job_dir) / "bundle",
                             candidate_id=next(iter(selected_candidates)),
@@ -5880,6 +5934,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             request_path=args.adp009d_articulated_diagnostic_request,
                             harness_manifest_path=args.adp009d_harness_manifest,
                             implementation_commit=control_identity["orchestrator_source_commit"],
+                            static_qualification_receipt_path=args.adp009d_articulated_diagnostic_static_receipt,
                         )
                     else:
                         prepared_bundle = build_native_microcheck_bundle(
@@ -5921,6 +5976,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "controls_requested": bool(args.adp009d_controls),
                 "diagnostic_only_requested": bool(args.adp009d_diagnostic_only),
                 "articulated_native_diagnostic_requested": articulated_native_requested,
+                "native_continuation_requested": native_continuation_requested,
                 "diagnostic_kind": (
                     prepared_bundle.get("diagnostic_kind") if prepared_bundle else None
                 ),
@@ -5978,7 +6034,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                     "retry_cap": 0,
                     "authority": "user_authorized_bounded_gpu_compute_in_goal_scope",
-                    "private_data_uploaded": False,
+                    "private_data_uploaded": native_continuation_requested,
                     "candidate_policy_queried": policy_runtime_smoke_requested,
                     "physical_outcome_values_uploaded": False,
                     "explicit_concurrent_gpu_authority_bound": bool(

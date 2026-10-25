@@ -323,8 +323,10 @@ def test_automatic_aws_billing_removed_without_starving_other_providers(tmp_path
     )
     assert result["status"] == "reconciled"
     assert result["covered_provider_ids"] == ["digitalocean", "runpod", "vast"]
-    assert result["uncovered_provider_ids"] == ["aws"]
-    assert result["optional_provider_failures"] == {"aws": AWS_BILLING_UNAVAILABLE_REASON}
+    assert result["uncovered_provider_ids"] == ["aws", "gcp"]
+    assert result["optional_provider_failures"] == {
+        "aws": AWS_BILLING_UNAVAILABLE_REASON, "gcp": "gcp_billing_report_unconfigured",
+    }
     assert "aws" not in json.loads(export.read_text())["provider_totals_usd"]
     assert not any("amazonaws.com" in url for url, _header in transport.requests)
     receipt = json.loads(Path(result["source_receipt_path"]).read_text())
@@ -381,10 +383,11 @@ def test_optional_digitalocean_failure_does_not_block_vast_export(
 
     assert result["status"] == "reconciled"
     assert result["covered_provider_ids"] == ["runpod", "vast"]
-    assert result["uncovered_provider_ids"] == ["aws", "digitalocean"]
+    assert result["uncovered_provider_ids"] == ["aws", "digitalocean", "gcp"]
     assert result["optional_provider_failures"] == {
         "digitalocean": "provider_billing_request_failed",
         "aws": AWS_BILLING_UNAVAILABLE_REASON,
+        "gcp": "gcp_billing_report_unconfigured",
     }
     assert "vast" in json.loads(export.read_text())["provider_totals_usd"]
 

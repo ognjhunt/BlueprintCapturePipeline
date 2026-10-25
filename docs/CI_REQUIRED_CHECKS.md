@@ -13,6 +13,11 @@ hosted diagnostics or claim-specific release evidence. They remain visible and
 must be green when their claim or promotion scope requires them, but they are
 not blanket merge gates for every ordinary PR.
 
+The sentinels include the whole-repository paid-resource allocator
+verification and the module line-budget governance policy. `ci.yml` runs those
+scripts only on push to `main`, where a failure blocks the signed deploy
+artifact after merge, so the required PR gate checks them first.
+
 `python -m blueprint_pipeline.impacted_test_selection` is the shared selector
 and runner. Its local build-loop default is a hard 120-second wall-time limit.
 CI runs the same plan
@@ -27,7 +32,7 @@ Canonical Pipeline launch evidence uses Python `3.12`. The source of truth is
 `docs/CI_PYTHON_INTERPRETER_MATRIX.md`, and enforced by
 `scripts/validate_python_interpreter_matrix.py`. The required compatibility
 workflow installs the frozen lock and runs the declared bounded suite on Python
-`3.10`, `3.11`, and `3.12`. Compatibility output from `3.10` and `3.11` is not
+`3.11` and `3.12`. Compatibility output from `3.11` is not
 canonical launch/deploy proof. Python `3.13` output is non-canonical and must be
 rerun under Python `3.12` before it can support launch claims.
 

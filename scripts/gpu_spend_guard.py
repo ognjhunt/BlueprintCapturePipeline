@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import shlex
 import stat
 import subprocess
@@ -183,6 +184,8 @@ class GpuInstance:
     live: bool
     cost_per_hr: float = 0.0
     age_seconds: float | None = None
+    cleanup_authorized: bool = True
+    cost_rate_known: bool = True
 
 
 def _parse_runpod_pod(pod: Mapping[str, Any], *, now: float) -> GpuInstance:
@@ -298,9 +301,11 @@ def _parse_cloud_vm(resource: Mapping[str, Any], *, provider: str, now: float) -
         state=status or "unknown",
         booted=booted,
         # Stopped VMs retain billable disks and remain inventory until deleted.
-        live=status not in terminal,
+        live=(status not in terminal or provider == 'gcp' and resource.get('attached_disk_count', 0) > 0),
         cost_per_hr=_coerce_float(resource.get("cost_per_hour")) or 0.0,
         age_seconds=max(0.0, now - started) if started is not None else None,
+        cleanup_authorized=resource.get('cleanup_authorized', True) is True,
+        cost_rate_known=_coerce_float(resource.get('cost_per_hour')) is not None,
     )
 
 
@@ -335,6 +340,12 @@ def collect_instances(
 
 def total_burn_per_hour(instances: Iterable[GpuInstance]) -> float:
     return sum(i.cost_per_hr for i in instances if i.live)
+
+
+def reported_burn_per_hour(instances: Sequence[GpuInstance]) -> float | None:
+    if any(inst.live and not inst.cost_rate_known for inst in instances):
+        return None
+    return round(total_burn_per_hour(instances), 4)
 
 
 def _read_json_mapping(path: Path) -> tuple[dict[str, Any], str | None]:
@@ -388,6 +399,14 @@ def update_spend_ledger(
     so a scheduled timer can enforce aggregate spend without provider-specific
     billing exports.
     """
+    if any(inst.live and not inst.cost_rate_known for inst in instances):
+        return {
+            "schema_version": SPEND_LEDGER_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["spend_ledger_live_resource_cost_rate_unknown"],
+            "ledger_path": str(ledger_path),
+            "prior_state_preserved": True,
+        }
     observed_at = _now() if now is None else float(now)
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = ledger_path.with_name(f".{ledger_path.name}.lock")
@@ -494,6 +513,8 @@ def build_fleet_budget_guard(
     live_count = sum(1 for inst in instances if inst.live)
     burn = total_burn_per_hour(instances)
     blockers: list[str] = []
+    if any(inst.live and not inst.cost_rate_known for inst in instances):
+        blockers.append('fleet_live_resource_cost_rate_unknown')
     if max_live_instances is not None and live_count > max_live_instances:
         blockers.append("fleet_live_gpu_instance_limit_exceeded")
     if max_burn_usd_per_hour is not None and burn > max_burn_usd_per_hour:
@@ -527,7 +548,7 @@ def build_fleet_budget_guard(
         "schema_version": "gpu_fleet_budget_guard.v1",
         "status": "passed" if not blockers else "blocked",
         "live_instance_count": live_count,
-        "total_burn_per_hour_usd": round(burn, 4),
+        "total_burn_per_hour_usd": reported_burn_per_hour(instances),
         "max_live_instances": max_live_instances,
         "max_burn_usd_per_hour": max_burn_usd_per_hour,
         "daily_spend_usd": daily_spend,
@@ -672,7 +693,10 @@ def cloud_provider_configured(provider: str) -> bool:
     try:
         from blueprint_pipeline.gpu_render_providers import get_render_provider
 
-        availability = get_render_provider(provider).available()
+        adapter = get_render_provider(provider)
+        if provider == 'gcp':
+            return adapter.inventory_configured()
+        availability = adapter.available()
     except Exception:  # noqa: BLE001 - configuration uncertainty is false
         return False
     return availability.get("available") is True
@@ -683,7 +707,9 @@ def fetch_cloud_vm_instances(provider: str, *, timeout: int = 30) -> list[dict[s
     del timeout  # provider adapters own their bounded per-call timeouts
     from blueprint_pipeline.gpu_render_providers import get_render_provider
 
-    inventory = get_render_provider(provider).billable_inventory(name_prefix="blueprint")
+    adapter = get_render_provider(provider)
+    inventory = (adapter.project_inventory() if provider == 'gcp'
+                 else adapter.billable_inventory(name_prefix="blueprint"))
     if inventory.get("api_confirmed") is not True:
         raise ProviderInventoryError(provider, int(inventory.get("http") or 0))
     rows = inventory.get("resources")
@@ -1456,7 +1482,12 @@ def _task_evaluation_watchdog_owned_ids(
                     or value.get("provider_mutation_trigger") != "hard_deadline_only"
                     or value.get("watchdog_out_dir") != str(path.parent.resolve())
                     or not (type(deadline) is int or type(deadline) is float) or not now < deadline < now + 86400
-                    or not isinstance(prefix, str) or not prefix.startswith("blueprint-task-evaluation-")
+                    or not isinstance(prefix, str)
+                    or not (prefix.startswith("blueprint-task-evaluation-")
+                            or prefix.startswith("blueprint-adp009d-")
+                            or prefix == "blueprint-native-task-policy-canary-"
+                            or (prefix.startswith("blueprint-native-task-policy-canary-")
+                                and re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", prefix)))
                     or value.get("name_prefix") != prefix
                     or (path.parent / "groot_oscar_runpod_canary_watchdog_cancel.json").exists()):
                 continue
@@ -1602,6 +1633,8 @@ def is_reapable(
 ) -> bool:
     """True only for unprotected live allocations past their orphan TTL."""
     if inst.id in protected_ids:
+        return False
+    if not inst.cleanup_authorized:
         return False
     if not inst.live:
         return False
@@ -1770,6 +1803,7 @@ def build_report(
             f"{'PROVIDER':8} {'ID':16} {'NAME':22} {'AGE':>7} {'STATE':9} {'$/HR':>7}"
         )
         for inst in live:
+            cost = f"{inst.cost_per_hr:7.3f}" if inst.cost_rate_known else "unknown"
             if inst.id in serve_pod_ids:
                 owned = " [warm-serve worker (expected)]"
             elif inst.id in protected_ids:
@@ -1779,10 +1813,13 @@ def build_report(
             lines.append(
                 f"{inst.provider:8} {inst.id:16.16} {inst.name:22.22} "
                 f"{_fmt_age(inst.age_seconds):>7} {inst.state:9} "
-                f"{inst.cost_per_hr:7.3f}{owned}"
+                f"{cost}{owned}"
             )
     burn = total_burn_per_hour(instances)
-    lines.append(f"Total burn estimate: ${burn:.3f}/hr (${burn * 24:.2f}/day)")
+    if reported_burn_per_hour(instances) is None:
+        lines.append(f"Total burn estimate: unknown (known-rate subtotal ${burn:.3f}/hr)")
+    else:
+        lines.append(f"Total burn estimate: ${burn:.3f}/hr (${burn * 24:.2f}/day)")
     budget = dict(fleet_budget) if isinstance(fleet_budget, Mapping) else None
     if budget:
         lines.append(
@@ -1898,6 +1935,8 @@ def build_json_report(
         if row.get("status") != "terminated"
     ]
     blockers = [*inventory_blockers, *billing_blockers, *reap_blockers]
+    if reported_burn_per_hour(instances) is None:
+        blockers.append("fleet_live_resource_cost_rate_unknown")
     admission = (
         dict(spend_admission_lock)
         if isinstance(spend_admission_lock, Mapping)
@@ -1919,7 +1958,7 @@ def build_json_report(
         else None,
         "spend_admission_lock": admission,
         "live_instance_count": len(live),
-        "total_burn_per_hour_usd": round(total_burn_per_hour(instances), 4),
+        "total_burn_per_hour_usd": reported_burn_per_hour(instances),
         # ``status`` describes whether the fleet guard itself encountered a
         # blocker.  It is deliberately not a synonym for provider-zero: a
         # healthy, within-budget live allocation must remain visible as not
@@ -1934,7 +1973,7 @@ def build_json_report(
                 for result in required_inventory_rows
             ),
             "global_live_instance_count": len(live),
-            "global_total_burn_per_hour_usd": round(total_burn_per_hour(instances), 4),
+            "global_total_burn_per_hour_usd": reported_burn_per_hour(instances),
             "blockers": provider_zero_blockers,
             "claim_boundary": (
                 "Provider-zero is verified only when every required provider "
@@ -1961,7 +2000,9 @@ def build_json_report(
                 "live": inst.live,
                 "booted": inst.booted,
                 "age_seconds": inst.age_seconds,
-                "cost_per_hr_usd": inst.cost_per_hr,
+                "cost_per_hr_usd": inst.cost_per_hr if inst.cost_rate_known else None,
+                "cost_rate_known": inst.cost_rate_known,
+                "cleanup_authorized": inst.cleanup_authorized,
                 "protected": inst.id in protected_ids,
                 "reap_candidate": inst.id in candidate_ids,
                 "reap_candidate_reason": reap_candidate_reason(
@@ -2119,6 +2160,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+
+    # This project-scoped controller writes its own refusal/receipt. Its budget
+    # cannot silently replace the unrelated providers' fleet allowance.
+    try:
+        from blueprint_pipeline.gcp_monthly_budget_guard import run_configured_guard
+
+        project_budget = run_configured_guard()
+        if project_budget is not None:
+            print("GCP monthly budget: " + ("admitted" if project_budget["admission_allowed"] else "blocked"), file=sys.stderr)
+    except Exception as exc:
+        # The project's admission report expires closed if configuration breaks.
+        # Keep the existing orphan/invoice checks running for other providers.
+        print(f"GCP monthly budget controller failed: {type(exc).__name__}", file=sys.stderr)
 
     secrets_dir = Path(
         str(os.getenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR") or SECRETS_DIR)

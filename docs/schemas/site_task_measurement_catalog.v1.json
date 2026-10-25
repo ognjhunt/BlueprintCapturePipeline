@@ -1,0 +1,246 @@
+{
+  "families": [
+    {
+      "checks": [
+        {
+          "dimension": "scale",
+          "id": "pick_place.scale.lengths",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "pick_to_place_distance",
+            "reference_sheet_long_edge"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "registration",
+          "id": "pick_place.registration.surface_heights",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "pick_surface_height",
+            "place_surface_height"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "collision",
+          "id": "pick_place.collision.clearances",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "pick_front_clearance",
+            "pick_overhead_clearance"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "task_state",
+          "id": "pick_place.task_state.object_size",
+          "minimum_sample_count": 3,
+          "sample_ids": [
+            "object_length",
+            "object_width",
+            "object_height"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "observation",
+          "id": "pick_place.observation.visible_lengths",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "reference_sheet_long_edge",
+            "object_length"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "task_dynamics",
+          "id": "pick_place.task_dynamics.object_mass",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "object_mass"
+          ],
+          "unit": "kg"
+        }
+      ],
+      "family": "rigid_pick_place",
+      "readings": [
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "pick_surface_height",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "place_surface_height",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "pick_to_place_distance",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "object_length",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "object_width",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "object_height",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "pick_front_clearance",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "pick_overhead_clearance",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "mass",
+          "sample_id": "object_mass",
+          "unit": "kg"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "reference_sheet_long_edge",
+          "unit": "m"
+        }
+      ]
+    },
+    {
+      "checks": [
+        {
+          "dimension": "scale",
+          "id": "open_close.scale.lengths",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "front_width",
+            "reference_sheet_long_edge"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "registration",
+          "id": "open_close.registration.handle_height",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "handle_height"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "collision",
+          "id": "open_close.collision.open_clearance",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "front_clearance_open"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "task_state",
+          "id": "open_close.task_state.opening",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "opening_travel",
+            "opening_chord",
+            "handle_offset_from_hinge"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "observation",
+          "id": "open_close.observation.visible_lengths",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "reference_sheet_long_edge",
+            "front_width"
+          ],
+          "unit": "m"
+        },
+        {
+          "dimension": "task_dynamics",
+          "id": "open_close.task_dynamics.opening_force",
+          "minimum_sample_count": 1,
+          "sample_ids": [
+            "opening_force"
+          ],
+          "unit": "N"
+        }
+      ],
+      "family": "articulated_open_close",
+      "readings": [
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "handle_height",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "front_width",
+          "unit": "m"
+        },
+        {
+          "articulation": "sliding",
+          "quantity": "length",
+          "sample_id": "opening_travel",
+          "unit": "m"
+        },
+        {
+          "articulation": "hinged",
+          "quantity": "length",
+          "sample_id": "opening_chord",
+          "unit": "m"
+        },
+        {
+          "articulation": "hinged",
+          "quantity": "length",
+          "sample_id": "handle_offset_from_hinge",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "front_clearance_open",
+          "unit": "m"
+        },
+        {
+          "articulation": null,
+          "quantity": "force",
+          "sample_id": "opening_force",
+          "unit": "N"
+        },
+        {
+          "articulation": null,
+          "quantity": "length",
+          "sample_id": "reference_sheet_long_edge",
+          "unit": "m"
+        }
+      ]
+    }
+  ],
+  "measurement_samples_schema": "blueprint.site_task_measurement_samples.v1",
+  "schema_version": "blueprint.site_task_measurement_catalog.v1"
+}

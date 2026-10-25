@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,6 +22,25 @@ from blueprint_pipeline.policy_request_evidence import (
 def request():
     return {"prompt": " exact prompt ", "image": np.arange(48, dtype=np.uint8).reshape(4, 4, 3),
             "state": np.array([.1, .2, .3], dtype=np.float32)}
+
+
+def test_exact_scientific_json_roundtrip_preserves_provider_camera_and_state(tmp_path):
+    value = {"checkpoint": "dreamlabs/dream-1", "session_id": None, "reset": False,
+             "observation": {"video.overhead": ["exactJPEGbase64=="], "state": [[0.1, 0.2]],
+                             "prompt": "move object", "_record": False}}
+    raw = json.dumps(value, separators=(",", ":"), allow_nan=False).encode()
+    receipt = capture_request(value, transport="dreamlabs_https_json", scientific_wire_bytes=raw,
+                              decoded_wire_request=value)
+    assert validate_request_evidence(receipt)["serialization_verified"] is True
+    artifact = persist_request_evidence(receipt, root=tmp_path, episode_id="dream", query_index=0)
+    assert artifact["serialization_verified"] is True
+    assert policy_request_evidence.decode_scientific_wire(raw) == value
+
+
+@pytest.mark.parametrize("raw", [b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":Infinity}'])
+def test_scientific_json_refuses_ambiguous_or_nonfinite_values(raw):
+    with pytest.raises(ValueError, match="policy_request_wire_"):
+        policy_request_evidence.decode_scientific_wire(raw)
 
 
 def test_exact_values_dtype_order_prompt_and_wire_replay(tmp_path):

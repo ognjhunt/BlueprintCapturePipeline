@@ -96,7 +96,7 @@ def test_provisioner_publishes_with_one_reader_and_closes_it(
         "text-to-cad-root", "multi-agent-cad-root",
     ):
         argv += [f"--{name}", str(tmp_path)]
-    argv += ["--readback-user", "blueprint", "--website-mapanything-template", str(tmp_path / "none")]
+    argv += ["--readback-user", "blueprint"]
     monkeypatch.setattr("sys.argv", argv)
 
     assert provisioner.main() == 0

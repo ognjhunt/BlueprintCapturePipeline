@@ -7,11 +7,9 @@ import io
 import json
 from pathlib import Path
 import time
-import urllib.request
 
 import pytest
 
-from blueprint_pipeline import website_mapanything_bootstrap as website
 
 SCRIPT = Path(__file__).parents[1] / "scripts/rehearse_g1_vm_system_cpu.py"
 spec = importlib.util.spec_from_file_location("artifact_registry_probe", SCRIPT)
@@ -156,39 +154,3 @@ def test_small_immutable_layer_keeps_size_hash_and_real_http_eof(tmp_path, monke
 def test_response_deadline_refuses_before_reading_any_asset_bytes():
     with pytest.raises(ValueError, match="download_bound_exceeded"):
         registry._response_chunk(response(b"bytes"), 5, time.monotonic() - 1)
-
-
-def test_failure_put_refuses_redirect_without_forwarding_capability():
-    request = urllib.request.Request(
-        "https://objects.example/put?capability=synthetic", data=b"{}", method="PUT"
-    )
-    with pytest.raises(ValueError, match="website_worker_capability_redirect"):
-        website._CapabilityNoRedirect().redirect_request(
-            request, None, 307, "redirect", {}, "https://other.example"
-        )
-
-
-@pytest.mark.parametrize(
-    "url",
-    ["http://objects.example/put", "file:///private", "https://user:pass@objects.example/put"],
-)
-def test_failure_put_validates_admitted_https_before_any_call(monkeypatch, url):
-    monkeypatch.setenv("BLUEPRINT_RECONSTRUCTION_OUTPUT_BUNDLE_PUT_URL", url)
-    for name, value in [
-        ("OPERATION_REQUEST_DIGEST", "sha256:" + "a" * 64),
-        ("INPUT_BUNDLE_DIGEST", "sha256:" + "b" * 64),
-        ("SOURCE_COMMIT", "c" * 40),
-    ]:
-        monkeypatch.setenv(
-            "BLUEPRINT_RECONSTRUCTION_" + name
-            if name != "SOURCE_COMMIT"
-            else "BLUEPRINT_SOURCE_COMMIT",
-            value,
-        )
-    monkeypatch.setattr(
-        website.urllib.request,
-        "build_opener",
-        lambda *a: pytest.fail("invalid capability must refuse before transport"),
-    )
-    with pytest.raises(ValueError, match="website_worker_failure_transport_invalid"):
-        website._report_failure(ValueError("synthetic"))

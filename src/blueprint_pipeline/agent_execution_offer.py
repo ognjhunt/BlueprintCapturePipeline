@@ -118,6 +118,8 @@ def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -
     from .team_evaluation_plan import EPISODES, SCORED_FAMILY_SHARES, variation_bounds
     from .team_policy_https_client import INTERFACE_ID as TEAM_ROBOT_INTERFACE
     from .team_policy_https_client import METADATA_SCHEMA as TEAM_METADATA_SCHEMA
+    from .dreamlabs_policy_client import ENDPOINT_URL as DREAM_ENDPOINT, METADATA_URL as DREAM_METADATA
+    from .dreamlabs_policy_client import INTERFACE_ID as DREAM_INTERFACE, SDK_VERSION, SDK_WHEEL_SHA256
 
     scene = facts["scene"]
     task_spec = scene.get("task_spec") if isinstance(scene.get("task_spec"), Mapping) else {}
@@ -138,6 +140,20 @@ def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -
              "action": {"space": "joint_position", "dimension": 8, "control_hz": 15,
                         "chunk_rows": sorted(SUPPORTED_ACTION_CHUNK_ROWS)},
              "request_timeout_seconds": 30, "authentication": "bearer"},
+            {"policy_interface_id": DREAM_INTERFACE, "embodiment_preset_id": TEAM_ROBOT_ID,
+             "embodiment_schema": "blueprint.robot_embodiment.v2", "forms": ["bimanual_arm"], "base_modes": ["fixed"],
+             "endpoint_url": DREAM_ENDPOINT, "metadata_url": DREAM_METADATA,
+             "model_identity_basis": "provider_metadata", "weights_identity_verified": False,
+             "required_policy_config": ["model_id", "camera_roles"],
+             "observation": {"camera_roles": ["overhead", "wrist_l", "wrist_r"],
+                             "encoding": "jpeg_base64", "image_size": [320, 176], "jpeg_quality": 85,
+                             "history_hz": 5, "history_frames_max": 9, "synthetic_history_padding": False,
+                             "state": "named_arm_tcp_in_each_arm_base", "prompt": True},
+             "action": {"space": "named_arm_pose", "frame": "arm_base", "arm_names": ["left", "right"],
+                        "action_hz": 20, "control_hz": 60, "chunk_rows": [1, 48], "grippers": "independent_closures"},
+             "sdk_contract_version": SDK_VERSION, "sdk_wheel_sha256": SDK_WHEEL_SHA256,
+             "sdk_recording_enabled": False, "provider_inference_retention": "not_established", "request_timeout_seconds": 15, "authentication": "bearer",
+             "task_kinds": ["rigid_pick_place"]},
             {"policy_interface_id": TEAM_ROBOT_INTERFACE, "embodiment_preset_id": TEAM_ROBOT_ID,
              "embodiment_schema": EMBODIMENT_SCHEMA, "forms": list(FORMS), "base_modes": list(BASE_MODES),
              "robot_start": {"fixed": "scene_robot_station_declared_reach_must_cover_task",

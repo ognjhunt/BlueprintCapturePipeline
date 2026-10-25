@@ -1,0 +1,1140 @@
+{
+  "schema_version": "deployment_embodiment_support.v1",
+  "claim_ceiling": "planning_only",
+  "policy_routes": [
+    {
+      "route_id": "dreamlabs_dream1",
+      "display_name": "Dream-1 hosted API",
+      "kind": "hosted_api",
+      "model_id": "dreamlabs/dream-1",
+      "observation_schema_id": "head_and_per_arm_wrist_rgb_state_text_v1",
+      "action_schema_id": "bimanual_eef_pose_parallel_gripper_v1",
+      "source_url": "https://dreamlabs.ai/research/dream-1/",
+      "required_artifacts": [
+        "exact_model_or_controller_identity",
+        "observation_and_action_interface_contract",
+        "authorized_access_and_usage_terms",
+        "executed_integration_readiness_receipt",
+        "provider_version_identity",
+        "approved_site_image_disclosure_and_recording_controls",
+        "independent_bimanual_tool_channels_required"
+      ]
+    },
+    {
+      "route_id": "pi_api",
+      "display_name": "Physical Intelligence API",
+      "kind": "hosted_api",
+      "model_id": null,
+      "observation_schema_id": null,
+      "action_schema_id": null,
+      "source_url": "https://www.pi.website/blog/api-beta",
+      "required_artifacts": [
+        "exact_model_or_controller_identity",
+        "observation_and_action_interface_contract",
+        "authorized_access_and_usage_terms",
+        "executed_integration_readiness_receipt",
+        "customer_finetuned_model_identity",
+        "provider_version_identity",
+        "approved_site_image_disclosure"
+      ]
+    },
+    {
+      "route_id": "pi05_custom_checkpoint",
+      "display_name": "Customer pi0.5 checkpoint for this embodiment",
+      "kind": "checkpoint",
+      "model_id": null,
+      "observation_schema_id": null,
+      "action_schema_id": null,
+      "source_url": "https://github.com/Physical-Intelligence/openpi",
+      "required_artifacts": [
+        "exact_model_or_controller_identity",
+        "observation_and_action_interface_contract",
+        "authorized_access_and_usage_terms",
+        "executed_integration_readiness_receipt",
+        "checkpoint_digest_and_license",
+        "embodiment_specific_normalization_and_action_mapping"
+      ]
+    },
+    {
+      "route_id": "customer_controller",
+      "display_name": "Customer controller",
+      "kind": "customer_controller",
+      "model_id": null,
+      "observation_schema_id": null,
+      "action_schema_id": null,
+      "source_url": "https://docs.standardbots.com/",
+      "required_artifacts": [
+        "exact_model_or_controller_identity",
+        "observation_and_action_interface_contract",
+        "authorized_access_and_usage_terms",
+        "executed_integration_readiness_receipt",
+        "customer_controller_artifact_or_endpoint",
+        "controller_reset_and_safety_contract"
+      ]
+    },
+    {
+      "route_id": "planning_endpoint",
+      "display_name": "Customer planning endpoint",
+      "kind": "planning_endpoint",
+      "model_id": null,
+      "observation_schema_id": null,
+      "action_schema_id": null,
+      "source_url": "https://jacobirobotics.com/technology",
+      "required_artifacts": [
+        "exact_model_or_controller_identity",
+        "observation_and_action_interface_contract",
+        "authorized_access_and_usage_terms",
+        "executed_integration_readiness_receipt",
+        "customer_planning_endpoint_contract",
+        "trajectory_execution_and_collision_contract"
+      ]
+    },
+    {
+      "route_id": "skill_trace",
+      "display_name": "Customer recorded skill trace",
+      "kind": "skill_trace",
+      "model_id": null,
+      "observation_schema_id": null,
+      "action_schema_id": null,
+      "source_url": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world",
+      "required_artifacts": [
+        "exact_model_or_controller_identity",
+        "observation_and_action_interface_contract",
+        "authorized_access_and_usage_terms",
+        "executed_integration_readiness_receipt",
+        "digest_bound_skill_trace",
+        "trace_provenance_and_replay_contract"
+      ]
+    },
+    {
+      "route_id": "runway_praxis1",
+      "display_name": "Praxis-1 early partner access",
+      "kind": "early_access",
+      "model_id": "praxis-1",
+      "observation_schema_id": null,
+      "action_schema_id": null,
+      "source_url": "https://runway.com/research/introducing-praxis-1",
+      "required_artifacts": [
+        "exact_model_or_controller_identity",
+        "observation_and_action_interface_contract",
+        "authorized_access_and_usage_terms",
+        "executed_integration_readiness_receipt",
+        "partner_access_and_usage_terms",
+        "exact_provider_model_version_identity",
+        "embodiment_specific_interface_contract",
+        "runtime_adapter_and_readiness_receipt"
+      ]
+    },
+    {
+      "route_id": "groot_custom_checkpoint",
+      "display_name": "Customer GR00T checkpoint for this embodiment",
+      "kind": "checkpoint",
+      "model_id": null,
+      "observation_schema_id": null,
+      "action_schema_id": null,
+      "source_url": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world",
+      "required_artifacts": [
+        "exact_model_or_controller_identity",
+        "observation_and_action_interface_contract",
+        "authorized_access_and_usage_terms",
+        "executed_integration_readiness_receipt",
+        "checkpoint_digest_and_license",
+        "embodiment_specific_normalization_and_action_mapping",
+        "calibrated_action_and_camera_contract",
+        "checkpoint_admission_receipt"
+      ]
+    },
+    {
+      "route_id": "act_custom_checkpoint",
+      "display_name": "Customer ACT checkpoint for this embodiment",
+      "kind": "checkpoint",
+      "model_id": null,
+      "observation_schema_id": null,
+      "action_schema_id": null,
+      "source_url": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world",
+      "required_artifacts": [
+        "exact_model_or_controller_identity",
+        "observation_and_action_interface_contract",
+        "authorized_access_and_usage_terms",
+        "executed_integration_readiness_receipt",
+        "checkpoint_digest_and_license",
+        "embodiment_specific_normalization_and_action_mapping",
+        "calibrated_action_and_camera_contract",
+        "checkpoint_admission_receipt"
+      ]
+    }
+  ],
+  "embodiments": [
+    {
+      "embodiment_id": "universal_robots_ur5e",
+      "display_name": "Universal Robots UR5e (one arm)",
+      "manufacturer": "Universal Robots",
+      "arm_count": 1,
+      "arm_dof": [
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "An exact admitted end effector and tool center point; the arm asset alone does not specify a gripper.",
+      "related_teams": [
+        "Extend Robotics"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "isaac_ur5e",
+          "format": "usd",
+          "url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+          "relative_path": "UniversalRobots/ur5e/ur5e.usd",
+          "revision": null,
+          "license_note": "NVIDIA catalog lists BSD-3 for UR5e; retain the license and notices from the exact release.",
+          "preparation": "Resolve this catalog-relative path against the installed Isaac Sim asset release; retain referenced layers and pin their digests. Import availability is not physics or controller validation."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.universal-robots.com/marketplace/products/01tP40000071NNNIA2/"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.universal-robots.com/marketplace/products/01tP40000071NNNIA2/"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.universal-robots.com/marketplace/products/01tP40000071NNNIA2/"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.universal-robots.com/marketplace/products/01tP40000071NNNIA2/"
+        },
+        {
+          "route_id": "groot_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+        },
+        {
+          "route_id": "act_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt"
+      ]
+    },
+    {
+      "embodiment_id": "universal_robots_ur5e_bimanual",
+      "display_name": "Universal Robots UR5e (two arms)",
+      "manufacturer": "Universal Robots",
+      "arm_count": 2,
+      "arm_dof": [
+        6,
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Two independently controlled admitted parallel grippers; exact dual mounting and camera calibration remain required.",
+      "related_teams": [
+        "Dream Labs"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "isaac_ur5e",
+          "format": "usd",
+          "url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+          "relative_path": "UniversalRobots/ur5e/ur5e.usd",
+          "revision": null,
+          "license_note": "NVIDIA catalog lists BSD-3 for UR5e; retain release notices.",
+          "preparation": "Resolve this catalog-relative path against the installed Isaac Sim asset release; retain referenced layers and pin their digests. Import availability is not physics or controller validation."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "dreamlabs_dream1",
+          "evidence": "publisher_demonstrated",
+          "source_url": "https://dreamlabs.ai/research/dream-1/"
+        },
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "independent_bimanual_tool_channels_required",
+        "exact_dual_arm_mounting_and_collision_contract"
+      ]
+    },
+    {
+      "embodiment_id": "trlc_dk1_bimanual",
+      "display_name": "TRLC-DK1 follower (two arms)",
+      "manufacturer": "The Robot Learning Company",
+      "arm_count": 2,
+      "arm_dof": [
+        6,
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Two follower parallel grippers with independently mapped finger commands.",
+      "related_teams": [
+        "The Robot Learning Company"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "trlc_dk1_follower",
+          "format": "urdf",
+          "url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf",
+          "relative_path": "urdf/follower/TRLC-DK1-Follower.urdf",
+          "revision": "12f5368aefd0381461f2c7ffbb5611b4e8c90de9",
+          "license_note": "Repository license is Apache-2.0; CAD rights are separately reserved. This entry admits no CAD redistribution.",
+          "preparation": "Retain GLB visual and STL collision references; import and validate two follower instances. Six revolute joints per follower are distinct from its two prismatic fingers; no Isaac runtime has been verified."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "independent_bimanual_tool_channels_required",
+        "exact_dual_arm_mounting_and_collision_contract"
+      ]
+    },
+    {
+      "embodiment_id": "almond_axol",
+      "display_name": "Almond Axol",
+      "manufacturer": "Almond Robotics",
+      "arm_count": 2,
+      "arm_dof": [
+        7,
+        7
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Two independently controlled parallel grippers; the pinned URDF has fixed gripper joints and needs an independently validated actuation model.",
+      "related_teams": [
+        "Almond Robotics"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "almond_axol_urdf",
+          "format": "urdf",
+          "url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf",
+          "relative_path": "almond_axol/kinematics/urdf/axol.urdf",
+          "revision": "cd199a2f4c847c3a10594c6c2ed2250b4b4be675",
+          "license_note": "Axol repository is MIT; retain notices with the exact asset.",
+          "preparation": "Retain the entire referenced mesh closure; validate Isaac import, physical parameters and separate gripper articulation. SDK browser visualization is not Isaac validation."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "pi_api",
+          "evidence": "publisher_demonstrated",
+          "source_url": "https://www.pi.website/blog/api-beta"
+        },
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "independent_bimanual_tool_channels_required",
+        "validated_actuated_gripper_model"
+      ]
+    },
+    {
+      "embodiment_id": "fanuc_crx_10ia_l",
+      "display_name": "FANUC CRX-10iA/L",
+      "manufacturer": "FANUC",
+      "arm_count": 1,
+      "arm_dof": [
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Exact application tool and tool center point; a sanding tool is not a parallel gripper.",
+      "related_teams": [
+        "GrayMatter Robotics"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "isaac_fanuc_crx_10ia_l",
+          "format": "usd",
+          "url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+          "relative_path": "Fanuc/crx10ia_l/crx10ia_l.usd",
+          "revision": null,
+          "license_note": "NVIDIA catalog lists the 3D Content Sharing Agreement; verify the exact asset terms before use.",
+          "preparation": "Resolve this catalog-relative path against the installed Isaac Sim asset release; retain referenced layers and pin their digests. Import availability is not physics or controller validation."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt"
+      ]
+    },
+    {
+      "embodiment_id": "fanuc_m710ic_45m",
+      "display_name": "FANUC M-710iC/45M",
+      "manufacturer": "FANUC",
+      "arm_count": 1,
+      "arm_dof": [
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Exact deployment end effector, tool center point and payload model.",
+      "related_teams": [
+        "Jacobi Robotics",
+        "Delta Technology"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "fanuc_m710ic_45m_description",
+          "format": "documentation",
+          "url": "https://fanuc-corporation.github.io/fanuc_driver_doc/main/docs/environment/supported_models.html",
+          "relative_path": "fanuc_m710_description/m710ic_45m",
+          "revision": null,
+          "license_note": "Manufacturer documentation lists the exact model; obtain and admit the actual description package and mesh license before import.",
+          "preparation": "Resolve exact m710ic_45m in fanuc_m710_description. Do not substitute M-710iC/70 or another family variant. Retain expanded URDF, mesh references, license and digests."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://beta.jacobirobotics.com/case-study/deployment-with-delta-tech"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://beta.jacobirobotics.com/case-study/deployment-with-delta-tech"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://beta.jacobirobotics.com/case-study/deployment-with-delta-tech"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://beta.jacobirobotics.com/case-study/deployment-with-delta-tech"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt"
+      ]
+    },
+    {
+      "embodiment_id": "yaskawa_gp12",
+      "display_name": "Yaskawa GP12",
+      "manufacturer": "Yaskawa",
+      "arm_count": 1,
+      "arm_dof": [
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Exact palletizing tool, payload model and tool center point.",
+      "related_teams": [
+        "Unchained Robotics"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "unchained_gp12_specification",
+          "format": "documentation",
+          "url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+          "relative_path": null,
+          "revision": null,
+          "license_note": "Product documentation identifies GP12/GP20; no robot asset or redistribution license has been admitted.",
+          "preparation": "Obtain the exact Yaskawa model variant and a licensed description/mesh package; GP20HL is a different robot and cannot substitute for GP20."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "exact_robot_variant_and_licensed_asset"
+      ]
+    },
+    {
+      "embodiment_id": "yaskawa_gp20",
+      "display_name": "Yaskawa GP20",
+      "manufacturer": "Yaskawa",
+      "arm_count": 1,
+      "arm_dof": [
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Exact palletizing tool, payload model and tool center point.",
+      "related_teams": [
+        "Unchained Robotics"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "unchained_gp20_specification",
+          "format": "documentation",
+          "url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+          "relative_path": null,
+          "revision": null,
+          "license_note": "Product documentation identifies GP12/GP20; no robot asset or redistribution license has been admitted.",
+          "preparation": "Obtain the exact Yaskawa model variant and a licensed description/mesh package; GP20HL is a different robot and cannot substitute for GP20."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "exact_robot_variant_and_licensed_asset"
+      ]
+    },
+    {
+      "embodiment_id": "i2rt_yam_bimanual",
+      "display_name": "I2RT YAM (two arms)",
+      "manufacturer": "I2RT",
+      "arm_count": 2,
+      "arm_dof": [
+        6,
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Two linear_4310 parallel grippers composed with the standard YAM v1 arm; YAM-7 is a different embodiment.",
+      "related_teams": [
+        "Dream Labs"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "i2rt_yam_v1",
+          "format": "urdf",
+          "url": "https://github.com/i2rt-robotics/i2rt/blob/main/i2rt/robot_models/arm/yam/v1/yam.urdf",
+          "relative_path": "i2rt/robot_models/arm/yam/v1/yam.urdf",
+          "revision": null,
+          "license_note": "I2RT repository is MIT; pin exact commit, mesh closure and license before execution.",
+          "preparation": "The arm URDF does not include an actuated gripper. Compose and validate the intended linear_4310 gripper and its exact terminal mount, then validate two-arm Isaac import."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "dreamlabs_dream1",
+          "evidence": "publisher_demonstrated",
+          "source_url": "https://dreamlabs.ai/research/dream-1/"
+        },
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/i2rt-robotics/i2rt/blob/main/i2rt/robot_models/arm/yam/v1/yam.urdf"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/i2rt-robotics/i2rt/blob/main/i2rt/robot_models/arm/yam/v1/yam.urdf"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/i2rt-robotics/i2rt/blob/main/i2rt/robot_models/arm/yam/v1/yam.urdf"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/i2rt-robotics/i2rt/blob/main/i2rt/robot_models/arm/yam/v1/yam.urdf"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "independent_bimanual_tool_channels_required",
+        "composed_arm_and_gripper_asset",
+        "exact_dual_arm_mounting_and_collision_contract"
+      ]
+    },
+    {
+      "embodiment_id": "agilex_piper_bimanual",
+      "display_name": "AgileX PiPER (two arms)",
+      "manufacturer": "AgileX Robotics",
+      "arm_count": 2,
+      "arm_dof": [
+        6,
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Two standard PiPER parallel grippers; Piper H/L/X and Revo hands are different variants.",
+      "related_teams": [
+        "Dream Labs"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "agilex_piper_isaac",
+          "format": "usd",
+          "url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection",
+          "relative_path": "isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/usd/piper.usd",
+          "revision": "c2688be41e1bc99a9addd555f237a16bc839d936",
+          "license_note": "Bundled agx_arm_urdf license is MIT; retain exact notices and referenced layers.",
+          "preparation": "Retain sibling configuration USD layers. Upstream example names Isaac Sim 5.1.0.0 / IsaacLab 0.54.3 and includes a parallel gripper; this is not Dream-on-Isaac execution proof."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "dreamlabs_dream1",
+          "evidence": "publisher_demonstrated",
+          "source_url": "https://dreamlabs.ai/research/dream-1/"
+        },
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "independent_bimanual_tool_channels_required",
+        "exact_dual_arm_mounting_and_collision_contract"
+      ]
+    },
+    {
+      "embodiment_id": "standard_bots_ro1",
+      "display_name": "Standard Bots RO1",
+      "manufacturer": "Standard Bots",
+      "arm_count": 1,
+      "arm_dof": [
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Exact deployed end effector and tool center point. RO1 and Core asset equivalence must be verified, not assumed.",
+      "related_teams": [
+        "Standard Bots"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "standard_bots_ro1_asset_reference",
+          "format": "documentation",
+          "url": "https://apihelp.standardbots.com/",
+          "relative_path": null,
+          "revision": null,
+          "license_note": "Manufacturer API manual links robot URDF files; exact artifact access and reuse terms remain unverified.",
+          "preparation": "Obtain the exact requested model description, mesh closure, version and license from the manufacturer. Do not treat the RO1 manual link as proof that a Core asset is equivalent."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "runway_praxis1",
+          "evidence": "publisher_demonstrated",
+          "source_url": "https://runway.com/research/introducing-praxis-1"
+        },
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://standardbots.com/ai"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://standardbots.com/ai"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://standardbots.com/ai"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://standardbots.com/ai"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "manufacturer_asset_access_and_license"
+      ]
+    },
+    {
+      "embodiment_id": "standard_bots_core",
+      "display_name": "Standard Bots Core",
+      "manufacturer": "Standard Bots",
+      "arm_count": 1,
+      "arm_dof": [
+        6
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Exact deployed end effector and tool center point. RO1 and Core asset equivalence must be verified, not assumed.",
+      "related_teams": [
+        "Standard Bots",
+        "Path Machining"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "standard_bots_core_asset_reference",
+          "format": "documentation",
+          "url": "https://apihelp.standardbots.com/",
+          "relative_path": null,
+          "revision": null,
+          "license_note": "Manufacturer API manual links robot URDF files; exact artifact access and reuse terms remain unverified.",
+          "preparation": "Obtain the exact requested model description, mesh closure, version and license from the manufacturer. Do not treat the RO1 manual link as proof that a Core asset is equivalent."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://pathmachining.com/resources/capabilities-deep-dives/standard-bots-automated-machine-tending/"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://pathmachining.com/resources/capabilities-deep-dives/standard-bots-automated-machine-tending/"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://pathmachining.com/resources/capabilities-deep-dives/standard-bots-automated-machine-tending/"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://pathmachining.com/resources/capabilities-deep-dives/standard-bots-automated-machine-tending/"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "manufacturer_asset_access_and_license"
+      ]
+    },
+    {
+      "embodiment_id": "franka_research_3_bimanual",
+      "display_name": "Franka Research 3 (two arms)",
+      "manufacturer": "Franka Robotics",
+      "arm_count": 2,
+      "arm_dof": [
+        7,
+        7
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Two independently controlled Franka Hands; FR3 is distinct from the existing DROID Panda.",
+      "related_teams": [
+        "Dream Labs"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "isaac_franka_fr3",
+          "format": "usd",
+          "url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+          "relative_path": "FrankaRobotics/FrankaFR3/fr3.usd",
+          "revision": null,
+          "license_note": "NVIDIA catalog lists Apache-2.0 for the exact FR3 asset; retain notices.",
+          "preparation": "Resolve this catalog-relative path against the installed Isaac Sim asset release; retain referenced layers and pin their digests. Import availability is not physics or controller validation."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "dreamlabs_dream1",
+          "evidence": "publisher_demonstrated",
+          "source_url": "https://dreamlabs.ai/research/dream-1/"
+        },
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "independent_bimanual_tool_channels_required",
+        "eef_pose_ik_adapter",
+        "exact_dual_arm_mounting_and_collision_contract"
+      ]
+    },
+    {
+      "embodiment_id": "kinova_gen3_bimanual",
+      "display_name": "Kinova Gen3 (two arms)",
+      "manufacturer": "Kinova Robotics",
+      "arm_count": 2,
+      "arm_dof": [
+        7,
+        7
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Two independently controlled admitted parallel grippers; the NVIDIA Gen3 arm asset alone has seven DOFs.",
+      "related_teams": [
+        "Dream Labs"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "isaac_kinova_gen3",
+          "format": "usd",
+          "url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+          "relative_path": "Kinova/Gen3/gen3n7_instanceable.usd",
+          "revision": null,
+          "license_note": "Confirm the exact NVIDIA asset terms; official Kortex descriptions use BSD-3-Clause but that does not establish every USD accessory license.",
+          "preparation": "Resolve this catalog-relative path against the installed Isaac Sim asset release; retain referenced layers and pin their digests. Import availability is not physics or controller validation."
+        },
+        {
+          "source_id": "kinova_gen3_robotiq",
+          "format": "xacro",
+          "url": "https://github.com/Kinovarobotics/ros2_kortex/blob/b2aa46b29ae8fadd5b293c57e3500925c61eb8e8/kortex_description/robots/gen3_robotiq_2f_85.xacro",
+          "relative_path": "kortex_description/robots/gen3_robotiq_2f_85.xacro",
+          "revision": "b2aa46b29ae8fadd5b293c57e3500925c61eb8e8",
+          "license_note": "Kortex repository license is BSD-3-Clause; retain dependency and mesh licenses.",
+          "preparation": "Retain all references and validate the exact asset, collisions, joint limits, controller and gripper before an integration canary."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "dreamlabs_dream1",
+          "evidence": "publisher_demonstrated",
+          "source_url": "https://dreamlabs.ai/research/dream-1/"
+        },
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "independent_bimanual_tool_channels_required",
+        "eef_pose_ik_adapter",
+        "exact_dual_arm_mounting_and_collision_contract"
+      ]
+    },
+    {
+      "embodiment_id": "ufactory_xarm7_bimanual",
+      "display_name": "UFACTORY xArm 7 (two arms)",
+      "manufacturer": "UFACTORY",
+      "arm_count": 2,
+      "arm_dof": [
+        7,
+        7
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Two independently controlled parallel grippers and an exact admitted dual mount.",
+      "related_teams": [
+        "Dream Labs"
+      ],
+      "asset_sources": [
+        {
+          "source_id": "ufactory_dual_xarm7",
+          "format": "xacro",
+          "url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description/urdf/dual_xarm_device.urdf.xacro",
+          "relative_path": "xarm_description/urdf/dual_xarm_device.urdf.xacro",
+          "revision": "ac736c92b02de7ca7e0be6f737d77d46707464d8",
+          "license_note": "UFACTORY repository license is BSD-3-Clause; retain model and dependency notices.",
+          "preparation": "Expand Xacro with both arm DOFs fixed to seven and both intended grippers enabled. Retain arguments, meshes, resulting URDF and importer settings; validate Isaac physics and controllers."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "dreamlabs_dream1",
+          "evidence": "publisher_demonstrated",
+          "source_url": "https://dreamlabs.ai/research/dream-1/"
+        },
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description/urdf/dual_xarm_device.urdf.xacro"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description/urdf/dual_xarm_device.urdf.xacro"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description/urdf/dual_xarm_device.urdf.xacro"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description/urdf/dual_xarm_device.urdf.xacro"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt",
+        "independent_bimanual_tool_channels_required",
+        "eef_pose_ik_adapter",
+        "exact_dual_arm_mounting_and_collision_contract"
+      ]
+    },
+    {
+      "embodiment_id": "kuka_lbr_iiwa_14",
+      "display_name": "KUKA LBR iiwa 14 (one arm)",
+      "manufacturer": "KUKA",
+      "arm_count": 1,
+      "arm_dof": [
+        7
+      ],
+      "base_mode": "fixed",
+      "tool_requirement": "Exact admitted end effector and tool center point.",
+      "related_teams": [],
+      "asset_sources": [
+        {
+          "source_id": "lbr_stack_iiwa14",
+          "format": "xacro",
+          "url": "https://github.com/lbr-stack/lbr_iiwa14_r820_description/blob/86ac0532841a90694afe6a65c300f08b55eb1296/urdf/lbr_iiwa14_r820.urdf.xacro",
+          "relative_path": "urdf/lbr_iiwa14_r820.urdf.xacro",
+          "revision": "86ac0532841a90694afe6a65c300f08b55eb1296",
+          "license_note": "Community LBR-Stack package declares Apache-2.0; retain its mesh notices. It is not a KUKA manufacturer-supported Isaac integration.",
+          "preparation": "Expand and retain exact IIWA 14 R820 Xacro and meshes; validate end effector, physical parameters, importer settings and controller. No native NVIDIA iiwa14 asset was verified."
+        }
+      ],
+      "policy_routes": [
+        {
+          "route_id": "customer_controller",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/lbr-stack/lbr_iiwa14_r820_description/blob/86ac0532841a90694afe6a65c300f08b55eb1296/urdf/lbr_iiwa14_r820.urdf.xacro"
+        },
+        {
+          "route_id": "planning_endpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/lbr-stack/lbr_iiwa14_r820_description/blob/86ac0532841a90694afe6a65c300f08b55eb1296/urdf/lbr_iiwa14_r820.urdf.xacro"
+        },
+        {
+          "route_id": "skill_trace",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/lbr-stack/lbr_iiwa14_r820_description/blob/86ac0532841a90694afe6a65c300f08b55eb1296/urdf/lbr_iiwa14_r820.urdf.xacro"
+        },
+        {
+          "route_id": "pi05_custom_checkpoint",
+          "evidence": "customer_supplied",
+          "source_url": "https://github.com/lbr-stack/lbr_iiwa14_r820_description/blob/86ac0532841a90694afe6a65c300f08b55eb1296/urdf/lbr_iiwa14_r820.urdf.xacro"
+        }
+      ],
+      "required_artifacts": [
+        "exact_robot_asset_and_digest",
+        "controller_mapping_and_limits",
+        "calibrated_camera_rig",
+        "deterministic_reset_contract",
+        "policy_artifact_or_endpoint_contract",
+        "integration_readiness_receipt"
+      ]
+    }
+  ]
+}

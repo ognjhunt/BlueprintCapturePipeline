@@ -233,7 +233,8 @@ def _covered(masks, source_geometry, root: Path, *, views=DRAWER_VIEWS):
             body, blockers = coverage.estimate_body_bounds(track=row["track"], frames=source_geometry["frames"],
                 states={label["frame_id"]: label["part_state"] for label in classified["frames"]})
             row = {**row, "authoring_coverage": coverage.coverage_record(target_id=row["target_id"],
-                binding=coverage.coverage_binding(target=row, source_geometry=source_geometry),
+                binding=coverage.coverage_binding(target=row, source_geometry=source_geometry,
+                                                  task_context=_task_context()),
                 articulation_kind="prismatic", classified=classified,
                 selected=coverage.select_reference_frames(classified["frames"]), body_bounds=body,
                 body_blockers=blockers, candidate_count=len(frames))}
@@ -483,35 +484,30 @@ def test_pose_and_authoring_bounds_share_normalized_simulator_frame(tmp_path):
     assert value["intake_request"]["consent"] == SPEND["consent"]
 
 
-def test_collected_reconstruction_reaches_real_website_preparation(tmp_path):
+def test_a_ready_atlas_scene_reaches_real_website_preparation(tmp_path, monkeypatch):
     from blueprint_pipeline.common import write_json
     from blueprint_pipeline.website_scene_handoff import prepare_website_scene_handoff
     pipeline = tmp_path / "pipeline"
     pipeline.mkdir()
     args = _arguments(pipeline)
-    base = args["base_scene"]
-    # A World Labs export uses OpenCV Y-down, unlike the generic fixture.
-    collider_path = Path(base["collision_mesh_path"])
-    collider = trimesh.load(collider_path, force="mesh", process=False)
-    collider.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
-    collider.export(collider_path)
-    base["collision_mesh_digest"] = _sha256_file(collider_path)
-    rows = [{"kind": kind, "local_path": base[path], "sha256": base[digest][7:]}
-            for kind, path, digest in (("splat_ply", "splat_path", "splat_digest"),
-                                      ("collider_mesh_glb", "collision_mesh_path", "collision_mesh_digest"))]
-    assets_path = pipeline / "assets.json"
+    base = {**args["base_scene"], "provider": "world_labs_atlas", "scale_authority": "atlas_reference_estimate"}
+    geometry = {**args["source_geometry"], "geometry_backend": "world_labs_atlas"}
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    masks = {**args["task_masks"], "source_geometry_digest": geometry["digest"]}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
     removal_path = pipeline / "removal.json"
-    write_json(assets_path, {"world_id": "world-1", "downloads": rows})
     write_json(removal_path, args["removal_manifest"])
+    # The capture's Atlas job supplies the scene and the posed source geometry.
+    monkeypatch.setattr("blueprint_pipeline.website_atlas_scene_source.atlas_scene_source", lambda **_: {
+        "status": "ready", "base_scene": base, "source_geometry": geometry, "alignment": "anchored", "source_pose_digest": "sha256:" + "1" * 64,
+        "background_pose_digest": "sha256:" + "2" * 64})
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **_: masks)
     context = args["task_context"]
     result = prepare_website_scene_handoff(
         descriptor={"capture_id": context["capture_id"], "scene_id": context["scene_id"], "metadata": {
             "site_task_context": context, "website_scene_execution_authority": SPEND}},
-        clean_plate={"status": "objects_removed", "privacy_verified": True,
-                     "task_masks": args["task_masks"], "source_geometry": args["source_geometry"],
-                     "removal_manifest_path": str(removal_path)},
-        provider_run={"status": "ready", "world_id": "world-1", "provider_run_id": "op-1",
-                      "worldlabs_asset_materialization": {"manifest_path": str(assets_path)}},
+        clean_plate={"status": "objects_removed", "privacy_verified": True, "source_geometry": None,
+                     "task_masks": args["task_masks"], "removal_manifest_path": str(removal_path)},
         capture_root=tmp_path, now=NOW,
     )
     assert result["status"] == "intake_ready", result["blockers"]
@@ -519,7 +515,6 @@ def test_collected_reconstruction_reaches_real_website_preparation(tmp_path):
     assert compiled["coordinate_frame"]["declared_meters_per_unit"] == pytest.approx(1 / RUNTIME_SCALE)
     assert Path(result["thumbnail"]["path"]).is_file()
     assert result["simulator_ready"] is False
-    assert result["provider_mutation_performed"] is False
     assert result["runtime_inputs"]["status"] == "background_collision_prepared"
     assert Path(result["runtime_inputs"]["path"]).is_file()
 
@@ -543,6 +538,25 @@ def test_destination_outside_reconstructed_surface_cannot_reach_intake(tmp_path)
     assert result["status"] == "needs_input"
     assert "task_destination_surface_contact_required" in result["blockers"]
     assert result["destination"]["basis"] == "registered_estimated_visible_bounds"
+
+
+@pytest.mark.parametrize("shift, bound", [(5, True), (50, False)])
+def test_a_destination_on_the_same_bumpy_fitted_surface_is_bound(tmp_path, monkeypatch, shift, bound):
+    # Two fits of one bumpy counter converge on nearly the same faces; another surface does not.
+    args = _arguments(tmp_path)
+    calls = []
+
+    def fitted(mesh, lower, upper, *, up, meters_per_unit, up_sign=1):
+        start = 0 if not calls else shift
+        calls.append(start)
+        return {"top_runtime_units": float(lower[up]), "aabb_min": list(lower), "aabb_max": list(upper),
+                "face_indices": list(range(start, start + 100)), "basis": "fitted_surface_under_footprint",
+                "physical_measurement": False}
+    monkeypatch.setattr(preparation, "support_under", fitted)
+    result = preparation.compile_website_scene_preparation(**args)
+    assert len(calls) == 2
+    assert ("task_distinct_destination_surface_binding_required" not in result["blockers"]) is bound
+    assert (result["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact") is bound
 
 
 def test_source_far_above_support_is_not_snapped_down_to_floor(tmp_path):
@@ -742,3 +756,74 @@ def test_unlevelled_prior_from_a_pitched_camera_stays_a_typed_refusal(tmp_path, 
     with pytest.raises(ValueError, match="website_registration_"):
         preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path,
                                                anchor=anchor)
+
+
+def _yaw(degrees):
+    angle = np.radians(degrees)
+    return np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0], [-np.sin(angle), 0, np.cos(angle)]])
+
+
+def test_a_shared_camera_alignment_anchors_registration_in_any_orientation(tmp_path):
+    geometry = _source_geometry(tmp_path)
+    rotation, translation = _yaw(35.0), np.array([0.4, -0.2, 0.3])
+    base = _anchored_base_scene(tmp_path, geometry, rotation=rotation, translation=translation,
+                                ground_plane_offset_m=None)
+    transform = np.eye(4)
+    transform[:3, :3], transform[:3, 3] = rotation, translation / RUNTIME_SCALE
+    anchor = {"kind": "source_world_alignment", "source_world_to_provider_m": transform.tolist(),
+              "meters_per_unit": 1 / RUNTIME_SCALE, "up_axis": "Y", "ground_plane_offset_m": None}
+    value = preparation.register_source_to_runtime(
+        source_geometry=geometry, collision_mesh_path=Path(base["collision_mesh_path"]), anchor=anchor)
+    assert value["scale_status"] == "provider_declared_anchor"
+    assert value["scale"] == pytest.approx(RUNTIME_SCALE, rel=1e-3)
+    assert np.allclose(value["rotation"], rotation, atol=1e-3)
+    assert value["translation"] == pytest.approx(translation.tolist(), abs=1e-3)
+    assert value["anchor"]["kind"] == "source_world_alignment" and value["anchor"]["frame_id"] is None
+    assert value["anchor"]["roll_degrees"] == 0 and value["anchor"]["rotation_deviation_degrees"] < 0.5
+    assert value["ground_plane"] is None
+
+
+def test_a_levelled_atlas_world_checks_its_floor_through_the_alignment_alone(tmp_path, monkeypatch):
+    # atlas_world_levelling leaves an Atlas world Y-up with its floor at y = 0;
+    # the source reaches it through the shared-view alignment, so nothing
+    # here may level it again as if it were anchored at a first camera.
+    rng = np.random.default_rng(1)
+    floor = np.c_[rng.uniform(-2.0, 2.0, 3000), np.zeros(3000), rng.uniform(-1.5, 1.5, 3000)]
+    walls = [np.c_[np.full(750, side * 2.0), rng.uniform(0.0, 2.5, 750), rng.uniform(-1.5, 1.5, 750)]
+             for side in (-1, 1)]
+    walls += [np.c_[rng.uniform(-2.0, 2.0, 750), rng.uniform(0.0, 2.5, 750), np.full(750, side * 1.5)]
+              for side in (-1, 1)]
+    counter = np.c_[rng.uniform(0.5, 2.0, 750), np.full(750, 0.9), rng.uniform(0.9, 1.5, 750)]
+    world = np.concatenate([floor, *walls, counter])
+    rotation, translation = _yaw(35.0), np.array([0.4, -1.2, 0.3])
+    monkeypatch.setattr(preparation, "_source_points", lambda _geometry: (world - translation) @ rotation)
+
+    def first_camera_levelling(*_args):
+        raise AssertionError("an Atlas world is levelled by its scene source")
+    monkeypatch.setattr(preparation, "_observed_declared_ground", first_camera_levelling)
+    mpu = 0.8
+    mesh_path = tmp_path / "levelled-atlas.glb"
+    vertices = world / mpu
+    faces = np.c_[np.arange(len(vertices) - 2), np.arange(1, len(vertices) - 1), np.arange(2, len(vertices))]
+    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(mesh_path)
+    transform = np.eye(4)
+    transform[:3, :3], transform[:3, 3] = rotation, translation
+    anchor = {"kind": "source_world_alignment", "source_world_to_provider_m": transform.tolist(),
+              "meters_per_unit": mpu, "up_axis": "Y", "ground_plane_offset_m": 0.0}
+    value = preparation.register_source_to_runtime(source_geometry={"frames": [], "digest": "sha256:" + "0" * 64},
+                                                   collision_mesh_path=mesh_path, anchor=anchor)
+    assert value["anchor"]["rotation_deviation_degrees"] < 1 and value["trimmed_rmse_m"] < 0.01
+    ground = value["ground_plane"]
+    assert ground["checked"] is True and ground["declared_offset_m"] == 0.0 and ground["residual_m"] < 0.02
+
+
+@pytest.mark.parametrize("transform", [np.diag([1.0, 1.0, -1.0, 1.0]), np.diag([2.0, 2.0, 2.0, 1.0]),
+                                       np.full((4, 4), np.nan)])
+def test_an_alignment_that_is_not_a_proper_rigid_motion_is_refused(tmp_path, transform):
+    geometry = _source_geometry(tmp_path)
+    base = _anchored_base_scene(tmp_path, geometry, ground_plane_offset_m=None)
+    anchor = {"kind": "source_world_alignment", "source_world_to_provider_m": transform.tolist(),
+              "meters_per_unit": 1 / RUNTIME_SCALE, "up_axis": "Y", "ground_plane_offset_m": None}
+    with pytest.raises(ValueError, match="website_registration_anchor_frame_invalid"):
+        preparation.register_source_to_runtime(source_geometry=geometry,
+            collision_mesh_path=Path(base["collision_mesh_path"]), anchor=anchor)

@@ -16,6 +16,8 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
 
     Probe the center, corners and edge midpoints; retain the actual face set for
     downstream contact checks. Refuse a remote floor or disconnected islands.
+    A bumpy reconstructed surface with no exact level face under the footprint
+    is fitted instead (``fitted_surface_under_footprint``), under the same refusals.
     """
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
     if (lower.shape != (3,) or upper.shape != (3,) or not np.isfinite([lower, upper]).all()
@@ -36,6 +38,13 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
             result["aabb_min"][up], result["aabb_max"][up] = -result["aabb_max"][up], -result["aabb_min"][up]
         return result
     mesh.merge_vertices()
+    return (_level_face_support(mesh, lower, upper, up=up, meters_per_unit=meters_per_unit)
+            or _fitted_support(mesh, lower, upper, up=up, meters_per_unit=meters_per_unit))
+
+
+def _level_face_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
+                        meters_per_unit: float) -> dict[str, Any] | None:
+    """Exact level faces (within 5 degrees) under every probe, coplanar and connected."""
     horizontal = [axis for axis in range(3) if axis != up]
     triangles = np.asarray(mesh.triangles, dtype=float)
     normals = np.asarray(mesh.face_normals)
@@ -90,6 +99,126 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
     return {"top_runtime_units": top, "aabb_min": points.min(axis=0).tolist(),
             "aabb_max": points.max(axis=0).tolist(), "face_indices": sorted(connected),
             "basis": "reconstructed_triangle_footprint_contacts", "physical_measurement": False}
+
+
+#: Splat-derived meshes (Atlas) are bumpy. On the 2026-10-23 countertop 1-3% of
+#: faces lay within 5 degrees of level and its top spread over 2-4 cm, so no
+#: exact level face carried a footprint. When none does, the surface under the
+#: footprint is fitted, under the same refusals: level and smooth, one
+#: connected surface, and a real triangle of it under every probe.
+FITTED_MAX_TILT_DEGREES = 5.0
+FITTED_MAX_RMS_M = 0.015
+FITTED_BAND_BOUNDS_M = (0.01, 0.03)
+#: Faces steeper than this are a surface's edges and walls, never the surface.
+FITTED_MAX_FACE_TILT_DEGREES = 60.0
+#: A 10 cm seed fits a bumpy counter to about 5 degrees; each refit over the grown
+#: surface halves that (dishwasher capture 2026-10-23: 5.2, 3.9, 2.9, 2.2, 1.6 degrees).
+FITTED_ITERATIONS = 8
+#: Two fits of one bumpy surface converge on nearly, not always exactly, the same faces.
+SAME_FITTED_SURFACE_MIN_OVERLAP = 0.9
+#: The triangles themselves, not only their fitted plane, must meet the object:
+#: a corrugated mesh fits a smooth plane while its ridges stand centimetres
+#: proud of it. Near each probe the median actual height must sit near the
+#: plane: the real 2026-10-23 counter undulated up to 1.6 cm, a 0.66/0.74 m
+#: corrugation sits 4 cm off. The object rests on the highest of them.
+FITTED_MAX_CONTACT_DEVIATION_M = 0.025
+FITTED_CONTACT_RADIUS_M = 0.01
+
+
+def _plane(points: np.ndarray, up: int) -> tuple[np.ndarray, np.ndarray, float]:
+    middle = points.mean(axis=0)
+    normal = np.linalg.svd(points - middle, full_matrices=False)[2][-1]
+    normal = normal if normal[up] >= 0 else -normal
+    return normal, middle, float(np.sqrt(np.mean(((points - middle) @ normal) ** 2)))
+
+
+def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
+                    meters_per_unit: float) -> dict[str, Any] | None:
+    """Fit the bumpy surface under the footprint, grow it over connected faces, and test it."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    horizontal = [axis for axis in range(3) if axis != up]
+    triangles = np.asarray(mesh.triangles, dtype=float)
+    centres = triangles.mean(axis=1)
+    gentle = np.abs(np.asarray(mesh.face_normals)[:, up]) >= np.cos(np.deg2rad(FITTED_MAX_FACE_TILT_DEGREES))
+    within = np.ones(len(centres), dtype=bool)
+    for axis in horizontal:
+        within &= (centres[:, axis] >= lower[axis]) & (centres[:, axis] <= upper[axis])
+    tolerance = 0.03 / meters_per_unit
+    seed = np.flatnonzero(gentle & within & (np.abs(centres[:, up] - lower[up]) <= tolerance))
+    if len(seed) < 3:
+        return None
+    adjacency = np.asarray(mesh.face_adjacency, dtype=np.int64).reshape(-1, 2)
+    low_band, high_band = (bound / meters_per_unit for bound in FITTED_BAND_BOUNDS_M)
+    faces = seed
+    for _ in range(FITTED_ITERATIONS):
+        normal, middle, rms = _plane(centres[faces], up)
+        near = gentle & (np.abs((centres - middle) @ normal) <= min(max(2.5 * rms, low_band), high_band))
+        linked = adjacency[near[adjacency[:, 0]] & near[adjacency[:, 1]]]
+        graph = coo_matrix((np.ones(len(linked)), (linked[:, 0], linked[:, 1])), shape=(len(centres),) * 2)
+        labels = connected_components(graph, directed=False)[1]
+        seeded = labels[seed[near[seed]]]
+        if not len(seeded):
+            return None
+        grown = np.flatnonzero(near & (labels == np.bincount(seeded).argmax()))
+        if np.array_equal(grown, faces):
+            break
+        faces = grown
+    normal, middle, rms = _plane(centres[faces], up)
+    tilt = float(np.degrees(np.arccos(min(1.0, float(normal[up])))))
+    if tilt > FITTED_MAX_TILT_DEGREES or rms * meters_per_unit > FITTED_MAX_RMS_M:
+        return None
+    # A real triangle of this surface lies under every probe (no gap, no edge),
+    # and the triangles around it stand near the plane there; the object rests on the highest.
+    pad = FITTED_CONTACT_RADIUS_M / meters_per_unit
+    extent = triangles[faces][:, :, horizontal]
+    local = faces[np.all((extent.max(axis=1) >= lower[horizontal] - pad)
+                         & (extent.min(axis=1) <= upper[horizontal] + pad), axis=1)]
+    a, b, c = (triangles[local][:, corner][:, horizontal] for corner in range(3))
+    za, zb, zc = (triangles[local][:, corner, up] for corner in range(3))
+    e1, e2 = b - a, c - a
+    determinant = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+    safe = np.abs(determinant) > 1e-12
+    spread = np.linspace(-1.0, 1.0, 5) * FITTED_CONTACT_RADIUS_M / meters_per_unit
+    contacts = []
+    for x in np.linspace(lower[horizontal[0]], upper[horizontal[0]], 3):
+        for y in np.linspace(lower[horizontal[1]], upper[horizontal[1]], 3):
+            heights = []
+            for dx in spread:
+                for dy in spread:
+                    offset = np.array([x + dx, y + dy]) - a
+                    u = np.divide(offset[:, 0] * e2[:, 1] - offset[:, 1] * e2[:, 0], determinant,
+                                  out=np.full_like(determinant, -1.0), where=safe)
+                    v = np.divide(e1[:, 0] * offset[:, 1] - e1[:, 1] * offset[:, 0], determinant,
+                                  out=np.full_like(determinant, -1.0), where=safe)
+                    inside = safe & (u >= -1e-7) & (v >= -1e-7) & (u + v <= 1 + 1e-7)
+                    if dx == 0 and dy == 0 and not inside.any():
+                        return None
+                    heights.extend((za + u * (zb - za) + v * (zc - za))[inside])
+            plane = middle[up] - (normal[horizontal[0]] * (x - middle[horizontal[0]])
+                                  + normal[horizontal[1]] * (y - middle[horizontal[1]])) / normal[up]
+            contacts.append(float(np.median(heights)))
+            if abs(contacts[-1] - plane) * meters_per_unit > FITTED_MAX_CONTACT_DEVIATION_M:
+                return None
+    top = max(contacts)
+    if abs(top - lower[up]) > tolerance:
+        return None
+    points = triangles[faces].reshape(-1, 3)
+    return {"top_runtime_units": top, "aabb_min": points.min(axis=0).tolist(),
+            "aabb_max": points.max(axis=0).tolist(), "face_indices": faces.tolist(),
+            "basis": "fitted_surface_under_footprint", "fit_rms_m": rms * meters_per_unit,
+            "fit_tilt_degrees": tilt, "physical_measurement": False}
+
+
+def same_support_surface(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """Whether two support results name one surface: the same exact faces, or mostly the same fitted ones."""
+    if first["basis"] != second["basis"]:
+        return False
+    if first["basis"] != "fitted_surface_under_footprint":
+        return first["face_indices"] == second["face_indices"]
+    a, b = set(first["face_indices"]), set(second["face_indices"])
+    return len(a & b) >= SAME_FITTED_SURFACE_MIN_OVERLAP * len(a | b)
 
 
 #: The unobserved lowest band of a built-in, floor-standing assembly (a toe

@@ -1,0 +1,155 @@
+{
+  "checks": [
+    {
+      "dimension": "scale",
+      "id": "pick_place.scale.lengths",
+      "maximum_absolute_error": 0.025,
+      "maximum_rms_error": 0.02,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "pick_to_place_distance",
+        "reference_sheet_long_edge"
+      ],
+      "simulator_reading": "The same lengths in the prepared scene geometry: start pose to destination position in the horizontal plane, and the sheet's long edge.",
+      "site_reading": "Horizontal distance from the middle of the start spot to the middle of the end spot, and the long edge of a sheet of printer paper lying flat on the work surface while filming.",
+      "threshold_basis": "A careful tape reading is good to about 5 mm over 0.3 to 2 m. 2.5 cm is 1.3 to 2.5 percent of a 1 to 2 m span, inside typical reach tolerance. Website scenes currently carry estimated metres, so this is the check an unmeasured scale fails.",
+      "unit": "m"
+    },
+    {
+      "dimension": "registration",
+      "id": "pick_place.registration.surface_heights",
+      "maximum_absolute_error": 0.02,
+      "maximum_rms_error": 0.015,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "pick_surface_height",
+        "place_surface_height"
+      ],
+      "simulator_reading": "Support-surface height above the registered floor plane at the start (support_plane_z_m) and at the destination.",
+      "site_reading": "Floor to the top of the surface where the object starts, and of the one where it ends.",
+      "threshold_basis": "Surface height sets the approach and contact height. About 2 cm separates a clean top grasp from a fingertip striking the surface for common parallel grippers.",
+      "unit": "m"
+    },
+    {
+      "dimension": "collision",
+      "id": "pick_place.collision.clearances",
+      "maximum_absolute_error": 0.05,
+      "maximum_rms_error": 0.05,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "pick_front_clearance",
+        "pick_overhead_clearance"
+      ],
+      "simulator_reading": "The same free distances in the scene's collision geometry, along the approach direction and vertically above the support surface.",
+      "site_reading": "Open floor from the front edge of the start surface straight out to the nearest obstruction, and open height above that surface when something is above it.",
+      "threshold_basis": "Long spans with soft end points. 5 cm is small against approach clearances of 0.3 m or more and still catches a missing or phantom obstruction.",
+      "unit": "m"
+    },
+    {
+      "dimension": "task_state",
+      "id": "pick_place.task_state.object_size",
+      "maximum_absolute_error": 0.01,
+      "maximum_rms_error": 0.008,
+      "minimum_sample_count": 3,
+      "sample_ids": [
+        "object_length",
+        "object_width",
+        "object_height"
+      ],
+      "simulator_reading": "Extents of the task object's collision box in the scoring frame (subject_collision_bounds_scoring_frame_m).",
+      "site_reading": "Length, width and height of one typical object, outside edge to outside edge.",
+      "threshold_basis": "Object size decides grasp width against gripper stroke. 1 cm is roughly 10 to 15 percent of a common parallel-gripper stroke; website estimates assume 25 percent dimension error.",
+      "unit": "m"
+    },
+    {
+      "dimension": "observation",
+      "id": "pick_place.observation.visible_lengths",
+      "maximum_absolute_error": 0.02,
+      "maximum_rms_error": 0.02,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "reference_sheet_long_edge",
+        "object_length"
+      ],
+      "simulator_reading": "The same lengths recovered from a rendered RGB-D view at a capture or robot camera pose, using the scene's camera intrinsics: the appearance the policy sees, not the collision geometry.",
+      "site_reading": "The sheet's long edge and the object's length, from the same readings.",
+      "threshold_basis": "About 7 percent of a sheet edge. Catches a render whose appearance is out of scale or misaligned with the collision geometry, which the scale check cannot see.",
+      "unit": "m"
+    },
+    {
+      "dimension": "task_dynamics",
+      "id": "pick_place.task_dynamics.object_mass",
+      "maximum_absolute_error": 0.1,
+      "maximum_rms_error": 0.1,
+      "minimum_sample_count": 1,
+      "sample_ids": [
+        "object_mass"
+      ],
+      "simulator_reading": "The task object's configured mass in the prepared scene.",
+      "site_reading": "Weight of one typical object on a kitchen, postal or bathroom scale.",
+      "threshold_basis": "Covers kitchen-scale reading error and is small against typical payload margins. A heavy object may need a relative limit instead; an open question for the reviewer.",
+      "unit": "kg"
+    }
+  ],
+  "family": "rigid_pick_place",
+  "readings": [
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "pick_surface_height"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "place_surface_height"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "pick_to_place_distance"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "object_length"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "object_width"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "object_height"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "pick_front_clearance"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "pick_overhead_clearance"
+    },
+    {
+      "articulation": null,
+      "quantity": "mass",
+      "sample_id": "object_mass"
+    },
+    {
+      "articulation": null,
+      "quantity": "length",
+      "sample_id": "reference_sheet_long_edge"
+    }
+  ],
+  "schema_version": "blueprint.site_task_fidelity_profile_template.v1",
+  "threshold_review": {
+    "proposal": "AI-assisted engineering proposal of 2026-10-19. These are not reviewed values: the founder reviews them, and records the review here, before any profile is produced.",
+    "reviewed_at_iso": null,
+    "reviewed_by": null,
+    "reviewed_checks_digest": null,
+    "status": "pending_review"
+  }
+}

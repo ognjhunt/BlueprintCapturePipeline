@@ -1,0 +1,545 @@
+"""No provider calls: Atlas posed RGBD fuses into a draft splat that splats2Mesh accepts."""
+import json
+import math
+import struct
+import zlib
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from blueprint_pipeline import atlas_depth_splat as depth_splat
+from blueprint_pipeline import website_atlas_tasks as tasks
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
+
+
+def camera(position=(0.0, 0.0, 0.0), yaw_degrees=0.0, width=48, height=64, focal=60.0):
+    half = math.radians(yaw_degrees) / 2
+    return {"extrinsics": {"coordinateSystem": "rub", "position": list(position),
+                           "quaternion": [0.0, math.sin(half), 0.0, math.cos(half)]},
+            "intrinsics": {"fx": focal, "fy": focal, "cx": width / 2, "cy": height / 2,
+                           "width": width, "height": height}}
+
+
+def plane_depth(cam, plane_z=-2.0):
+    k, e = cam["intrinsics"], cam["extrinsics"]
+    u = (np.arange(k["width"]) + 0.5 - k["cx"]) / k["fx"]
+    v = (np.arange(k["height"]) + 0.5 - k["cy"]) / k["fy"]
+    rays = np.stack(np.broadcast_arrays(u[None, :], -v[:, None], -1.0), axis=-1)
+    rays = rays @ depth_splat._rotation_matrix(e["quaternion"]).T
+    return ((plane_z - e["position"][2]) / rays[..., 2]).astype(np.float32)
+
+
+def frame(cam, depth, frame_id="f0"):
+    height, width = depth.shape
+    rgb = np.zeros((height, width, 3), np.uint8)
+    rgb[..., 0] = 200
+    rgb[..., 1] = (np.arange(width) * 4 % 256)[None, :]
+    return depth_splat.posed_frame(frame_id=frame_id, rgb=rgb, depth=depth,
+                                   confidence=np.full(depth.shape, 255, np.uint8), camera=cam)
+
+
+def test_overlapping_views_of_one_plane_agree_and_fuse_onto_it():
+    first, second = camera(), camera((0.2, 0.0, 0.0), yaw_degrees=10.0)
+    frames = [frame(first, plane_depth(first), "a"), frame(second, plane_depth(second), "b")]
+    splat, report = depth_splat.fuse_posed_frames(frames)
+    assert report["cross_view_agreement"]["median_relative_residual"] < 0.01
+    assert {(row["source"], row["target"]) for row in report["cross_view_agreement"]["pairs"]} == {("a", "b"), ("b", "a")}
+    assert np.allclose(splat.xyz[:, 2], -2.0, atol=1e-5)
+    # Discs lie in the plane: the thin local z axis is rotated onto the plane normal.
+    assert np.allclose(np.abs(splat.quats[:, 0]), 1.0, atol=1e-5)
+    assert np.all(splat.scales[:, 2] < splat.scales[:, 0])
+    assert report["voxel_size"] == pytest.approx(2.0 * np.median([2.0 / 60.0]), rel=0.1)
+
+
+def test_depth_discontinuities_do_not_become_flying_points():
+    cam = camera()
+    depth = np.full((64, 48), 2.0, np.float32)
+    depth[:, :24] = 1.0
+    splat, _ = depth_splat.fuse_posed_frames([frame(cam, depth)])
+    z = -splat.xyz[:, 2]
+    assert np.all((np.abs(z - 1.0) < 1e-4) | (np.abs(z - 2.0) < 1e-4))
+
+
+def test_views_whose_depths_disagree_fail_closed():
+    first, second = camera(), camera((0.2, 0.0, 0.0), yaw_degrees=10.0)
+    frames = [frame(first, plane_depth(first), "a"), frame(second, plane_depth(second) * 1.2, "b")]
+    with pytest.raises(ValueError, match="atlas_depth_splat_cross_view_inconsistent"):
+        depth_splat.fuse_posed_frames(frames)
+
+
+def test_spz_round_trip_is_reproducible_and_within_quantization():
+    rng = np.random.default_rng(7)
+    count = 257
+    quats = rng.normal(size=(count, 4))
+    splat = depth_splat.SplatData(count=count, xyz=rng.uniform(-3, 3, (count, 3)).astype(np.float32),
+                                  opacity=rng.uniform(-2, 4, count).astype(np.float32),
+                                  f_dc=rng.uniform(-1.7, 1.7, (count, 3)).astype(np.float32),
+                                  scales=rng.uniform(-9, -2, (count, 3)).astype(np.float32),
+                                  quats=(quats / np.linalg.norm(quats, axis=1, keepdims=True)).astype(np.float32),
+                                  properties=depth_splat.PLY_PROPERTIES)
+    data = depth_splat.encode_spz(splat)
+    assert data == depth_splat.encode_spz(splat)
+    decoded = depth_splat.decode_spz(data)
+    assert decoded.count == count
+    assert np.max(np.abs(decoded.xyz - splat.xyz)) <= 0.5 / 4096 + 1e-6
+    assert np.max(np.abs(decoded.f_dc - splat.f_dc)) <= 0.5 / (0.15 * 255) + 1e-6
+    assert np.max(np.abs(decoded.scales - splat.scales)) <= 0.5 / 16 + 1e-6
+    alignment = np.abs(np.sum(decoded.quats * splat.quats, axis=1))
+    assert np.min(alignment) > 0.99
+    splat.xyz[0, 0] = 5000.0
+    with pytest.raises(ValueError, match="spz_position_out_of_range"):
+        depth_splat.encode_spz(splat)
+
+
+def test_mesh_spec_renders_capture_cameras_within_atlas_limits(tmp_path):
+    spz = tmp_path / "splat.spz"
+    spz.write_bytes(b"splat")
+    portrait = camera(width=720, height=1280, focal=1284.0)
+    frames = [frame(portrait, np.ones((1280, 720), np.float32))]
+    spec = depth_splat.splats2mesh_task_spec(frames=frames, spz=spz, source_video_digest="sha256:" + "0" * 64)
+    tasks.validate_task_request(spec["task"], spec["request"])
+    rendered = spec["request"]["cameras"][0]
+    assert (rendered["intrinsics"]["width"], rendered["intrinsics"]["height"]) == (576, 1024)
+    assert rendered["intrinsics"]["fx"] == pytest.approx(1284.0 * 0.8)
+    assert rendered["intrinsics"]["cy"] == pytest.approx(640.0 * 0.8)
+    assert rendered["extrinsics"] == portrait["extrinsics"]
+    assert spec["uploads"]["splat"]["sha256"].startswith("sha256:")
+    frames.append(frame(camera(), np.ones((64, 48), np.float32)))
+    spec = depth_splat.splats2mesh_task_spec(frames=frames, spz=spz, source_video_digest="sha256:" + "0" * 64)
+    # Different source/output grids still render identical world-space rays.
+    for source, target in zip(frames, spec["request"]["cameras"], strict=True):
+        before, after = source["intrinsics"], target["intrinsics"]
+        for axis, size in (("x", "width"), ("y", "height")):
+            assert after["f" + axis] / after[size] == pytest.approx(before["f" + axis] / before[size])
+            assert after["c" + axis] / after[size] == pytest.approx(before["c" + axis] / before[size])
+
+
+def write_exr(path, depth, compression=3):
+    """Single-channel HALF scanline EXR, the layout Atlas returns, without OpenCV."""
+    half = np.ascontiguousarray(depth, dtype="<f2")
+    height, width = half.shape
+    lines = 16 if compression == 3 else 1
+
+    def attribute(name, kind, value):
+        return name.encode() + b"\0" + kind.encode() + b"\0" + struct.pack("<I", len(value)) + value
+
+    window = struct.pack("<iiii", 0, 0, width - 1, height - 1)
+    header = b"".join([depth_splat.EXR_MAGIC, struct.pack("<I", 2),
+                       attribute("channels", "chlist", b"Y\0" + struct.pack("<iB3xii", 1, 0, 1, 1) + b"\0"),
+                       attribute("compression", "compression", bytes([compression])),
+                       attribute("dataWindow", "box2i", window), attribute("displayWindow", "box2i", window),
+                       attribute("lineOrder", "lineOrder", b"\0"), b"\0"])
+    chunks = []
+    for y in range(0, height, lines):
+        raw = np.frombuffer(half[y:y + lines].tobytes(), np.uint8)
+        payload = raw.tobytes()
+        if compression:
+            interleaved = np.concatenate([raw[0::2], raw[1::2]]).astype(np.int64)
+            delta = interleaved.copy()
+            delta[1:] = (interleaved[1:] - interleaved[:-1] + 128) & 0xFF
+            packed = zlib.compress(delta.astype(np.uint8).tobytes())
+            payload = packed if len(packed) < len(payload) else payload
+        chunks.append(struct.pack("<ii", y, len(payload)) + payload)
+    offsets, offset = [], len(header) + 8 * len(chunks)
+    for chunk in chunks:
+        offsets.append(offset)
+        offset += len(chunk)
+    path.write_bytes(header + struct.pack(f"<{len(chunks)}Q", *offsets) + b"".join(chunks))
+    return path
+
+
+@pytest.mark.parametrize("compression", [0, 3])
+def test_exr_depth_reader_matches_written_half_floats_and_refuses_other_layouts(tmp_path, compression):
+    depth = np.linspace(0.5, 3.0, 40 * 33, dtype=np.float32).reshape(40, 33)
+    depth[3, 4] = np.nan
+    path = write_exr(tmp_path / "d.exr", depth, compression)
+    read, expected = depth_splat.read_exr_depth(path), depth.astype(np.float16).astype(np.float32)
+    assert np.array_equal(np.isnan(read), np.isnan(expected))
+    assert np.array_equal(read[~np.isnan(read)], expected[~np.isnan(expected)])
+    tiled = bytearray(path.read_bytes())
+    tiled[5] |= 0x02
+    (tmp_path / "tiled.exr").write_bytes(bytes(tiled))
+    with pytest.raises(ValueError, match="layout_unsupported"):
+        depth_splat.read_exr_depth(tmp_path / "tiled.exr")
+
+
+def retained_pose_root(root):
+    import cv2
+
+    cameras, usage = [], []
+    for index, cam in enumerate([camera(), camera((0.2, 0.0, 0.0), yaw_degrees=10.0)]):
+        item = frame(cam, plane_depth(cam), f"f{index}")
+        folder = root / "atlas_pose" / "outputs" / f"{index:06d}"
+        folder.mkdir(parents=True)
+        write_exr(folder / "depth.bin", item["depth"])
+        for role, pixels in (("image", np.ascontiguousarray(item["rgb"][..., ::-1])),
+                             ("confidence", np.full(item["depth"].shape, 255, np.uint8))):
+            encoded = folder / f"{role}.png"
+            assert cv2.imwrite(str(encoded), pixels)
+            encoded.rename(folder / f"{role}.bin")
+        outputs = [{"role": role, "path": str((folder / f"{role}.bin").relative_to(root)),
+                    "sha256": depth_splat._sha256_file(folder / f"{role}.bin")} for role in ("image", "depth", "confidence")]
+        cameras.append({"camera": cam})
+        usage.append({"frame_id": f"f{index}", "outputs": outputs})
+    result = {"binding": {"source_video_digest": "sha256:" + "1" * 64}, "depth_unit": "provider_world_units",
+              "scale_status": "unscaled_provider_world_units",
+              "operation": {"id": "op_retained", "response": {"frames": cameras}},
+              "operation_receipt": {"input_usage": {"frames": usage}}}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    (root / depth_splat.POSE_RESULT).write_text(json.dumps(result))
+    return root
+
+
+def test_retained_pose_result_builds_bound_splat_files(tmp_path):
+    pose_root = retained_pose_root(tmp_path / "pose")
+    manifest = depth_splat.build_depth_splat(pose_root, tmp_path / "splat")
+    out = tmp_path / "splat"
+    assert manifest["digest"] == canonical_digest(manifest, digest_field="digest")
+    assert manifest["claim_scope"] == "development_only" and manifest["metric_measurement_proven"] is False
+    for row in manifest["outputs"]:
+        assert depth_splat._sha256_file(out / row["path"]) == row["sha256"]
+    assert read_standard_3dgs_ply(out / "atlas_depth_splat.ply").count == manifest["gaussian_count"]
+    assert depth_splat.decode_spz((out / "atlas_depth_splat.spz").read_bytes()).count == manifest["gaussian_count"]
+    spec = json.loads((out / "splats2mesh_task_spec.json").read_text())
+    assert spec["source_video_digest"] == "sha256:" + "1" * 64
+    assert spec["uploads"]["splat"]["sha256"] == manifest["outputs"][1]["sha256"]
+
+
+def test_changed_retained_depth_is_refused(tmp_path):
+    pose_root = retained_pose_root(tmp_path / "pose")
+    depth = pose_root / "atlas_pose" / "outputs" / "000001" / "depth.bin"
+    depth.write_bytes(depth.read_bytes() + b"\0")
+    with pytest.raises(ValueError, match="atlas_depth_splat_output_changed"):
+        depth_splat.load_posed_rgbd(pose_root)
+
+
+def test_a_nearer_surface_hiding_points_is_occlusion_not_disagreement():
+    # Camera b sees a panel at depth 0.5 in front of most of the background camera a sees.
+    first, second = camera(), camera((0.5, 0.0, 0.0))
+    k = second["intrinsics"]
+    panel_x = 0.5 + (np.arange(k["width"]) + 0.5 - k["cx"]) / k["fx"] * 0.5
+    occluded = np.where(((panel_x >= 0.35) & (panel_x <= 0.75))[None, :], 0.5, 2.0)
+    frames = [frame(first, plane_depth(first), "a"),
+              frame(second, np.broadcast_to(occluded, (k["height"], k["width"])).astype(np.float32), "b")]
+    _, report = depth_splat.fuse_posed_frames(frames)
+    agreement = report["cross_view_agreement"]
+    assert agreement["median_relative_residual"] < 0.01
+    hidden = next(pair for pair in agreement["pairs"] if (pair["source"], pair["target"]) == ("a", "b"))
+    assert hidden["occluded_samples"] > hidden["overlap_samples"]
+
+
+def test_cross_view_work_is_bounded_to_nearest_views():
+    cams = [camera((0.05 * index, 0.0, 0.0), width=16, height=16, focal=20.0) for index in range(12)]
+    frames = [frame(cam, plane_depth(cam), f"f{index}") for index, cam in enumerate(cams)]
+    _, report = depth_splat.fuse_posed_frames(frames)
+    pairs = report["cross_view_agreement"]["pairs"]
+    assert len(pairs) == 12 * depth_splat.CROSS_VIEW_NEIGHBOURS
+    assert [pair["target"] for pair in pairs if pair["source"] == "f0"] == [f"f{index}" for index in range(1, 9)]
+
+
+def test_streamed_voxel_sums_match_one_batch_fusion():
+    first, second = camera(), camera((0.2, 0.0, 0.0), yaw_degrees=10.0)
+    samples = [depth_splat.surface_samples(frame(cam, plane_depth(cam))) for cam in (first, second)]
+    streamed, batched = depth_splat.VoxelSums(0.05), depth_splat.VoxelSums(0.05)
+    for sample in samples:
+        streamed.add(sample)
+    batched.add({key: np.concatenate([sample[key] for sample in samples]) for key in samples[0]})
+    assert np.array_equal(streamed.keys, batched.keys) and np.allclose(streamed.sums, batched.sums)
+
+
+def test_generated_background_writer_retains_edit_and_review_provenance(tmp_path):
+    root=retained_pose_root(tmp_path/'pose')
+    result,frames=depth_splat.load_posed_rgbd(root)
+    manifest=depth_splat.write_depth_splat(frames=frames,result=result,output_root=tmp_path/'generated',
+        generated_result_digests=['atlas-masked-task'],visual_review_digest='independent-review')
+    assert manifest['generated_content'] is True
+    assert manifest['generated_result_digests']==['atlas-masked-task']
+    assert manifest['visual_review_digest']=='independent-review'
+    assert manifest['appearance_basis']=='generated_object_absent_background'
+    assert manifest['metric_measurement_proven'] is False
+
+
+def disc_splat(xyz, normals, voxel=0.01):
+    count = len(xyz)
+    return depth_splat.depth_fused_splat({"xyz": np.asarray(xyz, float), "rgb": np.full((count, 3), 0.6),
+                                          "normal": np.asarray(normals, float), "normal_agreement": np.ones(count),
+                                          "confidence": np.ones(count)}, voxel)
+
+
+def test_oversized_splat_merges_onto_a_coarser_grid_for_meshing_only():
+    grid = np.stack(np.meshgrid(np.arange(60), np.arange(60), indexing="ij"), -1).reshape(-1, 2) * 0.01
+    normal = np.array([-0.3, 0.0, 1.0]) / np.linalg.norm([-0.3, 0.0, 1.0])
+    splat = disc_splat(np.column_stack([grid, 0.3 * grid[:, 0]]), np.tile(normal, (len(grid), 1)))
+    merged, size = depth_splat.splats2mesh_input(splat, 0.01, limit=1000)
+    assert merged.count <= 1000 < splat.count and size > 0.01
+    assert np.allclose(np.abs(depth_splat._disc_normals(merged) @ normal), 1.0, atol=1e-5)
+    assert np.all(merged.scales[:, 2] < merged.scales[:, 0]), "merged discs stay thin on the surface"
+    assert np.allclose(merged.xyz[:, 2], 0.3 * merged.xyz[:, 0], atol=1e-5)
+    assert np.allclose(merged.f_dc, splat.f_dc[0], atol=1e-5)
+    same, voxel = depth_splat.splats2mesh_input(splat, 0.01, limit=splat.count)
+    assert same is splat and voxel == 0.01
+
+
+def test_wall_discs_facing_either_way_still_merge_into_thin_discs():
+    grid = np.stack(np.meshgrid(np.arange(60), np.arange(60), indexing="ij"), -1).reshape(-1, 2) * 0.01
+    normals = np.zeros((len(grid), 3))
+    normals[:, 0] = np.where(np.arange(len(grid)) % 2, 1.0, -1.0)
+    splat = disc_splat(np.column_stack([np.zeros(len(grid)), grid]), normals)
+    merged, _ = depth_splat.splats2mesh_input(splat, 0.01, limit=1000)
+    assert np.allclose(np.abs(depth_splat._disc_normals(merged)[:, 0]), 1.0, atol=1e-5)
+    assert np.all(merged.scales[:, 2] < merged.scales[:, 0])
+
+
+def test_mesh_attempt_merges_an_unattempted_oversized_export_without_rewriting_it(tmp_path, monkeypatch):
+    splat_root = tmp_path / "splat"
+    manifest = depth_splat.build_depth_splat(retained_pose_root(tmp_path / "pose"), splat_root)
+    retained = {path.name: path.read_bytes() for path in splat_root.iterdir()}
+    original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    assert depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh") == (original, tmp_path / "mesh")
+    monkeypatch.setattr(depth_splat, "SPLATS2MESH_MAX_GAUSSIANS", manifest["gaussian_count"] // 3)
+    spec, mesh_root = depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh")
+    assert mesh_root == tmp_path / "mesh-merged-v1" and not mesh_root.exists()
+    assert spec["request"] == original["request"], "the priced request is unchanged"
+    receipt = json.loads((tmp_path / "mesh-input-merged-v1" / "mesh_input.json").read_text())
+    assert spec["uploads"]["splat"] == {"path": receipt["path"], "sha256": receipt["sha256"]}
+    assert receipt["source_sha256"] == original["uploads"]["splat"]["sha256"]
+    assert receipt["gaussian_count"] <= manifest["gaussian_count"] // 3 < manifest["gaussian_count"]
+    assert receipt["voxel_size"] > manifest["voxel_size"]
+    assert depth_splat.decode_spz(Path(receipt["path"]).read_bytes()).count == receipt["gaussian_count"]
+    assert {path.name: path.read_bytes() for path in splat_root.iterdir()} == retained
+    # A restart reuses the same merged input and attempt root.
+    assert depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh") == (spec, mesh_root)
+
+
+def test_mesh_attempt_keeps_an_already_attempted_root_and_refuses_a_changed_input(tmp_path, monkeypatch):
+    splat_root = tmp_path / "splat"
+    manifest = depth_splat.build_depth_splat(retained_pose_root(tmp_path / "pose"), splat_root)
+    original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    monkeypatch.setattr(depth_splat, "SPLATS2MESH_MAX_GAUSSIANS", manifest["gaussian_count"] // 3)
+    (tmp_path / "mesh" / "atlas_pose").mkdir(parents=True)
+    assert depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh") == (original, tmp_path / "mesh")
+    depth_splat.splats2mesh_attempt(splat_root, tmp_path / "other")
+    merged = tmp_path / "other-input-merged-v1" / "atlas_depth_splat_mesh_input.spz"
+    merged.write_bytes(merged.read_bytes() + b"\0")
+    with pytest.raises(ValueError, match="mesh_input_changed"):
+        depth_splat.splats2mesh_attempt(splat_root, tmp_path / "other")
+    (splat_root / "atlas_depth_splat.spz").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="mesh_source_changed"):
+        depth_splat.splats2mesh_attempt(splat_root, tmp_path / "third")
+
+
+def test_discs_of_crossing_surfaces_merge_into_a_round_gaussian():
+    xyz = np.full((200, 3), 0.003) + np.linspace(0.0, 0.002, 200)[:, None]
+    normals = np.where((np.arange(200) % 2 == 0)[:, None], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    merged, _ = depth_splat.splats2mesh_input(disc_splat(xyz, normals), 0.01, limit=100)
+    assert merged.count == 1 and np.allclose(merged.scales[0], merged.scales[0, 0])
+@pytest.mark.parametrize("merge_rows", [1, 10**9])
+def test_batched_voxel_merges_equal_a_direct_sum(monkeypatch, merge_rows):
+    rng = np.random.default_rng(3)
+    samples = [{"points": rng.uniform(-1, 1, (500, 3)), "colors": rng.uniform(0, 1, (500, 3)),
+                "normals": rng.normal(size=(500, 3)), "weights": rng.uniform(0.1, 1, 500),
+                "slant": rng.uniform(0.001, 0.01, 500)} for _ in range(6)]
+    monkeypatch.setattr(depth_splat.VoxelSums, "MIN_MERGE_ROWS", merge_rows)
+    sums = depth_splat.VoxelSums(0.2)
+    for sample in samples:
+        sums.add(sample)
+    every = {key: np.concatenate([sample[key] for sample in samples]) for key in samples[0]}
+    keys, inverse = np.unique(depth_splat._voxel_keys(every["points"], 0.2), return_inverse=True)
+    weights = every["weights"][:, None]
+    values = np.concatenate([weights, every["points"] * weights, every["colors"] * weights,
+                             every["normals"] * weights, np.ones_like(weights), every["slant"][:, None] * weights], axis=1)
+    expected = np.stack([np.bincount(inverse.reshape(-1), weights=values[:, column], minlength=len(keys))
+                         for column in range(values.shape[1])], axis=1)
+    assert np.array_equal(sums.keys, keys) and np.allclose(sums.sums, expected)
+
+
+def tilted_plane_depth(cam, tilt_degrees, distance=2.0):
+    k = cam["intrinsics"]
+    u = (np.arange(k["width"]) + 0.5 - k["cx"]) / k["fx"]
+    v = (np.arange(k["height"]) + 0.5 - k["cy"]) / k["fy"]
+    rays = np.stack(np.broadcast_arrays(u[None, :], -v[:, None], -1.0), axis=-1)
+    normal = np.array([math.sin(math.radians(tilt_degrees)), 0.0, math.cos(math.radians(tilt_degrees))])
+    return (-distance * normal[2] / (rays @ normal)).astype(np.float32)
+
+
+def test_oblique_view_discs_bridge_the_spacing_of_their_pixel_rows():
+    cam = camera(width=48, height=64, focal=120.0)
+    front, front_report = depth_splat.fuse_posed_frames([frame(cam, plane_depth(cam))])
+    assert np.allclose(np.exp(front.scales[:, 0]), depth_splat.DISC_SIGMA_PER_VOXEL * front_report["voxel_size"],
+                       rtol=1e-5), "a frontal view keeps one-voxel discs"
+    oblique_frame = frame(cam, tilted_plane_depth(cam, 70.0))
+    oblique, report = depth_splat.fuse_posed_frames([oblique_frame])
+    sigma, base = np.exp(oblique.scales[:, 0]), depth_splat.DISC_SIGMA_PER_VOXEL * report["voxel_size"]
+    rows = depth_splat.surface_samples(oblique_frame)["slant"]
+    assert np.median(rows) > report["voxel_size"], "at 70 degrees the pixel rows land wider than a voxel"
+    assert np.all(sigma >= base * (1 - 1e-6)) and np.median(sigma) > 1.3 * base
+    assert np.max(sigma) <= depth_splat.DISC_SIGMA_PER_VOXEL * np.max(rows) * (1 + 1e-6)
+    assert np.all(oblique.scales[:, 2] < oblique.scales[:, 0])
+
+
+def test_merged_mesh_input_keeps_the_row_spacing_its_discs_bridged():
+    grid = np.stack(np.meshgrid(np.arange(60), np.arange(60), indexing="ij"), -1).reshape(-1, 2) * 0.01
+    count = len(grid)
+    splat = depth_splat.depth_fused_splat({
+        "xyz": np.column_stack([grid, np.zeros(count)]), "rgb": np.full((count, 3), 0.6),
+        "normal": np.tile([0.0, 0.0, 1.0], (count, 1)), "normal_agreement": np.ones(count),
+        "confidence": np.ones(count), "slant": np.full(count, 0.03)}, 0.01)
+    merged, size = depth_splat.splats2mesh_input(splat, 0.01, limit=1000)
+    assert size < 0.03
+    assert np.allclose(np.exp(merged.scales[:, 0]), depth_splat.DISC_SIGMA_PER_VOXEL * 0.03, rtol=1e-4)
+
+
+def write_attempt(root, state, result=False):
+    (root / "atlas_pose").mkdir(parents=True)
+    (root / "atlas_pose" / "submission.json").write_text(json.dumps(state))
+    if result:
+        (root / "result.json").write_text("{}")
+
+
+def failed(operation_id):
+    return {"status": "failed", "operation_id": operation_id,
+            "terminal_operation": {"id": operation_id, "done": True, "error": {"code": 13}}}
+
+
+@pytest.mark.parametrize("state, retry, result, switches", [
+    (failed("op1"), None, False, True),
+    (failed("op1"), failed("op2"), False, True),
+    (failed("op1"), {"status": "submitted", "operation_id": "op2"}, False, False),
+    ({"status": "submitted", "operation_id": "op1"}, None, False, False),
+    ({"status": "completed", "operation_id": "op1"}, None, True, False),
+    ({"status": "failed", "terminal_error": {"reason": "reconciliation_window_lapsed"}}, None, False, False),
+    ({"status": "rejected", "provider_rejection": {"status": 400, "retryable": False}}, None, False, False),
+])
+def test_mesh_attempt_moves_to_the_merged_input_only_after_confirmed_failures(
+        tmp_path, monkeypatch, state, retry, result, switches):
+    splat_root = tmp_path / "splat"
+    manifest = depth_splat.build_depth_splat(retained_pose_root(tmp_path / "pose"), splat_root)
+    monkeypatch.setattr(depth_splat, "SPLATS2MESH_MAX_GAUSSIANS", manifest["gaussian_count"] // 3)
+    write_attempt(tmp_path / "mesh", state, result)
+    if retry is not None:
+        write_attempt(tmp_path / "mesh" / "retry", retry)
+    spec, mesh_root = depth_splat.splats2mesh_attempt(splat_root, tmp_path / "mesh")
+    assert mesh_root == (tmp_path / "mesh-merged-v1" if switches else tmp_path / "mesh")
+    original = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
+    assert (spec["uploads"] != original["uploads"]) is switches
+
+
+def test_terraced_atlas_depth_smooths_back_onto_its_plane():
+    cam = camera(width=120, height=160, focal=200.0)
+    true = tilted_plane_depth(cam, 55.0).astype(np.float64)
+    terraced = (np.round(true / 0.009) * 0.009).astype(np.float32)  # Atlas-like 9 mm plateaus
+    smoothed = depth_splat.smoothed_depth(terraced).astype(np.float64)
+    interior = (slice(12, -12), slice(12, -12))
+    raw_error = np.median(np.abs(terraced[interior] - true[interior]))
+    assert np.median(np.abs(smoothed[interior] - true[interior])) < 0.25 * raw_error
+    assert np.mean(np.abs(smoothed[interior] - true[interior]) < 0.001) > 0.8 > np.mean(
+        np.abs(terraced[interior] - true[interior]) < 0.001)
+
+
+def test_depth_smoothing_never_blends_across_a_real_edge():
+    near = np.round(np.linspace(0.9, 1.1, 96)[None, :] / 0.009) * 0.009 * np.ones((64, 1))
+    depth = np.where(np.arange(96)[None, :] < 48, near, 2.0 * near).astype(np.float32)
+    smoothed = depth_splat.smoothed_depth(depth)
+    between = (smoothed > 1.1 * 1.03) & (smoothed < 1.8 * 0.97)
+    assert not between.any(), "no intermediate surface appears at the edge"
+
+
+def test_planes_stay_exact_beside_missing_depth():
+    cam = camera(width=96, height=96, focal=150.0)
+    true = tilted_plane_depth(cam, 40.0)
+    holed = true.copy()
+    holed[30:50, 40:60] = np.nan
+    holed[:, :3] = 0.0
+    smoothed = depth_splat.smoothed_depth(holed)
+    assert np.isnan(smoothed[30:50, 40:60]).all() and (smoothed[:, :3] == 0).all()
+    valid = np.isfinite(holed) & (holed > 0)
+    assert np.allclose(smoothed[valid], true[valid], rtol=1e-5)
+
+
+def test_views_with_opposite_depth_errors_fuse_onto_one_surface(monkeypatch):
+    # Atlas returns each view's depth with its own low-frequency error.
+    first = camera(width=96, height=128, focal=120.0)
+    second = camera((0.2, 0.0, 0.0), yaw_degrees=10.0, width=96, height=128, focal=120.0)
+    frames = [frame(first, plane_depth(first) * 1.015, "a"), frame(second, plane_depth(second) * 0.985, "b")]
+    splat, report = depth_splat.fuse_posed_frames(frames)
+    monkeypatch.setattr(depth_splat, "DEPTH_CONSENSUS_PASSES", 0)
+    layered, _ = depth_splat.fuse_posed_frames(frames)
+    assert report["cross_view_agreement"]["median_relative_residual"] > 0.025  # gated before any rescaling
+    assert report["depth_consensus"]["median_relative_residual_after"] < 0.003
+    off_plane, layered_off_plane = np.abs(splat.xyz[:, 2] + 2.0), np.abs(layered.xyz[:, 2] + 2.0)
+    assert np.median(off_plane) < 0.2 * np.median(layered_off_plane)
+
+
+def test_views_that_already_agree_are_left_unchanged():
+    first, second = camera(), camera((0.2, 0.0, 0.0), yaw_degrees=10.0)
+    frames = [frame(first, plane_depth(first), "a"), frame(second, plane_depth(second), "b")]
+    rescaled, report = depth_splat.consensus_depths(frames)
+    assert report["median_voted_grid_share_by_pass"][0] > 0.5
+    for before, after in zip(frames, rescaled):
+        assert np.allclose(after["depth"], before["depth"], rtol=1e-6)
+
+
+def test_an_occluder_and_the_surface_behind_it_never_vote_for_each_other():
+    first, second = camera(), camera((0.5, 0.0, 0.0))
+    k = second["intrinsics"]
+    panel_x = 0.5 + (np.arange(k["width"]) + 0.5 - k["cx"]) / k["fx"] * 0.5
+    occluded = np.where(((panel_x >= 0.35) & (panel_x <= 0.75))[None, :], 0.5, 2.0)
+    frames = [frame(first, plane_depth(first), "a"),
+              frame(second, np.broadcast_to(occluded, (k["height"], k["width"])).astype(np.float32), "b")]
+    rescaled, _ = depth_splat.consensus_depths(frames)
+    for before, after in zip(frames, rescaled):
+        assert np.allclose(after["depth"], before["depth"], rtol=1e-6)
+
+
+def test_views_that_share_no_surface_keep_their_own_depth():
+    ahead, behind = camera(), camera(yaw_degrees=180.0)
+    frames = [frame(ahead, plane_depth(ahead) * 1.03, "a"), frame(behind, np.full((64, 48), 1.7, np.float32), "b")]
+    rescaled, report = depth_splat.consensus_depths(frames)
+    assert report["median_voted_grid_share_by_pass"] == [0.0] * depth_splat.DEPTH_CONSENSUS_PASSES
+    for before, after in zip(frames, rescaled):
+        assert np.array_equal(after["depth"], before["depth"])
+
+
+def test_a_sample_straddling_an_occluder_edge_is_no_vote():
+    # b sits 0.4 mm to the side, so a's pixels land 2 % of a pixel inside b's next column:
+    # blending b's panel (depth 1) into its background (depth 2) there would read as a 2 % vote.
+    a, b = camera(width=120, height=80, focal=100.0), camera((0.0004, 0.0, 0.0), width=120, height=80, focal=100.0)
+    edge = 2 + 4 * 14  # a column on the consensus grid
+    panel = np.full((80, 120), 2.0, np.float32)
+    panel[:, :edge] = 1.0
+    frames = [frame(a, np.full((80, 120), 2.0, np.float32), "a"), frame(b, panel, "b")]
+    rescaled, _ = depth_splat.consensus_depths(frames)
+    assert np.array_equal(rescaled[0]["depth"], frames[0]["depth"])
+
+
+def test_a_correction_never_crosses_an_occlusion_edge():
+    # Both views agree on a depth-1 foreground but disagree by 4 % on the background beside it.
+    a, b = camera(width=96, height=64, focal=80.0), camera(width=96, height=64, focal=80.0)
+    foreground = np.arange(96)[None, :] < 46
+    frames = [frame(a, np.broadcast_to(np.where(foreground, 1.0, 2.0), (64, 96)).astype(np.float32), "a"),
+              frame(b, np.broadcast_to(np.where(foreground, 1.0, 2.08), (64, 96)).astype(np.float32), "b")]
+    rescaled, _ = depth_splat.consensus_depths(frames)
+    for before, after in zip(frames, rescaled):
+        assert np.array_equal(after["depth"][:, :46], before["depth"][:, :46]), "the agreeing foreground stays one sheet"
+    assert np.median(np.abs(rescaled[0]["depth"][:, 60:] - rescaled[1]["depth"][:, 60:])) < 0.02
+
+
+def test_masked_repair_views_beside_a_view_never_crowd_out_the_view_that_overlaps_it():
+    # Repair views sit beside each full view but keep only a few pixels each; the
+    # production export gave one full view seven of them as its eight nearest cameras.
+    a = camera(width=96, height=128, focal=120.0)
+    b = camera((0.6, 0.0, 0.0), yaw_degrees=15.0, width=96, height=128, focal=120.0)
+    frames = [frame(a, plane_depth(a) * 1.015, "a"), frame(b, plane_depth(b) * 0.985, "b")]
+    patch = np.zeros((128, 96), np.float32)
+    patch[60:64, 44:48] = 1.0
+    for anchor, x in (("a", 0.0), ("b", 0.6)):
+        for index in range(depth_splat.CROSS_VIEW_NEIGHBOURS):
+            cam = camera((x + 0.01 * index - 0.04, 0.02, 0.0), width=96, height=128, focal=120.0)
+            repair = frame(cam, plane_depth(cam), f"{anchor}-repair-{index}")
+            frames.append({**repair, "confidence": patch})
+    rescaled, report = depth_splat.consensus_depths(frames)
+    for view, cam in ((0, a), (1, b)):
+        assert np.median(np.abs(rescaled[view]["depth"] / plane_depth(cam) - 1.0)) < 0.003
+    assert report["median_voting_views_by_pass"][0] >= 1

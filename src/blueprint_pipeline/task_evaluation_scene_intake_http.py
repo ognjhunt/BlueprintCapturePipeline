@@ -31,6 +31,65 @@ from .task_evaluation_scene_intake import (
 
 def register_scene_intake_routes(app: FastAPI, require_admission: Callable,
                                  deployment_identity: Callable) -> None:
+    def require_support_issuer(request: Request) -> None:
+        trusted = {v.strip() for v in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if v.strip()}
+        if (not request.headers.get("x-blueprint-pipeline-signature")
+                or getattr(request.state, "intake_client_id", "") not in trusted):
+            raise HTTPException(status_code=403, detail="Support preparation issuer not authorized")
+
+    @app.get("/api/live-pipeline/deployment-embodiment-support",
+             dependencies=[Depends(require_admission)])
+    async def inspect_deployment_embodiment_support(request: Request) -> JSONResponse:
+        require_support_issuer(request)
+        from .deployment_embodiment_support import support_catalog
+
+        try:
+            catalog = await run_in_threadpool(support_catalog)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(status_code=503, detail="Robot support catalog unavailable") from exc
+        return JSONResponse(content=catalog, headers={"Cache-Control": "private, no-store"})
+
+    @app.post("/api/live-pipeline/deployment-embodiment-shortlist-preflight",
+              dependencies=[Depends(require_admission)])
+    async def inspect_deployment_embodiment_shortlist(request: Request) -> JSONResponse:
+        require_support_issuer(request)
+        from .deployment_embodiment_support import prepare_shortlist
+
+        try:
+            value = await run_in_threadpool(prepare_shortlist, await request.json())
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail="Robot support shortlist invalid or changed") from exc
+        return JSONResponse(content=value, headers={"Cache-Control": "private, no-store"})
+
+    @app.get("/api/live-pipeline/deployment-embodiment-asset-recipes",
+             dependencies=[Depends(require_admission)])
+    async def inspect_deployment_embodiment_assets(request: Request) -> JSONResponse:
+        require_support_issuer(request)
+        from .deployment_embodiment_assets import asset_recipes
+
+        return JSONResponse(content=asset_recipes(), headers={"Cache-Control": "private, no-store"})
+
+    @app.post("/api/live-pipeline/deployment-embodiment-native-preflight",
+              dependencies=[Depends(require_admission)])
+    async def inspect_deployment_embodiment_configuration(request: Request) -> JSONResponse:
+        require_support_issuer(request)
+        from .deployment_embodiment_configuration import inspect_configuration
+
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 128 * 1024:
+                raise HTTPException(status_code=413, detail="Robot configuration too large")
+        try:
+            payload = json.loads(raw)
+            result = await run_in_threadpool(inspect_configuration, payload)
+        except (ValueError, KeyError, TypeError) as exc:
+            # Typed configuration/model errors contain no credentials or runtime paths.
+            raise HTTPException(status_code=422, detail=str(exc)[:1000]) from exc
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=503, detail="Robot model inspection unavailable") from exc
+        return JSONResponse(content=result, headers={"Cache-Control": "private, no-store"})
+
     @app.post("/api/live-pipeline/native-g1-team-campaign-setups",
               dependencies=[Depends(require_admission)])
     async def inspect_native_g1_team_campaign_setups(request: Request) -> JSONResponse:

@@ -303,14 +303,40 @@ def test_articulated_grader_and_confirmed_acceptance_must_match(tmp_path):
         prepare(seal(manifest, "manifest_digest"), tmp_path, allow_fixtures=True)
 
 
-def test_committed_empty_corpus_is_honest_and_zero_cost():
-    manifest = json.loads((DELIVERABLE / "argus_shadow_manifest.v1.json").read_text())
-    assert validate_manifest(manifest, REPO) == []
-    report = compare(manifest, REPO, [])
-    assert report["status"] == "blocked_no_retained_episodes"
+def test_committed_empty_corpus_preserves_frozen_grader_and_refuses_current_source_drift():
+    path = DELIVERABLE / "argus_shadow_manifest.v1.json"
+    archived = path.read_bytes()
+    manifest = json.loads(archived)
+    assert manifest["current_grader_commit"] == "9cf0e298bf33280379a320240be005f28a480c3f"
+    assert manifest["episodes"] == []
+    # The archive retains its original grader identity. Even an empty corpus
+    # cannot silently run against changed source or propose paid work from it.
+    for operation in (
+        lambda: validate_manifest(manifest, REPO),
+        lambda: compare(manifest, REPO, []),
+        lambda: cost_proposal(manifest, REPO),
+    ):
+        with pytest.raises(ShadowError, match="executing_grader_differs_from_pin"):
+            operation()
+    assert path.read_bytes() == archived
+
+
+def test_empty_synthetic_corpus_is_honest_and_zero_cost(tmp_path):
+    manifest = _fixture(tmp_path)
+    manifest["episodes"] = []
+    manifest["selection"]["episode_ids"] = []
+    manifest = seal(manifest, "manifest_digest")
+    assert manifest["corpus_kind"] == "synthetic_fixture"
+    with pytest.raises(ShadowError, match="fixtures_require_explicit_flag"):
+        validate_manifest(manifest, tmp_path)
+    assert validate_manifest(manifest, tmp_path, allow_fixtures=True) == []
+    report = compare(manifest, tmp_path, [], allow_fixtures=True)
+    assert report["claim_ceiling"] == "Offline fixture correctness"
+    assert report["model_calls"] == 0
+    assert report["status"] == "fixture_only"
     assert report["episode_count"] == 0
     assert report["metrics"]["current"]["false_success"]["rate"] is None
-    cost = cost_proposal(manifest, REPO)
+    cost = cost_proposal(manifest, tmp_path, allow_fixtures=True)
     assert cost["estimated_argus_usd"] == cost["unrelated_budgets_available_usd"] == 0
     assert cost["paid_execution_authorized"] is False
     assert cost["target_model"] == "openai/gpt-6.1-sol"

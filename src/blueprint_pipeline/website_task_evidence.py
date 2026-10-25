@@ -34,6 +34,8 @@ def prepare_website_task_descriptor(*, descriptor: CaptureDescriptor, capture_ro
     evidence = ingest_website_task_evidence(task_context=context, bucket=bucket,
         output_root=pipeline_dir / "website_task_evidence" / context["context_digest"][7:])
     publish_website_item_evidence(task_context=context, evidence=evidence)
+    # An Atlas preview is a separate side lane (website_atlas_preview); it never
+    # replaces or skips this sponsorship.
     sponsorship = load_sponsorship(task_context=context, now=time.time())
     write_json(pipeline_dir / "website_scene_sponsorship.json", sponsorship)
     return CaptureDescriptor.from_dict({

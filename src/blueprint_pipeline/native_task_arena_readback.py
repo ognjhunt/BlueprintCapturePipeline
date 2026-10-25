@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from .native_articulated_task_state import compile_native_articulated_task_sample
 from .native_task_arena_runtime import NativeTaskArenaEnvironment
+from .native_articulation_root_frame import convert_root_pose
 
 
 class NativeTaskArenaReadbackError(ValueError):
@@ -17,6 +18,24 @@ class NativeTaskArenaReadbackError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def _logical_root_pose(planned: Mapping[str, Any], native_pose: Sequence[float]) -> dict[str, list[float]]:
+    binding = (planned.get("articulation_adaptation") or {}).get("native_root_frame_binding")
+    return convert_root_pose(
+        {"position_world_m": [float(value) for value in native_pose[:3]],
+         "orientation_xyzw": _native_xyzw_to_contract_xyzw(native_pose[3:7])},
+        binding, to_native=False,
+    )
+
+
+def _stored_logical_root_pose(planned: Mapping[str, Any]) -> dict[str, list[float]]:
+    """Map the exact float32 native reset value back to the logical asset frame."""
+    binding = (planned.get("articulation_adaptation") or {}).get("native_root_frame_binding")
+    native = convert_root_pose(planned["pose_world"], binding, to_native=True)
+    rounded = {key: [struct.unpack("!f", struct.pack("!f", float(value)))[0]
+                     for value in values] for key, values in native.items()}
+    return _logical_root_pose(planned, [*rounded["position_world_m"], *rounded["orientation_xyzw"]])
 
 
 def _read_marker_pose_world(scene: Any) -> list[float]:
@@ -565,10 +584,7 @@ def read_native_task_arena_object_reset_state(
             raise NativeTaskArenaReadbackError(
                 [f"native_task_arena_reset_root_pose_invalid:{runtime_name}"]
             )
-        observed_pose = {
-            "position_world_m": [float(item) for item in root_pose[:3]],
-            "orientation_xyzw": _native_xyzw_to_contract_xyzw(root_pose[3:7]),
-        }
+        observed_pose = _logical_root_pose(planned, root_pose)
         reset_state = planned.get("reset_state") or {}
         expected_pose = reset_state.get("root_pose_world") or planned["pose_world"]
         translation_error = math.dist(
@@ -696,8 +712,16 @@ def read_native_task_arena_scenario_parameters(
                 error=f"native_task_arena_scenario_root_pose_missing:{runtime_name}",
             )
             dtype = native_storage["canonical_scalar_dtype"]
+            # Numeric-only legacy/rigid readbacks have no articulated object
+            # inventory. A missing binding keeps their native frame unchanged;
+            # executable articulated packets still require one at preflight.
+            planned = next((row for row in built.plan.get("objects") or []
+                            if (row.get("name") or row.get("semantic_role")) == runtime_name), {})
+            logical_pose = _logical_root_pose(planned, pose)
+            root_binding = (planned.get("articulation_adaptation") or {}).get("native_root_frame_binding")
             if kind in ("task_subject_root_position_x_m", "task_subject_root_position_y_m"):
-                observed: Any = float(pose[0 if kind.endswith("_x_m") else 1])
+                axis = 0 if kind.endswith("_x_m") else 1
+                observed: Any = logical_pose["position_world_m"][axis]
                 error = abs(observed - float(expected))
                 if tolerance == 0.0 and dtype in {"float32", "torch.float32"}:
                     # Compare an exact reset with the exact value its native
@@ -705,6 +729,8 @@ def read_native_task_arena_scenario_parameters(
                     # this introduces no distance tolerance and even one native
                     # ULP of observed drift still refuses.
                     stored_expected = struct.unpack("!f", struct.pack("!f", float(expected)))[0]
+                    if root_binding is not None:
+                        stored_expected = _stored_logical_root_pose(planned)["position_world_m"][axis]
                     storage_comparison = {
                         "schema_version": "native_float_storage_comparison.v1",
                         "mode": "exact_expected_native_storage_value",
@@ -715,19 +741,23 @@ def read_native_task_arena_scenario_parameters(
                         "physical_tolerance_changed": False,
                     }
             else:
-                observed = _native_xyzw_to_contract_xyzw(pose[3:7])
+                observed = logical_pose["orientation_xyzw"]
                 error = _quaternion_angle_xyzw(observed, expected)
                 tolerance = math.radians(tolerance)
                 if tolerance == 0.0 and dtype in {"float32", "torch.float32"}:
                     stored_expected = [struct.unpack("!f", struct.pack("!f", float(value)))[0]
                                        for value in expected]
+                    if root_binding is not None:
+                        stored_expected = _stored_logical_root_pose(planned)["orientation_xyzw"]
                     storage_comparison = {
                         "schema_version": "native_float_storage_comparison.v1",
                         "mode": "exact_expected_native_storage_value",
                         "native_dtype": dtype,
                         "expected_stored_value": stored_expected,
-                        # Use both raw orientations so each is normalized once.
-                        "absolute_error_stored_value": _quaternion_angle_xyzw(pose[3:7], stored_expected),
+                        # Legacy native frames compare both raw orientations;
+                        # bound frames compare the same inverse-map operation.
+                        "absolute_error_stored_value": _quaternion_angle_xyzw(
+                            observed if root_binding is not None else pose[3:7], stored_expected),
                         "unit": "rad",
                         "physical_tolerance_changed": False,
                     }
@@ -841,10 +871,11 @@ class NativeArticulatedTaskArenaReadback:
             getattr(task_data, "root_pose_w", None),
             error="native_task_arena_task_root_pose_missing",
         )[:7]
-        task_root_pose = [
-            *[float(value) for value in native_task_root_pose[:3]],
-            *_native_xyzw_to_contract_xyzw(native_task_root_pose[3:7]),
-        ]
+        task_row = next(row for row in self._built.plan["objects"]
+                        if row.get("task_subject") is True
+                        or row.get("semantic_role") == "task_object")
+        logical_pose = _logical_root_pose(task_row, native_task_root_pose)
+        task_root_pose = [*logical_pose["position_world_m"], *logical_pose["orientation_xyzw"]]
 
         sensor_forces: dict[str, list[list[float]]] = {}
         sensor_instance_readback: dict[str, list[dict[str, Any]]] = {}
@@ -1284,6 +1315,33 @@ class NativeRigidTaskArenaReadback:
             **joint_state,
             "measurement_authority": "native_rigid_root_pose_and_filtered_contact_sensors",
         }
+        if "gripper_channels" in self._built.plan["robot"]:
+            tool_readback = []
+            for channel in self._built.plan["robot"]["gripper_channels"]:
+                sensor_names = channel.get("task_contact_sensor_instances") or []
+                if not sensor_names:
+                    raise NativeTaskArenaReadbackError(["native_task_arena_tool_contact_readback_missing"])
+                forces = []
+                for name in sensor_names:
+                    try:
+                        sensor = scene[name]
+                    except (KeyError, TypeError) as exc:
+                        raise NativeTaskArenaReadbackError(["native_task_arena_tool_contact_readback_missing"]) from exc
+                    forces.extend(_force_vectors(getattr(getattr(sensor, "data", None), "force_matrix_w", None),
+                                                 sensor_id=name))
+                positions = {link: _body_position(robot, body_name=link,
+                                                error="native_task_arena_tool_body_missing")[0]
+                             for link in channel["contact_links"]}
+                tool_readback.append({
+                    "name": channel["name"], "tool_link": channel["tool_link"],
+                    "tool_link_position_world_m": _body_position(
+                        robot, body_name=channel["tool_link"], error="native_task_arena_tool_body_missing")[0],
+                    "contact_link_positions_world_m": positions,
+                    "task_contact_peak_force_n": max(math.sqrt(sum(v*v for v in vector)) for vector in forces),
+                    "task_contact_sensor_instances": list(sensor_names),
+                    "position_source": "native_declared_body_origins_not_calibrated_grasp_frames",
+                })
+            sample["tool_readback"] = tool_readback
         if destination_pose is not None:
             sample["destination_pose_world"] = destination_pose
         sample["grasp_frame_position_source"] = grasp_position_source

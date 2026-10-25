@@ -1478,6 +1478,43 @@ def _gated_cleanup(tmp_path: Path, job: Path):
         bucket="bucket")
 
 
+@pytest.mark.parametrize('remote_state', ['absent', 'present', 'unknown', 'witness_present'])
+def test_startup_failure_cleans_inputs_only_after_all_remote_outputs_are_absent(tmp_path, monkeypatch, remote_state):
+    objects = {'bundle': (6, '"b"')}
+    if remote_state == 'present':
+        objects['output'] = (100, '"output"')
+    if remote_state == 'witness_present':
+        objects['paired_witness'] = (100, '"witness"')
+    job, keys, client = _gated_job(tmp_path, monkeypatch, objects, witness=True)
+    # Older staging manifests have no promotion gate, as in the retained
+    # startup failure. The opt-in absence guard must still protect their data.
+    manifest_path = job / object_store.STAGING_MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    manifest.pop('output_promotion_required')
+    manifest_path.write_text(json.dumps(manifest))
+    if remote_state == 'unknown':
+        def denied(**_kwargs):
+            raise PermissionError('HEAD denied')
+        client.head_object = denied
+    result = object_store.cleanup_staged_wam_provider_objects(job,
+        endpoint_url='https://nyc3.digitaloceanspaces.com', bucket='bucket',
+        access_key_id_file=tmp_path / 'access', secret_access_key_file=tmp_path / 'secret',
+        require_outputs_absent=True)
+    if remote_state == 'absent':
+        assert result['status'] == 'completed' and result['all_objects_absent'] is True
+        assert result['signed_url_files_removed'] is True
+        assert all(row['absence']['absence_confirmed'] for row in result['output_absence_precheck'])
+        first_delete = next(i for i, call in enumerate(client.calls) if call[0] == 'delete')
+        assert ('head', keys['output']) in client.calls[:first_delete]
+        assert ('head', keys['paired_witness']) in client.calls[:first_delete]
+    else:
+        assert result['status'] == 'blocked' and result['all_objects_absent'] is False
+        assert not client.delete_arguments and client.objects == {keys[k]: v for k, v in objects.items()}
+        assert all((job / name).is_file() for name in object_store.SIGNED_URL_FILENAMES)
+        assert result['remote_objects_retained_for_recovery'] is True
+    assert 'signed.example' not in json.dumps(result)
+
+
 def test_gated_cleanup_never_deletes_a_present_output_without_a_receipt(tmp_path: Path, monkeypatch) -> None:
     job, keys, client = _gated_job(tmp_path, monkeypatch, {"bundle": (6, '"b"'), "output": (100, '"e1"')})
 

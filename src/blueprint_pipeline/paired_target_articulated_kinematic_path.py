@@ -67,6 +67,250 @@ def _unit(value: Sequence[float], code: str) -> list[float]:
     return [item / norm for item in vector]
 
 
+def derive_usd_articulated_graph_contact_path(
+    *, usd_path: str | Path, asset_sha256: str, graph: Mapping[str, Any],
+    contact_link_id: str, contact_local: Sequence[float], approach_world: Sequence[float],
+    target_value: float, waypoint_count: int = 5,
+    link_prim_paths: Mapping[str, str] | None = None,
+    joint_prim_paths: Mapping[str, str] | None = None,
+    lateral_outward_local: Sequence[float] | None = None,
+) -> dict[str, Any]:
+    """Derive exact USD joint FK for a qualified graph and explicit prim paths."""
+    usd_path = Path(usd_path).expanduser().resolve(strict=True)
+    graph = validate_articulation_graph(graph)
+    targets = [row for row in graph["joints"] if row["role"] == "target"]
+    if (len(targets) != 1 or isinstance(waypoint_count, bool) or not 2 <= waypoint_count <= 64
+        or _sha256(usd_path) != asset_sha256 or not math.isfinite(float(target_value))):
+        raise PairedTargetArticulatedKinematicPathError("paired_target_kinematic_path_source_invalid")
+    target_id = targets[0]["joint_id"]
+    if not float(targets[0]["limits"][0]) <= float(target_value) <= float(targets[0]["limits"][1]):
+        raise PairedTargetArticulatedKinematicPathError("paired_target_kinematic_path_target_joint_invalid")
+    try:
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+    except ImportError as exc:  # pragma: no cover
+        raise PairedTargetArticulatedKinematicPathError(
+            "paired_target_kinematic_path_openusd_missing"
+        ) from exc
+    stage = Usd.Stage.Open(str(usd_path))
+    root = stage.GetDefaultPrim() if stage is not None else None
+    if root is None or not root.IsValid():
+        raise PairedTargetArticulatedKinematicPathError(
+            "paired_target_kinematic_path_usd_invalid"
+        )
+    root_path = str(root.GetPath())
+    links = {row["link_id"]: row for row in graph["links"]}
+    link_paths = dict(link_prim_paths or {key: f"{root_path}/links/{key}" for key in links})
+    joint_paths = dict(joint_prim_paths or {row["joint_id"]: f"{root_path}/joints/{row['joint_id']}" for row in graph["joints"]})
+    if set(link_paths) != set(links) or set(joint_paths) != {row["joint_id"] for row in graph["joints"]}:
+        raise PairedTargetArticulatedKinematicPathError("paired_target_kinematic_path_prim_binding_invalid")
+    joints = {row["joint_id"]: row for row in graph["joints"]}
+    child_joint = {row["child_link_id"]: row for row in graph["joints"]}
+    if contact_link_id not in links:
+        raise PairedTargetArticulatedKinematicPathError(
+            "paired_target_kinematic_path_contact_link_invalid"
+        )
+
+    def joint_positions(target: float) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for joint_id, row in joints.items():
+            if row["role"] == "target":
+                values[joint_id] = target
+            elif row["role"] == "dependent":
+                dependency = row["dependency"]
+                values[joint_id] = (
+                    target * float(dependency["multiplier"])
+                    + float(dependency["offset"])
+                )
+            else:
+                values[joint_id] = float(row["reset_position"])
+        return values
+
+    cache = UsdGeom.XformCache()
+
+    def matrix(value: Any) -> np.ndarray:
+        # Gf stores row-vector matrices; transpose into conventional
+        # column-vector homogeneous form for explicit FK multiplication.
+        return np.asarray(value, dtype=np.float64).T
+
+    root_world = matrix(cache.GetLocalToWorldTransform(root))
+    world_from_root = np.linalg.inv(root_world)
+    approach = _unit(
+        world_from_root[:3, :3] @ np.asarray(approach_world),
+        "paired_target_kinematic_path_approach_invalid",
+    )
+
+    def joint_frame(position: Any, rotation: Any) -> np.ndarray:
+        value = Gf.Matrix4d(1.0)
+        value.SetRotate(Gf.Rotation(rotation or Gf.Quatf(1.0)))
+        value.SetTranslateOnly(Gf.Vec3d(*(position or Gf.Vec3f())))
+        return matrix(value)
+
+    root_links = [
+        link_id
+        for link_id, row in links.items()
+        if row.get("is_root") is True
+    ]
+    if len(root_links) != 1:
+        raise PairedTargetArticulatedKinematicPathError(
+            "paired_target_kinematic_path_root_link_invalid"
+        )
+    root_link_prim = stage.GetPrimAtPath(link_paths[root_links[0]])
+    if not root_link_prim.IsValid():
+        raise PairedTargetArticulatedKinematicPathError(
+            "paired_target_kinematic_path_link_missing"
+        )
+    root_link_transform = world_from_root @ matrix(
+        cache.GetLocalToWorldTransform(root_link_prim)
+    )
+
+    def all_link_transforms(positions: Mapping[str, float]) -> dict[str, np.ndarray]:
+        transforms = {root_links[0]: root_link_transform}
+        remaining = dict(child_joint)
+        while remaining:
+            progress = False
+            for child_id, row in list(remaining.items()):
+                parent_id = str(row["parent_link_id"])
+                if parent_id not in transforms:
+                    continue
+                joint_prim = stage.GetPrimAtPath(
+                    joint_paths[row["joint_id"]]
+                )
+                child_prim = stage.GetPrimAtPath(link_paths[child_id])
+                if not joint_prim.IsValid() or not child_prim.IsValid():
+                    raise PairedTargetArticulatedKinematicPathError(
+                        "paired_target_kinematic_path_joint_missing"
+                    )
+                joint = UsdPhysics.Joint(joint_prim)
+                frame0 = joint_frame(
+                    joint.GetLocalPos0Attr().Get(),
+                    joint.GetLocalRot0Attr().Get(),
+                )
+                frame1 = joint_frame(
+                    joint.GetLocalPos1Attr().Get(),
+                    joint.GetLocalRot1Attr().Get(),
+                )
+                motion = np.eye(4, dtype=np.float64)
+                value = float(positions[row["joint_id"]])
+                axis_token = str(joint_prim.GetAttribute("physics:axis").Get() or "")
+                axis_index = {"X": 0, "Y": 1, "Z": 2}.get(axis_token)
+                if row["joint_type"] in {"revolute", "continuous"}:
+                    if axis_index is None:
+                        raise PairedTargetArticulatedKinematicPathError(
+                            "paired_target_kinematic_path_joint_axis_invalid"
+                        )
+                    axis = np.zeros(3, dtype=np.float64)
+                    axis[axis_index] = 1.0
+                    x, y, z = axis
+                    cosine, sine = math.cos(value), math.sin(value)
+                    cross = np.array(
+                        [[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]]
+                    )
+                    motion[:3, :3] = (
+                        cosine * np.eye(3)
+                        + (1.0 - cosine) * np.outer(axis, axis)
+                        + sine * cross
+                    )
+                elif row["joint_type"] == "prismatic":
+                    if axis_index is None:
+                        raise PairedTargetArticulatedKinematicPathError(
+                            "paired_target_kinematic_path_joint_axis_invalid"
+                        )
+                    motion[axis_index, 3] = value
+                transforms[child_id] = (
+                    transforms[parent_id]
+                    @ frame0
+                    @ motion
+                    @ np.linalg.inv(frame1)
+                )
+                del remaining[child_id]
+                progress = True
+            if not progress:
+                raise PairedTargetArticulatedKinematicPathError(
+                    "paired_target_kinematic_path_graph_disconnected"
+                )
+        return transforms
+
+    reset_positions = joint_positions(float(joints[target_id]["reset_position"]))
+    reset_transforms = all_link_transforms(reset_positions)
+    for link_id, derived in reset_transforms.items():
+        authored_prim = stage.GetPrimAtPath(link_paths[link_id])
+        authored = world_from_root @ matrix(cache.GetLocalToWorldTransform(authored_prim))
+        if not np.allclose(derived, authored, rtol=0.0, atol=1.0e-6):
+            raise PairedTargetArticulatedKinematicPathError(
+                f"paired_target_kinematic_path_reset_fk_mismatch:{link_id}"
+            )
+
+    # ``approach`` is the outward free-edge standoff at reset, expressed in
+    # the asset-root frame. Preserve that direction in the moving link frame,
+    # then transform it back at every waypoint. Copying the reset vector into
+    # every row makes the clearance stop rotating while the door and gripper
+    # do rotate, so later sweep targets are no longer outside the edge they
+    # claim to qualify.
+    reset_contact_rotation = reset_transforms[contact_link_id][:3, :3]
+    clearance_link_local = reset_contact_rotation.T @ approach
+
+    rows = []
+    for index in range(waypoint_count):
+        fraction = index / (waypoint_count - 1)
+        target = float(joints[target_id]["reset_position"]) + fraction * (
+            target_value - float(joints[target_id]["reset_position"])
+        )
+        positions = joint_positions(target)
+        transform = all_link_transforms(positions)[contact_link_id]
+        point = transform @ np.asarray([*contact_local, 1.0], dtype=np.float64)
+        clearance = transform[:3, :3] @ clearance_link_local
+        clearance /= np.linalg.norm(clearance)
+        lateral_outward = (
+            transform[:3, :3]
+            @ np.asarray(lateral_outward_local, dtype=np.float64)
+            if lateral_outward_local is not None
+            else None
+        )
+        if lateral_outward is not None:
+            lateral_outward /= np.linalg.norm(lateral_outward)
+        gf_transform = Gf.Matrix4d(*transform.T.reshape(-1).tolist())
+        rotation = gf_transform.ExtractRotationQuat()
+        rows.append(
+            {
+                "waypoint_id": f"mechanism_path_{index:02d}",
+                "joint_positions": positions,
+                "contact_pose_asset_root": {
+                    "position_m": [float(item) for item in point[:3]],
+                    "orientation_xyzw": [
+                        float(rotation.GetImaginary()[0]),
+                        float(rotation.GetImaginary()[1]),
+                        float(rotation.GetImaginary()[2]),
+                        float(rotation.GetReal()),
+                    ],
+                },
+                "clearance_unit_asset_root": [
+                    float(item) for item in clearance
+                ],
+                **(
+                    {
+                        "lateral_outward_unit_asset_root": [
+                            float(item) for item in lateral_outward
+                        ]
+                    }
+                    if lateral_outward is not None
+                    else {}
+                ),
+            }
+        )
+    receipt = {
+        "schema_version": "native_articulated_graph_kinematic_path.v1",
+        "source_usd": _record(usd_path), "articulation_graph_digest": canonical_digest(graph),
+        "contact_link_id": contact_link_id, "contact_point_link_m": list(contact_local),
+        "link_prim_paths": link_paths, "joint_prim_paths": joint_paths,
+        "target_joint_id": target_id, "target_value": float(target_value),
+        "waypoint_count": waypoint_count, "joint_contact_path": rows,
+        "native_ik_or_contact_executed": False, "claim_ceiling": "geometry_candidate_only",
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    return receipt
+
+
 def materialize_paired_target_articulated_kinematic_path(
     *,
     task_freeze_path: str | Path,
@@ -140,214 +384,12 @@ def materialize_paired_target_articulated_kinematic_path(
         raise PairedTargetArticulatedKinematicPathError(
             "paired_target_kinematic_path_contact_invalid"
         )
-    try:
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics
-    except ImportError as exc:  # pragma: no cover
-        raise PairedTargetArticulatedKinematicPathError(
-            "paired_target_kinematic_path_openusd_missing"
-        ) from exc
-    stage = Usd.Stage.Open(str(usd_path))
-    root = stage.GetDefaultPrim() if stage is not None else None
-    if root is None or not root.IsValid():
-        raise PairedTargetArticulatedKinematicPathError(
-            "paired_target_kinematic_path_usd_invalid"
-        )
-    root_path = str(root.GetPath())
-    links = {row["link_id"]: row for row in graph["links"]}
-    joints = {row["joint_id"]: row for row in graph["joints"]}
-    child_joint = {row["child_link_id"]: row for row in graph["joints"]}
-    if contact_link_id not in links:
-        raise PairedTargetArticulatedKinematicPathError(
-            "paired_target_kinematic_path_contact_link_invalid"
-        )
-
-    def joint_positions(target: float) -> dict[str, float]:
-        values: dict[str, float] = {}
-        for joint_id, row in joints.items():
-            if row["role"] == "target":
-                values[joint_id] = target
-            elif row["role"] == "dependent":
-                dependency = row["dependency"]
-                values[joint_id] = (
-                    target * float(dependency["multiplier"])
-                    + float(dependency["offset"])
-                )
-            else:
-                values[joint_id] = float(row["reset_position"])
-        return values
-
-    cache = UsdGeom.XformCache()
-
-    def matrix(value: Any) -> np.ndarray:
-        # Gf stores row-vector matrices; transpose into conventional
-        # column-vector homogeneous form for explicit FK multiplication.
-        return np.asarray(value, dtype=np.float64).T
-
-    root_world = matrix(cache.GetLocalToWorldTransform(root))
-    world_from_root = np.linalg.inv(root_world)
-    approach = _unit(
-        world_from_root[:3, :3] @ np.asarray(approach_world),
-        "paired_target_kinematic_path_approach_invalid",
+    derived = derive_usd_articulated_graph_contact_path(
+        usd_path=usd_path, asset_sha256=registered["sha256"], graph=graph,
+        contact_link_id=contact_link_id, contact_local=contact_local, approach_world=approach_world,
+        target_value=target_value, waypoint_count=waypoint_count, lateral_outward_local=lateral_outward_local,
     )
-
-    def joint_frame(position: Any, rotation: Any) -> np.ndarray:
-        value = Gf.Matrix4d(1.0)
-        value.SetRotate(Gf.Rotation(rotation or Gf.Quatf(1.0)))
-        value.SetTranslateOnly(Gf.Vec3d(*(position or Gf.Vec3f())))
-        return matrix(value)
-
-    root_links = [
-        link_id
-        for link_id, row in links.items()
-        if row.get("is_root") is True
-    ]
-    if len(root_links) != 1:
-        raise PairedTargetArticulatedKinematicPathError(
-            "paired_target_kinematic_path_root_link_invalid"
-        )
-    root_link_prim = stage.GetPrimAtPath(f"{root_path}/links/{root_links[0]}")
-    if not root_link_prim.IsValid():
-        raise PairedTargetArticulatedKinematicPathError(
-            "paired_target_kinematic_path_link_missing"
-        )
-    root_link_transform = world_from_root @ matrix(
-        cache.GetLocalToWorldTransform(root_link_prim)
-    )
-
-    def all_link_transforms(positions: Mapping[str, float]) -> dict[str, np.ndarray]:
-        transforms = {root_links[0]: root_link_transform}
-        remaining = dict(child_joint)
-        while remaining:
-            progress = False
-            for child_id, row in list(remaining.items()):
-                parent_id = str(row["parent_link_id"])
-                if parent_id not in transforms:
-                    continue
-                joint_prim = stage.GetPrimAtPath(
-                    f"{root_path}/joints/{row['joint_id']}"
-                )
-                child_prim = stage.GetPrimAtPath(f"{root_path}/links/{child_id}")
-                if not joint_prim.IsValid() or not child_prim.IsValid():
-                    raise PairedTargetArticulatedKinematicPathError(
-                        "paired_target_kinematic_path_joint_missing"
-                    )
-                joint = UsdPhysics.Joint(joint_prim)
-                frame0 = joint_frame(
-                    joint.GetLocalPos0Attr().Get(),
-                    joint.GetLocalRot0Attr().Get(),
-                )
-                frame1 = joint_frame(
-                    joint.GetLocalPos1Attr().Get(),
-                    joint.GetLocalRot1Attr().Get(),
-                )
-                motion = np.eye(4, dtype=np.float64)
-                value = float(positions[row["joint_id"]])
-                axis_token = str(joint_prim.GetAttribute("physics:axis").Get() or "")
-                axis_index = {"X": 0, "Y": 1, "Z": 2}.get(axis_token)
-                if row["joint_type"] in {"revolute", "continuous"}:
-                    if axis_index is None:
-                        raise PairedTargetArticulatedKinematicPathError(
-                            "paired_target_kinematic_path_joint_axis_invalid"
-                        )
-                    axis = np.zeros(3, dtype=np.float64)
-                    axis[axis_index] = 1.0
-                    x, y, z = axis
-                    cosine, sine = math.cos(value), math.sin(value)
-                    cross = np.array(
-                        [[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]]
-                    )
-                    motion[:3, :3] = (
-                        cosine * np.eye(3)
-                        + (1.0 - cosine) * np.outer(axis, axis)
-                        + sine * cross
-                    )
-                elif row["joint_type"] == "prismatic":
-                    if axis_index is None:
-                        raise PairedTargetArticulatedKinematicPathError(
-                            "paired_target_kinematic_path_joint_axis_invalid"
-                        )
-                    motion[axis_index, 3] = value
-                transforms[child_id] = (
-                    transforms[parent_id]
-                    @ frame0
-                    @ motion
-                    @ np.linalg.inv(frame1)
-                )
-                del remaining[child_id]
-                progress = True
-            if not progress:
-                raise PairedTargetArticulatedKinematicPathError(
-                    "paired_target_kinematic_path_graph_disconnected"
-                )
-        return transforms
-
-    reset_positions = joint_positions(float(joints[target_id]["reset_position"]))
-    reset_transforms = all_link_transforms(reset_positions)
-    for link_id, derived in reset_transforms.items():
-        authored_prim = stage.GetPrimAtPath(f"{root_path}/links/{link_id}")
-        authored = world_from_root @ matrix(cache.GetLocalToWorldTransform(authored_prim))
-        if not np.allclose(derived, authored, rtol=0.0, atol=1.0e-6):
-            raise PairedTargetArticulatedKinematicPathError(
-                f"paired_target_kinematic_path_reset_fk_mismatch:{link_id}"
-            )
-
-    # ``approach`` is the outward free-edge standoff at reset, expressed in
-    # the asset-root frame. Preserve that direction in the moving link frame,
-    # then transform it back at every waypoint. Copying the reset vector into
-    # every row makes the clearance stop rotating while the door and gripper
-    # do rotate, so later sweep targets are no longer outside the edge they
-    # claim to qualify.
-    reset_contact_rotation = reset_transforms[contact_link_id][:3, :3]
-    clearance_link_local = reset_contact_rotation.T @ approach
-
-    rows = []
-    for index in range(waypoint_count):
-        fraction = index / (waypoint_count - 1)
-        target = float(joints[target_id]["reset_position"]) + fraction * (
-            target_value - float(joints[target_id]["reset_position"])
-        )
-        positions = joint_positions(target)
-        transform = all_link_transforms(positions)[contact_link_id]
-        point = transform @ np.asarray([*contact_local, 1.0], dtype=np.float64)
-        clearance = transform[:3, :3] @ clearance_link_local
-        clearance /= np.linalg.norm(clearance)
-        lateral_outward = (
-            transform[:3, :3]
-            @ np.asarray(lateral_outward_local, dtype=np.float64)
-            if lateral_outward_local is not None
-            else None
-        )
-        if lateral_outward is not None:
-            lateral_outward /= np.linalg.norm(lateral_outward)
-        gf_transform = Gf.Matrix4d(*transform.T.reshape(-1).tolist())
-        rotation = gf_transform.ExtractRotationQuat()
-        rows.append(
-            {
-                "waypoint_id": f"mechanism_path_{index:02d}",
-                "joint_positions": positions,
-                "contact_pose_asset_root": {
-                    "position_m": [float(item) for item in point[:3]],
-                    "orientation_xyzw": [
-                        float(rotation.GetImaginary()[0]),
-                        float(rotation.GetImaginary()[1]),
-                        float(rotation.GetImaginary()[2]),
-                        float(rotation.GetReal()),
-                    ],
-                },
-                "clearance_unit_asset_root": [
-                    float(item) for item in clearance
-                ],
-                **(
-                    {
-                        "lateral_outward_unit_asset_root": [
-                            float(item) for item in lateral_outward
-                        ]
-                    }
-                    if lateral_outward is not None
-                    else {}
-                ),
-            }
-        )
+    rows = derived["joint_contact_path"]
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "deterministic_registered_usd_kinematic_candidate",
@@ -387,4 +429,5 @@ __all__ = [
     "PairedTargetArticulatedKinematicPathError",
     "SCHEMA_VERSION",
     "materialize_paired_target_articulated_kinematic_path",
+    "derive_usd_articulated_graph_contact_path",
 ]

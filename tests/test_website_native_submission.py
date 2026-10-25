@@ -241,10 +241,10 @@ def test_new_signed_website_drawer_selects_sol_managed_runtime_without_spend(tmp
     assert request["spend"]["hard_cap_usd"] == 31.0
 
 
-@pytest.mark.parametrize("ceiling,admitted", [(20, False), (30.99, False), (31, True)])
+@pytest.mark.parametrize("ceiling,admitted", [(20, False), (25, False), (30.99, True), (31, True)])
 def test_articulated_stage_quote_is_admitted_only_under_a_scene_ceiling_that_covers_it(
         tmp_path, monkeypatch, ceiling, admitted):
-    """Provider compute ($6) plus the shared $25 authoring pool; nothing lower admits it."""
+    """Keep the frozen authoring pool and bound prospective compute to the owner cap."""
     from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
         MAX_ASTRA_AUTHORING_SPEND_USD, MAX_PROVIDER_COMPUTE_SPEND_USD,
     )
@@ -255,11 +255,42 @@ def test_articulated_stage_quote_is_admitted_only_under_a_scene_ceiling_that_cov
     if not admitted:
         with pytest.raises(ValueError, match="website_native_construction_budget_exceeds_authority"):
             materialize_website_submission(**kwargs)
-        assert not (kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").exists()
+        assert not kwargs["staging_root"].exists()
         return
     materialize_website_submission(**kwargs)
     request = json.loads((kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())
-    assert request["spend"]["hard_cap_usd"] == 31.0
+    spend = request["spend"]
+    assert spend["hard_cap_usd"] == pytest.approx(min(ceiling, 31.0), abs=0.0000011)
+    assert spend["hard_cap_usd"] <= ceiling
+    assert spend["external_service_caps"]["openai"]["maximum_cost_usd"] == 25.0
+    assert spend["maximum_hourly_rate_usd"] * spend["hard_ttl_seconds"] / 3600 <= spend["provider_compute_spend_cap_usd"]
+
+
+@pytest.mark.parametrize("ceiling,admitted", [(15, False), (20, True)])
+def test_artisan_owner_ceiling_bounds_compute_before_any_staging(tmp_path, monkeypatch, ceiling, admitted):
+    monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")
+    monkeypatch.setenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", "15")
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=ceiling,
+                      authoring_backend="artisan_v1")
+    authority_path = Path(kwargs["task"]["scene_intent_authority"]["path"])
+    authority_bytes = authority_path.read_bytes()
+    if not admitted:
+        with pytest.raises(ValueError, match="website_native_construction_budget_exceeds_authority"):
+            materialize_website_submission(**kwargs)
+        assert not kwargs["staging_root"].exists()
+    else:
+        materialize_website_submission(**kwargs)
+        root = kwargs["staging_root"]
+        request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+        spend = request["spend"]
+        assert spend["hard_cap_usd"] == 20
+        assert spend["provider_compute_spend_cap_usd"] == 5
+        assert spend["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 15
+        from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import REQUIRED_PARENT_TTL_SECONDS
+        assert spend["hard_ttl_seconds"] == REQUIRED_PARENT_TTL_SECONDS
+        assert spend["maximum_hourly_rate_usd"] * REQUIRED_PARENT_TTL_SECONDS / 3600 <= 5
+        assert _validated_inventory(root, SHA)[1]
+    assert authority_path.read_bytes() == authority_bytes
 
 
 def test_owner_grant_admits_the_articulated_quote_above_the_consented_ceiling(tmp_path, monkeypatch):
@@ -405,37 +436,32 @@ def test_existing_progression_publishes_and_queues_website_source_without_manual
     prepare_website_construction(tmp_path, monkeypatch, development)
 
 
-def test_collected_website_world_registers_the_source_for_progression(tmp_path, monkeypatch):
+def test_a_ready_atlas_scene_registers_the_source_for_progression(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.website_scene_handoff import prepare_website_scene_handoff
     pipeline = tmp_path / "pipeline"
     pipeline.mkdir()
     args, _, _ = inputs(pipeline)
-    # This seam consumes World Labs' Y-down exports, whereas the reusable
-    # fixture is Y-up. Rotate the actual collider bytes into the provider frame.
-    import numpy as np
-    import trimesh
-    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
-    collider = Path(args["base_scene"]["collision_mesh_path"])
-    mesh = trimesh.load(collider, force="mesh")
-    mesh.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
-    mesh.export(collider)
-    args["base_scene"]["collision_mesh_digest"] = _sha256_file(collider)
     context = args["task_context"]
     monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(tmp_path / "intents"))
-    assets = pipeline / "assets.json"
-    write_json(assets, {"world_id": "world-1", "downloads": [
-        {"kind": kind, "local_path": args["base_scene"][key + "_path"],
-         "sha256": args["base_scene"][key + "_digest"][7:]}
-        for kind, key in (("splat_ply", "splat"), ("collider_mesh_glb", "collision_mesh"))]})
+    # The capture's Atlas job supplies the scene and the posed source geometry.
+    geometry = {**args["source_geometry"], "geometry_backend": "world_labs_atlas"}
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    masks = {**args["task_masks"], "source_geometry_digest": geometry["digest"]}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    monkeypatch.setattr("blueprint_pipeline.website_atlas_scene_source.atlas_scene_source", lambda **_: {
+        "status": "ready", "base_scene": {**args["base_scene"], "provider": "world_labs_atlas"},
+        "source_geometry": geometry, "alignment": "anchored", "source_pose_digest": "sha256:" + "1" * 64,
+        "background_pose_digest": "sha256:" + "2" * 64})
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **_: masks)
     removal = pipeline / "removal.json"
     write_json(removal, args["removal_manifest"])
     result = prepare_website_scene_handoff(descriptor={"capture_id": context["capture_id"],
         "scene_id": context["scene_id"], "metadata": {"site_task_context": context,
             "website_scene_execution_authority": args["spend"]}},
         clean_plate={"privacy_verified": True, "status": "objects_removed", "task_masks": args["task_masks"],
-            "source_geometry": args["source_geometry"], "removal_manifest_path": str(removal)},
-        provider_run={"status": "ready", "world_id": "world-1", "provider_run_id": "op-1",
-            "worldlabs_asset_materialization": {"manifest_path": str(assets)}}, capture_root=tmp_path, now=args["now"])
+            "source_geometry": None, "removal_manifest_path": str(removal)},
+        capture_root=tmp_path, now=args["now"])
     assert result.get("source_registration"), result
     registration = json.loads(Path(result["source_registration"]["path"]).read_text())
     assert registration["execution_authority_granted"] is False

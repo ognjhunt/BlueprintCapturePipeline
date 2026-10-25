@@ -1,7 +1,7 @@
 """Reopen ARTISAN's exact manifests and USD; enforce retained source constraints.
 
-The only output adaptation is namespace/provenance and an explicit source-
-property material overlay. Geometry, collisions, joints and inertias are upstream.
+Output adaptations are namespace/provenance and declared material/passive-joint
+properties. Geometry, collisions, joint frames and inertias are upstream.
 Earlier physics reports remain bound to the original exports, never the overlay.
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 import math
 from pathlib import Path
 
-from .task_object_authoring_contracts import require, file_record, read_json, verified_file, source_joint_constraints
+from .task_object_authoring_contracts import AuthoringContractError, require, file_record, read_json, verified_file, source_joint_constraints
 
 
 def upstream_exports(terminal: dict, workspace: Path) -> dict:
@@ -57,6 +57,53 @@ def upstream_exports(terminal: dict, workspace: Path) -> dict:
             "physics_report": file_record(report_path), "exports": records, "usd": usd}
 
 
+def validated_sdk_exports(*, manifest_path: Path, model_path: Path, blueprint_path: Path) -> dict:
+    """Read a real SDK validation export without inventing CLI registration.
+
+    The SDK's accepted candidate is usable for independent static/native checks;
+    it is not an ARTISAN controller DONE record or a registered library asset.
+    """
+    manifest = read_json(manifest_path)
+    require(manifest.get("schema_version") == "release-candidate-v7"
+            and manifest.get("status") == "accepted" and bool(manifest.get("candidate_id"))
+            and "usd" in manifest.get("formats", []), "artisan_sdk_candidate_not_accepted")
+    require(file_record(model_path)["sha256"][7:] == manifest.get("model_sha256")
+            and file_record(blueprint_path)["sha256"][7:] == manifest.get("blueprint_sha256"),
+            "artisan_reviewed_program_or_blueprint_changed")
+    root, records = manifest_path.parent, {}
+    for name, row in manifest.get("artifacts", {}).items():
+        relative = Path(row["path"])
+        require(not relative.is_absolute() and ".." not in relative.parts, "artisan_export_path_invalid")
+        path = verified_file({"path": str(root / relative), "sha256": "sha256:" + row["sha256"],
+                              "size_bytes": row["size_bytes"]}, root=root)
+        records[name] = file_record(path)
+    require("object.usd" in records, "artisan_reviewed_usd_export_missing")
+    relative = Path(manifest["physics_report_path"])
+    require(not relative.is_absolute() and ".." not in relative.parts,
+            "artisan_export_physics_report_path_invalid")
+    report_path = root / relative
+    require(report_path.resolve().is_relative_to(root.resolve()), "artisan_upstream_storage_escape")
+    report = read_json(report_path)
+    require(file_record(report_path)["sha256"][7:] == manifest.get("physics_report_sha256")
+            and report.get("candidate_id") == manifest["candidate_id"]
+            and report.get("model_sha256") == manifest["model_sha256"]
+            and bool(manifest.get("build_id")) and report.get("build_id") == manifest["build_id"]
+            and report.get("status") == "pass" and report.get("blocking_findings") == [],
+            "artisan_sdk_physics_report_invalid")
+    for report_key, manifest_key in (("algorithm_version", "validation_algorithm_version"),
+                                     ("validation_policy_sha256", "validation_policy_sha256"),
+                                     ("simulator_collision_digest", "simulator_collision_digest"),
+                                     ("accepted_fcl_pose_sha256", "accepted_fcl_pose_sha256")):
+        require(bool(manifest.get(manifest_key)) and report.get(report_key) == manifest[manifest_key],
+                "artisan_sdk_validation_binding_changed")
+    # Both roles refer to the actual SDK manifest. There is no separate CLI
+    # export manifest, canonical registry record or synthetic terminal status.
+    return {"manifest": manifest, "export_manifest": file_record(manifest_path),
+            "candidate_manifest": file_record(manifest_path), "program": file_record(model_path),
+            "blueprint": file_record(blueprint_path), "physics_report": file_record(report_path),
+            "exports": records, "usd": records["object.usd"]}
+
+
 def _finite(values):
     return all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in values)
 
@@ -97,6 +144,46 @@ def _measured(configuration, name):
     return float(row["value"])
 
 
+def _fixed_descendants(root, joints):
+    members = {root}
+    while True:
+        added = {row["child_link_id"] for row in joints
+                 if row["joint_type"] == "fixed" and row["parent_link_id"] in members} - members
+        if not added:
+            return members
+        members.update(added)
+
+
+def _mass_groups(links, joints, configuration, task):
+    """A split door's fixed features share its mass range, not the carcass range.
+
+    Required fixed interior parts remain separate mass admissions even though
+    they are connected to the carcass. Every link contributes exactly once.
+    """
+    parents = {row["child_link_id"]: row for row in joints}
+    interior = {row["part_id"] for row in configuration.get("required_parts") or []
+                if row.get("role") == "fixed_interior"}
+    groups = {}
+    for name, link in links.items():
+        anchor = name
+        while anchor in parents and anchor not in interior:
+            edge = parents[anchor]
+            if edge["joint_type"] != "fixed":
+                break
+            anchor = edge["parent_link_id"]
+        group = groups.setdefault(anchor, {"link_ids": [], "mass_kg": 0.0})
+        group["link_ids"].append(name)
+        group["mass_kg"] += link["mass_kg"]
+    for anchor, group in groups.items():
+        key = "task_part_mass_kg_bounds" if task and anchor == task["child_link_id"] else "mass_kg_bounds"
+        if anchor in interior and "fixed_part_mass_kg_bounds" in configuration["required_output"]:
+            key = "fixed_part_mass_kg_bounds"
+        interval = configuration["required_output"][key]
+        require(float(interval[0]) <= group["mass_kg"] <= float(interval[1]), "artisan_mass_outside_admitted_bounds")
+        group.update(bounds_key=key, admitted_bounds_kg=list(interval))
+    return groups
+
+
 def _material_overlay(stage, configuration, *, colliders):
     from pxr import UsdPhysics, UsdShade
     required = configuration["required_output"]
@@ -119,6 +206,143 @@ def _material_overlay(stage, configuration, *, colliders):
     for prim in colliders:
         UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, materialPurpose="physics")
     return provenance
+
+
+def _flatten_nested_physics_links(stage):
+    """Keep body-local joint frames and asset placement valid in PhysX.
+
+    A reset stack on each nested body would discard the scene's placement too.
+    Instead, move nested bodies beside their ancestors and preserve their exact
+    asset-space transforms. NamespaceEditor also updates joint relationships.
+    """
+    from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+    cache = UsdGeom.XformCache()
+    root_inverse = cache.GetLocalToWorldTransform(stage.GetDefaultPrim()).GetInverse()
+    nested = []
+    for prim in stage.Traverse():
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI) and _owner(prim.GetParent(), UsdPhysics) is not None:
+            nested.append((str(prim.GetPath()), cache.GetLocalToWorldTransform(prim) * root_inverse))
+    if nested:
+        UsdGeom.Scope.Define(stage, '/Asset/BlueprintPhysicsLinks')
+    moved = []
+    for before, matrix in sorted(nested, key=lambda row: row[0].count('/'), reverse=True):
+        prim = stage.GetPrimAtPath(before)
+        # Make inherited material bindings explicit before leaving that parent.
+        for purpose in ('', 'preview', 'full', 'physics'):
+            material, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial(materialPurpose=purpose)
+            if material:
+                UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, materialPurpose=purpose)
+        after = '/Asset/BlueprintPhysicsLinks/' + prim.GetName()
+        require(not stage.GetPrimAtPath(after).IsValid(), 'artisan_physics_link_namespace_collision')
+        editor = Usd.NamespaceEditor(stage)
+        require(editor.MovePrimAtPath(before, after) and editor.CanApplyEdits()
+                and editor.ApplyEdits(), 'artisan_physics_link_namespace_refused')
+        body = UsdGeom.Xformable(stage.GetPrimAtPath(after))
+        body.ClearXformOpOrder()
+        body.AddTransformOp().Set(matrix)
+        moved.append({'before': before, 'after': after})
+    return moved
+
+
+def _display_color_surface(stage):
+    """Translate the SDK's authored display colours into a native render material."""
+    from pxr import Sdf, UsdGeom, UsdPhysics, UsdShade
+    material = None
+    count = 0
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Gprim) or prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        existing, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+        if existing and existing.GetSurfaceOutput().HasConnectedSource():
+            continue
+        if not UsdGeom.Gprim(prim).GetDisplayColorAttr().Get():
+            continue
+        if material is None:
+            material = UsdShade.Material.Define(stage, '/Asset/BlueprintDisplayColor')
+            reader = UsdShade.Shader.Define(stage, '/Asset/BlueprintDisplayColor/reader')
+            reader.CreateIdAttr('UsdPrimvarReader_float3')
+            reader.CreateInput('varname', Sdf.ValueTypeNames.Token).Set('displayColor')
+            reader.CreateOutput('result', Sdf.ValueTypeNames.Float3)
+            shader = UsdShade.Shader.Define(stage, '/Asset/BlueprintDisplayColor/surface')
+            shader.CreateIdAttr('UsdPreviewSurface')
+            shader.CreateInput('diffuseColor', Sdf.ValueTypeNames.Color3f).ConnectToSource(reader.ConnectableAPI(), 'result')
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), 'surface')
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+        count += 1
+    return {'basis': 'upstream_display_color', 'bound_visual_count': count,
+            'material_path': str(material.GetPath()) if material else None}
+
+
+def _declared_joint_dynamics(configuration):
+    mechanism = configuration.get('mechanism') or {}
+    policy = mechanism.get('passive_dynamics') or {}
+    if not policy:
+        return None
+    require(policy.get('task_joint_drive', 'none') == 'none', 'artisan_passive_joint_drive_not_admitted')
+    result = {'joint_id': mechanism.get('target_joint_id'), 'joint_type': mechanism.get('joint_type')}
+    require(result['joint_id'] and result['joint_type'] in {'prismatic', 'revolute'},
+            'artisan_passive_joint_identity_invalid')
+    for key in ('joint_friction_bounds', 'joint_damping_bounds'):
+        bounds = policy.get(key)
+        require(isinstance(bounds, list) and len(bounds) == 2 and _finite(bounds)
+                and 0 <= bounds[0] <= bounds[1], 'artisan_' + key + '_invalid')
+        result[key] = [float(value) for value in bounds]
+    result.update(static_effort=sum(result['joint_friction_bounds']) / 2,
+                  dynamic_effort=result['joint_friction_bounds'][0],
+                  damping=sum(result['joint_damping_bounds']) / 2,
+                  units='N_m' if result['joint_type'] == 'revolute' else 'N',
+                  basis='estimated_unobserved_joint_resistance_prior', physical_measurement_proven=False)
+    return result
+
+
+def _passive_joint_dynamics(stage, configuration, *, author):
+    """Carry the admitted, unactuated resistance into imported and read-back USD."""
+    from pxr import Sdf, UsdPhysics
+    policy = _declared_joint_dynamics(configuration)
+    if policy is None:
+        return None
+    matches = [prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.Joint)
+               and prim.GetCustomDataByKey('blueprint:jointId') == policy['joint_id']]
+    require(len(matches) == 1, 'artisan_passive_joint_unresolved')
+    prim = matches[0]
+    angular = policy['joint_type'] == 'revolute'
+    require(prim.IsA(UsdPhysics.RevoluteJoint if angular else UsdPhysics.PrismaticJoint),
+            'artisan_passive_joint_type_changed')
+    axis = 'angular' if angular else 'linear'
+    for name in ('linear', 'angular'):
+        if prim.HasAPI(UsdPhysics.DriveAPI, name):
+            existing = UsdPhysics.DriveAPI(prim, name)
+            require(float(existing.GetStiffnessAttr().Get() or 0) == 0
+                    and float(existing.GetTargetVelocityAttr().Get() or 0) == 0,
+                    'artisan_task_or_passive_drive_not_admitted')
+    damping = math.radians(policy['damping']) if angular else policy['damping']
+    attributes = {f'physxJointAxis:{axis}:staticFrictionEffort': policy['static_effort'],
+                  f'physxJointAxis:{axis}:dynamicFrictionEffort': policy['dynamic_effort']}
+    if author:
+        prim.AddAppliedSchema(f'PhysxJointAxisAPI:{axis}')
+        for name, value in attributes.items():
+            prim.CreateAttribute(name, Sdf.ValueTypeNames.Float, custom=False).Set(value)
+        drive = UsdPhysics.DriveAPI.Apply(prim, axis)
+        drive.CreateTypeAttr().Set('force')
+        drive.CreateStiffnessAttr().Set(0)
+        drive.CreateDampingAttr().Set(damping)
+        drive.CreateTargetPositionAttr().Set(0)
+        drive.CreateTargetVelocityAttr().Set(0)
+        prim.SetCustomDataByKey('blueprint:declaredDriveType', 'none')
+        prim.SetCustomDataByKey('blueprint:driveImplementation',
+                               'passive_torque_damper' if angular else 'passive_force_damper')
+        prim.SetCustomDataByKey('blueprint:passiveFrictionBasis', policy['basis'])
+    drive = UsdPhysics.DriveAPI(prim, axis)
+    schemas = prim.GetMetadata('apiSchemas')
+    require(schemas is not None and f'PhysxJointAxisAPI:{axis}' in schemas.GetAddedOrExplicitItems()
+            and prim.HasAPI(UsdPhysics.DriveAPI, axis) and drive.GetTypeAttr().Get() == 'force'
+            and math.isclose(float(drive.GetDampingAttr().Get()), damping, rel_tol=1e-6, abs_tol=1e-7)
+            and (damping == 0 or float(drive.GetMaxForceAttr().Get()) > 0)
+            and all(prim.GetAttribute(name).Get() is not None
+                    and math.isclose(float(prim.GetAttribute(name).Get()), value, rel_tol=1e-6, abs_tol=1e-7)
+                    for name, value in attributes.items()), 'artisan_declared_joint_dynamics_missing_or_changed')
+    return {**policy, 'prim_path': str(prim.GetPath()), 'usd_axis': axis, 'usd_damping': damping,
+            'motor_stiffness': 0.0, 'target_velocity': 0.0}
 
 
 def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_path: Path | None = None) -> dict:
@@ -144,6 +368,8 @@ def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_pat
         require(annotations_path is not None, "artisan_cavity_annotations_required")
         annotations = read_json(annotations_path)
         root.SetCustomDataByKey("blueprint:sourceConstraintAnnotations", json.dumps(annotations, allow_nan=False, sort_keys=True))
+    physics_namespace = _flatten_nested_physics_links(stage)
+    appearance = _display_color_surface(stage)
     colliders = [p for p in stage.Traverse() if p.HasAPI(UsdPhysics.CollisionAPI)]
     properties = _material_overlay(stage, request["configuration"], colliders=colliders)
     mechanism = request["configuration"].get("mechanism") or {}
@@ -181,6 +407,7 @@ def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_pat
                 require(len(parent) == 1, "artisan_joint_parent_missing")
                 axis = list(UsdGeom.XformCache().GetLocalToWorldTransform(stage.GetPrimAtPath(parent[0])).TransformDir(Gf.Vec3d(*axis)))
                 prim.SetCustomDataByKey("blueprint:graphAxis", Gf.Vec3d(*axis))
+    joint_dynamics = _passive_joint_dynamics(stage, request['configuration'], author=True)
     stage.GetRootLayer().Save()
     require(UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(working)), str(destination)), "artisan_usdz_packaging_failed")
     # Checks apply to the final package bytes after every overlay/namespace edit.
@@ -188,7 +415,8 @@ def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_pat
     return {"schema_version": "artisan_export_adaptation.v1", "original_usd": file_record(source),
             "final_usd": file_record(destination), "namespace_root_before": original_root,
             "namespace_root_after": "/Asset", "geometry_scale_applied": False,
-            "material_overlay": properties, "final_readback": observed,
+            "physics_namespace_overlay": physics_namespace, "appearance_overlay": appearance,
+            "material_overlay": properties, "joint_dynamics_overlay": joint_dynamics, "final_readback": observed,
             "candidate_annotations": file_record(annotations_path) if annotations is not None else None,
             "upstream_physics_report_certifies_overlay": False,
             "native_import_qualification_required": True}
@@ -214,6 +442,8 @@ def validate_final_usd(path: Path, request: dict) -> dict:
             "artisan_source_identity_changed")
     prims = list(stage.Traverse())
     bodies = [p for p in prims if p.HasAPI(UsdPhysics.RigidBodyAPI)]
+    require(all(_owner(p.GetParent(), UsdPhysics) is None for p in bodies),
+            'artisan_native_nested_rigid_body')
     colliders = [p for p in prims if p.HasAPI(UsdPhysics.CollisionAPI)]
     visuals = [p for p in prims if p.IsA(UsdGeom.Gprim) and p not in colliders]
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render,
@@ -243,6 +473,7 @@ def validate_final_usd(path: Path, request: dict) -> dict:
             require(prim.HasAPI(UsdPhysics.MeshCollisionAPI) and str(UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get())
                     in {"convexHull", "convexDecomposition"}, "artisan_uncooked_dynamic_collision")
     configuration = request["configuration"]
+    _passive_joint_dynamics(stage, configuration, author=False)
     joints = [p for p in prims if p.IsA(UsdPhysics.Joint)]
     articulated = configuration["schema_version"] == "articulated_replacement_authoring_configuration.v1"
     articulation_roots = [p for p in prims if p.HasAPI(UsdPhysics.ArticulationRootAPI)]
@@ -342,12 +573,6 @@ def validate_final_usd(path: Path, request: dict) -> dict:
                 and _finite(principal_axes) and math.isclose(sum(v*v for v in principal_axes), 1, abs_tol=1e-5)
                 and UsdPhysics.RigidBodyAPI(body).GetKinematicEnabledAttr().Get() is not True
                 and UsdPhysics.RigidBodyAPI(body).GetRigidBodyEnabledAttr().Get() is not False, "artisan_physics_properties_invalid")
-        mass_key = "task_part_mass_kg_bounds" if task and name == task["child_link_id"] else "mass_kg_bounds"
-        part = next((row for row in configuration.get("required_parts") or [] if row["part_id"] == name), None)
-        if part and part.get("role") == "fixed_interior":
-            mass_key = "fixed_part_mass_kg_bounds" if "fixed_part_mass_kg_bounds" in configuration["required_output"] else mass_key
-        interval = configuration["required_output"][mass_key]
-        require(float(interval[0]) <= mass <= float(interval[1]), "artisan_mass_outside_admitted_bounds")
         measured_mass = _measured(configuration, "mass_kg") if not articulated else None
         require(measured_mass is None or math.isclose(mass, measured_mass, rel_tol=1e-6), "artisan_measured_mass_changed")
         local_bounds = _bounds(owned, cache=cache, frame=transforms.GetLocalToWorldTransform(body).GetInverse())
@@ -373,19 +598,33 @@ def validate_final_usd(path: Path, request: dict) -> dict:
             "collision_prim_paths": sorted(str(p.GetPath()) for p in owned),
             "physics_materials": list({row["path"]: row for row in materials}.values()),
             "collision_bounds_link_frame_m": local_bounds}
+    mass_groups = _mass_groups(link_rows, graph_joints, configuration, task)
     handles = []
     whole_mass = sum(row["mass_kg"] for row in link_rows.values())
     measured_assembly_mass = _measured(configuration, "mass_kg") if articulated else None
     require(measured_assembly_mass is None or math.isclose(whole_mass, measured_assembly_mass, rel_tol=1e-6),
             "artisan_measured_assembly_mass_changed")
     if articulated:
+        moving_links = _fixed_descendants(task["child_link_id"], graph_joints)
         handle_uids = {p.GetCustomDataByKey("blueprint:visualUid") for p in visuals if p.GetCustomDataByKey("blueprint:visualName") == "task_handle"}
         handles = [p for p in colliders if p.GetCustomDataByKey("blueprint:sourceVisualUid") in handle_uids
-                   and _owner(p, UsdPhysics).GetName() == task["child_link_id"]]
+                   and _owner(p, UsdPhysics).GetName() in moving_links]
         require(handle_uids and handles, "artisan_useful_task_handle_missing")
     required_parts = configuration.get("required_part_ids") or [row["part_id"] for row in configuration.get("required_parts") or []]
     names = set(link_rows) | {p.GetCustomDataByKey("blueprint:visualName") for p in visuals}
     require(set(required_parts) <= names, "artisan_required_observed_part_missing")
+    from .task_object_required_motions import motion_graph_readback
+    requirements = (request.get("joint_constraints") or source_joint_constraints(configuration)).get("required_motions", [])
+    part_links = {}
+    for part in {part for motion in requirements for part in motion["part_ids"]}:
+        owners = ({part} if part in link_rows else {_owner(p, UsdPhysics).GetName() for p in visuals
+            if p.GetCustomDataByKey("blueprint:visualName") == part})
+        require(len(owners) == 1, "artisan_required_motion_part_owner_ambiguous:" + part)
+        part_links[part] = next(iter(owners))
+    try:
+        motion_readback = motion_graph_readback(requirements, graph, part_links=part_links)
+    except ValueError as exc:
+        raise AuthoringContractError(str(exc)) from exc
     handle_point = None
     if handles:
         moving = stage.GetPrimAtPath(link_rows[task["child_link_id"]]["prim_path"])
@@ -401,7 +640,9 @@ def validate_final_usd(path: Path, request: dict) -> dict:
         "source_uncertainty_m": request["dimension_uncertainty_m"], "construction_tolerance_m": tolerance,
         "links": link_rows, "articulation_graph": graph, "task_joint": task,
         "whole_assembly_mass_kg": whole_mass,
+        "mass_group_readback": mass_groups,
         "joint_prim_paths": joint_paths, "handle_prim_paths": sorted(str(p.GetPath()) for p in handles),
         "handle_grasp_point_link_m": handle_point,
         "interior_cavity_readback": cavity_readback,
+        "required_motion_readback": motion_readback,
         "physics_authority_granted": False, "physical_equivalence_proven": False}

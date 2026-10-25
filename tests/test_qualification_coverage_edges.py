@@ -1000,15 +1000,16 @@ def test_website_preparation_skips_legacy_privacy_video_and_geometry(tmp_path, m
     def prepare(**kwargs):
         calls.append(kwargs)
         return {"status": "blocked", "mode": "source_geometry_blocked", "privacy_status": "no_people_detected",
-                "privacy_verified": True, "blockers": ["mapanything_local_checkpoint_missing"]}
+                "privacy_verified": True, "blockers": ["website_source_geometry_unavailable"]}
 
     monkeypatch.setattr(q, "run_clean_plate_stage", prepare)
-    with pytest.raises(PipelineError, match="mapanything_local_checkpoint_missing"):
+    with pytest.raises(PipelineError, match="website_source_geometry_unavailable"):
         q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
     assert len(calls) == 1
     assert calls[0]["policy"].enabled is True
     assert calls[0]["privacy_processing"]["mode"] == "task_aware_prepared_images"
-    assert calls[0]["worldlabs_input"]["status"] == "awaiting_prepared_images"
+    # The capture's Atlas job is the scene; no Marble input is prepared.
+    assert calls[0]["worldlabs_input"]["status"] == "not_requested"
 
 
 @pytest.mark.parametrize("sponsorship, enabled", [
@@ -1037,11 +1038,11 @@ def test_browser_delivery_without_requested_outputs_prepares_only_a_sponsored_sc
     with pytest.raises(PipelineError, match="website_preparation_probe"):
         q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
     assert calls[0]["policy"].enabled is enabled
-    assert calls[0]["worldlabs_input"]["status"] == ("awaiting_prepared_images" if enabled else "not_requested")
+    assert calls[0]["worldlabs_input"]["status"] == "not_requested"
 
 
-def test_sponsored_browser_preparation_reaches_the_marble_provider(tmp_path, monkeypatch):
-    # The preview rule must hold at the provider call too, or paid preparation ends before Marble.
+def test_sponsored_browser_preparation_hands_off_to_atlas_and_never_calls_marble(tmp_path, monkeypatch):
+    # Owner decision 2026-10-22: the capture's Atlas job is the website scene.
     storage_root = tmp_path / "gcs"
     descriptor_uri = _write_descriptor(storage_root, _descriptor(
         capture_source="unknown", capture_modality="video_only", requested_outputs=[],
@@ -1050,24 +1051,22 @@ def test_sponsored_browser_preparation_reaches_the_marble_provider(tmp_path, mon
     monkeypatch.setattr(q, "load_current_website_task_context", _confirmed_website_task)
     monkeypatch.setattr(q, "load_website_scene_sponsorship",
                         lambda **_: {"sponsor": "blueprint", "purpose": "scene_preparation"})
-    for name in ("run_privacy_postprocess", "infer_capture_fidelity_review", "_prepare_worldlabs_input_video", "build_geometry_stage_contract"):
-        monkeypatch.setattr(q, name, lambda **_: pytest.fail("website must not enter a legacy media stage"))
+    for name in ("run_privacy_postprocess", "infer_capture_fidelity_review", "_prepare_worldlabs_input_video",
+                 "build_geometry_stage_contract", "run_preview_provider"):
+        monkeypatch.setattr(q, name, lambda **_: pytest.fail("website must not enter a legacy or Marble stage"))
     monkeypatch.setattr(q, "run_clean_plate_stage", lambda **_: {
-        "status": "objects_removed", "mode": "task_aware_prepared_images", "privacy_status": "website_capture_admitted",
-        "privacy_verified": True, "blockers": [], "prepared_views": {"status": "ready", "frames": []}})
-    provider_calls = []
+        "status": "objects_removed", "mode": "task_masks_ready", "privacy_status": "website_capture_admitted",
+        "privacy_verified": True, "blockers": []})
+    handoffs = []
 
-    class ReachedMarble(Exception):
-        pass
+    def handoff(**kwargs):
+        handoffs.append(kwargs)
+        return {"status": "awaiting_reconstruction", "blockers": ["website_atlas_job_processing"]}
 
-    def provider(**kwargs):
-        provider_calls.append(kwargs)
-        raise ReachedMarble()
-
-    monkeypatch.setattr(q, "run_preview_provider", provider)
-    with pytest.raises((ReachedMarble, PipelineError)):
+    monkeypatch.setattr("blueprint_pipeline.website_scene_handoff.prepare_website_scene_handoff", handoff)
+    with pytest.raises(PipelineError, match="website_atlas_job_processing"):
         q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
-    assert len(provider_calls) == 1
+    assert len(handoffs) == 1 and "provider_run" not in handoffs[0]
 
 
 def test_run_qualification_pipeline_disabled_preflight_and_llm_outputs(

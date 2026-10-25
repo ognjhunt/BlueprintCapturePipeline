@@ -1,0 +1,15 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-website-atlas-preview.timer.json
+Description=Advance consented website Atlas previews
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=60s
+RandomizedDelaySec=10s
+Persistent=true
+Unit=blueprint-website-atlas-preview.service
+
+[Install]
+WantedBy=timers.target

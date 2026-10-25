@@ -24,7 +24,18 @@ inside the Isaac process:
   scores the samples (``score_task_episode_from_spec``), exactly as for
   Blueprint's own robot. A free base whose root drops below its declared fall
   height has fallen: the policy is not queried again and the episode is the
-  robot's failure.
+  robot's failure. An optional v2 named-arm binding also exposes measured
+  TCP poses in each fixed arm base. Typed absolute pose chunks use the current
+  simulator COM Jacobians, calibrated TCP offsets and bounded per-tick DLS;
+  command receipts do not claim that the target pose was achieved. A slower
+  policy action rate holds each row for an exact integral number of native
+  ticks, while its optional camera-history callback runs on simulator time.
+
+When a client exposes exact transport frames, the lossless policy-input PNGs
+contain decoded request pixels. Source native renders, JPEG preprocessing,
+resized calibration, request bytes and attempted/received transport evidence
+are retained separately. Derived review videos may normalize dimensions;
+their transforms never rewrite authoritative observation frames.
 
 A row outside a joint's declared limits, or a closure outside [0, 1], is
 refused before it reaches the robot and ends the episode as the policy's
@@ -136,7 +147,8 @@ def build_team_embodiment(robot: Mapping[str, Any], *, enable_cameras: bool, pos
             # A fixed base is held by its anchor; a free base stands, walks or drives under gravity.
             rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=not free, max_depenetration_velocity=5.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False, solver_position_iteration_count=64,
+                enabled_self_collisions=robot.get("enabled_self_collisions") is True,
+                solver_position_iteration_count=64,
                 solver_velocity_iteration_count=0)),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=tuple(pose["position_world_m"]), rot=tuple(pose["orientation_xyzw"]),
@@ -282,11 +294,12 @@ def team_observation_gate(*, built: Any, plan: Mapping[str, Any], output_root: P
 class _GripperWidth:
     """The robot-side half of a rigid scoring sample: the gripper's opening, from its declared joints."""
 
-    def __init__(self, width: Callable[[], float | None]):
-        self._width = width
+    def __init__(self, width: Callable[[], float | None], tools: Callable[[], list[dict[str, Any]]] | None = None):
+        self._width, self._tools = width, tools
 
     def read_object_sample(self) -> dict[str, Any]:
-        return {"gripper_width_m": self._width()}
+        return {"gripper_width_m": self._width(),
+                **({"tool_states": self._tools()} if self._tools is not None else {})}
 
     def reset(self) -> None:
         return None
@@ -308,6 +321,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     from .native_task_episode_environment import NativeRigidScoringEnvironment
     from .policy_episode_trace_evidence import episode_trace_evidence
     from .policy_request_evidence import capture_request, request_evidence_sink
+    from .team_arm_kinematics import LiveArmKinematics, POSE_CHUNK_SCHEMA, validate_pose_chunk
 
     env = built.env
     unwrapped = env.unwrapped
@@ -322,6 +336,10 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         raise RuntimeError("team_embodiment_joint_missing_at_runtime:" + ",".join(missing))
     declared_index = [names.index(name) for name in declared]
     gripper_index = [names.index(joint["name"]) for joint in gripper]
+    multi_tool = "gripper_channels" in row
+    channels = list(row["gripper_channels"]) if multi_tool else ([{
+        "name": "gripper", "joints": gripper, "max_width_m": row["gripper_max_width_m"]}] if gripper else [])
+    channel_indices = [[names.index(j["name"]) for j in channel["joints"]] for channel in channels]
     # Where each declared joint's value sits in a policy row, split by how the simulator drives it.
     position_columns = [j for j, name in enumerate(declared) if controls[name] == "position"]
     velocity_columns = [j for j, name in enumerate(declared) if controls[name] == "velocity"]
@@ -329,7 +347,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
               else [-float(row["joint_velocity_limits"][name]), float(row["joint_velocity_limits"][name])]
               for name in declared]
     fall_height = float(row["fall_height_world_m"]) if row["base_mode"] == "free_on_floor" else None
-    width_dimension = len(declared) + (1 if gripper else 0)
+    width_dimension = len(declared) + len(channels)
     stride = int(cadence["task_sample_stride"])
     action_steps = int(cadence["maximum_action_steps"])
     settle_steps = int(cadence["settle_window_samples"])
@@ -337,6 +355,28 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     media_cameras = {role: built.camera_scene_names[role] for role, _ in roles}
     media_cameras["overview"] = built.camera_scene_names["overview"]
     step_seconds = 1.0 / float(cadence["control_frequency_hz"])
+    control_hz = float(cadence["control_frequency_hz"])
+    action_hz = getattr(policy, "action_hz", control_hz)
+    if (isinstance(action_hz, bool) or not isinstance(action_hz, (int, float))
+            or not math.isfinite(action_hz) or action_hz <= 0
+            or not math.isclose(control_hz / action_hz, round(control_hz / action_hz), abs_tol=1e-9)
+            or not 1 <= control_hz / action_hz <= 120):
+        raise ValueError("team_policy_action_cadence_incompatible")
+    hold_ticks = int(round(control_hz / action_hz))
+    arm_control = LiveArmKinematics(robot=robot, row=row, as_array=_array) if row.get("arms") else None
+    if getattr(policy, "require_named_arm_state", False) is True and arm_control is None:
+        raise ValueError("team_policy_named_arm_state_required")
+    observe_frame = getattr(policy, "observe_frame", None)
+    observation_hz = getattr(policy, "observation_hz", action_hz)
+    if callable(observe_frame):
+        if (isinstance(observation_hz, bool) or not isinstance(observation_hz, (int, float))
+                or not math.isfinite(observation_hz) or observation_hz <= 0
+                or not math.isclose(control_hz / observation_hz, round(control_hz / observation_hz), abs_tol=1e-9)
+                or not 1 <= control_hz / observation_hz <= 120):
+            raise ValueError("team_policy_observation_cadence_incompatible")
+        observation_stride = int(round(control_hz / observation_hz))
+    else:
+        observation_stride = None
     if to_action is None:
         import torch
 
@@ -354,23 +394,41 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
                 "linear_velocity_world_mps": [float(v) for v in velocity[:3]],
                 "angular_velocity_world_radps": [float(v) for v in velocity[3:6]]}
 
-    def closure(q: Any) -> float | None:
-        if not gripper:
-            return None
-        fractions = [(float(q[i]) - float(j["open"])) / (float(j["closed"]) - float(j["open"]))
-                     for i, j in zip(gripper_index, gripper, strict=True)]
-        return float(min(1.0, max(0.0, sum(fractions) / len(fractions))))
+    def closures(q: Any) -> list[float]:
+        values = []
+        for channel, indices in zip(channels, channel_indices, strict=True):
+            fractions = [(float(q[i]) - float(j["open"])) / (float(j["closed"]) - float(j["open"]))
+                         for i, j in zip(indices, channel["joints"], strict=True)]
+            values.append(float(min(1.0, max(0.0, sum(fractions) / len(fractions)))))
+        return values
+
+    def tool_states() -> list[dict[str, Any]]:
+        q = joint_positions()
+        return [{"name": channel["name"], "tool_link": channel["tool_link"],
+                 "gripper_position": fraction,
+                 "gripper_width_m": float(channel["max_width_m"]) * (1.0 - fraction),
+                 "joint_positions": {j["name"]: float(q[i])
+                                     for j, i in zip(channel["joints"], indices, strict=True)},
+                 "width_source": "declared_joint_open_closed_and_maximum_width"}
+                for channel, indices, fraction in zip(channels, channel_indices, closures(q), strict=True)]
 
     def width() -> float | None:
-        fraction = closure(joint_positions())
-        return None if fraction is None else float(row["gripper_max_width_m"]) * (1.0 - fraction)
+        # There is no single gripper width for v2. The scorer consumes every
+        # measured tool state; never copy the primary width to other tools.
+        values = closures(joint_positions())
+        return None if multi_tool or not values else float(row["gripper_max_width_m"]) * (1.0 - values[0])
 
-    scoring = NativeRigidScoringEnvironment(environment=_GripperWidth(width), task_readback=task_readback,
-                                            task_spec=task_spec)
+    scoring = NativeRigidScoringEnvironment(environment=_GripperWidth(width, tool_states if multi_tool else None),
+                                            task_readback=task_readback, task_spec=task_spec)
     seed = int(plan["scenario"]["seed"])
     env.reset(seed=seed)
     scoring.begin_episode()
     observations: list[dict[str, Any]] = []
+    review_observations: list[dict[str, Any]] = []
+    native_observations: dict[int, dict[str, Any]] = {}
+    transport_inputs = getattr(policy, "last_policy_input_frames", None)
+    transported_frames: dict[tuple[int, str], str] = {}
+    transport_windows: list[dict[str, Any]] = []
     step = 0
 
     def capture(kind: str) -> dict[str, Any]:
@@ -378,7 +436,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         simulation_time = step * step_seconds
         return persist_multicamera_observation(
             {role: _rgb(camera) for role, camera in cameras.items()}, output_dir=media_root,
-            episode_id=episode_id, observation_index=len(observations), kind=kind,
+            episode_id=episode_id, observation_index=len(observations) + len(review_observations), kind=kind,
             timestamp_ns=round(simulation_time * 1e9), simulation_time_s=simulation_time,
             calibrations={role: _calibration(camera) for role, camera in cameras.items()},
             source_devices={role: str(unwrapped.device) for role in cameras},
@@ -393,8 +451,30 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         terminal = capture("terminal-observation")
         visual, artifacts = finalize_multicamera_visual_evidence(
             output_dir=media_root, episode_id=episode_id, identity=identity,
-            policy_input_observations=observations, terminal_observation=terminal,
+            policy_input_observations=sorted(observations, key=lambda item: item["observation_index"]),
+            review_observations=review_observations, terminal_observation=terminal,
             required_camera_ids=sorted(media_cameras), review_only_camera_ids=["overview"])
+        if callable(transport_inputs):
+            import hashlib
+            import json
+
+            native_manifest = {"schema_version": "team_policy_native_render_sources.v1",
+                               "episode_id": episode_id, "observations": list(native_observations.values()),
+                               "claim_boundary": "Native pre-transport renders; exact provider inputs are the decoded wire-frame PNGs.",
+                               "manifest_digest": ""}
+            native_manifest["manifest_digest"] = canonical_digest(native_manifest, digest_field="manifest_digest")
+            payload = (json.dumps(native_manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            path = media_root / "media" / episode_id / "native_render_sources.json"
+            if path.exists():
+                if path.read_bytes() != payload:
+                    raise ValueError("team_policy_native_render_manifest_changed")
+            else:
+                path.write_bytes(payload)
+            artifacts.append({"role": "native_render_source_manifest", "relative_path": path.relative_to(media_root).as_posix(),
+                              "sha256": hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)})
+            artifacts.extend({"role": "native_render_camera_frame", "relative_path": frame["relative_path"],
+                              "sha256": frame["png_sha256"], "size_bytes": frame["size_bytes"]}
+                             for record in native_observations.values() for frame in record["views"].values())
         if failure_reason is not None:
             visual = {**visual, "failure_reason": failure_reason}
         return visual, artifacts
@@ -406,8 +486,149 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     queries: list[dict[str, Any]] = []
     request_artifacts: list[dict[str, Any]] = []
     progress["policy_request_artifacts"] = request_artifacts
+    named_arm_trace: list[dict[str, Any]] = []
+    history_frames: list[dict[str, Any]] = []
+    last_retained_step = -1
+    last_observed_step = -1
+    history_enabled = True
 
     fell = False
+
+    def observation() -> dict[str, Any]:
+        q, qd = joint_positions(), _array(robot.data.joint_vel)[0]
+        return {"images": {name: _rgb(unwrapped.scene[built.camera_scene_names[role]]) for role, name in roles},
+                "prompt": prompt,
+                "state": {"joint_position": [float(q[i]) for i in declared_index],
+                          "joint_velocity": [float(qd[i]) for i in declared_index],
+                          "gripper_position": closures(q),
+                          **({"gripper_names": [channel["name"] for channel in channels]} if multi_tool else {}),
+                          **(arm_control.state() if arm_control is not None else {}), "base": base_state()}}
+
+    def retain_policy_frame() -> dict[str, Any]:
+        nonlocal last_retained_step
+        if last_retained_step != step:
+            retained = capture("review-sample" if callable(transport_inputs) else "policy-input")
+            (review_observations if callable(transport_inputs) else observations).append(retained)
+            native_observations[round(step * step_seconds * 1e9)] = retained
+            last_retained_step = step
+        progress["first_observation_retained"] = True
+        return native_observations[round(step * step_seconds * 1e9)]
+
+    def retain_transport_frames(query_index: int) -> None:
+        """Replace native review records with lossless copies of actual decoded wire pixels."""
+        if not callable(transport_inputs):
+            return
+        import hashlib
+        import io
+        from PIL import Image
+
+        supplied = transport_inputs()
+        if not isinstance(supplied, list):
+            raise ValueError("team_policy_transport_frames_invalid")
+        grouped: dict[int, dict[str, Any]] = {}
+        name_roles = {name: role for role, name in roles}
+        window = []
+        for frame in supplied:
+            if not isinstance(frame, Mapping) or frame.get("camera_name") not in name_roles:
+                raise ValueError("team_policy_transport_frames_invalid")
+            if frame.get("transmission_attempted") is not True or type(frame.get("server_response_received")) is not bool:
+                raise ValueError("team_policy_transport_attempt_evidence_missing")
+            timestamp = frame.get("simulation_time_s")
+            if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+                raise ValueError("team_policy_transport_frame_time_invalid")
+            time_ns = round(timestamp * 1e9)
+            if time_ns not in native_observations:
+                raise ValueError("team_policy_transport_frame_source_unretained")
+            rgb = np.asarray(frame.get("rgb"))
+            source = native_observations[time_ns]["views"][name_roles[frame["camera_name"]]]
+            preprocessing = frame.get("preprocessing")
+            if (not isinstance(preprocessing, Mapping)
+                    or set(preprocessing) != {"resize_width", "resize_height", "resampling", "encoding", "jpeg_quality"}
+                    or preprocessing.get("resampling") != "bilinear" or preprocessing.get("encoding") != "jpeg"
+                    or any(type(preprocessing.get(key)) is not int or not 1 <= preprocessing[key] <= limit
+                           for key, limit in (("resize_width", 8192), ("resize_height", 8192), ("jpeg_quality", 100)))):
+                raise ValueError("team_policy_transport_preprocessing_invalid")
+            width, height = preprocessing["resize_width"], preprocessing["resize_height"]
+            if rgb.dtype != np.uint8 or rgb.shape != (height, width, 3):
+                raise ValueError("team_policy_transport_frame_shape_invalid")
+            if (frame.get("source_rgb_shape") != [source["height"], source["width"], 3]
+                    or str(frame.get("source_rgb_sha256") or "").removeprefix("sha256:")
+                    != source["raw_rgb_sha256"].removeprefix("sha256:")):
+                raise ValueError("team_policy_transport_frame_source_mismatch")
+            # Independently replay the declared publisher preprocessing from
+            # the lossless pre-transport render. Neither the hook's hash nor
+            # its decoded array alone establishes what reached the provider.
+            with Image.open(media_root / source["relative_path"]) as image:
+                original = image.convert("RGB")
+                if hashlib.sha256(np.asarray(original).tobytes()).hexdigest() != source["raw_rgb_sha256"].removeprefix("sha256:"):
+                    raise ValueError("team_policy_transport_frame_source_changed")
+                encoded = io.BytesIO()
+                original.resize((width, height), Image.Resampling.BILINEAR).save(
+                    encoded, format="JPEG", quality=preprocessing["jpeg_quality"])
+            if hashlib.sha256(encoded.getvalue()).hexdigest() != str(frame.get("image_sha256") or "").removeprefix("sha256:"):
+                raise ValueError("team_policy_transport_wire_hash_mismatch")
+            with Image.open(io.BytesIO(encoded.getvalue())) as image:
+                if not np.array_equal(np.asarray(image.convert("RGB")), rgb):
+                    raise ValueError("team_policy_transport_wire_pixels_mismatch")
+            decoded_hash = "sha256:" + hashlib.sha256(rgb.tobytes()).hexdigest()
+            expected_hash = str(frame.get("decoded_rgb_sha256") or "")
+            if decoded_hash.removeprefix("sha256:") != expected_hash.removeprefix("sha256:"):
+                raise ValueError("team_policy_transport_decoded_hash_mismatch")
+            key = (time_ns, frame["camera_name"])
+            if key in transported_frames and transported_frames[key] != decoded_hash:
+                raise ValueError("team_policy_transport_frame_identity_changed")
+            group = grouped.setdefault(time_ns, {})
+            if frame["camera_name"] in group:
+                raise ValueError("team_policy_transport_frame_duplicate")
+            scale_x, scale_y = width / source["width"], height / source["height"]
+            resize = np.array([[scale_x, 0., (scale_x - 1.) / 2.],
+                               [0., scale_y, (scale_y - 1.) / 2.], [0., 0., 1.]])
+            calibration = {**source["calibration"], "resolution": [width, height],
+                           "intrinsic_matrix": (resize @ np.asarray(source["calibration"]["intrinsic_matrix"])).tolist(),
+                           "image_preprocessing": dict(preprocessing),
+                           "source_calibration_digest": source["calibration_digest"],
+                           "pixel_coordinate_transform": resize.tolist()}
+            group[frame["camera_name"]] = (rgb, decoded_hash, calibration, dict(preprocessing))
+            window.append({"camera_name": frame["camera_name"], "simulation_time_s": timestamp,
+                           "image_sha256": frame.get("image_sha256"), "decoded_rgb_sha256": decoded_hash,
+                           "source_rgb_sha256": source["raw_rgb_sha256"], "preprocessing": dict(preprocessing),
+                           "transmission_attempted": True, "server_response_received": frame["server_response_received"],
+                           "observation_index": native_observations[time_ns]["observation_index"]})
+        for time_ns, group in sorted(grouped.items()):
+            if set(group) != set(name_roles):
+                raise ValueError("team_policy_transport_frame_camera_set_invalid")
+            if all((time_ns, name) in transported_frames for name in group):
+                continue
+            native = native_observations[time_ns]
+            images = {name_roles[name]: value[0] for name, value in group.items()}
+            # Overview is review-only, retaining the source frame at this historical time.
+            with Image.open(media_root / native["views"]["overview"]["relative_path"]) as image:
+                images["overview"] = np.asarray(image.convert("RGB"))
+            record = persist_multicamera_observation(
+                images, output_dir=media_root, episode_id=episode_id, observation_index=native["observation_index"],
+                kind="policy-input", timestamp_ns=time_ns, simulation_time_s=native["simulation_time_s"],
+                calibrations={**{name_roles[name]: value[2] for name, value in group.items()},
+                              "overview": native["views"]["overview"]["calibration"]},
+                source_devices={role: native["views"][role]["source_device"] for role in images},
+                synchronizations={role: {**native["views"][role]["synchronization"],
+                                          "transport_pixels": "decoded_exact_policy_request" if role != "overview" else "review_only_native_render"}
+                                  for role in images})
+            review_observations.remove(native)
+            observations.append(record)
+            transported_frames.update({(time_ns, name): value[1] for name, value in group.items()})
+        transport_windows.append({"query_index": query_index, "frames": window})
+
+    def observe_history(current: dict[str, Any] | None = None) -> None:
+        nonlocal last_observed_step
+        if (not history_enabled or observation_stride is None or last_observed_step == step
+                or step % observation_stride):
+            return
+        current = current if current is not None else observation()
+        retained = retain_policy_frame()  # Persist before any provider-facing hook can receive pixels.
+        observe_frame(current, simulation_time_s=step * step_seconds)
+        history_frames.append({"step_index": step, "simulation_time_s": step * step_seconds,
+                               "observation_index": retained["observation_index"]})
+        last_observed_step = step
 
     def sample_task_state() -> None:
         q = joint_positions()
@@ -427,6 +648,8 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
             fell = True
         if step % stride == 0:
             sample_task_state()
+        if not fell:
+            observe_history()
 
     q0 = joint_positions()
     base0 = base_state()["position_world_m"]
@@ -437,15 +660,13 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     for query_index in range(int(max_policy_queries)):
         if step >= action_steps or fell:
             break
-        q, qd = joint_positions(), _array(robot.data.joint_vel)[0]
-        images = {name: _rgb(unwrapped.scene[built.camera_scene_names[role]]) for role, name in roles}
-        observation = {"images": images, "prompt": prompt,
-                       "state": {"joint_position": [float(q[i]) for i in declared_index],
-                                 "joint_velocity": [float(qd[i]) for i in declared_index],
-                                 "gripper_position": [] if not gripper else [closure(q)],
-                                 "base": base_state()}}
-        observations.append(capture("policy-input"))
-        progress["first_observation_retained"] = True
+        current_observation = observation()
+        retain_policy_frame()
+        observe_history(current_observation)
+        if arm_control is not None:
+            named_arm_trace.append({"step_index": step, "simulation_time_s": step * step_seconds,
+                                    **{key: current_observation["state"][key]
+                                       for key in ("arm_names", "arm_joint_names", "arm_gripper_names", "joint_names", "arm_eef_pose")}})
         progress.update(candidate_policy_query_attempted=True, candidate_action_applied=False, phase="policy_query")
         started = time.monotonic()
 
@@ -458,51 +679,85 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         if callable(bind_request_sink):
             bind_request_sink(retain_request)
         else:
-            retain_request(capture_request(observation, transport="injected_policy_client"))
+            retain_request(capture_request(current_observation, transport="injected_policy_client"))
         try:
-            chunk = policy.infer(observation)
+            chunk = policy.infer(current_observation)
         except Exception:
             # Only an inference exception marks a policy failure. The retained
             # request sink marks its own disk/media failures as infrastructure.
             progress["policy_inference_failed"] = True
+            retain_transport_frames(query_index)
             raise
+        retain_transport_frames(query_index)
         latency = time.monotonic() - started
         progress.update(candidate_policy_queried=True, candidate_action_returned=True)
-        try:
-            actions = np.asarray(chunk, dtype=float)
-        except (TypeError, ValueError):
-            actions = np.zeros((0, 0))
-        if actions.ndim != 2 or actions.shape[1] != width_dimension or not 1 <= actions.shape[0] <= int(
-                row["action_chunk_rows"]):
-            raise ValueError(f"team_policy_https_action_shape_invalid:{tuple(actions.shape)}")
+        pose_chunk = None
+        if isinstance(chunk, Mapping) and chunk.get("schema_version") == POSE_CHUNK_SCHEMA:
+            if arm_control is None:
+                raise ValueError("team_policy_named_arm_state_required")
+            pose_chunk = validate_pose_chunk(chunk, arm_names=[arm["name"] for arm in row["arms"]],
+                                             maximum_rows=int(row["action_chunk_rows"]))
+            returned_rows = len(pose_chunk["positions_m"])
+            actions = None
+        else:
+            try:
+                actions = np.asarray(chunk, dtype=float)
+            except (TypeError, ValueError):
+                actions = np.zeros((0, 0))
+            if actions.ndim != 2 or actions.shape[1] != width_dimension or not 1 <= actions.shape[0] <= int(
+                    row["action_chunk_rows"]):
+                raise ValueError(f"team_policy_https_action_shape_invalid:{tuple(actions.shape)}")
+            returned_rows = len(actions)
         progress["candidate_action_shape_validated"] = True
-        if not np.isfinite(actions).all():
+        if actions is not None and not np.isfinite(actions).all():
             raise ValueError("team_policy_https_action_nonfinite")
         progress["candidate_action_finite_validated"] = True
-        executed = actions[:int(open_loop_horizon)]
+        executed_rows = min(returned_rows, int(open_loop_horizon))
+        executed = actions[:executed_rows] if actions is not None else None
         violations = [f"candidate_action_joint_position_bounds_invalid:{declared[j]}:row{r}"
-                      for r in range(executed.shape[0]) for j in range(len(declared))
-                      if not bounds[j][0] - LIMIT_TOLERANCE <= executed[r, j] <= bounds[j][1] + LIMIT_TOLERANCE]
-        if gripper:
-            violations += [f"candidate_action_joint_position_bounds_invalid:gripper_closure:row{r}"
-                           for r in range(executed.shape[0]) if not 0.0 <= executed[r, -1] <= 1.0]
-        queries.append({"query_index": query_index, "latency_seconds": latency, "returned_rows": int(actions.shape[0]),
-                        "executed_rows": int(executed.shape[0]), "any_joint_limit_clamped": False,
-                        "bounds_refused": bool(violations)})
+                      for r in range(executed_rows) for j in range(len(declared))
+                      if executed is not None and not bounds[j][0] - LIMIT_TOLERANCE <= executed[r, j] <= bounds[j][1] + LIMIT_TOLERANCE]
+        if channels and executed is not None:
+            violations += [f"candidate_action_joint_position_bounds_invalid:gripper_closure"
+                           f"{':' + channel['name'] if multi_tool else ''}:row{r}"
+                           for r in range(executed_rows) for index, channel in enumerate(channels)
+                           if not 0.0 <= executed[r, len(declared) + index] <= 1.0]
+        queries.append({"query_index": query_index, "latency_seconds": latency, "returned_rows": returned_rows,
+                        "executed_rows": executed_rows, "any_joint_limit_clamped": False,
+                        "bounds_refused": bool(violations), "native_hold_ticks_per_action": hold_ticks,
+                        "native_steps_executed": 0,
+                        "action_schema": POSE_CHUNK_SCHEMA if pose_chunk is not None else "declared_joint_targets"})
         if violations:
             progress["phase"] = "policy_action_bounds_refused"
             raise TeamPolicyActionRejected(violations[:16])
-        for action in executed:
-            if step >= action_steps or fell:
-                break
-            targets = [float(action[j]) for j in position_columns]
-            for joint in gripper:
-                targets.append(float(joint["open"]) + float(action[-1]) * (float(joint["closed"]) - float(joint["open"])))
-            targets += [float(action[j]) for j in velocity_columns]
-            commanded.append({"step_index": step, "targets": targets})
-            advance(targets)
-            progress["candidate_action_applied"] = True
-            last = targets
+        for action_index in range(executed_rows):
+            for hold_index in range(hold_ticks):
+                if step >= action_steps or fell:
+                    break
+                servo_receipts = []
+                if pose_chunk is not None:
+                    joint_targets, servo_receipts = arm_control.joint_targets(
+                        positions=pose_chunk["positions_m"][action_index],
+                        orientations=pose_chunk["orientations_xyzw"][action_index])
+                    closures_by_name = {arm["gripper_name"]: pose_chunk["gripper_closures"][action_index, index]
+                                        for index, arm in enumerate(row["arms"])}
+                    action = [joint_targets[name] for name in declared] + [closures_by_name[c["name"]] for c in channels]
+                else:
+                    action = executed[action_index]
+                targets = [float(action[j]) for j in position_columns]
+                for index, channel in enumerate(channels):
+                    for joint in channel["joints"]:
+                        targets.append(float(joint["open"]) + float(action[len(declared) + index])
+                                       * (float(joint["closed"]) - float(joint["open"])))
+                targets += [float(action[j]) for j in velocity_columns]
+                commanded.append({"step_index": step, "targets": targets,
+                                  **({"pose_servo": servo_receipts} if servo_receipts else {}),
+                                  "policy_action_row": action_index, "hold_tick": hold_index})
+                advance(targets)
+                queries[-1]["native_steps_executed"] += 1
+                progress["candidate_action_applied"] = True
+                last = targets
+    history_enabled = False
     if velocity_columns:  # the wheels stop while the task object settles
         last = [*last[:len(last) - len(velocity_columns)], *([0.0] * len(velocity_columns))]
     for _ in range(settle_steps):  # hold the last command while the task object settles
@@ -522,13 +777,23 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     return {
         "status": "completed", "score": score, "visual_evidence": visual, "media_artifacts": artifacts,
         "motion_evidence": {"actions_reached_robot": bool(commanded), "arm_moved": moved, "robot_fell": fell,
-                            "control_hz": float(cadence["control_frequency_hz"]), "task_sample_stride": stride},
+                            "control_hz": float(cadence["control_frequency_hz"]), "task_sample_stride": stride,
+                            **({"self_collisions_enabled": row.get("enabled_self_collisions") is True,
+                                "self_collision_force_readback": "unavailable_task_and_scene_contacts_only"}
+                               if multi_tool else {})},
         "commanded_actions": commanded, "state_trace": state_trace, "contact_force_evidence": contacts,
         "task_object_trajectory": trajectory, "queries": queries, "policy_queries": len(queries),
         "policy_query_latency": {"seconds": [row_q["latency_seconds"] for row_q in queries]},
         "camera_calibration": None, "resource_telemetry": None, "telemetry_channels": None,
         "scientific_reset": None, "embodiment_digest": row["embodiment_digest"],
         "policy_request_artifacts": request_artifacts,
+        "policy_cadence": {"native_control_hz": control_hz, "policy_action_hz": float(action_hz),
+                           "native_hold_ticks_per_action": hold_ticks,
+                           "task_sample_hz": control_hz / stride,
+                           "history_observation_hz": float(observation_hz) if observation_stride is not None else None},
+        **({"named_arm_observations": named_arm_trace} if arm_control is not None else {}),
+        **({"policy_history_frames": history_frames} if observation_stride is not None else {}),
+        **({"policy_transport_windows": transport_windows} if callable(transport_inputs) else {}),
         "policy_request_evidence_complete": bool(request_artifacts)
             and all(item["serialization_verified"] for item in request_artifacts),
     }

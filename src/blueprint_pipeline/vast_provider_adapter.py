@@ -387,6 +387,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_policy_runtime_smoke",
         "adp009d_isaac",
         "adp009d_articulated_native",
+        "scene_configuration_native_continuation",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
@@ -402,6 +403,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_policy_runtime_smoke",
         "adp009d_isaac",
         "adp009d_articulated_native",
+        "scene_configuration_native_continuation",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
@@ -2533,7 +2535,6 @@ def _blueprint_bundle_preflight(
         "provider_runtime/articulated_native_diagnostic_runtime.py",
         "provider_runtime/articulated_native_diagnostic_request.v1.json",
         "provider_runtime/adp009d_franka_eval_harness_manifest.v1.json",
-        "provider_runtime/assets/articulated_task_asset.usda",
     }
     native_task_arena_required_entries = {
         "provider_runtime/run_adp_arena_provider_runtime.sh",
@@ -2698,6 +2699,17 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp009d_policy_runtime_smoke_worker.py"
         readiness_name = "adp009d_policy_runtime_smoke_manifest.json"
+    elif provider_bundle_kind == "scene_configuration_native_continuation":
+        required_entries = {
+            "provider_runtime/run_adp_arena_provider_runtime.sh",
+            "provider_runtime/native_continuation_manifest.v1.json",
+            "provider_runtime/completed_cpu_prefix.zip",
+            "provider_runtime/construction_envelope.v1.json",
+            "provider_runtime/pipeline/src/blueprint_pipeline/task_evaluation_scene_configuration_native_continuation.py",
+        }
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/pipeline/src/blueprint_pipeline/task_evaluation_scene_configuration_native_continuation.py"
+        readiness_name = "native_continuation_manifest.v1.json"
     elif provider_bundle_kind == "adp009d_articulated_native":
         required_entries = adp009d_articulated_native_required_entries
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
@@ -2843,6 +2855,7 @@ def _blueprint_bundle_preflight(
             "adp009d_policy_runtime_smoke",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -2896,6 +2909,19 @@ def _blueprint_bundle_preflight(
             try:
                 with zipfile.ZipFile(bundle_path) as archive:
                     zip_entries = sorted(archive.namelist())
+                    if provider_bundle_kind == "adp009d_articulated_native":
+                        assets = set(zip_entries) & {
+                            "provider_runtime/assets/articulated_task_asset" + suffix
+                            for suffix in (".usd", ".usda", ".usdc", ".usdz")
+                        }
+                        if len(assets) == 1:
+                            required_entries = required_entries | assets
+                        else:
+                            required_entries = required_entries | {
+                                "provider_runtime/assets/articulated_task_asset.usda"
+                            }
+                            if assets:
+                                blockers.append("articulated_native_bundle_asset_format_ambiguous")
                     zip_testzip_result = archive.testzip()
                     for member in zip_entries:
                         if member.endswith(".json"):
@@ -3911,6 +3937,7 @@ def _resolve_launch_mode(
             "adp009d_policy_runtime_smoke",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -3980,6 +4007,7 @@ def _probe_env(
         "adp_arena",
         "adp009d_isaac",
         "adp009d_articulated_native",
+        "scene_configuration_native_continuation",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
@@ -4750,6 +4778,7 @@ def _probe_shell_script(
             "adp009d_policy_runtime_smoke",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -4854,6 +4883,16 @@ def _probe_shell_script(
                 )
                 + "\n"
                 "required_result_max_bytes = 512 * 1024 * 1024\n"
+                "required_evidence_names = "
+                + repr(("native_continuation_stage_output.zip",)
+                       if provider_bundle_kind == "scene_configuration_native_continuation" else ())
+                + "\n"
+                "for name in required_evidence_names:\n"
+                "    evidence = output_dir / name\n"
+                "    if evidence.is_symlink() or not evidence.is_file():\n"
+                "        raise SystemExit('provider_required_evidence_missing_or_not_regular:' + name)\n"
+                "    if not 0 < evidence.stat().st_size <= required_result_max_bytes:\n"
+                "        raise SystemExit('provider_required_evidence_size_invalid:' + name)\n"
                 "if required_result_name is not None:\n"
                 "    required_result = output_dir / required_result_name\n"
                 "    if required_result.is_symlink() or not required_result.is_file():\n"
@@ -6766,6 +6805,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp_arena",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -7368,6 +7408,7 @@ def run_vast_provider_adapter(
             "adp_arena",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",

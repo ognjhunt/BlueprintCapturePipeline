@@ -1,0 +1,728 @@
+{
+  "$defs": {
+    "BaseFootprint": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "length_m"
+                ]
+              },
+              {
+                "required": [
+                  "width_m"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "shape": {
+              "const": "circle"
+            }
+          },
+          "required": [
+            "shape",
+            "radius_m"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "radius_m"
+            ]
+          },
+          "properties": {
+            "shape": {
+              "const": "rectangle"
+            }
+          },
+          "required": [
+            "shape",
+            "length_m",
+            "width_m"
+          ]
+        }
+      ],
+      "properties": {
+        "shape": {
+          "enum": [
+            "circle",
+            "rectangle"
+          ],
+          "title": "Shape",
+          "type": "string"
+        },
+        "radius_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 10.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Radius M"
+        },
+        "length_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 20.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Length M"
+        },
+        "width_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 20.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width M"
+        }
+      },
+      "required": [
+        "shape"
+      ],
+      "title": "BaseFootprint",
+      "type": "object"
+    },
+    "ClaimEmbodiment": {
+      "additionalProperties": false,
+      "properties": {
+        "robot_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Robot Id",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        },
+        "base_footprint": {
+          "$ref": "#/$defs/BaseFootprint"
+        },
+        "reach_envelope": {
+          "$ref": "#/$defs/ReachEnvelope"
+        },
+        "end_effector_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "End Effector Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "robot_id",
+        "version",
+        "base_footprint",
+        "reach_envelope",
+        "end_effector_id"
+      ],
+      "title": "ClaimEmbodiment",
+      "type": "object"
+    },
+    "ControllerActionRepresentation": {
+      "additionalProperties": false,
+      "properties": {
+        "controller_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Controller Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "controller_id"
+      ],
+      "title": "ControllerActionRepresentation",
+      "type": "object"
+    },
+    "DecisionBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_cost_usd": {
+          "maximum": 100000.0,
+          "minimum": 0.0,
+          "title": "Max Cost Usd",
+          "type": "number"
+        },
+        "max_latency_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 2592000.0,
+          "title": "Max Latency Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "max_cost_usd",
+        "max_latency_seconds"
+      ],
+      "title": "DecisionBudget",
+      "type": "object"
+    },
+    "DecisionCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "robot_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Robot Id",
+          "type": "string"
+        },
+        "embodiment_version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Embodiment Version",
+          "type": "string"
+        },
+        "robot_binding": {
+          "$ref": "#/$defs/RobotBinding"
+        }
+      },
+      "required": [
+        "robot_id",
+        "embodiment_version",
+        "robot_binding"
+      ],
+      "title": "DecisionCandidate",
+      "type": "object"
+    },
+    "DecisionClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+          "title": "Claim Id",
+          "type": "string"
+        },
+        "claim_type": {
+          "enum": [
+            "perception_visibility",
+            "task_discovery",
+            "appearance_review",
+            "reachability",
+            "robot_placement",
+            "navigation_clearance",
+            "collision_contact",
+            "grasp_contact",
+            "articulation",
+            "containment",
+            "mass_inertia",
+            "friction_compliance",
+            "object_state_transition"
+          ],
+          "title": "Claim Type",
+          "type": "string"
+        },
+        "subject": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Subject",
+          "type": "string"
+        },
+        "measurable_threshold": {
+          "$ref": "#/$defs/MeasurableThreshold"
+        },
+        "false_safe_consequence": {
+          "enum": [
+            "low",
+            "moderate",
+            "high",
+            "critical"
+          ],
+          "title": "False Safe Consequence",
+          "type": "string"
+        },
+        "acceptable_false_safe_risk": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Acceptable False Safe Risk",
+          "type": "number"
+        },
+        "desired_confidence_or_coverage": {
+          "$ref": "#/$defs/DesiredConfidenceOrCoverage"
+        },
+        "permitted_abstention_behavior": {
+          "$ref": "#/$defs/PermittedAbstentionBehavior"
+        },
+        "task_family": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Task Family",
+          "type": "string"
+        },
+        "site_domain_conditions": {
+          "$ref": "#/$defs/SiteDomainConditions"
+        },
+        "embodiment": {
+          "$ref": "#/$defs/ClaimEmbodiment"
+        },
+        "sensors": {
+          "additionalProperties": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxProperties": 32,
+          "minProperties": 1,
+          "title": "Sensors",
+          "type": "object"
+        },
+        "controller_action_representation": {
+          "$ref": "#/$defs/ControllerActionRepresentation"
+        }
+      },
+      "required": [
+        "claim_id",
+        "claim_type",
+        "subject",
+        "measurable_threshold",
+        "false_safe_consequence",
+        "acceptable_false_safe_risk",
+        "desired_confidence_or_coverage",
+        "permitted_abstention_behavior",
+        "task_family",
+        "site_domain_conditions",
+        "embodiment",
+        "sensors",
+        "controller_action_representation"
+      ],
+      "title": "DecisionClaim",
+      "type": "object"
+    },
+    "DecisionRequestConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "decision_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/DecisionCandidate"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Candidates",
+          "type": "array"
+        },
+        "claims": {
+          "items": {
+            "$ref": "#/$defs/DecisionClaim"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Claims",
+          "type": "array"
+        },
+        "budget": {
+          "$ref": "#/$defs/DecisionBudget"
+        },
+        "deadline": {
+          "format": "date-time",
+          "title": "Deadline",
+          "type": "string"
+        },
+        "permitted_evidence_methods": {
+          "items": {
+            "enum": [
+              "analytic_geometry_kinematics",
+              "captured_real_observation",
+              "traditional_simulation",
+              "learned_world_model",
+              "external_provider_tool",
+              "physical_evidence",
+              "owner_attested_operational_input"
+            ],
+            "type": "string"
+          },
+          "maxItems": 7,
+          "minItems": 1,
+          "title": "Permitted Evidence Methods",
+          "type": "array"
+        },
+        "restrictions": {
+          "$ref": "#/$defs/DecisionRestrictions"
+        },
+        "requested_result_audience": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Requested Result Audience",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,191}$",
+          "title": "Idempotency Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "decision_id",
+        "candidates",
+        "claims",
+        "budget",
+        "deadline",
+        "permitted_evidence_methods",
+        "restrictions",
+        "requested_result_audience",
+        "idempotency_key"
+      ],
+      "title": "DecisionRequestConstraints",
+      "type": "object"
+    },
+    "DecisionRestrictions": {
+      "additionalProperties": true,
+      "properties": {
+        "webapp_provider_selection_allowed": {
+          "const": false,
+          "title": "Webapp Provider Selection Allowed",
+          "type": "boolean"
+        },
+        "live_robot_execution_allowed": {
+          "const": false,
+          "title": "Live Robot Execution Allowed",
+          "type": "boolean"
+        },
+        "paid_compute_authorized": {
+          "const": false,
+          "title": "Paid Compute Authorized",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "webapp_provider_selection_allowed",
+        "live_robot_execution_allowed",
+        "paid_compute_authorized"
+      ],
+      "title": "DecisionRestrictions",
+      "type": "object"
+    },
+    "DesiredConfidenceOrCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "minimum_coverage": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "title": "Minimum Coverage",
+          "type": "number"
+        },
+        "minimum_independent_methods": {
+          "maximum": 8,
+          "minimum": 1,
+          "title": "Minimum Independent Methods",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "minimum_coverage",
+        "minimum_independent_methods"
+      ],
+      "title": "DesiredConfidenceOrCoverage",
+      "type": "object"
+    },
+    "JobEvidenceSourceBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "job_evidence_source_binding.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "job_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$",
+          "title": "Job Id",
+          "type": "string"
+        },
+        "brief_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Brief Digest",
+          "type": "string"
+        },
+        "task_inventory_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Task Inventory Digest",
+          "type": "string"
+        },
+        "capture_session_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+          "title": "Capture Session Id",
+          "type": "string"
+        },
+        "intake_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+          "title": "Intake Id",
+          "type": "string"
+        },
+        "source_capture_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Source Capture Digest",
+          "type": "string"
+        },
+        "command_request_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+          "title": "Command Request Id",
+          "type": "string"
+        },
+        "approved_task_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Approved Task Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "job_id",
+        "brief_digest",
+        "task_inventory_digest",
+        "capture_session_id",
+        "intake_id",
+        "source_capture_digest",
+        "command_request_id",
+        "approved_task_digest"
+      ],
+      "title": "JobEvidenceSourceBinding",
+      "type": "object"
+    },
+    "MeasurableThreshold": {
+      "additionalProperties": false,
+      "properties": {
+        "operator": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Operator",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value"
+        },
+        "units": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Units",
+          "type": "string"
+        },
+        "metric": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Metric",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operator",
+        "value",
+        "units",
+        "metric"
+      ],
+      "title": "MeasurableThreshold",
+      "type": "object"
+    },
+    "PermittedAbstentionBehavior": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "const": true,
+          "title": "Allowed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "allowed"
+      ],
+      "title": "PermittedAbstentionBehavior",
+      "type": "object"
+    },
+    "ReachEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "minimum_m": {
+          "maximum": 20.0,
+          "minimum": 0.0,
+          "title": "Minimum M",
+          "type": "number"
+        },
+        "maximum_m": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 20.0,
+          "title": "Maximum M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "minimum_m",
+        "maximum_m"
+      ],
+      "title": "ReachEnvelope",
+      "type": "object"
+    },
+    "RobotBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "robot_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Robot Id",
+          "type": "string"
+        },
+        "embodiment_version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Embodiment Version",
+          "type": "string"
+        },
+        "base_footprint": {
+          "$ref": "#/$defs/BaseFootprint"
+        },
+        "sensors": {
+          "additionalProperties": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxProperties": 32,
+          "minProperties": 1,
+          "title": "Sensors",
+          "type": "object"
+        },
+        "controller_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Controller Id",
+          "type": "string"
+        },
+        "end_effector_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "End Effector Id",
+          "type": "string"
+        },
+        "reach_envelope": {
+          "$ref": "#/$defs/ReachEnvelope"
+        }
+      },
+      "required": [
+        "robot_id",
+        "embodiment_version",
+        "base_footprint",
+        "sensors",
+        "controller_id",
+        "end_effector_id",
+        "reach_envelope"
+      ],
+      "title": "RobotBinding",
+      "type": "object"
+    },
+    "SiteDomainConditions": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "const": "accepted_capture_observation",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope"
+      ],
+      "title": "SiteDomainConditions",
+      "type": "object"
+    }
+  },
+  "$id": "https://tryblueprint.io/contracts/site-task-testbed-compilation-submission.v3.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "site_task_testbed_compilation_submission.v3",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "capture_session_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+      "title": "Capture Session Id",
+      "type": "string"
+    },
+    "intake_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+      "title": "Intake Id",
+      "type": "string"
+    },
+    "testbed_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+      "title": "Testbed Id",
+      "type": "string"
+    },
+    "version": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+      "title": "Version",
+      "type": "string"
+    },
+    "approved_task_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Approved Task Digest",
+      "type": "string"
+    },
+    "reconstruction_plan_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$",
+      "title": "Reconstruction Plan Id",
+      "type": "string"
+    },
+    "reconstruction_execution_result_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Reconstruction Execution Result Digest",
+      "type": "string"
+    },
+    "robot_binding": {
+      "$ref": "#/$defs/RobotBinding"
+    },
+    "decision_request_constraints": {
+      "$ref": "#/$defs/DecisionRequestConstraints"
+    },
+    "job_context": {
+      "$ref": "#/$defs/JobEvidenceSourceBinding"
+    }
+  },
+  "required": [
+    "schema_version",
+    "capture_session_id",
+    "intake_id",
+    "testbed_id",
+    "version",
+    "approved_task_digest",
+    "reconstruction_plan_id",
+    "reconstruction_execution_result_digest",
+    "robot_binding",
+    "decision_request_constraints",
+    "job_context"
+  ],
+  "title": "SiteTaskTestbedCompilationSubmissionV3",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

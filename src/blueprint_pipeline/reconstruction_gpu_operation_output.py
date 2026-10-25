@@ -54,12 +54,7 @@ def _accepted(
     runtime_result: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
     try:
-        if operation == "website_mapanything":
-            from .website_mapanything_operation import build_request, build_result, REQUEST_DIGEST, RESULT_DIGEST
-            request = build_request(operation_request)
-            result = build_result(runtime_result)
-            request_field, result_field = REQUEST_DIGEST, RESULT_DIGEST
-        elif operation == "pose_canary":
+        if operation == "pose_canary":
             request = build_pose_estimation_request(operation_request)
             result = build_pose_estimation_result(runtime_result)
             request_field = "pose_estimation_request_digest"
@@ -90,9 +85,7 @@ def _result_root(
     result: Mapping[str, Any],
     output_root: Path,
 ) -> Path:
-    if operation == "website_mapanything":
-        relative = request["website_mapanything_request_digest"][7:23]
-    elif operation == "pose_canary":
+    if operation == "pose_canary":
         plan_digest = str(result.get("native_360_colmap_execution_plan_digest") or "")
         if not plan_digest.startswith("sha256:"):
             raise ReconstructionGpuOperationOutputError(
@@ -355,7 +348,7 @@ def validate_reconstruction_gpu_operation_output_bundle(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Validate a retrieved bundle independently before provider teardown."""
 
-    if expected_operation not in {"pose_canary", "trainer_canary", "website_mapanything"}:
+    if expected_operation not in {"pose_canary", "trainer_canary"}:
         raise ReconstructionGpuOperationOutputError(
             ["reconstruction_operation_output_operation_unsupported"]
         )
@@ -431,16 +424,12 @@ def validate_reconstruction_gpu_operation_output_bundle(
                 ["reconstruction_operation_output_manifest_digest_mismatch"]
             )
         expected_request_schema = (
-            "website_mapanything_request.v1"
-            if expected_operation == "website_mapanything"
-            else POSE_REQUEST_SCHEMA_VERSION
+            POSE_REQUEST_SCHEMA_VERSION
             if expected_operation == "pose_canary"
             else TRAINING_REQUEST_SCHEMA_VERSION
         )
         expected_result_schema = (
-            "website_mapanything_result.v1"
-            if expected_operation == "website_mapanything"
-            else POSE_RESULT_SCHEMA_VERSION
+            POSE_RESULT_SCHEMA_VERSION
             if expected_operation == "pose_canary"
             else TRAINING_RESULT_SCHEMA_VERSION
         )
@@ -464,14 +453,7 @@ def validate_reconstruction_gpu_operation_output_bundle(
             raise ReconstructionGpuOperationOutputError(
                 ["reconstruction_operation_output_expected_binding_mismatch"]
             )
-        if expected_operation == "website_mapanything":
-            from .website_mapanything_operation import build_result, RESULT_DIGEST
-            try:
-                result = build_result(result)
-            except ReconstructionWorkerContractError as exc:
-                raise ReconstructionGpuOperationOutputError(["website_mapanything_result_invalid"]) from exc
-            result_digest = result[RESULT_DIGEST]
-        elif expected_operation == "pose_canary":
+        if expected_operation == "pose_canary":
             try:
                 result = build_pose_estimation_result(result)
             except ReconstructionWorkerContractError as exc:

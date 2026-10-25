@@ -44,6 +44,8 @@ def episode_trace_evidence(
         "contact_active",
         "task_contact_active",
         "gripper_width_m",
+        "tool_states",
+        "tool_readback",
         "robot_collision_failure",
         "scene_collision_failure",
     )

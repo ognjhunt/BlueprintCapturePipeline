@@ -355,6 +355,7 @@ from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
     reserve_control_plane_disk,
 )
 from blueprint_pipeline.control_plane_disk_usage import TreeUsage, tree_usage  # noqa: E402
+from blueprint_pipeline.provision_staging_sweep import sweep_stale_staging  # noqa: E402
 from blueprint_pipeline.control_plane_storage_pins import (  # noqa: E402
     DEFAULT_PINS_ROOT,
 )
@@ -485,6 +486,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-control-plane-preflight.timer",
     "blueprint-pipeline-control-plane.service",
     "blueprint-pipeline-intake.service",
+    "blueprint-website-atlas-preview.service",
+    "blueprint-website-atlas-preview.timer",
 )
 #: Watchers whose execution surface is provably no-spend and may be armed on a
 #: fresh host without widening provider authority.  The paid dispatcher is
@@ -544,6 +547,10 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-completed-replay-cache-gc.timer",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.timer",
+    # Advances only preview jobs that intake recorded for routed uploads
+    # (BLUEPRINT_WEBSITE_ATLAS_ROUTING, off by default): with routing off there
+    # are none. Every paid call still needs that upload's WebApp grant and cap.
+    "blueprint-website-atlas-preview.timer",
 )
 
 CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
@@ -681,6 +688,14 @@ def _provision_scene_configuration_from_release(*, repository_root, source_commi
     environment = dict(os.environ)
     environment.update(PYTHONPATH=os.pathsep.join([str(repository / "src"), str(repository)]),
                        PYTHONDONTWRITEBYTECODE="1")
+    if paths.get("artisan_vendor_reuse_plan") is not None:
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        reuse = json.loads(Path(paths["artisan_vendor_reuse_plan"]).read_text())
+        if reuse.get("digest") != canonical_digest(reuse, digest_field="digest"):
+            raise ValueError("deploy_vendor_reuse_plan_changed")
+        # Every component/build temporary directory must share the SDK's device;
+        # otherwise package publication would copy the linked payload again.
+        environment["TMPDIR"] = reuse["staging_root"]
     try:
         result = subprocess.run(command, cwd=repository, env=environment,
             check=True, capture_output=True, text=True,
@@ -2608,6 +2623,96 @@ def _release_footprint_estimate(
     }
 
 
+SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST = "task_evaluation_scene_configuration_toolchain.v1.json"
+SCENE_CONFIGURATION_STAGING_HEADROOM = 1.05
+#: A full ARTISAN-era build when no toolchain has been published to measure.
+SCENE_CONFIGURATION_STAGING_DECLARED_BYTES = 12 * 1024**3
+
+
+def _scene_configuration_staging_estimate(runtime_root: str | Path, commit: str) -> dict[str, Any] | None:
+    """What the provision step stages under the temporary directory for ``commit``.
+
+    A commit without a published toolchain has every component rebuilt there
+    in full (ARTISAN's Blender and site-packages, ArtiFixer) before publication
+    links unchanged bytes to earlier toolchains. On 2026-10-23 those 10.4 GB
+    were outside admission, and a deploy took the root disk to 6 GB free
+    mid-provision. The newest published toolchain's own file list is the
+    estimate. None when the commit's toolchain exists: the step reuses it.
+    """
+
+    root = Path(runtime_root).expanduser() / "scene-configuration"
+    if (root / commit).exists():
+        return None
+    target = tempfile.gettempdir()
+    try:
+        manifests = sorted(
+            (path for path in root.glob(f"*/{SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST}")
+             if re.fullmatch(r"[0-9a-f]{40}", path.parent.name)),
+            key=lambda path: path.stat().st_mtime, reverse=True,
+        )
+    except OSError:
+        manifests = []
+    for manifest in manifests:
+        try:
+            files = json.loads(manifest.read_text(encoding="utf-8"))["files"]
+            size = sum(int(row["size_bytes"]) for row in files)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        return {
+            "bytes": math.ceil(size * SCENE_CONFIGURATION_STAGING_HEADROOM)
+            + RELEASE_ESTIMATE_BLOCK_BYTES * len(files),
+            "basis": "published_toolchain:" + manifest.parent.name,
+            "file_count": len(files),
+            "target_root": target,
+        }
+    return {
+        "bytes": SCENE_CONFIGURATION_STAGING_DECLARED_BYTES,
+        "basis": "declared_default",
+        "file_count": None,
+        "target_root": target,
+    }
+
+
+def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
+                             site_packages_root, blender_root):
+    """Only discount bytes the target builder is required to hard-link."""
+    from blueprint_pipeline.artisan_vendor_reuse import prepare_vendor_reuse
+
+    prefix = "published_toolchain:"
+    if not estimate["basis"].startswith(prefix):
+        return None
+    previous = Path(runtime_root) / "scene-configuration" / estimate["basis"][len(prefix):]
+    plan = prepare_vendor_reuse(toolchain_root=previous, site_packages_root=site_packages_root,
+                               blender_root=blender_root,
+                               staging_device=previous.parent.stat().st_dev)
+    if plan is None:
+        return None
+    files = json.loads((previous / SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST).read_text())["files"]
+    unshared = sum(int(row["size_bytes"]) for row in files) - plan["shared_bytes"]
+    if unshared < 0:
+        raise ControlPlaneDeployError("deploy_vendor_reuse_size_invalid")
+    directory = Path(state_root) / "deploy-vendor-reuse"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o750)
+    path = directory / (plan["digest"][7:] + ".json")
+    payload = (json.dumps(plan, sort_keys=True) + "\n").encode()
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o444)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError:
+        if path.is_symlink() or path.read_bytes() != payload:
+            raise ControlPlaneDeployError("deploy_vendor_reuse_plan_changed") from None
+    estimate["full_copy_bytes"] = estimate["bytes"]
+    estimate["target_root"] = plan["staging_root"]
+    estimate["bytes"] = (math.ceil(unshared * SCENE_CONFIGURATION_STAGING_HEADROOM)
+                         + RELEASE_ESTIMATE_BLOCK_BYTES * len(files) + RELEASE_ESTIMATE_OVERHEAD_BYTES)
+    estimate["vendor_reuse"] = {"path": str(path), "digest": plan["digest"],
+                               "shared_bytes": plan["shared_bytes"], "file_count": len(plan["files"])}
+    return path
+
+
 def _release_runtime_trees(runtime_root: Path, commit: str) -> set[Path]:
     """The per-release runtime trees, ``<runtime_root>/<component>/<commit>``, present now."""
 
@@ -3581,9 +3686,8 @@ def _install_scene_configuration_environment(
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_RELEASE_WINDOW_PREFIX",
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX",
     }
-    allowed_names = expected_names | {"BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE"}
     if (
-        not expected_names <= set(environment) <= allowed_names
+        set(environment) != expected_names
         or path.is_symlink()
         or (path.exists() and not stat.S_ISREG(path.stat().st_mode))
         or any(
@@ -4522,6 +4626,74 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str, 
             os.close(fd)
 
 
+def _synchronize_shared_control_plane_dependencies(*, release_path: str | Path) -> dict[str, Any]:
+    """Apply only the two security updates to intake's caller interpreter.
+
+    The protected SDK is prepared separately. Intake without a retirement policy
+    still executes this shared interpreter, so changing uv.lock alone leaves its
+    image decoder and trust store unchanged. Never install as root or resolve a
+    second dependency graph here.
+    """
+    requirements = Path(release_path) / "deploy/systemd/shared-control-plane-security-requirements.txt"
+    error = "deploy_shared_runtime_dependency_sync_failed"
+    try:
+        raw = requirements.read_bytes()
+        content = "\n".join(line.strip() for line in raw.decode("utf-8").splitlines()
+                            if line.strip() and not line.lstrip().startswith("#"))
+        pattern = r"([A-Za-z0-9_.-]+)==([^\s]+) \\\n--hash=sha256:[a-f0-9]{64}"
+        entries = re.findall(pattern, content)
+        pins = dict(entries)
+        if (set(pins) != {"certifi", "pillow"} or len(entries) != 2 or len(raw) > 65536
+                or re.sub(pattern, "", content).strip()):
+            raise ValueError("invalid shared runtime security manifest")
+        python = str(Path(sys.executable).absolute())
+        prefix = ["/usr/sbin/runuser", "-u", DEFAULT_SERVICE_ACCOUNT, "--", python, "-I"]
+        environment = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
+                       "PIP_CONFIG_FILE": "/dev/null"}
+
+        def run(command: list[str], *, timeout: int, input_text: str | None = None) -> str:
+            process = subprocess.Popen(command, stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd="/", env=environment,
+                start_new_session=True)
+            try:
+                output, _errors = process.communicate(input=input_text, timeout=timeout)
+                if process.returncode != 0:
+                    raise subprocess.CalledProcessError(process.returncode, command)
+                return output
+            finally:
+                # Direct-argv runuser keeps pip in this owned process group.
+                # Reap before releasing deploy locks, including on interruption
+                # or when runuser exits while a descendant still writes.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+                process.stdout.close()
+                process.stderr.close()
+
+        run(
+            [*prefix, "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+             "--no-deps", "--only-binary=:all:", "--require-hashes", "--requirement", str(requirements)],
+            timeout=180,
+        )
+        observed = run(
+            [*prefix, "-c", "import importlib.metadata as m,json,sys; "
+             "print(json.dumps({name:m.version(name) for name in json.load(sys.stdin)}))"],
+            input_text=json.dumps(sorted(pins)), timeout=20,
+        )
+        versions = json.loads(observed)
+        if versions != pins:
+            raise ValueError("installed production dependencies differ")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        # Captured installer output may contain local configuration. The operator
+        # receipt retains the bounded failure code without echoing child output.
+        raise ControlPlaneDeployError(error) from exc
+    return {"status": "synchronized", "account": DEFAULT_SERVICE_ACCOUNT,
+            "python": python, "requirements": str(requirements),
+            "requirements_sha256": hashlib.sha256(raw).hexdigest(), "versions": versions}
+
+
 def deploy_control_plane_commit(
     *,
     source_repo: str | Path,
@@ -4682,18 +4854,29 @@ def deploy_control_plane_commit(
         provenance_receipt.setdefault("promotion_eligible", True)
 
     disk_reservation = None
+    staging_reservation = None
     disk_reservation_runtime = None
     disk_reservation_estimate = None
+    artisan_vendor_reuse_plan = None
     if disk_reservation_root is not None:
         disk_reservation_runtime = _install_disk_reservation_runtime_prerequisites(
             disk_reservation_root
         )
         try:
+            # Scratch a stopped deploy left is reclaimed before this one is
+            # admitted; otherwise its bytes would refuse every later deploy.
+            try:
+                swept_staging = sweep_stale_staging(
+                    runtime_root=Path(scene_configuration_runtime_root).expanduser()
+                )
+            except OSError as exc:  # best effort: admission still decides
+                swept_staging = [f"sweep_failed:{type(exc).__name__}"]
             # Reserve what this release costs to stage, not a flat 2 GiB: on
             # 2026-09-26 the flat figure refused a deploy the disk could hold.
             disk_reservation_estimate = _release_footprint_estimate(
                 source, source_commit, reservation_root=disk_reservation_root
             )
+            disk_reservation_estimate["swept_stale_staging"] = swept_staging
             disk_reservation = reserve_control_plane_disk(
                 "control_plane_deploy",
                 target_root=releases,
@@ -4701,7 +4884,32 @@ def deploy_control_plane_commit(
                 reservation_root=disk_reservation_root,
                 workload="control_plane_release",
             )
+            # The provision step's scratch copy is admitted on the filesystem
+            # it lands on, before any copy starts, and freed when the step ends.
+            staging_estimate = _scene_configuration_staging_estimate(
+                scene_configuration_runtime_root, source_commit
+            )
+            if staging_estimate is not None:
+                from blueprint_pipeline.task_object_authoring_backend import default_backend
+                if (authoring_backend or default_backend()) == "artisan_v1" and all((
+                    artisan_site_packages_root, artisan_blender_root
+                )):
+                    artisan_vendor_reuse_plan = _bind_artisan_vendor_reuse(
+                        staging_estimate, runtime_root=scene_configuration_runtime_root,
+                        state_root=state, site_packages_root=artisan_site_packages_root,
+                        blender_root=artisan_blender_root)
+                disk_reservation_estimate["scene_configuration_staging"] = staging_estimate
+                staging_reservation = reserve_control_plane_disk(
+                    "control_plane_deploy",
+                    target_root=staging_estimate["target_root"],
+                    expected_bytes=staging_estimate["bytes"],
+                    reservation_root=disk_reservation_root,
+                    workload="scene_configuration_staging",
+                )
+                staging_estimate["reservation"] = staging_reservation.receipt()
         except ControlPlaneDiskBudgetError as exc:
+            if disk_reservation is not None:
+                disk_reservation.release(outcome="blocked")
             raise ControlPlaneDeployError(
                 f"deploy_disk_budget_exceeded:{exc}"
             ) from exc
@@ -4729,6 +4937,7 @@ def deploy_control_plane_commit(
     # any later deploy step fails.
     with (
         disk_reservation or contextlib.nullcontext(),
+        staging_reservation or contextlib.nullcontext(),
         _holding_deploy_lock(state),
         # Before the gate and the full quiesce: only the drained services'
         # triggers stop while their in-flight runs finish.
@@ -4764,6 +4973,9 @@ def deploy_control_plane_commit(
         )
         scene_retirement_runtime = _prepare_scene_retirement_runtime(
             source_repo=source, source_commit=source_commit
+        )
+        shared_runtime_dependencies = _synchronize_shared_control_plane_dependencies(
+            release_path=staged_release["release_path"]
         )
         scene_retirement_stores = _install_scene_retirement_stores()
         _mark_stage("release_staged")
@@ -4807,6 +5019,7 @@ def deploy_control_plane_commit(
                 artisan_root=artisan_root,
                 artisan_site_packages_root=artisan_site_packages_root,
                 artisan_blender_root=artisan_blender_root,
+                artisan_vendor_reuse_plan=artisan_vendor_reuse_plan,
                 content_agents_root=content_agents_source_root if authoring_backend != "artisan_v1" else None,
                 text_to_cad_root=cad_sources_by_id.get("text-to-cad"),
                 multi_agent_cad_root=cad_sources_by_id.get("multi-agent-cad"),
@@ -4817,6 +5030,8 @@ def deploy_control_plane_commit(
             raise ControlPlaneDeployError(
                 f"deploy_scene_configuration_runtime_invalid:{exc}"
             ) from exc
+        if staging_reservation is not None:
+            staging_reservation.release()  # the step removed its scratch copy
         scene_configuration_environment = _install_scene_configuration_environment(
             Path(scene_configuration_environment_file).expanduser(),
             environment=scene_configuration_runtime["environment"],
@@ -5007,6 +5222,7 @@ def deploy_control_plane_commit(
         "disk_reservation_estimate": disk_reservation_estimate,
         "disk_reservation_runtime": disk_reservation_runtime,
         "scene_retirement_runtime": scene_retirement_runtime,
+        "shared_runtime_dependencies": shared_runtime_dependencies,
         "scene_retirement_stores": scene_retirement_stores,
         "surfaces": [
             {"name": name, "path": str(path), "head": observed[name]}
@@ -5158,7 +5374,11 @@ def _run_deploy_with_signal_cleanup(callback: Callable[[], dict[str, Any]]) -> d
         if _DEPLOY_ACTIVE_TRANSITION:
             deferred.add(signal.Signals(number).name)
             return
-        signal.signal(number, signal.SIG_IGN)
+        # Ignore both, not just this one: a unit stop sends SIGTERM to what is
+        # left after the operator's SIGINT, and a second interruption raised
+        # inside rollback left every quiesced timer stopped (2026-10-25).
+        for handled in previous:
+            signal.signal(handled, signal.SIG_IGN)
         raise ControlPlaneDeployError(f"deploy_interrupted:{signal.Signals(number).name}")
 
     try:

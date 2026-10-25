@@ -1,0 +1,281 @@
+"""Only named, coherent reconstruction gaps may receive new geometry."""
+from copy import deepcopy
+import json
+
+import numpy as np
+from PIL import Image
+import pytest
+
+from blueprint_pipeline import atlas_scene_gaps as gaps
+from blueprint_pipeline import atlas_scene_preservation as preservation
+from blueprint_pipeline.atlas_depth_splat import posed_frame
+from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+
+
+def test_camera_context_scales_with_the_gap_and_rejects_retained_empty_views():
+    # The failed dishwasher plan had 0.01% and 0% usable known pixels.
+    counts = [('floor', 326720, 11513), ('bad-panel', 96, 16392),
+              ('bad-cabinet', 0, 108534), ('prior-success', 129834, 47879),
+              ('small-gap', 100, 20), ('large-gap', 100, 200)]
+    candidates = [{'camera_id': key} for key, _, _ in counts]
+    survey = {'views': [{'camera_id': key, 'known_context_pixel_count': known,
+                         'gap_pixel_count': missing, 'total_pixel_count': 921600}
+                        for key, known, missing in counts]}
+    accepted, rejected = gaps.context_supported_candidates(candidates, survey)
+    assert [row['camera_id'] for row in accepted] == ['floor', 'prior-success', 'small-gap']
+    assert rejected == ['bad-panel', 'bad-cabinet', 'large-gap']
+    assert accepted[0]['known_context_fraction'] > accepted[0]['gap_fraction']
+
+
+def test_blank_exterior_and_raster_pinholes_are_not_scene_completion_targets():
+    depth = np.zeros((80, 100), np.float32)
+    depth[10:70, 10:90] = 2
+    depth[25:40, 35:60] = 0  # A coherent bounded surface gap.
+    depth[50, 50] = 0  # A sampling pinhole, not a new scene surface.
+    labels, regions = gaps.gap_labels(depth, np.zeros(depth.shape, bool))
+    assert len(regions) == 1 and labels[30, 40] == 1
+    assert not labels[:10].any() and not labels[:, :10].any()
+    assert labels[50, 50] == 0
+
+
+def test_background_seen_through_missing_foreground_is_still_a_surface_gap():
+    depth = np.full((60, 80), 2., np.float32)
+    expected = depth.copy()
+    depth[15:40, 25:55] = 5.  # The back wall is present, the required nearer surface is absent.
+    labels, regions = gaps.gap_labels(depth, np.ones(depth.shape, bool), expected_depth=expected)
+    assert len(regions) == 1 and labels[20:35, 30:50].all()
+    assert not labels[:15].any()
+
+
+def test_depth_hypotheses_do_not_reject_nearer_surfaces_or_small_distortions():
+    depth = np.full((60, 80), 2.04, np.float32)
+    expected = np.full_like(depth, 2.)
+    depth[15:40, 25:55] = 1.  # A retained occluder is authoritative.
+    labels, regions = gaps.gap_labels(depth, np.ones(depth.shape, bool), expected_depth=expected)
+    assert not regions and not labels.any()
+    with pytest.raises(ValueError, match='expected_depth_grid_changed'):
+        gaps.gap_labels(depth, np.ones(depth.shape, bool), expected_depth=expected[:10])
+
+
+def test_expected_depth_stays_paired_with_its_own_reviewed_view(monkeypatch):
+    from blueprint_pipeline import atlas_scene_chisel
+    views = [{'frame_id': 'own-view'}, {'frame_id': 'other-view'}]
+    calls = []
+    monkeypatch.setattr(atlas_scene_chisel, 'project_source_depth',
+                        lambda frames, camera: calls.append((frames, camera)) or 'paired-depth')
+    candidate = {'camera': {'id': 'target-camera'}, 'expected_frame_id': 'own-view'}
+    assert gaps.expected_depth_for_candidate(views, candidate) == 'paired-depth'
+    assert calls == [([views[0]], candidate['camera'])]
+    with pytest.raises(ValueError, match='expected_reference_missing'):
+        gaps.expected_depth_for_candidate(views, {**candidate, 'expected_frame_id': 'missing'})
+
+
+def test_photographed_missing_depth_can_reach_image_edge_without_filling_unseen_canvas():
+    depth = np.zeros((60, 80), np.float32)
+    photo = np.zeros(depth.shape, bool)
+    photo[:, :40] = True
+    labels, regions = gaps.gap_labels(depth, photo)
+    assert len(regions) == 1 and labels[:, :40].all() and not labels[:, 40:].any()
+
+
+def test_disocclusion_domain_can_bridge_open_scene_gaps_but_never_the_exterior():
+    depth = np.zeros((100, 100), np.float32)
+    depth[10:90, 10:25] = 2
+    depth[10:90, 75:90] = 2
+    depth[75:90, 10:90] = 2  # U-shaped known floor/wall outline, open at the top.
+    photo = depth > 0
+    ordinary, _ = gaps.gap_labels(depth, photo)
+    novel, regions = gaps.gap_labels(depth, photo, scene_outline=True)
+    assert not ordinary.any() and len(regions) == 1
+    assert novel[30:70, 30:70].all()
+    assert not novel[:10].any() and not novel[:, :10].any() and not novel[90:].any()
+    assert not novel[photo].any()
+
+
+def test_aiming_at_a_gap_does_not_make_the_rest_of_the_new_view_a_fill_target():
+    depth = np.zeros((80, 100), np.float32)
+    photographed = np.ones(depth.shape, bool)
+    domain = np.zeros(depth.shape, bool)
+    domain[20:40, 65:85] = True
+    labels, regions = gaps.gap_labels(depth, photographed, scene_outline=True, candidate_mask=domain)
+    assert len(regions) == 1 and np.array_equal(labels > 0, domain)
+
+
+def test_agent_must_name_real_regions_and_mask_bytes_cannot_change(tmp_path):
+    labels = np.zeros((30, 40), np.uint16)
+    labels[5:12, 5:12], labels[18:25, 25:32] = 1, 2
+    path = tmp_path / 'labels.png'
+    Image.fromarray(labels).save(path)
+    view = {'label_path': str(path), 'label_sha256': _sha256_file(path),
+            'gaps': [{'gap_id': 'left', 'label': 1}, {'gap_id': 'right', 'label': 2}]}
+    with pytest.raises(ValueError, match='named_gaps_required'):
+        gaps.select_gap_mask(view, ['whole-room'], tmp_path / 'mask.png')
+    selected = gaps.select_gap_mask(view, ['left'], tmp_path / 'mask.png')
+    mask = np.asarray(Image.open(selected['completion_gap_mask_path'])) > 0
+    assert np.array_equal(mask, labels == 1)
+    path.write_bytes(b'changed')
+    with pytest.raises(ValueError, match='gap_survey_changed'):
+        gaps.select_gap_mask(view, ['left'], tmp_path / 'other.png')
+
+
+def test_gap_target_lineage_does_not_become_a_target_camera_mask(tmp_path):
+    # Retained production response: the model cited the originating source gap
+    # together with two target-camera labels. Keep its decision and target masks.
+    ids = ['gap-target-dfc1a8e078f06ba4-gap-1', 'gap-target-dfc1a8e078f06ba4-gap-3']
+    labels = np.zeros((20, 30), np.uint16)
+    labels[2:8, 3:10], labels[12:18, 19:27] = 1, 3
+    path = tmp_path / 'labels.png'
+    Image.fromarray(labels).save(path)
+    view = {'label_path': str(path), 'label_sha256': _sha256_file(path),
+            'gaps': [{'gap_id': key, 'label': label} for key, label in zip(ids, [1, 3])]}
+    source = 'decoded-000000098-wide-gap-1'
+    candidate = {'source_gap_ids': [source]}
+    selected = gaps.target_gap_ids(view, candidate, [source, *ids])
+    assert selected == ids
+    actual = gaps.select_gap_mask(view, selected, tmp_path / 'selected.png')
+    assert np.array_equal(np.array(Image.open(actual['completion_gap_mask_path'])) > 0, labels > 0)
+    for bad in [[source], [source, 'some-other-camera-gap-1'], [ids[0], ids[0]]]:
+        with pytest.raises(ValueError, match='named_gaps_required'):
+            gaps.target_gap_ids(view, candidate, bad)
+
+
+def test_native_full_image_contributes_only_selected_gap_and_keeps_known_rgb(tmp_path):
+    cam = {'intrinsics': {'width': 20, 'height': 16, 'fx': 20., 'fy': 20., 'cx': 10., 'cy': 8.},
+           'extrinsics': {'position': [0, 0, 0], 'quaternion': [0, 0, 0, 1], 'coordinateSystem': 'rub'}}
+    source = posed_frame(frame_id='source', rgb=np.full((16, 20, 3), 50, np.uint8),
+                         depth=np.zeros((16, 20), np.float32), confidence=np.zeros((16, 20)), camera=cam)
+    prepared = preservation.prepare_completion_views(frames=[source],
+        selected=[{'camera_id': 'source', 'source_frame_id': 'source', 'camera': cam}], root=tmp_path / 'inputs')[0]
+    depth = tmp_path / 'depth.png'
+    Image.fromarray(np.zeros((16, 20), np.uint8)).save(depth)
+    mask = np.zeros((16, 20), np.uint8)
+    mask[4:12, 5:15] = 255
+    path = tmp_path / 'gap.png'
+    Image.fromarray(mask).save(path)
+    prepared.update(source_depth_context_path=str(depth), source_depth_context_digest=_sha256_file(depth),
+                    completion_gap_mask_path=str(path), completion_gap_mask_digest=_sha256_file(path),
+                    completion_gap_ids=['floor-gap'], completion_gap_pixel_count=80)
+    generated = deepcopy(source)
+    generated.update(frame_id='generated', rgb=np.full((16, 20, 3), 255, np.uint8),
+                     depth=np.full((16, 20), 2., np.float32), confidence=np.ones((16, 20)))
+    actual, _, receipt, _ = preservation.preserve_generated_view(generated=generated, prepared=prepared,
+        references=[source], output_root=tmp_path / 'result', native_result_digest='native', native_frame_index=0)
+    assert np.array_equal(actual['confidence'] > 0, mask > 0)
+    assert np.array_equal(actual['rgb'], source['rgb'])
+    assert receipt['generated_geometry_pixel_count'] == 80
+    assert receipt['completion_gap_ids'] == ['floor-gap']
+
+
+def test_no_gap_returns_existing_scene_without_planner_or_provider_purchase(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_scene_completion, atlas_context_fov
+
+    cam = {'intrinsics': {'width': 32, 'height': 18, 'fx': 30., 'fy': 30., 'cx': 16., 'cy': 9.},
+           'extrinsics': {'position': [0, 0, 0], 'quaternion': [0, 0, 0, 1], 'coordinateSystem': 'rub'}}
+    source = posed_frame(frame_id='source', rgb=np.full((18, 32, 3), 50, np.uint8),
+        depth=np.full((18, 32), 2., np.float32), confidence=np.ones((18, 32)), camera=cam)
+    monkeypatch.setattr(atlas_context_fov, 'verify_pose_context_fov', lambda **_: {'digest': 'fov'})
+    def forbidden(**_):
+        pytest.fail('A scene without eligible gaps must not purchase generation or a planning review')
+    actual, report = atlas_scene_completion.complete_scene(pose_root=tmp_path, pose={}, frames=[source],
+        review={}, root=tmp_path / 'completion', context={}, configuration={}, task_runner=forbidden,
+        planner_runner=forbidden, release_blockers=forbidden, max_polls=1)
+    assert actual == [] and report['status'] == 'passed' and report['generated_roots'] == []
+
+
+def test_post_export_zero_masks_still_receive_a_complete_surface_review_before_stopping(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_scene_completion, atlas_context_fov
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    cam = {'intrinsics': {'width': 32, 'height': 18, 'fx': 30., 'fy': 30., 'cx': 16., 'cy': 9.},
+           'extrinsics': {'position': [0, 0, 0], 'quaternion': [0, 0, 0, 1], 'coordinateSystem': 'rub'}}
+    source = posed_frame(frame_id='source', rgb=np.full((18, 32, 3), 50, np.uint8),
+        depth=np.full((18, 32), 2., np.float32), confidence=np.ones((18, 32)), camera=cam)
+    image = tmp_path/'source.png'
+    Image.fromarray(source['rgb']).save(image)
+    digest = _sha256_file(image)
+    pose = {'digest': 'pose', 'binding': {'source_video_digest': 'video'},
+            'operation_receipt': {'input_usage': {'frames': [{'frame_id': 'source',
+                'outputs': [{'role': 'image', 'path': image.name, 'sha256': digest}]}]}}}
+    survey = {'schema_version': 'atlas_video_survey.v1', 'source_video_digest': 'video',
+        'heldout_pixels_included': False, 'display_rotation_degrees': 0,
+        'frames': [{'frame_id': 'source', 'timestamp_seconds': 0.,
+                    'source_image_path': str(image), 'source_image_digest': digest}]}
+    survey['digest'] = canonical_digest(survey, digest_field='digest')
+    survey_path = tmp_path/'source-survey.json'
+    survey_path.write_text(json.dumps(survey))
+    monkeypatch.setattr(atlas_context_fov, 'verify_pose_context_fov', lambda **_: {'digest': 'fov'})
+    decisions = []
+    def review(**kwargs):
+        feedback = kwargs['completion']
+        views = feedback['gap_survey']['views']
+        assert all(not row['gaps'] for row in views)
+        assert {p['camera_id'] for p in feedback['previews'] if p['kind'] == 'geometry_gap_survey'}
+        camera_id = views[0]['camera_id']
+        decisions.append(camera_id)
+        return {'proposal': {'status': 'sufficient', 'selected_camera_ids': [],
+            'gap_assessment': ['Complete connected support checked against the actual export'],
+            'remaining_unknowns': ['Physical fidelity unverified'], 'environment_surfaces': [
+                {'component': 'work fixture', 'surface': 'support face',
+                 'required_for_local_environment': True, 'coverage': 'present',
+                 'source_frame_ids': ['source'], 'evidence_camera_ids': [camera_id], 'gap_ids': [],
+                 'reason': 'The actual exported support surface is continuous'}]}}
+    def forbidden(**_):
+        pytest.fail('No new generation is needed after a sufficient surface review')
+    actual, result = atlas_scene_completion.complete_scene(pose_root=tmp_path, pose=pose, frames=[source],
+        review={'automation': {'objects': [], 'removal_instruction': 'Cleared task area'}},
+        root=tmp_path/'completion', context={}, configuration={'remaining_cost_usd': 5},
+        task_runner=forbidden, planner_runner=review, release_blockers=forbidden, max_polls=1,
+        source_survey_path=survey_path, coverage_feedback={})
+    assert len(decisions) == 1 and actual == []
+    assert result['review']['reason'] == 'agent_found_no_material_task_gap'
+
+
+def test_gap_survey_reuses_verified_projection_and_refuses_changed_geometry(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_scene_chisel
+
+    cam = {'intrinsics': {'width': 32, 'height': 18, 'fx': 30., 'fy': 30., 'cx': 16., 'cy': 9.},
+           'extrinsics': {'position': [0, 0, 0], 'quaternion': [0, 0, 0, 1], 'coordinateSystem': 'rub'}}
+    source = posed_frame(frame_id='source', rgb=np.full((18, 32, 3), 50, np.uint8),
+        depth=np.full((18, 32), 2., np.float32), confidence=np.ones((18, 32)), camera=cam)
+    pool = [{'camera_id': 'source-wide', 'source_frame_id': 'source', 'purpose': 'wide', 'camera': cam}]
+    report = gaps.survey_gaps(frames=[source], geometry_frames=[source], candidates=pool, root=tmp_path)
+    monkeypatch.setattr(atlas_scene_chisel, 'project_source_depth', lambda *_: pytest.fail('Verified cache not adopted'))
+    assert gaps.survey_gaps(frames=[source], geometry_frames=[source], candidates=pool, root=tmp_path) == report
+    source['depth'][0, 0] = 0
+    with pytest.raises(ValueError, match='gap_survey_changed'):
+        gaps.survey_gaps(frames=[source], geometry_frames=[source], candidates=pool, root=tmp_path)
+
+
+@pytest.mark.parametrize('plan_name', ['chisel-completion-plan.json', 'rgbd-completion-plan.json'])
+def test_prior_completion_reuses_bound_composite_and_mask_without_regenerating(tmp_path, monkeypatch, plan_name):
+    from blueprint_pipeline import atlas_scene_completion
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    preserved = tmp_path / 'preserved/0000-0000'
+    preserved.mkdir(parents=True)
+    image, mask = preserved / 'image.png', preserved / 'mask.png'
+    Image.fromarray(np.full((8, 8, 3), 77, np.uint8)).save(image)
+    pixels = np.zeros((8, 8), np.uint8)
+    pixels[2:6, 2:6] = 255
+    Image.fromarray(pixels).save(mask)
+    receipt = {'frame_id': 'prior-completion-floor', 'native_result_digest': 'native', 'native_frame_index': 0,
+               'assets': [{'role': role, 'path': str(path), 'sha256': _sha256_file(path)} for role, path in
+                          [('composite_rgb', image), ('generated_geometry_mask', mask)]]}
+    receipt['digest'] = canonical_digest(receipt, digest_field='digest')
+    (preserved / 'preservation.json').write_text(json.dumps(receipt))
+    report = {'status': 'passed', 'generated_roots': [str(tmp_path / 'native')],
+              'generation': {'preservation_receipt_digests': [receipt['digest']]}}
+    plan = {'source_pose_digest': 'pose', 'batches': [{'frame_ids': ['floor']}]} 
+    for name, value in [('completion.json', report), (plan_name, plan)]:
+        value['digest'] = canonical_digest(value, digest_field='digest')
+        (tmp_path / name).write_text(json.dumps(value))
+    native = {'frame_id': 'temporary', 'rgb': np.zeros((8, 8, 3), np.uint8), 'confidence': np.ones((8, 8))}
+    monkeypatch.setattr(atlas_scene_completion, 'load_generated_views', lambda *_: ({'digest': 'native'}, [native], []))
+    frames, actual = gaps.retained_completion(root=tmp_path, pose_digest='pose')
+    assert actual == report and frames[0]['frame_id'] == 'prior-completion-floor'
+    assert np.all(frames[0]['rgb'] == 77) and np.array_equal(frames[0]['confidence'] > 0, pixels > 0)
+    with pytest.raises(ValueError, match='prior_incompatible'):
+        gaps.retained_completion(root=tmp_path, pose_digest='another-coordinate-frame')
+    mask.write_bytes(b'changed-mask')
+    with pytest.raises(ValueError, match='prior_changed'):
+        gaps.retained_completion(root=tmp_path, pose_digest='pose')

@@ -21,6 +21,19 @@ def _grant(admission):
                                            expected_schema_version="paid_lane_admission.v1")
 
 
+def test_read_only_image_adoption_cannot_buy_a_missing_or_partial_batch(tmp_path, monkeypatch):
+    frames, admission = _inputs(tmp_path)
+    monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("bought cached image"))
+    with pytest.raises(ValueError, match="cached_batch_missing"):
+        completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "out",
+                                              admission=admission, token="", require_cached=True)
+    root = next((tmp_path / "out").glob("[0-9a-f]" * 64))
+    (root / "0.json").write_text(json.dumps({"status": "submitting"}))
+    with pytest.raises(ValueError, match="cached_batch_incomplete"):
+        completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "out",
+                                              admission=admission, token="", require_cached=True)
+
+
 def _inputs(tmp_path):
     frames = []
     for index in range(2):
@@ -40,8 +53,16 @@ def _inputs(tmp_path):
     return frames, admission
 
 
-def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and_reuses_paid_outputs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mask_guidance,region_guide", [(False, False), (True, False), (True, True)])
+def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and_reuses_paid_outputs(tmp_path, monkeypatch, mask_guidance, region_guide):
     frames, admission = _inputs(tmp_path)
+    if region_guide:
+        for frame in frames:
+            frame.update(mask_guide_basis='agent_grounded_region', mask_guide_evidence_digest='retained-evidence')
+    if mask_guidance:
+        backend = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)[2]
+        admission["allocation_binding_digest"] = canonical_digest(completion.completion_binding(
+            frames, task_digest="task", backend_digest=backend, mask_guidance=True))
     calls = []
 
     def edit(**kwargs):
@@ -51,17 +72,25 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
         return {"succeeded": True, "generated": stream.getvalue(), "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
 
     monkeypatch.setattr(completion, "_execute_frame_request", edit)
-    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission, admission_grant=_grant(admission), token="test")
+    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission,
+                admission_grant=_grant(admission), token="test", mask_guidance=mask_guidance)
     outputs = completion.complete_background_images(**args)
     assert len(calls) == 2
-    assert calls[0]["reference_images"] == [Path(frames[1]["image_path"]).read_bytes()]
-    assert calls[1]["reference_images"] == [Path(outputs[0]["image_path"]).read_bytes()]
-    # No segmentation mask reaches the editor, and the first image is the plain frame
-    # (letterboxed), never a frame with the object cut out.
+    assert calls[0]["reference_images"][0] == Path(frames[1]["image_path"]).read_bytes()
+    assert calls[1]["reference_images"][0] == Path(outputs[0]["image_path"]).read_bytes()
+    assert all(len(call["reference_images"]) == (2 if mask_guidance else 1) for call in calls)
+    if mask_guidance:
+        assert ("source-grounded region target-guide" if region_guide else "SAM target-guide overlay") in calls[0]["prompt"]
+        assert calls[0]["reference_images"][-1] == completion._sam_guide(
+            Image.open(frames[0]["image_path"]).convert("RGB"), Image.open(frames[0]["remaining_mask_path"]).convert("L"))
+        receipt = json.loads(Path(outputs[0]["completion_receipt"]).read_text())
+        assert receipt["target_guidance"] == ("source_grounded_region_overlay_v1" if region_guide else "sam_overlay_v1")
+        assert _sha256_file(Path(receipt["guide_image_path"])) == receipt["guide_image_digest"]
+    # The first image is plain; SAM guidance is a separate reference. The API
+    # mask field and silhouette paste-back remain unused.
     assert all(call["mask_bytes"] is None for call in calls)
     sent = np.asarray(Image.open(BytesIO(calls[0]["image_bytes"])).convert("RGB"))
-    assert sent.shape == (1536, 1024, 3) and not np.any(np.all(sent == [255, 255, 255], axis=-1))
-    assert np.all(sent[:, 256:768][sent[:, 256:768].any(axis=-1)] == [255, 0, 0])
+    assert sent.shape == (1536, 768, 3) and np.all(sent == [255, 0, 0])
     assert "shadows" in calls[0]["prompt"] and "Change nothing else" in calls[0]["prompt"]
     # Contents of a removed object must go with it rather than float in mid-air.
     assert "anything inside them or resting on them" in calls[0]["prompt"]
@@ -75,6 +104,15 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
         assert output["view_consistency"] == "requires_review"
     assert completion.complete_background_images(**args) == outputs
     assert len(calls) == 2
+    if not mask_guidance:
+        assert completion.complete_background_images(**{**args, "mask_guidance": True}) == outputs
+        path = Path(outputs[0]["completion_receipt"])
+        receipt = json.loads(path.read_text())
+        receipt["status"] = "submitting"
+        path.write_text(json.dumps(receipt))
+        with pytest.raises(ValueError, match="requires_reconciliation"):
+            completion.complete_background_images(**{**args, "mask_guidance": True})
+        assert len(calls) == 2
 
 
 def _admission_for(frames, backend_id):
@@ -97,9 +135,11 @@ def _blue_edit(calls):
 
 def test_website_edits_use_xhigh_and_a_finished_high_batch_is_reused_without_spending(tmp_path, monkeypatch):
     frames, _ = _inputs(tmp_path)
-    (legacy_id,) = completion.LEGACY_BACKEND_IDS
+    legacy_id = completion.LEGACY_BACKEND_IDS[-1]
+    current_id = completion.BACKEND_ID
     registry = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)[1]
     assert registry["default_options"] == {"output_format": "png", "quality": "xhigh"}
+    assert registry["website_canvas_policy"] == "native_aspect_v1"
     assert registry["model_snapshot"] == "gpt-image-2.5-sunburst-2026-09-08"
     calls = []
     monkeypatch.setattr(completion, "_execute_frame_request", _blue_edit(calls))
@@ -123,12 +163,77 @@ def test_website_edits_use_xhigh_and_a_finished_high_batch_is_reused_without_spe
                                           admission=legacy_admission, admission_grant=_grant(legacy_admission),
                                           token="test")
     next(other.glob("*/1.json")).unlink()
-    monkeypatch.setattr(completion, "BACKEND_ID", "openai_gpt_image_2_5_sunburst_2026_09_08_website_xhigh")
+    monkeypatch.setattr(completion, "BACKEND_ID", current_id)
     calls.clear()
     admission = _admission_for(frames, completion.BACKEND_ID)
     completion.complete_background_images(frames=frames, task_digest="task", output_root=other,
                                           admission=admission, admission_grant=_grant(admission), token="test")
     assert [call["execution"]["default_options"]["quality"] for call in calls] == ["xhigh", "xhigh"]
+
+
+@pytest.mark.parametrize("size,expected", [
+    ((720, 1280), (864, 1536)), ((1080, 1920), (864, 1536)),
+    ((1280, 720), (1536, 864)), ((640, 480), (1360, 1024)), ((900, 900), (1024, 1024)),
+])
+def test_custom_canvas_keeps_all_source_corners_without_a_letterbox(size, expected):
+    source = Image.new("RGB", size, "gray")
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+    for (x, y), color in zip([(0, 0), (size[0] - 50, 0), (0, size[1] - 50),
+                              (size[0] - 50, size[1] - 50)], colors):
+        source.paste(color, (x, y, x + 50, y + 50))
+    canvas, box = completion._canvas(source)
+    assert canvas.size == expected and box == (0, 0, *expected)
+    assert all(value % 16 == 0 for value in expected)
+    assert 655_360 <= canvas.width * canvas.height <= 8_294_400
+    assert canvas.width / canvas.height == pytest.approx(size[0] / size[1], rel=.01)
+    assert [canvas.getpixel(p) for p in [(0, 0), (canvas.width - 1, 0),
+        (0, canvas.height - 1), (canvas.width - 1, canvas.height - 1)]] == colors
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_camera_repair_uses_current_canvas_but_never_bypasses_uncertain_legacy_edit(tmp_path, monkeypatch, uncertain):
+    frames, _ = _inputs(tmp_path)
+    current_id = completion.BACKEND_ID
+    legacy_id = completion.LEGACY_BACKEND_IDS[0]
+    calls = []
+    monkeypatch.setattr(completion, "_execute_frame_request", _blue_edit(calls))
+    monkeypatch.setattr(completion, "BACKEND_ID", legacy_id)
+    old_admission = _admission_for(frames, legacy_id)
+    kwargs = dict(frames=frames, task_digest="task", output_root=tmp_path / "out", token="test")
+    old = completion.complete_background_images(**kwargs, admission=old_admission, admission_grant=_grant(old_admission))
+    assert [call["expected_size"] for call in calls] == [(1024, 1536)] * 2
+    monkeypatch.setattr(completion, "BACKEND_ID", current_id)
+    if uncertain:
+        path = Path(old[0]["completion_receipt"])
+        receipt = json.loads(path.read_text())
+        receipt["status"] = "submitting"
+        path.write_text(json.dumps(receipt))
+        with pytest.raises(ValueError, match="requires_reconciliation"):
+            completion.complete_background_images(**kwargs, admission={}, require_original_camera=True)
+        assert len(calls) == 2
+    else:
+        # Ordinary adoption retains the exact old bytes. A framing correction
+        # explicitly requires the new canvas rather than reusing its failed one.
+        assert completion.complete_background_images(**kwargs, admission={}) == old
+        admission = _admission_for(frames, current_id)
+        new = completion.complete_background_images(**kwargs, admission=admission,
+            admission_grant=_grant(admission), require_original_camera=True)
+        assert len(calls) == 4 and [c["expected_size"] for c in calls[2:]] == [(768, 1536)] * 2
+        assert new[0]["completion_receipt"] != old[0]["completion_receipt"]
+        assert completion.complete_background_images(**kwargs, admission={}, require_original_camera=True) == new
+        assert len(calls) == 4
+
+
+def test_unsupported_source_aspect_refuses_before_provider_request(tmp_path, monkeypatch):
+    frames, _ = _inputs(tmp_path)
+    frame = frames[0]
+    Image.new("RGB", (1600, 100), "red").save(frame["image_path"])
+    frame["image_digest"] = _sha256_file(Path(frame["image_path"]))
+    admission = _admission_for(frames, completion.BACKEND_ID)
+    monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("invalid canvas reached provider"))
+    with pytest.raises(ValueError, match="source_aspect_unsupported"):
+        completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "out",
+            admission=admission, admission_grant=_grant(admission), token="test")
 
 
 def test_largest_removal_view_is_the_edited_anchor_for_every_other_view(tmp_path, monkeypatch):
@@ -237,15 +342,18 @@ def test_admission_dictionary_cannot_authorize_image_spend(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("website", [False, True])
-def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypatch, website):
+@pytest.mark.parametrize("novel", [False, True])
+def test_background_review_keeps_client_alive_and_prices_all_novel_capture_context(tmp_path, monkeypatch, website, novel):
     import sys
     from types import SimpleNamespace as NS
     import google
 
     state = {"closed": False, "calls": 0}
+    requests = []
     def generate(**kwargs):
         assert not state["closed"]
         state["calls"] += 1
+        requests.append(kwargs)
         return NS(candidates=[NS(finish_reason="STOP")], text=json.dumps({
             "consistent_background": True, "task_objects_removed": True,
             "people_absent": False, "unrelated_objects_preserved": True,
@@ -268,9 +376,15 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
     monkeypatch.setitem(sys.modules, "google.genai", fake)
     monkeypatch.setattr(completion, "_api_key", lambda: ("fixture-key", "fixture"))
     frames, _ = _inputs(tmp_path)
-    args = dict(frames=frames, original_frames=frames, plan={"task_context_sha256": "task", "targets": []},
+    if novel:
+        frames = [{**frame, "novel_view": True} for frame in frames]
+    raw_path = tmp_path / "unselected-capture.png"
+    Image.new("RGB", (20, 10), "blue").save(raw_path)
+    raw = {"frame_id": "unselected-capture", "image_path": str(raw_path), "image_digest": _sha256_file(raw_path)}
+    args = dict(frames=frames, original_frames=[*frames, raw], plan={"task_context_sha256": "task", "targets": []},
                 output_root=tmp_path / "review")
     reservations = []
+    quotes = []
     if website:
         from blueprint_pipeline import website_gemini_receipts as receipts
         from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -284,14 +398,94 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
             reservations.append(kwargs)
             return {"status": "admitted"}, object()
         monkeypatch.setattr(receipts, "reserve_website_preparation_spend", reserve)
+        real_quote = receipts.gemini_quote
+        def quote(**kwargs):
+            quotes.append(kwargs)
+            return real_quote(**kwargs)
+        monkeypatch.setattr(receipts, "gemini_quote", quote)
     assert completion.verify_completed_background(**args)["status"] == "passed"
     assert state == {"closed": True, "calls": 1}
+    images = [item for item in requests[0]["contents"] if isinstance(item, dict)]
+    assert len(images) == 4 + int(novel)
+    assert ("raw capture context unselected-capture" in requests[0]["contents"]) is novel
+    assert any(item["data"] == raw_path.read_bytes() for item in images) is novel
     if website:
         monkeypatch.setattr(completion, "_api_key", lambda: (None, None))
         assert len(reservations) == 1
         assert reservations[0]["provider"] == "google"
+        request = json.loads(next((args["output_root"] / "gemini_reviews").glob("*.json")).read_text())["request"]
+        assert len(request["binding"]["image_digests"]) == len(images)
+        assert request["binding"].get("capture_context_frame_ids", []) == ([raw["frame_id"]] if novel else [])
+        assert quotes[0]["input_tokens"] >= 1120 * len(images)
     assert completion.verify_completed_background(**args)["status"] == "passed"
     assert state["calls"] == 1
+    if website and novel:
+        Image.new("RGB", (20, 10), "green").save(raw_path)
+        with pytest.raises(ValueError, match="review_source_changed"):
+            completion.verify_completed_background(**args)
+        assert len(reservations) == 1
+
+
+@pytest.mark.parametrize("camera_ids,novel,expected", [
+    ([], False, "passed"), (None, False, "blocked"), (["0"], False, "blocked"),
+    (["missing"], False, "blocked"), (["0", "0"], False, "blocked"), ([1], False, "blocked"),
+    (None, True, "passed"),
+])
+def test_visual_review_must_resolve_source_camera_changes_and_retains_invalid_answers(
+        tmp_path, monkeypatch, camera_ids, novel, expected):
+    import sys
+    from types import SimpleNamespace as NS
+
+    response = {"consistent_background": True, "task_objects_removed": True,
+                "unrelated_objects_preserved": True, "remaining_task_object_frame_ids": [],
+                "unrelated_object_loss_frame_ids": [], "camera_changed_frame_ids": camera_ids}
+    calls = []
+    class Client:
+        def __init__(self, **_):
+            self.models = self
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            return NS(candidates=[NS(finish_reason="STOP")], text=json.dumps(response))
+    types = NS(Part=NS(from_bytes=lambda **kw: kw), GenerateContentConfig=NS,
+               HttpOptions=NS, HttpRetryOptions=NS)
+    monkeypatch.setitem(sys.modules, "google.genai", NS(Client=Client, types=types))
+    monkeypatch.setattr(completion, "_api_key", lambda: ("fixture-key", "fixture"))
+    frames, _ = _inputs(tmp_path)
+    edited = [{**frame, "generated_pixels_present": True, "novel_view": novel} for frame in frames]
+    args = dict(frames=edited, original_frames=frames,
+                plan={"task_context_sha256": "task", "targets": []}, output_root=tmp_path / "review")
+    first = completion.verify_completed_background(**args)
+    assert first["status"] == expected
+    assert first["review"] == response
+    assert (completion.CAMERA_REVIEW_PROMPT in first["binding"]["review_prompt"]) is not novel
+    assert completion.verify_completed_background(**args) == first
+    assert len(calls) == 1  # A blocked/invalid answer remains a completed paid review.
+
+
+def test_http_failure_retains_sanitized_provider_evidence_and_never_retries(tmp_path, monkeypatch):
+    frames, admission = _inputs(tmp_path)
+    calls = []
+    failure = {"http_status": 429, "provider_error_code": "rate_limit_exceeded",
+               "provider_request_id": "req_fixture", "raw_provider_body_recorded": False}
+    def request(**_):
+        calls.append(True)
+        return {"succeeded": False, "blocker": "semantic_teacher_provider_http_error",
+                "provider_failure": failure}
+    monkeypatch.setattr(completion, "_execute_frame_request", request)
+    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits",
+                admission=admission, admission_grant=_grant(admission), token="fixture-key")
+    with pytest.raises(ValueError, match="semantic_teacher_provider_http_error"):
+        completion.complete_background_images(**args)
+    receipt = json.loads(next((tmp_path / "edits").glob("*/0.json")).read_text())
+    assert receipt["provider_failure"] == failure
+    assert receipt["status"] == "submitting" and receipt["requires_reconciliation"] is True
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        completion.complete_background_images(**args)
+    assert calls == [True]
 
 
 @pytest.mark.parametrize("diagnosed_ids", [["0"], [], ["0", "1"], ["missing"]])
@@ -399,9 +593,11 @@ def test_consistency_diagnosis_preserves_or_supersedes_exact_prior_receipt(
         assert seen[0]["binding"]["supersedes_incomplete_request_digest"] == prior_digest
 
 
-@pytest.mark.parametrize("prior_status,expected_revision", [("completed", 1), ("submitting", 2), (None, 2)])
+@pytest.mark.parametrize("prior_version,prior_status,expected_revision", [
+    (1, "completed", 1), (1, "submitting", 3), (1, None, 3),
+    (2, "completed", 2), (2, "submitting", 3)])
 def test_background_review_preserves_or_supersedes_exact_prior_receipt(
-        tmp_path, monkeypatch, prior_status, expected_revision):
+        tmp_path, monkeypatch, prior_version, prior_status, expected_revision):
     from hashlib import sha256
     from blueprint_pipeline import website_gemini_receipts as receipts
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -421,35 +617,88 @@ def test_background_review_preserves_or_supersedes_exact_prior_receipt(
         "maximum_cost_usd": receipts.gemini_quote(model=completion.DEFAULT_MODEL,
             input_tokens=text_bytes + 1120 * len(image_digests), max_output_tokens=2048)}
     prior_digest = canonical_digest(prior_request)
+    if prior_version == 2:
+        prior_binding = {**prior_binding, "revision": 2, "timeout_seconds": 300,
+                         "supersedes_incomplete_request_digest": None}
+        prior_request = {**prior_request, "binding": prior_binding}
+        prior_digest = canonical_digest(prior_request)
     if prior_status:
         review_dir = tmp_path / "review" / "gemini_reviews"
         review_dir.mkdir(parents=True)
         (review_dir / f"{prior_digest[7:]}.json").write_text(json.dumps({
             "status": prior_status, "request_digest": prior_digest, "request": prior_request}))
-    seen, timeouts = [], []
+    seen, timeouts, token_limits = [], [], []
     def retained(**kwargs):
         seen.append(kwargs)
         kwargs["invoke"]()
         return {"status": "passed", "binding": kwargs["binding"]}
     monkeypatch.setattr(receipts, "retained_gemini_call", retained)
-    monkeypatch.setattr(completion, "_verify_completed_background", lambda **kw: timeouts.append(kw["timeout_ms"]))
+    monkeypatch.setattr(completion, "_verify_completed_background", lambda **kw:
+                        (timeouts.append(kw["timeout_ms"]), token_limits.append(kw["max_output_tokens"])))
     completion.verify_completed_background(frames=frames, original_frames=frames, plan=plan,
                                            output_root=tmp_path / "review", task_context=task)
     binding = seen[0]["binding"]
     assert binding["revision"] == expected_revision
-    if expected_revision == 1:
-        # A completed v1 review is reused exactly, never bought again.
-        assert binding == prior_binding and timeouts == [120_000]
+    if expected_revision in {1, 2}:
+        # Completed reviews are reused exactly, including their old quote.
+        assert binding == prior_binding and timeouts == [120_000 if expected_revision == 1 else 300_000]
+        assert token_limits == [2048]
     else:
-        # An unresolved v1 intent is never rewritten; one separately bounded v2
-        # request with a longer client timeout supersedes it.
+        # One separately bounded v3 request preserves earlier incomplete calls.
         assert binding["timeout_seconds"] == 300 and timeouts == [300_000]
+        assert binding["max_output_tokens"] == 8192 and token_limits == [8192]
         assert binding["supersedes_incomplete_request_digest"] == (prior_digest if prior_status else None)
         assert not prior_status or json.loads(next((tmp_path / "review" / "gemini_reviews").glob("*.json"))
                                               .read_text())["status"] == prior_status
 
 
-def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_grant(tmp_path, monkeypatch):
+@pytest.mark.parametrize("finish_reason", ["MAX_TOKENS", "STOP"])
+def test_review_retains_incomplete_reason_and_accepts_a_guided_single_target_only_after_review(
+        tmp_path, monkeypatch, finish_reason):
+    from types import SimpleNamespace
+    import sys
+    frames, _ = _inputs(tmp_path)
+    monkeypatch.setattr(completion, "_api_key", lambda: ("non-secret", "test"))
+
+    class Client:
+        def __init__(self, **_):
+            self.models = self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def generate_content(self, **kwargs):
+            assert kwargs["config"].max_output_tokens == 8192
+            return SimpleNamespace(candidates=[SimpleNamespace(finish_reason=finish_reason)], text=json.dumps({
+                "consistent_background": True, "task_objects_removed": True, "unrelated_objects_preserved": True,
+                "remaining_task_object_frame_ids": [], "unrelated_object_loss_frame_ids": []}))
+
+    types = SimpleNamespace(
+        Part=SimpleNamespace(from_bytes=lambda **_: "image"),
+        HttpOptions=lambda **kw: SimpleNamespace(**kw), HttpRetryOptions=lambda **kw: SimpleNamespace(**kw),
+        GenerateContentConfig=lambda **kw: SimpleNamespace(**kw))
+    monkeypatch.setitem(sys.modules, "google.genai", SimpleNamespace(Client=Client, types=types))
+    if finish_reason == "STOP":
+        selected = [{**frame, "target_guidance": "sam_overlay_v1"} for frame in frames]
+        result = completion._verify_completed_background(frames=selected, original_frames=frames,
+            plan={"targets": [{"task_effect": "manipulated", "disposition": "remove"}],
+                  "task_context_sha256": "task"}, output_root=tmp_path / "review",
+            retain_result=False, max_output_tokens=8192)
+        assert result["status"] == "passed" and "same camera field of view" in result["binding"]["review_prompt"]
+        return
+    with pytest.raises(ValueError, match="review_incomplete"):
+        completion._verify_completed_background(frames=frames, original_frames=frames,
+            plan={"targets": [], "task_context_sha256": "task"}, output_root=tmp_path / "review",
+            retain_result=False, max_output_tokens=8192)
+    result = json.loads(next((tmp_path / "review").glob("review-incomplete-*.json")).read_text())
+    assert result["finish_reason"] == "MAX_TOKENS" and result["approves_views"] is False
+
+
+@pytest.mark.parametrize("source_digest", [None, "sha256:" + "f" * 64])
+def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_grant(tmp_path, monkeypatch, source_digest):
     from blueprint_pipeline import website_task_context as control
     frames, admission = _inputs(tmp_path)
     reservations, calls = [], []
@@ -478,10 +727,12 @@ def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_
     context = {"context_digest": "task", "capture_id": "cap", "request_id": "req", "scene_id": "scene"}
     task_digest = completion.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     _, _, backend_digest = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)
-    admission["allocation_binding_digest"] = canonical_digest(completion.completion_binding(
-        frames, task_digest=task_digest, backend_digest=backend_digest))
+    binding = completion.completion_binding(frames, task_digest=task_digest, backend_digest=backend_digest)
+    if source_digest:
+        binding["source_video_digest"] = source_digest
+    admission["allocation_binding_digest"] = canonical_digest(binding)
     args = dict(frames=frames, task_digest=task_digest, task_context=context,
-                output_root=tmp_path / "edits", admission={}, token="test")
+                output_root=tmp_path / "edits", admission={}, token="test", source_video_digest=source_digest)
     outputs = completion.complete_background_images(**args)
     assert len(reservations) == 1 and len(calls) == 2
     # The completed batch releases its quote down to the receipted charge, once.
@@ -493,6 +744,7 @@ def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_
     assert reservations[0]["provider"] == "openai"
     assert reservations[0]["binding_digest"] == admission["allocation_binding_digest"]
     assert reservations[0]["request_count"] == 2
+    assert reservations[0]["source_video_digest"] == source_digest
     # No key or admission survives the controller restart. Reuse needs neither.
     assert completion.complete_background_images(**{**args, "token": ""}) == outputs
     assert len(reservations) == 1 and len(calls) == 2 and len(settlements) == 1
@@ -567,3 +819,21 @@ def test_another_controller_cannot_rebuy_reserved_image_work(tmp_path, monkeypat
     with pytest.raises(RuntimeError):
         completion.complete_background_images(frames=frames, task_digest=task_digest,
             task_context=context, output_root=tmp_path / "edits", admission={}, token="test")
+
+
+def test_only_a_scene_with_transients_extends_the_bound_edit_and_review_prompts():
+    from blueprint_pipeline import website_image_completion as completion
+
+    still = [{"target_id": "obj", "semantic_label": "dishwasher", "task_effect": "manipulated",
+              "disposition": "remove"}]
+    working = [*still, {"target_id": "transient-0", "semantic_label": "person", "task_effect": "transient",
+                        "disposition": "remove"}]
+    assert completion.TRANSIENT_PROMPT not in completion._completion_prompt(still)
+    assert completion.TRANSIENT_REVIEW_PROMPT not in completion._review_prompt(still)
+    assert completion._review_prompt(still) == completion.REVIEW_PROMPT
+    edit = completion._completion_prompt(working)
+    assert completion.TRANSIENT_PROMPT in edit and '"task_effect": "transient"' in edit
+    review = completion._review_prompt(working)
+    assert completion.TRANSIENT_REVIEW_PROMPT in review and review.endswith("Targets: ")
+    # A person is not one of several task objects; the single-object prompts stay.
+    assert completion.MULTI_OBJECT_PROMPT not in edit

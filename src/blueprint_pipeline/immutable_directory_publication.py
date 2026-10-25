@@ -89,7 +89,7 @@ def publish_staged_immutable_directory(
         target.chmod(0o555)
         _fsync_directory(target)
         _fsync_directory(target.parent)
-    except Exception:
+    except BaseException:  # a stop (SystemExit) or interrupt leaves nothing half-built either
         _remove_owned_tree(target)
         raise
 

@@ -15,7 +15,9 @@ from .decision_evidence_contracts import (
     DecisionEnvelope,
     EvidencePlan,
     canonical_digest,
+    canonical_json,
     cross_runtime_canonical_digest,
+    cross_runtime_canonical_json,
 )
 from .task_evaluation_result_delivery import DELIVERY_SCHEMA_VERSION
 from .task_evaluation_launch_webapp_sync import (
@@ -144,6 +146,16 @@ def build_task_evaluation_run_webapp_publication(
         ):
             raise ValueError("task_evaluation_policy_run_result_binding_mismatch")
         publication["policy_run_result"] = policy_result
+    # Native evidence identities predate the RFC 8785 transport boundary.
+    # Preserve their original bytes (including Python's 1.0 spelling) so a
+    # JavaScript consumer can verify, rather than rehashing a lossy JSON parse.
+    fields = {"evidence_plan": "plan_digest", "decision_envelope": "decision_envelope_digest",
+              "result_delivery": "delivery_digest", "policy_run_result": "projection_digest"}
+    publication["producer_canonical_json"] = {
+        field: (cross_runtime_canonical_json if field == "policy_run_result" else canonical_json)(
+            {key: value for key, value in publication[field].items() if key != digest_field})
+        for field, digest_field in fields.items() if field in publication
+    }
     return publication
 
 

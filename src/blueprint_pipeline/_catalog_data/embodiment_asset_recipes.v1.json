@@ -1,0 +1,785 @@
+{
+  "schema_version": "embodiment_asset_recipes.v1",
+  "claim_ceiling": "source_asset_not_qualified",
+  "recipes": [
+    {
+      "embodiment_id": "universal_robots_ur5e",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description",
+        "revision": "d4042c1f5123c86645cc5dbd650b4f461f697ee9",
+        "entry_path": "urdf/ur.urdf.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/blob/d4042c1f5123c86645cc5dbd650b4f461f697ee9/LICENSE",
+        "license_note": "Publisher README excludes newer UR8LONG/15/18/20/30 meshes from BSD; this recipe includes only the exact UR5e or UR10e BSD source. No gripper is included.",
+        "include_paths": [
+          "urdf",
+          "config/ur5e",
+          "meshes/ur5e",
+          "LICENSE"
+        ],
+        "import_arguments": {
+          "name": "ur5e",
+          "ur_type": "ur5e"
+        },
+        "package_roots": {
+          "ur_description": "."
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "exact_end_effector_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "universal_robots_ur5e_bimanual",
+      "arm_count": 2,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description",
+        "revision": "d4042c1f5123c86645cc5dbd650b4f461f697ee9",
+        "entry_path": "urdf/ur.urdf.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/blob/d4042c1f5123c86645cc5dbd650b4f461f697ee9/LICENSE",
+        "license_note": "Publisher README excludes newer UR8LONG/15/18/20/30 meshes from BSD; this recipe includes only the exact UR5e or UR10e BSD source. No gripper is included.",
+        "include_paths": [
+          "urdf",
+          "config/ur5e",
+          "meshes/ur5e",
+          "LICENSE"
+        ],
+        "import_arguments": {
+          "name": "ur5e",
+          "ur_type": "ur5e"
+        },
+        "package_roots": {
+          "ur_description": "."
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "two_instances_with_distinct_joint_link_prefixes",
+        "exact_dual_mount_transform",
+        "two_independent_parallel_grippers",
+        "head_and_two_wrist_camera_rig"
+      ],
+      "missing": [
+        "tool_asset_and_license",
+        "independent_tool_action_mapping",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "trlc_dk1_bimanual",
+      "arm_count": 2,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/robot-learning-co/trlc-dk1",
+        "revision": "12f5368aefd0381461f2c7ffbb5611b4e8c90de9",
+        "entry_path": "urdf/follower/TRLC-DK1-Follower.urdf",
+        "format": "urdf",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/LICENSE",
+        "license_note": "Repository Apache-2.0 includes upstream MIT/Apache notices; publisher separately reserves linked CAD rights. This recipe references repository URDF/GLB/STL files and grants no rights to external CAD exports.",
+        "include_paths": [
+          "urdf/follower",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {},
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "two_follower_instances_with_distinct_joint_link_prefixes",
+        "exact_dual_mount_transform",
+        "independent_finger_pair_commands",
+        "head_and_two_wrist_camera_rig"
+      ],
+      "missing": [
+        "retained_per_asset_notices",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "almond_axol",
+      "arm_count": 2,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/almond-bot/axol",
+        "revision": "cd199a2f4c847c3a10594c6c2ed2250b4b4be675",
+        "entry_path": "almond_axol/kinematics/urdf/axol.urdf",
+        "format": "urdf",
+        "license_id": "MIT",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/LICENSE",
+        "license_note": "Retain the exact source license and notices. Source publication is not Blueprint rights admission, imported physics qualification or policy compatibility.",
+        "include_paths": [
+          "almond_axol/kinematics/urdf",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "assembly": "almond_axol/kinematics/urdf"
+        },
+        "source_arm_count": 2
+      },
+      "composition_required": [
+        "validated_actuated_left_and_right_gripper_models",
+        "calibrated_camera_rig"
+      ],
+      "missing": [
+        "left_and_right_gripper_urdf_joints_are_fixed",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact 14 arm joints exist; both gripper joints in this pinned URDF are fixed. Do not invent finger dynamics or treat browser visualization as an actuated robot."
+    },
+    {
+      "embodiment_id": "fanuc_crx_10ia_l",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+        "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2",
+        "entry_path": "fanuc_crx_description/robot/crx10ia_l.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSES/Apache-2.0.txt",
+        "license_url": "https://github.com/fanuc-corporation/fanuc_description/blob/fb40c9803a826ba68c7c8e28ba904a25efa7fcd2/LICENSES/Apache-2.0.txt",
+        "license_note": "Official FANUC description package and source headers declare Apache-2.0. Preserve exact mesh/source attribution; this is separate from NVIDIA USD asset agreements and driver/hardware access.",
+        "include_paths": [
+          "fanuc_crx_description/robot/crx10ia_l.urdf.xacro",
+          "fanuc_crx_description/urdf/crx10ia_l_urdf_macro.xacro",
+          "fanuc_crx_description/meshes/crx10ia_l",
+          "fanuc_crx_description/package.xml",
+          "README.md",
+          "LICENSES/Apache-2.0.txt"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "fanuc_crx_description": "fanuc_crx_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "exact_application_tool_and_tcp",
+        "site_camera_rig",
+        "replace_example_pedestal_transform_with_recorded_mount"
+      ],
+      "missing": [
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "fanuc_m710ic_45m",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+        "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2",
+        "entry_path": "fanuc_m710_description/robot/m710ic_45m.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSES/Apache-2.0.txt",
+        "license_url": "https://github.com/fanuc-corporation/fanuc_description/blob/fb40c9803a826ba68c7c8e28ba904a25efa7fcd2/LICENSES/Apache-2.0.txt",
+        "license_note": "Official FANUC description package and source headers declare Apache-2.0. Preserve exact mesh/source attribution; this is separate from NVIDIA USD asset agreements and driver/hardware access.",
+        "include_paths": [
+          "fanuc_m710_description/robot/m710ic_45m.urdf.xacro",
+          "fanuc_m710_description/urdf/m710ic_45m_urdf_macro.xacro",
+          "fanuc_m710_description/meshes/m710ic_45m",
+          "fanuc_m710_description/package.xml",
+          "README.md",
+          "LICENSES/Apache-2.0.txt"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "fanuc_m710_description": "fanuc_m710_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "yaskawa_gp12",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/ros-industrial/motoman",
+        "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+        "entry_path": "motoman_gp12_support/urdf/gp12.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "motoman_gp12_support/package.xml",
+        "license_url": "https://github.com/ros-industrial/motoman/blob/846fbbc57c60223f12bf4795ea6404982d57709e/motoman_gp12_support/package.xml",
+        "license_note": "ROS-Industrial GP12 package declares BSD-3-Clause in package.xml. Retain source copyright notices; exact mesh notice closure and imported dynamics remain unqualified.",
+        "include_paths": [
+          "motoman_gp12_support",
+          "motoman_resources",
+          "motoman_gp12_support/package.xml"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "motoman_gp12_support": "motoman_gp12_support",
+          "motoman_resources": "motoman_resources"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "inertial_parameters_not_present_in_gp12_macro",
+        "exact_mesh_notice_closure",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact GP12 public kinematics/meshes exist. Its macro has no inertial elements; no importer-authored masses may be promoted to measured dynamics."
+    },
+    {
+      "embodiment_id": "yaskawa_gp20",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/ros-industrial/motoman",
+        "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+        "entry_path": "motoman_gp25_support/urdf/gp25_20.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "motoman_gp25_support/package.xml",
+        "license_url": "https://github.com/ros-industrial/motoman/blob/846fbbc57c60223f12bf4795ea6404982d57709e/motoman_gp25_support/package.xml",
+        "license_note": "The ROS-Industrial package declares BSD-3-Clause for its configuration data and 3D models. Retain the package declaration, exact meshes and source notices. This is the GP25-20 variant YR-1-06VX25-20-A0*, documented as European GP20; it is not GP20HL or the default GP25. The macro has no inertial elements; no measured dynamics or use-rights admission is inferred.",
+        "include_paths": [
+          "motoman_gp25_support/urdf/gp25_20.xacro",
+          "motoman_gp25_support/urdf/gp25_20_macro.xacro",
+          "motoman_gp25_support/meshes/gp25",
+          "motoman_gp25_support/meshes/gp25_20",
+          "motoman_gp25_support/package.xml",
+          "motoman_resources"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "motoman_gp25_support": "motoman_gp25_support",
+          "motoman_resources": "motoman_resources"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_exact_gp25_20_variant_YR_1_06VX25_20_A0",
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "inertial_parameters_not_present_in_gp25_20_macro",
+        "tool_asset_and_license",
+        "exact_mesh_notice_closure",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public GP25-20 source (European GP20, YR-1-06VX25-20-A0*) was added by ROS-Industrial PR643. GP20HL is a different variant and default GP25 geometry is not a substitute. Retain this model identity and qualify the missing inertias, application tool and controller independently."
+    },
+    {
+      "embodiment_id": "i2rt_yam_bimanual",
+      "arm_count": 2,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/i2rt-robotics/i2rt",
+        "revision": "120c3c81400171174604e503943f8d1ebc891058",
+        "entry_path": "i2rt/robot_models/station/yam_station_linear_4310_d405/yam_station_linear_4310_d405.urdf",
+        "format": "urdf",
+        "license_id": "MIT",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/i2rt-robotics/i2rt/blob/120c3c81400171174604e503943f8d1ebc891058/LICENSE",
+        "license_note": "Retain the exact source license and notices. Source publication is not Blueprint rights admission, imported physics qualification or policy compatibility.",
+        "include_paths": [
+          "i2rt/robot_models/station/yam_station_linear_4310_d405",
+          "i2rt/robot_models/arm/yam/v1/assets",
+          "i2rt/robot_models/station/assets/d405_top.stl",
+          "i2rt/robot_models/station/assets/d405_wrist_linear_4310.stl",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {},
+        "source_arm_count": 2
+      },
+      "composition_required": [
+        "preserve_publisher_dual_mount_and_linear_4310_finger_pairs",
+        "instantiate_left_camera_right_camera_top_camera_optical_frames"
+      ],
+      "missing": [
+        "camera_intrinsics_and_site_calibration",
+        "independent_tool_action_mapping",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Publisher station already composes two YAM v1 arms, linear_4310 grippers, wrist D405 frames and overhead D405. CAD-derived transforms are authored source geometry, not measurements of this customer site."
+    },
+    {
+      "embodiment_id": "agilex_piper_bimanual",
+      "arm_count": 2,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/agilexrobotics/Agilex-College",
+        "revision": "c2688be41e1bc99a9addd555f237a16bc839d936",
+        "entry_path": "isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/urdf/piper_with_gripper_description.xacro",
+        "format": "xacro",
+        "license_id": "MIT",
+        "license_path": "isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/LICENSE",
+        "license_url": "https://github.com/agilexrobotics/Agilex-College/blob/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/LICENSE",
+        "license_note": "Retain the exact source license and notices. Source publication is not Blueprint rights admission, imported physics qualification or policy compatibility.",
+        "include_paths": [
+          "isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper",
+          "isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "agx_arm_description": "isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "two_standard_piper_instances_with_distinct_joint_link_prefixes",
+        "exact_dual_mount_transform",
+        "head_and_two_wrist_camera_rig"
+      ],
+      "missing": [
+        "agx_arm_description_package_resolution",
+        "independent_tool_action_mapping",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Manufacturer source combines standard six-joint PiPER with two prismatic gripper fingers. Piper H/L/X and Revo hands are distinct variants; do not substitute them."
+    },
+    {
+      "embodiment_id": "standard_bots_ro1",
+      "arm_count": 1,
+      "status": "source_unavailable",
+      "source": null,
+      "composition_required": [],
+      "missing": [
+        "exact_manufacturer_urdf_mesh_artifact",
+        "explicit_model_variant_and_reuse_terms"
+      ],
+      "reason": "Official API manual links URDF resources through Notion, but no exact immutable RO1 artifact and reuse license were verified. RO1 and Core are not interchangeable; real external control also requires enabled manufacturer beta access."
+    },
+    {
+      "embodiment_id": "standard_bots_core",
+      "arm_count": 1,
+      "status": "source_unavailable",
+      "source": null,
+      "composition_required": [],
+      "missing": [
+        "exact_manufacturer_urdf_mesh_artifact",
+        "explicit_model_variant_and_reuse_terms"
+      ],
+      "reason": "Official API manual links URDF resources through Notion, but no exact immutable Core artifact and reuse license were verified. RO1 and Core are not interchangeable; real external control also requires enabled manufacturer beta access."
+    },
+    {
+      "embodiment_id": "franka_research_3_bimanual",
+      "arm_count": 2,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/frankarobotics/franka_description",
+        "revision": "7aeeddc449edf8d62b594f9e36a81da53e7796f9",
+        "entry_path": "robots/fr3/fr3.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/frankarobotics/franka_description/blob/7aeeddc449edf8d62b594f9e36a81da53e7796f9/LICENSE",
+        "license_note": "Retain the exact source license and notices. Source publication is not Blueprint rights admission, imported physics qualification or policy compatibility.",
+        "include_paths": [
+          "robots/common",
+          "robots/fr3",
+          "end_effectors/common",
+          "end_effectors/franka_hand",
+          "meshes/robots/fr3",
+          "meshes/robot_ee/franka_hand_white",
+          "meshes/robot_ee/franka_hand_black",
+          "LICENSE",
+          "NOTICE"
+        ],
+        "import_arguments": {
+          "robot_type": "fr3",
+          "hand": "true",
+          "ee_id": "franka_hand"
+        },
+        "package_roots": {
+          "franka_description": "."
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "two_fr3_instances_with_distinct_joint_link_prefixes",
+        "exact_dual_mount_transform",
+        "head_and_two_wrist_camera_rig"
+      ],
+      "missing": [
+        "independent_tool_action_mapping",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Manufacturer FR3 plus Franka Hand source; neither Panda, FR3v2 nor a default FR3-Duo mounting is silently substituted."
+    },
+    {
+      "embodiment_id": "kinova_gen3_bimanual",
+      "arm_count": 2,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/Kinovarobotics/ros2_kortex",
+        "revision": "b2aa46b29ae8fadd5b293c57e3500925c61eb8e8",
+        "entry_path": "kortex_description/robots/gen3_robotiq_2f_85.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/Kinovarobotics/ros2_kortex/blob/b2aa46b29ae8fadd5b293c57e3500925c61eb8e8/LICENSE",
+        "license_note": "Official Kortex and bundled Robotiq 2F-85 gripper have BSD-3-Clause notices; retain kortex_description/grippers/robotiq_2f_85/LICENSE as well. Seven-DOF Gen3 is distinct from six-DOF Gen3 and Gen3 Lite.",
+        "include_paths": [
+          "kortex_description",
+          "LICENSE"
+        ],
+        "import_arguments": {
+          "arm": "gen3",
+          "dof": "7",
+          "vision": "true",
+          "gripper": "robotiq_2f_85",
+          "sim": "false"
+        },
+        "package_roots": {
+          "kortex_description": "kortex_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "two_7dof_gen3_instances_with_distinct_joint_link_prefixes",
+        "exact_dual_mount_transform",
+        "head_and_two_wrist_camera_rig"
+      ],
+      "missing": [
+        "independent_tool_action_mapping",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "ufactory_xarm7_bimanual",
+      "arm_count": 2,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/xArm-Developer/xarm_ros2",
+        "revision": "ac736c92b02de7ca7e0be6f737d77d46707464d8",
+        "entry_path": "xarm_description/urdf/dual_xarm_device.urdf.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/LICENSE",
+        "license_note": "Manufacturer repository BSD-3-Clause; retain model/dependency notices. Upstream dual-arm placement defaults are examples, not this customer site mounting.",
+        "include_paths": [
+          "xarm_description/urdf",
+          "xarm_description/config",
+          "xarm_description/meshes/xarm7",
+          "xarm_description/meshes/xarm7_1305",
+          "xarm_description/meshes/gripper/xarm",
+          "xarm_controller/config",
+          "LICENSE"
+        ],
+        "import_arguments": {
+          "dof_1": "7",
+          "dof_2": "7",
+          "robot_type_1": "xarm",
+          "robot_type_2": "xarm",
+          "add_gripper_1": "true",
+          "add_gripper_2": "true",
+          "prefix_1": "L_",
+          "prefix_2": "R_"
+        },
+        "package_roots": {
+          "xarm_description": "xarm_description",
+          "xarm_controller": "xarm_controller"
+        },
+        "source_arm_count": 2
+      },
+      "composition_required": [
+        "replace_default_dual_mount_with_recorded_transform",
+        "head_and_two_wrist_camera_rig"
+      ],
+      "missing": [
+        "independent_tool_action_mapping",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "kuka_lbr_iiwa_14",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/google-deepmind/mujoco_menagerie",
+        "revision": "cda5236f98383f6fbaa4820c6b18dba892cd087f",
+        "entry_path": "kuka_iiwa_14/iiwa14.xml",
+        "format": "mjcf",
+        "license_id": "BSD-3-Clause",
+        "license_path": "kuka_iiwa_14/LICENSE",
+        "license_url": "https://github.com/google-deepmind/mujoco_menagerie/blob/cda5236f98383f6fbaa4820c6b18dba892cd087f/kuka_iiwa_14/LICENSE",
+        "license_note": "DeepMind Menagerie conversion; model LICENSE retains Drake BSD-3-Clause. This is not a manufacturer-supported Isaac runtime, nor a gripper-equipped workcell.",
+        "include_paths": [
+          "kuka_iiwa_14",
+          "kuka_iiwa_14/LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {},
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "exact_end_effector_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "tool_asset_and_license",
+        "isaac_mjcf_import_receipt",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "universal_robots_ur10e",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description",
+        "revision": "d4042c1f5123c86645cc5dbd650b4f461f697ee9",
+        "entry_path": "urdf/ur.urdf.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/blob/d4042c1f5123c86645cc5dbd650b4f461f697ee9/LICENSE",
+        "license_note": "Publisher README excludes newer UR8LONG/15/18/20/30 meshes from BSD; this recipe includes only the exact UR5e or UR10e BSD source. No gripper is included.",
+        "include_paths": [
+          "urdf",
+          "config/ur10e",
+          "meshes/ur10e",
+          "LICENSE"
+        ],
+        "import_arguments": {
+          "name": "ur10e",
+          "ur_type": "ur10e"
+        },
+        "package_roots": {
+          "ur_description": "."
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "exact_end_effector_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "fanuc_crx_10ia",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+        "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2",
+        "entry_path": "fanuc_crx_description/robot/crx10ia.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSES/Apache-2.0.txt",
+        "license_url": "https://github.com/fanuc-corporation/fanuc_description/blob/fb40c9803a826ba68c7c8e28ba904a25efa7fcd2/LICENSES/Apache-2.0.txt",
+        "license_note": "Official FANUC description package and source headers declare Apache-2.0. Preserve exact mesh/source attribution; this is separate from NVIDIA USD asset agreements and driver/hardware access.",
+        "include_paths": [
+          "fanuc_crx_description/robot/crx10ia.urdf.xacro",
+          "fanuc_crx_description/urdf/crx10ia_urdf_macro.xacro",
+          "fanuc_crx_description/meshes/crx10ia",
+          "fanuc_crx_description/package.xml",
+          "README.md",
+          "LICENSES/Apache-2.0.txt"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "fanuc_crx_description": "fanuc_crx_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "exact_application_tool_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact CRX-10iA source. CRX-10iA/L and /LP are different variants and are not substitutes."
+    },
+    {
+      "embodiment_id": "abb_gofa_crb15000",
+      "arm_count": 1,
+      "status": "source_unavailable",
+      "source": null,
+      "composition_required": [],
+      "missing": [
+        "exact_crb15000_payload_reach_variant"
+      ],
+      "reason": "ROS-Industrial has distinct CRB15000-5/0.95 and CRB15000-12/1.27 descriptions at45f4769d826cf3ac62a65495f2db67b78b0c81df, Apache-2.0. The legacy ID does not choose one; selecting a variant is required before a recipe can be exact."
+    },
+    {
+      "embodiment_id": "kinova_gen3",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/Kinovarobotics/ros2_kortex",
+        "revision": "b2aa46b29ae8fadd5b293c57e3500925c61eb8e8",
+        "entry_path": "kortex_description/robots/gen3_robotiq_2f_85.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/Kinovarobotics/ros2_kortex/blob/b2aa46b29ae8fadd5b293c57e3500925c61eb8e8/LICENSE",
+        "license_note": "Official Kortex and bundled Robotiq 2F-85 gripper have BSD-3-Clause notices; retain kortex_description/grippers/robotiq_2f_85/LICENSE as well. Seven-DOF Gen3 is distinct from six-DOF Gen3 and Gen3 Lite.",
+        "include_paths": [
+          "kortex_description",
+          "LICENSE"
+        ],
+        "import_arguments": {
+          "arm": "gen3",
+          "dof": "7",
+          "vision": "true",
+          "gripper": "robotiq_2f_85",
+          "sim": "false"
+        },
+        "package_roots": {
+          "kortex_description": "kortex_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_exact_7dof_vision_gen3_and_robotiq_2f85_configuration",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "configuration_confirmation",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Recipe explicitly uses seven-DOF vision Gen3 plus Robotiq2F85; this does not infer compatibility for every legacy record labeled only Gen3."
+    },
+    {
+      "embodiment_id": "ufactory_xarm7",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/xArm-Developer/xarm_ros2",
+        "revision": "ac736c92b02de7ca7e0be6f737d77d46707464d8",
+        "entry_path": "xarm_description/urdf/xarm_device.urdf.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/LICENSE",
+        "license_note": "Manufacturer repository BSD-3-Clause; retain model/dependency notices. Upstream dual-arm placement defaults are examples, not this customer site mounting.",
+        "include_paths": [
+          "xarm_description/urdf",
+          "xarm_description/config",
+          "xarm_description/meshes/xarm7",
+          "xarm_description/meshes/xarm7_1305",
+          "xarm_description/meshes/gripper/xarm",
+          "xarm_controller/config",
+          "LICENSE"
+        ],
+        "import_arguments": {
+          "dof": "7",
+          "robot_type": "xarm",
+          "add_gripper": "true"
+        },
+        "package_roots": {
+          "xarm_description": "xarm_description",
+          "xarm_controller": "xarm_controller"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_camera_rig"
+      ],
+      "missing": [
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+    },
+    {
+      "embodiment_id": "droid_franka_robotiq_2f85",
+      "arm_count": 1,
+      "status": "existing_runtime",
+      "source": null,
+      "composition_required": [],
+      "missing": [],
+      "reason": "Preserve the existing DROID profile: Arena8b4a3a47fc53de23e8205089d71109a2e2348acd:isaaclab_arena/embodiments/droid/droid.py uses ISAACLAB_NUCLEUS_DIR/Arena/assets/robot_library/droid/franka_robotiq_2f_85_flattened.usd with pinned camera/reset/action contracts. A generic Panda source must not replace it; runtime admission remains in the existing path."
+    },
+    {
+      "embodiment_id": "unitree_g1_dex3_v1",
+      "arm_count": 2,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/unitreerobotics/unitree_ros",
+        "revision": "5994d4faef0a9cadd3287f8de0199a67eeb2a259",
+        "entry_path": "robots/g1_description/g1_29dof_with_hand.urdf",
+        "format": "urdf",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/unitreerobotics/unitree_ros/blob/5994d4faef0a9cadd3287f8de0199a67eeb2a259/LICENSE",
+        "license_note": "Retain the exact source license and notices. Source publication is not Blueprint rights admission, imported physics qualification or policy compatibility.",
+        "include_paths": [
+          "robots/g1_description/g1_29dof_with_hand.urdf",
+          "robots/g1_description/meshes",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "g1_description": "robots/g1_description"
+        },
+        "source_arm_count": 2
+      },
+      "composition_required": [
+        "verify_exact_g1_dex3_revision_against_existing_sonic_asset",
+        "head_camera_rig",
+        "sonic_whole_body_controller"
+      ],
+      "missing": [
+        "exact_hand_variant_binding",
+        "reviewed_checkpoint_and_sonic_terms",
+        "verified_site_episode"
+      ],
+      "reason": "Official public G1 body with articulated three-finger hands is source material only. Existing HumanoidArena/SONIC semantic-v3 configuration, 50Hz controller and checkpoint terms remain separate and unavailable until verified."
+    },
+    {
+      "embodiment_id": "boston_dynamics_atlas",
+      "arm_count": 2,
+      "status": "source_unavailable",
+      "source": null,
+      "composition_required": [],
+      "missing": [
+        "exact_licensed_atlas_asset",
+        "accessible_policy_controller_and_runtime"
+      ],
+      "reason": "Official Atlas product information does not provide Blueprint an exact licensed robot asset or executable controller/API. Historical Atlas models and Spot SDK assets are not the current electric Atlas."
+    }
+  ]
+}

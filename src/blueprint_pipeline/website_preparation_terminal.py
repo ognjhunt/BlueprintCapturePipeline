@@ -177,7 +177,14 @@ def _silent_since(ledger: Mapping[str, Any], current: datetime) -> datetime | No
         if (status == "failed_retryable" and ledger.get("last_error") == _ASSESSMENT_PENDING
                 and isinstance(ledger.get("assessment_resume"), Mapping)):
             return None
-        return _parse_utc(ledger.get("updated_at"))
+        stopped = _parse_utc(ledger.get("updated_at"))
+        from .website_reconstruction_resume import armed
+        if stopped is not None and armed(ledger):
+            # Replayed when the capture's Atlas job ends, not by Pub/Sub: its
+            # silence starts only after the longest that job may run.
+            from .website_atlas_preview_store import MAXIMUM_JOB_SECONDS
+            return stopped + timedelta(seconds=MAXIMUM_JOB_SECONDS)
+        return stopped
     if status == "processing" and type(ledger.get("lease_token")) is str and ledger["lease_token"]:
         expires = _parse_utc(ledger.get("lease_expires_at"))
         return expires if expires is not None and expires <= current else None

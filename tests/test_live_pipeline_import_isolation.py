@@ -128,6 +128,14 @@ def test_control_plane_lane_does_not_import_hot_lane() -> None:
     )
 
 
+def test_shared_paid_admission_stays_off_the_hot_lane() -> None:
+    # Every lane imports this chokepoint. Its monthly-budget check once pulled
+    # the VM inventory and the GPU providers into the control plane (2026-10-23).
+    reachable = _transitive_local_modules(("paid_resource_admission",))
+    assert "gcp_monthly_budget_admission" in reachable
+    assert not reachable.intersection(HOT_LANE_MODULES | {"gcp_monthly_budget_guard", "cloud_vm_render_providers"})
+
+
 def test_sam_phase_queue_stays_independent_of_execution_services() -> None:
     reachable = _transitive_local_modules(("task_evaluation_sam31_phase_queue",))
     assert "task_evaluation_launch_preparation_queue" in reachable

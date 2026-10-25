@@ -104,12 +104,16 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
     if _shape(manifest) is not TEAM_SHAPE:
         return set(_PAIR_ENTRIES)
     candidate = str((manifest.get("candidate_ids") or [""])[0])
-    return {
+    required = {
         f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json",
         "provider_runtime/blueprint_pipeline/team_candidate_policy_client.py",
         "provider_runtime/blueprint_pipeline/droid_https_policy_client.py",
         "provider_runtime/blueprint_pipeline/core/security_controls.py",
     }
+    if manifest.get("team_policy_interface_id") == "dreamlabs_dream1.v1":
+        required.update({"provider_runtime/blueprint_pipeline/dreamlabs_policy_client.py",
+                         "provider_runtime/blueprint_pipeline/team_arm_kinematics.py"})
+    return required
 
 
 def run_kind_entrypoint_blockers(manifest: Mapping[str, Any], entrypoint_text: str) -> list[str]:

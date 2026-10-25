@@ -13,6 +13,28 @@ CAVITY_PROBE_OFFSETS = (-0.3, 0.0, 0.3)
 CAVITY_FIXTURE_MARGIN_M = 0.01
 CAVITY_FIXTURE_MAXIMUM_VOLUME_FRACTION = 0.1
 
+def _outside_cavity_rays(bounds, cavities):
+    """A conservative primitive bound may exclude it, never certify a hit."""
+    if not isinstance(bounds, Mapping) or not cavities:
+        return False
+    lo, hi = bounds.get("minimum"), bounds.get("maximum")
+    if (not isinstance(lo, (list, tuple)) or not isinstance(hi, (list, tuple))
+            or len(lo) != 3 or len(hi) != 3
+            or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in [*lo, *hi])
+            or any(a > b for a, b in zip(lo, hi, strict=True))):
+        return False
+    for cavity in cavities:
+        cx, cy, cz = map(float, cavity["opening_center_link_m"])
+        for dy in CAVITY_PROBE_OFFSETS:
+            for dz in CAVITY_PROBE_OFFSETS:
+                y = cy + dy * float(cavity["opening_width_m"]) / 2
+                z = cz + dz * float(cavity["opening_height_m"]) / 2
+                if (lo[0] <= cx + CAVITY_PROBE_STANDOFF_M
+                        and lo[1] - 1e-9 <= y <= hi[1] + 1e-9
+                        and lo[2] - 1e-9 <= z <= hi[2] + 1e-9):
+                    return False
+    return True
+
 def _declared_fixture_boxes(cavity: Mapping[str, Any], *, maximum_volume_fraction=CAVITY_FIXTURE_MAXIMUM_VOLUME_FRACTION) -> list[tuple[list[float], list[float]]] | None:
     """A cavity's declared fixture boxes, or None when any is malformed, outside it or too large."""
     rows = cavity.get("declared_fixtures", [])
@@ -112,6 +134,8 @@ def collision_cavity_findings(pieces: Sequence[Mapping[str, Any]],
             hull = trimesh.Trimesh(points, triangles, process=False).convex_hull
             points, triangles = np.asarray(hull.vertices), np.asarray(hull.faces)
         elif approximation != "analytic_box":
+            if approximation == "analytic_Cylinder" and _outside_cavity_rays(piece.get("conservative_bounds"), cavities):
+                continue
             unproven.append("body_cavity_collision_approximation_unproven:" + (approximation or "unspecified"))
             continue
         faces.append(triangles + sum(len(v) for v in vertices))

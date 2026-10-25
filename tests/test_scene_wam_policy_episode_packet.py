@@ -127,7 +127,7 @@ def _write_robot_pov_reference_index(
     rgb = rng.integers(20, 235, size=(height, width, 3), dtype=np.uint8)
     Image.fromarray(rgb).save(frame_dir / "head_pov_reference.jpg", quality=92)
     depth_mm = np.full((height, width), 2000, dtype=np.uint16)
-    Image.fromarray(depth_mm, mode="I;16").save(depth_dir / "head_pov_reference.png")
+    Image.fromarray(depth_mm).save(depth_dir / "head_pov_reference.png")
     target_T = packet._robot_pov_target_T_world_camera(
         robot_pose=robot_pose,
         target_pose=target_pose,

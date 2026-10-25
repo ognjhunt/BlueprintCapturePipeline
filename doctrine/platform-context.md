@@ -5,9 +5,9 @@
 Blueprint has two active programs. Both bind every repository, and neither
 loosens the engineering invariants in this document.
 
-1. **Free Beta: Evaluated, Recommended Pilot** (`free-beta-evaluated-pilot`)
-   is the customer-facing program (founder decisions of 2026-10-13 and
-   2026-10-14).
+1. **Free Beta: Job-First Automation** is the customer-facing program, updated
+   by the owner on 2026-10-21. The historical program identifier
+   `free-beta-evaluated-pilot` remains readable for existing records.
 2. **Arm Decision Proof v1** (`arm-decision-proof-v1`) is the evidence program.
    It tests whether a simulated decision agrees with held-out physical trials.
 
@@ -17,52 +17,126 @@ programs shows that it is the smallest necessary dependency.
 
 Shared seams are built once and serve both programs: capture, scene
 preparation, policy execution, scoring, and result publication. When the two
-compete for the same engineering time, work that an invited site or robot team
+compete for the same engineering time, work that a site or suitable partner
 is blocked on comes first, and the founder resolves anything else. Arm
 Decision Proof keeps sole authority over physical-validation claims. No beta
 result may be described as physically validated without Physical Outcome Join
 evidence.
 
-### Free Beta: Evaluated, Recommended Pilot
+### Free Beta: Job-First Automation
 
-A site shows one recurring job. Invited robot teams evaluate it, free, in a
-simulation built from the site's capture. Blueprint recommends one team whose
-evaluation on that job passed and that wants the pilot, and the site books it
-in one step. The site never has to compare teams. If no team passes, the site
-is told so, and what would change that.
+"Find the right way to automate your work." A site records or uploads its job
+video; a written description is not required. The later owner correction on
+2026-10-21 requires actual retained video before assessment. A draft or inquiry
+may wait for video, but a description, checkbox or allocated upload ID cannot
+substitute for a successful storage receipt. Existing video analysis drafts the
+description and structured job facts from the same output; the customer corrects
+the reading and supplies material facts the footage cannot establish.
+Preserve customer-authored or confirmed text and source-bound revisions. Keep
+observed, measured, customer-declared and inferred values distinct; estimated
+dimensions do not become authoritative hardware exclusions. Retain metric units,
+coordinate frames and calibration across geometry, objects and runtime inputs.
+Visual appearance alone does not establish contact, dynamics or sensor fidelity.
 
-- The beta is free for sites and robot teams. There are no fees, paid
-  evaluations, balances, top-ups, checkout, or announced future pricing.
-- The physical pilot is agreed between the site and the robot team. Blueprint
-  takes no cut.
-- Sign-up is open for sites, and Blueprint also onboards sites by hand. Robot
-  teams join by invitation after application review.
-- A recommendation needs a team's own policy, scored by the simulator and
-  never self-reported, for at least the minimum evidence episodes, passing the
-  job's pass mark as frozen before the run.
-- Every result is a bounded simulation estimate. It never certifies physical
-  performance or safety; the physical pilot measures that.
+The six service stages reuse the existing capture-to-simulation foundation:
+retain the original video, permissions and job identity; understand and confirm
+the job; prepare the capture-backed site package and measurable task testbed;
+shortlist complete executable configurations; run matched evaluations with
+independent scoring; and prepare an evidence-bounded recommendation and real
+delivery proposals. Reuse valid source-bound artifacts and applicable permitted
+evidence instead of repeating unchanged work. Missing measurements, unavailable
+execution or unsuitable options return their precise next action or abstention;
+they cannot be presented as completed simulation, execution or delivery proof.
+The evidence bridge's read-only adapters are not policy evaluation.
 
-The beta's north star is one site that started through the public form booking
-a pilot recommended on that evidence. The metric is
-`evidence_backed_recommended_pilots_booked`: current `0`, next target `1`.
+This replaces the superseded optional-video interpretation, not the original
+walkthrough or approved example animations. Keep the experience bare bones:
+video, review the reading, understandable progress/results and comparable
+delivery options. Use the existing private workspace and admin tools. After
+recommendation, the customer chooses an exact real proposal revision; the
+customer and deployment partner agree their bounded physical pilot directly.
+Selection is not contract award or authority to start physical work.
 
-These beta areas are active build-out and no longer frozen:
+- The beta is free. There are no assessment or success fees, paid provider
+  evaluations, balances, top-ups, checkout, escrow, percentage cut, or future
+  pricing promises. Partner installation and operating prices concern their
+  physical delivery, not a Blueprint charge.
+- Capture current process cost separately from desired future spending. An
+  optional planning budget is neither a supplier price nor resource-spending
+  authority. Firm proposals follow the agreed scope and acceptance criteria.
+  Prefer two or three comparable proposals when real suppliers exist; one
+  credible option is sufficient. Revisions retain their brief and scope.
+- Deployment partners explicitly commit equipment, integration, installation,
+  preparation, assistance, timing and support. Technology providers may supply
+  policies or integrations without offering deployment. Reviewed applications
+  do not establish runtime admission or verified delivery coverage.
+- Blueprint can execute accessible licensed policies through existing approved
+  self-hosted, provider-API or hosted-endpoint adapters. A technology team can
+  supply an approved endpoint or integration when access is missing; operating
+  every evaluation themselves is not mandatory. Preserve independent scoring,
+  controlled observations, exact runtime identities, retained policy inputs,
+  rights, authorized spending, watchdog and teardown controls.
+- A scientific result keeps its question, candidate/site/task/configuration
+  scope, assumptions, uncertainty, provenance and claim ceiling. It does not
+  choose a commercial proposal. The operator's recommendation also considers
+  installed and operating cost, assistance, disruption, timing and support.
+- A separately permitted customer-reported pilot outcome remains reported
+  evidence. Only authoritative physical records with the required exact
+  identities and rights can enter the existing Physical Outcome Join.
 
-- the site and robot-team journeys in `Blueprint-WebApp`: intake, consent,
-  capture, job briefs, invitation, evaluation requests, results,
-  recommendation, booking, and the messages around them;
-- running an invited team's own policy in the website scene runtime for
-  enough episodes to judge it against the job's pass mark;
-- scene preparation and evaluation throughput for several concurrent beta
-  sites, with spend caps and an operator effort small enough to repeat;
-- the robot-team side: application review, invitation, job listings,
-  interface contracts, and result review.
+Use the existing owner workspace and operator workflow. Keep six commercial
+stages: `job_submitted`, `brief_agreed`, `options_assessed`, `proposals_ready`,
+`pilot_agreed`, and `results_recorded`, each with a next action and responsible
+actor. Do not add review stages, dashboards, certifications or approval loops.
+Existing signed evidence publication remains separate from commercial state.
+Budget-only quote revisions do not invalidate unchanged observations; task or
+configuration changes require reassessing technical applicability. Stale
+evidence stays historical. Neither assessment nor publication may award a
+contract, invent an agreement, send outreach, or start a physical operation.
 
-The default build target remains the envelope the Pipeline can score today: a
-fixed arm on rigid-object pick-and-place or articulated open/close tasks.
-Building support for another robot form or task family needs a recorded owner
-focus decision based on demand evidence.
+The historical metric `evidence_backed_recommended_pilots_booked` belongs to
+the earlier journey; it is not proof that a selected proposal was agreed or
+delivered. The useful beta outcome is a real job with an agreed scope, a
+supportable customer choice, a separately agreed pilot, and recorded outcomes.
+
+Accept jobs across sites and task families into truthful capability routing.
+The first runnable route is the exact admitted fixed-arm/DROID-compatible
+rigid-object profile, not every arm or task. An articulated open/close fidelity
+template does not establish an executable adapter, reset or scorer. Atlas and
+other unavailable embodiments or policies remain unavailable without blocking
+supported configurations. New task families need real assets, adapters,
+resets, scoring and evidence; registry labels and fixture names cannot supply
+them. Keep task requirements, site data, embodiment/tool/sensors, policy
+interfaces and delivery availability separate behind existing contracts.
+
+### Durable Job Workflow
+
+Site, job, task, capture and tenant identities are data, never demo constants.
+Derive stage completion from retained receipts and artifacts. Reuse existing
+stores, queues, intent/outbox records, idempotency keys, claims and leases; do
+not create a parallel workflow platform or state database. At-least-once events,
+worker restarts and signed publication retries must not duplicate expensive
+work, proposals or sends. Persist intent before effects, reconcile ambiguous
+provider timeouts before another purchase, and resume from the last valid
+artifact with bounded retry/backoff and the existing retry/error surface.
+
+Bind video, technical brief, testbed, configuration and result revisions.
+Changed technical sources cannot inherit a stale recommendation; retain late
+old results as history. Quote or budget edits do not rerun unchanged science.
+Cancellation, withdrawal and permission revocation stop applicable future work
+while preserving existing minimum audit obligations. Owner links and staff
+authority remain distinct, and tenant evidence remains isolated. Retain bounded
+summaries/references in the existing database and large immutable artifacts in
+authorized company object storage, not chat sessions or provider file IDs.
+
+Executable technology access, deployment capability and a partner's scoped
+proposal are separate facts. Record exact robot/tool/sensor/controller,
+observation/action units and normalization, policy/runtime versions and access
+terms. Research rankings do not prove compatibility, stock or delivery support.
+Only actual partner availability, cost and support commitments make a proposal
+theirs. Unknown cost, assistance and cycle time stay unmeasured or unknown;
+simulation time is not physical end-to-end cycle time. Existing rights, spend,
+founder holds, watchdog, teardown and no-send controls remain intact.
 
 ### Arm Decision Proof v1
 
@@ -81,15 +155,16 @@ The north-star metric is
 target `1`.
 
 ADP-008's SIMPLER decision-harness replay is observed complete and immutable.
-The immediate engineering phase is **ADP-009 public scene qualification**:
+The recorded earlier engineering phase was **ADP-009 public scene qualification**:
 exact dataset/code/rights admission; an unchanged Inpaint360GS author-data
 reproducibility smoke; an InFusion primary adapter and AuraFusion360 quality
 challenger on one exact rights-admitted InteriorGS/SAGE-3D pair using a frozen
 render-derived camera bundle; exact SimReady USD replacement;
 NVIDIA USD Content Agents as a bounded authoring candidate against a manual USD
 control; targeted ScanNet++ real measured transfer after access; hybrid Isaac
-tests; and a complete simulator-side rehearsal. All outputs remain
-`development_only`.
+tests; and a complete simulator-side rehearsal. Its outputs remain
+`development_only`. This historical method sequence is superseded for execution
+by the current lane-reachability record described below.
 
 After ADP-009 and partner protocol freeze, collect one fresh Raw V3.2 workcell
 capture with registered clean-background and object-present observations. That
@@ -101,8 +176,11 @@ rights, and physical access remain a small parallel human lane.
 
 ### Product And Artifact Boundary
 
-Blueprint has one product: the **Task Evaluation Run**. In the free beta a site
-experiences it as an evaluated, recommended pilot, and nothing is sold.
+The customer-facing service helps a business find a suitable, deliverable way
+to automate its job. The **Task Evaluation Run** is its bounded technical
+assessment, not a mandatory purchase or a substitute for retained video.
+An inquiry awaiting footage needs no invented capture, testbed or run and
+cannot advance through assessment before its real video is retained.
 
 - A maintained **Site-Task Testbed** is the versioned reusable substrate.
 - A **candidate Minimum Sufficient Evaluation Replica** is the construction
@@ -141,19 +219,28 @@ rank correlation.
 
 - `BlueprintCapture` records immutable, provenance-linked real-site evidence.
 - `BlueprintCapturePipeline` compiles the testbed, routes claims to qualified
-  evidence, executes authorized leaf runs (including invited teams' beta
-  evaluation runs), seals the prospective decision, performs the Physical
-  Outcome Join, and owns the scientific verdict.
+  evidence, qualifies methods, executes authorized leaf runs using supported
+  independent or team-supplied access, seals the prospective decision,
+  performs the Physical Outcome Join, and owns normalized scientific results,
+  uncertainty, abstention and claim ceilings.
 - `Blueprint-WebApp` handles site and robot-team intake, consent, invitation,
-  authorization, durable workflow state, evaluation requests, recommendation
-  and booking, evidence review, and bounded case-study presentation. It does
-  not select evidence providers or recompute verdicts.
+  authorization, commercial workflow state, briefs, delivery proposals,
+  customer selection, direct pilot agreement records, reported outcomes and
+  evidence display. It does not recompute verdicts, raise claim ceilings or
+  turn commercial screening into scientific evidence.
 - Agents may inspect, propose, implement, validate, and assemble artifacts.
   Deterministic contracts authorize or abstain. Humans retain authority over
   task truth, resets, rights/privacy, physical robot motion and safety, holdout
   release, publication, and claim promotion.
 
 ### Existing Capture And Scene Policy
+
+The public-scene method list below records the earlier ADP construction plan.
+The owner-selected appearance path is artifixer3D+ with `gpt-image-2` as recorded
+on 2026-08-13; Inpaint360GS and AuraFusion360 are retired execution lanes. Fresh
+Raw V3.2 capture replaces ScanNet++ as the required real metric transfer.
+Follow the current ADP lane-reachability record for execution. Preserve the
+historical `7/10` suite and frozen proof definitions.
 
 Existing captures, exact public datasets, fixtures, released editing code,
 OpenUSD scenes, SimReady candidates, and simulator artifacts must exercise every
@@ -193,10 +280,11 @@ dynamics, observation-domain match, factual recovery of an unobserved surface,
 sim-to-real decision fidelity, or partner value. No fixture/generated field may
 be copied into qualified evidence to make a gate pass.
 
-Beta site captures are the free beta's real inputs. Scenes built from them, and
-evaluation results on those scenes, may back a beta recommendation when stated
-as a bounded simulation estimate with its limits. They stay separate from Arm
-Decision Proof evidence. They cannot qualify a partner capture, promote a
+Beta site captures are required real inputs to assessment. Qualified simulation
+results can contribute to a recommendation within their stated
+task/configuration/site limits. Reusing applicable evidence does not establish
+a newly completed reconstruction or evaluation. Those results stay
+separate from Arm Decision Proof evidence. They cannot qualify a partner capture, promote a
 physical-validation claim, or be copied into Arm Decision Proof qualified
 evidence.
 
@@ -218,7 +306,8 @@ collision validity, physical fidelity, task success, deployment, or safety.
 
 ### Evidence And Result Contract
 
-Every decision exposes:
+Every scientific decision exposes the applicable fields, with absent physical
+evidence left absent rather than invented:
 
 - the requested decision and minimum meaningful difference;
 - exact site, task, robot, candidate, condition, reset, and runtime identities;

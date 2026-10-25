@@ -6,10 +6,13 @@ confirmation. The authenticated snapshot is retained as derived run evidence.
 from __future__ import annotations
 
 import json
+import hmac
+import hashlib
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 
@@ -18,7 +21,6 @@ from .safe_outbound_http import pinned_api_policy
 from .safe_outbound_http import request as safe_request
 from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
-from .website_capture_entry import is_website_entry_source
 from .website_task_context_contracts import validate_website_task_context as validate_website_task_context
 
 
@@ -39,8 +41,9 @@ def load_current_website_task_context(
 
 def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Use the existing signed transport for private preparation control data."""
-    if operation not in {"task-context", "scene-sponsorship", "prepared-scene", "visual-scene",
-                         "preparation-spend", "preparation-settlement", "agent-execution-offer", "task-item-evidence", "preparation-status"}:
+    if operation not in {"task-context", "scene-sponsorship", "prepared-scene",
+                         "preparation-spend", "preparation-settlement", "atlas-configuration", "atlas-preview",
+                         "agent-execution-offer", "task-item-evidence", "preparation-status"}:
         raise ValueError("website_control_operation_invalid")
     configured = os.getenv("PIPELINE_SYNC_WEBAPP_URL", "").strip()
     if not configured:
@@ -79,72 +82,99 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
 
 
 def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest: str,
-                            maximum_cost_usd: float, request_count: int) -> tuple[dict[str, Any], Any]:
+                            maximum_cost_usd: float, request_count: int, source_video_digest: str | None = None) -> tuple[dict[str, Any], Any]:
     return reserve_website_preparation_spend(task_context=task_context, binding_digest=binding_digest,
         maximum_cost_usd=maximum_cost_usd, request_count=request_count,
-        resource_class="evaluator_api", provider="meta")
+        resource_class="evaluator_api", provider="meta", source_video_digest=source_video_digest,
+        atlas_auxiliary=source_video_digest is not None)
 
 
 def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], binding_digest: str,
                                      maximum_cost_usd: float, request_count: int,
                                      resource_class: str, provider: str,
-                                     retained_admission: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], Any]:
+                                     source_video_digest: str | None = None,
+                                     atlas_auxiliary: bool = False,
+                                     retained_admission: Mapping[str, Any] | None = None,
+                                     retain_admission: Callable[[Mapping[str, Any]], None] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
 
-    from .paid_resource_admission import require_paid_resource_admission
+    from .paid_resource_admission import require_paid_resource_admission, require_paid_resource_budget
     if (resource_class, provider) not in {("evaluator_api", "meta"), ("evaluator_api", "google"), ("openai_api_candidate", "openai"),
-                                         ("provider_reconstruction_api", "world_labs"), ("gpu_render", "vast")}:
+                                         ("provider_reconstruction_api", "world_labs_atlas"), ("gpu_render", "vast")}:
         raise ValueError("website_preparation_provider_resource_mismatch")
     command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": binding_digest,
                "resource_class": resource_class, "provider": provider, "maximum_cost_usd": maximum_cost_usd,
                "request_count": request_count}
-    value = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-spend",
-        payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
+    if source_video_digest is not None:
+        command["source_video_digest"] = source_video_digest
+    if atlas_auxiliary:
+        if provider not in {"meta", "google"} or source_video_digest is None:
+            raise ValueError("website_atlas_auxiliary_binding_invalid")
+        command["atlas_auxiliary"] = True
+    # Avoid an orphaned remote hold when the local monitor already refuses.
+    # A report can still expire during the RPC, so this is only a precheck.
+    require_paid_resource_budget(resource_class=resource_class)
+    operator_file = os.getenv("BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "").strip()
+    if operator_file:
+        value = load_atlas_operator_admission(Path(operator_file), command=command, task_context=task_context)
+    else:
+        value = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-spend",
+            payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
     if (any(value.get(key) != expected for key, expected in command.items())
             or value.get("external_disclosure_allowed") is not True
             or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):
         raise ValueError("website_preparation_spend_receipt_invalid")
     if value.get("status") == "already_reserved" and retained_admission is not None:
-        # Only Marble's durable pre-generation recovery may reuse this grant.
-        # Its adapter locks submission and persists intent before worlds:generate;
-        # unknown outcomes still refuse, and another worker without the original
-        # local admission cannot turn an existing reservation into new authority.
+        # Only the Atlas adapters' durable recovery may reuse this grant,
+        # between its uploads and its one submission. It locks and persists
+        # intent before mutating; unknown outcomes still refuse, and another
+        # worker without the original local admission cannot turn an existing
+        # reservation into new authority.
         retained = {key: item for key, item in retained_admission.items() if key != "source_commit"}
-        if ((resource_class, provider) != ("provider_reconstruction_api", "world_labs")
+        if (resource_class != "provider_reconstruction_api" or provider != "world_labs_atlas"
                 or retained != {**value, "status": "admitted"}):
             raise ValueError("website_preparation_retained_admission_mismatch")
         value = retained
+    if (retain_admission is not None and value.get("status") == "admitted"
+            and value.get("schema_version") == "paid_lane_admission.v1"
+            and value.get("blockers") in ([], None)):
+        # Preserve the original authenticated transaction before rechecking
+        # local budget. A restart must never turn a bare already_reserved
+        # answer into authority or overwrite the original receipt with it.
+        retain_admission(dict(value))
     grant = require_paid_resource_admission(value, resource_class=resource_class, expected_schema_version="paid_lane_admission.v1")
     return value, grant
 
 
-def publish_website_visual_scene(*, descriptor: Mapping[str, Any], world: Mapping[str, Any],
-                                 operation_id: str) -> dict[str, Any]:
-    """Publish the first viewable world before mesh downloads or native authoring."""
-    metadata = descriptor.get("metadata") or {}
-    context = metadata.get("site_task_context") or {}
-    if (not is_website_entry_source(metadata.get("capture_entry_source"))
-            or (metadata.get("clean_plate") or {}).get("privacy_verified") is not True):
-        raise ValueError("website_visual_scene_preparation_missing")
-    validate_website_task_context(context, request_id=context.get("request_id", ""),
-                                  scene_id=descriptor["scene_id"], capture_id=descriptor["capture_id"], purpose="scene_preparation")
-    assets = world.get("assets") or {}
-    imagery = assets.get("imagery") or {}
-    world_id = world.get("world_id") or world.get("id")
-    launch_url = world.get("world_marble_url")
-    if not world_id or not launch_url or not operation_id:
-        raise ValueError("website_visual_scene_not_viewable")
-    payload = {"request_id": context["request_id"], "scene_id": context["scene_id"],
-               "task_context_digest": context["context_digest"], "world_id": world_id,
-               "operation_id": operation_id, "model": world.get("model") or "marble-1.1-plus",
-               "launch_url": launch_url, "thumbnail_url": assets.get("thumbnail_url") or world.get("thumbnail_url"),
-               "pano_url": imagery.get("pano_url")}
-    value = website_webapp_request(capture_id=context["capture_id"], operation="visual-scene", payload=payload)
-    if (value.get("world_id") != world_id or value.get("state") != "ready"
-            or value.get("task_context_digest") != context["context_digest"]):
-        raise ValueError("website_visual_scene_receipt_invalid")
-    return value
+def load_atlas_operator_admission(path: Path, *, command: Mapping[str, Any],
+                                  task_context: Mapping[str, Any]) -> dict[str, Any]:
+    """A short-lived signed handoff from the actual WebApp reservation transaction.
+
+    The operator runs WebApp's committed utility; this never invents authority
+    or reserves locally. The same canonical admission check still issues the
+    in-process grant, and the same allocator/input/release gates still apply.
+    """
+    import time
+    if command.get("provider") != "world_labs_atlas" or command.get("resource_class") != "provider_reconstruction_api":
+        raise ValueError("atlas_operator_admission_provider_invalid")
+    value = json.loads(path.read_text())
+    signature = value.pop("signature", None)
+    expected = hmac.new(load_pipeline_sync_token().encode(), cross_runtime_canonical_digest(value).encode(), hashlib.sha256).hexdigest()
+    admission = value.get("admission")
+    if (not isinstance(signature, str) or not hmac.compare_digest(signature, expected)
+            or value.get("schema_version") != "website_atlas_operator_admission.v1"
+            or value.get("request_id") != task_context["request_id"]
+            or value.get("capture_id") != task_context["capture_id"]
+            or not isinstance(value.get("expires_at_epoch"), (int, float))
+            or value["expires_at_epoch"] <= time.time()
+            or not isinstance(value.get("issued_at_epoch"), (int, float))
+            or value["expires_at_epoch"] - value["issued_at_epoch"] > 600
+            or not isinstance(admission, Mapping)
+            or any(admission.get(k) != v for k, v in command.items())
+            or admission.get("status") not in {"admitted", "already_reserved"}):
+        raise ValueError("atlas_operator_admission_invalid")
+    return dict(admission)
 
 
 def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: float, create: bool = True) -> dict[str, Any]:

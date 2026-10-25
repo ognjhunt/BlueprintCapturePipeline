@@ -31,6 +31,59 @@ Pending checkpoints are pinned from the Hugging Face tree listing
 (`hub_tree_listing`), not downloaded bytes. That is enough to name the exact
 revision; it is not enough to run it.
 
+## Hosted API policies
+
+`HOSTED_REGISTRY` lists policies that run behind a provider's API. Nothing is
+downloaded, so an entry records the provider's model ID, whether the provider
+promises that ID never changes (`version_frozen`), the credential variable it
+needs, and the provider's terms and data-use status. Hosted entries are never
+part of the two-candidate pair or the scene setup's checkpoint list. A hosted
+entry may become `runnable` only with a hosted runtime adapter, reviewed
+terms, a configured credential and no open blockers
+(`hosted_registry_violations`). Sending site images to a provider also needs
+the job's existing external-processing permission.
+
+| Candidate | Provider | Status | Why |
+| --- | --- | --- | --- |
+| `dreamlabs_dream1` | Dream Labs | integration_pending | Account access (`DREAM_API_KEY`) and inference/data-use terms unverified; no controlled-observation hosted adapter or runtime contract validation; no runnable two-arm, three-camera setup; no integration canary |
+
+The [official launch](https://dreamlabs.ai/research/dream-1/) describes a public
+research-beta API for bimanual parallel-gripper robots. The existing single-arm
+DROID setup is not interchangeable with that interface. Blueprint has not
+executed Dream-1 or verified an account entitlement, accepted hosted terms, or
+qualified a matching configuration. The registry does not inspect credential
+values or contact the provider.
+
+The [official client 1.0.3](https://pypi.org/project/dreamlabs-client/1.0.3/)
+was inspected without installation or execution on 2026-10-21. Its wheel
+SHA256 is `2a2afaaead696a5f76de5fb3a671dbf7ac85fa69c3311deae40f698f621af5c2`.
+It uses bearer authentication and `POST https://api.dreamlabs.ai/v1/get_action`
+with checkpoint, session/reset and observation fields; returned actions are
+not task results. HTTP success alone is insufficient: the response status
+must also succeed. The launch's `dreamlabs/dream-1` and the SDK examples'
+`dreamlabs/dream-1-beta` are not assumed equivalent. A future integration must
+resolve the account's actual model via `GET https://platform.dreamlabs.ai/v1/models`
+and retain the strongest returned deployment/version identity. No immutable
+checkpoint digest has been observed.
+
+The client records observations to a separate live service by default, even
+before inference. In this pinned version, `"_record": False` in the `policy()`
+config disables it. An adapter must force recording off and retain the existing approved-observation
+boundary, endpoint restrictions, limits and execution receipts. The SDK's
+Apache-2.0 license does not establish permission for hosted inference, site
+image retention, or training. No SDK dependency, inference call, training use,
+robot runtime, or runnable admission is added by this catalog entry.
+
+Robot setups a policy can run on are listed in
+`task_evaluation_embodiment_registry.py`. Only the DROID Franka + Robotiq 2F-85
+setup is `runnable`. G1 and Atlas are unavailable. The I2RT YAM and two-arm
+Franka Research 3 declare Dream-1's interface but are not integrated. UR5e,
+UR10e, FANUC CRX-10iA, ABB GoFa, KUKA LBR iiwa 14, Kinova Gen3 and xArm 7 are
+listed as not integrated, each with its missing asset, controller, camera-rig,
+reset and canary work. `job_capability_routing` matches policies to setups by
+their declared camera and action interfaces. It reports which setup would
+unlock which unavailable policy.
+
 ## Gates
 
 `registry_violations()` fails if any entry overstates what can run: a runnable

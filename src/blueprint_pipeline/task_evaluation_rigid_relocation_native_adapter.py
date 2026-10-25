@@ -451,6 +451,112 @@ def _revision_bound_task(
     }
 
 
+def _diagnostic_source_documents(
+    authority: Mapping[str, Any], *, source_schemas: Mapping[str, str] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Read exact diagnostic task inputs without creating a configured revision."""
+    if (
+        authority.get("schema_version") != "task_evaluation_configured_scene_diagnostic_controls_input.v1"
+        or authority.get("status") != "materialized"
+        or authority.get("qualification_eligible") is not False
+        or authority.get("configured_revision_publication_permitted") is not False
+        or authority.get("evaluation_ready_promotion_permitted") is not False
+        or authority.get("claim_ceiling") != "development_only_downstream_construction_and_controls_diagnostic"
+        or authority.get("receipt_digest") != canonical_digest(authority, digest_field="receipt_digest")
+    ):
+        raise TaskEvaluationRigidRelocationNativeAdapterError("rigid_relocation_native_adapter_diagnostic_authority_invalid")
+    documents: dict[str, dict[str, Any]] = {}
+    bindings: list[dict[str, Any]] = []
+    rows = authority.get("materialized_inputs")
+    by_contract = {
+        str(row.get("contract_path") or ""): row
+        for row in rows or []
+        if isinstance(row, Mapping)
+    }
+    if not isinstance(rows, list) or len(by_contract) != len(rows):
+        raise TaskEvaluationRigidRelocationNativeAdapterError("rigid_relocation_native_adapter_diagnostic_authority_invalid")
+    native_key = "diagnostic_output.scene_configuration_native_continuation_result.v1.json"
+    legacy_key = "diagnostic_output.task_evaluation_scene_configuration_provider_result.v1.json"
+    native_source = native_key in by_contract
+    if native_source and legacy_key in by_contract:
+        raise TaskEvaluationRigidRelocationNativeAdapterError("rigid_relocation_native_adapter_diagnostic_provider_result_invalid")
+    provider_key = native_key if native_source else legacy_key
+    provider_row = by_contract.get(provider_key)
+    if not isinstance(provider_row, Mapping):
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_diagnostic_authority_invalid"
+        )
+    provider_path = Path(str(provider_row.get("path") or "")).expanduser()
+    try:
+        provider_result = json.loads(provider_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_diagnostic_provider_result_invalid"
+        ) from exc
+    if (
+        provider_path.is_symlink()
+        or not provider_path.is_file()
+        or _sha256_and_size(provider_path)
+        != (provider_row.get("digest"), provider_row.get("size_bytes"))
+        or provider_row.get("full_byte_readback_passed") is not True
+        or provider_result.get("result_digest")
+        != canonical_digest(provider_result, digest_field="result_digest")
+    ):
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_diagnostic_provider_result_invalid"
+        )
+    if native_source:
+        from .task_evaluation_scene_configuration_provider_stage_chain import _completed_stage_chain_valid
+        chain = provider_result.get("stage_chain")
+        source_valid = (
+            provider_result.get("schema_version") == "scene_configuration_native_continuation_result.v1"
+            and provider_result.get("status") == "completed"
+            and provider_result.get("claim_ceiling") == "development_only"
+            and provider_result.get("qualification_eligible") is False
+            and provider_result.get("candidate_policy_queried") is False
+            and provider_result.get("provider_zero_required_after_return") is True
+            and provider_result.get("result_digest") == authority.get("source_provider_output_digest")
+            and _completed_stage_chain_valid(chain, provider_result={"run_id": authority.get("source_configuration_run_id")}, diagnostic_only=False)
+        )
+    else:
+        source_valid = (
+            provider_result.get("schema_version") == "task_evaluation_scene_configuration_diagnostic_provider_result.v1"
+            and provider_result.get("status") == "completed_diagnostic_only_not_qualification_eligible"
+            and provider_result.get("diagnostic_only") is True
+            and provider_result.get("qualification_eligible") is False
+            and provider_result.get("executed_inside_one_parent_provider_run") is False
+            and provider_result.get("configured_revision_publication_permitted") is False
+        )
+    if not source_valid:
+        raise TaskEvaluationRigidRelocationNativeAdapterError("rigid_relocation_native_adapter_diagnostic_provider_result_invalid")
+    diagnostic_references: dict[str, dict[str, Any]] = {}
+    for contract_path, source_alias in DIAGNOSTIC_SOURCE_ALIASES.items():
+        row = by_contract.get(source_alias)
+        if not isinstance(row, Mapping):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                f"rigid_relocation_native_adapter_source_invalid:{contract_path}"
+            )
+        diagnostic_references[contract_path] = {
+            "contract_path": contract_path,
+            "uri": row.get("uri") or f"diagnostic-input://{source_alias}",
+            "digest": row.get("digest"),
+            "size_bytes": row.get("size_bytes"),
+            "materialized_path": row.get("path"),
+            "full_byte_service_account_readback_passed": row.get(
+                "full_byte_readback_passed"
+            ),
+        }
+        document, binding = _source_document(
+            diagnostic_references,
+            contract_path=contract_path,
+            expected_reference=diagnostic_references[contract_path],
+            expected_schema=(source_schemas or {}).get(contract_path),
+        )
+        documents[contract_path] = document
+        bindings.append(binding)
+    return documents, bindings
+
+
 def adapt_rigid_relocation_task_template(
     *,
     request: Mapping[str, Any] | None = None,
@@ -470,87 +576,11 @@ def adapt_rigid_relocation_task_template(
     bindings: list[dict[str, Any]] = []
     if diagnostic:
         authority = dict(diagnostic_controls_input or {})
-        if (
-            request is not None
-            or configured_revision is not None
-            or authority.get("schema_version")
-            != "task_evaluation_configured_scene_diagnostic_controls_input.v1"
-            or authority.get("status") != "materialized"
-            or authority.get("qualification_eligible") is not False
-            or authority.get("configured_revision_publication_permitted") is not False
-            or authority.get("evaluation_ready_promotion_permitted") is not False
-            or authority.get("claim_ceiling")
-            != "development_only_downstream_construction_and_controls_diagnostic"
-            or authority.get("receipt_digest")
-            != canonical_digest(authority, digest_field="receipt_digest")
-        ):
+        if request is not None or configured_revision is not None:
             raise TaskEvaluationRigidRelocationNativeAdapterError(
                 "rigid_relocation_native_adapter_diagnostic_authority_invalid"
             )
-        rows = authority.get("materialized_inputs")
-        by_contract = {
-            str(row.get("contract_path") or ""): row
-            for row in rows or []
-            if isinstance(row, Mapping)
-        }
-        provider_row = by_contract.get(
-            "diagnostic_output.task_evaluation_scene_configuration_provider_result.v1.json"
-        )
-        if not isinstance(provider_row, Mapping):
-            raise TaskEvaluationRigidRelocationNativeAdapterError(
-                "rigid_relocation_native_adapter_diagnostic_authority_invalid"
-            )
-        provider_path = Path(str(provider_row.get("path") or "")).expanduser()
-        try:
-            provider_result = json.loads(provider_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise TaskEvaluationRigidRelocationNativeAdapterError(
-                "rigid_relocation_native_adapter_diagnostic_provider_result_invalid"
-            ) from exc
-        if (
-            provider_path.is_symlink()
-            or not provider_path.is_file()
-            or _sha256_and_size(provider_path)
-            != (provider_row.get("digest"), provider_row.get("size_bytes"))
-            or provider_row.get("full_byte_readback_passed") is not True
-            or provider_result.get("schema_version")
-            != "task_evaluation_scene_configuration_diagnostic_provider_result.v1"
-            or provider_result.get("status")
-            != "completed_diagnostic_only_not_qualification_eligible"
-            or provider_result.get("diagnostic_only") is not True
-            or provider_result.get("qualification_eligible") is not False
-            or provider_result.get("executed_inside_one_parent_provider_run") is not False
-            or provider_result.get("configured_revision_publication_permitted") is not False
-            or provider_result.get("result_digest")
-            != canonical_digest(provider_result, digest_field="result_digest")
-        ):
-            raise TaskEvaluationRigidRelocationNativeAdapterError(
-                "rigid_relocation_native_adapter_diagnostic_provider_result_invalid"
-            )
-        diagnostic_references: dict[str, dict[str, Any]] = {}
-        for contract_path, source_alias in DIAGNOSTIC_SOURCE_ALIASES.items():
-            row = by_contract.get(source_alias)
-            if not isinstance(row, Mapping):
-                raise TaskEvaluationRigidRelocationNativeAdapterError(
-                    f"rigid_relocation_native_adapter_source_invalid:{contract_path}"
-                )
-            diagnostic_references[contract_path] = {
-                "contract_path": contract_path,
-                "uri": row.get("uri") or f"diagnostic-input://{source_alias}",
-                "digest": row.get("digest"),
-                "size_bytes": row.get("size_bytes"),
-                "materialized_path": row.get("path"),
-                "full_byte_service_account_readback_passed": row.get(
-                    "full_byte_readback_passed"
-                ),
-            }
-            document, binding = _source_document(
-                diagnostic_references,
-                contract_path=contract_path,
-                expected_reference=diagnostic_references[contract_path],
-            )
-            documents[contract_path] = document
-            bindings.append(binding)
+        documents, bindings = _diagnostic_source_documents(authority)
         template = documents[DEFINITION_CONTRACT_PATH]
         task = {
             "identity": template.get("task_identity"),
