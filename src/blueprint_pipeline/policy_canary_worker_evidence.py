@@ -1,6 +1,7 @@
 """Retain native policy failures, lossless media, and indexed telemetry."""
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -303,6 +304,28 @@ def _write_episode_json_artifact(
         "size_bytes": path.stat().st_size,
         "sha256": _sha256(path),
     }
+
+
+def _prepolicy_refusal_result(*, child, gate, output_root, cell_index, planned_cells, gate_filename):
+    """Retain a refused scene without inventing episodes or inventorying live logs."""
+    if child.get("episodes") != [] or child.get("candidate_policy_queried") is not False:
+        raise ValueError("policy_canary_prepolicy_refusal_execution_not_empty")
+    result = deepcopy(dict(child))
+    result.pop("selected_cell_index", None)
+    inventory = [{**row, "relative_path": f"cell_runs/{cell_index:02d}/" + row["relative_path"]}
+                 for row in child["artifact_inventory"]]
+    telemetry, parent_artifacts = _write_indexed_telemetry(output_root, [])
+    # Server logs remain open until bootstrap teardown. Only the verified
+    # child and newly sealed parent records belong in this evidence inventory.
+    inventory.extend(row for row in parent_artifacts if row["relative_path"] == gate_filename
+        or row["role"] in {"indexed_episode_telemetry", "telemetry_schema", "telemetry_index"})
+    result.update(status="blocked", episodes_per_policy=0,
+        planned_episodes_per_policy=planned_cells, learned_policy_rollout_count=0,
+        blockers=list(gate["blockers"]), diagnostic_continuation_gate=gate,
+        isolated_simulation_process_count=1, stopped_before_next_cell=True,
+        telemetry=telemetry, artifact_inventory=inventory, artifact_inventory_digest=_digest(inventory))
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
 
 
 def _write_indexed_telemetry(

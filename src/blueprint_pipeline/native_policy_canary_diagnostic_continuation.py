@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
@@ -320,6 +321,26 @@ def assess_diagnostic_first_cell(*, runtime_root: Path, child_root: Path) -> dic
             and child.get("task_success_contract") == inputs["task_success_contract"]
             and child.get("matrix_digest") == inputs["matrix_digest"], "child_identity_invalid")
         rows = child.get("episodes") or []
+        gate = child.get("preload_observation_gate")
+        if (child.get("episodes") == [] and child.get("candidate_policy_queried") is False
+                and child.get("policy_loads") == [] and isinstance(gate, Mapping)
+                and gate.get("policy_observation_integrity_passed") is False):
+            _require(gate.get("gate_digest") == canonical_digest(gate, digest_field="gate_digest")
+                and gate.get("candidate_policy_loaded") is False
+                and gate.get("candidate_policy_queried") is False, "prepolicy_gate_identity_invalid")
+            inventory = child.get("artifact_inventory")
+            _require(isinstance(inventory, list) and bool(inventory)
+                and child.get("artifact_inventory_digest") == canonical_digest({"value": inventory}), "child_inventory_invalid")
+            for artifact in inventory:
+                _verify_artifact(root, artifact)
+            # Keep typed reasons, never arbitrary exception text or private URLs.
+            reasons = [item for item in gate.get("blockers", [])
+                if isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9_.:+-]{1,256}", item)]
+            receipt.update(failure_stage="prepolicy_observation",
+                prepolicy_observation_gate_digest=gate["gate_digest"],
+                blockers=["diagnostic_continuation_prepolicy_observation_blocked", *reasons])
+            receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+            return receipt
         expected = {(candidate, cell["cell_id"], cell["seed"]) for candidate in inputs["candidate_ids"]}
         _require(len(rows) == 2 and {(row.get("candidate_id"), row.get("cell_id"), row.get("seed")) for row in rows} == expected,
             "paired_episode_identity_invalid")
