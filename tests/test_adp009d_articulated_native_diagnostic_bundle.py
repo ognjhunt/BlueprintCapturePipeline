@@ -154,6 +154,62 @@ def _request(asset: Path, *, scene_id: str = "840796") -> dict:
     return value
 
 
+def test_required_motion_bundle_binds_static_receipt_and_reads_hinges_and_slides(tmp_path: Path) -> None:
+    from blueprint_pipeline.articulated_required_motion_probe import required_motion_plan_from_static_receipt
+    asset = _asset(tmp_path / "asset.usda")
+    stage = Usd.Stage.Open(str(asset))
+    prim = UsdGeom.Xform.Define(stage, "/Asset/carriage").GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(prim)
+    slide = UsdPhysics.PrismaticJoint.Define(stage, "/Asset/joints/carriage_slide")
+    slide.CreateLowerLimitAttr(0.0)
+    slide.CreateUpperLimitAttr(0.4)
+    slide.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+    slide.CreateBody1Rel().SetTargets(["/Asset/carriage"])
+    stage.GetRootLayer().Save()
+    graph = {"joints": [
+        {"joint_id": name, "joint_type": kind, "limits": limits, "reset_position": 0.0, "reset_tolerance": 0.001}
+        for name, kind, limits in (
+            ("upper_door_hinge", "revolute", [0.0, 1.5707963267948966]),
+            ("lower_door_hinge", "revolute", [0.0, 1.5707963267948966]),
+            ("carriage_slide", "prismatic", [0.0, 0.4]))]}
+    static = {"schema_version": "task_evaluation_articulated_replacement_static_qualification.v1",
+        "status": "authored_structure_statically_qualified", "replacement_usd": {"sha256": _sha256(asset)},
+        "articulation_graph": graph, "source_constraints": {"required_motion_readback": {
+            "requirements_digest": "sha256:" + "a" * 64,
+            "motions": [{"motion_id": row["joint_id"], **{key: row[key] for key in ("joint_id", "joint_type", "limits")}}
+                        for row in graph["joints"]]}}}
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    static_path = tmp_path / "static.json"
+    static_path.write_text(json.dumps(static))
+    request = _request(asset)
+    request.pop("request_digest")
+    request["articulation"].update(locked_joint_prim_paths=[], expected_joint_count=3, expected_dof_count=3)
+    request["required_motion_probe"] = required_motion_plan_from_static_receipt(static)
+    request["required_motion_static_receipt_sha256"] = _sha256(static_path)
+    request = build_articulated_native_diagnostic_request(request)
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request))
+    harness = tmp_path / "harness.json"
+    harness.write_text("{}")
+    result = build_articulated_native_diagnostic_bundle(job_dir=tmp_path / "job", asset_path=asset,
+        request_path=request_path, harness_manifest_path=harness, implementation_commit=_implementation_commit(),
+        static_qualification_receipt_path=static_path)
+    assert result["exact_bundle_entrypoint_rehearsal"]["status"] == "passed"
+    with zipfile.ZipFile(result["bundle_path"]) as archive:
+        assert "provider_runtime/articulated_required_motion_probe.py" in archive.namelist()
+        assert "provider_runtime/articulated_static_qualification_receipt.v1.json" in archive.namelist()
+        extracted = tmp_path / "isolated_bundle"
+        archive.extractall(extracted)
+    subprocess.run([sys.executable, "-I", "-B", "-c",
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "import articulated_native_diagnostic_runtime as runtime; "
+        "assert runtime.execute_required_motion_probe.__module__ == 'articulated_required_motion_probe'",
+        str(extracted / "provider_runtime")], check=True, capture_output=True, text=True)
+    with pytest.raises(ArticulatedNativeDiagnosticError, match="required_motion_static_receipt_missing"):
+        build_articulated_native_diagnostic_bundle(job_dir=tmp_path / "refused", asset_path=asset,
+            request_path=request_path, harness_manifest_path=harness, implementation_commit=_implementation_commit())
+
+
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])
 def test_request_is_scene_neutral_and_allows_multiple_joints(
     tmp_path: Path, scene_id: str
@@ -898,9 +954,11 @@ def test_allocator_routes_articulated_diagnostic_without_canned_inputs(
 
     monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
 
-    assert allocator.main(_allocator_args(tmp_path)) == 0
+    arguments = [*_allocator_args(tmp_path), "--adp009d-articulated-diagnostic-static-receipt", str(tmp_path / "static.json")]
+    assert allocator.main(arguments) == 0
     assert "approved_can_path" not in observed["build"]
     assert observed["build"]["asset_path"] == str(tmp_path / "asset.usda")
+    assert observed["build"]["static_qualification_receipt_path"] == str(tmp_path / "static.json")
     admission = json.loads((tmp_path / "admission.json").read_text())
     binding = admission["allocation_binding"]
     assert binding["articulated_native_diagnostic_requested"] is True

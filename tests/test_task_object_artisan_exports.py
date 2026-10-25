@@ -1,7 +1,9 @@
 """Real USD bytes exercise ADP-009 adapter contracts, not a live ARTISAN run."""
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
@@ -175,6 +177,39 @@ def test_fixed_door_handle_has_assembly_mass_and_grasp_point_in_door_frame(tmp_p
     assert result["mass_group_readback"]["door"]["mass_kg"] == pytest.approx(2.3)
     assert set(result["mass_group_readback"]["door"]["link_ids"]) == {"door", "handle_component"}
     assert result["handle_grasp_point_link_m"] == pytest.approx([.46, 0, .7])
+    # The native consumer must accept the same fixed handle assembly as the
+    # static exporter, including a separate rigid body for the grasp feature.
+    from blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver import _articulated_structure_observation, _IMPORTED_ROOT
+    receipt = {"backend": "artisan_v1", "articulation_graph": result["articulation_graph"],
+        "observed_structure": {**result, "joint_prim_paths": list(result["joint_prim_paths"].values())},
+        "task_joint": result["task_joint"], "task_contact": {"handle_prim_paths": result["handle_prim_paths"]}}
+    imported = Usd.Stage.CreateInMemory()
+    imported.DefinePrim(_IMPORTED_ROOT, "Xform").GetReferences().AddReference(str(final), "/Asset")
+    readback = _articulated_structure_observation(stage=imported, usd_physics=UsdPhysics, static_receipt=receipt)
+    assert set(readback["link_physics_readback"]) == {"body", "door", "handle_component"}
+    assert readback["handle_prim_paths"] == [_IMPORTED_ROOT + p[len("/Asset"):] for p in result["handle_prim_paths"]]
+    # Exercise the controller's real sealed-capsule preflight too: this exact
+    # readback must happen before renting the native host, not first on a GPU.
+    from blueprint_pipeline.task_evaluation_scene_configuration_native_continuation import preflight_native_prefix_composition
+    receipt["asset_kind"] = "articulated_assembly"
+    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+    capsule = tmp_path / "completed-prefix.zip"
+    blobs = [("statically_qualified_replacement_asset", "replacement.usdz", final.read_bytes()),
+             ("static_qualification_receipt", "static.json", json.dumps(receipt).encode())]
+    records = [{"role": role, "path": "/retained/stages/stage-4/adapter/" + name,
+                "digest": "sha256:" + hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+               for role, name, data in blobs]
+    with zipfile.ZipFile(capsule, "w") as archive:
+        archive.writestr("stages/stage-4/completed_stage_checkpoint.json", json.dumps({"stage_result": {"output_artifacts": records}}))
+        for role, name, data in blobs:
+            archive.writestr("stages/stage-4/adapter/" + name, data)
+    replay = preflight_native_prefix_composition(capsule, {"output_root": "/retained", "transport_digest": "sha256:" + "a" * 64})
+    assert replay["status"] == "passed" and replay["link_count"] == 3
+    assert replay["physics_executed"] is False
+    wrong = deepcopy(receipt)
+    wrong["task_contact"]["handle_prim_paths"] = result["links"]["body"]["collision_prim_paths"][:1]
+    with pytest.raises(RuntimeError, match="handle_mismatch"):
+        _articulated_structure_observation(stage=imported, usd_physics=UsdPhysics, static_receipt=wrong)
     changed = deepcopy(request)
     changed["configuration"]["required_output"]["task_part_mass_kg_bounds"] = [1.9, 2.1]
     with pytest.raises(AuthoringContractError, match="artisan_mass_outside_admitted_bounds"):

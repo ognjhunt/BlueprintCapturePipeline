@@ -20,6 +20,9 @@ from typing import Any, Mapping, Sequence
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .provider_bundle_rehearsal import rehearse_provider_bundle_entrypoint
+from .articulated_required_motion_probe import (
+    required_motion_plan_from_static_receipt, validate_required_motion_probe_plan,
+)
 
 
 REQUEST_SCHEMA = "articulated_native_diagnostic_request.v1"
@@ -103,6 +106,13 @@ def build_articulated_native_diagnostic_request(
         errors.append("articulated_native_request_program_invalid")
     if request.get("learned_policy_outcomes_observed") is not False:
         errors.append("articulated_native_request_policy_outcome_leakage")
+    if request.get("required_motion_probe") is not None:
+        try:
+            validate_required_motion_probe_plan(request["required_motion_probe"])
+        except (ValueError, KeyError, TypeError):
+            errors.append("articulated_native_request_required_motion_probe_invalid")
+        if not _is_sha256(request.get("required_motion_static_receipt_sha256")):
+            errors.append("articulated_native_request_required_motion_static_receipt_invalid")
     asset = request.get("asset")
     if not isinstance(asset, Mapping) or not _is_sha256(asset.get("sha256")):
         errors.append("articulated_native_request_asset_invalid")
@@ -279,6 +289,18 @@ def _inspect_bound_asset(asset_path: Path, request: Mapping[str, Any]) -> dict[s
         prim = stage.GetPrimAtPath(path)
         if not prim.IsValid() or not prim.IsA(UsdPhysics.RevoluteJoint):
             errors.append(f"articulated_native_locked_revolute_joint_missing:{path}")
+    for motion in (request.get("required_motion_probe") or {}).get("motions", []):
+        matches = [prim for prim in movable if prim.GetName() == motion["joint_id"]]
+        joint_type = UsdPhysics.RevoluteJoint if motion["joint_type"] == "revolute" else UsdPhysics.PrismaticJoint
+        if len(matches) != 1 or not matches[0].IsA(joint_type):
+            errors.append("articulated_native_required_motion_joint_missing:" + motion["joint_id"])
+            continue
+        joint = joint_type(matches[0])
+        limits = [float(joint.GetLowerLimitAttr().Get()), float(joint.GetUpperLimitAttr().Get())]
+        if motion["joint_type"] == "revolute":
+            limits = list(map(math.radians, limits))
+        if any(not math.isclose(a, b, abs_tol=1e-6) for a, b in zip(limits, motion["limits"], strict=True)):
+            errors.append("articulated_native_required_motion_limits_changed:" + motion["joint_id"])
     render_material_paths: list[str] = []
     for path in request["render_appearance"]["required_material_paths"]:
         material = UsdShade.Material(stage.GetPrimAtPath(path))
@@ -320,6 +342,14 @@ RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 mkdir -p "$OUT_DIR"
 if [ "${BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL:-0}" = "1" ]; then
+  if [ ! -s "$RUNTIME_DIR/articulated_required_motion_probe.py" ]; then
+    echo "missing required-motion runtime" >&2
+    exit 2
+  fi
+  if [ "__HAS_REQUIRED_MOTIONS__" = "1" ] && [ ! -s "$RUNTIME_DIR/articulated_static_qualification_receipt.v1.json" ]; then
+    echo "missing required-motion static receipt" >&2
+    exit 2
+  fi
   for required in \
     "$RUNTIME_DIR/assets/__ASSET_FILENAME__" \
     "$RUNTIME_DIR/articulated_native_diagnostic_request.v1.json" \
@@ -396,6 +426,7 @@ def build_articulated_native_diagnostic_bundle(
     harness_manifest_path: str | Path,
     implementation_commit: str,
     generated_at: str | None = None,
+    static_qualification_receipt_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Bind exact bytes into the canonical ADP-009D paid transport shape."""
 
@@ -439,6 +470,20 @@ def build_articulated_native_diagnostic_bundle(
         raise ArticulatedNativeDiagnosticError(
             ["articulated_native_asset_digest_mismatch"]
         )
+    static_receipt = None
+    if request.get("required_motion_probe") is not None:
+        if static_qualification_receipt_path is None:
+            raise ArticulatedNativeDiagnosticError(["articulated_native_required_motion_static_receipt_missing"])
+        static_receipt = Path(static_qualification_receipt_path).expanduser()
+        if static_receipt.is_symlink() or not static_receipt.is_file():
+            raise ArticulatedNativeDiagnosticError(["articulated_native_required_motion_static_receipt_invalid"])
+        qualification = json.loads(static_receipt.read_text())
+        if (request["required_motion_static_receipt_sha256"] != _sha256(static_receipt)
+                or qualification.get("result_digest") != canonical_digest(qualification, digest_field="result_digest")
+                or qualification.get("status") != "authored_structure_statically_qualified"
+                or qualification.get("replacement_usd", {}).get("sha256") != request["asset"]["sha256"]
+                or required_motion_plan_from_static_receipt(qualification) != request["required_motion_probe"]):
+            raise ArticulatedNativeDiagnosticError(["articulated_native_required_motion_static_binding_changed"])
     inventory = _inspect_bound_asset(asset, request)
 
     job = Path(job_dir).expanduser().resolve()
@@ -457,8 +502,12 @@ def build_articulated_native_diagnostic_bundle(
         runtime / "articulated_native_diagnostic_runtime.py",
     )
     shutil.copy2(harness, runtime / "adp009d_franka_eval_harness_manifest.v1.json")
+    shutil.copy2(source_root / "articulated_required_motion_probe.py", runtime / "articulated_required_motion_probe.py")
+    if static_receipt is not None:
+        shutil.copy2(static_receipt, runtime / "articulated_static_qualification_receipt.v1.json")
     _write_executable(runtime / "run_adp_arena_provider_runtime.sh",
-                      ENTRYPOINT.replace("__ASSET_FILENAME__", asset_filename))
+                      ENTRYPOINT.replace("__ASSET_FILENAME__", asset_filename).replace(
+                          "__HAS_REQUIRED_MOTIONS__", "1" if static_receipt is not None else "0"))
     generated = generated_at or utc_now_iso()
     manifest: dict[str, Any] = {
         "schema_version": BUNDLE_SCHEMA,

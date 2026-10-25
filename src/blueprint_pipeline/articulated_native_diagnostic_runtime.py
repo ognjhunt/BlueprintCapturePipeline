@@ -12,6 +12,15 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+try:
+    from .articulated_required_motion_probe import (
+        execute_required_motion_probe, required_motion_plan_from_static_receipt,
+    )
+except ImportError:  # standalone sealed provider bundle
+    from articulated_required_motion_probe import (
+        execute_required_motion_probe, required_motion_plan_from_static_receipt,
+    )
+
 
 _RUNTIME_SYMBOLS = {
     "carb": ("carb", None),
@@ -225,6 +234,52 @@ def _author_fixed_base_anchor(
     return anchor_path
 
 
+def _configure_required_motion_drives(stage: Any, plan: Any, usd_physics: Any, runtime: Any) -> None:
+    """Temporary diagnostic controllers; preserve the admitted asset bytes."""
+    for motion in plan["motions"]:
+        matches = [prim for prim in stage.Traverse()
+                   if prim.IsA(usd_physics.Joint) and prim.GetName() == motion["joint_id"]]
+        if len(matches) != 1:
+            raise RuntimeError("articulated_native_required_motion_joint_unresolved:" + motion["joint_id"])
+        angular = motion["joint_type"] == "revolute"
+        drive = usd_physics.DriveAPI.Apply(matches[0], "angular" if angular else "linear")
+        drive.CreateTypeAttr("force")
+        drive.CreateStiffnessAttr(float(runtime["drive_stiffness"]))
+        drive.CreateDampingAttr(float(runtime["drive_damping"]))
+        drive.CreateMaxForceAttr(float(runtime["drive_max_force"]))
+        reset = float(motion["reset_position"])
+        drive.CreateTargetPositionAttr(math.degrees(reset) if angular else reset)
+        drive.CreateTargetVelocityAttr(0.0)
+
+
+def _execute_native_required_motions(
+    plan: Any, *, articulation: Any, action_type: Any, simulation: Any,
+    settle_steps: int, locked_names: Any = (), capture: Any = None,
+) -> dict[str, Any]:
+    import numpy as np
+
+    names = [str(name) for name in (articulation.dof_names or [])]
+    required = [row["joint_id"] for row in plan["motions"]]
+    if any(names.count(name) != 1 for name in required):
+        raise RuntimeError("articulated_native_required_motion_dof_unresolved")
+    controlled = [*required, *(name for name in locked_names if name not in required)]
+    indices = np.asarray([names.index(name) for name in controlled], dtype=np.int64)
+
+    def command(positions):
+        _ramp_joint_targets(
+            articulation, action_type,
+            np.asarray([positions.get(name, 0.0) for name in controlled], dtype=np.float32),
+            indices, simulation=simulation, steps=settle_steps, dof_count=len(names))
+        for _ in range(settle_steps):
+            simulation.step(render=False)
+
+    def read_state():
+        positions, velocities = _joint_state(articulation, count=len(names), phase="required_motion_probe")
+        return {name: [float(positions[names.index(name)]), float(velocities[names.index(name)])] for name in required}
+
+    return execute_required_motion_probe(plan, command=command, read_state=read_state, capture=capture)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset", required=True)
@@ -246,6 +301,13 @@ def main(argv: list[str] | None = None) -> int:
     app = None
     try:
         request = json.loads(request_path.read_text(encoding="utf-8"))
+        required_plan = request.get("required_motion_probe")
+        if required_plan is not None:
+            static_path = request_path.parent / "articulated_static_qualification_receipt.v1.json"
+            if (_sha256(static_path) != request["required_motion_static_receipt_sha256"]
+                    or _sha256(asset) != request["asset"]["sha256"]
+                    or required_motion_plan_from_static_receipt(json.loads(static_path.read_text())) != required_plan):
+                raise RuntimeError("articulated_native_required_motion_static_binding_changed")
         try:
             from isaacsim import SimulationApp
         except ImportError:
@@ -365,6 +427,8 @@ def main(argv: list[str] | None = None) -> int:
             drive.CreateMaxForceAttr(float(runtime["drive_max_force"]))
             drive.CreateTargetPositionAttr(0.0)
             drive.CreateTargetVelocityAttr(0.0)
+        if required_plan is not None:
+            _configure_required_motion_drives(stage, required_plan, UsdPhysics, runtime)
         scene = UsdPhysics.Scene.Define(stage, "/PhysicsScene")
         scene.CreateGravityDirectionAttr((0.0, 0.0, -1.0))
         scene.CreateGravityMagnitudeAttr(9.81)
@@ -404,6 +468,8 @@ def main(argv: list[str] | None = None) -> int:
             Path(articulation_spec["driven_joint_prim_path"]).name,
             *(Path(path).name for path in articulation_spec["locked_joint_prim_paths"]),
         }
+        if required_plan is not None:
+            expected_names.update(row["joint_id"] for row in required_plan["motions"])
         if not expected_names.issubset(handles):
             raise RuntimeError(
                 "articulated_native_dof_name_mismatch:"
@@ -537,6 +603,31 @@ def main(argv: list[str] | None = None) -> int:
         )
         reset_readback = math.degrees(float(reset_positions[driven_handle]))
         reset_velocity = float(reset_velocities[driven_handle])
+        required_result = None
+        if required_plan is not None:
+            def capture_motion(phase_id, phase_row):
+                for camera_id, camera in sorted(camera_objects.items()):
+                    simulation.step(render=True)
+                    _joint_state(articulation, count=dof_count, phase="required_motion_render")
+                    rgba = np.asarray(camera.get_rgba())
+                    if rgba.ndim != 3 or rgba.shape[:2] != (height, width):
+                        raise RuntimeError("articulated_native_required_motion_frame_shape_invalid")
+                    rgb = np.asarray(rgba[:, :, :3], dtype=np.uint8)
+                    variance = float(rgb.std())
+                    if variance < float(appearance_spec["minimum_pixel_stddev"]):
+                        raise RuntimeError("articulated_native_required_motion_frame_blank")
+                    frame_path = frames_root / f"{camera_id}_{phase_id}.png"
+                    Image.fromarray(rgb).save(frame_path, format="PNG", optimize=False)
+                    frame_rows.append({"camera_id": camera_id, "required_motion_phase_id": phase_id,
+                        "commanded_joint_positions": phase_row["commanded_positions"],
+                        "relative_path": frame_path.relative_to(output.parent).as_posix(),
+                        "sha256": _sha256(frame_path), "width": width, "height": height, "pixel_stddev": variance})
+
+            required_result = _execute_native_required_motions(
+                required_plan, articulation=articulation, action_type=ArticulationAction,
+                simulation=simulation, settle_steps=settle_steps, locked_names=locked_names,
+                capture=capture_motion)
+            result["required_motion_probe"] = required_result
         final_fixed_pose = _usd_world_pose(
             stage, articulation_spec["fixed_base_body_prim_path"], UsdGeom
         )
@@ -545,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
             initial_fixed_pose, final_fixed_pose
         )
         errors = []
+        if required_result is not None and required_result["status"] != "passed":
+            errors.append("articulated_native_required_motion_probe_failed")
         if any(
             row["absolute_error_degrees"]
             > float(runtime["joint_readback_tolerance_degrees"])

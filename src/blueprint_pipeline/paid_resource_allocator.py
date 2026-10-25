@@ -243,6 +243,7 @@ from .adp009d_policy_runtime_smoke_bundle import build_policy_runtime_smoke_bund
 from .articulated_native_diagnostic_bundle import (
     build_articulated_native_diagnostic_bundle,
 )
+from . import task_evaluation_scene_configuration_native_continuation as native_continuation
 from .adp009d_physics_backend_comparison import (
     build_backend_profile,
     validate_newton_canary_admission,
@@ -1853,6 +1854,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
+    native_continuation.add_allocator_arguments(gpu)
     gpu.add_argument(
         "--adp009d-articulated-diagnostic-asset",
         help=(
@@ -1864,6 +1866,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument(
         "--adp009d-articulated-diagnostic-request",
         help="Frozen articulated_native_diagnostic_request.v1 JSON.",
+    )
+    gpu.add_argument(
+        "--adp009d-articulated-diagnostic-static-receipt",
+        help="Exact static qualification receipt required by an all-motion diagnostic request.",
     )
     gpu.add_argument(
         "--adp009d-physics-backend",
@@ -5736,23 +5742,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == ADP009D_NATIVE_MICROCHECK_PROBE_KIND:
+            native_continuation_requested = bool(args.adp009d_native_continuation_inputs)
             policy_runtime_smoke_requested = bool(
                 args.adp009d_policy_runtime_smoke
             )
             articulated_native_requested = bool(
                 args.adp009d_articulated_diagnostic_asset
                 or args.adp009d_articulated_diagnostic_request
+                or args.adp009d_articulated_diagnostic_static_receipt
             )
             missing = [
                 name
                 for name in (
                     ("adp_job_dir",)
-                    if policy_runtime_smoke_requested
+                    if policy_runtime_smoke_requested or native_continuation_requested
                     else ("adp009d_harness_manifest", "adp_job_dir")
                 )
                 if not getattr(args, name, None)
             ]
-            if policy_runtime_smoke_requested:
+            if native_continuation_requested:
+                pass
+            elif policy_runtime_smoke_requested:
                 pass
             elif articulated_native_requested:
                 missing.extend(
@@ -5791,6 +5801,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     bool(args.adp009d_diagnostic_only),
                 )
             )
+            if native_continuation_requested and native_continuation.allocator_mode_conflict(args):
+                blockers.append("adp009d_native_continuation_mode_conflict")
             if execution_modes == 0:
                 blockers.append("adp009d_execution_mode_missing")
             elif args.adp009d_diagnostic_only and execution_modes != 1:
@@ -5901,7 +5913,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared_bundle = None
             if not blockers:
                 try:
-                    if policy_runtime_smoke_requested:
+                    if native_continuation_requested:
+                        prepared_bundle = native_continuation.build_native_continuation_bundle(
+                            job_dir=Path(args.adp_job_dir) / "bundle",
+                            inputs_path=args.adp009d_native_continuation_inputs,
+                            implementation_commit=control_identity["orchestrator_source_commit"],
+                        )
+                    elif policy_runtime_smoke_requested:
                         prepared_bundle = build_policy_runtime_smoke_bundle(
                             job_dir=Path(args.adp_job_dir) / "bundle",
                             candidate_id=next(iter(selected_candidates)),
@@ -5916,6 +5934,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             request_path=args.adp009d_articulated_diagnostic_request,
                             harness_manifest_path=args.adp009d_harness_manifest,
                             implementation_commit=control_identity["orchestrator_source_commit"],
+                            static_qualification_receipt_path=args.adp009d_articulated_diagnostic_static_receipt,
                         )
                     else:
                         prepared_bundle = build_native_microcheck_bundle(
@@ -5957,6 +5976,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "controls_requested": bool(args.adp009d_controls),
                 "diagnostic_only_requested": bool(args.adp009d_diagnostic_only),
                 "articulated_native_diagnostic_requested": articulated_native_requested,
+                "native_continuation_requested": native_continuation_requested,
                 "diagnostic_kind": (
                     prepared_bundle.get("diagnostic_kind") if prepared_bundle else None
                 ),
@@ -6014,7 +6034,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                     "retry_cap": 0,
                     "authority": "user_authorized_bounded_gpu_compute_in_goal_scope",
-                    "private_data_uploaded": False,
+                    "private_data_uploaded": native_continuation_requested,
                     "candidate_policy_queried": policy_runtime_smoke_requested,
                     "physical_outcome_values_uploaded": False,
                     "explicit_concurrent_gpu_authority_bound": bool(
