@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import multiprocessing
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -376,6 +377,29 @@ def _rotated_bounds(
     return world.min(axis=0), world.max(axis=0)
 
 
+def _support_triangles_within_height_tolerance(
+    *, index: RobotPlacementGeometryIndex, surface: SupportSurface,
+    root_height_m: float, tolerance_m: float,
+) -> np.ndarray:
+    """Include neighboring height bins within the declared support tolerance.
+
+    Height bins discover candidate planes; they are not separate physical
+    surfaces. Every included vertex must still lie inside the allowed height
+    band, and support stays on the declared source mesh.
+    """
+
+    eligible = np.flatnonzero(
+        (index.triangle_normal_abs_z >= 0.95)
+        & (index.triangle_minimum[:, 2] >= root_height_m - tolerance_m)
+        & (index.triangle_maximum[:, 2] <= root_height_m + tolerance_m)
+    )
+    same_mesh = np.fromiter(
+        (index.triangle_prim_paths[int(i)] == surface.prim_path for i in eligible),
+        dtype=bool, count=len(eligible),
+    )
+    return index.triangles[eligible[same_mesh]]
+
+
 def _overlapping_scene_triangle_indices(
     *,
     scene_minimum: np.ndarray,
@@ -441,7 +465,7 @@ def _candidate_support_and_reach_can_pass(
     proposal: Mapping[str, Any],
     target: np.ndarray,
     robot_id: str,
-    support_triangles: dict[str, np.ndarray],
+    support_triangles: dict[tuple[str, float], np.ndarray],
 ) -> bool:
     """Reject necessary support/reach failures before detailed collision work."""
 
@@ -469,11 +493,12 @@ def _candidate_support_and_reach_can_pass(
     samples = np.asarray(
         [[0.0, 0.0], [-half_x, -half_y], [-half_x, half_y], [half_x, -half_y], [half_x, half_y]]
     ) @ rotation.T + position[:2]
-    if surface_id not in support_triangles:
-        support_triangles[surface_id] = index.triangles[
-            np.asarray(surface.triangle_indices, dtype=np.int64)
-        ]
-    return _supported_sample_count(samples, support_triangles[surface_id]) == len(samples)
+    key = (surface_id, float(position[2]))
+    if key not in support_triangles:
+        support_triangles[key] = _support_triangles_within_height_tolerance(
+            index=index, surface=surface, root_height_m=float(position[2]), tolerance_m=0.02,
+        )
+    return _supported_sample_count(samples, support_triangles[key]) == len(samples)
 
 
 def validate_robot_placement_geometry_candidate(
@@ -523,7 +548,10 @@ def validate_robot_placement_geometry_candidate(
     if surface is None:
         blockers.append("declared_support_surface_missing")
     else:
-        selected = index.triangles[np.asarray(surface.triangle_indices, dtype=np.int64)]
+        selected = _support_triangles_within_height_tolerance(
+            index=index, surface=surface, root_height_m=float(position[2]),
+            tolerance_m=support_height_tolerance_m,
+        )
         support_height_error_m = abs(float(position[2]) - surface.height_m)
         supported_count = _supported_sample_count(samples, selected)
         if support_height_error_m > support_height_tolerance_m:
@@ -697,7 +725,7 @@ def _geometry_gate_chunk_worker(
     ],
 ) -> list[dict[str, Any]]:
     index, proposals, target, robot_id, prefilter = work
-    support_triangles: dict[str, np.ndarray] = {}
+    support_triangles: dict[tuple[str, float], np.ndarray] = {}
     target_array = np.asarray(target, dtype=np.float64)
     result = []
     for proposal in proposals:
@@ -928,6 +956,7 @@ def enumerate_robot_placement_geometry_candidates(
     trajectory_orientations_world_xyzw: Sequence[Sequence[float]] = (),
     geometry_worker_count: int = 1,
     trajectory_worker_count: int = 1,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Return ranked, deterministic, geometry-passing candidates for agent context."""
 
@@ -1060,6 +1089,19 @@ def enumerate_robot_placement_geometry_candidates(
         )
         candidates.append((score, proposal, gate))
     candidates.sort(key=lambda item: item[0])
+    if diagnostics is not None:
+        diagnostics.update({
+            "proposal_count": len(geometry_work),
+            "support_or_reach_prefilter_rejected_count": sum(len(gate) == 1 for gate in geometry_gates),
+            "detailed_geometry_tested_count": sum(len(gate) > 1 for gate in geometry_gates),
+            "detailed_geometry_blocker_counts": dict(Counter(
+                blocker for gate in geometry_gates for blocker in gate.get("blockers", [])
+            )),
+            "geometry_passing_count": len(prequalified),
+            "trajectory_waypoint_count": len(trajectory_waypoints_world_m),
+            "trajectory_rejected_count": sum(gate["status"] == "rejected" for gate in trajectory_gates),
+            "candidate_count": min(len(candidates), int(maximum_candidates)),
+        })
     return [
         {
             **proposal,
