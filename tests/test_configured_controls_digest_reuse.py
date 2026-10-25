@@ -1,5 +1,7 @@
 """ADP-030: retained robot bytes are hashed once per CPU operation, not per ancestor."""
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +10,7 @@ from blueprint_pipeline import task_evaluation_configured_controls_progression_w
 from blueprint_pipeline import task_evaluation_retained_controls_evidence as retained
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import validation_file_digests as digests
+from tests.test_task_evaluation_retained_model_compatibility import _json, _lineage
 from tests.test_task_evaluation_scene_intake import stage, attempt
 
 
@@ -77,3 +80,42 @@ def test_result_reuses_only_its_exact_just_validated_parent(monkeypatch, case):
     with pytest.raises(validation.TaskEvaluationConfiguredControlsAutostartError, match=reason):
         validation._validate_result(result, **kwargs)
     assert len(calls) == (1 if case == 'standalone' else 0)
+
+
+def test_status_walks_each_retained_adoption_once_per_read(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_configured_controls_autostart_validation as validation
+    owner, cancellation = _lineage(tmp_path / "history", "gpt-6-sol")
+    root = tmp_path / "intents"
+    intent = stage(root)
+    attempt(root, intent, "first")
+    attempt(root, intent, "second")
+    walked = []
+    validate_intent = validation.validate_configured_controls_autostart_intent
+    monkeypatch.setattr(validation, "validate_configured_controls_autostart_intent",
+                        lambda value: walked.append(value["intent_digest"]) or validate_intent(value))
+    monkeypatch.setattr(retained, "validated_cancellation", lambda directory, row: (
+        retained.validate_placement_cancellation(receipt=cancellation, attempt=owner) or cancellation))
+    for _ in range(2):
+        result = intake.scene_intent_status(queue_root=root, intent_id=intent["intent_id"], now=102)
+        assert [row["status"] for row in result["attempts"]] == ["cancelled_before_execution"] * 2
+    # Three release generations: walked once per status read, not once per cancelled
+    # attempt (12 walks before), and never reused across reads.
+    assert len(walked) == 6 and len(set(walked)) == 3
+
+
+def test_reused_adoption_rechecks_owner_seal_and_reopened_bytes(tmp_path):
+    owner, cancellation = _lineage(tmp_path / "history", "gpt-6-sol")
+    adoption = cancellation["completed_placement_adoption"]
+    with digests.file_digest_scope():
+        verdict = retained.validate_placement_adoption(adoption, expected_owner_digest=owner["intent_digest"])
+        verdict["intent"]["changed_by_caller"] = True
+        assert "changed_by_caller" not in retained.validate_placement_adoption(adoption)["intent"]
+        with pytest.raises(ValueError, match="completed_placement_adoption_owner_mismatch"):
+            retained.validate_placement_adoption(adoption, expected_owner_digest="sha256:" + "b" * 64)
+        forged = {**adoption, "source_launch_id": "forged"}  # still claims the reused seal
+        with pytest.raises(ValueError, match="completed_placement_adoption_invalid"):
+            retained.validate_placement_adoption(forged)
+        result_path = Path(adoption["source_result"]["path"])
+        _json(result_path, {**json.loads(result_path.read_text()), "rewritten": True})
+        with pytest.raises(ValueError, match="completed_placement_adoption_reference_changed"):
+            retained.validate_placement_adoption(adoption)

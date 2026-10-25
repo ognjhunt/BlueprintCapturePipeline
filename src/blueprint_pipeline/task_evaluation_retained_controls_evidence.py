@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .control_plane_retained_receipt import read_receipt_bytes
+from .validation_file_digests import scoped_measurement
 
 UNSTARTED_SCHEMA = "task_evaluation_unstarted_controls_cancellation.v1"
 DIRECTORY = "cancelled-unstarted-controls"
@@ -132,7 +133,47 @@ def _validate_same_task_trajectory_lineage(
     )
 
 
+_PINNED_REFERENCES = ("source_intent", "source_result", "source_plan", "source_agent_checkpoint")
+
+
+def _reopened_references(value: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """Current bytes behind a sealed adoption's references; None leaves the defect to validation."""
+    try:
+        return tuple(
+            "sha256:" + hashlib.sha256(read_receipt_bytes(Path(value[name]["path"]))).hexdigest()
+            for name in _PINNED_REFERENCES
+        )
+    except (KeyError, TypeError, ValueError, OSError):
+        return None
+
+
 def validate_placement_adoption(
+    value: Mapping[str, Any], *, expected_owner_digest: str | None = None
+) -> dict[str, Any]:
+    """Validate a retained adoption once per synchronous operation.
+
+    A status read meets the same release lineage from every cancelled attempt, and each
+    generation's intent nests its parent's adoption. Walking the lineage again per
+    descendant made one retained scene's status read cost 45 s of CPU on production
+    (2026-10-25), beyond the Website's 15 s request timeout. The verdict is keyed by the
+    recomputed seal and the reopened bytes of every file it pins; nothing survives the
+    operation, and the owner binding is checked on every call.
+    """
+    pinned = _reopened_references(value)
+    if pinned is None or value.get("adoption_digest") != canonical_digest(value, digest_field="adoption_digest"):
+        return _validate_placement_adoption(value, expected_owner_digest=expected_owner_digest)
+    source = scoped_measurement(
+        ("completed_placement_adoption", value["adoption_digest"], pinned),
+        lambda: _validate_placement_adoption(value),
+    )
+    _placement_require(
+        expected_owner_digest is None or source["owner"]["intent_digest"] == expected_owner_digest,
+        "owner_mismatch",
+    )
+    return source
+
+
+def _validate_placement_adoption(
     value: Mapping[str, Any], *, expected_owner_digest: str | None = None
 ) -> dict[str, Any]:
     from . import task_evaluation_configured_controls_autostart_validation as auto
