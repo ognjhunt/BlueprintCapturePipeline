@@ -172,6 +172,21 @@ def materialize_native_task_arena_appearance_variant_request(
     # digest/schema validation on the source request, but require the fully
     # qualified receipt on the derived request before it can leave this call.
     request = _clone_request(base, require_particlefield_quality=False)
+    website = None
+    if appearance.get("schema_version") == "website_native_appearance.v1":
+        website, appearance = appearance, appearance.get("authoring") or {}
+        artifact, binding = website.get("artifact") or {}, website.get("binding") or {}
+        source = (website.get("decoder") or {}).get("output_digest") or binding.get("source_digest")
+        if (website.get("digest") != canonical_digest(website, digest_field="digest")
+                or website.get("status") != "native_appearance_authored"
+                or website.get("claim_ceiling") != "development_only"
+                or website.get("renderer_qualified") is not False
+                or website.get("source_bytes_unchanged") is not True
+                or artifact.get("digest") != appearance.get("output_sha256")
+                or artifact.get("size_bytes") != appearance.get("output_bytes")
+                or source != appearance.get("source_sha256")
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", str(binding.get("writer_digest") or "")) is None):
+            raise NativeTaskArenaPacketError(["native_task_arena_website_appearance_receipt_invalid"])
     sh_degree = appearance.get("sh_degree")
     sh_element_size = (
         (sh_degree + 1) ** 2
@@ -223,6 +238,10 @@ def materialize_native_task_arena_appearance_variant_request(
         and appearance.get("particlefield_emissive_material_inputs")
         in ACCEPTED_PARTICLEFIELD_EMISSIVE_MATERIAL_INPUTS
     )
+    blueprint_private = (website is not None
+        and appearance.get("source_kind") == "standard_3dgs_ply"
+        and appearance.get("particlefield_emissive_material_binding_authored") is False
+        and appearance.get("particlefield_custom_render_hints_authored") is False)
     if (
         appearance.get("schema_version")
         not in {
@@ -236,7 +255,7 @@ def materialize_native_task_arena_appearance_variant_request(
         != expected_sh_interpolation
         or appearance.get("display_color_fallback_authored")
         is not (False if direct_3dgrut else True)
-        or not (official_upstream or direct_3dgrut or legacy_material)
+        or not (official_upstream or direct_3dgrut or legacy_material or blueprint_private)
         or not gaussian_quality_is_qualified(appearance.get("gaussian_field_quality"))
         or appearance.get("receipt_digest")
         != canonical_digest(appearance, digest_field="receipt_digest")
@@ -305,6 +324,12 @@ def materialize_native_task_arena_appearance_variant_request(
         "upstream_color_space": appearance.get("upstream_color_space"),
         "gaussian_field_quality": appearance["gaussian_field_quality"],
     }
+    if blueprint_private:
+        request["appearance_variant"].update(
+            particlefield_authoring_implementation="blueprint_pipeline.particlefield_usd.write_particlefield_usd",
+            upstream_converter={"version": website["binding"]["writer_digest"]},
+            website_native_appearance_digest=website["digest"],
+            renderer_qualified=False, claim_ceiling="development_only")
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     write_json(Path(output_path), request)
     return request
