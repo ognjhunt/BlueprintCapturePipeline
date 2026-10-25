@@ -131,6 +131,86 @@ def _case(tmp_path: Path, *, opening_fraction: float = OPENING_FRACTION, assembl
             "references": references, "documents": documents, "static": static}
 
 
+def _diagnostic_case_authority(case, tmp_path):
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import DIAGNOSTIC_SOURCE_ALIASES
+    provider = {
+        "schema_version": "task_evaluation_scene_configuration_diagnostic_provider_result.v1",
+        "status": "completed_diagnostic_only_not_qualification_eligible",
+        "diagnostic_only": True, "qualification_eligible": False,
+        "executed_inside_one_parent_provider_run": False,
+        "configured_revision_publication_permitted": False, "result_digest": "",
+    }
+    provider["result_digest"] = canonical_digest(provider, digest_field="result_digest")
+    path = tmp_path / "diagnostic-provider-result.json"
+    path.write_text(json.dumps(provider) + "\n")
+    rows = [{"contract_path": alias, "path": row["materialized_path"],
+             "uri": row["uri"], "digest": row["digest"], "size_bytes": row["size_bytes"],
+             "full_byte_readback_passed": True}
+            for contract, alias in DIAGNOSTIC_SOURCE_ALIASES.items()
+            for row in [case["references"][contract]]]
+    rows.append({"contract_path": "diagnostic_output.task_evaluation_scene_configuration_provider_result.v1.json",
+                 "path": str(path), "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                 "size_bytes": path.stat().st_size, "full_byte_readback_passed": True})
+    authority = {
+        "schema_version": "task_evaluation_configured_scene_diagnostic_controls_input.v1",
+        "status": "materialized", "source_configuration_run_id": "unit-fixture-run",
+        "source_provider_output_digest": provider["result_digest"],
+        "materialized_inputs": rows,
+        "claim_ceiling": "development_only_downstream_construction_and_controls_diagnostic",
+        "qualification_eligible": False, "configured_revision_publication_permitted": False,
+        "evaluation_ready_promotion_permitted": False, "receipt_digest": "",
+    }
+    authority["receipt_digest"] = canonical_digest(authority, digest_field="receipt_digest")
+    return authority
+
+
+def test_diagnostic_articulated_adapter_preserves_task_and_joints_without_publishing(tmp_path):
+    case = _case(tmp_path)
+    authority = _diagnostic_case_authority(case, tmp_path)
+    diagnostic = adapt_articulated_open_close_task_template(materialized_references={}, diagnostic_controls_input=authority)
+    configured = adapt_articulated_open_close_task_template(configured_revision=case["configured"], materialized_references=case["references"])
+    assert diagnostic["native_task_definition"] == configured["native_task_definition"]
+    assert diagnostic["native_success_criteria"] == configured["native_success_criteria"]
+    assert diagnostic["qualification_eligible"] is False
+    assert diagnostic["configured_revision_publication_permitted"] is False
+    assert "configured_scene_revision_digest" not in diagnostic
+    assert diagnostic["diagnostic_controls_input_receipt_digest"] == authority["receipt_digest"]
+
+
+@pytest.mark.parametrize("forbidden", ["qualification_eligible", "configured_revision_publication_permitted", "evaluation_ready_promotion_permitted"])
+def test_diagnostic_articulated_adapter_refuses_widened_authority(tmp_path, forbidden):
+    case = _case(tmp_path)
+    authority = _diagnostic_case_authority(case, tmp_path)
+    authority[forbidden] = True
+    authority["receipt_digest"] = canonical_digest(authority, digest_field="receipt_digest")
+    with pytest.raises(TaskEvaluationArticulatedOpenCloseNativeAdapterError, match="diagnostic_inputs_invalid"):
+        adapt_articulated_open_close_task_template(materialized_references={}, diagnostic_controls_input=authority)
+
+
+def test_diagnostic_placement_context_uses_exact_actor_and_qualified_trajectory(tmp_path):
+    from blueprint_pipeline.task_evaluation_diagnostic_native_arena_compiler import diagnostic_robot_placement_inputs
+    case = _case(tmp_path)
+    authority = _diagnostic_case_authority(case, tmp_path)
+    workspace = tmp_path / "pending-workspace.json"
+    workspace.write_text(json.dumps({"schema_version": "website_workspace_clearance.v1", "status": "execute_during_scene_configuration_run", "scene_id": "unit-fixture-scene"}) + "\n")
+    for contract, path in [("scene.registration.workspace_clearance", workspace),
+                           ("diagnostic_output.replacement.usdz", case["asset"]),
+                           ("diagnostic_output.collision.usda", case["asset"])]:
+        authority["materialized_inputs"].append({"contract_path": contract, "path": str(path),
+            "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size, "full_byte_readback_passed": True})
+    authority["receipt_digest"] = canonical_digest(authority, digest_field="receipt_digest")
+    context = diagnostic_robot_placement_inputs(diagnostic_controls_input=authority, droid_profile_reference={"digest": "sha256:" + "f"*64})
+    definition = context["adapter"]["native_task_definition"]
+    actor = context["scene_binding"]["task_assets"][0]
+    assert actor["pose"] == definition["task_object_pose_world"]
+    assert context["task_binding"]["asset_scene_pose"] == actor["pose"]
+    assert context["placement_plan"]["qualification_eligible"] is False
+    assert "configured_scene_revision_digest" not in context["placement_plan"]
+    assert len(context["task_trajectory"]["phases"]) == 3
+    assert definition["task_object_reset_joint_positions"] == {"task_part_joint": 0.0}
+
+
 def test_configured_drawer_task_adapts_to_a_passive_joint_native_definition(tmp_path: Path) -> None:
     case = _case(tmp_path)
     result = adapt_articulated_open_close_task_template(
@@ -237,7 +317,59 @@ def test_normalized_sdk_assembly_keeps_capture_heading_and_task_goal(
     interval = result["native_task_definition"]["task_spec"]["executable_opening_threshold"]["success_interval"]
     assert interval == pytest.approx([opening_fraction * case["plan"]["task_joint"]["limits_m"][1],
                                       case["plan"]["task_joint"]["limits_m"][1]])
+    spec = result["native_task_definition"]["task_spec"]
+    assert spec["articulation_graph"]["success_predicate"]["joint_intervals"] == {
+        spec["executable_opening_threshold"]["target_joint_id"]: pytest.approx(interval)
+    }
     materialize_contract_and_plan(case, result, tmp_path)
+
+
+def test_qualified_drawer_geometry_drives_native_path_and_matching_state_binding(tmp_path):
+    from blueprint_pipeline.native_articulated_construction_inputs import (
+        materialize_articulated_construction_inputs,
+    )
+    from blueprint_pipeline.native_task_construction_plan import (
+        materialize_native_task_construction_phase_plan,
+    )
+
+    case = _case(tmp_path)
+    adapted = adapt_articulated_open_close_task_template(
+        configured_revision=case["configured"], materialized_references=case["references"]
+    )
+    original = copy.deepcopy(adapted)
+    definition = adapted["native_task_definition"]
+    value = materialize_articulated_construction_inputs(
+        task_spec=definition["task_spec"], definition=definition,
+        asset=case["asset"],
+        asset_digest="sha256:" + hashlib.sha256(case["asset"].read_bytes()).hexdigest(),
+        link_prim_paths=case["static"]["link_prim_paths"],
+    )
+    assert adapted == original
+    assert value["task_state_binding"]["interaction_affordance_digest"] == (
+        value["task_spec"]["interaction_affordance"]["affordance_digest"]
+    )
+    assert value["task_state_binding"]["root_translation_tolerance_m"] == (
+        definition["task_state_binding"]["root_translation_tolerance_m"]
+    )
+    rows = value["articulated_kinematic_path_receipt"]["joint_contact_path"]
+    assert rows[-1]["joint_positions"]["task_part_joint"] == pytest.approx(
+        definition["task_spec"]["executable_opening_threshold"]["success_interval"][0]
+    )
+    derived = copy.deepcopy(adapted)
+    derived["native_task_definition"].update(
+        task_spec=value["task_spec"], task_state_binding=value["task_state_binding"]
+    )
+    contract, articulation = materialize_contract_and_plan(case, derived, tmp_path)
+    # Fixed graph constraints do not become simulator DOFs or reset commands.
+    scene = {
+        "scene_id": "generic-drawer", "task_kind": "articulated_open_close",
+        "task_spec": value["task_spec"], "objects": contract["objects"],
+        "articulation": articulation,
+        "reset": {"task_joint_positions_rad": articulation["task_joint_reset_positions_rad"]},
+    }
+    plan = materialize_native_task_construction_phase_plan(scene)
+    assert plan["phases"][-1]["phase_id"] == "recovery"
+    assert set(scene["reset"]["task_joint_positions_rad"]) == {"task_part_joint"}
 
 
 def test_normalized_sdk_pose_anchors_the_local_base_instead_of_subtracting_capture_elevation():

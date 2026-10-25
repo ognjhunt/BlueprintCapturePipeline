@@ -356,6 +356,24 @@ def _articulated_placement_plan(
         raise ConfiguredControlsDeferredInputError(
             f"configured_controls_deferred_adapter_failed:{exc}"
         ) from exc
+    asset_reference = _reference(
+        (revision.get("replacement") or {}).get("asset"),
+        blocker="configured_controls_deferred_articulated_asset_reference_invalid",
+    )
+    asset = documents.get("scene.configured_revision.replacement.asset")
+    return articulated_placement_plan_from_adapter(
+        adapted=adapted, asset=asset, asset_reference=asset_reference,
+        qualified_static_digest=revision["replacement"]["static_qualification"]["digest"],
+        configured_revision_digest=revision["revision_digest"],
+    )
+
+
+def articulated_placement_plan_from_adapter(
+    *, adapted: Mapping[str, Any], asset: str | Path | None,
+    asset_reference: Mapping[str, Any], qualified_static_digest: str,
+    configured_revision_digest: str | None = None,
+) -> dict[str, Any]:
+    """Project exact qualified motion without changing the adapter's ceiling."""
     definition = adapted["native_task_definition"]
     spec = definition["task_spec"]
     graph = spec["articulation_graph"]
@@ -364,11 +382,6 @@ def _articulated_placement_plan(
         raise ConfiguredControlsDeferredInputError(
             "configured_controls_deferred_articulated_placement_joint_unsupported"
         )
-    asset_reference = _reference(
-        (revision.get("replacement") or {}).get("asset"),
-        blocker="configured_controls_deferred_articulated_asset_reference_invalid",
-    )
-    asset = documents.get("scene.configured_revision.replacement.asset")
     if asset is None or Path(asset).is_symlink() or not Path(asset).is_file():
         raise ConfiguredControlsDeferredInputError("configured_controls_deferred_articulated_asset_missing")
     payload = Path(asset).read_bytes()
@@ -439,10 +452,9 @@ def _articulated_placement_plan(
         "schema_version": ARTICULATED_PLACEMENT_PLAN_SCHEMA_VERSION,
         "task_kind": "articulated_open_close",
         "manipulation_strategy": "articulated_open_close",
-        "configured_scene_revision_digest": revision["revision_digest"],
         "adapter_digest": adapted["adapter_digest"],
         "qualified_asset_digest": asset_reference["digest"],
-        "qualified_static_digest": revision["replacement"]["static_qualification"]["digest"],
+        "qualified_static_digest": qualified_static_digest,
         "target_joint_id": target["joint_id"],
         **motion_fields,
         "phases": phases, "phase_count": len(phases),
@@ -457,6 +469,18 @@ def _articulated_placement_plan(
         },
         "plan_digest": "",
     }
+    if configured_revision_digest is not None:
+        if adapted.get("configured_scene_revision_digest") != configured_revision_digest:
+            raise ConfiguredControlsDeferredInputError("configured_controls_deferred_plan_authority_mismatch")
+        plan["configured_scene_revision_digest"] = configured_revision_digest
+    else:
+        if (adapted.get("qualification_eligible") is not False
+            or adapted.get("configured_revision_publication_permitted") is not False
+            or not adapted.get("diagnostic_controls_input_receipt_digest")):
+            raise ConfiguredControlsDeferredInputError("configured_controls_deferred_plan_authority_mismatch")
+        plan.update(diagnostic_controls_input_receipt_digest=adapted["diagnostic_controls_input_receipt_digest"],
+                    claim_ceiling=adapted["claim_ceiling"], qualification_eligible=False,
+                    configured_revision_publication_permitted=False)
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     placement_trajectory_from_native_plan(plan)
     return plan

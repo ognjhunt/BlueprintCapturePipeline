@@ -23,6 +23,7 @@ from .franka_kinematics import (
     forward_kinematics,
 )
 from .native_task_arena_packet import materialize_native_task_arena_packet
+from .native_articulated_construction_inputs import materialize_articulated_construction_inputs
 from .scene_placement.robot_profile import get_robot_profile
 from .rigid_frame_transforms import quaternion_conjugate_xyzw
 from .task_evaluation_robot_placement_agent import (
@@ -40,6 +41,12 @@ from .task_evaluation_robot_placement_trajectory import (
 )
 from .task_evaluation_rigid_relocation_native_adapter import (
     adapt_rigid_relocation_task_template,
+)
+from .task_evaluation_articulated_open_close_native_adapter import (
+    adapt_articulated_open_close_task_template,
+)
+from .task_evaluation_configured_controls_deferred_inputs import (
+    articulated_placement_plan_from_adapter,
 )
 
 
@@ -205,7 +212,7 @@ def _runtime_subject_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
             "diagnostic_native_compiler_subject_runtime_id_invalid"
         )
     task_spec["subject_asset_id"] = runtime_subject_id
-    task_spec["source_subject_identity"] = source_subject_id
+    task_spec["source_subject_identity"] = value.get("source_subject_identity") or source_subject_id
     interaction_affordance = task_spec.get("interaction_affordance")
     if (
         not isinstance(interaction_affordance, Mapping)
@@ -354,6 +361,102 @@ def _derive_task_aware_franka_reset(
     return derived_reset, report
 
 
+def diagnostic_robot_placement_inputs(
+    *, diagnostic_controls_input: Mapping[str, Any],
+    droid_profile_reference: Mapping[str, Any],
+    task_trajectory: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Derive the exact scene/task bindings before choosing a robot pose."""
+    authority = dict(diagnostic_controls_input)
+    rows = _bound_rows(authority)
+    task_source = _read_json(_bound_path(rows, "task.definition"), blocker="diagnostic_native_compiler_task_invalid")
+    articulated = task_source.get("strategy") == "articulated_open_close"
+    adapter = (
+        adapt_articulated_open_close_task_template(materialized_references={}, diagnostic_controls_input=authority)
+        if articulated else adapt_rigid_relocation_task_template(materialized_references={}, diagnostic_controls_input=authority)
+    )
+    definition = adapter["native_task_definition"]
+    task_spec = _runtime_subject_task_spec(definition["task_spec"])
+    task_spec["success_criteria"] = adapter["native_success_criteria"]["criteria"]
+    asset = _bound_path(rows, "diagnostic_output.replacement.usdz")
+    plan = None
+    if articulated:
+        plan = articulated_placement_plan_from_adapter(
+            adapted=adapter, asset=asset, asset_reference=rows["diagnostic_output.replacement.usdz"],
+            qualified_static_digest=rows["diagnostic_output.static_qualification_receipt.v1.json"]["digest"],
+        )
+        from .task_evaluation_robot_placement_trajectory import placement_trajectory_from_native_plan
+        derived = placement_trajectory_from_native_plan(plan)
+        if task_trajectory is not None and task_trajectory != derived:
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError("diagnostic_native_compiler_task_trajectory_binding_mismatch")
+        task_trajectory = derived
+        contact = next((p for p in derived["phases"] if p["phase_id"] == "handle_contact"), None)
+        if contact is None:
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError("diagnostic_native_compiler_task_contact_missing")
+        start = contact["position_world_m"]
+        target = derived["phases"][-1]["position_world_m"]
+        construction = materialize_articulated_construction_inputs(
+            task_spec=task_spec, definition=definition, asset=asset,
+            asset_digest=rows["diagnostic_output.replacement.usdz"]["digest"],
+            link_prim_paths=_read_json(
+                _bound_path(rows, "diagnostic_output.static_qualification_receipt.v1.json"),
+                blocker="diagnostic_native_compiler_static_qualification_invalid",
+            )["link_prim_paths"],
+        )
+        task_spec = construction["task_spec"]
+        kinematic_path = construction["articulated_kinematic_path_receipt"]
+    else:
+        start = _vector(task_source.get("start_center_xyz_m"), 3, blocker="diagnostic_native_compiler_task_direction_invalid")
+        target = _vector(task_source.get("target_center_xyz_m"), 3, blocker="diagnostic_native_compiler_task_direction_invalid")
+    direction = _normalize([target[0]-start[0], target[1]-start[1], 0.0], blocker="diagnostic_native_compiler_task_direction_invalid")
+    workspace = _read_json(_bound_path(rows, "scene.registration.workspace_clearance"), blocker="diagnostic_native_compiler_workspace_invalid")
+    placement = workspace.get("placement") or {}
+    registered = (
+        workspace.get("schema_version") == "registered_sage_franka_placement_packet.v1"
+        and workspace.get("packet_digest") == canonical_digest(workspace, digest_field="packet_digest")
+        and isinstance(placement, Mapping)
+        and placement.get("candidate_may_self_authorize") is False
+        and placement.get("physical_execution_authorized") is False
+    )
+    pending = (
+        workspace.get("schema_version") == "website_workspace_clearance.v1"
+        and workspace.get("status") == "execute_during_scene_configuration_run"
+        and isinstance(workspace.get("scene_id"), str) and bool(workspace["scene_id"])
+        and workspace.get("physical_execution_authorized") is not True
+        and workspace.get("candidate_may_self_authorize") is not True
+    )
+    if not registered and not pending:
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError("diagnostic_native_compiler_workspace_invalid")
+    scene_binding = {
+        "schema_version": "diagnostic_robot_placement_scene_binding.v1",
+        "source_configuration_run_id": authority["source_configuration_run_id"],
+        "workspace_packet_digest": workspace["packet_digest"] if registered else canonical_digest(workspace),
+        "collision_asset_digest": rows["diagnostic_output.collision.usda"]["digest"],
+        "task_assets": [{"asset_id": task_spec["subject_asset_id"], "asset_usd_path": str(asset),
+                         "asset_digest": rows["diagnostic_output.replacement.usdz"]["digest"],
+                         "pose": definition["task_object_pose_world"]}],
+    }
+    task_binding = {
+        "schema_version": "diagnostic_robot_placement_task_binding.v1",
+        "robot_id": "franka_panda", "task_id": definition["identity"]["id"],
+        "task_source_digest": canonical_digest(task_source),
+        "droid_profile_digest": droid_profile_reference["digest"],
+        "asset_scene_pose": definition["task_object_pose_world"],
+        **({"target_contact_world_m": start, "opening_target_world_m": target,
+            "trajectory_digest": task_trajectory["trajectory_digest"]} if articulated
+           else {"start_center_xyz_m": start, "target_center_xyz_m": target}),
+    }
+    support = _read_json(_bound_path(rows, "scene.registration.support_plane"), blocker="diagnostic_native_compiler_support_invalid")
+    return {"adapter": adapter, "task_spec": task_spec, "execution": adapter["native_episode_execution"],
+            "start": start, "target": target, "direction": direction, "workspace": workspace,
+            "placement": placement, "scene_binding": scene_binding, "task_binding": task_binding,
+            "task_trajectory": task_trajectory, "placement_plan": plan, "support": support,
+            "kinematic_path": kinematic_path if articulated else None,
+            "task_state_binding": construction["task_state_binding"] if articulated else definition.get("task_state_binding"),
+            "scene_collision_usd_path": str(_bound_path(rows, "diagnostic_output.collision.usda")),
+            "target_position_world_m": start}
+
+
 def compile_diagnostic_native_arena_packet(
     *,
     diagnostic_controls_input: Mapping[str, Any],
@@ -391,70 +494,36 @@ def compile_diagnostic_native_arena_packet(
     profile = _read_json(
         profile_path, blocker="diagnostic_native_compiler_droid_profile_invalid"
     )
-    if (
-        profile.get("schema_version") != "native_task_arena_packet_request.v1"
-        or profile.get("request_digest")
-        != canonical_digest(profile, digest_field="request_digest")
-    ):
+    sealed_request = profile.get("request_digest") == canonical_digest(profile, digest_field="request_digest")
+    camera_template = (
+        profile.get("status") == "immutable_intrinsics_and_wrist_mount_template"
+        and profile.get("world_camera_poses_authoritative") is False
+        and profile.get("world_camera_poses_recomputed_after_cpu_placement") is True
+        and profile.get("native_observability_readback_required") is True
+    )
+    if profile.get("schema_version") != "native_task_arena_packet_request.v1" or not (sealed_request or camera_template):
         raise TaskEvaluationDiagnosticNativeArenaCompilerError(
             "diagnostic_native_compiler_droid_profile_invalid"
         )
+    if camera_template:
+        # The catalog camera factory binds immutable intrinsics and wrist mount,
+        # not another scene's robot placement. Reuse canonical embodiment facts;
+        # the accepted trajectory derives the arm reset below.
+        from .task_evaluation_franka_robotiq_readiness_inputs import _RESET_JOINT_POSITIONS_RAD
+        profile["robot_joint_reset_positions_rad"] = dict(_RESET_JOINT_POSITIONS_RAD)
 
-    adapter = adapt_rigid_relocation_task_template(
-        materialized_references={},
-        diagnostic_controls_input=authority,
+    context = diagnostic_robot_placement_inputs(
+        diagnostic_controls_input=authority, droid_profile_reference=droid_profile_reference,
+        task_trajectory=task_trajectory,
     )
+    adapter = context["adapter"]
     task_definition = adapter["native_task_definition"]
-    task_spec = _runtime_subject_task_spec(task_definition["task_spec"])
-    task_spec["success_criteria"] = adapter["native_success_criteria"]["criteria"]
-    execution = adapter["native_episode_execution"]
-    task_source = adapter["source_documents"]["documents"]["definition"]
-    start = _vector(
-        task_source.get("start_center_xyz_m"),
-        3,
-        blocker="diagnostic_native_compiler_task_direction_invalid",
-    )
-    target = _vector(
-        task_source.get("target_center_xyz_m"),
-        3,
-        blocker="diagnostic_native_compiler_task_direction_invalid",
-    )
-    direction = _normalize(
-        [target[0] - start[0], target[1] - start[1], 0.0],
-        blocker="diagnostic_native_compiler_task_direction_invalid",
-    )
-    workspace = _read_json(
-        _bound_path(rows, "scene.registration.workspace_clearance"),
-        blocker="diagnostic_native_compiler_workspace_invalid",
-    )
-    placement = workspace.get("placement")
-    if (
-        workspace.get("schema_version")
-        != "registered_sage_franka_placement_packet.v1"
-        or workspace.get("packet_digest")
-        != canonical_digest(workspace, digest_field="packet_digest")
-        or not isinstance(placement, Mapping)
-        or placement.get("candidate_may_self_authorize") is not False
-        or placement.get("physical_execution_authorized") is not False
-    ):
-        raise TaskEvaluationDiagnosticNativeArenaCompilerError(
-            "diagnostic_native_compiler_workspace_invalid"
-        )
-    scene_binding = {
-        "schema_version": "diagnostic_robot_placement_scene_binding.v1",
-        "source_configuration_run_id": authority["source_configuration_run_id"],
-        "workspace_packet_digest": workspace["packet_digest"],
-        "collision_asset_digest": rows["diagnostic_output.collision.usda"]["digest"],
-    }
-    task_binding = {
-        "schema_version": "diagnostic_robot_placement_task_binding.v1",
-        "robot_id": "franka_panda",
-        "task_id": task_definition["identity"]["id"],
-        "start_center_xyz_m": start,
-        "target_center_xyz_m": target,
-        "task_source_digest": canonical_digest(task_source),
-        "droid_profile_digest": droid_profile_reference["digest"],
-    }
+    task_spec = context["task_spec"]
+    execution = context["execution"]
+    start, target, direction = context["start"], context["target"], context["direction"]
+    workspace, placement = context["workspace"], context["placement"]
+    scene_binding, task_binding = context["scene_binding"], context["task_binding"]
+    task_trajectory = context["task_trajectory"]
     accepted_placement_receipt: dict[str, Any] | None = None
     if robot_placement_receipt is not None:
         try:
@@ -468,7 +537,7 @@ def compile_diagnostic_native_arena_packet(
                 f"diagnostic_native_compiler_robot_placement_invalid:{exc}"
             ) from exc
         base_pose = accepted_placement_receipt["accepted_pose"]
-        base_derivation_method = "gpt_6_1_sol_high_bounded_geometry_and_visual_gate"
+        base_derivation_method = "accepted_digest_bound_geometry_and_trajectory_candidate"
     else:
         # A prior diagnostic compiler copied only the source standoff, reflected
         # it along a new task direction, and never re-ran collision/support
@@ -564,6 +633,7 @@ def compile_diagnostic_native_arena_packet(
     }
     wrist = by_role.get("wrist") or {}
     intrinsics = (by_role.get("external") or {}).get("intrinsics")
+    overview_intrinsics = (by_role.get("overview") or {}).get("intrinsics")
     if (
         set(by_role) != {"external", "wrist", "overview"}
         or wrist.get("pose_frame") != "robot_body"
@@ -572,6 +642,7 @@ def compile_diagnostic_native_arena_packet(
         or wrist.get("policy_input") is not True
         or wrist.get("scoring_input") is not False
         or not isinstance(intrinsics, Mapping)
+        or not isinstance(overview_intrinsics, Mapping)
         or intrinsics != wrist.get("intrinsics")
     ):
         raise TaskEvaluationDiagnosticNativeArenaCompilerError(
@@ -595,7 +666,7 @@ def compile_diagnostic_native_arena_packet(
                 max(base_position[2], start[2]) + 1.45,
             ],
             target=midpoint,
-            intrinsics=intrinsics,
+            intrinsics=overview_intrinsics,
         ),
     ]
     cameras[2]["policy_input"] = False
@@ -635,19 +706,21 @@ def compile_diagnostic_native_arena_packet(
         if role == "replacement":
             row.update(
                 asset_id=task_spec["subject_asset_id"],
-                object_type="RIGID",
-                reset_state={"root_pose_world": object_pose, "joint_positions": {}},
+                object_type="ARTICULATION" if task_spec["task_kind"] == "articulated_open_close" else "RIGID",
+                reset_state={"root_pose_world": object_pose,
+                             "joint_positions": dict(task_definition.get("task_object_reset_joint_positions") or {})},
             )
         packet_assets.append(row)
 
-    support = adapter["source_documents"]["documents"]["support_plane"]
+    support = context["support"]
     packet_request: dict[str, Any] = {
         "schema_version": "native_task_arena_packet_request.v1",
         "scene_id": f"scene-{support['scene_id']}",
         "task_id": task_definition["identity"]["id"],
         "task_spec": task_spec,
         "task_joint_bindings": task_definition.get("task_joint_bindings") or [],
-        "task_state_binding": task_definition.get("task_state_binding"),
+        "task_state_binding": context["task_state_binding"],
+        "articulated_kinematic_path_receipt": context["kinematic_path"],
         "assets": packet_assets,
         "robot_base_pose_world": base_pose,
         "robot_joint_reset_positions_rad": robot_joint_reset_positions_rad,
@@ -732,4 +805,5 @@ __all__ = [
     "SCHEMA_VERSION",
     "TaskEvaluationDiagnosticNativeArenaCompilerError",
     "compile_diagnostic_native_arena_packet",
+    "diagnostic_robot_placement_inputs",
 ]
