@@ -167,6 +167,7 @@ def run_robot_placement_cli(
     placement_worker_count = min(8, max(1, os.cpu_count() or 1))
     trajectory_digest = (task_trajectory or {}).get("trajectory_digest")
     geometry_summary_digest = str(summary.get("geometry_summary_digest") or "")
+    search_diagnostics: dict[str, Any] = {}
     if candidate_inventory_checkpoint is None:
         candidates = enumerate_robot_placement_geometry_candidates(
             index=index,
@@ -178,6 +179,7 @@ def run_robot_placement_cli(
             trajectory_orientations_world_xyzw=trajectory_orientations,
             geometry_worker_count=placement_worker_count,
             trajectory_worker_count=placement_worker_count,
+            diagnostics=search_diagnostics,
         )
     else:
         candidates = validate_candidate_inventory_checkpoint(
@@ -189,6 +191,20 @@ def run_robot_placement_cli(
             trajectory_digest=trajectory_digest,
             geometry_summary_digest=geometry_summary_digest,
         )
+    search_record = {
+        "schema_version": "task_evaluation_robot_placement_geometry_search.v1",
+        "status": "candidates_found" if candidates else "no_candidate",
+        "candidate_inventory_source": "validated_checkpoint" if candidate_inventory_checkpoint is not None else "geometry_search",
+        "geometry_summary": summary,
+        "trajectory_digest": trajectory_digest,
+        "search_diagnostics": search_diagnostics,
+        "candidate_count": len(candidates),
+        "native_placement_qualified": False,
+        "policy_executed": False,
+        "record_digest": "",
+    }
+    search_record["record_digest"] = canonical_digest(search_record, digest_field="record_digest")
+    write_json(root / "task_evaluation_robot_placement_geometry_search.v1.json", search_record)
     if not candidates:
         raise ValueError("robot_placement_geometry_candidate_inventory_empty")
     candidate_inventory_digest = canonical_digest(

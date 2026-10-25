@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 from pxr import Gf, Usd, UsdGeom
 
 from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
@@ -193,6 +194,38 @@ def test_enumeration_prefilter_preserves_every_passing_gate(tmp_path) -> None:
         g for g in complete if g["status"] == "passed"
     ]
     assert any(len(g) == 1 for g in filtered)
+
+
+@pytest.mark.parametrize("neighbor_height,expected", [(0.01, True), (0.04, False)])
+def test_support_uses_adjacent_height_bins_only_within_declared_tolerance(
+    tmp_path, neighbor_height, expected
+) -> None:
+    scene_path, robot_path = _assets(tmp_path)
+    scene = Usd.Stage.Open(str(scene_path))
+    scene.RemovePrim("/Scene/Floor")
+    _mesh(
+        scene, "/Scene/Floor",
+        [(-2, -2, 0), (0, -2, 0), (0, 2, 0), (-2, 2, 0),
+         (0, -2, neighbor_height), (2, -2, neighbor_height),
+         (2, 2, neighbor_height), (0, 2, neighbor_height)],
+        [(0, 1, 2, 3), (4, 5, 6, 7)],
+    )
+    scene.GetRootLayer().Save()
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene_path, robot_asset_usd_path=robot_path
+    )
+    floor = next(s for s in index.support_surfaces if s.prim_path == "/Scene/Floor" and s.height_m == 0.0)
+    proposal = _proposal(floor.surface_id)
+    gate = validate_robot_placement_geometry_candidate(
+        index=index, proposal=proposal, target_position_world_m=[0.8, 0.0, 0.5]
+    )
+    assert gate["support_passed"] is expected
+    assert (gate["supported_sample_count"] == 5) is expected
+    prefiltered = _parallel_geometry_gates(
+        index=index, proposals=[proposal], target_position_world_m=[0.8, 0.0, 0.5],
+        robot_id="franka_panda", worker_count=1, prefilter_nonpassing=True,
+    )
+    assert (prefiltered[0]["status"] == "passed") is expected
 
 
 def test_geometry_gate_uses_batched_support_coverage(tmp_path, monkeypatch) -> None:
