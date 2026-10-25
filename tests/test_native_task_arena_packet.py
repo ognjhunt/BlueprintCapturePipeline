@@ -382,9 +382,9 @@ def Xform "Asset"
     return request
 
 
-@pytest.mark.parametrize("direct_3dgrut", [False, True])
+@pytest.mark.parametrize("direct_3dgrut,website", [(False, False), (True, False), (False, True)])
 def test_particlefield_appearance_variant_request_binds_authoring_receipt(
-    tmp_path: Path, direct_3dgrut: bool
+    tmp_path: Path, direct_3dgrut: bool, website: bool
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
@@ -465,11 +465,27 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         },
         "receipt_digest": "",
     }
+    if website:
+        receipt['source_kind'] = 'standard_3dgs_ply'
+        receipt.pop('particlefield_authoring_implementation')
+        receipt.pop('upstream_converter')
     receipt["receipt_digest"] = canonical_digest(
         receipt, digest_field="receipt_digest"
     )
+
+    def wrapped(authoring):
+        if not website:
+            return authoring
+        value = {'schema_version': 'website_native_appearance.v1', 'status': 'native_appearance_authored',
+            'artifact': {'digest': authoring['output_sha256'], 'size_bytes': authoring['output_bytes']},
+            'binding': {'source_digest': authoring['source_sha256'], 'writer_digest': _sha('c')},
+            'decoder': None, 'authoring': authoring, 'source_bytes_unchanged': True,
+            'renderer_qualified': False, 'claim_ceiling': 'development_only'}
+        value['digest'] = canonical_digest(value, digest_field='digest')
+        return value
+
     receipt_path = tmp_path / "authoring_receipt.json"
-    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    receipt_path.write_text(json.dumps(wrapped(receipt)), encoding="utf-8")
     output = tmp_path / "variant_request.json"
 
     variant = materialize_native_task_arena_appearance_variant_request(
@@ -504,10 +520,28 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
     ] is False
     assert variant["appearance_variant"]["particlefield_custom_render_hints_authored"] is False
     assert variant["appearance_variant"]["particlefield_authoring_implementation"] == (
+        "blueprint_pipeline.particlefield_usd.write_particlefield_usd" if website else
         "nvidia_3dgrut_direct_nurec_transcode"
         if direct_3dgrut
         else "nvidia_usd_convert_gsplat"
     )
+    if website:
+        assert variant['appearance_variant']['upstream_converter'] == {'version': _sha('c')}
+        assert variant['appearance_variant']['renderer_qualified'] is False
+        assert variant['appearance_variant']['claim_ceiling'] == 'development_only'
+        for field in ('artifact', 'binding', 'renderer_qualified'):
+            invalid = wrapped(receipt)
+            if field == 'artifact':
+                invalid[field]['digest'] = _sha('d')
+            elif field == 'binding':
+                invalid[field]['source_digest'] = _sha('d')
+            else:
+                invalid[field] = True
+            invalid['digest'] = canonical_digest(invalid, digest_field='digest')
+            receipt_path.write_text(json.dumps(invalid))
+            with pytest.raises(NativeTaskArenaPacketError, match='website_appearance_receipt_invalid'):
+                materialize_native_task_arena_appearance_variant_request(base_request_path=base_path,
+                    appearance_authoring_receipt_path=receipt_path, evidence_root=evidence, output_path=output)
     assert variant["appearance_variant"]["upstream_sorting_mode_hint"] == (
         "cameraDistance" if direct_3dgrut else None
     )
@@ -541,11 +575,13 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "gaussian_field_quality",
     ):
         invalid = dict(receipt)
+        if missing not in invalid:
+            continue
         invalid.pop(missing)
         invalid["receipt_digest"] = canonical_digest(
             invalid, digest_field="receipt_digest"
         )
-        receipt_path.write_text(json.dumps(invalid), encoding="utf-8")
+        receipt_path.write_text(json.dumps(wrapped(invalid)), encoding="utf-8")
         with pytest.raises(
             NativeTaskArenaPacketError,
             match="native_task_arena_appearance_variant_receipt_invalid",
