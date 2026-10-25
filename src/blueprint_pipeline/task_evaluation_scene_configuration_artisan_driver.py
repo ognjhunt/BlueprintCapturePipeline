@@ -31,10 +31,15 @@ PACKAGE = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
 
 def _component_result(stage_input, request, paths):
     from .task_evaluation_scene_configuration_stage_tool import COMPONENT_RESULT_SCHEMA_VERSION
+    artifacts = []
+    for role, path in paths:
+        record = file_record(path)
+        artifacts.append({"role": role, "path": record["path"], "digest": record["sha256"],
+                          "size_bytes": record["size_bytes"]})
     result = {"schema_version": COMPONENT_RESULT_SCHEMA_VERSION, "status": "completed",
         "adapter_id": "content_agents_rigid_replacement", "stage_id": stage_input["stage"]["stage_id"], "backend": ARTISAN_BACKEND,
         "request_digest": request["request_digest"], "provider_mutations_performed": 0, "nested_paid_execution_requested": False,
-        "artifacts": [{"role": role, **file_record(path)} for role, path in paths]}
+        "artifacts": artifacts}
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     return result
 
@@ -50,7 +55,7 @@ def execute_artisan_component(*, environment=None, runner=run_controller,
 
 
 def _execute(values, output, runner, cost_gate_factory):
-    from .task_evaluation_scene_configuration_stage_tool import _validate_input, _validate_dependencies
+    from .task_evaluation_scene_configuration_stage_tool import _validate_input, _validate_dependencies, _validate_component_result
     input_path = Path(values[INPUT])
     stage_input = _validate_input(read_json(input_path), adapter_id="content_agents_rigid_replacement",
         diagnostic_only=values.get("BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_ONLY") == "1")
@@ -94,7 +99,29 @@ def _execute(values, output, runner, cost_gate_factory):
         verify_artisan_candidate(receipt=read_json(artifacts["replacement_authoring_receipt"]),
             graph=read_json(artifacts["replacement_graph_spec"]), asset=artifacts["replacement_asset"],
             configuration=configuration, source_candidate_digest=request["source_candidate"]["digest"])
-        return result
+        canonical = _component_result(stage_input, request, ((row["role"], Path(row["path"])) for row in result["artifacts"]))
+        _validate_component_result(canonical, adapter_id=stage_input["stage"]["adapter"]["id"],
+            stage_id=stage_input["stage"]["stage_id"], output_root=output, diagnostic_only=False)
+        if result != canonical:
+            # Repair only the historical producer's exact hash-key mismatch.
+            # Preserve its original bytes before publishing the corrected result.
+            legacy = {**canonical, "artifacts": [
+                {"role": row["role"], "path": row["path"], "sha256": row["digest"], "size_bytes": row["size_bytes"]}
+                for row in canonical["artifacts"]]}
+            legacy["result_digest"] = canonical_digest(legacy, digest_field="result_digest")
+            require(result == legacy, "artisan_completed_result_changed")
+            history = result_path.with_name(f"{result_path.stem}.legacy-sha256-{result['result_digest'][7:]}.json")
+            original = result_path.read_bytes()
+            require(not history.is_symlink(), "artisan_legacy_result_history_invalid")
+            if history.exists():
+                require(history.read_bytes() == original, "artisan_legacy_result_history_changed")
+            else:
+                with history.open("xb") as stream:
+                    stream.write(original)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            write_json(result_path, canonical)
+        return canonical
     candidates = output / "candidates"
     retained_receipts = sorted(candidates.glob("*/replacement_authoring_receipt.v1.json")) if candidates.exists() else []
     if retained_receipts:

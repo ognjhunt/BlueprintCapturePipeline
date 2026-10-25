@@ -10,7 +10,7 @@ from typing import Any
 import zipfile
 
 import pytest
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
@@ -294,6 +294,54 @@ def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
     assert preflight["blockers"] == []
     assert preflight["status"] == "passed"
     assert preflight["zip_required_entries_present"] is True
+
+
+@pytest.mark.parametrize("suffix", [".usd", ".usda", ".usdc", ".usdz"])
+def test_bundle_preserves_the_actual_openusd_asset_format(tmp_path: Path, suffix: str) -> None:
+    asset = tmp_path / ("asset" + suffix)
+    if suffix == ".usdz":
+        source = _asset(tmp_path / "source.usda")
+        assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(source)), str(asset))
+    else:
+        _asset(asset)
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps(_request(asset)))
+    harness = tmp_path / "harness.json"
+    harness.write_text('{"schema_version":"fixture"}')
+    job = tmp_path / "bundle"
+    receipt = build_articulated_native_diagnostic_bundle(job_dir=job, asset_path=asset,
+        request_path=request, harness_manifest_path=harness, implementation_commit=_implementation_commit())
+    filename = "articulated_task_asset" + suffix
+    packaged = job / "provider_runtime/assets" / filename
+    assert receipt["asset_binding"]["filename"] == filename
+    assert packaged.read_bytes() == asset.read_bytes()
+    assert Usd.Stage.Open(str(packaged)) is not None
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        assert "provider_runtime/assets/" + filename in archive.namelist()
+        entrypoint = archive.read("provider_runtime/run_adp_arena_provider_runtime.sh").decode()
+    assert '--asset "$RUNTIME_DIR/assets/' + filename + '"' in entrypoint
+    preflight = _blueprint_bundle_preflight(job_dir=tmp_path / "preflight", generated_at="fixed",
+        enable_blueprint_bundle=True, enable_isaac_smoke=True, provider_bundle_kind="adp009d_articulated_native",
+        bundle_path=Path(receipt["bundle_path"]), provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
+        provider_output_put_url="https://example.com/output.zip?sig=redacted")
+    assert preflight["blockers"] == []
+
+
+def test_native_preflight_refuses_two_possible_asset_formats(tmp_path: Path) -> None:
+    asset = _asset(tmp_path / "asset.usda")
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps(_request(asset)))
+    harness = tmp_path / "harness.json"
+    harness.write_text('{"schema_version":"fixture"}')
+    receipt = build_articulated_native_diagnostic_bundle(job_dir=tmp_path / "bundle", asset_path=asset,
+        request_path=request, harness_manifest_path=harness, implementation_commit=_implementation_commit())
+    with zipfile.ZipFile(receipt["bundle_path"], "a") as archive:
+        archive.writestr("provider_runtime/assets/articulated_task_asset.usdz", asset.read_bytes())
+    preflight = _blueprint_bundle_preflight(job_dir=tmp_path / "preflight", generated_at="fixed",
+        enable_blueprint_bundle=True, enable_isaac_smoke=True, provider_bundle_kind="adp009d_articulated_native",
+        bundle_path=Path(receipt["bundle_path"]), provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
+        provider_output_put_url="https://example.com/output.zip?sig=redacted")
+    assert "articulated_native_bundle_asset_format_ambiguous" in preflight["blockers"]
 
 
 def test_articulated_bundle_uses_complete_native_isaac_transport_closure(

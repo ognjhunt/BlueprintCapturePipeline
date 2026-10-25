@@ -2533,7 +2533,6 @@ def _blueprint_bundle_preflight(
         "provider_runtime/articulated_native_diagnostic_runtime.py",
         "provider_runtime/articulated_native_diagnostic_request.v1.json",
         "provider_runtime/adp009d_franka_eval_harness_manifest.v1.json",
-        "provider_runtime/assets/articulated_task_asset.usda",
     }
     native_task_arena_required_entries = {
         "provider_runtime/run_adp_arena_provider_runtime.sh",
@@ -2896,6 +2895,19 @@ def _blueprint_bundle_preflight(
             try:
                 with zipfile.ZipFile(bundle_path) as archive:
                     zip_entries = sorted(archive.namelist())
+                    if provider_bundle_kind == "adp009d_articulated_native":
+                        assets = set(zip_entries) & {
+                            "provider_runtime/assets/articulated_task_asset" + suffix
+                            for suffix in (".usd", ".usda", ".usdc", ".usdz")
+                        }
+                        if len(assets) == 1:
+                            required_entries = required_entries | assets
+                        else:
+                            required_entries = required_entries | {
+                                "provider_runtime/assets/articulated_task_asset.usda"
+                            }
+                            if assets:
+                                blockers.append("articulated_native_bundle_asset_format_ambiguous")
                     zip_testzip_result = archive.testzip()
                     for member in zip_entries:
                         if member.endswith(".json"):

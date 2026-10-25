@@ -9,6 +9,7 @@ import time
 import pytest
 
 from blueprint_pipeline import task_evaluation_scene_configuration_artisan_driver as driver
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_object_authoring_contracts import file_record
 from tests.test_task_object_artisan_contracts import source_request
 from tests.test_task_object_artisan_exports import construction_request, usd_fixture, export_fixture
@@ -139,6 +140,59 @@ def test_interruption_preserves_original_pool_workspace_and_deadline(stage_fixtu
     assert (fixture.output / "artisan_runtime/bridge_context.v1.json").read_bytes() == retained
     assert fixture.events.count("reserve_original_pool") == 1
     assert result["status"] == "completed"
+
+
+def test_real_component_output_passes_next_stage_and_changed_artifact_is_refused(stage_fixture):
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_tool import (
+        _validate_component_result, TaskEvaluationSceneConfigurationStageToolError,
+    )
+    fixture = stage_fixture
+    result = driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
+    arguments = dict(adapter_id="content_agents_rigid_replacement", stage_id="stage-3",
+                     output_root=fixture.output, diagnostic_only=False)
+    assert _validate_component_result(result, **arguments) == result["artifacts"]
+    assert all("digest" in row and "sha256" not in row for row in result["artifacts"])
+    Path(result["artifacts"][0]["path"]).write_bytes(b"changed asset")
+    with pytest.raises(TaskEvaluationSceneConfigurationStageToolError, match="component_artifact_invalid"):
+        _validate_component_result(result, **arguments)
+
+
+def test_legacy_completed_hash_keys_are_repaired_without_regeneration_and_original_bytes_retained(stage_fixture):
+    fixture = stage_fixture
+    result = driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
+    legacy = {**result, "artifacts": [
+        {"role": row["role"], "path": row["path"], "sha256": row["digest"], "size_bytes": row["size_bytes"]}
+        for row in result["artifacts"]]}
+    legacy["result_digest"] = canonical_digest(legacy, digest_field="result_digest")
+    original = (json.dumps(legacy, indent=2) + "\n").encode()
+    result_path = Path(fixture.environment[driver.RESULT])
+    result_path.write_bytes(original)
+    fixture.key.unlink()
+    shutil.rmtree(fixture.package)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Legacy adoption cannot perform inference or reserve spend")
+
+    assert driver.execute_artisan_component(environment=fixture.environment, runner=forbidden, cost_gate_factory=forbidden) == result
+    history = result_path.with_name(f"{result_path.stem}.legacy-sha256-{legacy['result_digest'][7:]}.json")
+    assert history.read_bytes() == original
+    assert driver.execute_artisan_component(environment=fixture.environment, runner=forbidden, cost_gate_factory=forbidden) == result
+    assert len(fixture.calls) == 1 and fixture.events.count("reserve_original_pool") == 1
+
+
+def test_cached_result_with_conflicting_hash_aliases_is_not_migrated(stage_fixture):
+    from blueprint_pipeline.task_object_authoring_contracts import AuthoringContractError
+    fixture = stage_fixture
+    result = driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
+    result["artifacts"][0]["sha256"] = "sha256:" + "0" * 64
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    result_path = Path(fixture.environment[driver.RESULT])
+    result_path.write_text(json.dumps(result))
+    original = result_path.read_bytes()
+    with pytest.raises(AuthoringContractError, match="authoring_source_bytes_changed"):
+        driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
+    assert result_path.read_bytes() == original and not list(result_path.parent.glob("*.legacy-sha256-*.json"))
+    assert len(fixture.calls) == 1
 
 
 def test_explicit_candidate_passes_existing_rigid_static_boundary_and_rejects_changed_reviewed_program(stage_fixture):
