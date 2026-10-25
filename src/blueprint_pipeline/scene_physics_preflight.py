@@ -144,6 +144,10 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
         raise ScenePhysicsPreflightError("scene_physics_asset_frame_invalid")
     cache = UsdGeom.XformCache()
     world_from_root = _usd_matrix(cache, root)
+    # A scale above a body would change every collider and joint offset under it;
+    # measuring it unscaled would check a different shape, so refuse it instead.
+    if not np.allclose(_rigid(world_from_root, "scene_physics_asset_frame_invalid")[1], 1.0, atol=1e-6):
+        raise ScenePhysicsPreflightError("scene_physics_asset_scale_unsupported:" + str(root.GetPath()))
     root_from_world = np.linalg.inv(world_from_root)
     prims = list(Usd.PrimRange(root))
     bodies = {str(p.GetPath()): p for p in prims if p.HasAPI(UsdPhysics.RigidBodyAPI)}
@@ -151,7 +155,9 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
         raise ScenePhysicsPreflightError("scene_physics_asset_bodies_missing")
     asset_from_body = {}
     for path, prim in bodies.items():
-        asset_from_body[path], _ = _rigid(root_from_world @ _usd_matrix(cache, prim), "scene_physics_body_transform_invalid")
+        asset_from_body[path], scale = _rigid(root_from_world @ _usd_matrix(cache, prim), "scene_physics_body_transform_invalid")
+        if not np.allclose(scale, 1.0, atol=1e-6):
+            raise ScenePhysicsPreflightError("scene_physics_asset_scale_unsupported:" + path)
 
     def owner(path: str) -> str:
         best = max((b for b in bodies if path == b or path.startswith(b + "/")), key=len, default=None)
@@ -308,6 +314,8 @@ def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], 
         if prim.HasAPI(UsdPhysics.RigidBodyAPI):
             raise ScenePhysicsPreflightError("scene_physics_background_not_static")
         if not prim.IsA(UsdGeom.Mesh) or not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        if UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get() is False:
             continue
         meshes += 1
         mesh = UsdGeom.Mesh(prim)
@@ -534,6 +542,40 @@ def envelope_intrusion(points: np.ndarray, normals: np.ndarray, world_from_asset
             "by_face": dict(sorted(faces.items()))}
 
 
+_CLIP_LONGEST_EDGE_M = 0.5
+
+
+def _clip_to_box(triangle: np.ndarray, low: np.ndarray, high: np.ndarray) -> list[np.ndarray]:
+    """The part of one triangle inside an axis-aligned box, as a fan of triangles."""
+    polygon = [np.asarray(v, dtype=float) for v in triangle]
+    for axis in range(3):
+        for bound, keep_above in ((low[axis], True), (high[axis], False)):
+            kept = []
+            for index, current in enumerate(polygon):
+                previous = polygon[index - 1]
+                inside_now = current[axis] >= bound if keep_above else current[axis] <= bound
+                inside_before = previous[axis] >= bound if keep_above else previous[axis] <= bound
+                if inside_now != inside_before:
+                    fraction = (bound - previous[axis]) / (current[axis] - previous[axis])
+                    kept.append(previous + fraction * (current - previous))
+                if inside_now:
+                    kept.append(current)
+            polygon = kept
+            if len(polygon) < 3:
+                return []
+    return [np.stack([polygon[0], polygon[i], polygon[i + 1]]) for i in range(1, len(polygon) - 1)]
+
+
+def _clip_large_triangles(triangles: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
+    """Cut big triangles down to the reachable box so a floor 100 m across is not sampled in full."""
+    if not len(triangles):
+        return triangles
+    edges = np.linalg.norm(triangles - np.roll(triangles, 1, axis=1), axis=2).max(axis=1)
+    large = edges > _CLIP_LONGEST_EDGE_M
+    pieces = [piece for triangle in triangles[large] for piece in _clip_to_box(triangle, low, high)]
+    return np.concatenate([triangles[~large], np.asarray(pieces).reshape(-1, 3, 3)])
+
+
 def _reachable_triangles(triangles: np.ndarray, placements: Sequence[tuple[Collider, np.ndarray]]) -> np.ndarray:
     """Triangles that come within reach of any placed collider."""
     from scipy.spatial import cKDTree
@@ -596,7 +638,9 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
     radius = float(np.linalg.norm(centres - centre, axis=1).max() + max(c.bound_radius for c in model.colliders))
     nearby = load_background_triangles(background_usd, centre=centre, radius=radius,
                                        world_from_stage=None if background_pose_world is None else _pose_matrix(background_pose_world))
-    triangles = _reachable_triangles(nearby, every)
+    bounds = np.asarray([c.bound_radius for c, _ in every])
+    triangles = _clip_large_triangles(_reachable_triangles(nearby, every),
+                                      (centres - bounds[:, None]).min(axis=0), (centres + bounds[:, None]).max(axis=0))
     points, owners = sample_surface(triangles, sample_spacing_m)
     if not len(points):
         raise ScenePhysicsPreflightError("scene_physics_background_empty_near_asset")

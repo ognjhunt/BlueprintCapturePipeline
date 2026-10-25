@@ -35,16 +35,20 @@ def _box(stage, path, *, size, centre):
     UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
 
 
-def _asset(tmp_path, *, mounted=False, extra_collider=None):
+def _asset(tmp_path, *, mounted=False, extra_collider=None, door_scale=None, root_scale=None):
     path = tmp_path / "asset.usda"
     stage = _stage(path)
     root = UsdGeom.Xform.Define(stage, "/Asset")
     stage.SetDefaultPrim(root.GetPrim())
+    if root_scale is not None:
+        root.AddScaleOp().Set(Gf.Vec3f(root_scale, root_scale, root_scale))
     base = UsdGeom.Xform.Define(stage, "/Asset/base")
     UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
     _box(stage, "/Asset/base/col", size=(0.6, 0.6, 0.9), centre=(0.0, 0.0, 0.45))
     door = UsdGeom.Xform.Define(stage, "/Asset/door")
     door.AddTranslateOp().Set(Gf.Vec3d(0.32, 0.0, 0.05))
+    if door_scale is not None:
+        door.AddScaleOp().Set(Gf.Vec3f(door_scale, door_scale, door_scale))
     UsdPhysics.RigidBodyAPI.Apply(door.GetPrim())
     _box(stage, "/Asset/door/col", size=(0.04, 0.6, 0.8), centre=(0.0, 0.0, 0.4))
     hinge = UsdPhysics.RevoluteJoint.Define(stage, "/Asset/door_hinge")
@@ -74,14 +78,20 @@ def _quad(stage, path, corners):
     UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
 
 
-def _background(tmp_path, *, back_wall_x=None, floor_bump=False):
+def _background(tmp_path, *, back_wall_x=None, floor_bump=False, wall_disabled=False, floor_half=None):
     path = tmp_path / "collision.usda"
     stage = _stage(path)
     UsdGeom.Xform.Define(stage, "/World")
-    _quad(stage, "/World/floor", [(-0.6, -0.6, 0.0), (1.4, -0.6, 0.0), (1.4, 0.6, 0.0), (-0.6, 0.6, 0.0)])
+    if floor_half is None:
+        _quad(stage, "/World/floor", [(-0.6, -0.6, 0.0), (1.4, -0.6, 0.0), (1.4, 0.6, 0.0), (-0.6, 0.6, 0.0)])
+    else:
+        h = floor_half
+        _quad(stage, "/World/floor", [(-h, -h, 0.0), (h, -h, 0.0), (h, h, 0.0), (-h, h, 0.0)])
     if back_wall_x is not None:
         x = back_wall_x
         _quad(stage, "/World/back_wall", [(x, -0.5, 0.0), (x, 0.5, 0.0), (x, 0.5, 1.1), (x, -0.5, 1.1)])
+        if wall_disabled:
+            UsdPhysics.CollisionAPI(stage.GetPrimAtPath("/World/back_wall")).CreateCollisionEnabledAttr().Set(False)
     if floor_bump:
         # Level with the open door's mid-thickness, 0.40-0.60 m in front of the hinge.
         _quad(stage, "/World/bump", [(0.72, -0.1, 0.05), (0.92, -0.1, 0.05), (0.92, 0.1, 0.05), (0.72, 0.1, 0.05)])
@@ -152,6 +162,28 @@ def test_unsupported_collider_is_refused(tmp_path):
 
     with pytest.raises(spp.ScenePhysicsPreflightError, match="collider_type_unsupported:Capsule"):
         spp.load_asset_model(_asset(tmp_path, extra_collider=capsule))
+
+
+def test_scale_above_a_body_is_refused(tmp_path):
+    for name, options, path in (("door", {"door_scale": 2.0}, "/Asset/door"), ("root", {"root_scale": 2.0}, "/Asset")):
+        folder = tmp_path / name
+        folder.mkdir()
+        with pytest.raises(spp.ScenePhysicsPreflightError, match="asset_scale_unsupported:" + path + "$"):
+            spp.load_asset_model(_asset(folder, **options))
+
+
+def test_disabled_background_collider_is_ignored(tmp_path):
+    report = spp.scene_physics_preflight(background_usd=_background(tmp_path, back_wall_x=-0.27, wall_disabled=True),
+                                         asset_usd=_asset(tmp_path), asset_pose_world=POSE, **FAST)
+    assert report["status"] == "passed" and report["blockers"] == []
+
+
+def test_huge_background_triangle_is_sampled_only_near_the_asset(tmp_path):
+    # Two triangles 200 m across: sampled whole at 1 cm this would be about 4e8 points.
+    report = spp.scene_physics_preflight(background_usd=_background(tmp_path, floor_half=100.0),
+                                         asset_usd=_asset(tmp_path), asset_pose_world=POSE, **FAST)
+    assert report["status"] == "passed"
+    assert report["background_samples"] < 200_000
 
 
 def _packet(tmp_path, background, asset):
