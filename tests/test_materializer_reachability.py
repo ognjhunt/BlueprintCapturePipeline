@@ -41,6 +41,9 @@ SCRIPTS = REPO_ROOT / "scripts"
 #: reachable, so that final change lowers the net count by three.
 #: It may fall and never rise.
 #:
+#: #2908 pushed it to 70: the articulated construction inputs and the native
+#: continuation controls input landed with no command line. Both now have one.
+#:
 #: It went to 76 once, when the semantic-teacher image-edit lane landed with all
 #: three of its terminal materializers -- result, provider zero, and the
 #: no-allocation closeout -- reachable from nothing. That is the shape this

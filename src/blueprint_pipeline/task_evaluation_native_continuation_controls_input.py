@@ -7,10 +7,11 @@ authority. The resulting inputs remain development-only.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -169,3 +170,47 @@ def materialize_native_continuation_controls_input(
     target = root / "diagnostic_controls_input.v1.json"
     target.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
     return value
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Bind a completed native continuation's retained outputs as diagnostic inputs."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--continuation-result", required=True)
+    parser.add_argument("--allocator-result", required=True)
+    parser.add_argument("--continuation-bundle", required=True)
+    parser.add_argument("--configured-assets-root", required=True)
+    parser.add_argument("--static-qualification", required=True)
+    parser.add_argument("--native-import-qualification", required=True)
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--reference-override", action="append", default=[], metavar="CONTRACT_PATH=PATH",
+        help="read a retained source from a local copy; its bytes must still match",
+    )
+    args = parser.parse_args(argv)
+    overrides: dict[str, str] = {}
+    for item in args.reference_override:
+        contract_path, separator, path = item.partition("=")
+        if not separator or not contract_path or not path:
+            parser.error("--reference-override needs CONTRACT_PATH=PATH")
+        overrides[contract_path] = path
+    try:
+        value = materialize_native_continuation_controls_input(
+            continuation_result_path=args.continuation_result,
+            allocator_result_path=args.allocator_result,
+            continuation_bundle_path=args.continuation_bundle,
+            configured_assets_root=args.configured_assets_root,
+            static_qualification_path=args.static_qualification,
+            native_import_qualification_path=args.native_import_qualification,
+            output_dir=args.output_dir,
+            materialized_reference_overrides=overrides,
+        )
+    except NativeContinuationControlsInputError as exc:
+        print(json.dumps({"status": "refused", "reason": str(exc)}, sort_keys=True))
+        return 2
+    print(json.dumps({"status": value["status"], "receipt_digest": value["receipt_digest"]}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

@@ -408,6 +408,32 @@ def test_qualified_drawer_geometry_drives_native_path_and_matching_state_binding
     assert set(scene["reset"]["task_joint_positions_rad"]) == {"task_part_joint"}
 
 
+def test_construction_inputs_replay_from_saved_files(tmp_path):
+    from blueprint_pipeline.native_articulated_construction_inputs import (
+        main, materialize_articulated_construction_inputs,
+    )
+
+    case = _case(tmp_path)
+    definition = adapt_articulated_open_close_task_template(
+        configured_revision=case["configured"], materialized_references=case["references"]
+    )["native_task_definition"]
+    definition_path, static_path = tmp_path / "definition.json", tmp_path / "static.json"
+    definition_path.write_text(json.dumps(definition))
+    static_path.write_text(json.dumps(case["static"]))
+    output = tmp_path / "construction.json"
+    argv = ["--definition", str(definition_path), "--asset", str(case["asset"]),
+            "--static-qualification", str(static_path), "--output", str(output)]
+    assert main(argv) == 0
+    expected = materialize_articulated_construction_inputs(
+        task_spec=definition["task_spec"], definition=definition, asset=case["asset"],
+        asset_digest="sha256:" + hashlib.sha256(case["asset"].read_bytes()).hexdigest(),
+        link_prim_paths=case["static"]["link_prim_paths"],
+    )
+    assert json.loads(output.read_text()) == json.loads(json.dumps(expected))
+    with pytest.raises(ValueError, match="articulated_construction_output_exists"):
+        main(argv)
+
+
 def test_normalized_sdk_pose_anchors_the_local_base_instead_of_subtracting_capture_elevation():
     from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import _assembly_root_pose
     template = {"start_center_xyz_m": [2.0, -3.0, 1.8],
