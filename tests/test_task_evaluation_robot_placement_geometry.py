@@ -336,6 +336,57 @@ def _shelf_scene(tmp_path):
     return scene_path, robot_path
 
 
+def test_empty_initial_support_search_expands_to_other_observed_surfaces(tmp_path):
+    scene_path, robot_path = _assets(tmp_path)
+    scene = Usd.Stage.Open(str(scene_path))
+    scene.RemovePrim("/Scene/Floor")
+    scene.RemovePrim("/Scene/Obstacle")
+    # The largest surfaces lie inside a solid obstruction. The surfaces
+    # closest to task height are too small to support the base.
+    _box(scene, "/Scene/Occupied", (-0.2, -0.9, 0.0), (1.3, 0.9, 2.0))
+    for n, z in enumerate((0.1, 0.2, 0.3)):
+        _mesh(scene, f"/Scene/Large_{n}",
+              [(-0.2, -0.9, z), (1.3, -0.9, z), (1.3, 0.9, z), (-0.2, 0.9, z)],
+              [(0, 1, 2, 3)])
+    for n in range(13):
+        z = 0.7 + 0.005 * n
+        _mesh(scene, f"/Scene/Small_{n}",
+              [(0.4, -0.07, z), (0.54, -0.07, z), (0.54, 0.07, z), (0.4, 0.07, z)],
+              [(0, 1, 2, 3)])
+    _mesh(scene, "/Scene/UsableShelf",
+          [(-0.9, -0.35, 0.4), (-0.25, -0.35, 0.4), (-0.25, 0.35, 0.4), (-0.9, 0.35, 0.4)],
+          [(0, 1, 2, 3)])
+    scene.GetRootLayer().Save()
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene_path, robot_asset_usd_path=robot_path
+    )
+    diagnostics = {}
+    candidates = enumerate_robot_placement_geometry_candidates(
+        index=index, target_position_world_m=[0.0, 0.0, 0.9], maximum_candidates=3,
+        diagnostics=diagnostics,
+    )
+    assert candidates
+    assert all(p["support_surface_id"].startswith("/Scene/UsableShelf@") for p in candidates)
+    assert diagnostics["support_search_pass_count"] == 2
+    assert diagnostics["support_search_exhausted"] is True
+    assert diagnostics["searched_support_surface_count"] > 15
+    assert diagnostics["searched_support_surface_count"] == diagnostics["available_support_surface_count"]
+
+
+def test_no_eligible_observed_support_returns_an_empty_inventory(tmp_path):
+    scene_path, robot_path = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene_path, robot_asset_usd_path=robot_path
+    )
+    diagnostics = {}
+    assert enumerate_robot_placement_geometry_candidates(
+        index=index, target_position_world_m=[0.0, 0.0, 10.0], diagnostics=diagnostics
+    ) == []
+    assert diagnostics["proposal_count"] == 0
+    assert diagnostics["available_support_surface_count"] == 0
+    assert diagnostics["support_search_exhausted"] is True
+
+
 def test_enumeration_keeps_the_largest_support_when_height_ranking_buries_it(
     tmp_path,
 ) -> None:

@@ -30,6 +30,7 @@ from .task_evaluation_deferred_controls_contract import (
 
 import hashlib
 import json
+import math
 import re
 import os
 import tempfile
@@ -46,6 +47,14 @@ from .native_task_construction_plan import (
     materialize_native_task_construction_phase_plan,
 )
 from .native_franka_action_math import grasp_orientation_contact_xyzw
+from .native_articulated_motion_geometry import (
+    NativeArticulatedMotionGeometryError,
+    derive_native_articulated_motion_geometry,
+)
+from .articulated_control_planner import (
+    ArticulatedControlPlannerError,
+    plan_articulated_handle_trajectory,
+)
 from .task_evaluation_articulated_open_close_native_adapter import (
     TaskEvaluationArticulatedOpenCloseNativeAdapterError,
     adapt_articulated_open_close_task_template,
@@ -270,6 +279,66 @@ def derive_native_trajectory_plan(
     return plan
 
 
+def _revolute_placement_phases(
+    *, definition: Mapping[str, Any], asset: Path, asset_digest: str,
+    target: Mapping[str, Any], link_path: str, approach: list[float],
+    jaw: list[float], precontact: list[float], opening: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Derive the hinge arc and rotating grasp from the exact qualified USD."""
+
+    spec = definition["task_spec"]
+    affordance = spec["interaction_affordance"]
+    binding = next((row for row in definition["task_joint_bindings"]
+                    if row["joint_id"] == target["joint_id"]), None)
+    if binding is None:
+        raise ConfiguredControlsDeferredInputError(
+            "configured_controls_deferred_articulated_joint_binding_missing"
+        )
+    try:
+        motion = derive_native_articulated_motion_geometry(
+            task_object_usd_path=asset, task_object_sha256=asset_digest,
+            target_joint_id=target["joint_id"],
+            target_joint_prim_path=binding["joint_prim_path"],
+            moving_link_prim_path=link_path,
+            handle_grasp_point_moving_link_m=affordance["contact_point_link_m"],
+            task_object_pose_world=definition["task_object_pose_world"],
+            reset_angle_rad=float(target["reset_position"]),
+            scripted_target_angle_rad=opening,
+        )
+        trajectory = plan_articulated_handle_trajectory(
+            hinge_point_world_m=motion["hinge_point_world_m"],
+            hinge_axis_world=motion["hinge_axis_world_unit"],
+            handle_grasp_point_closed_world_m=motion["handle_grasp_point_closed_world_m"],
+            open_angle_degrees=motion["scripted_sweep_angle_degrees"],
+            authored_limit_degrees=max(abs(v) for v in motion["authored_limits_degrees"]),
+            approach_standoff_m=float(affordance["precontact_clearance_m"]),
+        )
+    except (NativeArticulatedMotionGeometryError, ArticulatedControlPlannerError) as exc:
+        raise ConfiguredControlsDeferredInputError(
+            "configured_controls_deferred_articulated_hinge_projection_failed"
+        ) from exc
+
+    def phase(name: str, point: list[float], angle: float, state: str) -> dict[str, Any]:
+        half = math.radians(angle) / 2.0
+        rotation = [v * math.sin(half) for v in motion["hinge_axis_world_unit"]] + [math.cos(half)]
+        orientation = grasp_orientation_contact_xyzw(
+            approach_axis=_quaternion_rotate_xyzw(rotation, approach),
+            jaw_axis=_quaternion_rotate_xyzw(rotation, jaw),
+        )
+        return {"phase_id": name, "position_world_m": point,
+                "orientation_world_xyzw": orientation, "gripper_state": state,
+                "gate_ids": ["native_ik", "native_collision_readback"]}
+
+    phases = [phase("approach", precontact, 0.0, "open")]
+    waypoints = trajectory["waypoints"]
+    for index, row in enumerate(waypoints):
+        name = ("handle_contact" if index == 0 else "minimum_opening_reach"
+                if index == len(waypoints) - 1 else f"opening_reach_{index:02d}")
+        phases.append(phase(name, row["position_world_m"], row["door_angle_degrees"],
+                            "open" if index == 0 else "closed"))
+    return phases, motion
+
+
 def _articulated_placement_plan(
     *, revision: Mapping[str, Any], documents: Mapping[str, Path],
     references: Mapping[str, Mapping[str, Any]],
@@ -291,7 +360,7 @@ def _articulated_placement_plan(
     spec = definition["task_spec"]
     graph = spec["articulation_graph"]
     target = next((row for row in graph["joints"] if row["role"] == "target"), None)
-    if target is None or target["joint_type"] != "prismatic":
+    if target is None or target["joint_type"] not in {"prismatic", "revolute"}:
         raise ConfiguredControlsDeferredInputError(
             "configured_controls_deferred_articulated_placement_joint_unsupported"
         )
@@ -313,7 +382,7 @@ def _articulated_placement_plan(
         from pxr import Gf, Usd, UsdGeom
 
         stage = Usd.Stage.Open(str(asset))
-        root_prim = stage.GetPrimAtPath("/Asset") if stage is not None else None
+        root_prim = stage.GetDefaultPrim() if stage is not None else None
         link_path = next(
             path for path in affordance["contact_body_prim_paths"]
             if path.endswith("/" + affordance["contact_link_id"])
@@ -353,12 +422,19 @@ def _articulated_placement_plan(
         }
 
     precontact = [point_world[i] - approach[i] * clearance for i in range(3)]
-    opened = [point_world[i] + axis[i] * opening for i in range(3)]
-    phases = [
-        phase("approach", precontact, "open"),
-        phase("handle_contact", point_world, "open"),
-        phase("minimum_opening_reach", opened, "closed"),
-    ]
+    if target["joint_type"] == "prismatic":
+        opened = [point_world[i] + axis[i] * opening for i in range(3)]
+        phases = [phase("approach", precontact, "open"),
+                  phase("handle_contact", point_world, "open"),
+                  phase("minimum_opening_reach", opened, "closed")]
+        motion_fields = {"minimum_opening_m": opening}
+    else:
+        phases, motion = _revolute_placement_phases(
+            definition=definition, asset=Path(asset), asset_digest=asset_reference["digest"],
+            target=target, link_path=link_path, approach=approach, jaw=jaw,
+            precontact=precontact, opening=opening,
+        )
+        motion_fields = {"minimum_opening_rad": opening, "motion_geometry": motion}
     plan = {
         "schema_version": ARTICULATED_PLACEMENT_PLAN_SCHEMA_VERSION,
         "task_kind": "articulated_open_close",
@@ -368,7 +444,7 @@ def _articulated_placement_plan(
         "qualified_asset_digest": asset_reference["digest"],
         "qualified_static_digest": revision["replacement"]["static_qualification"]["digest"],
         "target_joint_id": target["joint_id"],
-        "minimum_opening_m": opening,
+        **motion_fields,
         "phases": phases, "phase_count": len(phases),
         "execution_parameters": {
             "arrival_tolerance_m": 0.02,
