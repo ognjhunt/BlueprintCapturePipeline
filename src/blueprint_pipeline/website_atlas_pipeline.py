@@ -408,9 +408,14 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         if mesh["status"] != "completed":
             return {"status": "processing", "stage": "mesh", "operation_id": mesh.get("operation_id")}
         if not (mesh_root / "registered" / "atlas_mesh_registration.json").exists():
+            from .atlas_depth_splat import load_posed_rgbd
+            reference_pose, reference_frames = load_posed_rgbd(pose_root)
+            if reference_pose["digest"] != pose["digest"]:
+                raise ValueError("atlas_mesh_depth_filter_pose_binding_invalid")
             outputs = json.loads((mesh_root / "result.json").read_text())["outputs"]
             register_atlas_mesh(glb=mesh_root / next(row["path"] for row in outputs if row["role"] == "mesh"),
-                                splat_root=splat_root, output_root=mesh_root / "registered")
+                                splat_root=splat_root, output_root=mesh_root / "registered",
+                                reference_frames=reference_frames, reference_pose_digest=reference_pose["digest"])
     else:
         blockers.insert(0, "atlas_mesh_export_price_unreviewed")
     bundle = export_pose_bundle(pose_root=pose_root, output_root=output_root / "downloads",

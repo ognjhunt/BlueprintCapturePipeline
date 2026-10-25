@@ -144,6 +144,7 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
         if calls["pose"] == 1:
             return {"status": "processing", "operation_id": "pose"}
         value = {"operation": {"id": "pose", "done": True, "response": {"frames": [frame(0), frame(1)]}}}
+        value["digest"] = canonical_digest(value, digest_field="digest")
         (kwargs["output_root"] / "atlas_posed_rgbd_result.json").write_text(json.dumps(value))
         return {"status": "completed", "operation_id": "pose"}
     monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", pose)
@@ -170,6 +171,9 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
         (splat_root / "atlas_depth_splat_manifest.json").write_text(json.dumps(manifest))
         return manifest
     monkeypatch.setattr(depth_splat, "build_depth_splat", splat)
+    reference_frames = [{"frame_id": "first"}, {"frame_id": "second"}]
+    monkeypatch.setattr(depth_splat, "load_posed_rgbd", lambda path: (
+        json.loads((path / "atlas_posed_rgbd_result.json").read_text()), reference_frames))
     from blueprint_pipeline import atlas_mesh_registration as mesh_registration
     registered = []
     monkeypatch.setattr(mesh_registration, "register_atlas_mesh", lambda **kw: registered.append(kw))
@@ -194,6 +198,8 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     assert result["splat_available"] is True and result["mesh_available"] is bool(mesh_price)
     assert (exported["mesh_root"] is not None) is bool(mesh_price) and exported["splat_root"] == root / "splat"
     assert [str(kw["glb"]) for kw in registered] == ([str(root / "mesh/outputs/mesh.glb")] if mesh_price else [])
+    assert all(kw["reference_frames"] is reference_frames and
+               kw["reference_pose_digest"].startswith("sha256:") for kw in registered)
     # No reviewed mesh price means no mesh purchase, never an implied mesh.
     assert result["blockers"] == ([] if mesh_price else ["atlas_mesh_export_price_unreviewed"]) + [
         "metric_scene_registration_unproven"]
