@@ -18,6 +18,7 @@ import stat
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -900,6 +901,55 @@ def test_a_short_sidecar_write_leaves_no_partial_lease(
     retried = collect_release_protections(sources, now=NOW, migrate=True)
     assert retried["blockers"] == [] and retried["migrated"] == ["short.json"]
     assert json.loads(_sidecar(sources, "short.json").read_text(encoding="utf-8"))["binding"] == "short.json"
+
+
+def test_a_lease_the_service_account_cannot_read_is_named_unreadable(tmp_path: Path) -> None:
+    # Root-only sidecars read as "invalid" to the service account, hiding the
+    # real cause while they blocked every retirement for weeks.
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    sources = _sources(tmp_path)
+    _binding(sources, "root-only.json", B)
+    assert collect_release_protections(sources, now=NOW, migrate=True)["migrated"] == ["root-only.json"]
+    bindings = sources.lease_root / "bindings"
+    bindings.chmod(0)
+    try:
+        result = collect_release_protections(sources, now=NOW, migrate=False)
+    finally:
+        bindings.chmod(0o750)
+
+    assert result["blockers"] == ["release_protection_lease_unreadable:root-only.json"]
+
+
+def test_root_written_leases_stay_readable_by_the_service_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sources = _sources(tmp_path)
+    _binding(sources, "as-root.json", B)
+    granted: list[tuple[object, int, int]] = []
+    monkeypatch.setattr(leases, "_service_group", lambda: 4242)
+    monkeypatch.setattr(leases.os, "chown", lambda path, uid, gid: granted.append((Path(path), uid, gid)))
+    monkeypatch.setattr(leases.os, "fchown", lambda descriptor, uid, gid: granted.append(("sidecar", uid, gid)))
+
+    result = collect_release_protections(sources, now=NOW, migrate=True)
+
+    assert result["migrated"] == ["as-root.json"]
+    assert granted == [(sources.lease_root, -1, 4242), (sources.lease_root / "bindings", -1, 4242),
+                       ("sidecar", -1, 4242)]
+    assert stat.S_IMODE((sources.lease_root / "bindings").stat().st_mode) == 0o750
+    assert stat.S_IMODE(_sidecar(sources, "as-root.json").stat().st_mode) == 0o640
+
+
+def test_only_root_hands_its_leases_to_the_service_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    accounts = {"blueprint": SimpleNamespace(pw_gid=986)}
+    monkeypatch.setattr(leases.pwd, "getpwnam", lambda name: accounts[name])
+    monkeypatch.setattr(leases.os, "geteuid", lambda: 0)
+    assert leases._service_group() == 986
+    monkeypatch.setattr(leases.os, "geteuid", lambda: 995)
+    assert leases._service_group() is None
+    monkeypatch.setattr(leases.os, "geteuid", lambda: 0)
+    accounts.clear()
+    assert leases._service_group() is None  # a host without the account keeps the writer's group
 
 
 def test_standing_authorization_commit_comes_from_the_id_prefix_or_blocks(tmp_path: Path) -> None:

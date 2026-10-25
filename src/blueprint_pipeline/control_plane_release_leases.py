@@ -41,6 +41,7 @@ import hashlib
 import json
 import math
 import os
+import pwd
 import re
 import stat
 import tempfile
@@ -103,6 +104,10 @@ _COMMIT_FIELDS = ("expected_production_commit", "source_commit", "expected_sourc
 _MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}\Z")
 _SIDECAR_SUFFIX = ".lease.v1.json"
+# Retirement runs as root to delete root-owned trees, but deploys and the
+# capacity controller read leases as this account. Root-only sidecars written
+# by a 2026-09-27 migration read as invalid there and blocked retirement for weeks.
+_SERVICE_ACCOUNT = "blueprint"
 _OFFLOAD_POINTER_SUFFIX = ".offloaded.v1.json"
 _INLINE_LEASE_FIELDS = ("owner", "expires_at_epoch", "max_expires_at_epoch", "run_ref")
 _QUEUE_SCAN_ATTEMPTS = 3
@@ -1074,6 +1079,16 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         view = view[os.write(descriptor, view):]
 
 
+def _service_group() -> int | None:
+    """The service account's group when root writes, else None (the writer's own group)."""
+    if os.geteuid() != 0:
+        return None
+    try:
+        return pwd.getpwnam(_SERVICE_ACCOUNT).pw_gid
+    except KeyError:
+        return None
+
+
 def _write_sidecar(path: Path, lease: Mapping[str, Any], *, replace: bool) -> None:
     """Publish a complete sidecar (mode 0640) or nothing.
 
@@ -1081,14 +1096,19 @@ def _write_sidecar(path: Path, lease: Mapping[str, Any], *, replace: bool) -> No
     first; creation then links that file into place (refusing an existing
     sidecar) and renewal renames it over the old one.  A short write (a full
     disk) leaves no partial sidecar that would block every later deploy.
+    Written as root, the sidecar and its directories stay root-owned but take
+    the service account's group, so the service can still read them.
     """
 
     directory = path.parent
+    group = _service_group()
     for level in (directory.parent, directory):
         if _absent(level):
             level.mkdir(mode=0o750)
         elif level.is_symlink() or not level.is_dir():
             raise ValueError("release_protection_lease_root_unsafe")
+        if group is not None:
+            os.chown(level, -1, group)
     payload = (
         json.dumps(lease, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     ).encode("utf-8")
@@ -1096,6 +1116,8 @@ def _write_sidecar(path: Path, lease: Mapping[str, Any], *, replace: bool) -> No
     try:
         try:
             os.fchmod(descriptor, 0o640)
+            if group is not None:
+                os.fchown(descriptor, -1, group)
             _write_all(descriptor, payload)
             os.fsync(descriptor)
         finally:
@@ -1176,11 +1198,15 @@ def evaluate_binding_lease(
     )
     try:
         sidecar_exists = sidecar is not None and not _absent(sidecar)
+    except PermissionError:
+        return blocked(f"release_protection_lease_unreadable:{_code_id(name)}")
     except OSError:
         return blocked(f"release_protection_lease_invalid:{_code_id(name)}")
     if lease is None and sidecar_exists:
         try:
             sidecar_payload, recorded, _info = _read_document(sidecar)  # type: ignore[arg-type]
+        except PermissionError:
+            return blocked(f"release_protection_lease_unreadable:{_code_id(name)}")
         except (OSError, ValueError):
             return blocked(f"release_protection_lease_invalid:{_code_id(name)}")
         problem = _sidecar_problem(
