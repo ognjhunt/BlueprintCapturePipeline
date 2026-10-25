@@ -162,13 +162,39 @@ def fixture_reset_clearance(plan, chain, joints, collision_path: Path,
 
 
 def external_camera_offset_position(plan) -> list[float]:
-    """Apply the preregistered world-X shift in the DROID camera's parent frame."""
+    """Apply sealed task placement and the preregistered shift in the parent frame."""
     delta = float(((plan.get("scenario") or {}).get("parameters") or {}).get("external_camera_x_delta_m", 0.0))
     if not math.isfinite(delta) or abs(delta) > 0.1:
         raise ValueError("policy_camera_external_variation_out_of_bounds")
     base = plan["robot"]["base_pose_world"]
     rotation = pose_matrix(base["position_world_m"], base["orientation_xyzw"])[:3, :3]
-    return (np.asarray(EXTERNAL_POSITION) + rotation.T @ np.asarray([delta, 0., 0.])).tolist()
+    binding = plan.get("policy_canary_camera_start_configuration") or {}
+    position = np.asarray(binding.get("external_camera_position_parent_m", EXTERNAL_POSITION), dtype=float)
+    if position.shape != (3,) or not np.isfinite(position).all():
+        raise ValueError("policy_camera_external_position_invalid")
+    return (position + rotation.T @ np.asarray([delta, 0., 0.])).tolist()
+
+
+def task_external_camera_position(plan) -> list[float]:
+    """Translate the calibrated camera to frame the task path with scene context.
+
+    Intrinsics, camera rotation, and the wrist mount stay calibrated. This is a
+    provisional camera placement; actual visibility and occlusion need native readback.
+    """
+    base = plan["robot"]["base_pose_world"]
+    parent = pose_matrix(base["position_world_m"], base["orientation_xyzw"])
+    rotation = parent[:3, :3] @ pose_matrix([0., 0., 0.], EXTERNAL_QUATERNION_XYZW)[:3, :3]
+    points = np.asarray(list(task_framing_points(plan).values())) @ rotation
+    lower, upper = points.min(axis=0), points.max(axis=0)
+    center, half = (lower+upper)/2, (upper-lower)/2
+    extent = np.asarray((plan.get("task_object_observability") or {}).get("task_object_extent_m", [0., 0., 0.]))
+    if extent.shape != (3,) or not np.isfinite(extent).all() or np.any(extent < 0):
+        raise ValueError("policy_camera_articulated_geometry_invalid")
+    margin = float(extent.max())/4
+    # A 1280x720 image at fx=fy=500, with twenty percent framing margin.
+    distance = max(.75, (half[0]+margin)/1.024, (half[1]+margin)/.576) + half[2]
+    world_position = rotation @ (center + [0., 0., distance])
+    return (parent[:3, :3].T @ (world_position-parent[:3, 3])).tolist()
 
 
 def resolved_camera_matrices(plan, chain, joints) -> dict[str, tuple[np.ndarray, list[list[float]]]]:
@@ -196,7 +222,7 @@ def camera_framing_report(plan, chain, joints) -> dict[str, Any]:
         camera = next(c for c in plan["cameras"] if c["role"] == role)
         width, height = (1280, 720) if role != "overview" else (camera["intrinsics"]["width"], camera["intrinsics"]["height"])
         for name, point in points.items():
-            if role == "wrist" and name == "subject_destination":
+            if role == "wrist" and name != "subject_start":
                 continue
             local = matrix[:3, :3].T @ (np.asarray(point)-matrix[:3, 3])
             depth = float(-local[2])
@@ -211,7 +237,7 @@ def camera_framing_report(plan, chain, joints) -> dict[str, Any]:
 
 
 def task_framing_points(plan) -> dict[str, list[float]]:
-    """Use authored assembly bounds for a provisional drawer camera target."""
+    """Frame the frozen motion path without treating angular travel as meters."""
     spec = plan["task_spec"]
     if plan.get("task_kind") != "articulated_open_close":
         return {"subject_start": spec["start_pose_world"][:3],
@@ -223,6 +249,10 @@ def task_framing_points(plan) -> dict[str, list[float]]:
     contact = np.asarray(spec["interaction_affordance"]["contact_point_link_m"], dtype=float)
     pull = np.asarray(spec["interaction_affordance"]["pull_unit_asset_root"], dtype=float)
     threshold = spec["executable_opening_threshold"]
+    pose = subjects[0]["pose_world"]
+    world = pose_matrix(pose["position_world_m"], pose["orientation_xyzw"])
+    if threshold.get("joint_type") == "revolute":
+        return _revolute_framing_points(spec["interaction_affordance"], threshold, world)
     if threshold.get("joint_type") != "prismatic":
         raise ValueError("policy_camera_articulated_joint_unsupported")
     interval = threshold["success_interval"]
@@ -233,8 +263,6 @@ def task_framing_points(plan) -> dict[str, list[float]]:
             or not isinstance(interval, list) or len(interval) != 2
             or not 0 < float(interval[0]) <= float(interval[1])):
         raise ValueError("policy_camera_articulated_geometry_invalid")
-    pose = subjects[0]["pose_world"]
-    world = pose_matrix(pose["position_world_m"], pose["orientation_xyzw"])
     # The handle point is link-local, so only its front/side coordinates are
     # used here. The vertical center comes from the qualified full assembly
     # extent. Native rendered visibility remains a separate required check.
@@ -242,6 +270,39 @@ def task_framing_points(plan) -> dict[str, list[float]]:
     start = (world @ local)[:3]
     destination = start + world[:3, :3] @ pull * float(interval[0])
     return {"subject_start": start.tolist(), "subject_destination": destination.tolist()}
+
+
+def _revolute_framing_points(affordance, threshold, world) -> dict[str, list[float]]:
+    """Reuse the sealed USD-derived handle arc, including its intermediate views."""
+    path = affordance.get("joint_contact_path")
+    if (affordance.get("affordance_digest") != canonical_digest(affordance, digest_field="affordance_digest")
+            or not isinstance(path, list) or not 2 <= len(path) <= 64):
+        raise ValueError("policy_camera_articulated_contact_path_invalid")
+    try:
+        reset = float(threshold["reset_position"])
+        target = float(threshold["success_interval"][0])
+        travel = target - reset
+        if not math.isfinite(reset) or not math.isfinite(target) or abs(travel) < 1e-12:
+            raise ValueError
+        points, progress = {}, []
+        for index, row in enumerate(path):
+            coordinate = float(row["joint_positions"][threshold["target_joint_id"]])
+            position = np.asarray(row["contact_pose_asset_root"]["position_m"], dtype=float)
+            fraction = (coordinate - reset) / travel
+            if position.shape != (3,) or not np.isfinite(position).all() or not math.isfinite(fraction):
+                raise ValueError
+            progress.append(fraction)
+            name = ("subject_start" if index == 0 else "subject_destination" if index == len(path)-1
+                    else f"subject_path_{index:02d}")
+            points[name] = (world @ np.append(position, 1.))[:3].tolist()
+        if (not math.isclose(progress[0], 0., abs_tol=1e-9)
+                or not math.isclose(progress[-1], 1., abs_tol=1e-9)
+                or any(not -1e-9 <= value <= 1.+1e-9 for value in progress)
+                or any(a > b for a, b in zip(progress, progress[1:]))):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise ValueError("policy_camera_articulated_contact_path_invalid") from exc
+    return points
 
 
 def validate_camera_start_configuration(plan, value) -> dict[str, Any]:
@@ -267,7 +328,8 @@ def validate_camera_start_configuration(plan, value) -> dict[str, Any]:
     observed = np.asarray(reference["world_from_wrist_camera_opengl"], dtype=float)
     if observed.shape != (4, 4) or not np.isfinite(observed).all() or np.max(np.abs(baseline-observed)) > 0.001:
         raise ValueError("policy_camera_source_kinematics_native_readback_mismatch")
-    report = camera_framing_report(plan, binding["source_joint_chain"], joints)
+    report = camera_framing_report({**plan, "policy_canary_camera_start_configuration": binding},
+                                  binding["source_joint_chain"], joints)
     if report["status"] != "passed":
         raise ValueError("policy_camera_final_reset_does_not_frame_task")
     clearance = binding.get("pre_spend_scene_clearance")
@@ -370,6 +432,10 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
         'source_scene_plan_digest': plan['plan_digest'], 'runtime_digest': runtime_digest,
         'source_calibration_digest': calibration_digest, 'historical_scene_visibility_adopted': False,
         'reset_authority': 'configured_robot_plan_requires_native_readback'}
+    initial_framing = camera_framing_report(plan, value['source_joint_chain'], value['joint_reset_positions_rad'])
+    if any(not row['passed'] for row in initial_framing['views'] if row['camera_role'] == 'external'):
+        value['external_camera_position_parent_m'] = task_external_camera_position(plan)
+        value['external_camera_placement_source'] = 'sealed_task_motion_path'
     fixture = (plan.get('task_kind') == 'articulated_open_close'
                and str(plan.get('scene_id', '')).endswith('-development'))
     if fixture and (scene_collision_asset_path is None or task_asset_path is None):
@@ -454,7 +520,7 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
                                             'policy_camera_fixture_reset_intersects_obstacle'}:
                             raise
                         continue
-                    report = camera_framing_report(plan, candidate['source_joint_chain'],
+                    report = camera_framing_report({**plan, 'policy_canary_camera_start_configuration': candidate}, candidate['source_joint_chain'],
                                                    candidate['joint_reset_positions_rad'])
                     wrist = next(row for row in report['views'] if row['camera_role'] == 'wrist'
                                  and row['subject'] == 'subject_start')
@@ -465,3 +531,31 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
         if choices:
             return min(choices, key=lambda item: item[:4])[4]
     raise ValueError('policy_camera_final_reset_does_not_frame_task')
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Expose the same sealed camera joins used by automated scene preparation.
+
+    ``plan`` prepares a candidate reset; ``construction`` binds an actual native
+    reset. Neither command allocates, launches a simulator, or calls a policy.
+    Parameters are the selected materializer's exact JSON keyword arguments.
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("operation", choices=("plan", "construction"))
+    parser.add_argument("--parameters", required=True, help="JSON materializer arguments.")
+    args = parser.parse_args(argv)
+    parameters = json.loads(Path(args.parameters).read_text(encoding="utf-8"))
+    if not isinstance(parameters, dict):
+        parser.error("parameters must be a JSON object")
+    materialize = (materialize_camera_start_from_plan if args.operation == "plan"
+                   else materialize_camera_start_from_construction)
+    result = materialize(**parameters)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
