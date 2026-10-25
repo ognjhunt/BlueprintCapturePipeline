@@ -2,12 +2,16 @@
 
 Both episode preparation and development diagnostics use these same USD joint
 transforms. This derives geometry and command inputs, not robot contact proof.
+`main` replays the derivation from saved files on CPU.
 """
 
 from __future__ import annotations
 
+import argparse
 import copy
-from collections.abc import Mapping
+import hashlib
+import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -109,3 +113,57 @@ def materialize_articulated_construction_inputs(
         "task_state_binding": state_binding,
         "articulated_kinematic_path_receipt": receipt,
     }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Derive construction inputs from a saved native task definition."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--definition", required=True, help="native task definition JSON")
+    parser.add_argument("--task-spec", help="task spec JSON when it differs from the definition's")
+    parser.add_argument("--asset", required=True, help="articulated replacement USD")
+    parser.add_argument(
+        "--static-qualification", required=True, help="receipt that names link_prim_paths"
+    )
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+    definition = json.loads(Path(args.definition).expanduser().read_text(encoding="utf-8"))
+    task_spec = (
+        json.loads(Path(args.task_spec).expanduser().read_text(encoding="utf-8"))
+        if args.task_spec
+        else definition["task_spec"]
+    )
+    static = json.loads(Path(args.static_qualification).expanduser().read_text(encoding="utf-8"))
+    asset = Path(args.asset).expanduser()
+    output = Path(args.output).expanduser()
+    if output.exists():
+        raise ValueError("articulated_construction_output_exists")
+    with asset.open("rb") as stream:
+        asset_digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+    value = materialize_articulated_construction_inputs(
+        task_spec=task_spec,
+        definition=definition,
+        asset=asset,
+        asset_digest=asset_digest,
+        link_prim_paths=static["link_prim_paths"],
+    )
+    output.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "affordance_digest": value["task_spec"]["interaction_affordance"][
+                    "affordance_digest"
+                ],
+                "kinematic_path_receipt_digest": value["articulated_kinematic_path_receipt"][
+                    "receipt_digest"
+                ],
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

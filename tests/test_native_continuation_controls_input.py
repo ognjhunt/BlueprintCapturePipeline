@@ -9,6 +9,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_native_continuation_controls_input import (
     NativeContinuationControlsInputError,
+    main,
     materialize_native_continuation_controls_input,
 )
 
@@ -127,4 +128,36 @@ def test_reuse_refuses_wider_authority_or_unclosed_source(tmp_path, flags, reaso
     args = _case(tmp_path, **flags)
     with pytest.raises(NativeContinuationControlsInputError, match=reason):
         materialize_native_continuation_controls_input(**args)
+    assert not args["output_dir"].exists()
+
+
+def _argv(args):
+    argv = ["--continuation-result", str(args["continuation_result_path"]),
+            "--allocator-result", str(args["allocator_result_path"]),
+            "--continuation-bundle", str(args["continuation_bundle_path"]),
+            "--configured-assets-root", str(args["configured_assets_root"]),
+            "--static-qualification", str(args["static_qualification_path"]),
+            "--native-import-qualification", str(args["native_import_qualification_path"]),
+            "--output-dir", str(args["output_dir"])]
+    for contract_path, path in args["materialized_reference_overrides"].items():
+        argv += ["--reference-override", f"{contract_path}={path}"]
+    return argv
+
+
+def test_command_line_writes_the_same_receipt(tmp_path, capsys):
+    args = _case(tmp_path)
+    assert main(_argv(args)) == 0
+    receipt = json.loads((args["output_dir"] / "diagnostic_controls_input.v1.json").read_text())
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "materialized", "receipt_digest": receipt["receipt_digest"]}
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
+    assert receipt["prior_spend_authority_inherited"] is False
+
+
+def test_command_line_refuses_changed_bytes_without_output(tmp_path, capsys):
+    args = _case(tmp_path)
+    static = args["static_qualification_path"]
+    static.write_bytes(static.read_bytes() + b"changed")
+    assert main(_argv(args)) == 2
+    assert "bound_input_changed" in json.loads(capsys.readouterr().out)["reason"]
     assert not args["output_dir"].exists()
