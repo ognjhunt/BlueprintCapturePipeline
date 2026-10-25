@@ -45,13 +45,16 @@ MIN_CANDIDATE_SPACING_SECONDS = 0.4
 MIN_MASK_AREA_FRACTION = 0.01
 CLASSIFY_BATCH = 12
 CLASSIFIER_MODEL = "gemini-3.8-flash"
-# 4: full-task motion requirements accompany the visible-part classification.
-CLASSIFIER_REVISION = 4
+# 5: reserve room for the answer and explicitly bound thinking effort.
+CLASSIFIER_REVISION = 5
 # Selection output shape; a change recomputes records while replaying retained
 # classifier receipts for free. 4: seed required-motion witnesses and select for
 # coverage rather than padding an articulated task's image budget.
 SELECTION_REVISION = 4
-CLASSIFIER_MAX_OUTPUT_TOKENS = 8192
+# Thinking tokens share the output limit. A twelve-frame part/motion report
+# exhausted 8192 tokens before returning JSON on Gemini 3.8's default effort.
+CLASSIFIER_MAX_OUTPUT_TOKENS = 16384
+CLASSIFIER_THINKING_LEVEL = "LOW"
 # A JSON syntax error gets one text-only repair turn in the same call, never a
 # receipt left uncertain or a second paid classification.
 JSON_REPAIR_TURNS = 1
@@ -457,7 +460,8 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
                    "images": [{"frame_id": row["frame_id"], "upright_sha256": row["sha256"],
                                "classifier_copy_sha256": "sha256:" + hashlib.sha256(image).hexdigest()}
                               for row, image in zip(batch, images, strict=True)],
-                   "max_output_tokens": CLASSIFIER_MAX_OUTPUT_TOKENS, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
+                   "max_output_tokens": CLASSIFIER_MAX_OUTPUT_TOKENS,
+                   "thinking_level": CLASSIFIER_THINKING_LEVEL, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
 
         def preflight():
             if not _api_key()[0]:
@@ -473,17 +477,27 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
                     contents=[prompt, *[types.Part.from_bytes(data=image, mime_type="image/jpeg") for image in images]],
                     config=types.GenerateContentConfig(response_mime_type="application/json",
                                                        max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS,
+                                                       thinking_config=types.ThinkingConfig(
+                                                           thinking_level=CLASSIFIER_THINKING_LEVEL),
                                                        media_resolution="MEDIA_RESOLUTION_HIGH"))
                 reason = response.candidates[0].finish_reason if response.candidates else None
                 if reason != "STOP":
                     # Retained as an invalid classification, never left uncertain or bought again.
-                    return {"classification": None, "finish_reason": str(getattr(reason, "value", reason))}
+                    usage = getattr(response, "usage_metadata", None)
+                    return {"classification": None, "finish_reason": str(getattr(reason, "value", reason)),
+                            "partial_output": response.text or "",
+                            "token_usage": {key: getattr(usage, key) for key in (
+                                "prompt_token_count", "candidates_token_count",
+                                "thoughts_token_count", "total_token_count")
+                                if getattr(usage, key, None) is not None}}
 
                 def repair(error: str) -> str:
                     fixed = client.models.generate_content(model=CLASSIFIER_MODEL,
                         contents=[_json_repair_prompt(response.text, error)],
                         config=types.GenerateContentConfig(response_mime_type="application/json",
-                                                           max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS))
+                                                           max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS,
+                                                           thinking_config=types.ThinkingConfig(
+                                                               thinking_level=CLASSIFIER_THINKING_LEVEL)))
                     if not fixed.candidates or fixed.candidates[0].finish_reason != "STOP":
                         raise ValueError("website_assembly_coverage_json_repair_incomplete")
                     return fixed.text
