@@ -723,6 +723,8 @@ def test_blocked_preload_observation_gate_loads_zero_policies_and_still_closes(
     assert result["episodes"] == []
     assert result["candidate_policy_queried"] is False
     assert result["preload_observation_gate"] == gate_receipt
+    assert result["learned_policy_rollout_count"] == 0
+    assert result["planned_learned_policy_rollout_count"] > 0
     assert calls == {"open": 1, "close": 1, "loads": []}
 
 

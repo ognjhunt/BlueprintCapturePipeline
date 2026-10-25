@@ -976,7 +976,8 @@ def execute_paired_session(
         "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
         "episodes_per_policy": len(inputs["cells"]),
-        "learned_policy_rollout_count": len(candidate_ids) * len(inputs["cells"]),
+        "learned_policy_rollout_count": len(episodes),
+        "planned_learned_policy_rollout_count": expected_episode_count,
         "provider_allocations_observed": (
             None
             if provider_closeout_pending

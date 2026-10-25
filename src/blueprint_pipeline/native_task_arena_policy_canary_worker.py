@@ -1480,6 +1480,23 @@ def _run_isolated_cell_processes(
             diagnostic_continuation_gate = assess_diagnostic_first_cell(runtime_root=runtime, child_root=child_root)
             _seal_result(result_path=output_root / GATE_FILENAME, result=diagnostic_continuation_gate)
             if diagnostic_continuation_gate["status"] != "passed":
+                if diagnostic_continuation_gate.get("failure_stage") == "prepolicy_observation":
+                    # This is a retained scene refusal, not a missing pair of
+                    # policy episodes. Preserve its inventory for streaming and
+                    # close normally so the bootstrap does not invent a fallback.
+                    result = deepcopy(child_result)
+                    result.pop("selected_cell_index", None)
+                    inventory = [{**row, "relative_path": f"cell_runs/{index:02d}/" + row["relative_path"]}
+                                 for row in child_result["artifact_inventory"]]
+                    result.update(status="blocked", episodes_per_policy=0,
+                        planned_episodes_per_policy=len(inputs["cells"]), learned_policy_rollout_count=0,
+                        blockers=list(diagnostic_continuation_gate["blockers"]),
+                        diagnostic_continuation_gate=diagnostic_continuation_gate,
+                        isolated_simulation_process_count=1, stopped_before_next_cell=True,
+                        artifact_inventory=inventory, artifact_inventory_digest=_digest(inventory))
+                    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+                    _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+                    return 1
                 raise RuntimeError("diagnostic_continuation_first_cell_blocked:" + ",".join(diagnostic_continuation_gate["blockers"]))
         elif index == 0 and inputs.get("run_kind") != TEAM_RUN_KIND:
             # The DROID harness-parity probe qualifies Blueprint's frozen canary; a team's

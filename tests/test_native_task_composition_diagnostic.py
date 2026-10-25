@@ -198,6 +198,104 @@ def test_composition_gate_retains_edge_differences_without_promoting_them_to_int
     assert result['interior_pixels_occluded_by_appearance'] == 1
 
 
+def _contact_plan():
+    affordance = {'arrival_tolerance_m': .06, 'sweep_clearance_m': .08,
+        'joint_contact_path': [
+            {'joint_positions': {'joint_a': 0.}, 'contact_pose_asset_root': {'position_m': [0., 0., 0.]}},
+            {'joint_positions': {'joint_a': .7}, 'contact_pose_asset_root': {'position_m': [.3, 0., 0.]}}]}
+    diagnostic.seal(affordance, 'affordance_digest')
+    return {'task_kind': 'articulated_open_close',
+        'task_spec': {'interaction_affordance': affordance,
+            'executable_opening_threshold': {'target_joint_id': 'joint_a', 'reset_position': 0.}},
+        'objects': [{'task_subject': True, 'object_type': 'ARTICULATION',
+            'pose_world': {'position_world_m': [0., 0., -1.], 'orientation_xyzw': [0., 0., 0., 1.]}}]}
+
+
+def _contact_pixels(tmp_path):
+    root = tmp_path / 'pixel_comparison'
+    root.mkdir()
+    mask = np.ones((60, 80), dtype=bool)
+    missing = np.zeros_like(mask)
+    calibration = {'intrinsic_matrix': [[100., 0., 40.], [0., 100., 30.], [0., 0., 1.]],
+        'position_world_m': [0., 0., 0.], 'quaternion_world_opengl_xyzw': [0., 0., 0., 1.],
+        'resolution_hw': [60, 80]}
+    np.save(root / 'native_mesh_target_semantic_mask.npy', mask)
+    value = {'status': 'captured', 'blockers': [], 'passes': [{'pass': 'full', 'camera_calibration': calibration}]}
+    return root, mask, missing, value
+
+
+def test_installed_housing_occlusion_is_reported_but_contact_occlusion_still_blocks(tmp_path):
+    from blueprint_pipeline.native_task_asset_composition_gate import (
+        articulated_reset_contact_region, assess_composition_pixels)
+    root, _mask, missing, value = _contact_pixels(tmp_path)
+    region = articulated_reset_contact_region(_contact_plan())
+    missing[5, 5] = True  # Covered housing, outside the frozen interaction patch.
+    np.save(root / 'mesh_target_occluded_in_full.npy', missing)
+    assert not assess_composition_pixels(value, output_root=tmp_path)['passed']
+    result = assess_composition_pixels(value, output_root=tmp_path, interaction_region=region)
+    assert result['passed'] and not result['whole_asset_visibility_qualified']
+    assert result['interaction_visibility']['outside_contact_pixels_occluded_by_appearance'] == 1
+    assert result['interaction_visibility']['native_contact_interior_pixels'] >= 64
+    missing[30, 40] = True
+    np.save(root / 'mesh_target_occluded_in_full.npy', missing)
+    result = assess_composition_pixels(value, output_root=tmp_path, interaction_region=region)
+    assert not result['passed']
+    assert result['blockers'] == ['composition_contact_background_occlusion_requires_review']
+    debug = assess_composition_pixels(value, output_root=tmp_path, interaction_region=region, interaction_required=False)
+    assert debug['passed'] and not debug['interaction_visibility']['passed']
+
+
+def test_contact_patch_without_native_target_pixels_cannot_pass(tmp_path):
+    from blueprint_pipeline.native_task_asset_composition_gate import (
+        articulated_reset_contact_region, assess_composition_pixels)
+    root, mask, missing, value = _contact_pixels(tmp_path)
+    mask[15:45, 25:55] = False
+    np.save(root / 'native_mesh_target_semantic_mask.npy', mask)
+    np.save(root / 'mesh_target_occluded_in_full.npy', missing)
+    result = assess_composition_pixels(value, output_root=tmp_path,
+        interaction_region=articulated_reset_contact_region(_contact_plan()))
+    assert not result['passed'] and 'composition_contact_interior_insufficient' in result['blockers']
+
+
+@pytest.mark.parametrize('fault', ['digest', 'reset', 'radius', 'duplicate_subject'])
+def test_unbound_or_invalid_contact_geometry_does_not_narrow_the_gate(fault):
+    from blueprint_pipeline.native_task_asset_composition_gate import articulated_reset_contact_region
+    plan = _contact_plan()
+    affordance = plan['task_spec']['interaction_affordance']
+    if fault == 'digest':
+        affordance['arrival_tolerance_m'] += .01
+    elif fault == 'reset':
+        plan['task_spec']['executable_opening_threshold']['reset_position'] = .1
+    elif fault == 'radius':
+        affordance['sweep_clearance_m'] = -1.
+        diagnostic.seal(affordance, 'affordance_digest')
+    else:
+        plan['objects'] *= 2
+    with pytest.raises(ValueError, match='composition_articulated_contact_region_invalid'):
+        articulated_reset_contact_region(plan)
+
+
+def test_contact_projection_tracks_asset_and_native_camera_frames_without_site_constants():
+    from blueprint_pipeline.native_task_asset_composition_gate import articulated_reset_contact_region, contact_patch_mask
+    plan = _contact_plan()
+    region = articulated_reset_contact_region(plan)
+    calibration = {'intrinsic_matrix': [[100., 0., 40.], [0., 100., 30.], [0., 0., 1.]],
+        'position_world_m': [0., 0., 0.], 'quaternion_world_opengl_xyzw': [0., 0., 0., 1.],
+        'resolution_hw': [60, 80]}
+    mask, _ = contact_patch_mask(region, calibration, (60, 80))
+    plan['objects'][0]['pose_world']['position_world_m'] = [4., -3., 1.]
+    calibration['position_world_m'] = [4., -3., 2.]
+    translated, _ = contact_patch_mask(articulated_reset_contact_region(plan), calibration, (60, 80))
+    assert np.array_equal(mask, translated)
+
+
+def test_legacy_mechanism_without_a_contact_path_keeps_whole_target_coverage():
+    from blueprint_pipeline.native_task_asset_composition_gate import articulated_reset_contact_region
+    plan = _contact_plan()
+    plan['task_spec']['interaction_affordance'].pop('joint_contact_path')
+    assert articulated_reset_contact_region(plan) is None
+
+
 @pytest.mark.parametrize('failure', ['capture', 'pose', 'settings', 'stale', 'physics'])
 def test_scope_restores_on_capture_failure_or_fixed_state_change(native, failure):
     original = native.adapters.render_and_capture
