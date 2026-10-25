@@ -215,3 +215,30 @@ def test_old_cached_packet_requires_root_binding_recompile_before_paid_use(tmp_p
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     with pytest.raises(NativeTaskArenaRuntimeError, match="root_binding_missing"):
         validate_native_task_arena_runtime_plan(plan, bundle_root=root)
+
+
+def test_bound_float32_reset_and_orientation_keep_exact_storage_checks(tmp_path):
+    import numpy as np
+    from blueprint_pipeline.native_task_arena_readback import read_native_task_arena_scenario_parameters
+    from tests.test_native_task_arena_readback import _built
+
+    built = _built()
+    planned = built.plan["objects"][0]
+    binding = derive_root_frame_binding(_asset(tmp_path, offset=True))
+    planned["articulation_adaptation"] = {"native_root_frame_binding": binding}
+    half = math.radians(-5) / 2
+    planned["pose_world"]["orientation_xyzw"] = [0, 0, math.sin(half), math.cos(half)]
+    native = convert_root_pose(planned["pose_world"], binding, to_native=True)
+    data = built.env.unwrapped.scene["task_object"].data
+    data.root_pose_w = np.array([[*native["position_world_m"], *native["orientation_xyzw"]]], dtype=np.float32)
+    built.plan["scenario"] = {"parameter_applications": [
+        {"parameter_id": "y", "readback_kind": "task_subject_root_position_y_m",
+         "application_tolerance": 0, "expected_native_value": planned["pose_world"]["position_world_m"][1],
+         "runtime_name": "task_object", "runtime_target": "root.y", "unit": "m", "resolved_value": 0},
+        {"parameter_id": "yaw", "readback_kind": "task_subject_root_orientation_xyzw",
+         "application_tolerance": 0, "expected_native_value": planned["pose_world"]["orientation_xyzw"],
+         "runtime_name": "task_object", "runtime_target": "root.orientation", "unit": "degrees", "resolved_value": -5},
+    ]}
+    assert read_native_task_arena_scenario_parameters(built)["passed"] is True
+    data.root_pose_w[0, 1] = np.nextafter(data.root_pose_w[0, 1], np.float32(np.inf))
+    assert read_native_task_arena_scenario_parameters(built)["passed"] is False
