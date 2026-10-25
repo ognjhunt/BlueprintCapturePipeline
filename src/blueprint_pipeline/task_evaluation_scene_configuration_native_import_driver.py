@@ -681,6 +681,7 @@ def _one_native_settle(
     articulated: bool = False,
     static_receipt: Mapping[str, Any] | None = None,
     robot_free_probe: Mapping[str, Any] | None = None,
+    required_motion_probe: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     import omni.physx as omni_physx  # type: ignore
     import omni.usd  # type: ignore
@@ -758,6 +759,13 @@ def _one_native_settle(
         raise RuntimeError("scene_configuration_native_import_structure_invalid")
     else:
         body_path = rigid_paths[0]
+    if required_motion_probe is not None:
+        from .articulated_required_motion_probe import DIAGNOSTIC_DRIVE
+        from .articulated_native_diagnostic_runtime import _author_fixed_base_anchor, _configure_required_motion_drives
+        assert static_receipt is not None
+        base_id = _receipt_mechanism(static_receipt)["root_link_id"]
+        _author_fixed_base_anchor(stage, _imported_path(static_receipt["link_prim_paths"][base_id]), UsdPhysics)
+        _configure_required_motion_drives(stage, required_motion_probe, UsdPhysics, DIAGNOSTIC_DRIVE)
     body = stage.GetPrimAtPath(body_path)
     contact_api = PhysxSchema.PhysxContactReportAPI.Apply(body)
     contact_api.CreateThresholdAttr().Set(0.0)
@@ -824,6 +832,13 @@ def _one_native_settle(
         probe_samples += _robot_free_drive_and_release(
             simulation=simulation, articulation=articulation, joint_name=joint_observation["task_joint_name"],
             plan=robot_free_probe, timestep_seconds=timestep_seconds, first_step_index=step_count)
+    required_motion_result = None
+    if required_motion_probe is not None:
+        from isaacsim.core.utils.types import ArticulationAction  # type: ignore
+        from .articulated_native_diagnostic_runtime import _execute_native_required_motions
+        required_motion_result = _execute_native_required_motions(
+            required_motion_probe, articulation=articulation, action_type=ArticulationAction,
+            simulation=simulation, settle_steps=max(1, int(round(2.0 / timestep_seconds))))
     simulation.stop()
     del contact_subscription
     if callable(clear_instance):
@@ -862,6 +877,7 @@ def _one_native_settle(
         "position_trace_digest": canonical_digest(
             {"position_trace_m": [[round(v, 7) for v in row] for row in trace]}
         ),
+        **({"required_motion_probe": required_motion_result} if required_motion_result is not None else {}),
         **({"task_joint_trace_digest": canonical_digest(
             {"task_joint_position_m": [round(value, 7) for value in joint_trace]}
         )} if articulated else {}),
@@ -921,6 +937,13 @@ def _run_native_import(
             observation["robot_free_success_probe"] = record_robot_free_probe(
                 settle=_one_native_settle, asset_path=asset_path, duration_seconds=duration,
                 static_receipt=static_receipt)
+            from .articulated_required_motion_probe import required_motion_plan_from_static_receipt
+            required_plan = required_motion_plan_from_static_receipt(static_receipt)
+            if required_plan is not None:
+                extra = _one_native_settle(asset_path=asset_path, duration_seconds=duration,
+                    timestep_seconds=1.0 / 60.0, articulated=True, static_receipt=static_receipt,
+                    required_motion_probe=required_plan)
+                observation["required_motion_probe"] = extra["required_motion_probe"]
         return dict(observation_consumer(observation))
     finally:
         app.close()
@@ -1109,6 +1132,7 @@ def execute_native_import_component(
         maximum_translation: float,
         maximum_rotation: float,
         robot_free_probe: Any = None,
+        required_motion_probe: Any = None,
     ) -> dict[str, Any]:
         runtime_result: dict[str, Any] = {
             "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
@@ -1169,6 +1193,8 @@ def execute_native_import_component(
             # never part of import qualification.
             if isinstance(robot_free_probe, Mapping) and robot_free_probe.get("schema_version") == ROBOT_FREE_PROBE_SCHEMA:
                 runtime_result["robot_free_success_probe"] = dict(robot_free_probe)
+            if required_motion_probe is not None:
+                runtime_result["required_motion_probe"] = dict(required_motion_probe)
         runtime_result["result_digest"] = canonical_digest(
             runtime_result, digest_field="result_digest"
         )
@@ -1199,6 +1225,18 @@ def execute_native_import_component(
             repeats, code="scene_configuration_native_import_execution_invalid",
             articulated=articulated,
         )
+        required_result = None
+        if articulated and static_receipt is not None:
+            from .articulated_required_motion_probe import (
+                required_motion_plan_from_static_receipt, validate_required_motion_probe_result,
+            )
+            required_plan = required_motion_plan_from_static_receipt(static_receipt)
+            if required_plan is not None:
+                try:
+                    required_result = validate_required_motion_probe_result(observed.get("required_motion_probe"), required_plan)
+                except (ValueError, TypeError, KeyError) as exc:
+                    raise TaskEvaluationSceneConfigurationNativeImportDriverError(
+                        "scene_configuration_native_import_required_motion_probe_failed") from exc
         artifacts = [
             _write_artifact(
                 role="native_import_runtime_result",
@@ -1214,6 +1252,7 @@ def execute_native_import_component(
                     maximum_translation=maximum_translation,
                     maximum_rotation=maximum_rotation,
                     robot_free_probe=observed.get("robot_free_success_probe"),
+                    required_motion_probe=required_result,
                 ),
             )
         ]

@@ -145,6 +145,13 @@ def qualify_artisan_asset_static(*, asset_path, graph_spec, authoring_receipt, r
                  "link_prim_paths": {name: row["prim_path"] for name, row in observed["links"].items()},
                  "task_joint": observed["task_joint"], "task_contact": contact,
                  "backend": "artisan_v1"}
+        readback = observed.get("required_motion_readback")
+        if readback and readback.get("motions"):
+            from .articulated_required_motion_probe import build_required_motion_probe_plan
+            extra["required_motion_probe_plan"] = build_required_motion_probe_plan(
+                readback=readback, graph=observed["articulation_graph"],
+                requirements=request["construction_constraints"].get("required_motions", []),
+                source_frames=request["source_frame_manifest"].get("frames", []))
     else:
         from .task_evaluation_scene_configuration_static_qualification import _usd_findings
         required = request["configuration"]["required_output"]

@@ -930,3 +930,43 @@ def test_the_probe_changes_nothing_else_in_the_sealed_runtime_result(tmp_path: P
     with_probe = sealed(tmp_path / "probe", {**_articulated_observed(), "robot_free_success_probe": probe})
     strip = lambda value: {k: v for k, v in value.items() if k not in {"robot_free_success_probe", "result_digest"}}  # noqa: E731
     assert strip(with_probe) == strip(baseline) and with_probe["robot_free_success_probe"] == probe
+
+
+@pytest.mark.parametrize("mode", ["missing", "forged_pass", "complete"])
+def test_required_motion_readback_is_enforced_by_real_native_component_consumer(tmp_path: Path, mode: str) -> None:
+    from blueprint_pipeline.articulated_required_motion_probe import (
+        required_motion_plan_from_static_receipt, execute_required_motion_probe,
+    )
+    environment = _articulated_environment(tmp_path)
+    static_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"]) / "static.json"
+    static = json.loads(static_path.read_text())
+    target = next(row for row in static["articulation_graph"]["joints"] if row["role"] == "target")
+    static["source_constraints"] = {"required_motion_readback": {
+        "requirements_digest": "sha256:" + "a" * 64,
+        "motions": [{"motion_id": "carriage", **{key: target[key] for key in ("joint_id", "joint_type", "limits")}}]}}
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    static_path.write_text(json.dumps(static))
+    dependencies_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"])
+    dependencies = json.loads(dependencies_path.read_text())
+    dependencies[0]["output_artifacts"][1].update(digest=_sha256(static_path), size_bytes=static_path.stat().st_size)
+    dependencies_path.write_text(json.dumps(dependencies))
+    plan = required_motion_plan_from_static_receipt(static)
+    state = {}
+    probe = execute_required_motion_probe(plan,
+        command=lambda positions: state.update({name: [coordinate, 0.0] for name, coordinate in positions.items()}),
+        read_state=lambda: state)
+    if mode == "forged_pass":
+        probe["phase_rows"][2]["joint_readback"][target["joint_id"]]["position"] = target["reset_position"]
+        probe["result_digest"] = canonical_digest(probe, digest_field="result_digest")
+
+    def runner(*, observation_consumer, **_kwargs):
+        return observation_consumer({**_articulated_observed(),
+            **({"required_motion_probe": probe} if mode != "missing" else {})})
+
+    if mode != "complete":
+        with pytest.raises(driver.TaskEvaluationSceneConfigurationNativeImportDriverError, match="required_motion_probe_failed"):
+            execute_native_import_component(environment=environment, native_runner=runner)
+    else:
+        result = execute_native_import_component(environment=environment, native_runner=runner)
+        artifact = next(row for row in result["artifacts"] if row["role"] == "native_import_runtime_result")
+        assert json.loads(Path(artifact["path"]).read_text())["required_motion_probe"] == probe
