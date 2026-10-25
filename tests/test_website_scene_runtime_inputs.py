@@ -11,6 +11,30 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_website_task_preparation import _arguments
 
 
+def test_reviewed_enclosure_reconciliation_reaches_native_collision_handoff(tmp_path):
+    from tests.test_website_task_preparation import _assembly_inputs
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    from blueprint_pipeline.website_native_background import prepare_collision_stage
+    arguments = _arguments(tmp_path, _assembly_inputs(tmp_path))
+    preparation = compile_website_scene_preparation(**arguments)
+    assert preparation["status"] == "intake_ready"
+    configuration = preparation["authoring_inputs"]["configuration"]
+    configuration["construction_constraints"]["assembly_mounting"] = {
+        "mode": "fixed_in_scene", "source_frame_ids": [preparation["authoring_inputs"]["source_frames"][0]["frame_id"]],
+        "reason": "Fixture capture review.", "body_envelope_excludes_environment": True}
+    preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+    source_digest = _sha256_file(Path(arguments["base_scene"]["collision_mesh_path"]))
+    kwargs = dict(preparation=preparation, base_scene=arguments["base_scene"],
+        source_geometry=arguments["source_geometry"], task_masks=arguments["task_masks"], output_root=tmp_path / "native")
+    result = prepare_website_runtime_inputs(**kwargs)
+    assert result["collision"]["reconciliation"]["outside_volume_geometry_preserved"] is True
+    assert result["collision"]["digest"] == _sha256_file(Path(result["collision"]["path"]))
+    assert _sha256_file(Path(arguments["base_scene"]["collision_mesh_path"])) == source_digest
+    stage = prepare_collision_stage(tmp_path / "native/runtime_inputs.json")
+    assert stage["configuration"]["collision_source_digest"] == result["collision"]["digest"]
+    assert prepare_website_runtime_inputs(**kwargs) == result
+
+
 @pytest.mark.parametrize("up_axis", ["Y", "-Y"])
 def test_real_native_collision_conversion_preserves_background_and_separate_subject(tmp_path, up_axis):
     args = _arguments(tmp_path)

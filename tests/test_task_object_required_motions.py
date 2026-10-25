@@ -3,9 +3,25 @@ from copy import deepcopy
 import pytest
 
 from blueprint_pipeline.task_object_required_motions import (
-    assembly_mounting, merge_assembly_mounting, merge_required_motions,
+    assembly_mounting, bounded_assembly_pose, merge_assembly_mounting, merge_required_motions,
     motion_graph_readback, required_motions,
 )
+
+
+def test_scene_pose_bounds_every_corner_and_preserves_dimensions():
+    import math
+    reference = {"position_world_m": [1., 2., .3], "orientation_xyzw": [0., 0., 0., 1.]}
+    arguments = dict(reference_pose=reference, minimum=[-.5, -.2, 0.], maximum=[.5, .2, 1.], uncertainty_m=.1)
+    proposed = {**reference, "position_world_m": [1.03, 2.04, .3]}
+    pose, report = bounded_assembly_pose(proposed, **arguments)
+    assert pose == proposed and report["maximum_corner_displacement_m"] == pytest.approx(.05)
+    assert report["body_dimensions_changed"] is False and report["physical_registration_proven"] is False
+    # A stationary center is insufficient: a half turn moves the far corners.
+    rotated = {**reference, "orientation_xyzw": [0., 0., math.sin(math.pi/2), math.cos(math.pi/2)]}
+    with pytest.raises(ValueError, match="outside_registration_uncertainty"):
+        bounded_assembly_pose(rotated, **arguments)
+    with pytest.raises(ValueError, match="pose_invalid"):
+        bounded_assembly_pose({**reference, "orientation_xyzw": [0., 0., 0., 2.]}, **arguments)
 
 
 def test_mounting_is_evidence_bound_and_conflicting_reviews_remain_unknown():
@@ -24,6 +40,13 @@ def test_mounting_is_evidence_bound_and_conflicting_reviews_remain_unknown():
     unknown = {"mode": "unknown", "source_frame_ids": [], "reason": "Mount is not visible."}
     assert merge_assembly_mounting([unknown, fixed]) == fixed
     assert merge_assembly_mounting([unknown])["mode"] == "unknown"
+    enclosed = {**fixed, "body_envelope_excludes_environment": True}
+    open_frame = {**fixed, "body_envelope_excludes_environment": False}
+    assert assembly_mounting(enclosed)["body_envelope_excludes_environment"] is True
+    assert merge_assembly_mounting([enclosed, fixed])["body_envelope_excludes_environment"] is True
+    assert merge_assembly_mounting([enclosed, open_frame])["body_envelope_excludes_environment"] is None
+    with pytest.raises(ValueError, match="assembly_mounting_invalid"):
+        assembly_mounting({**free, "body_envelope_excludes_environment": True})
 
 
 def motion(name, parts, kind="prismatic", frames=None):

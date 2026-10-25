@@ -1,8 +1,9 @@
 """Reuse the website's prepared background in native construction, ADP-030/day 28.
 
-The subject was removed before reconstruction. This stage passes the background
-through byte-for-byte and supplies the separate observed object to authoring;
-it never pretends to have excised a prim from the reconstructed background.
+The subject was removed before reconstruction. Preparation may reconcile
+collision inside a capture-reviewed enclosed fixture; the stage transports
+those prepared bytes and supplies separate object observations to authoring.
+It never claims to have excised an observed prim from the background.
 """
 from __future__ import annotations
 
@@ -18,6 +19,183 @@ SCHEMA = "website_prepared_collision.v1"
 ADAPTER_ID = "website_prepared_collision"
 PREFIX = "scene.website_native_inputs"
 APPEARANCE_ADAPTER_ID = "website_prepared_appearance"
+
+
+def exclude_box_interior(triangles, *, minimum, maximum):
+    """Subtract an open box, splitting crossing faces without losing outside area."""
+    import numpy as np
+    from .adp009d_native_microcheck_bundle import _clip_polygon_to_axis_plane, _clip_triangle_to_aabb
+
+    triangles, low, high = (np.asarray(value, dtype=float) for value in (triangles, minimum, maximum))
+    if (triangles.ndim != 3 or triangles.shape[1:] != (3, 3) or low.shape != (3,)
+            or high.shape != (3,) or not np.isfinite(triangles).all()
+            or not np.isfinite(low).all() or not np.isfinite(high).all() or not np.all(low < high)):
+        raise ValueError("website_fixture_void_geometry_invalid")
+    outside = np.any(np.all(triangles <= low, axis=1) | np.all(triangles >= high, axis=1), axis=1)
+    inside = np.all((triangles > low) & (triangles < high), axis=(1, 2))
+    untouched = list(np.flatnonzero(outside))
+    pieces, source_faces = [], []
+    removed_area = float(np.linalg.norm(np.cross(triangles[inside, 1] - triangles[inside, 0],
+        triangles[inside, 2] - triangles[inside, 0]), axis=1).sum() / 2)
+    clipped = 0
+    def area(rows):
+        value = np.asarray(rows, dtype=float).reshape(-1, 3, 3)
+        return float(np.linalg.norm(np.cross(value[:, 1] - value[:, 0], value[:, 2] - value[:, 0]), axis=1).sum() / 2)
+    for index in np.flatnonzero(~outside & ~inside):
+        triangle = tuple(map(tuple, triangles[index]))
+        intersection = _clip_triangle_to_aabb(triangle, roi_min=tuple(low), roi_max=tuple(high))
+        if not intersection:
+            untouched.append(index)
+            continue
+        polygon, exterior = list(triangle), []
+        for axis in range(3):
+            for boundary, keep_greater in ((low[axis], True), (high[axis], False)):
+                part = _clip_polygon_to_axis_plane(polygon, axis=axis,
+                    boundary=float(boundary), keep_greater=not keep_greater)
+                exterior.extend((part[0], part[i], part[i + 1]) for i in range(1, len(part) - 1))
+                polygon = _clip_polygon_to_axis_plane(polygon, axis=axis,
+                    boundary=float(boundary), keep_greater=keep_greater)
+        exterior = [row for row in exterior if area([row]) > 1e-12]
+        before, removed, after = area([triangle]), area(intersection), area(exterior)
+        if not np.isclose(before, removed + after, rtol=1e-8, atol=1e-12):
+            raise ValueError("website_fixture_void_outside_area_changed")
+        removed_area += removed
+        clipped += 1
+        pieces.extend(exterior)
+        source_faces.extend([int(index)] * len(exterior))
+    return (np.asarray(sorted(untouched), dtype=np.int64),
+            np.asarray(pieces, dtype=float).reshape(-1, 3, 3),
+            {"input_faces": len(triangles), "untouched_faces": len(untouched),
+             "fully_interior_faces": int(inside.sum()), "clipped_faces": clipped,
+             "replacement_faces": len(pieces), "replacement_source_faces": source_faces,
+             "excluded_area_m2": removed_area, "boundary_surfaces_preserved": True})
+
+
+def reconcile_enclosed_fixture_collision(*, source: Path, preparation: Mapping[str, Any],
+                                         output_root: Path) -> dict[str, Any] | None:
+    """Remove generated collision intrusions only from a capture-reviewed enclosure.
+
+    An open frame, movable object or unknown enclosure keeps the original
+    background. The source volume and all results remain estimated candidates.
+    """
+    import math
+    import numpy as np
+    from .local_reconstruction_adapters import _sha256_file
+    from .task_object_required_motions import assembly_mounting, bounded_assembly_pose
+
+    configuration = preparation["authoring_inputs"]["configuration"]
+    declaration = (configuration.get("construction_constraints") or {}).get("assembly_mounting")
+    if declaration is None:
+        return None
+    frames = preparation["authoring_inputs"]["source_frames"]
+    review = assembly_mounting(declaration,
+        source_frame_ids=[row["frame_id"] for row in frames])
+    if review is None or review.get("body_envelope_excludes_environment") is not True:
+        return None
+    if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
+            or preparation.get("claim_ceiling") != "development_only"
+            or preparation["subject"].get("geometry_origin") != "removed_before_reconstruction"):
+        raise ValueError("website_fixture_void_preparation_invalid")
+    body = configuration["body_extent_m"]
+    size = np.asarray([body[key] for key in ("depth", "width", "height")], dtype=float)
+    normal = np.asarray(configuration["mechanism"]["estimated_front_normal_world"], dtype=float)
+    if (not np.isfinite(size).all() or np.any(size <= 0) or normal.shape != (3,)
+            or not np.isfinite(normal).all() or abs(normal[2]) > 1e-8
+            or not np.isclose(np.linalg.norm(normal), 1, atol=1e-6)):
+        raise ValueError("website_fixture_void_frame_invalid")
+    low = np.asarray(preparation["subject"]["aabb_min_xyz"], dtype=float)
+    high = np.asarray(preparation["subject"]["aabb_max_xyz"], dtype=float)
+    if low.shape != (3,) or high.shape != (3,) or not np.isfinite([low, high]).all():
+        raise ValueError("website_fixture_void_body_bounds_inconsistent")
+    center = (low + high) / 2
+    center[2] = low[2]
+    yaw = math.atan2(normal[1], normal[0])
+    rotation = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1.]])
+    if not np.allclose(high - low, np.abs(rotation) @ size, rtol=0, atol=1e-5):
+        raise ValueError("website_fixture_void_body_bounds_inconsistent")
+    minimum, maximum = [-size[0] / 2, -size[1] / 2, 0.], [size[0] / 2, size[1] / 2, size[2]]
+    refinement = None
+    if "scene_instance_pose_world" in preparation:
+        pose, refinement = bounded_assembly_pose(preparation["scene_instance_pose_world"],
+            reference_pose={"position_world_m": center.tolist(),
+                            "orientation_xyzw": [0., 0., math.sin(yaw / 2), math.cos(yaw / 2)]},
+            minimum=minimum, maximum=maximum,
+            uncertainty_m=preparation["coordinate_frame"].get("placement_uncertainty_m"))
+        from scipy.spatial.transform import Rotation
+        center = np.asarray(pose["position_world_m"])
+        rotation = Rotation.from_quat(pose["orientation_xyzw"]).as_matrix()
+    binding = {"source_sha256": _sha256_file(source), "preparation_digest": preparation["digest"],
+               "review": review, "center_world_m": center.tolist(), "rotation_world_from_volume": rotation.tolist(),
+               "minimum_volume_m": list(map(float, minimum)), "maximum_volume_m": list(map(float, maximum))}
+    if refinement is not None:
+        binding["scene_instance_pose_refinement"] = refinement
+    target = output_root / canonical_digest(binding)[7:]
+    receipt_path, output = target / "reconciliation.json", target / "collision.usdc"
+    if receipt_path.is_file():
+        receipt = json.loads(receipt_path.read_text())
+        if (receipt.get("digest") != canonical_digest(receipt, digest_field="digest")
+                or receipt.get("binding") != binding or receipt["output"]["digest"] != _sha256_file(output)):
+            raise ValueError("website_fixture_void_cache_changed")
+        return receipt
+    from pxr import Usd, UsdGeom, UsdPhysics, Vt
+    stage = Usd.Stage.Open(Usd.Stage.Open(str(source)).Flatten())
+    if UsdGeom.GetStageUpAxis(stage) != "Z" or not np.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1., atol=1e-10):
+        raise ValueError("website_fixture_void_background_frame_invalid")
+    if any(p.HasAPI(UsdPhysics.RigidBodyAPI) for p in stage.Traverse()):
+        raise ValueError("website_fixture_void_background_not_static")
+    cache, reports = UsdGeom.XformCache(), []
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Mesh) or not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get(), dtype=int)
+        if not np.all(counts == 3):
+            raise ValueError("website_fixture_void_triangles_required")
+        points = np.asarray(mesh.GetPointsAttr().Get(), dtype=np.float32)
+        faces = np.asarray(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int64).reshape(-1, 3)
+        matrix = np.asarray(cache.GetLocalToWorldTransform(prim), dtype=float).T
+        world = points @ matrix[:3, :3].T + matrix[:3, 3]
+        local = (world - center) @ rotation
+        kept, replacements, report = exclude_box_interior(local[faces], minimum=minimum, maximum=maximum)
+        reports.append({"prim_path": str(prim.GetPath()), **report})
+        if report["fully_interior_faces"] == 0 and report["clipped_faces"] == 0:
+            continue
+        extra_world = replacements.reshape(-1, 3) @ rotation.T + center
+        inverse = np.linalg.inv(matrix)
+        extra = extra_world @ inverse[:3, :3].T + inverse[:3, 3]
+        new_points = np.concatenate([points, extra.astype(np.float32)])
+        new_faces = np.concatenate([faces[kept], np.arange(len(extra)).reshape(-1, 3) + len(points)])
+        mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(new_points))
+        mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray.FromNumpy(new_faces.reshape(-1).astype(np.int32)))
+        mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray.FromNumpy(np.full(len(new_faces), 3, dtype=np.int32)))
+        source_faces = np.concatenate([kept, np.asarray(report["replacement_source_faces"], dtype=int)])
+        for subset in UsdGeom.Subset.GetGeomSubsets(mesh):
+            if subset.GetElementTypeAttr().Get() != UsdGeom.Tokens.face:
+                raise ValueError("website_fixture_void_subset_type_unsupported")
+            remapped = np.flatnonzero(np.isin(source_faces, np.asarray(subset.GetIndicesAttr().Get(), dtype=int)))
+            subset.GetIndicesAttr().Set(Vt.IntArray.FromNumpy(remapped.astype(np.int32)))
+        # Appearance uses the separate source splat. Per-face/vertex arrays
+        # cannot silently refer to the old topology in a collision derivative.
+        mesh.GetNormalsAttr().Clear()
+        for var in UsdGeom.PrimvarsAPI(prim).GetPrimvars():
+            if var.GetInterpolation() != UsdGeom.Tokens.constant:
+                name = var.GetAttr().GetName()
+                prim.RemoveProperty(name)
+                prim.RemoveProperty(name + ":indices")
+    if not reports:
+        raise ValueError("website_fixture_void_collision_mesh_missing")
+    target.mkdir(parents=True, exist_ok=False)
+    stage.GetRootLayer().Export(str(output))
+    if _sha256_file(source) != binding["source_sha256"]:
+        raise ValueError("website_fixture_void_source_changed")
+    receipt = {"schema_version": "website_enclosed_fixture_collision_reconciliation.v1", "binding": binding,
+               "meshes": reports, "output": _record(output), "source_bytes_unchanged": _sha256_file(source) == binding["source_sha256"],
+               "outside_volume_geometry_preserved": True, "appearance_modified": False,
+               "native_physics_qualified": False, "physical_measurement_proven": False,
+               "claim_ceiling": "development_only", "provider_mutation_performed": False}
+    receipt["digest"] = canonical_digest(receipt, digest_field="digest")
+    write_json(receipt_path, receipt)
+    return receipt
 
 
 def derived_stage_three_configuration(*, runtime: Mapping[str, Any],
