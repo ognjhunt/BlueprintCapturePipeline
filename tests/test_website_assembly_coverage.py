@@ -713,7 +713,9 @@ def _fake_genai(monkeypatch, answer):
         def generate_content(self, *, model, contents, config):
             calls.append({"model": model, "contents": contents, "config": config})
             text, reason = answer(contents)
-            return NS(candidates=[NS(finish_reason=reason)], text=text)
+            return NS(candidates=[NS(finish_reason=reason)], text=text,
+                      usage_metadata=NS(prompt_token_count=1234, candidates_token_count=1000,
+                                        thoughts_token_count=7192, total_token_count=9426))
 
     class Client:
         def __init__(self, **_):
@@ -727,6 +729,7 @@ def _fake_genai(monkeypatch, answer):
 
     genai, types_module = module_types.ModuleType("google.genai"), module_types.ModuleType("google.genai.types")
     types_module.HttpOptions = types_module.HttpRetryOptions = types_module.GenerateContentConfig = lambda **k: k
+    types_module.ThinkingConfig = lambda **k: k
     types_module.Part = NS(from_bytes=lambda data, mime_type: ("image", len(data)))
     genai.Client, genai.types = Client, types_module
     google = sys.modules.get("google") or module_types.ModuleType("google")
@@ -774,6 +777,11 @@ def test_the_real_classifier_call_repairs_malformed_json_in_the_same_receipt(tmp
     assert record["status"] == "complete", record.get("blockers")
     repairs = [call for call in calls if "is not valid JSON" in call["contents"][0]]
     assert repairs and all(len(call["contents"]) == 1 for call in repairs)  # text only, no images
+    classifications = [call for call in calls if '{"assembly"' in call["contents"][0]]
+    assert classifications
+    for call in classifications + repairs:
+        assert call["config"]["thinking_config"] == {"thinking_level": "LOW"}
+        assert call["config"]["max_output_tokens"] == 16384
     receipts_dir = next((tmp_path / "coverage").rglob("receipts"))
     stored = [json.loads(path.read_text()) for path in receipts_dir.glob("*.json")]
     assert stored and all(row["status"] == "completed" for row in stored)
@@ -785,4 +793,9 @@ def test_a_cut_off_classification_is_retained_invalid_not_left_uncertain(tmp_pat
     assert record["status"] == "incomplete"
     assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
     receipts_dir = next((tmp_path / "coverage").rglob("receipts"))
-    assert all(json.loads(path.read_text())["status"] == "completed" for path in receipts_dir.glob("*.json"))
+    stored = [json.loads(path.read_text()) for path in receipts_dir.glob("*.json")]
+    assert stored and all(row["status"] == "completed" for row in stored)
+    assert all(row["result"]["finish_reason"] == "MAX_TOKENS" for row in stored)
+    assert all(len(row["result"]["partial_output"]) == 500 for row in stored)
+    assert all(row["request"]["binding"]["thinking_level"] == "LOW" for row in stored)
+    assert all(row["result"]["token_usage"]["thoughts_token_count"] == 7192 for row in stored)
