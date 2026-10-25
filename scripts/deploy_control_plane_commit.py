@@ -688,6 +688,14 @@ def _provision_scene_configuration_from_release(*, repository_root, source_commi
     environment = dict(os.environ)
     environment.update(PYTHONPATH=os.pathsep.join([str(repository / "src"), str(repository)]),
                        PYTHONDONTWRITEBYTECODE="1")
+    if paths.get("artisan_vendor_reuse_plan") is not None:
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        reuse = json.loads(Path(paths["artisan_vendor_reuse_plan"]).read_text())
+        if reuse.get("digest") != canonical_digest(reuse, digest_field="digest"):
+            raise ValueError("deploy_vendor_reuse_plan_changed")
+        # Every component/build temporary directory must share the SDK's device;
+        # otherwise package publication would copy the linked payload again.
+        environment["TMPDIR"] = reuse["staging_root"]
     try:
         result = subprocess.run(command, cwd=repository, env=environment,
             check=True, capture_output=True, text=True,
@@ -2663,6 +2671,46 @@ def _scene_configuration_staging_estimate(runtime_root: str | Path, commit: str)
         "file_count": None,
         "target_root": target,
     }
+
+
+def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
+                             site_packages_root, blender_root):
+    """Only discount bytes the target builder is required to hard-link."""
+    from blueprint_pipeline.artisan_vendor_reuse import prepare_vendor_reuse
+
+    prefix = "published_toolchain:"
+    if not estimate["basis"].startswith(prefix):
+        return None
+    previous = Path(runtime_root) / "scene-configuration" / estimate["basis"][len(prefix):]
+    plan = prepare_vendor_reuse(toolchain_root=previous, site_packages_root=site_packages_root,
+                               blender_root=blender_root,
+                               staging_device=previous.parent.stat().st_dev)
+    if plan is None:
+        return None
+    files = json.loads((previous / SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST).read_text())["files"]
+    unshared = sum(int(row["size_bytes"]) for row in files) - plan["shared_bytes"]
+    if unshared < 0:
+        raise ControlPlaneDeployError("deploy_vendor_reuse_size_invalid")
+    directory = Path(state_root) / "deploy-vendor-reuse"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o750)
+    path = directory / (plan["digest"][7:] + ".json")
+    payload = (json.dumps(plan, sort_keys=True) + "\n").encode()
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o444)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError:
+        if path.is_symlink() or path.read_bytes() != payload:
+            raise ControlPlaneDeployError("deploy_vendor_reuse_plan_changed") from None
+    estimate["full_copy_bytes"] = estimate["bytes"]
+    estimate["target_root"] = plan["staging_root"]
+    estimate["bytes"] = (math.ceil(unshared * SCENE_CONFIGURATION_STAGING_HEADROOM)
+                         + RELEASE_ESTIMATE_BLOCK_BYTES * len(files) + RELEASE_ESTIMATE_OVERHEAD_BYTES)
+    estimate["vendor_reuse"] = {"path": str(path), "digest": plan["digest"],
+                               "shared_bytes": plan["shared_bytes"], "file_count": len(plan["files"])}
+    return path
 
 
 def _release_runtime_trees(runtime_root: Path, commit: str) -> set[Path]:
@@ -4809,6 +4857,7 @@ def deploy_control_plane_commit(
     staging_reservation = None
     disk_reservation_runtime = None
     disk_reservation_estimate = None
+    artisan_vendor_reuse_plan = None
     if disk_reservation_root is not None:
         disk_reservation_runtime = _install_disk_reservation_runtime_prerequisites(
             disk_reservation_root
@@ -4841,6 +4890,14 @@ def deploy_control_plane_commit(
                 scene_configuration_runtime_root, source_commit
             )
             if staging_estimate is not None:
+                from blueprint_pipeline.task_object_authoring_backend import default_backend
+                if (authoring_backend or default_backend()) == "artisan_v1" and all((
+                    artisan_site_packages_root, artisan_blender_root
+                )):
+                    artisan_vendor_reuse_plan = _bind_artisan_vendor_reuse(
+                        staging_estimate, runtime_root=scene_configuration_runtime_root,
+                        state_root=state, site_packages_root=artisan_site_packages_root,
+                        blender_root=artisan_blender_root)
                 disk_reservation_estimate["scene_configuration_staging"] = staging_estimate
                 staging_reservation = reserve_control_plane_disk(
                     "control_plane_deploy",
@@ -4962,6 +5019,7 @@ def deploy_control_plane_commit(
                 artisan_root=artisan_root,
                 artisan_site_packages_root=artisan_site_packages_root,
                 artisan_blender_root=artisan_blender_root,
+                artisan_vendor_reuse_plan=artisan_vendor_reuse_plan,
                 content_agents_root=content_agents_source_root if authoring_backend != "artisan_v1" else None,
                 text_to_cad_root=cad_sources_by_id.get("text-to-cad"),
                 multi_agent_cad_root=cad_sources_by_id.get("multi-agent-cad"),
