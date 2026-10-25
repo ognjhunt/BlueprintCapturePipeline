@@ -361,8 +361,9 @@ def _handler(
     diagnostic_only: bool,
     runner: Runner,
     environment: Mapping[str, str],
+    validated_toolchain: tuple[dict[str, Any], dict[str, Path]] | None = None,
 ) -> Callable[..., Mapping[str, Any]]:
-    manifest, entrypoints = _validate_toolchain(
+    manifest, entrypoints = validated_toolchain or _validate_toolchain(
         root=toolchain_root, expected_source_commit=expected_source_commit
     )
     executable = entrypoints[identity.adapter_id]
@@ -540,6 +541,10 @@ def builtin_scene_configuration_stage_producer_registry(
             "scene_configuration_toolchain_environment_missing"
         )
     root = Path(unresolved).expanduser().resolve()
+    # Every handler belongs to this same published tree. Validate its full
+    # inventory once for this construction, rather than once per handler.
+    # A later registry construction performs a fresh validation.
+    validated = _validate_toolchain(root=root, expected_source_commit=expected_source_commit)
     handlers = {
         identity: _handler(
             identity=identity,
@@ -548,6 +553,7 @@ def builtin_scene_configuration_stage_producer_registry(
             diagnostic_only=diagnostic_only,
             runner=runner,
             environment=values,
+            validated_toolchain=validated,
         )
         for identity in ADMITTED_PRODUCER_IDENTITIES
     }

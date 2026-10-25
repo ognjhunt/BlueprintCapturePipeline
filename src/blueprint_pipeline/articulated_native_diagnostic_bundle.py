@@ -321,7 +321,7 @@ OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 mkdir -p "$OUT_DIR"
 if [ "${BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL:-0}" = "1" ]; then
   for required in \
-    "$RUNTIME_DIR/assets/articulated_task_asset.usda" \
+    "$RUNTIME_DIR/assets/__ASSET_FILENAME__" \
     "$RUNTIME_DIR/articulated_native_diagnostic_request.v1.json" \
     "$RUNTIME_DIR/articulated_native_diagnostic_runtime.py" \
     "$RUNTIME_DIR/adp009d_franka_eval_harness_manifest.v1.json"; do
@@ -370,7 +370,7 @@ PY
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:articulated_native_diagnostic:started"
 set -o pipefail
 /isaac-sim/python.sh "$RUNTIME_DIR/articulated_native_diagnostic_runtime.py" \
-  --asset "$RUNTIME_DIR/assets/articulated_task_asset.usda" \
+  --asset "$RUNTIME_DIR/assets/__ASSET_FILENAME__" \
   --request "$RUNTIME_DIR/articulated_native_diagnostic_request.v1.json" \
   --output "$OUT_DIR/adp009d_native_microcheck.json" \
   2>&1 | tee "$OUT_DIR/articulated_native_diagnostic.log"
@@ -421,6 +421,13 @@ def build_articulated_native_diagnostic_bundle(
         raise ArticulatedNativeDiagnosticError(
             ["articulated_native_bundle_input_missing"]
         )
+    if asset.suffix.lower() not in {".usd", ".usda", ".usdc", ".usdz"}:
+        raise ArticulatedNativeDiagnosticError(
+            ["articulated_native_asset_format_invalid"]
+        )
+    # OpenUSD chooses its parser from the filename. Preserve the admitted
+    # package/crate/text format all the way through extraction and execution.
+    asset_filename = "articulated_task_asset" + asset.suffix.lower()
     try:
         raw_request = json.loads(request_source.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -440,7 +447,7 @@ def build_articulated_native_diagnostic_bundle(
     runtime = job / "provider_runtime"
     assets = runtime / "assets"
     ensure_dir(assets)
-    shutil.copy2(asset, assets / "articulated_task_asset.usda")
+    shutil.copy2(asset, assets / asset_filename)
     (runtime / "articulated_native_diagnostic_request.v1.json").write_text(
         json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -450,7 +457,8 @@ def build_articulated_native_diagnostic_bundle(
         runtime / "articulated_native_diagnostic_runtime.py",
     )
     shutil.copy2(harness, runtime / "adp009d_franka_eval_harness_manifest.v1.json")
-    _write_executable(runtime / "run_adp_arena_provider_runtime.sh", ENTRYPOINT)
+    _write_executable(runtime / "run_adp_arena_provider_runtime.sh",
+                      ENTRYPOINT.replace("__ASSET_FILENAME__", asset_filename))
     generated = generated_at or utc_now_iso()
     manifest: dict[str, Any] = {
         "schema_version": BUNDLE_SCHEMA,
@@ -464,7 +472,7 @@ def build_articulated_native_diagnostic_bundle(
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "expected_output_filename": "adp009d_native_microcheck.json",
         "asset_binding": {
-            "filename": "articulated_task_asset.usda",
+            "filename": asset_filename,
             "sha256": _sha256(asset),
             "size_bytes": asset.stat().st_size,
         },
