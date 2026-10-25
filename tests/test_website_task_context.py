@@ -250,6 +250,33 @@ def test_new_sponsorship_expiry_uses_signed_issuance_not_request_start(monkeypat
             module.load_website_scene_sponsorship(task_context=context(), now=1000)
 
 
+def test_vast_gpu_preparation_reservation_uses_the_same_exact_signed_cap(monkeypatch):
+    from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
+    calls = []
+
+    def post(**kwargs):
+        calls.append(kwargs)
+        return {**kwargs["payload"]["spend"], "schema_version": "paid_lane_admission.v1", "status": "admitted",
+                "blockers": [], "external_disclosure_allowed": True, "expires_at_epoch": 9_999_999_999}
+
+    monkeypatch.setattr(module, "website_webapp_request", post)
+    digest = "sha256:" + "a" * 64
+    receipt, grant = module.reserve_website_preparation_spend(task_context=context(), binding_digest=digest,
+        maximum_cost_usd=1.7, request_count=1, resource_class="gpu_render", provider="vast")
+    require_paid_resource_admission_grant(grant, resource_class="gpu_render",
+        allocation_binding_digest=digest, require_allocation_binding=True)
+    assert calls[0]["operation"] == "preparation-spend"
+    assert receipt["maximum_cost_usd"] == 1.7 and receipt["request_count"] == 1
+    monkeypatch.setattr(module, "website_webapp_request", lambda **kwargs: {
+        **receipt, "allocation_binding_digest": "sha256:" + "b" * 64})
+    with pytest.raises(ValueError, match="receipt_invalid"):
+        module.reserve_website_preparation_spend(task_context=context(), binding_digest=digest,
+            maximum_cost_usd=1.7, request_count=1, resource_class="gpu_render", provider="vast")
+    with pytest.raises(ValueError, match="provider_resource_mismatch"):
+        module.reserve_website_preparation_spend(task_context=context(), binding_digest=digest,
+            maximum_cost_usd=1.7, request_count=1, resource_class="evaluator_api", provider="vast")
+
+
 @pytest.mark.parametrize('fault', [None, 'missing', 'changed', 'wrong-provider', 'expired'])
 def test_only_exact_retained_atlas_admission_can_resume_before_submission(monkeypatch, fault):
     import time
