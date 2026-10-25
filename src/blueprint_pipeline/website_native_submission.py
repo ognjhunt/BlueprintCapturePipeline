@@ -33,6 +33,17 @@ def _validate_development_opening_criterion(success, hypothesis):
             "website_articulated_depth_opening_criterion_mismatch")
 
 
+def _bind_assembly_scene_instance(*, template, preparation, configuration):
+    """Carry the capture review and shared pose into the frozen native template."""
+    from .task_object_required_motions import assembly_mounting
+    mounting = (configuration.get("construction_constraints") or {}).get("assembly_mounting")
+    if mounting is not None:
+        template["assembly_mounting"] = assembly_mounting(mounting,
+            source_frame_ids=[row["frame_id"] for row in preparation["authoring_inputs"]["source_frames"]])
+    if "scene_instance_pose_world" in preparation:
+        template["scene_instance_pose_world"] = preparation["scene_instance_pose_world"]
+
+
 @scene_participant()
 def verified_submission_inputs(task, *, now=None):
     from .task_evaluation_scene_owner_authority import reopen_scene_intent
@@ -179,6 +190,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         if stage_three.get("development_geometry_hypothesis"):
             hypothesis = stage_three["development_geometry_hypothesis"]
             _validate_development_opening_criterion(success, hypothesis)
+        _bind_assembly_scene_instance(template=template, preparation=preparation, configuration=stage_three)
     else:
         destination = owner_task["destination"]
         require(destination.get("mode") == "existing_support_surface", "website_destination_asset_required")

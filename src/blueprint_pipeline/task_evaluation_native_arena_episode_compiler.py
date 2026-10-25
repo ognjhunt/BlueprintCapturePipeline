@@ -1105,7 +1105,8 @@ def _derive_runtime_prismatic_friction_overlay(
     original = replacement_path
     grounded = output_root / "runtime-grounded-articulation" / "replacement.usda"
     try:
-        mounting = author_grounded_articulation(replacement_path, grounded)
+        mounting = author_grounded_articulation(replacement_path, grounded,
+                                               scene_mounting=task_definition.get("assembly_mounting"))
     except NativeTaskArenaRuntimeError as exc:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_articulation_grounding_invalid:" + ",".join(exc.errors)) from exc

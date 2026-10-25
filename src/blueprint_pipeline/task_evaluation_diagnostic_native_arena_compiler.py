@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -457,6 +459,58 @@ def diagnostic_robot_placement_inputs(
             "target_position_world_m": start}
 
 
+def _runtime_articulated_assets(*, rows, context, output_root):
+    """Use the episode compiler's replayable physics overlay on diagnostic inputs."""
+    contracts = {"appearance": "diagnostic_output.appearance.usdz",
+                 "collision": "diagnostic_output.collision.usda",
+                 "replacement": "diagnostic_output.replacement.usdz"}
+    paths = {role: _bound_path(rows, contract) for role, contract in contracts.items()}
+    definition = context["adapter"]["native_task_definition"]
+    if context["task_spec"]["task_kind"] != "articulated_open_close":
+        return paths, None, context
+    from .task_evaluation_native_arena_episode_compiler import (
+        _derive_runtime_prismatic_friction_overlay,
+    )
+    derived, adaptation = _derive_runtime_prismatic_friction_overlay(
+        task_spec=context["task_spec"], task_definition=definition,
+        replacement_path=paths["replacement"], output_root=output_root)
+    if adaptation is None:
+        return paths, None, context
+    from .native_task_arena_runtime import (
+        verify_grounded_articulation_overlay, verify_passive_joint_friction_overlay,
+    )
+    if adaptation["adaptation"] == "usd_authored_world_fixed_base":
+        verify_grounded_articulation_overlay(paths["replacement"], derived, adaptation)
+    else:
+        verify_passive_joint_friction_overlay(derived, adaptation["passive_joint_friction"])
+    # Keep sealed evidence intact. A common per-run root lets packet staging
+    # hard-link unchanged appearance/collision instead of making another copy.
+    evidence = output_root / "runtime-articulation-evidence"
+    evidence.mkdir()
+    paths["replacement"] = derived
+    for role, source in list(paths.items()):
+        destination = evidence / (role + source.suffix)
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copyfile(source, destination)
+        if _identity(destination) != _identity(source):
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+                "diagnostic_native_compiler_runtime_asset_changed")
+        paths[role] = destination
+    spec = _runtime_subject_task_spec(definition["task_spec"])
+    spec["success_criteria"] = context["adapter"]["native_success_criteria"]["criteria"]
+    construction = materialize_articulated_construction_inputs(
+        task_spec=spec, definition=definition, asset=paths["replacement"],
+        asset_digest=_identity(paths["replacement"])[0],
+        link_prim_paths=_read_json(
+            _bound_path(rows, "diagnostic_output.static_qualification_receipt.v1.json"),
+            blocker="diagnostic_native_compiler_static_qualification_invalid")["link_prim_paths"])
+    return paths, adaptation, {**context, "task_spec": construction["task_spec"],
+        "task_state_binding": construction["task_state_binding"],
+        "kinematic_path": construction["articulated_kinematic_path_receipt"]}
+
+
 def compile_diagnostic_native_arena_packet(
     *,
     diagnostic_controls_input: Mapping[str, Any],
@@ -516,6 +570,8 @@ def compile_diagnostic_native_arena_packet(
         diagnostic_controls_input=authority, droid_profile_reference=droid_profile_reference,
         task_trajectory=task_trajectory,
     )
+    runtime_assets, articulation_adaptation, context = _runtime_articulated_assets(
+        rows=rows, context=context, output_root=root)
     adapter = context["adapter"]
     task_definition = adapter["native_task_definition"]
     task_spec = context["task_spec"]
@@ -677,12 +733,10 @@ def compile_diagnostic_native_arena_packet(
         ("replacement", "task_object", "diagnostic_output.replacement.usdz"),
     )
     packet_assets: list[dict[str, Any]] = []
-    evidence_root = Path(
-        _bound_path(rows, "diagnostic_output.appearance.usdz")
-    ).parent.resolve()
+    evidence_root = runtime_assets["appearance"].parent.resolve()
     object_pose = task_definition["task_object_pose_world"]
     for role, semantic_role, contract_path in asset_contracts:
-        path = _bound_path(rows, contract_path)
+        path = runtime_assets[role]
         if path.parent != evidence_root:
             raise TaskEvaluationDiagnosticNativeArenaCompilerError(
                 "diagnostic_native_compiler_asset_root_mismatch"
@@ -710,6 +764,8 @@ def compile_diagnostic_native_arena_packet(
                 reset_state={"root_pose_world": object_pose,
                              "joint_positions": dict(task_definition.get("task_object_reset_joint_positions") or {})},
             )
+            if articulation_adaptation is not None:
+                row["articulation_adaptation"] = articulation_adaptation
         packet_assets.append(row)
 
     support = context["support"]
@@ -753,6 +809,7 @@ def compile_diagnostic_native_arena_packet(
         request=packet_request,
         evidence_root=evidence_root,
         output_dir=packet_root,
+        link_sources_within=root,
     )
     output: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

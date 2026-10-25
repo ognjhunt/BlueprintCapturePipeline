@@ -142,7 +142,7 @@ MOTIONS_PROMPT = (
     "not a measured axis, travel, force or physical qualification. Do not invent tasks absent from "
     "the description. Return an empty list only when no requested moving part is identifiable. "
 )
-MOUNTING_PROMPT = (
+LEGACY_MOUNTING_PROMPT = (
     "Give assembly_mounting with mode fixed_in_scene, free, or unknown, source_frame_ids, and reason. "
     "Use fixed_in_scene only when the visible installation or attachment supports keeping the assembly "
     "base fixed while its parts move. A motionless freestanding object alone does not establish a mount. "
@@ -150,13 +150,21 @@ MOUNTING_PROMPT = (
     "clear batch frames showing the evidence; this is a simulation construction hypothesis, not measured "
     "fasteners or physical qualification. Do not infer mounting from the object's name. "
 )
-RESPONSE_SHAPE = ('Return JSON only: {"hinge_edge": ..., "task_part_components": [...], "frames": '
+MOUNTING_PROMPT = LEGACY_MOUNTING_PROMPT + (
+    "Also give body_envelope_excludes_environment: true only when the capture supports a solid or "
+    "enclosed fixed body whose estimated envelope cannot contain surrounding scene geometry; false "
+    "for open frames, legs, or structures with background inside their envelope; null when uncertain. "
+    "This is an estimated collision-repair hypothesis. Do not mark every fixed object as enclosed. "
+)
+MOUNTING_RESPONSE_SHAPE_V1 = ('Return JSON only: {"hinge_edge": ..., "task_part_components": [...], "frames": '
                   '[{"frame_id": ..., "visible_parts": [...], "part_boxes": [{"part": ..., '
                   '"box_xywh_normalized": [...]}], "task_part_state": ..., "view": ..., "label_text": [...]}], '
                   '"required_motions": [{"motion_id": ..., "part_ids": [...], "joint_type": ..., '
                   '"task_actions": [...], "source_frame_ids": [...]}], '
                   '"assembly_mounting": {"mode": ..., "source_frame_ids": [...], "reason": ...}}. ')
-LEGACY_RESPONSE_SHAPE = RESPONSE_SHAPE.replace(
+RESPONSE_SHAPE = MOUNTING_RESPONSE_SHAPE_V1.replace(
+    '"reason": ...}}', '"reason": ..., "body_envelope_excludes_environment": true/false/null}}')
+LEGACY_RESPONSE_SHAPE = MOUNTING_RESPONSE_SHAPE_V1.replace(
     ', "assembly_mounting": {"mode": ..., "source_frame_ids": [...], "reason": ...}', '')
 # 2026-09-27 website capture: a stylized brand wordmark on the closed task
 # part's front was plain in the footage, yet label_text came
@@ -1191,9 +1199,14 @@ def coverage_matches(record: Mapping[str, Any] | None, *, target: Mapping[str, A
     expected = coverage_binding(target=target, source_geometry=source_geometry, task_context=task_context)
     legacy = {**expected, "prompt_digest": canonical_digest({"prompt": PROMPT, "revolute": REVOLUTE_PROMPT,
         "prismatic": PRISMATIC_PROMPT, "motions": MOTIONS_PROMPT, "response": LEGACY_RESPONSE_SHAPE})}
+    previous_mounting = {**expected, "prompt_digest": canonical_digest({"prompt": PROMPT,
+        "revolute": REVOLUTE_PROMPT, "prismatic": PRISMATIC_PROMPT, "motions": MOTIONS_PROMPT,
+        "mounting": LEGACY_MOUNTING_PROMPT, "response": MOUNTING_RESPONSE_SHAPE_V1})}
     return (isinstance(record, Mapping) and record.get("schema_version") == SCHEMA_VERSION
             and record.get("digest") == canonical_digest(record, digest_field="digest")
             and (record.get("binding") == expected or
+                 "body_envelope_excludes_environment" not in (record.get("assembly_mounting") or {})
+                 and record.get("binding") == previous_mounting or
                  "assembly_mounting" not in record and record.get("binding") == legacy))
 
 

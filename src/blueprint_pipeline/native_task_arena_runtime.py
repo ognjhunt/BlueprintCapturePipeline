@@ -725,7 +725,7 @@ ARENA_ANCHOR_JOINT = "fixed_base_anchor"
 
 
 def author_grounded_articulation(
-    source_usd: str | Path, destination: str | Path
+    source_usd: str | Path, destination: str | Path, *, scene_mounting: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Author the probe's proven fixed-base mechanism into a derived asset.
 
@@ -766,6 +766,28 @@ def author_grounded_articulation(
         usd_physics=UsdPhysics,
     )
     fixed_base = adaptation["fixed_base_body_prim_path"]
+    if scene_mounting is not None:
+        from .task_object_required_motions import assembly_mounting
+        try:
+            declared = assembly_mounting(scene_mounting)
+        except ValueError as exc:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_scene_mounting_invalid"]) from exc
+        if declared["mode"] == "free" and fixed_base:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_scene_mounting_conflicts_with_asset"])
+        if declared["mode"] == "fixed_in_scene":
+            children = set()
+            for prim in stage.Traverse():
+                if not prim.IsA(UsdPhysics.Joint):
+                    continue
+                typed = UsdPhysics.Joint(prim)
+                if len(typed.GetBody0Rel().GetTargets()) == 1:
+                    children.update(str(path) for path in typed.GetBody1Rel().GetTargets())
+            roots = set(adaptation["articulation_body_prim_paths"]) - children
+            if len(roots) != 1 or fixed_base and fixed_base not in roots:
+                raise NativeTaskArenaRuntimeError(["native_task_arena_scene_mounting_root_ambiguous"])
+            fixed_base = roots.pop()
+            adaptation = {**adaptation, "fixed_base_body_prim_path": fixed_base, "scene_mounting": declared,
+                          "scene_mounting_physical_measurement_proven": False}
     if not fixed_base:
         return None
 
@@ -803,7 +825,7 @@ def verify_grounded_articulation_overlay(
         raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_source_mismatch"])
     with tempfile.TemporaryDirectory(prefix="blueprint-grounding-replay-") as scratch:
         expected = Path(scratch) / "grounded.usda"
-        adaptation = author_grounded_articulation(source, expected)
+        adaptation = author_grounded_articulation(source, expected, scene_mounting=declared.get("scene_mounting"))
         if adaptation is None or any(declared.get(k) != v for k, v in adaptation.items()):
             raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_declaration_mismatch"])
         friction = declared.get("passive_joint_friction")

@@ -243,6 +243,19 @@ def _assembly_root_pose(*, template: Mapping[str, Any], static: Mapping[str, Any
         # Support height is a world coordinate; subtract the exported local
         # base, not the captured object's former world-space elevation.
         position[2] = support_top - float(lower[2])
+    if "scene_instance_pose_world" in template:
+        from .task_object_required_motions import assembly_mounting, bounded_assembly_pose
+        mounting = assembly_mounting(template.get("assembly_mounting"))
+        if mounting is None or mounting["mode"] != "fixed_in_scene" or constraints.get("schema_version") != "artisan_final_source_constraints.v1":
+            raise _error("instance_pose_requires_registered_fixed_assembly")
+        try:
+            pose, _ = bounded_assembly_pose(template["scene_instance_pose_world"],
+                reference_pose={"position_world_m": [float(center[0]), float(center[1]), float(source_lower[2]) - float(lower[2])],
+                                "orientation_xyzw": orientation},
+                minimum=lower, maximum=upper, uncertainty_m=template.get("placement_uncertainty_m"))
+        except ValueError as exc:
+            raise _error("instance_pose_invalid:" + str(exc)) from exc
+        return pose
     return {"position_world_m": position, "orientation_xyzw": orientation}
 
 
@@ -320,6 +333,11 @@ def adapt_articulated_open_close_task_template(
             bindings.append(binding)
         replacement_identity = revision["replacement"]["identity"]
     template = documents[DEFINITION_CONTRACT_PATH]
+    from .task_object_required_motions import assembly_mounting
+    try:
+        mounting = assembly_mounting(template.get("assembly_mounting"))
+    except ValueError as exc:
+        raise _error("assembly_mounting_invalid") from exc
     success = documents[SUCCESS_CONTRACT_PATH]
     execution = documents[EXECUTION_CONTRACT_PATH]
     if (
@@ -524,6 +542,7 @@ def adapt_articulated_open_close_task_template(
         "identity": dict(task["identity"]),
         "task_spec": native_task_spec,
         "task_object_pose_world": root_pose,
+        **({"assembly_mounting": mounting} if mounting is not None else {}),
         "task_joint_bindings": task_joint_bindings,
         "task_state_binding": task_state_binding,
         "task_object_reset_joint_positions": {

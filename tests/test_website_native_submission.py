@@ -22,6 +22,22 @@ from blueprint_pipeline.task_object_authoring_backend import new_authoring_budge
 from tests.test_task_evaluation_scene_configuration_submission import production_fixture, SHA
 
 
+def test_capture_mounting_and_shared_instance_pose_reach_the_frozen_template():
+    from blueprint_pipeline.website_native_submission import _bind_assembly_scene_instance
+    pose = {"position_world_m": [1., 2., .1], "orientation_xyzw": [0., 0., 0., 1.]}
+    mounting = {"mode": "fixed_in_scene", "source_frame_ids": ["source-view"],
+                "reason": "Capture-reviewed enclosed installation.", "body_envelope_excludes_environment": True}
+    preparation = {"authoring_inputs": {"source_frames": [{"frame_id": "source-view"}]},
+                   "scene_instance_pose_world": pose}
+    template = {}
+    _bind_assembly_scene_instance(template=template, preparation=preparation,
+        configuration={"construction_constraints": {"assembly_mounting": mounting}})
+    assert template == {"assembly_mounting": mounting, "scene_instance_pose_world": pose}
+    with pytest.raises(ValueError, match="assembly_mounting_invalid"):
+        _bind_assembly_scene_instance(template={}, preparation=preparation,
+            configuration={"construction_constraints": {"assembly_mounting": {**mounting, "source_frame_ids": ["other-view"]}}})
+
+
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
           max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False,
           authoring_backend=None):

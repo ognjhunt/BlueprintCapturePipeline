@@ -16,6 +16,132 @@ from blueprint_pipeline.task_evaluation_scene_configuration_stage_configuration 
 from tests.test_website_task_preparation import _arguments
 
 
+def test_void_clipping_preserves_floor_boundary_and_all_outside_area():
+    import numpy as np
+    from blueprint_pipeline.website_native_background import exclude_box_interior
+    triangles = np.array([[[-1., -1., 0.], [2., -1., 0.], [0., 2., 0.]],
+                          [[.2, .2, .5], [.4, .2, .5], [.2, .4, .5]],
+                          [[-1., .5, .5], [.5, -1., .5], [.5, .5, .5]]])
+    before = triangles.copy()
+    kept, pieces, report = exclude_box_interior(triangles, minimum=[0, 0, 0], maximum=[1, 1, 1])
+    assert kept.tolist() == [0]
+    assert report["fully_interior_faces"] == 1 and report["clipped_faces"] == 1
+    assert not np.any(np.all((pieces.mean(axis=1) > 0) & (pieces.mean(axis=1) < 1), axis=1))
+    def area(rows):
+        return np.linalg.norm(np.cross(rows[:, 1] - rows[:, 0], rows[:, 2] - rows[:, 0]), axis=1).sum() / 2
+    assert area(triangles) == pytest.approx(area(triangles[kept]) + area(pieces) + report["excluded_area_m2"])
+    np.testing.assert_array_equal(triangles, before)
+
+
+def _enclosed_fixture_preparation(mode="fixed_in_scene", excludes=True):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    review = {"mode": mode, "source_frame_ids": ["capture-view"], "reason": "Capture-reviewed candidate enclosure.",
+              "body_envelope_excludes_environment": excludes}
+    value = {"claim_ceiling": "development_only", "authoring_inputs": {
+        "source_frames": [{"frame_id": "capture-view"}], "configuration": {
+            "construction_constraints": {"assembly_mounting": review},
+            "body_extent_m": {"depth": 1., "width": 1., "height": 1.},
+            "mechanism": {"estimated_front_normal_world": [1., 0., 0.]}}},
+        "subject": {"geometry_origin": "removed_before_reconstruction",
+                    "aabb_min_xyz": [-.5, -.5, 0.], "aabb_max_xyz": [.5, .5, 1.]}}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    return value
+
+
+@pytest.mark.parametrize("mode,excludes", [("fixed_in_scene", None), ("fixed_in_scene", False), ("free", False), ("unknown", None)])
+def test_no_void_is_assumed_for_open_movable_or_unknown_objects(tmp_path, mode, excludes):
+    from blueprint_pipeline.website_native_background import reconcile_enclosed_fixture_collision
+    assert reconcile_enclosed_fixture_collision(source=tmp_path / "not-read.usdc",
+        preparation=_enclosed_fixture_preparation(mode, excludes), output_root=tmp_path / "unused") is None
+    assert not (tmp_path / "unused").exists()
+
+
+@pytest.mark.parametrize("yaw", [0, 35])
+def test_usd_void_derivative_preserves_source_and_remaps_subsets(tmp_path, yaw):
+    import math
+    import numpy as np
+    from pxr import Usd, UsdGeom, UsdPhysics
+    from blueprint_pipeline.website_native_background import reconcile_enclosed_fixture_collision
+    source = tmp_path / "background.usda"
+    stage = Usd.Stage.CreateNew(str(source))
+    UsdGeom.SetStageUpAxis(stage, "Z")
+    UsdGeom.SetStageMetersPerUnit(stage, 1.)
+    root = UsdGeom.Xform.Define(stage, "/Room")
+    if yaw:
+        root.AddTranslateOp().Set((3., -2., .1))
+        root.AddRotateZOp().Set(yaw)
+    stage.SetDefaultPrim(root.GetPrim())
+    mesh = UsdGeom.Mesh.Define(stage, "/Room/collision")
+    points = np.array([[-2, -2, 0], [2, -2, 0], [0, 2, 0],
+                       [-.2, -.2, .5], [.2, -.2, .5], [-.2, .2, .5],
+                       [-1, -.2, .5], [1, -.2, .5], [0, 1, .5]], dtype=np.float32)
+    mesh.CreatePointsAttr(points.tolist())
+    mesh.CreateFaceVertexCountsAttr([3, 3, 3])
+    mesh.CreateFaceVertexIndicesAttr(list(range(9)))
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    subset = UsdGeom.Subset.Define(stage, "/Room/collision/selected")
+    subset.CreateElementTypeAttr("face")
+    subset.CreateIndicesAttr([1, 2])
+    stage.GetRootLayer().Save()
+    digest = _sha256_file(source)
+    preparation = _enclosed_fixture_preparation()
+    if yaw:
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        angle = math.radians(yaw)
+        half = (math.sin(angle) + math.cos(angle)) / 2
+        preparation["subject"].update(aabb_min_xyz=[3 - half, -2 - half, .1],
+                                      aabb_max_xyz=[3 + half, -2 + half, 1.1])
+        preparation["authoring_inputs"]["configuration"]["mechanism"]["estimated_front_normal_world"] = [math.cos(angle), math.sin(angle), 0.]
+        preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+    arguments = dict(source=source, preparation=preparation, output_root=tmp_path / "derived")
+    receipt = reconcile_enclosed_fixture_collision(**arguments)
+    assert receipt["source_bytes_unchanged"] and receipt["outside_volume_geometry_preserved"]
+    assert receipt["appearance_modified"] is False and receipt["native_physics_qualified"] is False
+    assert _sha256_file(source) == digest
+    assert len(mesh.GetFaceVertexCountsAttr().Get()) == 3  # No in-memory source-layer mutation either.
+    derived = Usd.Stage.Open(receipt["output"]["path"])
+    result = UsdGeom.Mesh(derived.GetPrimAtPath("/Room/collision"))
+    np.testing.assert_array_equal(np.asarray(result.GetPointsAttr().Get())[:len(points)], points)
+    assert list(result.GetFaceVertexIndicesAttr().Get())[:3] == [0, 1, 2]
+    ids = UsdGeom.Subset(derived.GetPrimAtPath("/Room/collision/selected")).GetIndicesAttr().Get()
+    assert ids and max(ids) < len(result.GetFaceVertexCountsAttr().Get()) and 0 not in ids
+    assert reconcile_enclosed_fixture_collision(**arguments) == receipt
+    Path(receipt["output"]["path"]).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="cache_changed"):
+        reconcile_enclosed_fixture_collision(**arguments)
+
+
+def test_fixture_void_uses_same_bounded_scene_pose_without_rewriting_capture_bounds(tmp_path):
+    from pxr import Usd, UsdGeom, UsdPhysics
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.website_native_background import reconcile_enclosed_fixture_collision
+    source = tmp_path / "background.usda"
+    stage = Usd.Stage.CreateNew(str(source))
+    UsdGeom.SetStageUpAxis(stage, "Z")
+    UsdGeom.SetStageMetersPerUnit(stage, 1.)
+    root = UsdGeom.Xform.Define(stage, "/Room")
+    stage.SetDefaultPrim(root.GetPrim())
+    mesh = UsdGeom.Mesh.Define(stage, "/Room/collision")
+    mesh.CreatePointsAttr([(-.2, -.2, .5), (.2, -.2, .5), (-.2, .2, .5)])
+    mesh.CreateFaceVertexCountsAttr([3])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    stage.GetRootLayer().Save()
+    preparation = _enclosed_fixture_preparation()
+    subject = json.loads(json.dumps(preparation["subject"]))
+    preparation["coordinate_frame"] = {"placement_uncertainty_m": .1}
+    preparation["scene_instance_pose_world"] = {"position_world_m": [.03, .04, 0.], "orientation_xyzw": [0., 0., 0., 1.]}
+    preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+    receipt = reconcile_enclosed_fixture_collision(source=source, preparation=preparation, output_root=tmp_path / "derived")
+    assert receipt["binding"]["center_world_m"] == [.03, .04, 0.]
+    assert receipt["binding"]["scene_instance_pose_refinement"]["maximum_corner_displacement_m"] == pytest.approx(.05)
+    assert preparation["subject"] == subject
+    preparation["scene_instance_pose_world"]["position_world_m"][0] = .2
+    preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+    with pytest.raises(ValueError, match="outside_registration_uncertainty"):
+        reconcile_enclosed_fixture_collision(source=source, preparation=preparation, output_root=tmp_path / "other")
+
+
 def staged(tmp_path, *, appearance=False):
     control = tmp_path / "control"
     control.mkdir()

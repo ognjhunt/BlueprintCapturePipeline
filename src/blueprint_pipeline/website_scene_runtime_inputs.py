@@ -59,14 +59,20 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
     normalized = normalize_completed_mesh(source=source, original_filename=source.name,
                                          coordinate_frame=frame, output_root=collision_root)
     collision = collision_root / normalized["output"]["relative_path"]
+    from .website_native_background import reconcile_enclosed_fixture_collision
+    reconciliation = reconcile_enclosed_fixture_collision(source=collision, preparation=preparation,
+        output_root=output_root / "collision-reconciliation")
+    collision_record = ({**reconciliation["output"], "reconciliation": reconciliation}
+                        if reconciliation is not None else {
+                            "path": str(collision), "digest": normalized["output"]["sha256"],
+                            "size_bytes": normalized["output"]["size_bytes"]})
     from .website_object_observations import materialize_object_observations, REFERENCE_ROLE
     observations = materialize_object_observations(preparation=preparation, source_geometry=source_geometry,
         task_masks=task_masks, output_root=output_root / "object_observations")
     value = {
         "schema_version": "website_scene_runtime_inputs.v1", "status": "background_collision_prepared",
         "preparation_digest": preparation["digest"], "claim_ceiling": "development_only",
-        "collision": {"path": str(collision), "digest": normalized["output"]["sha256"],
-                      "size_bytes": normalized["output"]["size_bytes"],
+        "collision": {**collision_record,
                       "normalization_path": str(collision_root / "mesh_normalization.v1.json"),
                       "normalization_digest": normalized["normalization_digest"],
                       "object_mapping": normalized["object_mapping"]},

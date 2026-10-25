@@ -201,6 +201,16 @@ def test_mounting_review_survives_selection_and_legacy_records_stay_reusable(tmp
     mounting = record["assembly_mounting"]
     assert set(mounting["source_frame_ids"]) <= {r["frame_id"] for r in record["selected_frames"]}
     assert coverage.assembly_constraints(record, task_part="door")["assembly_mounting"] == mounting
+    previous = json.loads(json.dumps(record))
+    previous["binding"]["prompt_digest"] = canonical_digest({"prompt": coverage.PROMPT,
+        "revolute": coverage.REVOLUTE_PROMPT, "prismatic": coverage.PRISMATIC_PROMPT,
+        "motions": coverage.MOTIONS_PROMPT, "mounting": coverage.LEGACY_MOUNTING_PROMPT,
+        "response": coverage.MOUNTING_RESPONSE_SHAPE_V1})
+    previous["digest"] = canonical_digest(previous, digest_field="digest")
+    assert coverage.coverage_matches(previous, target=target, source_geometry=geometry, task_context=_context())
+    previous["assembly_mounting"]["body_envelope_excludes_environment"] = True
+    previous["digest"] = canonical_digest(previous, digest_field="digest")
+    assert not coverage.coverage_matches(previous, target=target, source_geometry=geometry, task_context=_context())
     legacy = json.loads(json.dumps(record))
     legacy.pop("assembly_mounting")
     legacy["binding"]["prompt_digest"] = canonical_digest({"prompt": coverage.PROMPT,

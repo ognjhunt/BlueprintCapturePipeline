@@ -66,7 +66,7 @@ def _native_import(identity: dict) -> dict:
     return value
 
 
-def _case(tmp_path: Path, *, opening_fraction: float = OPENING_FRACTION, assembly=None, mechanism=None):
+def _case(tmp_path: Path, *, opening_fraction: float = OPENING_FRACTION, assembly=None, mechanism=None, mounting=None):
     """``assembly`` (asset, graph_spec, static) and ``mechanism`` default to the drawer cabinet."""
     asset, graph_spec, static = assembly or _assembly(tmp_path)
     plan = graph_spec["assembly_plan"]
@@ -94,6 +94,8 @@ def _case(tmp_path: Path, *, opening_fraction: float = OPENING_FRACTION, assembl
                  "minimum_hold_seconds": 1.0, "maximum_retries": 0},
         resolved_seed=1)
     template["instruction"] = "Open the middle drawer of the three-drawer wood-front cabinet."
+    if mounting is not None:
+        template["assembly_mounting"] = mounting
     template["instruction_subject_label"] = "three-drawer wood cabinet"
     template["visible_target_label"] = "middle drawer"
     documents = {
@@ -209,6 +211,40 @@ def test_diagnostic_placement_context_uses_exact_actor_and_qualified_trajectory(
     assert "configured_scene_revision_digest" not in context["placement_plan"]
     assert len(context["task_trajectory"]["phases"]) == 3
     assert definition["task_object_reset_joint_positions"] == {"task_part_joint": 0.0}
+
+
+def test_diagnostic_route_reuses_qualified_geometry_with_canonical_mounting_and_fk(tmp_path):
+    from blueprint_pipeline import task_evaluation_diagnostic_native_arena_compiler as compiler
+    from blueprint_pipeline.native_task_arena_runtime import verify_grounded_articulation_overlay
+    mounting = {"mode": "fixed_in_scene", "source_frame_ids": ["source-frame"],
+                "reason": "Installed cabinet shown in the capture.", "body_envelope_excludes_environment": True}
+    case = _case(tmp_path, mounting=mounting)
+    authority = _diagnostic_case_authority(case, tmp_path)
+    workspace = tmp_path / "pending-workspace.json"
+    workspace.write_text(json.dumps({"schema_version": "website_workspace_clearance.v1",
+        "status": "execute_during_scene_configuration_run", "scene_id": "unit-fixture-scene"}))
+    for contract, path in [("scene.registration.workspace_clearance", workspace),
+                           ("diagnostic_output.replacement.usdz", case["asset"]),
+                           ("diagnostic_output.collision.usda", case["asset"]),
+                           ("diagnostic_output.appearance.usdz", case["asset"])]:
+        authority["materialized_inputs"].append({"contract_path": contract, "path": str(path),
+            "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size, "full_byte_readback_passed": True})
+    authority["receipt_digest"] = canonical_digest(authority, digest_field="receipt_digest")
+    context = compiler.diagnostic_robot_placement_inputs(diagnostic_controls_input=authority,
+        droid_profile_reference={"digest": "sha256:" + "f"*64})
+    original = case["asset"].read_bytes()
+    paths, adaptation, updated = compiler._runtime_articulated_assets(
+        rows=compiler._bound_rows(authority), context=context, output_root=tmp_path / "runtime")
+    assert len({p.parent for p in paths.values()}) == 1
+    assert paths["replacement"].suffix == ".usda"
+    assert paths["appearance"].read_bytes() == original == case["asset"].read_bytes()
+    assert updated["kinematic_path"]["source_usd"]["sha256"] == compiler._identity(paths["replacement"])[0]
+    assert updated["task_spec"]["interaction_affordance"]["kinematic_path_receipt_digest"] == updated["kinematic_path"]["receipt_digest"]
+    assert updated["task_state_binding"]["interaction_affordance_digest"] == updated["task_spec"]["interaction_affordance"]["affordance_digest"]
+    assert updated["scene_binding"] == context["scene_binding"]
+    assert adaptation["scene_mounting"] == mounting
+    verify_grounded_articulation_overlay(case["asset"], paths["replacement"], adaptation)
 
 
 def test_configured_drawer_task_adapts_to_a_passive_joint_native_definition(tmp_path: Path) -> None:
@@ -384,6 +420,22 @@ def test_normalized_sdk_pose_anchors_the_local_base_instead_of_subtracting_captu
     # An older package already contains scene-oriented geometry and keeps its existing placement.
     legacy = _assembly_root_pose(template=template, static={}, support_top=1.3)
     assert legacy["position_world_m"] == [2.0, -3.0, 0.0]
+
+
+def test_installed_fixture_pose_is_bound_to_capture_uncertainty_instead_of_floor_clamped():
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import _assembly_root_pose
+    template = {"start_center_xyz_m": [2., -3., 1.8],
+        "assembly_bounds_xyz_m": {"minimum": [1.7, -3.3, 1.3]},
+        "mechanism": {"estimated_front_normal_world": [1., 0., 0.]},
+        "assembly_mounting": {"mode": "fixed_in_scene", "source_frame_ids": ["source-view"], "reason": "Installed assembly."},
+        "placement_uncertainty_m": .1,
+        "scene_instance_pose_world": {"position_world_m": [2.03, -2.96, 1.12], "orientation_xyzw": [0., 0., 0., 1.]}}
+    static = {"source_constraints": {"schema_version": "artisan_final_source_constraints.v1",
+        "bounds_m": {"minimum": [-.3, -.3, .2], "maximum": [.3, .3, 1.2]}}}
+    assert _assembly_root_pose(template=template, static=static, support_top=0.) == template["scene_instance_pose_world"]
+    template["scene_instance_pose_world"]["position_world_m"][2] = 1.5
+    with pytest.raises(TaskEvaluationArticulatedOpenCloseNativeAdapterError, match="outside_registration_uncertainty"):
+        _assembly_root_pose(template=template, static=static, support_top=0.)
 
 
 @pytest.mark.parametrize("fraction", [0.0, -0.1, 1.01, True, float("nan")])
