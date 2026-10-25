@@ -28,7 +28,6 @@ from .task_evaluation_scene_configuration_diagnostic_mode import (
     FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
 )
 from .task_evaluation_scene_configuration_runtime_budget import (
-    MAX_ATTEMPT_SPEND_USD,
     MAX_EXTERNAL_SERVICE_SPEND_USD as MAX_EXTERNAL_SERVICE_SPEND_USD,
     MAX_HOURLY_RATE_USD,
     MAX_PROVIDER_COMPUTE_SPEND_USD,
@@ -347,13 +346,7 @@ def materialize_scene_configuration_paid_authority(
             (openai_cap == 0 and openai_max_requests == 0)
             or (openai_cap > 0 and 1 <= openai_max_requests <= 100)
         )
-        and (
-            (diagnostic_only and 0 < compute_cap <= MAX_PROVIDER_COMPUTE_SPEND_USD)
-            or (
-                not diagnostic_only
-                and abs(compute_cap - MAX_PROVIDER_COMPUTE_SPEND_USD) <= 1e-9
-            )
-        )
+        and 0 < compute_cap <= MAX_PROVIDER_COMPUTE_SPEND_USD
         and (
             (
                 diagnostic_only
@@ -362,9 +355,7 @@ def materialize_scene_configuration_paid_authority(
             )
             or (
                 not diagnostic_only
-                and (abs(float(hard_cap_usd) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
-                     if budget_profile.backend == "content_agents"
-                     else 0 < float(hard_cap_usd) <= budget_profile.attempt_maximum)
+                and 0 < float(hard_cap_usd) <= budget_profile.attempt_maximum
             )
         )
         and compute_cap + external_cap <= float(hard_cap_usd) + 1e-9
@@ -633,17 +624,7 @@ def validate_scene_configuration_paid_authority(
         and sum(float(value) for value in stage_caps.values())
         <= float(external_cost) + 1e-9
         and (authoring_provider != "anthropic" or all(float(value) == 0 for value in stage_caps.values()))
-        and (
-            (
-                diagnostic_only
-                and 0 < float(compute_cap) <= MAX_PROVIDER_COMPUTE_SPEND_USD
-            )
-            or (
-                not diagnostic_only
-                and abs(float(compute_cap) - MAX_PROVIDER_COMPUTE_SPEND_USD)
-                <= 1e-9
-            )
-        )
+        and 0 < float(compute_cap) <= MAX_PROVIDER_COMPUTE_SPEND_USD
         and (
             (
                 diagnostic_only
@@ -653,9 +634,7 @@ def validate_scene_configuration_paid_authority(
             )
             or (
                 not diagnostic_only
-                and (abs(float(total_cap) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
-                     if budget_profile.backend == "content_agents"
-                     else 0 < float(total_cap) <= budget_profile.attempt_maximum)
+                and 0 < float(total_cap) <= budget_profile.attempt_maximum
             )
         )
         and float(compute_cap) + float(external_cost) + float(anthropic_cost)
