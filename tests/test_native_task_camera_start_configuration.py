@@ -16,6 +16,7 @@ from blueprint_pipeline.native_task_camera_start_configuration import (
     external_camera_offset_position,
     resolved_camera_matrices,
     task_framing_points,
+    task_external_camera_position,
     validate_camera_start_configuration,
 )
 
@@ -100,6 +101,106 @@ def test_articulated_framing_uses_assembly_extent_and_frozen_stroke():
     plan['objects'][0]['object_type'] = 'RIGID'
     with pytest.raises(ValueError, match='policy_camera_articulated_subject_invalid'):
         task_framing_points(plan)
+
+
+@pytest.mark.parametrize("direction", [1., -1.])
+def test_hinged_framing_uses_registered_arc_in_the_scene_frame(direction):
+    import math
+
+    plan = fixture()
+    plan['task_kind'] = 'articulated_open_close'
+    plan['objects'] = [{
+        'task_subject': True, 'object_type': 'ARTICULATION',
+        'pose_world': {'position_world_m': [2., 3., 1.],
+                       'orientation_xyzw': [0., 0., math.sqrt(.5), math.sqrt(.5)]},
+    }]
+    plan['task_object_observability'] = {'task_object_extent_m': [.5, .6, .8]}
+    plan['task_spec']['executable_opening_threshold'] = {
+        'joint_type': 'revolute', 'target_joint_id': 'hinge',
+        'reset_position': .2, 'success_interval': [.2 + direction*math.pi/2, .2 + direction*math.pi/2],
+    }
+    affordance = {
+        'contact_point_link_m': [0., 0., .8], 'pull_unit_asset_root': [1., 0., 0.],
+        'joint_contact_path': [
+            {'joint_positions': {'hinge': .2 + direction*angle},
+             'contact_pose_asset_root': {'position_m': [math.sin(angle), 0., math.cos(angle)]}}
+            for angle in (0., math.pi/4, math.pi/2)
+        ],
+    }
+    affordance['affordance_digest'] = canonical_digest(affordance, digest_field='affordance_digest')
+    plan['task_spec']['interaction_affordance'] = affordance
+    points = task_framing_points(plan)
+    assert points['subject_start'] == pytest.approx([2., 3., 2.])
+    assert points['subject_destination'] == pytest.approx([2., 4., 1.])
+    assert points['subject_path_01'] == pytest.approx([2., 3.+math.sqrt(.5), 1.+math.sqrt(.5)])
+
+    # A path for a different requested opening cannot silently drive camera selection.
+    plan['task_spec']['executable_opening_threshold']['success_interval'][0] += .1
+    with pytest.raises(ValueError, match='contact_path_invalid'):
+        task_framing_points(plan)
+    plan['task_spec']['executable_opening_threshold']['success_interval'][0] -= .1
+    affordance['joint_contact_path'][1]['contact_pose_asset_root']['position_m'][0] += .1
+    with pytest.raises(ValueError, match='contact_path_invalid'):
+        task_framing_points(plan)
+
+
+def test_fixed_cameras_frame_the_arc_while_reset_wrist_checks_current_contact(monkeypatch):
+    import numpy as np
+    import blueprint_pipeline.native_task_camera_start_configuration as cameras
+
+    plan = fixture()
+    monkeypatch.setattr(cameras, 'task_framing_points', lambda _: {
+        'subject_start': [0., 0., -2.], 'subject_destination': [.1, 0., -2.],
+        'subject_path_01': [100., 0., -2.],
+    })
+    monkeypatch.setattr(cameras, 'resolved_camera_matrices', lambda *_: {
+        role: (np.eye(4), [[100., 0., 640.], [0., 100., 360.], [0., 0., 1.]])
+        for role in ('external', 'wrist', 'overview')
+    })
+    report = camera_framing_report(plan, [], {})
+    assert report['status'] == 'blocked'
+    assert [row['subject'] for row in report['views'] if row['camera_role'] == 'wrist'] == ['subject_start']
+    assert all(not row['passed'] for row in report['views'] if row['subject'] == 'subject_path_01')
+
+
+def test_scene_camera_translation_reaches_policy_profile_without_changing_wrist_calibration():
+    import numpy as np
+
+    plan = fixture()
+    original = deepcopy(plan)
+    binding = deepcopy(plan['policy_canary_camera_start_configuration'])
+    binding['external_camera_position_parent_m'] = task_external_camera_position(plan)
+    binding['external_camera_placement_source'] = 'sealed_task_motion_path'
+    binding['configuration_digest'] = canonical_digest(binding, digest_field='configuration_digest')
+    plan['policy_canary_camera_start_configuration'] = binding
+    assert validate_camera_start_configuration(plan, binding) == binding
+    profile = apply_droid_policy_canary_profile(plan)['policy_canary_embodiment_profile']
+    assert profile['preserve_official_external_camera_translation'] is False
+    assert profile['preserve_official_policy_camera_intrinsics'] is True
+    assert original['cameras'] == plan['cameras']
+    before = resolved_camera_matrices(plan, binding['source_joint_chain'], binding['joint_reset_positions_rad'])
+    assert camera_framing_report(plan, binding['source_joint_chain'], binding['joint_reset_positions_rad'])['status'] == 'passed'
+    plan['scenario'] = {'parameters': {'external_camera_x_delta_m': .02}}
+    after = resolved_camera_matrices(plan, binding['source_joint_chain'], binding['joint_reset_positions_rad'])
+    np.testing.assert_allclose(after['external'][0][:3, 3]-before['external'][0][:3, 3], [.02, 0., 0.], atol=1e-12)
+    np.testing.assert_allclose(after['wrist'][0], before['wrist'][0])
+    assert after['external'][1] == before['external'][1]
+
+
+def test_scene_camera_translation_recovers_an_elevated_handle_path(monkeypatch):
+    import blueprint_pipeline.native_task_camera_start_configuration as cameras
+
+    plan = fixture()
+    binding = plan['policy_canary_camera_start_configuration']
+    monkeypatch.setattr(cameras, 'task_framing_points', lambda _: {
+        'subject_start': [0., 0., 1.4], 'subject_path_01': [.3, 0., 1.2],
+        'subject_destination': [.5, 0., .9],
+    })
+    before = camera_framing_report(plan, binding['source_joint_chain'], binding['joint_reset_positions_rad'])
+    assert any(not row['passed'] for row in before['views'] if row['camera_role'] == 'external')
+    binding['external_camera_position_parent_m'] = task_external_camera_position(plan)
+    after = camera_framing_report(plan, binding['source_joint_chain'], binding['joint_reset_positions_rad'])
+    assert all(row['passed'] for row in after['views'] if row['camera_role'] == 'external')
 
 
 @pytest.mark.parametrize(
