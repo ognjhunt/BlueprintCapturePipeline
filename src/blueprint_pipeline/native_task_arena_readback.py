@@ -35,7 +35,7 @@ def _stored_logical_root_pose(planned: Mapping[str, Any]) -> dict[str, list[floa
     native = convert_root_pose(planned["pose_world"], binding, to_native=True)
     rounded = {key: [struct.unpack("!f", struct.pack("!f", float(value)))[0]
                      for value in values] for key, values in native.items()}
-    return convert_root_pose(rounded, binding, to_native=False)
+    return _logical_root_pose(planned, [*rounded["position_world_m"], *rounded["orientation_xyzw"]])
 
 
 def _read_marker_pose_world(scene: Any) -> list[float]:
@@ -712,8 +712,11 @@ def read_native_task_arena_scenario_parameters(
                 error=f"native_task_arena_scenario_root_pose_missing:{runtime_name}",
             )
             dtype = native_storage["canonical_scalar_dtype"]
-            planned = next(row for row in built.plan["objects"]
-                           if row.get("name") == runtime_name)
+            # Numeric-only legacy/rigid readbacks have no articulated object
+            # inventory. A missing binding keeps their native frame unchanged;
+            # executable articulated packets still require one at preflight.
+            planned = next((row for row in built.plan.get("objects") or []
+                            if (row.get("name") or row.get("semantic_role")) == runtime_name), {})
             logical_pose = _logical_root_pose(planned, pose)
             root_binding = (planned.get("articulation_adaptation") or {}).get("native_root_frame_binding")
             if kind in ("task_subject_root_position_x_m", "task_subject_root_position_y_m"):
@@ -751,8 +754,10 @@ def read_native_task_arena_scenario_parameters(
                         "mode": "exact_expected_native_storage_value",
                         "native_dtype": dtype,
                         "expected_stored_value": stored_expected,
-                        # Use both raw orientations so each is normalized once.
-                        "absolute_error_stored_value": _quaternion_angle_xyzw(observed, stored_expected),
+                        # Legacy native frames compare both raw orientations;
+                        # bound frames compare the same inverse-map operation.
+                        "absolute_error_stored_value": _quaternion_angle_xyzw(
+                            observed if root_binding is not None else pose[3:7], stored_expected),
                         "unit": "rad",
                         "physical_tolerance_changed": False,
                     }
