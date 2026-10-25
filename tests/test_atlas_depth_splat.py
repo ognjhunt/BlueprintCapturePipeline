@@ -456,3 +456,90 @@ def test_planes_stay_exact_beside_missing_depth():
     assert np.isnan(smoothed[30:50, 40:60]).all() and (smoothed[:, :3] == 0).all()
     valid = np.isfinite(holed) & (holed > 0)
     assert np.allclose(smoothed[valid], true[valid], rtol=1e-5)
+
+
+def test_views_with_opposite_depth_errors_fuse_onto_one_surface(monkeypatch):
+    # Atlas returns each view's depth with its own low-frequency error.
+    first = camera(width=96, height=128, focal=120.0)
+    second = camera((0.2, 0.0, 0.0), yaw_degrees=10.0, width=96, height=128, focal=120.0)
+    frames = [frame(first, plane_depth(first) * 1.015, "a"), frame(second, plane_depth(second) * 0.985, "b")]
+    splat, report = depth_splat.fuse_posed_frames(frames)
+    monkeypatch.setattr(depth_splat, "DEPTH_CONSENSUS_PASSES", 0)
+    layered, _ = depth_splat.fuse_posed_frames(frames)
+    assert report["cross_view_agreement"]["median_relative_residual"] > 0.025  # gated before any rescaling
+    assert report["depth_consensus"]["median_relative_residual_after"] < 0.003
+    off_plane, layered_off_plane = np.abs(splat.xyz[:, 2] + 2.0), np.abs(layered.xyz[:, 2] + 2.0)
+    assert np.median(off_plane) < 0.2 * np.median(layered_off_plane)
+
+
+def test_views_that_already_agree_are_left_unchanged():
+    first, second = camera(), camera((0.2, 0.0, 0.0), yaw_degrees=10.0)
+    frames = [frame(first, plane_depth(first), "a"), frame(second, plane_depth(second), "b")]
+    rescaled, report = depth_splat.consensus_depths(frames)
+    assert report["median_voted_grid_share_by_pass"][0] > 0.5
+    for before, after in zip(frames, rescaled):
+        assert np.allclose(after["depth"], before["depth"], rtol=1e-6)
+
+
+def test_an_occluder_and_the_surface_behind_it_never_vote_for_each_other():
+    first, second = camera(), camera((0.5, 0.0, 0.0))
+    k = second["intrinsics"]
+    panel_x = 0.5 + (np.arange(k["width"]) + 0.5 - k["cx"]) / k["fx"] * 0.5
+    occluded = np.where(((panel_x >= 0.35) & (panel_x <= 0.75))[None, :], 0.5, 2.0)
+    frames = [frame(first, plane_depth(first), "a"),
+              frame(second, np.broadcast_to(occluded, (k["height"], k["width"])).astype(np.float32), "b")]
+    rescaled, _ = depth_splat.consensus_depths(frames)
+    for before, after in zip(frames, rescaled):
+        assert np.allclose(after["depth"], before["depth"], rtol=1e-6)
+
+
+def test_views_that_share_no_surface_keep_their_own_depth():
+    ahead, behind = camera(), camera(yaw_degrees=180.0)
+    frames = [frame(ahead, plane_depth(ahead) * 1.03, "a"), frame(behind, np.full((64, 48), 1.7, np.float32), "b")]
+    rescaled, report = depth_splat.consensus_depths(frames)
+    assert report["median_voted_grid_share_by_pass"] == [0.0] * depth_splat.DEPTH_CONSENSUS_PASSES
+    for before, after in zip(frames, rescaled):
+        assert np.array_equal(after["depth"], before["depth"])
+
+
+def test_a_sample_straddling_an_occluder_edge_is_no_vote():
+    # b sits 0.4 mm to the side, so a's pixels land 2 % of a pixel inside b's next column:
+    # blending b's panel (depth 1) into its background (depth 2) there would read as a 2 % vote.
+    a, b = camera(width=120, height=80, focal=100.0), camera((0.0004, 0.0, 0.0), width=120, height=80, focal=100.0)
+    edge = 2 + 4 * 14  # a column on the consensus grid
+    panel = np.full((80, 120), 2.0, np.float32)
+    panel[:, :edge] = 1.0
+    frames = [frame(a, np.full((80, 120), 2.0, np.float32), "a"), frame(b, panel, "b")]
+    rescaled, _ = depth_splat.consensus_depths(frames)
+    assert np.array_equal(rescaled[0]["depth"], frames[0]["depth"])
+
+
+def test_a_correction_never_crosses_an_occlusion_edge():
+    # Both views agree on a depth-1 foreground but disagree by 4 % on the background beside it.
+    a, b = camera(width=96, height=64, focal=80.0), camera(width=96, height=64, focal=80.0)
+    foreground = np.arange(96)[None, :] < 46
+    frames = [frame(a, np.broadcast_to(np.where(foreground, 1.0, 2.0), (64, 96)).astype(np.float32), "a"),
+              frame(b, np.broadcast_to(np.where(foreground, 1.0, 2.08), (64, 96)).astype(np.float32), "b")]
+    rescaled, _ = depth_splat.consensus_depths(frames)
+    for before, after in zip(frames, rescaled):
+        assert np.array_equal(after["depth"][:, :46], before["depth"][:, :46]), "the agreeing foreground stays one sheet"
+    assert np.median(np.abs(rescaled[0]["depth"][:, 60:] - rescaled[1]["depth"][:, 60:])) < 0.02
+
+
+def test_masked_repair_views_beside_a_view_never_crowd_out_the_view_that_overlaps_it():
+    # Repair views sit beside each full view but keep only a few pixels each; the
+    # production export gave one full view seven of them as its eight nearest cameras.
+    a = camera(width=96, height=128, focal=120.0)
+    b = camera((0.6, 0.0, 0.0), yaw_degrees=15.0, width=96, height=128, focal=120.0)
+    frames = [frame(a, plane_depth(a) * 1.015, "a"), frame(b, plane_depth(b) * 0.985, "b")]
+    patch = np.zeros((128, 96), np.float32)
+    patch[60:64, 44:48] = 1.0
+    for anchor, x in (("a", 0.0), ("b", 0.6)):
+        for index in range(depth_splat.CROSS_VIEW_NEIGHBOURS):
+            cam = camera((x + 0.01 * index - 0.04, 0.02, 0.0), width=96, height=128, focal=120.0)
+            repair = frame(cam, plane_depth(cam), f"{anchor}-repair-{index}")
+            frames.append({**repair, "confidence": patch})
+    rescaled, report = depth_splat.consensus_depths(frames)
+    for view, cam in ((0, a), (1, b)):
+        assert np.median(np.abs(rescaled[view]["depth"] / plane_depth(cam) - 1.0)) < 0.003
+    assert report["median_voting_views_by_pass"][0] >= 1
