@@ -1866,6 +1866,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Frozen articulated_native_diagnostic_request.v1 JSON.",
     )
     gpu.add_argument(
+        "--adp009d-articulated-diagnostic-static-receipt",
+        help="Exact static qualification receipt required by an all-motion diagnostic request.",
+    )
+    gpu.add_argument(
         "--adp009d-physics-backend",
         choices=("physx", "newton"),
         default="physx",
@@ -5742,6 +5746,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             articulated_native_requested = bool(
                 args.adp009d_articulated_diagnostic_asset
                 or args.adp009d_articulated_diagnostic_request
+                or args.adp009d_articulated_diagnostic_static_receipt
             )
             missing = [
                 name
@@ -5916,6 +5921,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             request_path=args.adp009d_articulated_diagnostic_request,
                             harness_manifest_path=args.adp009d_harness_manifest,
                             implementation_commit=control_identity["orchestrator_source_commit"],
+                            static_qualification_receipt_path=args.adp009d_articulated_diagnostic_static_receipt,
                         )
                     else:
                         prepared_bundle = build_native_microcheck_bundle(

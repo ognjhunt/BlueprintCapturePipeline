@@ -954,9 +954,11 @@ def test_allocator_routes_articulated_diagnostic_without_canned_inputs(
 
     monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
 
-    assert allocator.main(_allocator_args(tmp_path)) == 0
+    arguments = [*_allocator_args(tmp_path), "--adp009d-articulated-diagnostic-static-receipt", str(tmp_path / "static.json")]
+    assert allocator.main(arguments) == 0
     assert "approved_can_path" not in observed["build"]
     assert observed["build"]["asset_path"] == str(tmp_path / "asset.usda")
+    assert observed["build"]["static_qualification_receipt_path"] == str(tmp_path / "static.json")
     admission = json.loads((tmp_path / "admission.json").read_text())
     binding = admission["allocation_binding"]
     assert binding["articulated_native_diagnostic_requested"] is True

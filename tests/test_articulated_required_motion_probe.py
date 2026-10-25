@@ -128,3 +128,31 @@ def test_consumer_recalculates_actual_joint_errors_instead_of_accepting_pass_fla
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     with pytest.raises(ValueError, match="result_motion_failed"):
         validate_required_motion_probe_result(result, value)
+
+
+def test_real_static_qualifier_emits_the_motion_plan_from_retained_source_metadata(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_object_artisan_candidate as candidate
+    from blueprint_pipeline.task_object_artisan_exports import adapt_usd
+    from tests.test_task_object_artisan_exports import construction_request, usd_fixture, annotations
+    request = construction_request(articulated=True)
+    constraints = {"required_motions": [{"motion_id": "operate_panel", "part_ids": ["door"],
+        "joint_type": "revolute", "task_actions": ["open"], "source_frame_ids": ["source_1"]}]}
+    request["configuration"].update(required_part_ids=["door"], construction_constraints=constraints)
+    request.update(construction_constraints=constraints,
+        replacement_identity={"id": "fixture", "version": "v1"},
+        source_frame_manifest={"frames": [{"frame_id": "source_1", "timestamp_seconds": 2.0}]})
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    asset = tmp_path / "final.usdz"
+    observed = adapt_usd(usd_fixture(tmp_path, articulated=True), asset, request,
+                        annotations_path=annotations(tmp_path, request))["final_readback"]
+    # Receipt verification has independent byte-tampering tests. Here the
+    # production qualifier consumes actual OpenUSD readback and source metadata.
+    monkeypatch.setattr(candidate, "verify_artisan_candidate", lambda **kwargs: (request, observed))
+    receipt = {"asset_kind": "articulated_assembly", "upstream_artifacts": {"manifest": {"candidate_id": "fixture"}}}
+    qualified = candidate.qualify_artisan_asset_static(asset_path=asset, graph_spec={},
+        authoring_receipt=receipt, replacement_identity=request["replacement_identity"],
+        output_path=tmp_path / "static.json")
+    protocol = qualified["required_motion_probe_plan"]
+    assert protocol["motion_order_basis"] == "source_frame_chronology"
+    assert protocol["motions"][0]["joint_id"] == "door_hinge"
+    assert qualified["claim_boundary"]["native_simulator_import_qualified"] is False
