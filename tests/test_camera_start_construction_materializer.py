@@ -48,6 +48,36 @@ def test_materializer_uses_current_readback_and_not_old_reference_reset():
     assert camera.validate_camera_start_configuration(kwargs['plan'],result)==result
 
 
+@pytest.mark.parametrize('operation', ['plan', 'construction'])
+def test_camera_cli_binds_exact_json_inputs_without_mutating_them(tmp_path, capsys, operation):
+    kwargs = inputs()
+    if operation == 'plan':
+        kwargs.pop('construction')
+        kwargs['plan']['plan_digest'] = canonical_digest(kwargs['plan'], digest_field='plan_digest')
+    path = tmp_path / 'parameters.json'
+    path.write_text(json.dumps(kwargs))
+    original = path.read_bytes()
+    assert camera.main([operation, '--parameters', str(path)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert camera.validate_camera_start_configuration(kwargs['plan'], result) == result
+    assert result['source_robot_asset_sha256'] == kwargs['robot_asset_sha256']
+    assert result['native_qualification_claimed'] is False
+    assert ('construction_result_digest' in result) == (operation == 'construction')
+    assert path.read_bytes() == original
+
+
+def test_camera_cli_refuses_changed_native_reset_before_emitting_a_binding(tmp_path, capsys):
+    kwargs = inputs()
+    kwargs['construction']['initial_readback']['robot_root_pose_world'][0] += .1
+    kwargs['construction']['result_digest'] = canonical_digest(
+        kwargs['construction'], digest_field='result_digest')
+    path = tmp_path / 'parameters.json'
+    path.write_text(json.dumps(kwargs))
+    with pytest.raises(ValueError, match='policy_camera_construction_base_readback_changed'):
+        camera.main(['construction', '--parameters', str(path)])
+    assert capsys.readouterr().out == ''
+
+
 @pytest.mark.parametrize('fault',['robot','gate_pose','native_base','default_reset','missing_readback','failed_reset','chain'])
 def test_materializer_rejects_mismatched_native_or_calibration_evidence(fault):
     kwargs=inputs()

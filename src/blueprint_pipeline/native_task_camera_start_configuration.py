@@ -465,3 +465,31 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
         if choices:
             return min(choices, key=lambda item: item[:4])[4]
     raise ValueError('policy_camera_final_reset_does_not_frame_task')
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Expose the same sealed camera joins used by automated scene preparation.
+
+    ``plan`` prepares a candidate reset; ``construction`` binds an actual native
+    reset. Neither command allocates, launches a simulator, or calls a policy.
+    Parameters are the selected materializer's exact JSON keyword arguments.
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("operation", choices=("plan", "construction"))
+    parser.add_argument("--parameters", required=True, help="JSON materializer arguments.")
+    args = parser.parse_args(argv)
+    parameters = json.loads(Path(args.parameters).read_text(encoding="utf-8"))
+    if not isinstance(parameters, dict):
+        parser.error("parameters must be a JSON object")
+    materialize = (materialize_camera_start_from_plan if args.operation == "plan"
+                   else materialize_camera_start_from_construction)
+    result = materialize(**parameters)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
