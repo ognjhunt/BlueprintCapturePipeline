@@ -179,12 +179,24 @@ def _qualified_mechanism(
     interval = graph["success_predicate"]["joint_intervals"].get(target["joint_id"])
     if not interval or float(interval[0]) <= float(target["reset_position"]):
         raise _error("success_interval_invalid")
-    # The template only declares the intended opening fraction; the executable
-    # threshold comes from the qualified joint limit, and the two must agree.
+    # The task owns its opening goal. SDK exports carry a generic diagnostic
+    # success predicate; use their qualified travel limits to resolve the
+    # already-frozen task fraction rather than replacing it with that default.
+    # Older packages encode the task predicate itself and keep its exact check.
     declared = (template.get("success") or {}).get("minimum_opening_fraction_of_usable_travel")
     if declared is not None:
-        expected = float(declared) * limits[1]
-        if abs(expected - float(interval[0])) > max(1e-4, 1e-3 * abs(limits[1])):
+        if isinstance(declared, bool):
+            raise _error("success_fraction_outside_joint_limits")
+        fraction = _number(declared)
+        if fraction > 1:
+            raise _error("success_fraction_outside_joint_limits")
+        normalized = (static.get("source_constraints") or {}).get("schema_version") == "artisan_final_source_constraints.v1"
+        if normalized:
+            if (template.get("success") or {}).get("threshold_binding") != "frozen_from_qualified_asset_joint_limit_before_any_episode":
+                raise _error("success_threshold_binding_invalid")
+            reset = float(target["reset_position"])
+            interval = [reset + fraction * (limits[1] - reset), limits[1]]
+        elif abs(fraction * limits[1] - float(interval[0])) > max(1e-4, 1e-3 * abs(limits[1])):
             raise _error("success_threshold_disagrees_with_qualified_limit")
     return {
         "graph": graph,
@@ -201,6 +213,35 @@ def _qualified_mechanism(
         "contact_point_link_m": contact_point,
         "handle_prim_paths": [str(path) for path in contact["handle_prim_paths"]],
     }
+
+
+def _assembly_root_pose(*, template: Mapping[str, Any], static: Mapping[str, Any],
+                        support_top: float) -> dict[str, Any]:
+    center = _vector(template.get("start_center_xyz_m"), field="template.start_center_xyz_m")
+    source_lower = _vector((template.get("assembly_bounds_xyz_m") or {}).get("minimum"),
+                           field="template.assembly_bounds.minimum")
+    position = [float(center[0]), float(center[1]), support_top - float(source_lower[2])]
+    orientation = [0.0, 0.0, 0.0, 1.0]
+    constraints = static.get("source_constraints") or {}
+    if constraints.get("schema_version") == "artisan_final_source_constraints.v1":
+        # This export contract requires an identity root and a local +X-front,
+        # Z-up assembly. Older assembly packages already carry scene-oriented
+        # geometry. Apply the capture heading only to the normalized export.
+        front = _vector((template.get("mechanism") or {}).get("estimated_front_normal_world"),
+                        field="template.mechanism.estimated_front_normal_world")
+        if math.hypot(float(front[0]), float(front[1])) <= 1e-9:
+            raise _error("asset_scene_heading_invalid")
+        yaw = math.atan2(float(front[1]), float(front[0]))
+        orientation = [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)]
+        bounds = constraints.get("bounds_m") or {}
+        lower = _vector(bounds.get("minimum"), field="static.source_constraints.bounds.minimum")
+        upper = _vector(bounds.get("maximum"), field="static.source_constraints.bounds.maximum")
+        if any(lo >= hi for lo, hi in zip(lower, upper, strict=True)):
+            raise _error("asset_scene_bounds_invalid")
+        # Support height is a world coordinate; subtract the exported local
+        # base, not the captured object's former world-space elevation.
+        position[2] = support_top - float(lower[2])
+    return {"position_world_m": position, "orientation_xyzw": orientation}
 
 
 def adapt_articulated_open_close_task_template(
@@ -438,13 +479,9 @@ def adapt_articulated_open_close_task_template(
         support.get("sage_prim_path") or ""
     ).startswith("/"):
         raise _error("support_plane_invalid")
-    start_center = _vector(template.get("start_center_xyz_m"), field="template.start_center_xyz_m")
-    assembly = template.get("assembly_bounds_xyz_m") or {}
-    lower = _vector(assembly.get("minimum"), field="template.assembly_bounds.minimum")
     support_top = _number(support.get("top_z_m"), positive=False)
-    # Place the assembly root so its own base sits on the registered support
-    # top; the authored frame's origin is the carcass bottom.
-    root_position = [float(start_center[0]), float(start_center[1]), support_top - float(lower[2])]
+    root_pose = _assembly_root_pose(template=template, static=documents[STATIC_QUALIFICATION_CONTRACT_PATH],
+                                    support_top=support_top)
     scenario_document = {
         "schema_version": "adp009d_scenario_instance.v1",
         "context_kind": "evaluation_cell",
@@ -463,10 +500,7 @@ def adapt_articulated_open_close_task_template(
         "schema_version": "task_evaluation_native_task_definition.v1",
         "identity": dict(task["identity"]),
         "task_spec": native_task_spec,
-        "task_object_pose_world": {
-            "position_world_m": root_position,
-            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
-        },
+        "task_object_pose_world": root_pose,
         "task_joint_bindings": task_joint_bindings,
         "task_state_binding": task_state_binding,
         "task_object_reset_joint_positions": {
