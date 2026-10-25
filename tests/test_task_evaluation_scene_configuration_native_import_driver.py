@@ -970,3 +970,26 @@ def test_required_motion_readback_is_enforced_by_real_native_component_consumer(
         result = execute_native_import_component(environment=environment, native_runner=runner)
         artifact = next(row for row in result["artifacts"] if row["role"] == "native_import_runtime_result")
         assert json.loads(Path(artifact["path"]).read_text())["required_motion_probe"] == probe
+        from blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters import execute_simready_native_import_qualification
+        from blueprint_pipeline.task_evaluation_scene_configuration_adapters import TaskEvaluationSceneConfigurationAdapterError
+        stage_input_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"])
+        stage_input = json.loads(stage_input_path.read_text())
+        adapter_root = tmp_path / "real_consumer"
+        adapter_root.mkdir()
+        kwargs = dict(envelope={"recipe": {"subject_identity": static["replacement_identity"]}},
+            stage={"stage_id": "stage-5", "capability": "native_import", "execution_class": "gpu_canary"},
+            configuration=stage_input["configuration"], configuration_path=stage_input_path,
+            dependency_results=tuple(dependencies), provider_runtime_artifacts=tuple(result["artifacts"]))
+        assert execute_simready_native_import_qualification(output_root=adapter_root, **kwargs)["status"] == "completed"
+        # An old worker could emit a qualified result without exercising all
+        # motions. The stable downstream consumer must independently refuse it.
+        runtime_path = Path(artifact["path"])
+        runtime = json.loads(runtime_path.read_text())
+        runtime.pop("required_motion_probe")
+        runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
+        runtime_path.write_text(json.dumps(runtime))
+        artifact.update(digest=_sha256(runtime_path), size_bytes=runtime_path.stat().st_size)
+        refused = tmp_path / "old_worker_consumer"
+        refused.mkdir()
+        with pytest.raises(TaskEvaluationSceneConfigurationAdapterError, match="required_motion_probe_invalid"):
+            execute_simready_native_import_qualification(output_root=refused, **kwargs)
