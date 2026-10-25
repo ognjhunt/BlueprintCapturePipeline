@@ -17,6 +17,9 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 def _setup(tmp_path, monkeypatch):
+    # These fixtures model a standalone operator, even when CI's runner is a
+    # systemd service. Actual systemd caller-survival cases have separate tests.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
     inputs, bundle, _, _ = _prepared(tmp_path, monkeypatch)
     authority = inputs["authority_arguments"]
     args = SimpleNamespace(
