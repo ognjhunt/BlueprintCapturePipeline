@@ -5,14 +5,21 @@ therefore retain all receipt/owner/phase checks without importing execution code
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 import hashlib
 import json
+import os
 import re
+import stat
 from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .control_plane_retained_receipt import read_receipt_bytes
+from .validation_file_digests import MINIMUM_BYTES, _identity, record_touched, scoped_verdict, touched_files
+
+# Retained bytes (and directory listings) each adoption verdict being derived has consulted.
+_CONSULTED: ContextVar[tuple] = ContextVar("retained_controls_consulted", default=())
 
 UNSTARTED_SCHEMA = "task_evaluation_unstarted_controls_cancellation.v1"
 DIRECTORY = "cancelled-unstarted-controls"
@@ -31,8 +38,19 @@ def _terminal_require(condition: bool, code: str) -> None:
     if not condition:
         raise ValueError("controls_autoprovision_" + code)
 
+def _receipt_bytes(path: Path) -> bytes:
+    """``read_receipt_bytes``, noted for every adoption verdict being derived from it."""
+    raw = read_receipt_bytes(path)
+    collectors = _CONSULTED.get()
+    if collectors:
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        for rows in collectors:
+            rows[str(path)] = digest
+    return raw
+
+
 def _read(path: Path) -> dict[str, Any]:
-    value = json.loads(read_receipt_bytes(path))
+    value = json.loads(_receipt_bytes(path))
     if not isinstance(value, dict):
         raise ValueError("unstarted_controls_evidence_invalid")
     return value
@@ -40,7 +58,7 @@ def _read(path: Path) -> dict[str, Any]:
 
 def _file(path: Path) -> dict[str, Any]:
     _read(path)
-    return {"path": str(path), "digest": "sha256:" + hashlib.sha256(read_receipt_bytes(path)).hexdigest()}
+    return {"path": str(path), "digest": "sha256:" + hashlib.sha256(_receipt_bytes(path)).hexdigest()}
 
 
 def _placement_require(condition: Any, code: str) -> None:
@@ -73,7 +91,10 @@ def _validated_trajectory_provenance_rebound(
     def native_plan(base_pose_path: str, digest: str) -> dict[str, Any]:
         root = Path(base_pose_path).parent / "deferred-inputs"
         _placement_require(root.is_dir() and not root.is_symlink(), "trajectory_provenance_invalid")
-        paths = root.glob("*/native_trajectory_plan.v1.json")
+        pattern = "*/native_trajectory_plan.v1.json"
+        paths = sorted(root.glob(pattern))
+        for rows in _CONSULTED.get():  # a new plan appearing here changes the verdict
+            rows[("listing", str(root), pattern)] = tuple(str(path) for path in paths)
         matches = []
         found_any = False
         for path in paths:
@@ -132,7 +153,104 @@ def _validate_same_task_trajectory_lineage(
     )
 
 
+def _consulting(compute):
+    """Run ``compute`` and return its verdict with every byte and listing it consulted."""
+    receipts: dict = {}
+    token = _CONSULTED.set(_CONSULTED.get() + (receipts,))
+    try:
+        with touched_files() as files:
+            verdict = compute()
+    finally:
+        _CONSULTED.reset(token)
+    # Generations share profile artifacts and nested reuse re-records them: keep each
+    # path once (its last bytes), or every reuse re-hashes the same file hundreds of times.
+    return verdict, (receipts, list({row["path"]: row for row in files}.values()))
+
+
+def _live_digest(path: str) -> str | None:
+    """Digest of a regular file opened without following a final symlink."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            return None
+        return "sha256:" + hashlib.sha256(stream.read()).hexdigest()
+
+
+def _reproven(consulted) -> bool:
+    """Re-read everything a stored verdict consulted; enclosing verdicts then inherit it.
+
+    Small files are re-hashed and large files re-proven by full stat identity, as the
+    scoped digest cache does. A retired or offloaded record is re-read through its reader.
+    """
+    receipts, files = consulted
+    plain: set[str] = set()  # directories this pass has already found free of symlinks
+
+    def unlinked(path: str) -> bool:
+        parent = os.path.dirname(path)
+        while parent not in plain:
+            if os.path.islink(parent):
+                return False
+            plain.add(parent)
+            parent = os.path.dirname(parent)
+        return not os.path.islink(path)
+
+    try:
+        for name, expected in receipts.items():
+            if isinstance(name, tuple):
+                observed = tuple(str(path) for path in sorted(Path(name[1]).glob(name[2])))
+            else:
+                observed = _live_digest(name) if unlinked(name) else None
+                if observed != expected:
+                    observed = "sha256:" + hashlib.sha256(read_receipt_bytes(Path(name))).hexdigest()
+            if observed != expected:
+                return False
+        for row in files:
+            if not unlinked(row["path"]):
+                return False
+            observed = os.lstat(row["path"])
+            if not (observed.st_size >= MINIMUM_BYTES and list(_identity(observed)) == list(row["identity"])
+                    or _live_digest(row["path"]) == row["sha256"]):
+                return False
+    except (OSError, ValueError):
+        return False
+    for rows in _CONSULTED.get():
+        rows.update(receipts)
+    for row in files:
+        record_touched(row["path"], row["identity"], row["sha256"])
+    return True
+
+
 def validate_placement_adoption(
+    value: Mapping[str, Any], *, expected_owner_digest: str | None = None
+) -> dict[str, Any]:
+    """Validate a retained adoption once per synchronous operation.
+
+    A status read meets the same release lineage from every cancelled attempt, and each
+    generation's intent nests its parent's adoption. Walking the lineage again per
+    descendant made one retained scene's status read cost 45 s of CPU on production
+    (2026-10-25), beyond the Website's 15 s request timeout. A verdict for the same
+    recomputed seal is reused only after every byte and listing behind it, ancestors
+    included, is re-read unchanged; nothing survives the operation, and the owner
+    binding is checked on every call.
+    """
+    if value.get("adoption_digest") != canonical_digest(value, digest_field="adoption_digest"):
+        return _validate_placement_adoption(value, expected_owner_digest=expected_owner_digest)
+    source = scoped_verdict(
+        ("completed_placement_adoption", value["adoption_digest"]),
+        lambda: _consulting(lambda: _validate_placement_adoption(value)),
+        _reproven,
+    )
+    _placement_require(
+        expected_owner_digest is None or source["owner"]["intent_digest"] == expected_owner_digest,
+        "owner_mismatch",
+    )
+    return source
+
+
+def _validate_placement_adoption(
     value: Mapping[str, Any], *, expected_owner_digest: str | None = None
 ) -> dict[str, Any]:
     from . import task_evaluation_configured_controls_autostart_validation as auto

@@ -1,6 +1,7 @@
-"""Transaction-local hashing reuse for retained large inputs, never validation verdicts.
+"""Transaction-local hashing reuse for retained large inputs.
 
-Each outer operation starts empty. Every first read hashes all bytes. Only
+A validation verdict is reused only through ``scoped_verdict``, after every byte
+it consulted is re-proven. Each outer operation starts empty. Every first read hashes all bytes. Only
 regular files of at least MINIMUM_BYTES qualify; every hit reopens the file
 without following symlinks and checks device, inode, link count, ownership,
 mode, size and nanosecond modification and change times. The change time is
@@ -50,6 +51,12 @@ def record_touched(path, identity, digest) -> None:
         rows.append({"path": str(path), "identity": list(identity), "sha256": digest})
 
 
+def note_consulted(path, raw: bytes) -> None:
+    """Record bytes a reader consulted for every open collector; free when none is open."""
+    if _TOUCHED.get():
+        record_touched(path, _identity(Path(path).lstat()), "sha256:" + hashlib.sha256(raw).hexdigest())
+
+
 def note_verdict(*, reused: bool) -> None:
     stats = _STATS.get()
     if stats is not None:
@@ -71,6 +78,27 @@ def scoped_measurement(key, compute):
     if key not in cache:
         cache[key] = deepcopy(compute())
     return deepcopy(cache[key])
+
+
+def scoped_verdict(key, compute, reproven):
+    """Reuse a verdict inside this operation only once every byte it consulted is re-proven.
+
+    ``compute()`` returns ``(verdict, consulted)``. A stored verdict is returned again
+    only when ``reproven(consulted)`` re-reads all of those bytes unchanged; otherwise
+    it is recomputed. Nothing survives the outer operation and callers get copies.
+    """
+    cache = _CACHE.get()
+    if cache is None:
+        return compute()[0]
+    key = ("verdict", key)
+    stored = cache.get(key)
+    if stored is not None and reproven(stored[1]):
+        note_verdict(reused=True)
+        return deepcopy(stored[0])
+    verdict, consulted = compute()
+    note_verdict(reused=False)
+    cache[key] = (deepcopy(verdict), consulted)
+    return verdict
 
 
 @contextmanager

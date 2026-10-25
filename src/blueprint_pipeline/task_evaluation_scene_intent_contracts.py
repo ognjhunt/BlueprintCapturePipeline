@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest as canonical_digest
+from .validation_file_digests import note_consulted
 
 TASK_STRATEGIES = ("pick_and_place", "articulated_open_close")
 ARTICULATION_JOINT_TYPES = ("prismatic", "revolute")
@@ -125,9 +126,11 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
 def _read(path: Path, field: str) -> dict[str, Any]:
     _require(not path.is_symlink(), "record_unsafe")
     try:
-        value = json.loads(path.read_text())
+        raw = path.read_bytes()
+        value = json.loads(raw)
     except (OSError, ValueError) as exc:
         raise SceneIntakeError("scene_intake_record_unreadable") from exc
     _require(isinstance(value, dict) and value.get(field) == canonical_digest(value, digest_field=field),
              "record_digest_invalid")
+    note_consulted(path, raw)
     return value

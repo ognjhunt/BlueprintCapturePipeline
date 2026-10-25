@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .validation_file_digests import note_consulted
+
 PROMPT_CACHE_INTENT_FIELDS = (
     "expected_proposal_reuse_probability",
     "expected_visual_review_reuse_probability",
@@ -85,6 +87,7 @@ def _artifact_record(path: Path) -> dict[str, Any]:
         raise OpenAIInferenceUsageError("openai_inference_usage_artifact_invalid")
     payload = resolved.read_bytes()
     metadata = resolved.stat()
+    note_consulted(resolved, payload)
     return {
         "path": str(resolved),
         "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
