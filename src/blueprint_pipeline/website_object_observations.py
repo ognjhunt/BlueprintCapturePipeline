@@ -15,7 +15,6 @@ from typing import Any, Mapping
 
 import numpy as np
 from PIL import Image
-from pxr import Usd, UsdGeom
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -123,6 +122,10 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
                 raise ValueError("website_object_observation_source_changed")
         return {"manifest": _record(path), "candidate": _record(_checked(value["candidate"], root=root)),
                 "configuration": bound_config}
+    # Receipt validation and adapter registration run before SimulationApp.
+    # Isaac exposes its own USD bindings only after native initialization.
+    from pxr import Usd, UsdGeom
+
     root.mkdir(parents=True, exist_ok=True)
     candidate = root / "source_object_candidate.usda"
     stage = Usd.Stage.CreateNew(str(candidate))

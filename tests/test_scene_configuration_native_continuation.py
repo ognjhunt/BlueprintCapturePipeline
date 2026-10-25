@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
+import textwrap
 import time
 import zipfile
 
@@ -90,6 +93,7 @@ def test_changed_prefix_is_rejected_before_a_native_runtime_can_start(tmp_path, 
         continuation.validate_native_prefix(capsule, envelope)
 
 
+@pytest.mark.slow
 def test_exact_bundle_rehearsal_never_restores_over_the_controller_prefix(tmp_path, monkeypatch):
     envelope, configurations, output, capsule, _, chain, _ = prefix(tmp_path)
     source = Path(__file__).resolve().parents[1]
@@ -110,6 +114,26 @@ def test_exact_bundle_rehearsal_never_restores_over_the_controller_prefix(tmp_pa
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         archive.extractall(tmp_path / "extracted")
     runtime = tmp_path / "extracted/provider_runtime"
+    # Reproduce the actual pinned-image boundary: USD is unavailable before
+    # SimulationApp, even when the developer interpreter has usd-core installed.
+    probe = textwrap.dedent("""
+        import importlib.abc, pathlib, sys
+        runtime, output = map(pathlib.Path, sys.argv[1:])
+        sys.path.insert(0, str(runtime / 'pipeline/src'))
+        class BeforeIsaac(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == 'pxr' or fullname.startswith('pxr.'):
+                    raise ModuleNotFoundError("No module named 'pxr' before SimulationApp")
+        sys.meta_path.insert(0, BeforeIsaac())
+        from blueprint_pipeline.task_evaluation_scene_configuration_native_continuation import main
+        assert main(['--runtime-root', str(runtime), '--output-root', str(output), '--preflight-only']) == 0
+        assert 'pxr' not in sys.modules
+        print('NATIVE_REGISTRY_READY_BEFORE_ISAAC')
+    """)
+    checked = subprocess.run([sys.executable, "-I", "-c", probe, str(runtime), str(tmp_path / "isolated")],
+        capture_output=True, text=True, check=False, timeout=30)
+    assert checked.returncode == 0, checked.stderr
+    assert "NATIVE_REGISTRY_READY_BEFORE_ISAAC" in checked.stdout
     assert provider_runtime_contract_blockers(provider_bundle_kind=continuation.BUNDLE_KIND,
         entrypoint_text=(runtime / "run_adp_arena_provider_runtime.sh").read_text(),
         runner_text=Path(continuation.__file__).read_text()) == []
@@ -143,9 +167,10 @@ def test_exact_bundle_rehearsal_never_restores_over_the_controller_prefix(tmp_pa
         assert all(not name.startswith("stages/stage-1/") for name in archive.namelist())
 
 
-def test_fixed_producer_drives_the_real_native_component_and_verifies_its_bytes(tmp_path, monkeypatch):
-    from tests.test_task_evaluation_scene_configuration_native_import_driver import _environment, _native_runner, _observed
-    from blueprint_pipeline import task_evaluation_scene_configuration_native_import_driver as driver
+@pytest.mark.slow
+@pytest.mark.parametrize("child_exit", [0, 1])
+def test_fixed_producer_drives_the_real_native_component_and_verifies_its_bytes(tmp_path, monkeypatch, child_exit):
+    from tests.test_task_evaluation_scene_configuration_native_import_driver import _environment
     environment = _environment(tmp_path)
     stage_input = json.loads(Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"]).read_text())
     stage = stage_input["stage"]
@@ -157,14 +182,31 @@ def test_fixed_producer_drives_the_real_native_component_and_verifies_its_bytes(
     deps[0]["stage_result_digest"] = canonical_digest(deps[0], digest_field="stage_result_digest")
     envelope = {"run_id": "retained-run", "expected_production_commit": "a" * 40}
     envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
-    original = driver.execute_native_import_component
-    monkeypatch.setattr(driver, "execute_native_import_component", lambda **kwargs:
-        original(**kwargs, native_runner=_native_runner(_observed())))
+    original = subprocess.run
+    def child(argv, **kwargs):
+        assert argv == [sys.executable, "-m", "blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver"]
+        assert kwargs["timeout"] == 1800
+        # The real component seals its result, then Isaac shutdown exits the
+        # child process. The parent must validate it and continue packaging.
+        probe = textwrap.dedent("""
+            from blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver import execute_native_import_component
+            from tests.test_task_evaluation_scene_configuration_native_import_driver import _native_runner, _observed
+            execute_native_import_component(native_runner=_native_runner(_observed()))
+        """) + "\nraise SystemExit(" + str(child_exit) + ")\n"
+        return original([sys.executable, "-c", probe], **kwargs)
+    monkeypatch.setattr(continuation.subprocess, "run", child)
     root = tmp_path / "native-producer"
     root.mkdir()
-    artifacts = continuation.native_import_producer_registry(implementation_commit="b" * 40).execute(
-        stage=stage, envelope=envelope, configuration=stage_input["configuration"], configuration_path=config,
-        dependency_results=deps, output_root=root)
+    def execute():
+        return continuation.native_import_producer_registry(implementation_commit="b" * 40).execute(
+            stage=stage, envelope=envelope, configuration=stage_input["configuration"], configuration_path=config,
+            dependency_results=deps, output_root=root)
+    if child_exit:
+        with pytest.raises(Exception, match="native_component_failed:1"):
+            execute()
+        assert (root / "component_result.v1.json").is_file()
+        return
+    artifacts = execute()
     assert {row["role"] for row in artifacts} == {"native_import_runtime_result"}
     actual = json.loads(Path(artifacts[0]["path"]).read_text())
     assert actual["deterministic_reset_state_digest_repeat_count"] == 3

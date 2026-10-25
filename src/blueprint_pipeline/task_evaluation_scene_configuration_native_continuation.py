@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 import zipfile
 
@@ -235,8 +236,9 @@ def native_import_producer_registry(*, implementation_commit):
     identity = identities[0]
 
     def produce(*, stage, envelope, configuration, configuration_path, dependency_results, output_root):
-        from .task_evaluation_scene_configuration_native_import_driver import execute_native_import_component
-        from .task_evaluation_scene_configuration_stage_tool import _validate_input, _validate_dependencies, _validate_component_result
+        from .task_evaluation_scene_configuration_stage_tool import (
+            _validate_input, _validate_dependencies, _validate_component_result, component_timeout_seconds,
+        )
         root = Path(output_root)
         source_binding = canonical_digest({"implementation_commit": implementation_commit,
             "runtime": "repository_owned_native_import", "generated_tool_runtime_used": False})
@@ -250,11 +252,24 @@ def native_import_producer_registry(*, implementation_commit):
         input_path, dependencies = root / "stage_production_input.v1.json", root / "dependency_results.v1.json"
         input_path.write_text(canonical_json(value) + "\n")
         dependencies.write_text(canonical_json(list(dependency_results)) + "\n")
-        component = execute_native_import_component(environment={
+        component_path = root / "component_result.v1.json"
+        _require(not component_path.exists(), "native_component_result_already_exists")
+        environment = {**os.environ,
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(input_path),
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES": str(dependencies),
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(root),
-            "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(root / "component_result.v1.json")})
+            "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(component_path)}
+        # SimulationApp.close may terminate its interpreter. Keep the stage
+        # chain alive to consume the durable result and assemble stage 6.
+        with (root / "native_component.log").open("w") as log:
+            completed = subprocess.run(
+                [sys.executable, "-m", "blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver"],
+                cwd=Path(__file__).resolve().parents[2], env=environment,
+                stdout=log, stderr=subprocess.STDOUT, check=False,
+                timeout=component_timeout_seconds(identity.adapter_id))
+        _require(completed.returncode == 0 and component_path.is_file(),
+                 "native_component_failed:" + str(completed.returncode))
+        component = _json(component_path)
         artifacts = _validate_component_result(component, adapter_id=identity.adapter_id,
             stage_id=stage["stage_id"], output_root=root, diagnostic_only=False)
         result = {"schema_version": PRODUCTION_RESULT_SCHEMA_VERSION, "status": "completed",
@@ -416,9 +431,13 @@ def main(argv=None):
     transport = validate_native_prefix(capsule, envelope)
     _validated_configurations(runtime, manifest, envelope)
     if args.preflight_only:
-        # Import the actual driver closure now; SimulationApp remains lazy.
+        # Exercise the registry too: an eager USD import here previously
+        # escaped the driver-only rehearsal and failed in the Isaac image.
+        from .task_evaluation_scene_configuration_builtin_adapters import builtin_scene_configuration_adapter_handlers
         from .task_evaluation_scene_configuration_native_import_driver import execute_native_import_component
         _require(callable(execute_native_import_component), "native_driver_missing")
+        _require(all(callable(handler) for handler in builtin_scene_configuration_adapter_handlers().values()),
+                 "adapter_handler_missing")
         value = {"schema_version": "provider_bundle_entrypoint_rehearsal.v1", "status": "passed",
             "archive_extraction_executed": True, "gpu_runtime_started": False,
             "paid_inference_performed": False, "provider_mutations_performed": 0,
