@@ -387,6 +387,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_policy_runtime_smoke",
         "adp009d_isaac",
         "adp009d_articulated_native",
+        "scene_configuration_native_continuation",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
@@ -402,6 +403,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_policy_runtime_smoke",
         "adp009d_isaac",
         "adp009d_articulated_native",
+        "scene_configuration_native_continuation",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
@@ -2697,6 +2699,17 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp009d_policy_runtime_smoke_worker.py"
         readiness_name = "adp009d_policy_runtime_smoke_manifest.json"
+    elif provider_bundle_kind == "scene_configuration_native_continuation":
+        required_entries = {
+            "provider_runtime/run_adp_arena_provider_runtime.sh",
+            "provider_runtime/native_continuation_manifest.v1.json",
+            "provider_runtime/completed_cpu_prefix.zip",
+            "provider_runtime/construction_envelope.v1.json",
+            "provider_runtime/pipeline/src/blueprint_pipeline/task_evaluation_scene_configuration_native_continuation.py",
+        }
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/pipeline/src/blueprint_pipeline/task_evaluation_scene_configuration_native_continuation.py"
+        readiness_name = "native_continuation_manifest.v1.json"
     elif provider_bundle_kind == "adp009d_articulated_native":
         required_entries = adp009d_articulated_native_required_entries
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
@@ -2842,6 +2855,7 @@ def _blueprint_bundle_preflight(
             "adp009d_policy_runtime_smoke",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -3923,6 +3937,7 @@ def _resolve_launch_mode(
             "adp009d_policy_runtime_smoke",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -3992,6 +4007,7 @@ def _probe_env(
         "adp_arena",
         "adp009d_isaac",
         "adp009d_articulated_native",
+        "scene_configuration_native_continuation",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
@@ -4762,6 +4778,7 @@ def _probe_shell_script(
             "adp009d_policy_runtime_smoke",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -6778,6 +6795,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp_arena",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -7380,6 +7398,7 @@ def run_vast_provider_adapter(
             "adp_arena",
             "adp009d_isaac",
             "adp009d_articulated_native",
+            "scene_configuration_native_continuation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",

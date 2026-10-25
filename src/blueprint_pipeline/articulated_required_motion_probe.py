@@ -13,6 +13,7 @@ import re
 from collections.abc import Mapping
 
 
+TASK_SUCCESS_FIELD = "task_success_proven"
 SCHEMA = "articulated_required_motion_probe_plan.v1"
 RESULT_SCHEMA = "articulated_required_motion_probe_result.v1"
 DIAGNOSTIC_DRIVE = {"drive_stiffness": 2000.0, "drive_damping": 150.0, "drive_max_force": 5000.0}
@@ -79,14 +80,14 @@ def build_required_motion_probe_plan(*, readback, graph, requirements=(), source
     plan = {"schema_version": SCHEMA, "requirements_digest": readback["requirements_digest"],
             "motion_order_basis": "source_frame_chronology" if observed_order else "candidate_authoring_requirement_order",
             "dependency_order_is_measured": False, "motions": rows, "phases": phases,
-            "task_success_proven": False, "physics_authority_granted": False}
+            TASK_SUCCESS_FIELD: False, "physics_authority_granted": False}
     plan["plan_digest"] = _digest(plan, "plan_digest")
     return validate_required_motion_probe_plan(plan)
 
 
 def validate_required_motion_probe_plan(plan):
     _require(isinstance(plan, Mapping) and plan.get("schema_version") == SCHEMA and
-             plan.get("task_success_proven") is False and plan.get("physics_authority_granted") is False and
+             plan.get(TASK_SUCCESS_FIELD) is False and plan.get("physics_authority_granted") is False and
              plan.get("dependency_order_is_measured") is False and
              plan.get("plan_digest") == _digest(plan, "plan_digest"), "plan_invalid")
     _require(isinstance(plan.get("requirements_digest"), str) and
@@ -159,7 +160,7 @@ def execute_required_motion_probe(plan, *, command, read_state, capture=None):
               "plan_digest": plan["plan_digest"], "requirements_digest": plan["requirements_digest"],
               "motion_ids": [row["motion_id"] for row in plan["motions"]], "phase_rows": rows,
               "blockers": errors, "robot_embodiment_used": False, "learned_policy_queried": False,
-              "task_success_proven": False, "physics_authority_granted": False}
+              TASK_SUCCESS_FIELD: False, "physics_authority_granted": False}
     result["result_digest"] = _digest(result, "result_digest")
     return result
 
@@ -193,7 +194,7 @@ def validate_required_motion_probe_result(result, plan):
              result.get("requirements_digest") == plan["requirements_digest"] and
              result.get("result_digest") == _digest(result, "result_digest") and
              result.get("robot_embodiment_used") is False and result.get("learned_policy_queried") is False and
-             result.get("task_success_proven") is False and result.get("physics_authority_granted") is False,
+             result.get(TASK_SUCCESS_FIELD) is False and result.get("physics_authority_granted") is False,
              "result_invalid")
     rows = result.get("phase_rows")
     _require(isinstance(rows, list) and len(rows) == len(plan["phases"]) and

@@ -56,6 +56,20 @@ def run_adp009d_native_microcheck_vast(
         prepared_bundle.get("execution_mode")
         == "outcome_blind_policy_runtime_smoke"
     )
+    native_continuation = prepared_bundle.get("diagnostic_kind") == "scene_configuration_native_continuation"
+    if native_continuation:
+        from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE as native_image
+        from .task_evaluation_scene_configuration_native_continuation import MINIMUM_DRIVER_VERSION as native_driver
+        if (prepared_bundle.get("container_image") != native_image
+                or prepared_bundle.get("minimum_driver_version") != native_driver
+                or prepared_bundle.get("candidate_policy_queried") is not False
+                or prepared_bundle.get("policy_candidate_id") is not None
+                or prepared_bundle.get("model_calls_performed") != 0
+                or prepared_bundle.get("generated_tool_runtime_used") is not False
+                or prepared_bundle.get("provider_disclosure_authorized") is not True
+                or prepared_bundle.get("claim_ceiling") != "development_only"
+                or authorize_gated_backbone):
+            raise ValueError("native_continuation_transport_contract_invalid")
 
     return run_arena_native_control_vast(
         approval_path=".",
@@ -68,9 +82,11 @@ def run_adp009d_native_microcheck_vast(
         hard_cap_usd=hard_cap_usd,
         hard_ttl_seconds=hard_ttl_seconds,
         expected_output_filename="adp009d_native_microcheck.json",
-        container_image=DEFAULT_IMAGE,
+        container_image=native_image if native_continuation else DEFAULT_IMAGE,
         provider_bundle_kind=(
-            "adp009d_policy_runtime_smoke"
+            "scene_configuration_native_continuation"
+            if native_continuation
+            else "adp009d_policy_runtime_smoke"
             if policy_runtime_smoke
             else "adp009d_articulated_native"
             if prepared_bundle.get("diagnostic_kind")
@@ -85,7 +101,8 @@ def run_adp009d_native_microcheck_vast(
             else "blueprint-adp009d-"
         ),
         blocker_prefix="adp009d",
-        min_gpu_ram_mb=46_000,
+        min_gpu_ram_mb=16_000 if native_continuation else 46_000,
+        min_compute_cap=89 if native_continuation else 0,
         max_compute_cap=max_compute_cap,
         require_independent_watchdog=True,
         enable_isaac_smoke=True,
@@ -94,8 +111,9 @@ def run_adp009d_native_microcheck_vast(
         candidate_policy_query_expected=bool(
             str(prepared_bundle.get("policy_candidate_id") or "").strip()
         ),
-        preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
-        minimum_driver_version=MINIMUM_DRIVER_VERSION,
+        preferred_gpu_keywords=(("RTX 4000 Ada", "RTX4000Ada", "L4", "L40S")
+            if native_continuation else ("L40S", "RTX 6000 Ada", "RTX A6000")),
+        minimum_driver_version=native_driver if native_continuation else MINIMUM_DRIVER_VERSION,
     )
 
 
