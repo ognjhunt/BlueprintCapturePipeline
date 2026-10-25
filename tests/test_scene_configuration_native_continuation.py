@@ -197,7 +197,7 @@ def test_fixed_producer_drives_the_real_native_component_and_verifies_its_bytes(
     envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
     original = subprocess.run
     def child(argv, **kwargs):
-        assert argv == [sys.executable, "-m", "blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver"]
+        assert argv == ["/isaac-sim/python.sh", "-m", "blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver"]
         assert kwargs["timeout"] == 1800
         # The real component seals its result, then Isaac shutdown exits the
         # child process. The parent must validate it and continue packaging.

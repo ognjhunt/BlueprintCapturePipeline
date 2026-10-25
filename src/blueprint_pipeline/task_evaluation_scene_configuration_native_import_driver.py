@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -911,10 +912,14 @@ def _run_native_import(
 ) -> dict[str, Any]:
     # Isaac allows one SimulationApp per process, so a supplemental destination
     # is settled inside the same session right after the subject replacement.
-    _bind_isaac_runtime_environment()
-    SimulationApp = _import_simulation_app()
-    app = SimulationApp({"headless": True, "fast_shutdown": True})
+    app = None
+    exit_code = 1
     try:
+        _bind_isaac_runtime_environment()
+        SimulationApp = _import_simulation_app()
+        print("BLUEPRINT_NATIVE_IMPORT_SIMULATION_APP_STARTING", flush=True)
+        app = SimulationApp({"headless": True, "fast_shutdown": True})
+        print("BLUEPRINT_NATIVE_IMPORT_SIMULATION_APP_READY", flush=True)
         runtime_identity = _observe_isaac_runtime_identity(app)
         repeat_count = int(required_checks["state_digest_repeat_count"])
         duration = float(required_checks["gravity_settle_seconds"])
@@ -953,14 +958,26 @@ def _run_native_import(
                     timestep_seconds=1.0 / 60.0, articulated=True, static_receipt=static_receipt,
                     required_motion_probe=required_plan)
                 observation["required_motion_probe"] = extra["required_motion_probe"]
-        return dict(observation_consumer(observation))
-    except Exception:
+        result = dict(observation_consumer(observation))
+        exit_code = 0
+        return result
+    except BaseException as error:
         # Fast Kit shutdown can exit Python with code 0 before an exception
         # reaches the process entrypoint. Retain its real predicate first.
+        if isinstance(error, SystemExit) and isinstance(error.code, int) and error.code != 0:
+            exit_code = error.code
+        elif isinstance(error, KeyboardInterrupt):
+            exit_code = 130
         traceback.print_exc()
         raise
     finally:
-        app.close()
+        if app is not None:
+            # Isaac 6.0.1 can otherwise replace a validation failure with a
+            # successful process exit during fast shutdown.
+            if "exit_code" in inspect.signature(app.close).parameters:
+                app.close(exit_code=exit_code)
+            else:
+                app.close()
 
 
 def execute_native_import_component(
@@ -1050,10 +1067,10 @@ def execute_native_import_component(
         if not isinstance(repeats, list) or len(repeats) != 3:
             raise TaskEvaluationSceneConfigurationNativeImportDriverError(code)
         state_digests = [str(row.get("final_state_digest") or "") for row in repeats]
-        maximum_translation = max(
-            float(row.get("settle_translation_m", math.inf)) for row in repeats
-        )
-        maximum_rotation = max(float(row.get("settle_rotation_rad", math.inf)) for row in repeats)
+        translations = [float(row.get("settle_translation_m", math.inf)) for row in repeats]
+        rotations = [float(row.get("settle_rotation_rad", math.inf)) for row in repeats]
+        maximum_translation = max(translations)
+        maximum_rotation = max(rotations)
         if articulated:
             assert static_receipt is not None
             expected_links = static_receipt["observed_structure"]["links"]
@@ -1119,18 +1136,21 @@ def execute_native_import_component(
             )
         else:
             structure_ok = all(len(row.get("rigid_body_paths") or []) == 1 for row in repeats)
-        qualified = (
-            len(set(state_digests)) == 1
-            and all(row.get("asset_imported") is True for row in repeats)
-            and all(row.get("support_contact_observed") is True for row in repeats)
-            and structure_ok
-            and all(bool(row.get("collision_paths")) for row in repeats)
-            and maximum_translation <= float(checks["maximum_settle_translation_m"])
-            and maximum_rotation <= float(checks["maximum_settle_rotation_rad"])
-        )
-        if not qualified:
+        predicates = {
+            "deterministic_reset": len(set(state_digests)) == 1,
+            "asset_imported": all(row.get("asset_imported") is True for row in repeats),
+            "support_contact": all(row.get("support_contact_observed") is True for row in repeats),
+            "structure_matches_static": structure_ok,
+            "colliders_present": all(bool(row.get("collision_paths")) for row in repeats),
+            "settle_translation": all(math.isfinite(value) for value in translations)
+                and maximum_translation <= float(checks["maximum_settle_translation_m"]),
+            "settle_rotation": all(math.isfinite(value) for value in rotations)
+                and maximum_rotation <= float(checks["maximum_settle_rotation_rad"]),
+        }
+        failed = [name for name, passed in predicates.items() if not passed]
+        if failed:
             raise TaskEvaluationSceneConfigurationNativeImportDriverError(
-                "scene_configuration_native_import_qualification_failed"
+                "scene_configuration_native_import_qualification_failed:" + ",".join(failed)
             )
         return state_digests, maximum_translation, maximum_rotation
 
@@ -1226,6 +1246,21 @@ def execute_native_import_component(
 
     def _seal_observation(observation: Mapping[str, Any]) -> dict[str, Any]:
         observed = dict(observation)
+        # A failed gate must retain the actual simulator data for offline
+        # replay. This is deliberately ungraded, never a qualified artifact.
+        raw = {"schema_version": "scene_configuration_native_import_observation.v1", "status": "ungraded",
+            "stage_input_digest": _sha256(stage_input_path), "asset_digest": asset_record["digest"],
+            "static_qualification_digest": static_record["digest"], "observation": observed,
+            "claim_ceiling": "development_only"}
+        try:
+            raw_text = json.dumps(raw, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError) as error:
+            # Nonfinite or malformed simulator output remains inspectable,
+            # while the normal validator still refuses its original values.
+            raw_text = canonical_json({**{k: v for k, v in raw.items() if k != "observation"},
+                "status": "unserializable_observation", "serialization_error_type": type(error).__name__,
+                "observation_repr": repr(observed)[:2_000_000]})
+        (output_root / "native_import_observation.v1.json").write_text(raw_text + "\n", encoding="utf-8")
         runtime_identity = observed.get("runtime_identity")
         if (
             not isinstance(runtime_identity, Mapping)

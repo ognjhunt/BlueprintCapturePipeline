@@ -199,14 +199,65 @@ def test_native_driver_seals_only_three_matching_contact_settles(
 
 
 def test_native_driver_rejects_nondeterministic_reset(tmp_path: Path) -> None:
+    environment = _environment(tmp_path)
     with pytest.raises(
         TaskEvaluationSceneConfigurationNativeImportDriverError,
-        match="native_import_qualification_failed",
+        match="native_import_qualification_failed:deterministic_reset",
     ):
         execute_native_import_component(
-            environment=_environment(tmp_path),
+            environment=environment,
             native_runner=_native_runner(_observed(mismatch=True)),
         )
+    root = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    raw = json.loads((root / "native_import_observation.v1.json").read_text())
+    assert raw["status"] == "ungraded" and raw["observation"] == _observed(mismatch=True)
+    assert raw["claim_ceiling"] == "development_only"
+    assert not Path(environment["BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"]).exists()
+
+
+@pytest.mark.parametrize("repeat_index", [0, 1, 2])
+@pytest.mark.parametrize("measurement", ["settle_translation_m", "settle_rotation_rad"])
+def test_native_driver_preserves_unserializable_failed_observation(tmp_path: Path, repeat_index, measurement) -> None:
+    environment = _environment(tmp_path)
+    observed = _observed()
+    observed["repeats"][repeat_index][measurement] = float("nan")
+    predicate = "settle_translation" if measurement == "settle_translation_m" else "settle_rotation"
+    with pytest.raises(TaskEvaluationSceneConfigurationNativeImportDriverError,
+            match="native_import_qualification_failed:" + predicate):
+        execute_native_import_component(environment=environment, native_runner=_native_runner(observed))
+    root = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    raw = json.loads((root / "native_import_observation.v1.json").read_text())
+    assert raw["status"] == "unserializable_observation"
+    assert raw["serialization_error_type"] == "ValueError"
+    assert "nan" in raw["observation_repr"]
+    assert not Path(environment["BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"]).exists()
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_native_fast_shutdown_preserves_result_and_failure_exit_status(tmp_path, monkeypatch, capsys, valid):
+    environment = _environment(tmp_path)
+
+    class FastSimulationApp:
+        def __init__(self, config):
+            pass
+
+        def close(self, *, exit_code=0):
+            raise SystemExit(exit_code)
+
+    monkeypatch.setattr(driver, "_bind_isaac_runtime_environment", lambda: None)
+    monkeypatch.setattr(driver, "_import_simulation_app", lambda: FastSimulationApp)
+    observed = _observed(mismatch=not valid)
+    monkeypatch.setattr(driver, "_observe_isaac_runtime_identity", lambda app: observed["runtime_identity"])
+    repeats = iter(observed["repeats"])
+    monkeypatch.setattr(driver, "_one_native_settle", lambda **kwargs: next(repeats))
+    with pytest.raises(SystemExit) as error:
+        execute_native_import_component(environment=environment)
+    assert error.value.code == (0 if valid else 1)
+    root = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    assert json.loads((root / "native_import_observation.v1.json").read_text())["observation"] == observed
+    assert Path(environment["BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"]).exists() is valid
+    if not valid:
+        assert "native_import_qualification_failed:deterministic_reset" in capsys.readouterr().err
 
 
 def test_native_driver_rejects_unexpected_isaac_runtime_identity(
@@ -306,6 +357,30 @@ def test_native_failure_predicate_is_printed_before_fast_isaac_shutdown(monkeypa
             required_checks={"state_digest_repeat_count": 3, "gravity_settle_seconds": 3},
             observation_consumer=lambda row: row)
     assert "RuntimeError: scene_configuration_native_import_handle_mismatch" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("phase", ["constructor", "runtime"])
+def test_native_startup_system_exit_is_reported_before_cleanup(monkeypatch, capsys, phase):
+    class ExitingApp:
+        def __init__(self, config):
+            if phase == "constructor":
+                raise SystemExit(23)
+
+        def close(self, *, exit_code=0):
+            raise SystemExit(exit_code)
+
+    def exit_during_runtime(app):
+        raise SystemExit(23)
+
+    monkeypatch.setattr(driver, "_bind_isaac_runtime_environment", lambda: None)
+    monkeypatch.setattr(driver, "_import_simulation_app", lambda: ExitingApp)
+    monkeypatch.setattr(driver, "_observe_isaac_runtime_identity", exit_during_runtime)
+    with pytest.raises(SystemExit) as error:
+        driver._run_native_import(asset_path=Path("retained.usdz"),
+            required_checks={"state_digest_repeat_count": 3, "gravity_settle_seconds": 3},
+            observation_consumer=lambda row: row)
+    assert error.value.code == 23
+    assert "SystemExit: 23" in capsys.readouterr().err
 
 
 # --- supplemental passive destination imported in the same Isaac session -----

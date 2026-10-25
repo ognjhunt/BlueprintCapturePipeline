@@ -13,7 +13,6 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import zipfile
@@ -308,7 +307,7 @@ def native_import_producer_registry(*, implementation_commit):
         # chain alive to consume the durable result and assemble stage 6.
         with (root / "native_component.log").open("w") as log:
             completed = subprocess.run(
-                [sys.executable, "-m", "blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver"],
+                ["/isaac-sim/python.sh", "-m", "blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver"],
                 cwd=Path(__file__).resolve().parents[2], env=environment,
                 stdout=log, stderr=subprocess.STDOUT, check=False,
                 timeout=component_timeout_seconds(identity.adapter_id))
