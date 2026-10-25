@@ -597,11 +597,17 @@ def run_automation(
                 from .atlas_mesh_registration import register_atlas_mesh
 
                 if not (mesh_root / "registered/atlas_mesh_registration.json").is_file():
+                    from .atlas_depth_splat import load_posed_rgbd
+                    reference_pose, reference_frames = load_posed_rgbd(effective_root)
+                    if reference_pose["digest"] != effective_pose["digest"]:
+                        raise ValueError("atlas_mesh_depth_filter_pose_binding_invalid")
                     glb = next(o for o in mesh["outputs"] if o["role"] == "mesh")
                     register_atlas_mesh(
                         glb=mesh_root / glb["path"],
                         splat_root=splat_root,
                         output_root=mesh_root / "registered",
+                        reference_frames=reference_frames,
+                        reference_pose_digest=reference_pose["digest"],
                     )
             from .atlas_result_bundle import export_pose_bundle
 
