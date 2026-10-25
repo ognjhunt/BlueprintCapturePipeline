@@ -77,6 +77,8 @@ def test_scene_keys_produce_distinct_immutable_scene_identity(tmp_path):
 
 @pytest.mark.slow
 def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_path, monkeypatch):
+    # Model a standalone fixture caller, independently of CI's parent service.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
     from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
     from blueprint_pipeline import task_evaluation_stage_replay as replay
     from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk

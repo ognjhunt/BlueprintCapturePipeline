@@ -1345,3 +1345,20 @@ def test_failed_download_keeps_paid_remote_evidence_and_recovery_access(tmp_path
         assert 'test-only-protected-reference' not in json.dumps(result)
     else:
         assert result['status'] == 'completed' and not remote and not access.exists()
+
+
+@pytest.mark.parametrize('absent,continuing', [(True, False), (False, False), (True, True), (True, None)])
+def test_missing_archive_cleanup_requires_independent_provider_zero(tmp_path, monkeypatch, absent, continuing):
+    calls = []
+    def cleanup(path, **kwargs):
+        calls.append((path, kwargs))
+        return {'status': 'completed', 'all_objects_absent': True}
+    monkeypatch.setattr(arena, 'cleanup_staged_wam_provider_objects', cleanup)
+    result = arena._cleanup_downloaded_provider_objects(staging_dir=tmp_path, output_zip=tmp_path / 'missing.zip',
+        adapter={'provider_create_attempted': True, 'continuing_spend_from_this_run': continuing},
+        provider_zero_confirmed=absent)
+    if absent and continuing is False:
+        assert calls == [(tmp_path, {'require_outputs_absent': True})]
+        assert result['status'] == 'completed'
+    else:
+        assert not calls and result['remote_objects_retained_for_recovery'] is True
