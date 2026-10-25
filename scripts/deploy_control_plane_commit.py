@@ -5374,7 +5374,11 @@ def _run_deploy_with_signal_cleanup(callback: Callable[[], dict[str, Any]]) -> d
         if _DEPLOY_ACTIVE_TRANSITION:
             deferred.add(signal.Signals(number).name)
             return
-        signal.signal(number, signal.SIG_IGN)
+        # Ignore both, not just this one: a unit stop sends SIGTERM to what is
+        # left after the operator's SIGINT, and a second interruption raised
+        # inside rollback left every quiesced timer stopped (2026-10-25).
+        for handled in previous:
+            signal.signal(handled, signal.SIG_IGN)
         raise ControlPlaneDeployError(f"deploy_interrupted:{signal.Signals(number).name}")
 
     try:
