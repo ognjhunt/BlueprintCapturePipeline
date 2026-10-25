@@ -955,6 +955,7 @@ def test_the_runtime_admits_every_sensor_the_scene_plan_can_emit() -> None:
 KINEMATIC_ARTICULATION_USDA = """#usda 1.0
 (
     defaultPrim = "Asset"
+    metersPerUnit = 1
 )
 
 def Xform "Asset" (
@@ -1001,6 +1002,8 @@ def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
     # the same released function, never the raw sealed bytes
     adaptation = author_grounded_articulation(sealed, task)
     assert adaptation is not None
+    from blueprint_pipeline.native_articulation_root_frame import derive_root_frame_binding
+    adaptation["native_root_frame_binding"] = derive_root_frame_binding(task)
     plan = _sealed_scene_plan()
     plan["asset_directory"] = "assets"
     for row, path in zip(plan["objects"], (collision, task), strict=True):
