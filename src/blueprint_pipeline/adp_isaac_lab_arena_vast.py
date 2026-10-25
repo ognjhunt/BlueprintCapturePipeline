@@ -411,6 +411,7 @@ def _extract_provider_output(
     *,
     result_name: str = "adp_arena_native_canary.json",
     blocker_prefix: str = "adp_arena",
+    required_members: Sequence[str] = (),
 ) -> dict[str, Any]:
     blockers: list[str] = []
     if not path.is_file():
@@ -427,6 +428,9 @@ def _extract_provider_output(
     hold = None
     try:
         with zipfile.ZipFile(path) as archive:
+            for name in required_members:
+                if name not in archive.namelist():
+                    blockers.append(f"{blocker_prefix}_required_output_missing:{name}")
             if result_name == "native_task_arena_policy_canary_session_result.v1.json":
                 from .wam_provider_output import NATIVE_TERMINAL_MAX_BYTES
                 if archive.getinfo(result_name).file_size > NATIVE_TERMINAL_MAX_BYTES:
@@ -1088,6 +1092,8 @@ def run_arena_native_control_vast(
         attempt_root / "immutable_execution",
         result_name=expected_output_filename,
         blocker_prefix=blocker_prefix,
+        required_members=(("native_continuation_stage_output.zip",)
+                          if provider_bundle_kind == "scene_configuration_native_continuation" else ()),
     )
     execution = dict(extracted.get("execution") or {})
     teardown = _read_json(provider_run / "vast_teardown_manifest.json")

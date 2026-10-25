@@ -55,7 +55,9 @@ def provider_command_execute_fallback_allowed(kind: str, *, configured_override:
 
 
 def g1_provider_output_contract(kind: str) -> tuple[str | None, bool, tuple[str, ...]]:
-    """Retain lossless G1 evidence while excluding downloaded execution inputs."""
+    """Retain required review evidence while excluding downloaded execution inputs."""
+    if kind == "scene_configuration_native_continuation":
+        return "adp009d_native_microcheck.json", True, ()
     if kind == "native_g1_team_policy":
         return "native_g1_team_provider_result.v1.json", True, ()
     if kind == "native_g1_development_campaign":
