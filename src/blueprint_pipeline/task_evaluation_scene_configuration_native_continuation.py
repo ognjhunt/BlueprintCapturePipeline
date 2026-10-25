@@ -25,6 +25,7 @@ MANIFEST = "native_continuation_manifest.v1.json"
 CAPSULE = "completed_cpu_prefix.zip"
 OUTPUT = "adp009d_native_microcheck.json"
 MINIMUM_DRIVER_VERSION = "595.58.03"
+MAXIMUM_DRIVER_EXCLUSIVE = "596.0.0"
 INPUT_SCHEMA = "scene_configuration_native_continuation_inputs.v1"
 
 
@@ -362,6 +363,7 @@ def build_native_continuation_bundle(*, job_dir, inputs_path, implementation_com
             shutil.copyfile(path, target)
     manifest = {"schema_version": SCHEMA, "diagnostic_kind": BUNDLE_KIND, "implementation_commit": implementation_commit,
         "container_image": DEFAULT_IMAGE, "minimum_driver_version": MINIMUM_DRIVER_VERSION,
+        "maximum_driver_exclusive": MAXIMUM_DRIVER_EXCLUSIVE,
         "construction_envelope_digest": envelope["envelope_digest"], "run_id": envelope["run_id"],
         "prefix": {**_record(Path(capsule_path)), "member": CAPSULE}, "prefix_transport": transport,
         "configurations": configs, "candidate_policy_queried": False, "policy_candidate_id": None,
