@@ -7,7 +7,9 @@ returned camera, keeps finite, confident pixels away from depth discontinuities,
 merges them on a voxel grid sized from the capture's own pixel footprint, and
 writes one surface-aligned Gaussian per voxel as a standard 3DGS PLY and an SPZ
 v2 upload. Cross-view depth agreement is measured before fusion, so poses and
-depths that do not describe one surface fail closed instead of smearing.
+depths that do not describe one surface fail closed instead of smearing; views
+that do agree within a few percent are then rescaled onto their shared surface
+before their pixels merge, so one surface fuses as one sheet.
 
 The splat is a depth-fused draft without photometric optimization. Positions
 stay in Atlas world units on RUB axes (Y up, gravity-levelled), the frame SPZ
@@ -33,7 +35,7 @@ from .gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from .local_reconstruction_adapters import _sha256_file
 
 SCHEMA_VERSION = "atlas_depth_splat.v1"
-FUSION_REVISION = "local-plane-slant-aware-v2"
+FUSION_REVISION = "local-plane-slant-aware-consensus-v3"
 POSE_RESULT = "atlas_posed_rgbd_result.json"
 SH_C0 = 0.28209479177387814
 # A 5 % depth jump between neighbouring pixels is a discontinuity: a continuous
@@ -57,6 +59,16 @@ DEPTH_SMOOTHING_SIGMA_PIXELS = 4.0
 # discontinuity, the pixel keeps its own depth. Terrace steps are ~0.3% RMS.
 DEPTH_SMOOTHING_RESIDUAL = 0.015
 DEPTH_SMOOTHING_TOLERANCE = 0.03
+# Each view's depth carries its own low-frequency error: overlapping Atlas views
+# disagreed by a median 1.9 % (measured 2026-10-24), which fused into layered
+# sheets about five times thicker than one view's. Each pass rescales every
+# frame towards the median of what its nearest views see along its pixels;
+# another view's surface votes only within the gate, so occluders never do.
+DEPTH_CONSENSUS_PASSES = 3
+DEPTH_CONSENSUS_GATE = 0.05
+DEPTH_CONSENSUS_STRIDE = 4
+DEPTH_CONSENSUS_SIGMA = 2.0  # in consensus-grid pixels
+DEPTH_CONSENSUS_MIN_WEIGHT = 0.25
 DISC_THICKNESS_RATIO = 0.1
 SPLATS2MESH_MAX_RENDER = 1024
 SPLATS2MESH_MIN_RENDER = 64
@@ -342,6 +354,131 @@ def cross_view_agreement(frames: Sequence[Mapping[str, Any]],
     return {"pairs": pairs, "median_relative_residual": pooled, "limit": MAX_MEDIAN_CROSS_VIEW_RESIDUAL}
 
 
+def _inverse_depth_at(frame: Mapping[str, Any], column: np.ndarray, row: np.ndarray) -> np.ndarray:
+    """Bilinear inverse depth at continuous pixel coordinates; NaN unless four usable pixels share a surface.
+
+    Inverse depth is linear across a plane in a pinhole image, so a plane samples exactly;
+    four pixels spanning a depth discontinuity would blend an occluder into a vote.
+    """
+    depth, confidence = frame["depth"], frame["confidence"]
+    height, width = depth.shape
+    with np.errstate(invalid="ignore"):
+        x, y = column - 0.5, row - 0.5
+        inside = (x >= 0) & (y >= 0) & (x < width - 1) & (y < height - 1)
+    x, y = x[inside], y[inside]
+    x0, y0 = np.floor(x).astype(np.int64), np.floor(y).astype(np.int64)
+    fx, fy = x - x0, y - y0
+    total, usable = np.zeros(len(x)), np.ones(len(x), bool)
+    nearest, farthest = np.full(len(x), np.inf), np.zeros(len(x))
+    for dy, dx, weight in ((0, 0, (1 - fx) * (1 - fy)), (0, 1, fx * (1 - fy)), (1, 0, (1 - fx) * fy), (1, 1, fx * fy)):
+        d = depth[y0 + dy, x0 + dx].astype(np.float64)
+        ok = np.isfinite(d) & (d > 0) & (confidence[y0 + dy, x0 + dx] > 0)
+        usable &= ok
+        total += weight / np.where(ok, d, np.inf)
+        nearest, farthest = np.minimum(nearest, np.where(ok, d, np.inf)), np.maximum(farthest, np.where(ok, d, 0.0))
+    usable &= farthest <= (1.0 + EDGE_RELATIVE_JUMP) * nearest
+    out = np.full(len(column), np.nan)
+    out[np.flatnonzero(inside)[usable]] = total[usable]
+    return out
+
+
+def _surface_smoothed(correction: np.ndarray, voted: np.ndarray, depth: np.ndarray) -> np.ndarray:
+    """Gaussian-weighted mean of the voted corrections over grid pixels on each pixel's own surface.
+
+    A grid pixel whose depth differs by more than the gate is another surface, so a
+    correction never crosses an occlusion edge. Away from votes the ratio fades to 1.
+    """
+    radius = int(3.0 * DEPTH_CONSENSUS_SIGMA + 0.5)
+    offsets = np.arange(-radius, radius + 1)
+    kernel = np.exp(-(offsets[:, None] ** 2 + offsets[None, :] ** 2) / (2.0 * DEPTH_CONSENSUS_SIGMA ** 2))
+    kernel /= kernel.sum()
+    height, width = depth.shape
+    padded_correction = np.pad(np.where(voted, correction, 0.0), radius)
+    padded_voted = np.pad(voted.astype(np.float64), radius)
+    padded_depth = np.pad(depth, radius, constant_values=np.nan)
+    total, spread = np.zeros(depth.shape), np.zeros(depth.shape)
+    with np.errstate(invalid="ignore"):
+        for i, dy in enumerate(offsets):
+            for j, dx in enumerate(offsets):
+                window = (slice(radius + dy, radius + dy + height), slice(radius + dx, radius + dx + width))
+                same = np.abs(padded_depth[window] - depth) <= DEPTH_CONSENSUS_GATE * depth
+                total += kernel[i, j] * np.where(same, padded_correction[window], 0.0)
+                spread += kernel[i, j] * np.where(same, padded_voted[window], 0.0)
+    return 1.0 + total / np.maximum(spread, DEPTH_CONSENSUS_MIN_WEIGHT)
+
+
+def _upsampled_on_surface(ratio: np.ndarray, grid_depth: np.ndarray, depth: np.ndarray) -> np.ndarray:
+    """Bilinear full-resolution ratio from the grid samples on each pixel's own surface; 1 where none is."""
+    start, stride = DEPTH_CONSENSUS_STRIDE // 2, DEPTH_CONSENSUS_STRIDE
+    rows, columns = ratio.shape
+    gy = np.clip((np.arange(depth.shape[0]) - start) / stride, 0, rows - 1)
+    gx = np.clip((np.arange(depth.shape[1]) - start) / stride, 0, columns - 1)
+    y0, x0 = np.floor(gy).astype(np.int64), np.floor(gx).astype(np.int64)
+    total, weight = np.zeros(depth.shape), np.zeros(depth.shape)
+    with np.errstate(invalid="ignore"):
+        for ys, yw in ((y0, 1.0 - (gy - y0)), (np.minimum(y0 + 1, rows - 1), gy - y0)):
+            for xs, xw in ((x0, 1.0 - (gx - x0)), (np.minimum(x0 + 1, columns - 1), gx - x0)):
+                corner = np.ix_(ys, xs)
+                same = np.abs(grid_depth[corner] - depth) <= DEPTH_CONSENSUS_GATE * depth
+                total += np.where(same, yw[:, None] * xw[None, :] * ratio[corner], 0.0)
+                weight += np.where(same, yw[:, None] * xw[None, :], 0.0)
+    return np.where(weight > 0, total / np.where(weight > 0, weight, 1.0), 1.0)
+
+
+def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Rescale each frame's depth towards the median of its nearest views' depth along its pixels.
+
+    A pixel's world point is projected into each nearest view; that view's depth there
+    over the point's own distance from it is one vote, kept only within the gate, so an
+    occluder or a surface seen past an edge never votes. The median with the frame's
+    own vote of 1 is smoothed over its own surface and applied at full resolution on
+    that surface only: the correction is low-frequency, leaves surface detail alone and
+    never crosses an occlusion edge. Views that already agree vote exactly 1 and stay
+    unchanged.
+    """
+    frames = [dict(frame) for frame in frames]
+    centres = np.array([frame["position"] for frame in frames])
+    start, stride = DEPTH_CONSENSUS_STRIDE // 2, DEPTH_CONSENSUS_STRIDE
+    voted_by_pass = []
+    for _ in range(DEPTH_CONSENSUS_PASSES):
+        ratios, voted = [], []
+        for index, frame in enumerate(frames):
+            k = frame["intrinsics"]
+            depth = frame["depth"][start::stride, start::stride].astype(np.float64)
+            valid = np.isfinite(depth) & (depth > 0) & (frame["confidence"][start::stride, start::stride] > 0)
+            rows, columns = np.nonzero(valid)
+            z = depth[rows, columns]
+            u = (columns * stride + start + 0.5 - k["cx"]) / k["fx"]
+            v = (rows * stride + start + 0.5 - k["cy"]) / k["fy"]
+            points = np.stack([u * z, -v * z, -z], axis=1) @ frame["rotation"].T + frame["position"]
+            votes = [np.ones(len(z))]
+            order = np.argsort(np.linalg.norm(centres - centres[index], axis=1), kind="stable")
+            for other in (frames[i] for i in order[order != index][:CROSS_VIEW_NEIGHBOURS]):
+                ko = other["intrinsics"]
+                local = (points - other["position"]) @ other["rotation"]
+                distance = np.where(local[:, 2] < 0, -local[:, 2], np.nan)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    seen = 1.0 / (_inverse_depth_at(other, local[:, 0] / distance * ko["fx"] + ko["cx"],
+                                                    -local[:, 1] / distance * ko["fy"] + ko["cy"]) * distance)
+                    votes.append(np.where(np.abs(seen - 1.0) <= DEPTH_CONSENSUS_GATE, seen, np.nan))
+            stack = np.stack(votes)
+            counted = np.isfinite(stack).sum(axis=0) >= 2
+            correction, voted_grid = np.zeros(depth.shape), np.zeros(depth.shape, bool)
+            correction[rows[counted], columns[counted]] = np.nanmedian(stack[:, counted], axis=0) - 1.0
+            voted_grid[rows[counted], columns[counted]] = True
+            grid_depth = np.where(valid, depth, np.nan)
+            ratios.append((_surface_smoothed(correction, voted_grid, grid_depth), grid_depth))
+            voted.append(float(counted.sum()) / depth.size)
+        for frame, (ratio, grid_depth) in zip(frames, ratios):
+            full = _upsampled_on_surface(ratio, grid_depth, frame["depth"])
+            frame["depth"] = (frame["depth"] * full).astype(frame["depth"].dtype)
+        voted_by_pass.append(round(float(np.median(voted)), 4))
+    return frames, {"basis": "median_of_nearest_views", "passes": DEPTH_CONSENSUS_PASSES,
+                    "neighbours": CROSS_VIEW_NEIGHBOURS, "relative_gate": DEPTH_CONSENSUS_GATE,
+                    "stride_pixels": stride, "sigma_grid_pixels": DEPTH_CONSENSUS_SIGMA,
+                    "median_voted_grid_share_by_pass": voted_by_pass}
+
+
 def _voxel_keys(points: np.ndarray, voxel: float) -> np.ndarray:
     cells = np.floor(points / voxel).astype(np.int64) + (1 << (_KEY_BITS - 1))
     if cells.size and (cells.min() < 0 or cells.max() >= 1 << _KEY_BITS):
@@ -496,6 +633,9 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
     if (agreement["median_relative_residual"] is not None
             and agreement["median_relative_residual"] > MAX_MEDIAN_CROSS_VIEW_RESIDUAL):
         raise ValueError("atlas_depth_splat_cross_view_inconsistent")
+    frames, consensus = consensus_depths(frames)
+    samples = [_subsample(surface_samples(frame)) for frame in frames]
+    consensus["median_relative_residual_after"] = cross_view_agreement(frames, samples)["median_relative_residual"]
     footprints = np.concatenate([sample["footprint"] for sample in samples])
     if not len(footprints):
         raise ValueError("atlas_depth_splat_no_usable_depth")
@@ -511,6 +651,7 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
               "depth_smoothing": {"basis": "local_plane_fit", "sigma_pixels": DEPTH_SMOOTHING_SIGMA_PIXELS,
                                   "relative_residual": DEPTH_SMOOTHING_RESIDUAL,
                                   "relative_tolerance": DEPTH_SMOOTHING_TOLERANCE},
+              "depth_consensus": consensus,
               "median_observations_per_gaussian": float(np.median(fused["observations"]))}
     return depth_fused_splat(fused, voxel), report
 
@@ -647,7 +788,13 @@ def fusion_profile() -> dict[str, Any]:
             "disc_thickness_ratio": DISC_THICKNESS_RATIO,
             "depth_smoothing_sigma_pixels": DEPTH_SMOOTHING_SIGMA_PIXELS,
             "depth_smoothing_residual": DEPTH_SMOOTHING_RESIDUAL,
-            "depth_smoothing_tolerance": DEPTH_SMOOTHING_TOLERANCE}
+            "depth_smoothing_tolerance": DEPTH_SMOOTHING_TOLERANCE,
+            "depth_consensus_passes": DEPTH_CONSENSUS_PASSES,
+            "depth_consensus_neighbours": CROSS_VIEW_NEIGHBOURS,
+            "depth_consensus_gate": DEPTH_CONSENSUS_GATE,
+            "depth_consensus_stride": DEPTH_CONSENSUS_STRIDE,
+            "depth_consensus_sigma": DEPTH_CONSENSUS_SIGMA,
+            "depth_consensus_min_weight": DEPTH_CONSENSUS_MIN_WEIGHT}
 
 
 def build_depth_splat(pose_root: Path, output_root: Path, *, voxel_footprint_multiple: float = 2.0) -> dict[str, Any]:
