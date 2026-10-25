@@ -1,7 +1,7 @@
 """Reopen ARTISAN's exact manifests and USD; enforce retained source constraints.
 
-The only output adaptation is namespace/provenance and an explicit source-
-property material overlay. Geometry, collisions, joints and inertias are upstream.
+Output adaptations are namespace/provenance and declared material/passive-joint
+properties. Geometry, collisions, joint frames and inertias are upstream.
 Earlier physics reports remain bound to the original exports, never the overlay.
 """
 from __future__ import annotations
@@ -273,6 +273,78 @@ def _display_color_surface(stage):
             'material_path': str(material.GetPath()) if material else None}
 
 
+def _declared_joint_dynamics(configuration):
+    mechanism = configuration.get('mechanism') or {}
+    policy = mechanism.get('passive_dynamics') or {}
+    if not policy:
+        return None
+    require(policy.get('task_joint_drive', 'none') == 'none', 'artisan_passive_joint_drive_not_admitted')
+    result = {'joint_id': mechanism.get('target_joint_id'), 'joint_type': mechanism.get('joint_type')}
+    require(result['joint_id'] and result['joint_type'] in {'prismatic', 'revolute'},
+            'artisan_passive_joint_identity_invalid')
+    for key in ('joint_friction_bounds', 'joint_damping_bounds'):
+        bounds = policy.get(key)
+        require(isinstance(bounds, list) and len(bounds) == 2 and _finite(bounds)
+                and 0 <= bounds[0] <= bounds[1], 'artisan_' + key + '_invalid')
+        result[key] = [float(value) for value in bounds]
+    result.update(static_effort=sum(result['joint_friction_bounds']) / 2,
+                  dynamic_effort=result['joint_friction_bounds'][0],
+                  damping=sum(result['joint_damping_bounds']) / 2,
+                  units='N_m' if result['joint_type'] == 'revolute' else 'N',
+                  basis='estimated_unobserved_joint_resistance_prior', physical_measurement_proven=False)
+    return result
+
+
+def _passive_joint_dynamics(stage, configuration, *, author):
+    """Carry the admitted, unactuated resistance into imported and read-back USD."""
+    from pxr import Sdf, UsdPhysics
+    policy = _declared_joint_dynamics(configuration)
+    if policy is None:
+        return None
+    matches = [prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.Joint)
+               and prim.GetCustomDataByKey('blueprint:jointId') == policy['joint_id']]
+    require(len(matches) == 1, 'artisan_passive_joint_unresolved')
+    prim = matches[0]
+    angular = policy['joint_type'] == 'revolute'
+    require(prim.IsA(UsdPhysics.RevoluteJoint if angular else UsdPhysics.PrismaticJoint),
+            'artisan_passive_joint_type_changed')
+    axis = 'angular' if angular else 'linear'
+    for name in ('linear', 'angular'):
+        if prim.HasAPI(UsdPhysics.DriveAPI, name):
+            existing = UsdPhysics.DriveAPI(prim, name)
+            require(float(existing.GetStiffnessAttr().Get() or 0) == 0
+                    and float(existing.GetTargetVelocityAttr().Get() or 0) == 0,
+                    'artisan_task_or_passive_drive_not_admitted')
+    damping = math.radians(policy['damping']) if angular else policy['damping']
+    attributes = {f'physxJointAxis:{axis}:staticFrictionEffort': policy['static_effort'],
+                  f'physxJointAxis:{axis}:dynamicFrictionEffort': policy['dynamic_effort']}
+    if author:
+        prim.AddAppliedSchema(f'PhysxJointAxisAPI:{axis}')
+        for name, value in attributes.items():
+            prim.CreateAttribute(name, Sdf.ValueTypeNames.Float, custom=False).Set(value)
+        drive = UsdPhysics.DriveAPI.Apply(prim, axis)
+        drive.CreateTypeAttr().Set('force')
+        drive.CreateStiffnessAttr().Set(0)
+        drive.CreateDampingAttr().Set(damping)
+        drive.CreateTargetPositionAttr().Set(0)
+        drive.CreateTargetVelocityAttr().Set(0)
+        prim.SetCustomDataByKey('blueprint:declaredDriveType', 'none')
+        prim.SetCustomDataByKey('blueprint:driveImplementation',
+                               'passive_torque_damper' if angular else 'passive_force_damper')
+        prim.SetCustomDataByKey('blueprint:passiveFrictionBasis', policy['basis'])
+    drive = UsdPhysics.DriveAPI(prim, axis)
+    schemas = prim.GetMetadata('apiSchemas')
+    require(schemas is not None and f'PhysxJointAxisAPI:{axis}' in schemas.GetAddedOrExplicitItems()
+            and prim.HasAPI(UsdPhysics.DriveAPI, axis) and drive.GetTypeAttr().Get() == 'force'
+            and math.isclose(float(drive.GetDampingAttr().Get()), damping, rel_tol=1e-6, abs_tol=1e-7)
+            and (damping == 0 or float(drive.GetMaxForceAttr().Get()) > 0)
+            and all(prim.GetAttribute(name).Get() is not None
+                    and math.isclose(float(prim.GetAttribute(name).Get()), value, rel_tol=1e-6, abs_tol=1e-7)
+                    for name, value in attributes.items()), 'artisan_declared_joint_dynamics_missing_or_changed')
+    return {**policy, 'prim_path': str(prim.GetPath()), 'usd_axis': axis, 'usd_damping': damping,
+            'motor_stiffness': 0.0, 'target_velocity': 0.0}
+
+
 def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_path: Path | None = None) -> dict:
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils
     stage = Usd.Stage.Open(str(source), load=Usd.Stage.LoadAll)
@@ -335,6 +407,7 @@ def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_pat
                 require(len(parent) == 1, "artisan_joint_parent_missing")
                 axis = list(UsdGeom.XformCache().GetLocalToWorldTransform(stage.GetPrimAtPath(parent[0])).TransformDir(Gf.Vec3d(*axis)))
                 prim.SetCustomDataByKey("blueprint:graphAxis", Gf.Vec3d(*axis))
+    joint_dynamics = _passive_joint_dynamics(stage, request['configuration'], author=True)
     stage.GetRootLayer().Save()
     require(UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(working)), str(destination)), "artisan_usdz_packaging_failed")
     # Checks apply to the final package bytes after every overlay/namespace edit.
@@ -343,7 +416,7 @@ def adapt_usd(source: Path, destination: Path, request: dict, *, annotations_pat
             "final_usd": file_record(destination), "namespace_root_before": original_root,
             "namespace_root_after": "/Asset", "geometry_scale_applied": False,
             "physics_namespace_overlay": physics_namespace, "appearance_overlay": appearance,
-            "material_overlay": properties, "final_readback": observed,
+            "material_overlay": properties, "joint_dynamics_overlay": joint_dynamics, "final_readback": observed,
             "candidate_annotations": file_record(annotations_path) if annotations is not None else None,
             "upstream_physics_report_certifies_overlay": False,
             "native_import_qualification_required": True}
@@ -400,6 +473,7 @@ def validate_final_usd(path: Path, request: dict) -> dict:
             require(prim.HasAPI(UsdPhysics.MeshCollisionAPI) and str(UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get())
                     in {"convexHull", "convexDecomposition"}, "artisan_uncooked_dynamic_collision")
     configuration = request["configuration"]
+    _passive_joint_dynamics(stage, configuration, author=False)
     joints = [p for p in prims if p.IsA(UsdPhysics.Joint)]
     articulated = configuration["schema_version"] == "articulated_replacement_authoring_configuration.v1"
     articulation_roots = [p for p in prims if p.HasAPI(UsdPhysics.ArticulationRootAPI)]

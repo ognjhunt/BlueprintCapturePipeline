@@ -2,11 +2,12 @@
 from copy import deepcopy
 import hashlib
 import json
+import math
 from pathlib import Path
 import zipfile
 
 import pytest
-from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_object_authoring_contracts import AuthoringContractError, file_record
@@ -106,6 +107,63 @@ def test_rigid_final_bytes_preserve_dimensions_identity_and_do_not_invent_joint(
     changed["dimensions_m"][0] += 0.002
     with pytest.raises(AuthoringContractError, match="dimension_constraint_violation"):
         validate_final_usd(tmp_path / "final.usdz", changed)
+
+
+@pytest.mark.parametrize('kind', ['revolute', 'prismatic'])
+def test_declared_passive_joint_dynamics_survive_import_and_packaged_readback(tmp_path, kind):
+    request = construction_request(articulated=True)
+    mechanism = request['configuration']['mechanism']
+    mechanism.update(joint_type=kind, passive_dynamics={'task_joint_drive': 'none',
+        'joint_friction_bounds': [1., 15.], 'joint_damping_bounds': [1., 30.]})
+    source = usd_fixture(tmp_path, articulated=True)
+    if kind == 'prismatic':
+        stage = Usd.Stage.Open(str(source))
+        joint = UsdPhysics.PrismaticJoint.Define(stage, '/UpstreamObject/door/joint_door_hinge')
+        joint.CreateAxisAttr('X')
+        joint.CreateLocalRot0Attr(Gf.Quatf(1))
+        joint.CreateLocalRot1Attr(Gf.Quatf(1))
+        joint.CreateUpperLimitAttr(.4)
+        mechanism['joint_limits'] = [0., .4]
+        stage.GetRootLayer().Save()
+    request['request_digest'] = canonical_digest(request, digest_field='request_digest')
+    final = tmp_path / 'final.usdz'
+    result = adapt_usd(source, final, request, annotations_path=annotations(tmp_path, request))
+    stage = Usd.Stage.Open(str(final))
+    prim = stage.GetPrimAtPath('/Asset/joints/door_hinge')
+    axis = 'angular' if kind == 'revolute' else 'linear'
+    assert prim.GetAttribute(f'physxJointAxis:{axis}:staticFrictionEffort').Get() == 8.
+    assert prim.GetAttribute(f'physxJointAxis:{axis}:dynamicFrictionEffort').Get() == 1.
+    drive = UsdPhysics.DriveAPI(prim, axis)
+    assert drive.GetStiffnessAttr().Get() == 0.
+    assert drive.GetTargetVelocityAttr().Get() == 0.
+    assert drive.GetDampingAttr().Get() == pytest.approx(math.radians(15.5) if kind == 'revolute' else 15.5)
+    assert result['joint_dynamics_overlay']['physical_measurement_proven'] is False
+    assert result['joint_dynamics_overlay']['units'] == ('N_m' if kind == 'revolute' else 'N')
+    assert result['final_readback']['dimensions_m'] == pytest.approx([1., 1., 1.])
+    assert result['final_readback']['task_joint']['drive']['damping'] == pytest.approx(15.5)
+    # A later packaging step must not silently discard the configured resistance.
+    working = Usd.Stage.Open(str(final.with_suffix('.usda')))
+    working.GetPrimAtPath('/Asset/joints/door_hinge').GetAttribute(
+        f'physxJointAxis:{axis}:staticFrictionEffort').Set(0.)
+    working.GetRootLayer().Save()
+    altered = tmp_path / 'altered.usdz'
+    assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(final.with_suffix('.usda'))), str(altered))
+    with pytest.raises(AuthoringContractError, match='declared_joint_dynamics_missing_or_changed'):
+        validate_final_usd(altered, request)
+
+
+def test_passive_joint_overlay_refuses_an_upstream_motor_instead_of_erasing_it(tmp_path):
+    request = construction_request(articulated=True)
+    request['configuration']['mechanism']['passive_dynamics'] = {'task_joint_drive': 'none',
+        'joint_friction_bounds': [1., 15.], 'joint_damping_bounds': [1., 30.]}
+    request['request_digest'] = canonical_digest(request, digest_field='request_digest')
+    source = usd_fixture(tmp_path, articulated=True)
+    stage = Usd.Stage.Open(str(source))
+    drive = UsdPhysics.DriveAPI.Apply(stage.GetPrimAtPath('/UpstreamObject/door/joint_door_hinge'), 'angular')
+    drive.CreateStiffnessAttr().Set(10.)
+    stage.GetRootLayer().Save()
+    with pytest.raises(AuthoringContractError, match='task_or_passive_drive_not_admitted'):
+        adapt_usd(source, tmp_path / 'final.usdz', request, annotations_path=annotations(tmp_path, request))
 
 
 def test_real_hollow_articulated_bytes_keep_joint_frame_handle_and_native_contract(tmp_path):

@@ -4883,6 +4883,16 @@ def _probe_shell_script(
                 )
                 + "\n"
                 "required_result_max_bytes = 512 * 1024 * 1024\n"
+                "required_evidence_names = "
+                + repr(("native_continuation_stage_output.zip",)
+                       if provider_bundle_kind == "scene_configuration_native_continuation" else ())
+                + "\n"
+                "for name in required_evidence_names:\n"
+                "    evidence = output_dir / name\n"
+                "    if evidence.is_symlink() or not evidence.is_file():\n"
+                "        raise SystemExit('provider_required_evidence_missing_or_not_regular:' + name)\n"
+                "    if not 0 < evidence.stat().st_size <= required_result_max_bytes:\n"
+                "        raise SystemExit('provider_required_evidence_size_invalid:' + name)\n"
                 "if required_result_name is not None:\n"
                 "    required_result = output_dir / required_result_name\n"
                 "    if required_result.is_symlink() or not required_result.is_file():\n"
