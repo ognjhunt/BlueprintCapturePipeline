@@ -32,7 +32,9 @@ def test_legacy_caller_keeps_its_original_bound():
 @pytest.mark.slow
 def test_component_timeout_closes_background_children_and_retains_output(tmp_path):
     marker = tmp_path / "orphan-finished"
-    child = "import pathlib,time;time.sleep(.8);pathlib.Path(%r).write_text('orphan')" % str(marker)
+    # The child must outlive the 2 s bound asserted below: with a shorter delay a
+    # slow runner returning inside that bound let the child write before the kill.
+    child = "import pathlib,time;time.sleep(3);pathlib.Path(%r).write_text('orphan')" % str(marker)
     wrapper = (
         "import subprocess,sys,time;"
         "subprocess.Popen([sys.executable,'-c',%r]);"
@@ -43,7 +45,8 @@ def test_component_timeout_closes_background_children_and_retains_output(tmp_pat
         run_component_process([sys.executable, "-c", wrapper], timeout=.3, text=True)
     assert time.monotonic() - started < 2
     assert "started" in failure.value.stdout
-    time.sleep(.8)
+    # The child started before "started" printed, so a survivor writes within 3 s of now.
+    time.sleep(3.2)
     assert not marker.exists()
 
 
