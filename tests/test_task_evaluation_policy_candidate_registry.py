@@ -66,6 +66,7 @@ def test_hosted_policies_are_listed_but_never_selectable_without_runtime_terms_a
     dream = registry.hosted_candidate("dreamlabs_dream1")
     assert dream is not None and dream.runnable is False
     assert dream.credential_env == "DREAM_API_KEY"
+    assert dream.adapter_id == "dreamlabs_dream1.v1"
     assert dream.terms_status != "reviewed"
     assert dream.blockers and dream.reason and dream.version_frozen is False
     assert registry.hosted_registry_violations() == []
@@ -73,11 +74,12 @@ def test_hosted_policies_are_listed_but_never_selectable_without_runtime_terms_a
     assert all(row.candidate_id != "dreamlabs_dream1" for row in registry.REGISTRY)
     with pytest.raises(registry.PolicyCandidateRegistryError, match="policy_candidate_unknown:dreamlabs_dream1"):
         registry.validate_selected_pair(["pi05_droid", "dreamlabs_dream1"])
-    # Flipping the label alone is caught: adapter, terms, credential and blockers are still missing.
+    # Flipping the label alone is caught even though an adapter exists.
     monkeypatch.setattr(registry, "HOSTED_REGISTRY", (dataclasses.replace(dream, status="runnable"),))
     assert set(registry.hosted_registry_violations()) == {
-        "hosted_runnable_without_adapter:dreamlabs_dream1",
         "hosted_runnable_without_reviewed_terms:dreamlabs_dream1",
         "hosted_runnable_without_credential:dreamlabs_dream1",
         "hosted_runnable_with_open_blockers:dreamlabs_dream1",
     }
+    monkeypatch.setattr(registry, "HOSTED_REGISTRY", (dataclasses.replace(dream, status="runnable", adapter_id=None),))
+    assert "hosted_runnable_without_adapter:dreamlabs_dream1" in registry.hosted_registry_violations()
