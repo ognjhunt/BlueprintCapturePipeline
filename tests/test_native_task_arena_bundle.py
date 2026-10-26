@@ -471,6 +471,39 @@ def test_rigid_and_articulated_packets_use_the_same_bundle_contract(
         ) == worker.read_bytes()
 
 
+def test_bundle_refuses_a_packet_the_physics_check_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import scene_physics_preflight as physics
+
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+    module = tmp_path / "runtime_helper.py"
+    module.write_text("HELPER = 1\n", encoding="utf-8")
+    kwargs = {
+        "packet_dir": _packet(tmp_path, scene_id="840313"),
+        "worker_source": worker,
+        "runtime_module_sources": [module],
+        "implementation_commit": "a" * 40,
+        "generated_at": "fixed",
+    }
+    build_native_task_arena_bundle(job_dir=tmp_path / "job", **kwargs)
+    report = json.loads((tmp_path / "job" / physics.PACKET_REPORT_FILENAME).read_text())
+    assert report["status"] == "not_applicable"
+    assert report["arena_scene_plan_digest"] == "sha256:" + "p" * 64
+
+    def blocked(packet_dir, **_options):
+        raise physics.ScenePhysicsAdmissionBlocked(["task_object:scene_physics_rest_overlap:1.3cm"])
+
+    monkeypatch.setattr(physics, "require_scene_physics_admission", blocked)
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        build_native_task_arena_bundle(job_dir=tmp_path / "job-blocked", **kwargs)
+    assert error.value.errors == (
+        "native_task_arena_bundle_scene_physics_blocked:task_object:scene_physics_rest_overlap:1.3cm",
+    )
+    assert not (tmp_path / "job-blocked").exists()
+
+
 def test_construction_bundle_binds_initial_warm_control_search_request(
     tmp_path: Path,
 ) -> None:

@@ -17,6 +17,12 @@ A collider is a solid (box, cylinder, sphere, or the convex hull of a mesh, whic
 is what PhysX uses for a dynamic mesh). Background surfaces are sampled densely
 and each sample inside a solid counts with its depth to the solid's boundary.
 Nothing here runs a simulator, calls a provider or changes an input file.
+
+Every paid native bundle passes ``require_scene_physics_admission``. Rest overlap
+and background inside the asset's envelope block it. A moving part's contact blocks
+only inside the task's range: the target joint between its reset position and the
+success threshold. Contact beyond that range, or on a joint the task does not
+command, is reported without blocking.
 """
 from __future__ import annotations
 
@@ -38,6 +44,14 @@ _PUSH_DIRECTIONS = 1024
 
 class ScenePhysicsPreflightError(ValueError):
     """The scene cannot be measured: a missing, unsupported or malformed input."""
+
+
+class ScenePhysicsAdmissionBlocked(ScenePhysicsPreflightError):
+    """A paid native run would start from a physically invalid scene."""
+
+    def __init__(self, blockers: Sequence[str]):
+        super().__init__(",".join(blockers))
+        self.blockers = list(blockers)
 
 
 @dataclass(frozen=True)
@@ -84,6 +98,7 @@ class AssetModel:
     colliders: tuple[Collider, ...]
     joints: tuple[Joint, ...]
     mounted: bool  # the root body is fixed to the world by an authored joint
+    skipped_colliders: tuple[str, ...] = ()  # flat or empty hulls: no volume to overlap
 
 
 def _rigid(matrix: np.ndarray, code: str) -> tuple[np.ndarray, np.ndarray]:
@@ -165,7 +180,7 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
             raise ScenePhysicsPreflightError("scene_physics_collider_without_body")
         return best
 
-    colliders = []
+    colliders, skipped = [], []
     for prim in prims:
         if not prim.HasAPI(UsdPhysics.CollisionAPI):
             continue
@@ -200,13 +215,15 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
             radius = float(UsdGeom.Sphere(prim).GetRadiusAttr().Get()) * float(scale[0])
             colliders.append(Collider(path, body, "sphere", frame, radius=radius, bound_radius=radius))
         elif prim.IsA(UsdGeom.Mesh):
-            points = np.asarray(UsdGeom.Mesh(prim).GetPointsAttr().Get(), dtype=float) * scale
-            planes, vertices, bound = _hull(points)
+            points = np.asarray(UsdGeom.Mesh(prim).GetPointsAttr().Get() or [], dtype=float).reshape(-1, 3) * scale
+            try:
+                planes, vertices, bound = _hull(points)
+            except ScenePhysicsPreflightError:
+                skipped.append(path)
+                continue
             colliders.append(Collider(path, body, "hull", frame, planes=planes, vertices=vertices, bound_radius=bound))
         else:
             raise ScenePhysicsPreflightError("scene_physics_collider_type_unsupported:" + prim.GetTypeName())
-    if not colliders:
-        raise ScenePhysicsPreflightError("scene_physics_asset_colliders_missing")
 
     joints = []
     children: set[str] = set()
@@ -249,7 +266,7 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
     roots = [b for b in bodies if b not in children]
     if len(roots) != 1:
         raise ScenePhysicsPreflightError("scene_physics_asset_root_ambiguous")
-    return AssetModel(roots[0], asset_from_body, tuple(colliders), tuple(joints), mounted)
+    return AssetModel(roots[0], asset_from_body, tuple(colliders), tuple(joints), mounted, tuple(skipped))
 
 
 def body_poses(model: AssetModel, joint_values: Mapping[str, float] | None = None) -> dict[str, np.ndarray]:
@@ -319,9 +336,11 @@ def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], 
             continue
         meshes += 1
         mesh = UsdGeom.Mesh(prim)
-        points = np.asarray(mesh.GetPointsAttr().Get(), dtype=float)
-        counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get(), dtype=np.int64)
-        indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int64)
+        points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=float).reshape(-1, 3)
+        counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get() or [], dtype=np.int64)
+        indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get() or [], dtype=np.int64)
+        if not len(points) or not len(counts):
+            continue
         if np.all(counts == 3):
             faces = indices.reshape(-1, 3)
         else:
@@ -595,25 +614,47 @@ def _reachable_triangles(triangles: np.ndarray, placements: Sequence[tuple[Colli
     return triangles[keep]
 
 
+def _joint_label(motion: Mapping[str, Any], sample: Mapping[str, Any]) -> str:
+    return ("%.0fdeg" % math.degrees(sample["value"]) if motion["joint_type"] == "revolute"
+            else "%.0fcm" % (100 * sample["value"]))
+
+
 def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path,
                             asset_pose_world: Mapping[str, Sequence[float]],
                             reset_joint_positions: Mapping[str, float] | None = None,
                             background_pose_world: Mapping[str, Sequence[float]] | None = None,
                             movable_joint_ids: Sequence[str] | None = None,
+                            task_ranges: Mapping[str, Sequence[float]] | None = None,
                             sample_spacing_m: float = DEFAULT_SAMPLE_SPACING_M,
                             rest_tolerance_m: float = DEFAULT_REST_TOLERANCE_M,
                             motion_tolerance_m: float = DEFAULT_MOTION_TOLERANCE_M,
                             revolute_step_rad: float = DEFAULT_REVOLUTE_STEP_RAD,
                             prismatic_step_m: float = DEFAULT_PRISMATIC_STEP_M) -> dict[str, Any]:
-    """Measure one placed asset against the static background; raises only on unusable input."""
+    """Measure one placed asset against the static background; raises only on unusable input.
+
+    ``task_ranges`` maps a joint to the span the task drives it through. With it,
+    contact inside a span blocks and every other contact is an advisory; without
+    it, every contact blocks.
+    """
     from scipy.spatial import cKDTree
 
     model = load_asset_model(asset_usd)
     world_from_asset = _pose_matrix(asset_pose_world)
     reset = dict(reset_joint_positions or {})
     known_joints = {j.joint_id for j in model.joints}
-    if set(reset) - known_joints:
-        raise ScenePhysicsPreflightError("scene_physics_joint_unknown:" + ",".join(sorted(set(reset) - known_joints)))
+    unknown = (set(reset) | set(task_ranges or {})) - known_joints
+    if unknown:
+        raise ScenePhysicsPreflightError("scene_physics_joint_unknown:" + ",".join(sorted(unknown)))
+    pose = {k: [float(v) for v in asset_pose_world[k]] for k in ("position_world_m", "orientation_xyzw")}
+
+    def nothing_to_measure(notice: str) -> dict[str, Any]:
+        return {"schema_version": SCHEMA_VERSION, "status": "passed", "blockers": [], "advisories": [],
+                "notices": [notice], "asset_pose_world": pose, "asset_mounted": model.mounted,
+                "skipped_colliders": list(model.skipped_colliders),
+                "simulator_executed": False, "provider_mutation_performed": False}
+
+    if not model.colliders:
+        return nothing_to_measure("scene_physics_asset_solid_colliders_absent")
 
     def placed_at(values: Mapping[str, float] | None, bodies: set[str] | None = None):
         poses = {body: world_from_asset @ pose for body, pose in body_poses(model, {**reset, **(values or {})}).items()}
@@ -631,6 +672,10 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
         moving = descendants(model, joint.joint_id)
         step = revolute_step_rad if joint.kind == "revolute" else prismatic_step_m
         values = np.linspace(joint.lower, joint.upper, max(2, int(math.ceil((joint.upper - joint.lower) / step)) + 1))
+        # Sample the task's own endpoints too: a goal between two sweep steps is
+        # exactly the position the task must reach.
+        span = (task_ranges or {}).get(joint.joint_id) or []
+        values = np.unique(np.concatenate([values, [float(v) for v in span if joint.lower <= float(v) <= joint.upper]]))
         sweeps.append((joint, moving, values, [placed_at({joint.joint_id: float(v)}, moving) for v in values]))
     every = rest + [pair for _, _, _, frames in sweeps for placed in frames for pair in placed]
     centres = np.asarray([w[:3, 3] for _, w in every])
@@ -643,7 +688,7 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
                                       (centres - bounds[:, None]).min(axis=0), (centres + bounds[:, None]).max(axis=0))
     points, owners = sample_surface(triangles, sample_spacing_m)
     if not len(points):
-        raise ScenePhysicsPreflightError("scene_physics_background_empty_near_asset")
+        return nothing_to_measure("scene_physics_background_empty_near_asset")
     tree = cKDTree(points)
 
     depth, owner = penetration(points, rest, tree=tree)
@@ -674,19 +719,28 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
                         "first_contact": first_contact,
                         "contact_sample_count": sum(1 for s in samples if s["contact_points"]), "samples": samples})
 
-    blockers = []
+    blockers, advisories = [], []
     if rest_report["penetrating_points"]:
         blockers.append("scene_physics_rest_overlap:%.1fcm" % (100 * rest_report["max_depth_m"]))
     for face, row in envelope["by_face"].items():
         blockers.append("scene_physics_envelope_intrusion:%s:%.1fcm" % (face, 100 * row["median_depth_m"]))
     for motion in motions:
-        contact = motion["first_contact"]
-        if contact is not None:
-            shown = ("%.0fdeg" % math.degrees(contact["value"]) if motion["joint_type"] == "revolute"
-                     else "%.0fcm" % (100 * contact["value"]))
-            blockers.append("scene_physics_motion_contact:%s@%s" % (motion["joint_id"], shown))
+        contacts = [s for s in motion["samples"] if s["contact_points"]]
+        span = None if task_ranges is None else task_ranges.get(motion["joint_id"])
+        if span is not None:
+            low_value, high_value = sorted(float(v) for v in span)
+            motion["task_range"] = [low_value, high_value]
+        inside = [s for s in contacts if task_ranges is None
+                  or (span is not None and low_value - 1e-6 <= s["value"] <= high_value + 1e-6)]
+        outside = [s for s in contacts if s not in inside]
+        if inside:
+            blockers.append("scene_physics_motion_contact:%s@%s" % (motion["joint_id"], _joint_label(motion, inside[0])))
+        if outside:
+            advisories.append("scene_physics_motion_contact_outside_task_range:%s@%s"
+                              % (motion["joint_id"], _joint_label(motion, outside[0])))
     return {"schema_version": SCHEMA_VERSION, "status": "blocked" if blockers else "passed", "blockers": blockers,
-            "asset_pose_world": {k: [float(v) for v in asset_pose_world[k]] for k in ("position_world_m", "orientation_xyzw")},
+            "advisories": advisories, "notices": [], "asset_pose_world": pose,
+            "skipped_colliders": list(model.skipped_colliders),
             "asset_mounted": model.mounted, "background_triangles_reached": int(len(triangles)),
             "background_samples": int(len(points)), "sample_spacing_m": sample_spacing_m,
             "rest_overlap": rest_report, "envelope_intrusion": envelope, "motion_clearance": motions,
@@ -708,12 +762,43 @@ def _file_sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def task_motion_ranges(plan: Mapping[str, Any]) -> dict[str, list[float]]:
+    """The task subject's commanded span: its target joint from reset to the success threshold.
+
+    An articulated task whose span cannot be read is refused rather than treated as
+    commanding nothing, which would turn every contact into an advisory.
+    """
+    spec = plan.get("task_spec") or {}
+    if spec.get("task_kind") != "articulated_open_close":
+        return {}
+    threshold = spec.get("executable_opening_threshold")
+    try:
+        if threshold is not None:
+            target = str(threshold["target_joint_id"])
+            reset, goal = float(threshold["reset_position"]), float(threshold["success_interval"][0])
+        else:
+            # Pre-v2 task specs command the scripted target from the scorer's reset.
+            target = str(spec["target_joint_id"])
+            reset = float(spec["joint_reset_positions_rad"][target])
+            goal = float(spec["scripted_positive_target_rad"])
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise ScenePhysicsPreflightError("scene_physics_task_range_unknown") from exc
+    if not target or not (math.isfinite(reset) and math.isfinite(goal)):
+        raise ScenePhysicsPreflightError("scene_physics_task_range_unknown")
+    # The plan names the joint by graph id; the asset's joint prim carries the USD name.
+    prim = ((plan.get("articulation") or {}).get("task_joint_prim_paths") or {}).get(target)
+    return {str(prim).rsplit("/", 1)[-1] if prim else target: sorted([reset, goal])}
+
+
 def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str, Any]:
     """Run the preflight for every articulated object of a native task arena packet.
 
     The background is the plan's one ``scene_collision`` object at its pose; each
     ``ARTICULATION`` object is checked at its reset root pose and joint positions.
-    Every file is bound to the digest the plan recorded for it.
+    The task subject's target joint blocks only inside the task's range; other
+    articulated objects and joints report contact without blocking. Every file is
+    bound to the digest the plan recorded for it. A plan with no articulated object
+    is ``not_applicable``.
     """
     import json
 
@@ -721,9 +806,16 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
 
     root = Path(packet_dir)
     plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
-    objects = plan.get("objects")
+    objects = plan.get("objects", [])
     if not isinstance(objects, list):
         raise ScenePhysicsPreflightError("scene_physics_packet_plan_objects_invalid")
+    articulated = [o for o in objects if isinstance(o, Mapping) and o.get("object_type") == "ARTICULATION"]
+    if not articulated:
+        result = {"schema_version": PACKET_REPORT_SCHEMA_VERSION, "arena_scene_plan_digest": plan.get("plan_digest"),
+                  "status": "not_applicable", "reason": "no_articulated_object", "blockers": [], "advisories": [],
+                  "objects": [], "simulator_executed": False, "provider_mutation_performed": False}
+        result["report_digest"] = canonical_digest(result, digest_field="report_digest")
+        return result
 
     def bound(row: Mapping[str, Any]) -> Path:
         path = (root / str(row.get("usd_path") or "")).resolve()
@@ -737,25 +829,37 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
     if len(collisions) != 1:
         raise ScenePhysicsPreflightError("scene_physics_packet_scene_collision_count_invalid")
     background = bound(collisions[0])
-    articulated = [o for o in objects if o.get("object_type") == "ARTICULATION"]
-    if not articulated:
-        raise ScenePhysicsPreflightError("scene_physics_packet_articulation_missing")
-    rows, blockers = [], []
+    ranges = task_motion_ranges(plan)
+    subjects = [o for o in articulated if o.get("task_subject") is True or o.get("semantic_role") == "task_object"]
+    rows, blockers, advisories = [], [], []
     for row in articulated:
         reset = row.get("reset_state") or {}
         report = scene_physics_preflight(
             background_usd=background, asset_usd=bound(row),
             asset_pose_world=reset.get("root_pose_world") or row["pose_world"],
             reset_joint_positions=reset.get("joint_positions"),
-            background_pose_world=collisions[0].get("pose_world"), **options)
+            background_pose_world=collisions[0].get("pose_world"),
+            task_ranges=ranges if len(subjects) == 1 and row is subjects[0] else {}, **options)
         rows.append({"name": row.get("name"), "usd_path": row.get("usd_path"), "sha256": row.get("sha256"), **report})
         blockers.extend(f"{row.get('name')}:{b}" for b in report["blockers"])
+        advisories.extend(f"{row.get('name')}:{a}" for a in report["advisories"])
     result = {"schema_version": PACKET_REPORT_SCHEMA_VERSION, "arena_scene_plan_digest": plan.get("plan_digest"),
               "scene_collision_sha256": collisions[0].get("sha256"), "status": "blocked" if blockers else "passed",
-              "blockers": blockers, "objects": rows, "simulator_executed": False,
-              "provider_mutation_performed": False}
+              "blockers": blockers, "advisories": advisories, "task_ranges": ranges, "objects": rows,
+              "simulator_executed": False, "provider_mutation_performed": False}
     result["report_digest"] = canonical_digest(result, digest_field="report_digest")
     return result
+
+
+def require_scene_physics_admission(packet_dir: str | Path, **options: Any) -> dict[str, Any]:
+    """Refuse a paid native run whose packet the preflight blocks or cannot measure."""
+    try:
+        report = preflight_native_packet(packet_dir, **options)
+    except ScenePhysicsPreflightError as exc:
+        raise ScenePhysicsAdmissionBlocked(["scene_physics_preflight_refused:" + str(exc)]) from exc
+    if report["status"] == "blocked":
+        raise ScenePhysicsAdmissionBlocked(report["blockers"])
+    return report
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -774,8 +878,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.output:
         Path(args.output).write_text(json.dumps(report, indent=1, sort_keys=True) + "\n")
     print(json.dumps({"status": report["status"], "blockers": report["blockers"],
-                      "report_digest": report["report_digest"]}, sort_keys=True))
-    return 0 if report["status"] == "passed" else 2
+                      "advisories": report["advisories"], "report_digest": report["report_digest"]}, sort_keys=True))
+    return 2 if report["status"] == "blocked" else 0
 
 
 if __name__ == "__main__":
