@@ -76,11 +76,18 @@ def placement_no_match_verdict(diagnostics: Mapping[str, Any], *, robot_id: str)
     elif clear and diagnostics.get("arm_path_tested_count") and (
             diagnostics.get("arm_path_rejected_count") == diagnostics.get("arm_path_tested_count")):
         tested_arm = diagnostics["arm_path_tested_count"]
-        if (diagnostics.get("arm_path_blocker_counts") or {}).get("robot_arm_in_task_part_path"):
+        arm_counts = diagnostics.get("arm_path_blocker_counts") or {}
+        part, room = arm_counts.get("robot_arm_in_task_part_path", 0), arm_counts.get("robot_arm_in_scene_path", 0)
+        if part and part >= room:
             reason, summary = "task_part_strikes_arm", (
                 f"Not a match: {tested_arm} {robot_id} base positions clear the scene and reach the task's path, "
                 "but from each the moving part would strike the arm: no grip on the handle keeps the arm clear "
                 "through the motion.")
+        elif room:
+            reason, summary = "scene_strikes_arm", (
+                f"Not a match: {tested_arm} {robot_id} base positions fit beside the task and reach its path, but "
+                "from each the arm would hit the room around it, such as a counter, wall or cabinet, on every grip "
+                "that holds the handle through the motion.")
         else:
             # Position-only reach is not a held grip; nothing struck the arm because no grip was held.
             reason, summary = "task_grip_unreachable", (
