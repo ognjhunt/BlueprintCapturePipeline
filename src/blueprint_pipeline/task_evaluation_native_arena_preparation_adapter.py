@@ -299,26 +299,29 @@ def _verify_task_subject_binding(
                 "task_evaluation_adapter_task_subject_binding_mismatch"
             )
         from .native_task_arena_runtime import (
-            verify_counterbalanced_hinge_overlay,
+            verify_counterbalanced_hinge_derivative,
             verify_grounded_articulation,
             verify_grounded_articulation_overlay,
             verify_passive_joint_friction_overlay,
         )
 
+        def sealed_source() -> Path:
+            if (sealed_task_asset_source is None
+                    or Path(sealed_task_asset_source).is_symlink()
+                    or Path(sealed_task_asset_source).stat().st_size != asset["size_bytes"]
+                    or _sha256_file(Path(sealed_task_asset_source)) != asset["digest"]):
+                raise ValueError("sealed_task_asset_source_missing_or_changed")
+            return Path(sealed_task_asset_source)
+
         staged_path = packet_root / str(binding.get("staged_relative_path") or "")
         try:
             if adaptation["adaptation"] == "usd_authored_world_fixed_base":
-                if (sealed_task_asset_source is None
-                        or Path(sealed_task_asset_source).is_symlink()
-                        or Path(sealed_task_asset_source).stat().st_size != asset["size_bytes"]
-                        or _sha256_file(Path(sealed_task_asset_source)) != asset["digest"]):
-                    raise ValueError("sealed_task_asset_source_missing_or_changed")
-                verify_grounded_articulation_overlay(
-                    sealed_task_asset_source, staged_path, adaptation)
+                verify_grounded_articulation_overlay(sealed_source(), staged_path, adaptation)
             elif adaptation["adaptation"] == "counterbalanced_hinge_overlay":
+                # Replay from the sealed bytes: a readback cannot see other edits.
                 if not isinstance(hinge, Mapping) or hinge.get("source_sha256") != asset["digest"]:
                     raise ValueError("counterbalanced_hinge_source_mismatch")
-                verify_counterbalanced_hinge_overlay(staged_path, hinge)
+                verify_counterbalanced_hinge_derivative(sealed_source(), staged_path, hinge)
             else:
                 if not isinstance(friction, Mapping) or friction.get("source_sha256") != asset["digest"]:
                     raise ValueError("passive_joint_source_mismatch")

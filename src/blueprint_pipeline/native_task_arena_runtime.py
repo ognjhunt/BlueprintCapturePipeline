@@ -1066,6 +1066,27 @@ def verify_counterbalanced_hinge_overlay(staged_usd: str | Path, declared: Mappi
             raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_readback_mismatch"])
 
 
+def verify_counterbalanced_hinge_derivative(
+    source_usd: str | Path, staged_usd: str | Path, declared: Mapping[str, Any],
+) -> None:
+    """Replay the counterbalance from the sealed source and require the staged bytes.
+
+    A readback alone proves the bodies are weightless, not that nothing else in
+    the staged asset changed; the replay proves both.
+    """
+    source = Path(source_usd).expanduser().resolve()
+    if _sha256(source) != declared.get("source_sha256"):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_source_mismatch"])
+    with tempfile.TemporaryDirectory(prefix="blueprint-counterbalance-replay-") as scratch:
+        expected = Path(scratch) / "counterbalanced.usda"
+        replayed = author_counterbalanced_hinge_overlay(
+            source, expected, joint_prim_path=str(declared.get("joint_prim_path") or ""))
+        if replayed is None or replayed != dict(declared):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_declaration_mismatch"])
+        if _sha256(expected) != _sha256(Path(staged_usd)):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_derivative_mismatch"])
+
+
 #: PhysX refuses to build GPU-compatible convex hulls for very thin shapes
 #: ("oblong"), and ONE such mesh silently demotes the whole simulation to the
 #: CPU pipeline -- surfacing later as a cuda/cpu device mismatch in whatever
