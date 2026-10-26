@@ -47,6 +47,8 @@ import numpy as np
 
 SCHEMA_VERSION = "scene_physics_preflight.v1"
 DEFAULT_SAMPLE_SPACING_M = 0.005
+#: Background samples one preflight may hold: about 0.7 GB at peak, inside the 7 GB control-plane host.
+MAXIMUM_BACKGROUND_SAMPLES = 12_000_000
 DEFAULT_REST_TOLERANCE_M = 0.005
 DEFAULT_MOTION_TOLERANCE_M = 0.002
 DEFAULT_REVOLUTE_STEP_RAD = math.radians(2.0)
@@ -426,26 +428,42 @@ def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], 
     return np.concatenate(kept) if kept else np.zeros((0, 3, 3))
 
 
-def sample_surface(triangles: np.ndarray, spacing: float = DEFAULT_SAMPLE_SPACING_M) -> tuple[np.ndarray, np.ndarray]:
-    """Points on every triangle no further apart than ``spacing``, and the triangle each came from."""
+def sample_surface(triangles: np.ndarray, spacing: float = DEFAULT_SAMPLE_SPACING_M, *,
+                   maximum_samples: int | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Points on every triangle no further apart than ``spacing``, and the triangle each came from.
+
+    Each triangle gets a lattice from its widest corner along the two edges that meet there, each step
+    at most ``spacing``, so the count follows the triangle's area. A grid sized by the longest edge
+    squared gave a 4 m sliver a third of a million samples; on the 840796 kitchen mesh it asked for
+    595 million and ran a 22 GB host out of memory. More than ``maximum_samples`` is refused by name.
+    """
     if len(triangles) == 0:
         return np.zeros((0, 3)), np.zeros(0, dtype=np.int64)
-    a, b, c = triangles[:, 0], triangles[:, 1], triangles[:, 2]
-    longest = np.max(np.stack([np.linalg.norm(b - a, axis=1), np.linalg.norm(c - b, axis=1),
-                               np.linalg.norm(a - c, axis=1)]), axis=0)
-    divisions = np.maximum(1, np.ceil(longest / spacing)).astype(int)
-    rows, owners = [], []
-    for n in np.unique(divisions):
-        chosen = np.flatnonzero(divisions == n)
-        i, j = np.meshgrid(np.arange(n + 1), np.arange(n + 1), indexing="ij")
-        keep = (i + j) <= n
-        u, v = (i[keep] / n), (j[keep] / n)
-        w = 1.0 - u - v
-        ta, tb, tc = a[chosen], b[chosen], c[chosen]
-        rows.append((w[None, :, None] * ta[:, None] + u[None, :, None] * tb[:, None]
-                     + v[None, :, None] * tc[:, None]).reshape(-1, 3))
-        owners.append(np.repeat(chosen, len(u)))
-    return np.concatenate(rows), np.concatenate(owners)
+    triangles = np.asarray(triangles, dtype=float)
+    # Edge k runs from vertex k to vertex k + 1; the corner opposite the longest edge is the widest.
+    lengths = np.linalg.norm(np.roll(triangles, -1, axis=1) - triangles, axis=2)
+    corner = (np.argmax(lengths, axis=1) + 2) % 3
+    ordered = np.take_along_axis(triangles, ((corner[:, None] + np.arange(3)) % 3)[:, :, None], axis=1)
+    a, ab, ac = ordered[:, 0], ordered[:, 1] - ordered[:, 0], ordered[:, 2] - ordered[:, 0]
+    n1 = np.maximum(1, np.ceil(np.linalg.norm(ab, axis=1) / spacing)).astype(np.int64)
+    n2 = np.maximum(1, np.ceil(np.linalg.norm(ac, axis=1) / spacing)).astype(np.int64)
+    bc = ordered[:, 2] - ordered[:, 1]
+    n3 = np.maximum(1, np.ceil(np.linalg.norm(bc, axis=1) / spacing)).astype(np.int64)
+    # Row i (0..n1) along ab holds j = 0..floor(n2 (1 - i / n1)) along ac; rows stop short of the
+    # third edge, so it gets its own samples.
+    row_owner = np.repeat(np.arange(len(triangles)), n1 + 1)
+    row = np.arange(len(row_owner)) - np.repeat(np.cumsum(n1 + 1) - (n1 + 1), n1 + 1)
+    per_row = np.floor(n2[row_owner] * (1.0 - row / n1[row_owner]) + 1e-9).astype(np.int64) + 1
+    total = int(per_row.sum()) + int((n3 + 1).sum())
+    if maximum_samples is not None and total > maximum_samples:
+        raise ScenePhysicsPreflightError(f"scene_physics_surface_samples_over_budget:{total}>{maximum_samples}")
+    owner = np.repeat(row_owner, per_row)
+    u = (np.repeat(row, per_row) / n1[owner])[:, None]
+    v = ((np.arange(len(owner)) - np.repeat(np.cumsum(per_row) - per_row, per_row)) / n2[owner])[:, None]
+    edge_owner = np.repeat(np.arange(len(triangles)), n3 + 1)
+    t = ((np.arange(len(edge_owner)) - np.repeat(np.cumsum(n3 + 1) - (n3 + 1), n3 + 1)) / n3[edge_owner])[:, None]
+    points = np.concatenate([a[owner] + u * ab[owner] + v * ac[owner], ordered[edge_owner, 1] + t * bc[edge_owner]])
+    return points, np.concatenate([owner, edge_owner])
 
 
 def triangle_normals(triangles: np.ndarray) -> np.ndarray:
@@ -498,9 +516,23 @@ def _placed(colliders: Iterable[Collider], world_from_body: Mapping[str, np.ndar
         yield collider, world
 
 
+def _local_box(collider: Collider) -> tuple[np.ndarray, np.ndarray]:
+    """The collider's own axis-aligned box in its frame."""
+    if collider.kind == "hull":
+        return collider.vertices.min(axis=0), collider.vertices.max(axis=0)
+    half = (collider.half_extents if collider.kind == "box" else
+            np.array([collider.radius, collider.radius, collider.half_height]) if collider.kind == "cylinder" else
+            np.full(3, collider.radius))
+    return -np.asarray(half, dtype=float), np.asarray(half, dtype=float)
+
+
 def penetration(points: np.ndarray, placed: Sequence[tuple[Collider, np.ndarray]], *, tree: Any = None,
                 ) -> tuple[np.ndarray, np.ndarray]:
-    """Deepest penetration of each point into any placed collider, and which collider."""
+    """Deepest penetration of each point into any placed collider, and which collider.
+
+    Only depth inside a solid is measured: a point outside every collider's own box keeps -inf. A tall
+    thin part's bounding sphere holds some fifty times the samples its box does.
+    """
     from scipy.spatial import cKDTree
 
     tree = tree if tree is not None else cKDTree(points)
@@ -511,6 +543,11 @@ def penetration(points: np.ndarray, placed: Sequence[tuple[Collider, np.ndarray]
         if not len(near):
             continue
         local = (points[near] - world[:3, 3]) @ world[:3, :3]
+        low, high = _local_box(collider)
+        boxed = np.all((local >= low) & (local <= high), axis=1)
+        if not boxed.any():
+            continue
+        near, local = near[boxed], local[boxed]
         d = _depths(collider, local)
         better = d > depth[near]
         depth[near[better]] = d[better]
@@ -756,7 +793,7 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
     bounds = np.asarray([c.bound_radius for c, _ in every])
     triangles = _clip_large_triangles(_reachable_triangles(nearby, every),
                                       (centres - bounds[:, None]).min(axis=0), (centres + bounds[:, None]).max(axis=0))
-    points, owners = sample_surface(triangles, sample_spacing_m)
+    points, owners = sample_surface(triangles, sample_spacing_m, maximum_samples=MAXIMUM_BACKGROUND_SAMPLES)
     if not len(points):
         return nothing_to_measure("scene_physics_background_empty_near_asset")
     tree = cKDTree(points)

@@ -8,6 +8,7 @@ lands stands for the 90 degree floor contact.
 import json
 import math
 
+import numpy as np
 import pytest
 
 from blueprint_pipeline import scene_physics_preflight as spp
@@ -368,3 +369,24 @@ def test_only_a_weightless_part_a_vertical_hinge_or_a_level_slide_holds_where_re
     upright = {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)]}
     assert spp.joint_holds_released_position(tmp_path / "gravity" / "asset.usda", "door_hinge",
                                              asset_pose_world=upright) is True
+
+
+def test_a_long_sliver_is_sampled_by_area_and_covered_and_a_budget_refuses_by_name():
+    # 2026-10-26: the 840796 kitchen mesh has thousands of metre-long slivers; a grid sized by the
+    # longest edge squared asked for 595 million samples and ran a 22 GB host out of memory.
+    from scipy.spatial import cKDTree
+
+    sliver = np.array([[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 0.01, 0.0]]])
+    points, owners = spp.sample_surface(sliver, 0.005)
+    assert len(points) < 5_000 and set(owners.tolist()) == {0}
+    rng = np.random.default_rng(7)
+    u, v = rng.random(20_000), rng.random(20_000)
+    flip = u + v > 1
+    u[flip], v[flip] = 1 - u[flip], 1 - v[flip]
+    a, b, c = sliver[0]
+    probes = a + u[:, None] * (b - a) + v[:, None] * (c - a)
+    assert cKDTree(points).query(probes)[0].max() <= 0.005
+    square = np.array([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]])
+    assert len(spp.sample_surface(square, 0.01)[0]) == pytest.approx(1.0 / 0.01 ** 2, rel=0.1)  # area plus edges
+    with pytest.raises(spp.ScenePhysicsPreflightError, match="scene_physics_surface_samples_over_budget"):
+        spp.sample_surface(square, 0.01, maximum_samples=1_000)
