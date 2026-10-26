@@ -86,6 +86,9 @@ class RobotPlacementGeometryIndex:
     # Surface samples of every pose a task asset's moving part takes between
     # reset and its success threshold.
     task_motion_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    # The same part across its whole joint range: where it can go if a policy
+    # opens it further or lets it fall.
+    task_limit_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
 
 
 def _sha256(path: Path) -> str:
@@ -340,7 +343,7 @@ def _task_motion(value: Any) -> dict[str, Any]:
     return {"joint_id": joint_id, "task_range": task_range, "reset_joint_positions": reset}
 
 
-def _task_motion_points(bindings: Sequence[Mapping[str, Any]]) -> np.ndarray:
+def _task_motion_points(bindings: Sequence[Mapping[str, Any]], *, whole_range: bool = False) -> np.ndarray:
     parts = [np.zeros((0, 3))]
     for binding in bindings:
         motion = binding.get("task_motion")
@@ -349,7 +352,7 @@ def _task_motion_points(bindings: Sequence[Mapping[str, Any]]) -> np.ndarray:
         try:
             parts.append(task_motion_surface(
                 asset_usd=binding["asset_usd_path"], asset_pose_world=binding["pose"],
-                joint_id=motion["joint_id"], task_range=motion["task_range"],
+                joint_id=motion["joint_id"], task_range=None if whole_range else motion["task_range"],
                 reset_joint_positions=motion["reset_joint_positions"]))
         except ScenePhysicsPreflightError as exc:
             raise RobotPlacementGeometryError(f"robot_placement_task_motion_unmeasurable:{exc}") from exc
@@ -357,12 +360,13 @@ def _task_motion_points(bindings: Sequence[Mapping[str, Any]]) -> np.ndarray:
 
 
 def _task_motion_contact_count(
-    index: RobotPlacementGeometryIndex, robot_id: str, position: np.ndarray, yaw: float
+    index: RobotPlacementGeometryIndex, robot_id: str, position: np.ndarray, yaw: float,
+    points: np.ndarray | None = None,
 ) -> int:
     """Swept task-part samples inside the robot's fixed volumes at this base pose."""
     try:
         reach = robot_fixed_volume_extent(robot_id) + TASK_MOTION_CLEARANCE_M
-        points = index.task_motion_points
+        points = index.task_motion_points if points is None else points
         near = points[(np.abs(points[:, 0] - position[0]) <= reach) & (np.abs(points[:, 1] - position[1]) <= reach)]
         relative = near - position
         cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
@@ -441,6 +445,7 @@ def build_robot_placement_geometry_index(
         background_collision_digest=background_digest,
         task_asset_bindings=actor_bindings,
         task_motion_points=_task_motion_points(actor_bindings),
+        task_limit_points=_task_motion_points(actor_bindings, whole_range=True),
     )
 
 
@@ -870,6 +875,10 @@ def validate_robot_placement_geometry_candidate(
     }
     if len(index.task_motion_points):
         result["task_motion_contact_point_count"] = motion_contacts
+        # Beyond the threshold a strike does not block: a policy may stop short.
+        # Counted here so the search can prefer a base the part never reaches.
+        result["task_limit_contact_point_count"] = _task_motion_contact_count(
+            index, robot_id, position, yaw, index.task_limit_points)
     result["geometry_gate_digest"] = canonical_digest(
         result, digest_field="geometry_gate_digest"
     )
@@ -1268,6 +1277,9 @@ def enumerate_robot_placement_geometry_candidates(
             if gate["status"] != "passed":
                 continue
             score = (
+                # A base clear of the part's whole range survives a policy that
+                # opens past the threshold; the door then cannot land on it.
+                bool(gate.get("task_limit_contact_point_count")),
                 -float(
                     gate["trajectory_position_ik_gate"]["minimum_manipulability"]
                     or 0.0

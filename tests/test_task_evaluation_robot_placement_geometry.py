@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 import hashlib
 
 import numpy as np
@@ -287,9 +288,27 @@ def test_robot_base_in_the_task_doors_swing_is_rejected(tmp_path):
     short = _cabinet_with_drop_door(tmp_path / "short", task_range=(0.0, math.radians(30)))
     short_index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
                                                        task_assets=[short])
-    assert "robot_base_in_task_motion_path" not in validate_robot_placement_geometry_candidate(
+    short_front = validate_robot_placement_geometry_candidate(
         index=short_index, proposal=_proposal(floor.surface_id, (0.55, 0.0, 0.0), math.pi),
-        target_position_world_m=target)["blockers"]
+        target_position_world_m=target)
+    assert "robot_base_in_task_motion_path" not in short_front["blockers"]
+    # Past the threshold the door still reaches that base, so the search ranks a
+    # base it never reaches first.
+    assert short_front["task_motion_contact_point_count"] == 0
+    assert short_front["task_limit_contact_point_count"] > 0
+    assert validate_robot_placement_geometry_candidate(
+        index=short_index, proposal=_proposal(floor.surface_id, (0.3, 0.55, 0.0), math.atan2(-0.55, -0.25)),
+        target_position_world_m=target)["task_limit_contact_point_count"] == 0
+
+    def reached(rows):
+        return [validate_robot_placement_geometry_candidate(index=short_index, proposal=row, target_position_world_m=target)
+                ["task_limit_contact_point_count"] > 0 for row in rows]
+
+    unranked = replace(short_index, task_limit_points=np.zeros((0, 3)))
+    assert reached(enumerate_robot_placement_geometry_candidates(
+        index=unranked, target_position_world_m=target, maximum_candidates=4)) == [True] * 4
+    assert reached(enumerate_robot_placement_geometry_candidates(
+        index=short_index, target_position_world_m=target, maximum_candidates=4)) == [False] * 4
     # Without a declared motion the gate keeps its previous shape.
     del actor["task_motion"]
     still = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
