@@ -1,0 +1,271 @@
+{
+  "$id": "beta_policy_screening_publication.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Structural wire contract. The signed consumer additionally validates source, canonical digest, monotonic progress, episode arithmetic and aggregate budget <= USD15.",
+  "properties": {
+    "budget": {
+      "additionalProperties": false,
+      "properties": {
+        "committed_upper_bound_usd": {
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,6})?$",
+          "type": "string"
+        },
+        "currency": {
+          "const": "USD"
+        },
+        "limit_usd": {
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,6})?$",
+          "type": "string"
+        },
+        "reserved_usd": {
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,6})?$",
+          "type": "string"
+        },
+        "spent_upper_bound_usd": {
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,6})?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "currency",
+        "limit_usd",
+        "committed_upper_bound_usd",
+        "spent_upper_bound_usd",
+        "reserved_usd"
+      ],
+      "type": "object"
+    },
+    "campaign_id": {
+      "maxLength": 192,
+      "minLength": 1,
+      "type": "string"
+    },
+    "candidates": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "blockers": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_:.=-]{0,199}$",
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "candidate_id": {
+            "maxLength": 192,
+            "minLength": 1,
+            "type": "string"
+          },
+          "configuration_digest": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "display_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "episodes_failed": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "episodes_planned": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "episodes_scored": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "episodes_succeeded": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "episodes_void": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_result_digest": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "preparing",
+              "launching",
+              "running",
+              "reconciliation_required",
+              "completed",
+              "blocked",
+              "unavailable",
+              "deferred"
+            ]
+          },
+          "success_rate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "candidate_id",
+          "configuration_digest",
+          "display_name",
+          "status",
+          "blockers",
+          "episodes_planned",
+          "episodes_scored",
+          "episodes_succeeded",
+          "episodes_failed",
+          "episodes_void",
+          "success_rate",
+          "session_result_digest"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "catalog_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "claim_ceiling": {
+      "const": "diagnostic_policy_execution"
+    },
+    "execution_operator": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "blueprint"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "publication_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "purpose": {
+      "const": "screening"
+    },
+    "recommendation_eligible": {
+      "const": false
+    },
+    "revision": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "scenario_plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "beta_policy_screening_publication.v1"
+    },
+    "site_id": {
+      "maxLength": 192,
+      "minLength": 1,
+      "type": "string"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "capture_id": {
+          "maxLength": 192,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scene_intent_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "scene_intent_id": {
+          "maxLength": 192,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scene_revision_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "task_context_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 192,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene_intent_id",
+        "scene_intent_digest",
+        "capture_id",
+        "task_id",
+        "task_context_digest",
+        "scene_revision_digest"
+      ],
+      "type": "object"
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "completed",
+        "blocked",
+        "reconciliation_required"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "site_id",
+    "plan_digest",
+    "catalog_digest",
+    "scenario_plan_digest",
+    "source",
+    "revision",
+    "status",
+    "purpose",
+    "execution_operator",
+    "claim_ceiling",
+    "recommendation_eligible",
+    "candidates",
+    "budget",
+    "generated_at",
+    "publication_digest"
+  ],
+  "title": "Diagnostic beta policy screening publication",
+  "type": "object"
+}

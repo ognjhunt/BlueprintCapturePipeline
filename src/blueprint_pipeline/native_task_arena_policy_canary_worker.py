@@ -44,7 +44,7 @@ from blueprint_pipeline.appearance_render_backend import (
     build_appearance_render_backend,
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
-    EXECUTION_MODES, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND,
+    BETA_RUN_KIND, EXECUTION_MODES, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND,
     PROVIDER_STATUS_FILENAME, PROVIDER_STATUS_SCHEMA,
     execute_paired_session,
     validate_runtime_input_manifest,
@@ -474,6 +474,9 @@ def preflight_policy_canary_static_inputs(
                 or spec.get("execution_spec_digest") != canonical_digest(spec, digest_field="execution_spec_digest")
                 or spec.get("task_success_contract_digest") != inputs.get("task_success_contract_digest")):
                 raise RuntimeError("policy_canary_frozen_execution_spec_mismatch")
+            if inputs.get("run_kind") == BETA_RUN_KIND:
+                from blueprint_pipeline.beta_robolab_runtime import validate_robolab_policy_execution_spec
+                validate_robolab_policy_execution_spec(spec, candidate_id=candidate)
         check(f"execution_spec.{candidate}", validate_spec)
     cells: list[dict[str, Any]] = []
     team_binding = check("team_embodiment_binding", lambda: _team_embodiment_binding(specs))
@@ -975,59 +978,14 @@ def isaac_cell_runtime() -> CellRuntime:
     )
 
 
-def _construction_lineage_mode(
-    *,
-    inputs: Mapping[str, Any],
-    base_scene_plan: Mapping[str, Any],
-    construction: Mapping[str, Any],
-) -> str:
-    """Accept strict construction or typed compiled-scene diagnostic lineage."""
+def _construction_lineage_mode(*, inputs: Mapping[str, Any], base_scene_plan: Mapping[str, Any],
+                               construction: Mapping[str, Any]) -> str:
+    from blueprint_pipeline.policy_canary_scene_resolution import construction_lineage_mode
 
-    if (
-        base_scene_plan.get("plan_digest")
-        != canonical_digest(base_scene_plan, digest_field="plan_digest")
-    ):
-        raise RuntimeError("policy_canary_scene_plan_invalid")
-    if construction.get("schema_version") == "native_task_arena_packet_receipt.v1":
-        # A team evaluation may run on a prepared scene's own compiled packet (``team_scene_packet``).
-        if (inputs.get("run_kind") not in ("internal_policy_canary", TEAM_RUN_KIND)
-                or inputs.get("claim_ceiling") != "diagnostic_policy_execution"
-                or inputs.get("construction_result") != inputs.get("base_native_packet")
-                or construction.get("status") != "construction_packet_completed"
-                or construction.get("arena_scene_plan_digest") != base_scene_plan.get("plan_digest")
-                or construction.get("scene_id") != base_scene_plan.get("scene_id")
-                or construction.get("task_id") != base_scene_plan.get("task_id")
-                or construction.get("native_application_claimed") is not False
-                or construction.get("policy_episode_claimed") is not False
-                or construction.get("receipt_digest") != canonical_digest(construction, digest_field="receipt_digest")):
-            raise RuntimeError("policy_canary_compiled_packet_lineage_invalid")
-        return "compiled_native_packet_diagnostic"
-    if construction.get("schema_version") == "native_task_arena_construction_result.v1":
-        if (
-            construction.get("status") != "completed"
-            or construction.get("construction_gate_qualified") is not True
-            or construction.get("scene_plan_digest")
-            != base_scene_plan.get("plan_digest")
-            or construction.get("result_digest")
-            != canonical_digest(construction, digest_field="result_digest")
-        ):
-            raise RuntimeError("policy_canary_construction_result_invalid")
-        return "qualified_native_construction_result"
-    if construction.get("schema_version") == "task_evaluation_episode_compilation_result.v1":
-        if (
-            construction.get("status") != "compiled_for_production_launch"
-            or construction.get("blockers") != []
-            or construction.get("configured_scene_revision_digest")
-            != inputs.get("scene_revision_digest")
-            or construction.get("provider_mutation_performed") is not False
-            or construction.get("paid_execution_requested") is not False
-            or construction.get("result_digest")
-            != canonical_digest(construction, digest_field="result_digest")
-        ):
-            raise RuntimeError("policy_canary_compiled_scene_lineage_invalid")
-        return "compiled_configured_scene_diagnostic"
-    raise RuntimeError("policy_canary_construction_lineage_schema_invalid")
-
+    return construction_lineage_mode(
+        inputs=inputs, base_scene_plan=base_scene_plan, construction=construction,
+        admitted_run_kinds=("internal_policy_canary", TEAM_RUN_KIND, BETA_RUN_KIND),
+    )
 
 def _validate_provider_manifest(
     value: Mapping[str, Any],
@@ -1181,7 +1139,7 @@ def _aggregate_isolated_cell_results(
         (str(row.get("candidate_id")), str(row.get("cell_id")), int(row.get("seed")))
         for row in episodes
     }
-    prepolicy_only = (inputs.get("run_kind") == TEAM_RUN_KIND and bool(failed_cells)
+    prepolicy_only = (inputs.get("run_kind") in (TEAM_RUN_KIND, BETA_RUN_KIND) and bool(failed_cells)
                       and len(failed_cells) == len(child_results))
     if observed != expected or (not episodes and not prepolicy_only):
         raise RuntimeError("policy_canary_isolated_cell_pairing_invalid")
@@ -1221,6 +1179,9 @@ def _aggregate_isolated_cell_results(
         "matrix_digest": inputs.get("matrix_digest") or _digest(inputs["cells"]),
         "result_digest": "",
     }
+    if inputs.get("run_kind") == BETA_RUN_KIND:
+        result.update({key: inputs[key] for key in ("beta_screening_admission", "scene_revision_digest",
+                                                   "plan_digest", "configuration_digest")})
     if failed_cells:
         result["planned_episodes_per_policy"] = len(inputs["cells"])
         result["isolated_cell_failures"] = failed_cells
@@ -1452,6 +1413,9 @@ def _run_isolated_cell_processes(
                        "episodes": [], "artifact_inventory": [], "candidate_policy_queried": False,
                        "blockers": ["team_scene_robot_free_probe_not_passed"],
                        **{key: child_results[0][key] for key in ("robot_free_probe_trace", "robot_free_probe_status")}}
+            if inputs.get("run_kind") == BETA_RUN_KIND:
+                blocked.update({key: inputs[key] for key in ("beta_screening_admission", "scene_revision_digest",
+                                                            "plan_digest", "configuration_digest")})
             blocked["result_digest"] = canonical_digest(blocked, digest_field="result_digest")
             _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=blocked)
             return 1
@@ -1486,7 +1450,7 @@ def _run_isolated_cell_processes(
                     _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
                     return 1
                 raise RuntimeError("diagnostic_continuation_first_cell_blocked:" + ",".join(diagnostic_continuation_gate["blockers"]))
-        elif index == 0 and inputs.get("run_kind") != TEAM_RUN_KIND:
+        elif index == 0 and inputs.get("run_kind") not in (TEAM_RUN_KIND, BETA_RUN_KIND):
             # The DROID harness-parity probe qualifies Blueprint's frozen canary; a team's
             # policy that does not approach the object in cell 0 is scored, not blocked.
             diagnostics = [
@@ -1629,6 +1593,9 @@ def _run_selected_cell(
         )
         report_progress("isaac_launch_completed")
         current_session["simulation_app"] = simulation_app
+        if inputs.get("run_kind") == BETA_RUN_KIND:
+            from blueprint_pipeline.beta_robolab_runtime import preflight_robolab_runtime
+            current_session["robolab_runtime_preflight"] = preflight_robolab_runtime()
         if base_scene_plan.get("task_spec", {}).get("astra_asset_adoption") is not None:
             if bound_runtime.begin_native_asset_monitor is None:
                 raise RuntimeError("policy_canary_native_asset_monitor_unavailable")
@@ -1749,7 +1716,8 @@ def _run_selected_cell(
                     built=built, task_readback=bound_runtime.make_rigid_task_readback(built), policy=tracker,
                     plan=scene_plan, prompt=str(spec["prompt"]), max_policy_queries=int(spec["max_policy_queries"]),
                     open_loop_horizon=int(spec["open_loop_horizon"]), media_root=output_root / "episodes",
-                    episode_id=episode_id, progress=episode_progress)
+                    episode_id=episode_id, progress=episode_progress,
+                    evaluation_backend=spec.get("evaluation_backend"))
                 _require_completed_episode_media(
                     output_root, episode, camera_ids=[*(row["role"] for row in scene_plan["cameras"]
                                                         if row.get("policy_input") is True), "overview"])
@@ -1866,6 +1834,8 @@ def _run_selected_cell(
                     },
                     progress=episode_progress,
                     scientific_reset_reader=scientific_reset_reader,
+                    **({"evaluation_backend": spec["evaluation_backend"]}
+                       if spec.get("evaluation_backend") else {}),
                 )
                 try:
                     _require_completed_episode_media(output_root, episode)

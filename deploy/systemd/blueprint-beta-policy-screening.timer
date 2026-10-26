@@ -1,0 +1,14 @@
+[Unit]
+Description=Reconcile authorized Blueprint site screening and its publication outbox
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-beta-policy-screening.timer.json
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Unit=blueprint-beta-policy-screening.service
+
+[Install]
+WantedBy=timers.target

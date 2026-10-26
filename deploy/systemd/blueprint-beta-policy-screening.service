@@ -1,0 +1,44 @@
+[Unit]
+Description=Advance Blueprint site policy screening and publish diagnostic results
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target blueprint-gpu-spend-guard.service
+After=network-online.target blueprint-gpu-spend-guard.service
+
+[Service]
+Type=oneshot
+# Each allocation retains its own bounded authority and independent watchdog.
+# An interrupted worker reconciles the committed attempt; it cannot relaunch it.
+KillMode=process
+TimeoutStartSec=7d
+User=blueprint
+Group=blueprint
+UMask=0077
+EnvironmentFile=/etc/blueprint/pipeline-control-plane.env
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
+Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
+Environment=BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/beta-policy-screening
+Environment=BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/team-scene-packets
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.beta_policy_screening_worker --max-campaigns 2 --max-launches 1'
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/beta-policy-screening
+TasksMax=512
+MemoryMax=8G
+CPUQuota=200%

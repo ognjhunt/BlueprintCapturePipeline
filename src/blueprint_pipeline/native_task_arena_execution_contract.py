@@ -229,6 +229,8 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "policy_interface_binding.py",
     "policy_paired_summary.py",
     "adp009d_policy_episode.py",
+    "policy_episode_events.py",
+    "beta_robolab_runtime.py",
     "adp009d_policy_episode_evidence.py",
     "adp009d_policy_episode_native_validation.py",
     "adp009d_droid_action_execution.py",
@@ -397,6 +399,8 @@ def native_task_arena_execution_transport_completed(
                 (result.get("run_kind") == "internal_policy_canary" and result.get("learned_policy_rollout_count") == 20)
                 or (result.get("run_kind") == "team_candidate_evaluation"
                     and 1 <= result["learned_policy_rollout_count"] <= 200)
+                or (result.get("run_kind") == "blueprint_beta_screening"
+                    and 1 <= result["learned_policy_rollout_count"] <= 10)
             )
             and result.get("claim_ceiling") == "diagnostic_policy_execution"
             and result.get("candidate_policy_queried") is True

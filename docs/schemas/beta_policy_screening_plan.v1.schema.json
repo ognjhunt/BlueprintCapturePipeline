@@ -1,0 +1,666 @@
+{
+  "$defs": {
+    "cell": {
+      "additionalProperties": false,
+      "properties": {
+        "cell_id": {
+          "pattern": "^screening\\.",
+          "type": "string"
+        },
+        "cell_spec_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "family": {
+          "enum": [
+            "canonical_anchor",
+            "placement_approach",
+            "illumination",
+            "camera_sensor",
+            "bounded_physics",
+            "pairwise_stress",
+            "composed_stress"
+          ]
+        },
+        "partition": {
+          "const": "screening"
+        },
+        "resolved_scenario": {
+          "additionalProperties": false,
+          "properties": {
+            "family": {
+              "enum": [
+                "canonical_anchor",
+                "placement_approach",
+                "illumination",
+                "camera_sensor",
+                "bounded_physics",
+                "pairwise_stress",
+                "composed_stress"
+              ]
+            },
+            "ordinal": {
+              "maximum": 9,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "dynamic_friction": {
+                  "type": "number"
+                },
+                "external_camera_x_delta_m": {
+                  "type": "number"
+                },
+                "object_start_x_delta_m": {
+                  "type": "number"
+                },
+                "object_start_y_delta_m": {
+                  "type": "number"
+                },
+                "object_yaw_delta_degrees": {
+                  "type": "number"
+                },
+                "task_light_intensity_scale": {
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "runtime_coverage_gaps": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "fallback": {
+                    "const": "canonical_task_root"
+                  },
+                  "family": {
+                    "enum": [
+                      "canonical_anchor",
+                      "placement_approach",
+                      "illumination",
+                      "camera_sensor",
+                      "bounded_physics",
+                      "pairwise_stress",
+                      "composed_stress"
+                    ]
+                  },
+                  "parameters_not_exercised": {
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "object_start_x_delta_m": {
+                        "not": {
+                          "const": 0
+                        },
+                        "type": "number"
+                      },
+                      "object_start_y_delta_m": {
+                        "not": {
+                          "const": 0
+                        },
+                        "type": "number"
+                      },
+                      "object_yaw_delta_degrees": {
+                        "not": {
+                          "const": 0
+                        },
+                        "type": "number"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "qualified_variation_claim_permitted": {
+                    "const": false
+                  },
+                  "reason": {
+                    "const": "task_subject_root_fixed_in_scene"
+                  }
+                },
+                "required": [
+                  "family",
+                  "reason",
+                  "fallback",
+                  "qualified_variation_claim_permitted",
+                  "parameters_not_exercised"
+                ],
+                "type": "object"
+              },
+              "maxItems": 1,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "family",
+            "ordinal",
+            "parameters"
+          ],
+          "type": "object"
+        },
+        "resolved_scenario_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "seed": {
+          "maximum": 2147483647,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cell_id",
+        "seed",
+        "family",
+        "partition",
+        "resolved_scenario",
+        "cell_spec_digest",
+        "resolved_scenario_digest"
+      ],
+      "type": "object"
+    },
+    "execution": {
+      "additionalProperties": false,
+      "dependentRequired": {
+        "credential_file": [
+          "provider_hard_cap_usd",
+          "hosted_inference_maximum_usd",
+          "hosted_inference_payment",
+          "hosted_max_cost_per_request_usd",
+          "hosted_http_request_limit",
+          "credential_origin"
+        ],
+        "credential_origin": [
+          "provider_hard_cap_usd",
+          "hosted_inference_maximum_usd",
+          "hosted_inference_payment",
+          "hosted_max_cost_per_request_usd",
+          "hosted_http_request_limit",
+          "credential_origin"
+        ],
+        "hosted_http_request_limit": [
+          "provider_hard_cap_usd",
+          "hosted_inference_maximum_usd",
+          "hosted_inference_payment",
+          "hosted_max_cost_per_request_usd",
+          "hosted_http_request_limit",
+          "credential_origin"
+        ],
+        "hosted_inference_maximum_usd": [
+          "provider_hard_cap_usd",
+          "hosted_inference_maximum_usd",
+          "hosted_inference_payment",
+          "hosted_max_cost_per_request_usd",
+          "hosted_http_request_limit",
+          "credential_origin"
+        ],
+        "hosted_inference_payment": [
+          "provider_hard_cap_usd",
+          "hosted_inference_maximum_usd",
+          "hosted_inference_payment",
+          "hosted_max_cost_per_request_usd",
+          "hosted_http_request_limit",
+          "credential_origin"
+        ],
+        "hosted_max_cost_per_request_usd": [
+          "provider_hard_cap_usd",
+          "hosted_inference_maximum_usd",
+          "hosted_inference_payment",
+          "hosted_max_cost_per_request_usd",
+          "hosted_http_request_limit",
+          "credential_origin"
+        ],
+        "provider_hard_cap_usd": [
+          "provider_hard_cap_usd",
+          "hosted_inference_maximum_usd",
+          "hosted_inference_payment",
+          "hosted_max_cost_per_request_usd",
+          "hosted_http_request_limit",
+          "credential_origin"
+        ]
+      },
+      "properties": {
+        "backend": {
+          "const": "robolab.v1"
+        },
+        "candidate_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+          "type": "string"
+        },
+        "checkpoint_inventory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "configuration_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "credential_file": {
+          "description": "Operator private file reference; ownership and mode rechecked by backend; never publish its path or contents.",
+          "pattern": "^/",
+          "type": "string"
+        },
+        "credential_origin": {
+          "description": "Exact HTTPS origin bound to the native hosted policy spec; no userinfo, query, fragment or non-root path.",
+          "format": "uri",
+          "pattern": "^https://",
+          "type": "string"
+        },
+        "hard_ttl_seconds": {
+          "maximum": 86400,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "hosted_http_request_limit": {
+          "maximum": 10000000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "hosted_inference_maximum_usd": {
+          "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+          "type": "string"
+        },
+        "hosted_inference_payment": {
+          "enum": [
+            "blueprint",
+            "caller_paid",
+            "free"
+          ]
+        },
+        "hosted_max_cost_per_request_usd": {
+          "pattern": "^(?:0|[1-9][0-9]{0,8})(?:\\.[0-9]{1,12})?$",
+          "type": "string"
+        },
+        "implementation_commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "machine_avoidlist_path": {
+          "pattern": "^/",
+          "type": "string"
+        },
+        "max_hourly_rate_usd": {
+          "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+          "type": "string"
+        },
+        "policy_execution_spec": {
+          "$ref": "#/$defs/receipt"
+        },
+        "provider_hard_cap_usd": {
+          "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+          "type": "string"
+        },
+        "runtime_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "blueprint.beta_policy_screening_execution.v1"
+        },
+        "task_success_contract_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "candidate_id",
+        "policy_execution_spec",
+        "checkpoint_inventory",
+        "configuration_digest",
+        "runtime_digest",
+        "backend",
+        "max_hourly_rate_usd",
+        "hard_ttl_seconds",
+        "implementation_commit",
+        "task_success_contract_digest"
+      ],
+      "type": "object"
+    },
+    "quote": {
+      "additionalProperties": false,
+      "properties": {
+        "configuration_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "episode_count": {
+          "maximum": 10,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maximum_cost_usd": {
+          "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+          "type": "string"
+        },
+        "price_source": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "quote_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "quote_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+          "type": "string"
+        },
+        "scene_revision_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "beta_policy_screening_cost_quote.v1"
+        },
+        "valid_until": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "quote_id",
+        "price_source",
+        "valid_until",
+        "configuration_digest",
+        "scene_revision_digest",
+        "episode_count",
+        "maximum_cost_usd",
+        "quote_digest"
+      ],
+      "type": "object"
+    },
+    "receipt": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "pattern": "^/",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "beta_policy_screening_plan.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Immutable matched diagnostic screening plan. Canonical digests, source/candidate binding, cost arithmetic and shared-cell equality are additionally enforced by validate_screening_plan. Quotes are checked for expiry before reserve/launch, not when reading history.",
+  "properties": {
+    "budget_usd": {
+      "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+      "type": "string"
+    },
+    "campaign_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+      "type": "string"
+    },
+    "candidates": {
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "admission_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "blockers": {
+                "maxItems": 0,
+                "type": "array"
+              },
+              "candidate_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                "type": "string"
+              },
+              "configuration_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "cost_quote": {
+                "$ref": "#/$defs/quote"
+              },
+              "display_name": {
+                "maxLength": 200,
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+                "type": "string"
+              },
+              "episode_count": {
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "execution_spec": {
+                "$ref": "#/$defs/execution"
+              },
+              "max_cost_usd": {
+                "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+                "type": "string"
+              },
+              "scenario_cells": {
+                "items": {
+                  "$ref": "#/$defs/cell"
+                },
+                "maxItems": 10,
+                "minItems": 1,
+                "type": "array"
+              },
+              "status": {
+                "const": "selected"
+              }
+            },
+            "required": [
+              "candidate_id",
+              "display_name",
+              "configuration_digest",
+              "status",
+              "blockers",
+              "admission_digest",
+              "execution_spec",
+              "cost_quote",
+              "max_cost_usd",
+              "episode_count",
+              "scenario_cells"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "maxLength": 300,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "minItems": 1,
+                "type": "array"
+              },
+              "candidate_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                "type": "string"
+              },
+              "configuration_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "display_name": {
+                "maxLength": 200,
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "unavailable",
+                  "deferred"
+                ]
+              }
+            },
+            "required": [
+              "candidate_id",
+              "display_name",
+              "configuration_digest",
+              "status",
+              "blockers"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "type": "array"
+    },
+    "capture_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+      "type": "string"
+    },
+    "catalog_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "claim_ceiling": {
+      "const": "diagnostic_policy_execution"
+    },
+    "maximum_planned_cost_usd": {
+      "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+      "type": "string"
+    },
+    "plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "purpose": {
+      "const": "screening"
+    },
+    "recommendation_eligible": {
+      "const": false
+    },
+    "robot_free_probe_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "scenario_cells": {
+      "items": {
+        "$ref": "#/$defs/cell"
+      },
+      "maxItems": 10,
+      "minItems": 1,
+      "type": "array"
+    },
+    "scenario_plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "scene_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+      "type": "string"
+    },
+    "scene_inputs": {
+      "$ref": "#/$defs/receipt"
+    },
+    "scene_revision_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "beta_policy_screening_plan.v1"
+    },
+    "site_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+      "type": "string"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "capture_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+          "type": "string"
+        },
+        "scene_intent_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "scene_intent_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+          "type": "string"
+        },
+        "scene_revision_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "task_context_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene_intent_id",
+        "scene_intent_digest",
+        "capture_id",
+        "task_id",
+        "task_context_digest",
+        "scene_revision_digest"
+      ],
+      "type": "object"
+    },
+    "task_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+      "type": "string"
+    },
+    "task_success_contract_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "site_id",
+    "scene_id",
+    "capture_id",
+    "task_id",
+    "scene_revision_digest",
+    "task_success_contract_digest",
+    "robot_free_probe_digest",
+    "catalog_digest",
+    "scenario_plan_digest",
+    "plan_digest",
+    "source",
+    "scene_inputs",
+    "scenario_cells",
+    "budget_usd",
+    "maximum_planned_cost_usd",
+    "purpose",
+    "claim_ceiling",
+    "recommendation_eligible",
+    "candidates"
+  ],
+  "type": "object"
+}

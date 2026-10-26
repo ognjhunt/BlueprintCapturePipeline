@@ -262,3 +262,58 @@ def resolved_scene_plan(
 
 
 __all__ = ["constrain_diagnostic_scenario", "resolved_scene_plan"]
+
+
+def construction_lineage_mode(
+    *,
+    inputs: Mapping[str, Any],
+    base_scene_plan: Mapping[str, Any],
+    construction: Mapping[str, Any],
+    admitted_run_kinds: tuple[str, ...],
+) -> str:
+    """Accept strict construction or typed compiled-scene diagnostic lineage."""
+
+    if (
+        base_scene_plan.get("plan_digest")
+        != canonical_digest(base_scene_plan, digest_field="plan_digest")
+    ):
+        raise RuntimeError("policy_canary_scene_plan_invalid")
+    if construction.get("schema_version") == "native_task_arena_packet_receipt.v1":
+        # A team evaluation may run on a prepared scene's own compiled packet (``team_scene_packet``).
+        if (inputs.get("run_kind") not in admitted_run_kinds
+                or inputs.get("claim_ceiling") != "diagnostic_policy_execution"
+                or inputs.get("construction_result") != inputs.get("base_native_packet")
+                or construction.get("status") != "construction_packet_completed"
+                or construction.get("arena_scene_plan_digest") != base_scene_plan.get("plan_digest")
+                or construction.get("scene_id") != base_scene_plan.get("scene_id")
+                or construction.get("task_id") != base_scene_plan.get("task_id")
+                or construction.get("native_application_claimed") is not False
+                or construction.get("policy_episode_claimed") is not False
+                or construction.get("receipt_digest") != canonical_digest(construction, digest_field="receipt_digest")):
+            raise RuntimeError("policy_canary_compiled_packet_lineage_invalid")
+        return "compiled_native_packet_diagnostic"
+    if construction.get("schema_version") == "native_task_arena_construction_result.v1":
+        if (
+            construction.get("status") != "completed"
+            or construction.get("construction_gate_qualified") is not True
+            or construction.get("scene_plan_digest")
+            != base_scene_plan.get("plan_digest")
+            or construction.get("result_digest")
+            != canonical_digest(construction, digest_field="result_digest")
+        ):
+            raise RuntimeError("policy_canary_construction_result_invalid")
+        return "qualified_native_construction_result"
+    if construction.get("schema_version") == "task_evaluation_episode_compilation_result.v1":
+        if (
+            construction.get("status") != "compiled_for_production_launch"
+            or construction.get("blockers") != []
+            or construction.get("configured_scene_revision_digest")
+            != inputs.get("scene_revision_digest")
+            or construction.get("provider_mutation_performed") is not False
+            or construction.get("paid_execution_requested") is not False
+            or construction.get("result_digest")
+            != canonical_digest(construction, digest_field="result_digest")
+        ):
+            raise RuntimeError("policy_canary_compiled_scene_lineage_invalid")
+        return "compiled_configured_scene_diagnostic"
+    raise RuntimeError("policy_canary_construction_lineage_schema_invalid")

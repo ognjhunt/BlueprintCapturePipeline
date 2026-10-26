@@ -459,6 +459,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     # A prepared website scene's robot-team half, compiled on this host; no allocator.
     "blueprint-team-scene-packet.service",
     "blueprint-team-scene-packet.path",
+    "blueprint-beta-policy-screening.service",
+    "blueprint-beta-policy-screening.timer",
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
@@ -533,6 +535,10 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-task-evaluation-launch-preparation.timer",
+    # Owner-authorized beta screening has its own aggregate site allowance,
+    # sealed admission and allocator. This does not release the paid agent
+    # dispatcher's existing explicit hold.
+    "blueprint-beta-policy-screening.timer",
     "blueprint-native-g1-team-campaign-dispatcher.timer",
     "blueprint-native-g1-team-campaign-settlement.timer",
     # The service retains its explicit enable flag and capture scope. Installing

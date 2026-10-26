@@ -606,6 +606,14 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     team_scene_path.write_text(
         "[Path]\nPathExistsGlob=/team-scene-packets/pending/*.json\n", encoding="utf-8"
     )
+    screening_service = unit_dir / "blueprint-beta-policy-screening.service"
+    screening_service.write_text(
+        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-beta-policy-screening\n", encoding="utf-8"
+    )
+    screening_timer = unit_dir / "blueprint-beta-policy-screening.timer"
+    screening_timer.write_text(
+        "[Timer]\nOnUnitInactiveSec=1min\n", encoding="utf-8"
+    )
     progression_service = (
         unit_dir
         / "blueprint-task-evaluation-configured-controls-progression.service"
@@ -735,6 +743,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         discovery_path,
         team_scene_service,
         team_scene_path,
+        screening_service,
+        screening_timer,
         progression_service,
         progression_timer,
         progression_path,
@@ -811,6 +821,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.service",
         "blueprint-team-scene-packet.path",
+        "blueprint-beta-policy-screening.service",
+        "blueprint-beta-policy-screening.timer",
         "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
@@ -849,6 +861,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
         "blueprint-task-evaluation-launch-preparation.timer",
+        "blueprint-beta-policy-screening.timer",
         "blueprint-native-g1-team-campaign-dispatcher.timer",
         "blueprint-native-g1-team-campaign-settlement.timer",
         "blueprint-agent-run-dispatcher.timer",

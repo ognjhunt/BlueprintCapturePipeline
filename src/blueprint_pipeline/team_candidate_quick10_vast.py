@@ -35,6 +35,7 @@ from .native_task_arena_policy_canary_session import (
     PROVIDER_RESULT_FILENAME,
     RESULT_SCHEMA_VERSION,
     TEAM_RUN_KIND,
+    BETA_RUN_KIND,
     consume_session_authority_once,
     validate_provider_bundle,
     validate_session_authority,
@@ -122,7 +123,7 @@ def run_team_candidate_session_vast(
 
     authority = validate_session_authority(session_authority)
     bundle = validate_provider_bundle(prepared_bundle, authority=authority)
-    if authority["run_kind"] != TEAM_RUN_KIND:
+    if authority["run_kind"] not in (TEAM_RUN_KIND, BETA_RUN_KIND):
         raise ValueError("team_candidate_session_run_kind_invalid")
     if float(authority["hard_cap_usd"]) != float(hard_cap_usd) or int(authority["hard_ttl_seconds"]) != int(
             hard_ttl_seconds):
@@ -147,7 +148,8 @@ def run_team_candidate_session_vast(
         max_hourly_rate_usd=max_hourly_rate_usd, hard_cap_usd=hard_cap_usd, hard_ttl_seconds=hard_ttl_seconds,
         expected_output_filename=PROVIDER_RESULT_FILENAME, container_image=str(bundle["container_image"]),
         provider_bundle_kind="native_task_arena_policy_canary_session", result_schema_version=RESULT_SCHEMA_VERSION,
-        object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/team-candidate-session",
+        object_store_key_prefix=(f"{DEFAULT_KEY_PREFIX}/beta-policy-screening" if authority["run_kind"] == BETA_RUN_KIND
+                                 else f"{DEFAULT_KEY_PREFIX}/team-candidate-session"),
         instance_label_prefix="blueprint-native-task-policy-canary-",
         instance_label_exact=str(authority["resource_name"]), blocker_prefix="native_task_arena_policy_canary_session",
         min_gpu_ram_mb=46_000, min_compute_cap=POLICY_MIN_COMPUTE_CAP,

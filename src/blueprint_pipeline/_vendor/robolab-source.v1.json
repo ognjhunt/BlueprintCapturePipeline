@@ -1,0 +1,992 @@
+{
+  "archive_sha256": "sha256:16092baa43c5a2eb78f6dc8a330330e8e8bfc6a8cafce59efff560b26d6af278",
+  "commit": "b6cfcf6ccd2113c4cd1216d35b33024a7d5691da",
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "sha256:d7dcc1c2365f327e1112dc0a4c5b133bc06dabc4554d5d5319a763bb64d78db4"
+    },
+    {
+      "path": "robolab/__init__.py",
+      "sha256": "sha256:d7912be543fa14354464740c9dd280e3530b38acbee28379b34a0ff825801d84"
+    },
+    {
+      "path": "robolab/constants.py",
+      "sha256": "sha256:becb4ff6b173fc6a85c20e47f3ad9eb87d71b0479f981cfedba1543f6f7804f4"
+    },
+    {
+      "path": "robolab/core/__init__.py",
+      "sha256": "sha256:39b67a3543de12fbe919327958818a53222b223688ef8ece33a12bc1e46d1f14"
+    },
+    {
+      "path": "robolab/core/environments/__init__.py",
+      "sha256": "sha256:7b49a044cd889dbab9f12671d6895f472cf16cf5b5518152de58e2c0c44d9b41"
+    },
+    {
+      "path": "robolab/core/environments/base.py",
+      "sha256": "sha256:215c249859a1db53b61fe23d6728999b646f5497c1cde10369804488c2fe96f5"
+    },
+    {
+      "path": "robolab/core/environments/config.py",
+      "sha256": "sha256:c1075e5f2dce7d70fc9702b7f1cedca8aa05709d62f79f8990a8e2d20babcdea"
+    },
+    {
+      "path": "robolab/core/environments/env.py",
+      "sha256": "sha256:c35a1aced26a30de1fde21f8db28f87910757d090b677172f9915432f3b45f12"
+    },
+    {
+      "path": "robolab/core/environments/factory.py",
+      "sha256": "sha256:bbbc3347380557d1f3fd735d6fa49a643d3f4c9af94875e9b64ccf64e84c1460"
+    },
+    {
+      "path": "robolab/core/environments/runtime.py",
+      "sha256": "sha256:21b4d4b25f151f308b82c3b17a149e58feab79e94e879ee65935d4663edc97d1"
+    },
+    {
+      "path": "robolab/core/environments/scene_fixture.py",
+      "sha256": "sha256:8f1a50bb853ab2a1756e1988323a23ded17ed69cb5271bf853be51040ee5b501"
+    },
+    {
+      "path": "robolab/core/events/basic_recorders.py",
+      "sha256": "sha256:6a4f608f40c94137ede6c06564924122e8ef2ac3c46690656a7b9dfb04c9f7fb"
+    },
+    {
+      "path": "robolab/core/events/reset_camera.py",
+      "sha256": "sha256:356cbe3153337184bae2c39b7d304e352b92f647fea0c3c6e8a07e08779ec7db"
+    },
+    {
+      "path": "robolab/core/events/reset_pose.py",
+      "sha256": "sha256:861429ab029596b2fe6211ec41131001ef106f0615f112af9c2edff95632463b"
+    },
+    {
+      "path": "robolab/core/events/subtask_recorder.py",
+      "sha256": "sha256:601491afa352761b43166f4c81e659f15609259293a2ddadb7447a4dbf591884"
+    },
+    {
+      "path": "robolab/core/events/utils.py",
+      "sha256": "sha256:a5b0e2573a81dcbacb473a416891bc95cba583ed1bc331eaaee20cde8736c83a"
+    },
+    {
+      "path": "robolab/core/export/__init__.py",
+      "sha256": "sha256:ac6229264a25d197c830ec2d042a544b2ab2a9b63ac9eabc9feac4594bdabbe8"
+    },
+    {
+      "path": "robolab/core/export/lerobot_exporter.py",
+      "sha256": "sha256:6fd16017b092682e46d3392d89e6efa3e28cf1d86d6149d33ba650190a35fcfd"
+    },
+    {
+      "path": "robolab/core/logging/frame_compat.py",
+      "sha256": "sha256:42af2a3654984f955b4a6aef14ead7ce702e0eb00e0d7b26cef23db84fdffd78"
+    },
+    {
+      "path": "robolab/core/logging/recorder_manager.py",
+      "sha256": "sha256:df8b9a9232564029ba346155bd16d31b10fcd7a5cc240e24645d40437f8c3a10"
+    },
+    {
+      "path": "robolab/core/logging/results.py",
+      "sha256": "sha256:2b235edb671fe34e1ddf5c1e38f5bcf68447c20d22a280dd33728952e281a22f"
+    },
+    {
+      "path": "robolab/core/logging/state_logging_interval.py",
+      "sha256": "sha256:f62249349fb98fcccc4103014d53cf777bd5ad909a965e3845c43bbdb5467930"
+    },
+    {
+      "path": "robolab/core/logging/streaming_hdf5_handler.py",
+      "sha256": "sha256:d9ed96ea2a699db88a02e7a10c9ec1150f73d3fe6fca304deec2d2de315d630e"
+    },
+    {
+      "path": "robolab/core/metrics/__init__.py",
+      "sha256": "sha256:4c9df10a952b0d32fb5cc9676716990dbeb04ac3674d48cbeab8a91f9387482d"
+    },
+    {
+      "path": "robolab/core/metrics/compute_metrics.py",
+      "sha256": "sha256:47786c1defefb4e29e49da3e43a23cb9aba127e029c9c87313a5cbf9d6d3166f"
+    },
+    {
+      "path": "robolab/core/metrics/metrics_recorder.py",
+      "sha256": "sha256:1b1b692d7a24ae988ebc5512c8d19b9d3501a22f18b5882e40f13ffe25588288"
+    },
+    {
+      "path": "robolab/core/metrics/trajectory_metrics.py",
+      "sha256": "sha256:616c30e0de223c369bda058b1dfc86b8150ec4395254f8547c4971dbe0ce9b66"
+    },
+    {
+      "path": "robolab/core/observations/example.py",
+      "sha256": "sha256:5722673edf21bafb4ee1592d73c1b5a5165f47e53e02e34509663e644d9dab59"
+    },
+    {
+      "path": "robolab/core/observations/observation_utils.py",
+      "sha256": "sha256:c97f1fe8b792362635018652d2e1ba95a513880c26e7a0af17c6a746b980a8c9"
+    },
+    {
+      "path": "robolab/core/replay/__init__.py",
+      "sha256": "sha256:6ee462f87a386080a059d3a3c02fca1d836f4915642698429c7b056280e68504"
+    },
+    {
+      "path": "robolab/core/replay/env_config.py",
+      "sha256": "sha256:174b23af62e4d41caebd4a04866b0b223f5758f2a913794567e6ecf4a49e61a9"
+    },
+    {
+      "path": "robolab/core/replay/scene_state.py",
+      "sha256": "sha256:97299b5517d342385d85cdd7fbdaabd01559c2fce9b2a6fc82e232230c991638"
+    },
+    {
+      "path": "robolab/core/scenes/__init__.py",
+      "sha256": "sha256:ff7cf089ee99dd2a71849f382e3a180a5bfbd5e556ed0778c599a6a3b379c1f2"
+    },
+    {
+      "path": "robolab/core/scenes/utils.py",
+      "sha256": "sha256:6562517740be7c60e24e964afced5eac63bd00b4c5de0b6fee92295b87c81110"
+    },
+    {
+      "path": "robolab/core/sensors/camera_utils.py",
+      "sha256": "sha256:85eb41407ca83d28c6f6f3a9dcef67cd9d11901ff8e4f686d4beff9968a13e87"
+    },
+    {
+      "path": "robolab/core/sensors/contact_sensor_utils.py",
+      "sha256": "sha256:f43b92353a7ef4c2f0c303bceb16171780888444151f942e1cf50add209d0ae6"
+    },
+    {
+      "path": "robolab/core/task/conditionals.py",
+      "sha256": "sha256:bf4b2461efc70cb2692a1278c9d18475323a1cb9765bb22a720960b557961bf4"
+    },
+    {
+      "path": "robolab/core/task/conditionals_state_machine.py",
+      "sha256": "sha256:900f7ee847f72099d458b25ce133d5457f15c498e75332b9c7a33f41e99851ac"
+    },
+    {
+      "path": "robolab/core/task/decorators.py",
+      "sha256": "sha256:fe6771f37c0b1ad56388a17329727b7a792bb7cc0bfc6bdf56ff33ca82b59bce"
+    },
+    {
+      "path": "robolab/core/task/event_tracker.py",
+      "sha256": "sha256:7e6b183cfcf4cb0741c27893024d2a7eba32d73441e41f2d27b49da0a672a5d1"
+    },
+    {
+      "path": "robolab/core/task/hull_check.py",
+      "sha256": "sha256:738f840e0c7a14900a2a18aac2836cb2b858e227c118a29516a3ba6619d7f4df"
+    },
+    {
+      "path": "robolab/core/task/instruction.py",
+      "sha256": "sha256:4b64bf4c2a74dac076e659c6d019f880777d0866cc841ce6b4cb0817bf2e4b72"
+    },
+    {
+      "path": "robolab/core/task/predicate_logic.py",
+      "sha256": "sha256:6d2bfed032a7370cf8a284707d4aa0e769300bd9238895442f5e9e0b5dacbbc6"
+    },
+    {
+      "path": "robolab/core/task/status.py",
+      "sha256": "sha256:1020701e0b9570db8c69962b2515988fd20a79fb980ea684ebc1914c7e7eb73e"
+    },
+    {
+      "path": "robolab/core/task/subtask.py",
+      "sha256": "sha256:39332ed8df2bb49d0e4eb861a21d3d233d4f3f79409750d31cf812056ac28e8c"
+    },
+    {
+      "path": "robolab/core/task/subtask_state_machine.py",
+      "sha256": "sha256:e79fdd4a73c64f3c2fefab91dc7ef40c363e54f79f321de1cec965e5b3902bf0"
+    },
+    {
+      "path": "robolab/core/task/subtask_utils.py",
+      "sha256": "sha256:6c9fb711ba4439cb79b7c31b4ecb3c320cab7465d52ef9322afd2e40f177e7c0"
+    },
+    {
+      "path": "robolab/core/task/task.py",
+      "sha256": "sha256:9a7fa68ec77b81bf758e4b11616c5214bf4a071492c44dad937183db3c167762"
+    },
+    {
+      "path": "robolab/core/task/task_utils.py",
+      "sha256": "sha256:5c2294eb4bd900868479fc3d2c7a9dd11365e79a64218160a6dd6a49f1135fa1"
+    },
+    {
+      "path": "robolab/core/utils/__init__.py",
+      "sha256": "sha256:39b67a3543de12fbe919327958818a53222b223688ef8ece33a12bc1e46d1f14"
+    },
+    {
+      "path": "robolab/core/utils/adaptive_sampling.py",
+      "sha256": "sha256:e56b2bcceb056e78350d60ad26faf60897bd6b557688276b72d5a6b664ebef9e"
+    },
+    {
+      "path": "robolab/core/utils/csv_utils.py",
+      "sha256": "sha256:99902e9ef54dad0dfda7c9e189d1de381fb14f287f2924abe25cd34752eabc3b"
+    },
+    {
+      "path": "robolab/core/utils/cv2_utils.py",
+      "sha256": "sha256:8dcbb904878ab6b7e32b77ae2199b811ec940de9bf0eef19cd9e9f05bacc9763"
+    },
+    {
+      "path": "robolab/core/utils/debug_utils.py",
+      "sha256": "sha256:6bc568a6c38fbf460405acfd6102d226b19fca9bd76ba4551dda9f00234e45eb"
+    },
+    {
+      "path": "robolab/core/utils/file_utils.py",
+      "sha256": "sha256:5cc8a4bea43da0d97236c7f90f9f296313d965031feed8b632a4454c562f9961"
+    },
+    {
+      "path": "robolab/core/utils/function_loader.py",
+      "sha256": "sha256:d84a324703353450d3cf46cda45e51fe201eeb03ddd3e08d66b73760b77df3eb"
+    },
+    {
+      "path": "robolab/core/utils/geometry_utils.py",
+      "sha256": "sha256:df012aa99d550c5430b6e19ba983d52787e5e1d2e1f9b9994d5d3b748dae1228"
+    },
+    {
+      "path": "robolab/core/utils/gym_utils.py",
+      "sha256": "sha256:c9c8629b7f2cfacb3dbe0eebf446c95597ef7d7c89ebaf068f6aa36611bca9ed"
+    },
+    {
+      "path": "robolab/core/utils/image_utils.py",
+      "sha256": "sha256:aead0c246b696ce5feabbbc63df93f42762365cc6315269fa08ad5c98e1a3d94"
+    },
+    {
+      "path": "robolab/core/utils/params_utils.py",
+      "sha256": "sha256:4a7651c45b3375fdc0b9035c595b8806d6cb1a82003570c56a3a3bbd018b7281"
+    },
+    {
+      "path": "robolab/core/utils/physics_utils.py",
+      "sha256": "sha256:f0fd51f320fd8772a42702c402ffd26fe10d4765d08d556b2f1e4fb9819136ae"
+    },
+    {
+      "path": "robolab/core/utils/plot_utils.py",
+      "sha256": "sha256:b062a057faf5e2c2e607391c4aa8cfbfd3158c99ee73c9d0b84226f5b72401c3"
+    },
+    {
+      "path": "robolab/core/utils/print_utils.py",
+      "sha256": "sha256:a998084846602ef5d4116a71b8453aba59857a8ffdffb6fe23165687c3820bf0"
+    },
+    {
+      "path": "robolab/core/utils/render_utils.py",
+      "sha256": "sha256:13b1553bace20dc056fe9bc999ebcc609cbd3e0970d9550dbb02faf2de043781"
+    },
+    {
+      "path": "robolab/core/utils/scene_timing_utils.py",
+      "sha256": "sha256:687c024811126fa0ccd8c164139df6ab2b05b26862c14efdd1e7962ffc3c0804"
+    },
+    {
+      "path": "robolab/core/utils/transform_utils.py",
+      "sha256": "sha256:09585c4ec8810bc42fba82b7fcefc34b51b2b03734859b2da934b72b005e682c"
+    },
+    {
+      "path": "robolab/core/utils/usd_utils.py",
+      "sha256": "sha256:786ea9c88ab6b79077ef25d0ab9ab9ba2077d936e0725e6b76e1c40a26f3a7a9"
+    },
+    {
+      "path": "robolab/core/utils/version_utils.py",
+      "sha256": "sha256:d7578609eddc0b947b1db9b5c6cbce67b3b6da32a99bddd5c089ab7893317ba7"
+    },
+    {
+      "path": "robolab/core/utils/video_utils.py",
+      "sha256": "sha256:8a7a344ae4bc35d30f91be9c56910fbe043cf5ba954f86722167a78f48aabdf3"
+    },
+    {
+      "path": "robolab/core/utils/vis_utils.py",
+      "sha256": "sha256:7ad087f372944b0ac30a7824091ec3120b031b3fb57c27396615efb6aa33fa3a"
+    },
+    {
+      "path": "robolab/core/world/world_state.py",
+      "sha256": "sha256:133a3e6289bb650b7bf9c6164fe19f2ebfe06a0154f6cd6c578c010d931c125a"
+    },
+    {
+      "path": "robolab/eval/__init__.py",
+      "sha256": "sha256:f0ba63052651417d431cbe88cad654fd1358ee7cc96e7fccfa9176b298a88891"
+    },
+    {
+      "path": "robolab/eval/base_client.py",
+      "sha256": "sha256:20e299d8e3f0001c546a12633f93eae59975c390e1faefad2288ed6297a5f7fa"
+    },
+    {
+      "path": "robolab/eval/episode.py",
+      "sha256": "sha256:3adea2e4de2fd7a4b9cb20cecedf46118e09a0a5db59166fa2d0ecde4783003f"
+    },
+    {
+      "path": "robolab/eval/gt_state.py",
+      "sha256": "sha256:feed29c20d3f6eb9cfcd0754f7c4c42428b1db5e244c60929b98d6cd45fd30fe"
+    },
+    {
+      "path": "robolab/eval/run_utils.py",
+      "sha256": "sha256:e28d745096a245e8ed8ddb35260f3cbd3959fbbf1d391d2eda54efd69408d107"
+    },
+    {
+      "path": "robolab/eval/runner.py",
+      "sha256": "sha256:5672369884275788de50b665e337fdc0c7a86612065068a2f2ba0cb97a9bc550"
+    },
+    {
+      "path": "robolab/eval/summarize.py",
+      "sha256": "sha256:e46a1402dcd4ada4f2daa16272418509caf0c9bc1323134ac6ccf231cc02890e"
+    },
+    {
+      "path": "robolab/eval/websocket_transport.py",
+      "sha256": "sha256:bc6757210b3a7bfe8df95fb2da13f60ae7c6492d69788bdd173a9a10f0fa84fd"
+    },
+    {
+      "path": "robolab/registrations/droid/__init__.py",
+      "sha256": "sha256:39b67a3543de12fbe919327958818a53222b223688ef8ece33a12bc1e46d1f14"
+    },
+    {
+      "path": "robolab/registrations/droid/auto_env_registrations_abs_ik.py",
+      "sha256": "sha256:2362f1907877e45133db0479df01d43c7a4c8291536a038e09f9db7adb61baff"
+    },
+    {
+      "path": "robolab/registrations/droid/auto_env_registrations_bg_variations.py",
+      "sha256": "sha256:318366554283e17d53080960810363f94eab221eab4873b3340a7a8d95a1e7ab"
+    },
+    {
+      "path": "robolab/registrations/droid/auto_env_registrations_jointpos.py",
+      "sha256": "sha256:2429f6e9f12be709ffba0db9b502f15311dfa0f1a4dd8567fa46f215191a6992"
+    },
+    {
+      "path": "robolab/registrations/droid/auto_env_registrations_lighting_variations.py",
+      "sha256": "sha256:d02fc2f199c8989dc4a46aa448e62f16430adfeab213d5edfad3563425d174ae"
+    },
+    {
+      "path": "robolab/registrations/droid/auto_env_registrations_rel_ik.py",
+      "sha256": "sha256:f17eb019f89116f3fda646cacfa2751933a2bbeacb4c289c7e1cd62f46362e27"
+    },
+    {
+      "path": "robolab/registrations/droid/camera_presets.py",
+      "sha256": "sha256:06ce41334a5264718e0fdd1c7d7f7a5de3b6281c20bb97a9379fc4d80d83f64c"
+    },
+    {
+      "path": "robolab/registrations/droid_jointpos/__init__.py",
+      "sha256": "sha256:15a5552c6b671f2a06dab7a386c6e27751e047136feef3d27e6e2e620a0f0f17"
+    },
+    {
+      "path": "robolab/registrations/droid_jointpos/auto_env_registrations.py",
+      "sha256": "sha256:274978eb02c1021597ac2549be0d8ce3eb4f1d7e925f78f00ecc04a2c11ef4cc"
+    },
+    {
+      "path": "robolab/registrations/droid_jointpos/auto_env_registrations_abs_ik.py",
+      "sha256": "sha256:8d86866f36d033abeb54af37d35d89e105c7a88c6fa6ee7a898a5d8948c0c452"
+    },
+    {
+      "path": "robolab/registrations/droid_jointpos/auto_env_registrations_bg_variations.py",
+      "sha256": "sha256:cf2569c1403aced2323e6589b3877a988450b3a84d2a7fe61e24587894d4b430"
+    },
+    {
+      "path": "robolab/registrations/droid_jointpos/auto_env_registrations_lighting_variations.py",
+      "sha256": "sha256:97024491fe15da4726cc5d6e28c106cfc9c50bdc53210b9868ef8a0982b32b9e"
+    },
+    {
+      "path": "robolab/registrations/droid_jointpos/camera_presets.py",
+      "sha256": "sha256:1e28ed6c671eebfe7265b8932886333dc7f90df5d8ed10701c9b96a8a5719132"
+    },
+    {
+      "path": "robolab/registrations/example/auto_env_registration.py",
+      "sha256": "sha256:cdb4e15bbde009da825fb85fa836ae60d38528817039a81cca9fb7b76e93029b"
+    },
+    {
+      "path": "robolab/registrations/kinova/__init__.py",
+      "sha256": "sha256:44546ba57479a3ca3064d1731c1fc5000b04cf4104cbd53d8484ec6a33428eed"
+    },
+    {
+      "path": "robolab/registrations/kinova/auto_env_registrations_jointpos.py",
+      "sha256": "sha256:e8a6357ed94b011ab0d25abedb621c9d37b313fe8e8cbef2568f289fa8e3e722"
+    },
+    {
+      "path": "robolab/robots/delta_actions.py",
+      "sha256": "sha256:aa4192cc49f9f17580db7deac86a53b197dc03562d69e4fe4cae0e0144c130a5"
+    },
+    {
+      "path": "robolab/robots/droid.py",
+      "sha256": "sha256:6afc715c2db55e89e52dc3bb19684dac91877e11042bd9410fce741b4f294c29"
+    },
+    {
+      "path": "robolab/robots/franka.py",
+      "sha256": "sha256:d99ec77ecb731b7d046d603410b0fa06669720017c0d53dfecb3a57570b06ff1"
+    },
+    {
+      "path": "robolab/robots/franka_definitions.py",
+      "sha256": "sha256:e714a3270c7a4c018c6234dba9301d4a852a093d5b75dddbebdebaf744498277"
+    },
+    {
+      "path": "robolab/robots/franka_high_pd.py",
+      "sha256": "sha256:824dae9ebb58625074c3ad316322e534a3dead276efbff08360ed6c8e4f0c92f"
+    },
+    {
+      "path": "robolab/robots/kinova_gen3.py",
+      "sha256": "sha256:2e106ac2999e4d7352c7b84d61428d29fadc2fd81d915b8e6ba7d962b6695e21"
+    },
+    {
+      "path": "robolab/scene_gen/__init__.py",
+      "sha256": "sha256:39b67a3543de12fbe919327958818a53222b223688ef8ece33a12bc1e46d1f14"
+    },
+    {
+      "path": "robolab/scene_gen/llm_scene_gen/__init__.py",
+      "sha256": "sha256:cd7fcc5caab1f32945ceed32ab41d351095503ed8647ba5f9300ab2fc4868e4e"
+    },
+    {
+      "path": "robolab/scene_gen/llm_scene_gen/feedback_system.py",
+      "sha256": "sha256:c8c4acc8ce0b01918634526a460436ba507f18c5501717e102e5bb71d1a7d2a9"
+    },
+    {
+      "path": "robolab/scene_gen/llm_scene_gen/physical_solver.py",
+      "sha256": "sha256:f3990545bc900518f16ed3420f97cff62d3f1d25d31c617d908797847206b302"
+    },
+    {
+      "path": "robolab/scene_gen/llm_scene_gen/predicates.py",
+      "sha256": "sha256:2bc933445b9651f2de4967879bc1189d32bb918b7ece643978ca127dbb62ddad"
+    },
+    {
+      "path": "robolab/scene_gen/llm_scene_gen/spatial_solver.py",
+      "sha256": "sha256:aefd493c366de671af35a6ea7e61501f36044f929d2863eee9fe5d6b15f66ded"
+    },
+    {
+      "path": "robolab/tasks/__init__.py",
+      "sha256": "sha256:39b67a3543de12fbe919327958818a53222b223688ef8ece33a12bc1e46d1f14"
+    },
+    {
+      "path": "robolab/tasks/_utils/compute_task_statistics.py",
+      "sha256": "sha256:e21226db7ca17bb9180fd976f8d740b50d716db81100c1f79780f59de88a908b"
+    },
+    {
+      "path": "robolab/tasks/_utils/generate_task_metadata.py",
+      "sha256": "sha256:9eb6d5d1f465fe0af67b2b37a3e31795a7affe8e878ca8d049a20462c8e37003"
+    },
+    {
+      "path": "robolab/tasks/_utils/load_task_info.py",
+      "sha256": "sha256:95db9ef02dbb0a920026b5777924fe83f29c70d4b5f421eec467aba3ac57c176"
+    },
+    {
+      "path": "robolab/tasks/benchmark/animals_in_bin.py",
+      "sha256": "sha256:4cdb2fc16a549cea673908a972eff797f571408f19f338414b6db21eee03c14e"
+    },
+    {
+      "path": "robolab/tasks/benchmark/apple_and_yogurt_in_bowl_task.py",
+      "sha256": "sha256:d0514512d5a4f096df8ae669c2cebfbd979c1c0d0d8e69ea70cd64a7fb2c62b5"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bagel_on_plate_task.py",
+      "sha256": "sha256:e0cef8ecc8a44ea76c7529c7ff170a9cd3d04d0d89fb6c78472e96f7228f8c03"
+    },
+    {
+      "path": "robolab/tasks/benchmark/banana_in_bowl_task.py",
+      "sha256": "sha256:ceaba5a9944cf6a9cd1ba6809a73251c01786059c0d4bd02604bf0c9c824ab4a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/banana_on_plate_task.py",
+      "sha256": "sha256:c07cd538e616ae5fbefa4a8a7b342ce5a0c0da95d12e2329c2bd9d972ce025fc"
+    },
+    {
+      "path": "robolab/tasks/benchmark/banana_then_rubiks_cube.py",
+      "sha256": "sha256:b08a14f857dee2c5f99caa7fa20c1ed11b84e2bbafe94a98ddb204a8fbce2539"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bananas_in_bin_one_more.py",
+      "sha256": "sha256:3380ad1107be0c08643e391719fdf101144421d4f4ad5ebd21b90dbecf6bcad2"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bananas_in_bin_three.py",
+      "sha256": "sha256:4f15107dc913e3a429f8aca1f75d99b028b53c12994f8f9671cde6985ae66198"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bananas_in_crate.py",
+      "sha256": "sha256:634b076a8561a658e85aa25a0ad4aaf295d22807f13ffd16cc37b8b63846492a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bananas_out_of_bin.py",
+      "sha256": "sha256:e7bc770d1d98decf746ec42cb5d3d73e776b89d5218a030aff4fc2c1b6b72df4"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bbq_sauce_in_bin_task.py",
+      "sha256": "sha256:2bf0a74c7b1b1790195fddc035531dd0fc66289c7611f226f221e24e8a6933ed"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bigger_object.py",
+      "sha256": "sha256:c1f52455bb90e3be4fc3e08678d5c4e8e232475f4c8df561a4d997a73532bbbe"
+    },
+    {
+      "path": "robolab/tasks/benchmark/black_items_in_bin.py",
+      "sha256": "sha256:ca54ad89fc4b1b82e629228826ae72a7566f64ff2c5f4f8e92a2b8ce25bc23b0"
+    },
+    {
+      "path": "robolab/tasks/benchmark/block_stacking_order_agnostic_task.py",
+      "sha256": "sha256:01da33887db6070823203c2cad2d8fea521fa39b3155669401c8e3045d1544fa"
+    },
+    {
+      "path": "robolab/tasks/benchmark/block_stacking_specified_order_task.py",
+      "sha256": "sha256:3e8bd2831dd95891d926eff64d5084c7ae6910e4e4d4bc1867fd83424a41899e"
+    },
+    {
+      "path": "robolab/tasks/benchmark/blocks_in_bin.py",
+      "sha256": "sha256:f5983c5bcc2d32875278dec18a9f86b4b98b92e4eb5c2747c1b14e900efac56b"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bottles_on_shelf_task.py",
+      "sha256": "sha256:8f510893be9e140bddd1f3f45c83a8289da8c43867d26e8fa68baf02052bfb27"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bowl_in_bin_task.py",
+      "sha256": "sha256:fb7ffe99ad9ad0c5658aa9be24a33b271ee67e8bbc1add9364f4d6e683ac3e7d"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bowl_stacking_left_on_right.py",
+      "sha256": "sha256:5f97aaf30c16459fcf138f02f665626204b0b60fac6cd06225974aaf8decbed3"
+    },
+    {
+      "path": "robolab/tasks/benchmark/bowl_stacking_right_on_left.py",
+      "sha256": "sha256:c64c46a825f097df4c69ef954efa7ea7ec018afbb03f1aaaa1cfffd6ce12b49b"
+    },
+    {
+      "path": "robolab/tasks/benchmark/butter_above_raisin_task.py",
+      "sha256": "sha256:28173a5ad5dab5dfd0f0814897ea3154cdda19fd4db0969755e24ce0dc874f05"
+    },
+    {
+      "path": "robolab/tasks/benchmark/canned_food_in_bin_task.py",
+      "sha256": "sha256:d37250587651a05462ef7e567af9374a2e768738ceedea4957343eac27ea5e67"
+    },
+    {
+      "path": "robolab/tasks/benchmark/clamp_in_right_bin.py",
+      "sha256": "sha256:521df10c8b31faf3c5c317b0f1b3cd65aa1653ec79dc1f2e8a774b9dc6bebc2a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/clean_up_toys.py",
+      "sha256": "sha256:4285aec58714dfabc47bf95c3e5c42af00b3a5f2ad38e6371841dd4edf32efb0"
+    },
+    {
+      "path": "robolab/tasks/benchmark/clutter_big_pumpkin_task.py",
+      "sha256": "sha256:a9684a19a6496a19ba502d6a8f35ebf92a2ae3430f907c5b00c2d9c03bcd9b5a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/clutter_organic_objects_task.py",
+      "sha256": "sha256:da448a449ae7607fc20258bd0734cdf9756b719317a7695b949f45a796a5863f"
+    },
+    {
+      "path": "robolab/tasks/benchmark/clutter_plastic_task.py",
+      "sha256": "sha256:01abecd9aa125c72ff6b291650f5372392c6cfabbc5411d458b9cf970f3c1e81"
+    },
+    {
+      "path": "robolab/tasks/benchmark/clutter_pumpkin_task.py",
+      "sha256": "sha256:cbfe1107f68f43d73c9993298caf0ba9e066473a85dbd8b9f5c50f6a3d082248"
+    },
+    {
+      "path": "robolab/tasks/benchmark/clutter_small_pumpkin_task.py",
+      "sha256": "sha256:f69ff8ef0b4011286f3329c4426d0cf0c42dc833864f80b6eb1fe2c2d143750b"
+    },
+    {
+      "path": "robolab/tasks/benchmark/coffee_pot_in_bin.py",
+      "sha256": "sha256:71c1f2a92379b58320b0bc84e2d675db23288315503595a2e467a9b2de87f96d"
+    },
+    {
+      "path": "robolab/tasks/benchmark/condiments_in_bin_task.py",
+      "sha256": "sha256:c4302403af9c69ada700e01ffa070de1d0c37d047e72f5e9dd6ad169629b557c"
+    },
+    {
+      "path": "robolab/tasks/benchmark/cooking_clear_plate_specific.py",
+      "sha256": "sha256:6f10906a03be46efa836591ddca80120a0083760d8cf71a836258c8c52c77b03"
+    },
+    {
+      "path": "robolab/tasks/benchmark/cooking_orange_object.py",
+      "sha256": "sha256:ca1af737c3f53c4b0a77538088ee52d8b939588dad3408ff668ef00648997eee"
+    },
+    {
+      "path": "robolab/tasks/benchmark/cooking_pick_pasta_tool.py",
+      "sha256": "sha256:e2b0a7c1ac3f0de99ebaa771f1b64a8eaeb9d4f76bea4a9dcdbc5e3f504e3f64"
+    },
+    {
+      "path": "robolab/tasks/benchmark/cubes_and_blocks_in_bin.py",
+      "sha256": "sha256:24ca284ea12d467061d414b477220366713df0d59ec923c1a954c6814c07fd59"
+    },
+    {
+      "path": "robolab/tasks/benchmark/dishes_in_bin.py",
+      "sha256": "sha256:e852b8601fbaea5e897e5daeb519551a43678f79351ce60555f5ea22a09a00bf"
+    },
+    {
+      "path": "robolab/tasks/benchmark/electronics_in_bin_task.py",
+      "sha256": "sha256:13f909fc2215bc1cbb89369f1f45822c10224a1d3eadb356fff7d6c0b2cd2fe3"
+    },
+    {
+      "path": "robolab/tasks/benchmark/food_packing_by_color_task.py",
+      "sha256": "sha256:bfa191a0876ec31ea019b49703a1b38887f4335302f55ab185c74f39898c08cb"
+    },
+    {
+      "path": "robolab/tasks/benchmark/foodpacking_1bin_1box.py",
+      "sha256": "sha256:b53a441de5882abcefdb8101d77c195dd96769395c8c76c1667903a718552833"
+    },
+    {
+      "path": "robolab/tasks/benchmark/foodpacking_1bin_1can.py",
+      "sha256": "sha256:73cce34aadcf9af9d6d219b0799242ac9733318444f7c66e13cdea44c5ddc0a2"
+    },
+    {
+      "path": "robolab/tasks/benchmark/foodpacking_1bin_2box.py",
+      "sha256": "sha256:f4fcebe1b148617792fa1ff70a739f73398f620c92ff40fe7bacc7ba63720774"
+    },
+    {
+      "path": "robolab/tasks/benchmark/foodpacking_1bin_2can.py",
+      "sha256": "sha256:58b10756038e79aa46a797388ff8c24fa8a39937256b514f4cae110e0475b86a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/foodpacking_1bin_3box.py",
+      "sha256": "sha256:41f08918426ece2c015c9d199db372409b53a691d52399ed851dff2fe0a9926a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/foodpacking_1bin_3can.py",
+      "sha256": "sha256:2d934a9ede3e2fdefdc1d1a7ef8822f82dcf0d454353e022a173b5a7d0814dad"
+    },
+    {
+      "path": "robolab/tasks/benchmark/fruits_green_limes_on_plate.py",
+      "sha256": "sha256:7101de14929bf0b4753865f7c13573c7d668369180230eff00302d65fffeb194"
+    },
+    {
+      "path": "robolab/tasks/benchmark/fruits_move_orange.py",
+      "sha256": "sha256:f42fac0ad76499ca4a8bfdeb3b3d13cca019253956766326ee41b1787a22b304"
+    },
+    {
+      "path": "robolab/tasks/benchmark/fruits_move_orange_or_lime.py",
+      "sha256": "sha256:fe6f28323dddbad91e19c2fee61cd5843e11db1e3b33fc336774085547b05d27"
+    },
+    {
+      "path": "robolab/tasks/benchmark/fruits_onion_to_bowl.py",
+      "sha256": "sha256:8cb0e0bb2f6254cb8b8266fe8aed6676a841cbb2c9ca8815b067f737b1f444c6"
+    },
+    {
+      "path": "robolab/tasks/benchmark/fruits_onion_to_plate.py",
+      "sha256": "sha256:eab8edf1d2dac1f68b2263b7fcf6076cd01f82fd3bacdc315274e5a65884387a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/fruits_oranges_on_plate.py",
+      "sha256": "sha256:297d169b6b8e8365a0630ca858ccc0c8cd7be6f3138a4c92fd42ee5e8a6a0922"
+    },
+    {
+      "path": "robolab/tasks/benchmark/fruits_to_plate.py",
+      "sha256": "sha256:8c0275c2c9ca1f202aface07084e1d108faa1d1162bd2791e28c5ea29fa51780"
+    },
+    {
+      "path": "robolab/tasks/benchmark/fruits_to_plate_3.py",
+      "sha256": "sha256:54ed599e98279b1bdb743fdf4d8c2290026791008f0e96ab53ed4dd6bb3e09d0"
+    },
+    {
+      "path": "robolab/tasks/benchmark/grab_a_bagel.py",
+      "sha256": "sha256:e01726ad6f1f9664f859ae4922148d3582254c360992f46e8593aeb9887e227a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/grab_a_fruit.py",
+      "sha256": "sha256:514d3b2477458c6650af135ff403d686ac8933ae5edf6f7124e2450fa1cd1e9e"
+    },
+    {
+      "path": "robolab/tasks/benchmark/green_spoons_in_pot.py",
+      "sha256": "sha256:5633e6ce82020124c279d3131b11726dd32b30d6cb866e18804bd405139faa9e"
+    },
+    {
+      "path": "robolab/tasks/benchmark/jugs_on_shelf_task.py",
+      "sha256": "sha256:d9ec335357567d49699ef278d2ebf101a1f30d4fbfbf2af909ec7c0a6e441bcc"
+    },
+    {
+      "path": "robolab/tasks/benchmark/keyboard_out_of_bin_task.py",
+      "sha256": "sha256:d7d359270bc397e03429624f235556cc294c38212d0977751ac142c82e2700da"
+    },
+    {
+      "path": "robolab/tasks/benchmark/lizard_in_bin_task.py",
+      "sha256": "sha256:74381a1d287d2ac23a427bfcd596846f695bd8f0db33c16868523bf0bc39e403"
+    },
+    {
+      "path": "robolab/tasks/benchmark/marker_in_mug_task.py",
+      "sha256": "sha256:e6dd8c9f96a1f5a3dbf5792dd72e4246940429c520b39a5c2f8fbe05781f70eb"
+    },
+    {
+      "path": "robolab/tasks/benchmark/mouse_on_keyboard.py",
+      "sha256": "sha256:d20859b4bc90f470498a49d45b34bcc2080cd45947ebb5dc67ce5e977d8667c5"
+    },
+    {
+      "path": "robolab/tasks/benchmark/move_banana_to_bagel_plate.py",
+      "sha256": "sha256:f8a7ad1cbf22a8543d0ca28e2d79e1fabad0f2ca1683f9b73e8e4b2dc61cd7cc"
+    },
+    {
+      "path": "robolab/tasks/benchmark/mustard_above_raisin_task.py",
+      "sha256": "sha256:18320ac679014b6d1cfcc24765f66d0debf456c03a0cd38dc055db3b31ef8387"
+    },
+    {
+      "path": "robolab/tasks/benchmark/mustard_in_left_bin.py",
+      "sha256": "sha256:026518480c0d5dc0a1f518a41a6bc6a4937ce320b41bd547dd9c95e3be3b5bb6"
+    },
+    {
+      "path": "robolab/tasks/benchmark/mustard_in_right_bin.py",
+      "sha256": "sha256:b7c17a542d6bb5fc308766c0cd1fe0a8c3dc94dfecb3946a555259e82f5116f8"
+    },
+    {
+      "path": "robolab/tasks/benchmark/non_hammer_tools_in_right_bin.py",
+      "sha256": "sha256:da87e285ab3ad862b42d40ea3ad0af7247f5df4c9fb50c70a26cf4a0e5daeef9"
+    },
+    {
+      "path": "robolab/tasks/benchmark/one_bottle_in_square_pail.py",
+      "sha256": "sha256:999f3e4aed2ceed3e8543b6e56aaf2ac9cde5fab1196a67fc6b035a383f46b00"
+    },
+    {
+      "path": "robolab/tasks/benchmark/one_bottle_on_shelf_task.py",
+      "sha256": "sha256:cc4e1c456804d3f58e5b29ca08c3f5ab7ea132af94808d8ce91e5202d4bdb6ba"
+    },
+    {
+      "path": "robolab/tasks/benchmark/phone_or_remote_in_bin_task.py",
+      "sha256": "sha256:c12e0d7baad60bad14e9400887a665731a1ca41d5a140231dcb06d012c87caab"
+    },
+    {
+      "path": "robolab/tasks/benchmark/pick_drill.py",
+      "sha256": "sha256:c8f15d8e12b5e26cbcf309239c00a9b804236e1cc596d2816d54e6b2d1e9c781"
+    },
+    {
+      "path": "robolab/tasks/benchmark/pick_glasses_task.py",
+      "sha256": "sha256:ea466f46f58fe3ffb8b91196016dc2de6de26c8e6f8d6aa643aec0e644ede79f"
+    },
+    {
+      "path": "robolab/tasks/benchmark/pick_up_blue_pitcher.py",
+      "sha256": "sha256:254c6287a5ad881a67726ef89c27015f9df2fcc96c2d35dc6a8d5a545e4afea6"
+    },
+    {
+      "path": "robolab/tasks/benchmark/pick_up_green_object.py",
+      "sha256": "sha256:c7f1e6688e2c65f42f0ec41521396312ed2d2b42b376b528f7c1760027f49e5a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/pink_spoon_in_pot.py",
+      "sha256": "sha256:1dca36fb43e28312b2e623cfb386d0d18c44e50a3cde6289c562963971de7c2d"
+    },
+    {
+      "path": "robolab/tasks/benchmark/put_bowl_on_shelf.py",
+      "sha256": "sha256:988efa001ed44628b52695f67eeb24f20d270f941a71e71a993670f550436674"
+    },
+    {
+      "path": "robolab/tasks/benchmark/put_mugs_on_shelf.py",
+      "sha256": "sha256:df4dd954652edd9860566ce712794b1a12cffa827f13ebd15ae1724175a10228"
+    },
+    {
+      "path": "robolab/tasks/benchmark/put_two_mugs_on_shelf.py",
+      "sha256": "sha256:80ecdde7b439fb03a4dbf46b6c35d56f354c3426c314303a581fb5a8c92828c5"
+    },
+    {
+      "path": "robolab/tasks/benchmark/recycle_cartons.py",
+      "sha256": "sha256:3e6db59dcc342f5b82d174e9452d23e3ae59328221c6da306b361fed6dd0aa1a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/recycle_cartons_on_box.py",
+      "sha256": "sha256:6f1bcfbca9f8976b452f483a0bc05bab96082c1a550c89c626cd12f90a9e8d7a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/recycle_cartons_vertical_crate.py",
+      "sha256": "sha256:63926482f1a11ff9952a4d867fb00aaa09b80df3667d94a06614749d5c045477"
+    },
+    {
+      "path": "robolab/tasks/benchmark/red_dishes_in_bin.py",
+      "sha256": "sha256:4295a299098bf369e890efd3380168ae4be4e5a93cf895d84a3f824083523fb0"
+    },
+    {
+      "path": "robolab/tasks/benchmark/red_items_in_bin.py",
+      "sha256": "sha256:75fd9c6d96df9b44544ff8faa27f4b777db10bb5dfc995ef3d32696f50582fd0"
+    },
+    {
+      "path": "robolab/tasks/benchmark/reorient_all_mugs_task.py",
+      "sha256": "sha256:a6b324d4eab54a1eb629939d8b20b1dd6cac54f5bf535d6c929dade73a8f9dbc"
+    },
+    {
+      "path": "robolab/tasks/benchmark/reorient_jug.py",
+      "sha256": "sha256:7877da74f6263fd59e6e8a64e42e79bb3edbc5f36b6f8003dc4f4857710039b9"
+    },
+    {
+      "path": "robolab/tasks/benchmark/reorient_red_mugs_task.py",
+      "sha256": "sha256:6f420c45b707a0dd7d37acb37e45e156189536ba8dd0b9b11fde533e2cd4f69a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/reorient_white_mugs.py",
+      "sha256": "sha256:d88ff10dd34013aa49c564c56d0abf6dbef14224010d46e6956b5671ee48b086"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cube_and_banana_task.py",
+      "sha256": "sha256:3687a21481ffb7482b42a801ab2950dbdb684c39cfc122dff3a8edbaf923f90f"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cube_behind_bowl.py",
+      "sha256": "sha256:dfe37172549e336131ccf185f95a99add6dab75ba762ec5864b7bc778f95d193"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cube_in_front_of_bowl.py",
+      "sha256": "sha256:5833595378cd3f7464552a32877068c29489197a52701f13ae83e6a3278ac6a8"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cube_left_of_bowl.py",
+      "sha256": "sha256:5e5145c4f5507fdd923f95bd3ba61d5e24b99820a69472f5e4e3b2f11d104b3b"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cube_or_banana_task.py",
+      "sha256": "sha256:ecbab8502d01dd3518d9e16acb81f44831a011a5574d05b5eea2573fc13531f8"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cube_right_of_bowl.py",
+      "sha256": "sha256:fb75bd3a69bb487058d18feac794b4dc2c15742039339f6eb2b0ec6ef305c3e6"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cube_stacking_task.py",
+      "sha256": "sha256:7c4e011d75015d1df1d0dd3da7ed2dc94736b31f88bd2e737aa7dfda9108f865"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cube_task.py",
+      "sha256": "sha256:ee4a137d56feb6277efb537a274e36b23ede210dbc46829bbb44bf2a8369b3eb"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cube_then_banana.py",
+      "sha256": "sha256:a7cb6b2469f4269f888f3d4b0441254a844bf95583516473610a714dfaa2e23f"
+    },
+    {
+      "path": "robolab/tasks/benchmark/rubiks_cubes_in_bin.py",
+      "sha256": "sha256:05ba9ca865771082fba06d4db51e01de5bf43785e6355cfd4628c527740c2337"
+    },
+    {
+      "path": "robolab/tasks/benchmark/sauce_bottles_crate_task.py",
+      "sha256": "sha256:a1df82f6f75f1b313e15b016b1bdc6ed0710c5f841a865848f18960d3cb0fe68"
+    },
+    {
+      "path": "robolab/tasks/benchmark/smaller_object.py",
+      "sha256": "sha256:3c7f367e16f67b6dc36b35c37e141104783e69e406d48eb1e0da393c9f633a73"
+    },
+    {
+      "path": "robolab/tasks/benchmark/smartphone_in_bin_task.py",
+      "sha256": "sha256:845f1de1d03ebe39ee6aeb385792df88e548781d24f5c119535e05851ae67576"
+    },
+    {
+      "path": "robolab/tasks/benchmark/spoon_in_mug_task.py",
+      "sha256": "sha256:be5879182d41a102b981478bd76a872c01309661853ba03e20bba1bdbd0e6b8f"
+    },
+    {
+      "path": "robolab/tasks/benchmark/spoons_in_pot.py",
+      "sha256": "sha256:508aaf1c123c9e85e1b9ead538be3c607b0993ebc16229c164a99ac3cf56ce6e"
+    },
+    {
+      "path": "robolab/tasks/benchmark/stack_white_mugs_task.py",
+      "sha256": "sha256:b15cf6cb5925d83b11890f9cb16cfbc16b0f0133b51128f3fae5f86878f8f074"
+    },
+    {
+      "path": "robolab/tasks/benchmark/stack_yellow_on_red.py",
+      "sha256": "sha256:68a73fd9f0a0ccb95e190d45e9b0eea25d9d24e856469b01e671489c56e5f695"
+    },
+    {
+      "path": "robolab/tasks/benchmark/take_measuring_spoon_out.py",
+      "sha256": "sha256:c5366831ac38eb47b8725364eae11f3b857aeeb1c5ec805d4d51fc98aa3b8b17"
+    },
+    {
+      "path": "robolab/tasks/benchmark/take_mugs_off_of_shelf.py",
+      "sha256": "sha256:216fa88892d6b24387df06236c736937c8fb405df90244405150ac4a520debb2"
+    },
+    {
+      "path": "robolab/tasks/benchmark/take_spatula_off_shelf.py",
+      "sha256": "sha256:fe62dc7de036736f858f37e7cec9b1abaa5f3977acee8af8f1c63682a96053f1"
+    },
+    {
+      "path": "robolab/tasks/benchmark/throw_away_apple_task.py",
+      "sha256": "sha256:11ca905019112a562c233a6c8d97840a6dfb0a67160661b5893922d0263eed73"
+    },
+    {
+      "path": "robolab/tasks/benchmark/throw_away_snacks_task.py",
+      "sha256": "sha256:d19eb1964d575ff3bd711fa1f82685435e6515c2e11f5ba58763d5cfb28dbd76"
+    },
+    {
+      "path": "robolab/tasks/benchmark/tool_organization_both_task.py",
+      "sha256": "sha256:d124e3a74fd43af17258b67b8a84963764da4ebccf2308aba980fe422e03807a"
+    },
+    {
+      "path": "robolab/tasks/benchmark/tool_organization_left_task.py",
+      "sha256": "sha256:7d0ce35a2d767cec0eaf94b4cd2121684b35a3354e52a3bf0b75434bb1d93629"
+    },
+    {
+      "path": "robolab/tasks/benchmark/tool_organization_task.py",
+      "sha256": "sha256:a87758d67e781a8f7b1aaeab40939c6ef79605dce7c4e4ade6f104e2f987bce2"
+    },
+    {
+      "path": "robolab/tasks/benchmark/tools_picking_all_hammers.py",
+      "sha256": "sha256:6c4799f53d76697a6b809453d023a95b25d52b7aa279575157274007d8df5e65"
+    },
+    {
+      "path": "robolab/tasks/benchmark/tools_picking_drill.py",
+      "sha256": "sha256:ebe3617aa758405b54f491b7a20a50a18d6d7857c241707e2b69bb194e2cbce2"
+    },
+    {
+      "path": "robolab/tasks/benchmark/tools_picking_hammer.py",
+      "sha256": "sha256:51eb553be33b270c5571bda515d977a0ecff804d517fee615f0e0a292d27ba86"
+    },
+    {
+      "path": "robolab/tasks/benchmark/unstack_rubiks_cube.py",
+      "sha256": "sha256:fb9066401231860a765937826354c5651fc65fe33e4f1cc96fe5c757066f09d1"
+    },
+    {
+      "path": "robolab/tasks/benchmark/utensils_in_mug.py",
+      "sha256": "sha256:3aa16d7d687f598d7d8f6b2ace85c57e8cac27392b1207f84f178bc69e137fb5"
+    },
+    {
+      "path": "robolab/tasks/benchmark/white_mug_in_center_of_table.py",
+      "sha256": "sha256:748afe94f9ff85255beb65a12e22ad661c93559cbe05d9bd509b483f5486a1aa"
+    },
+    {
+      "path": "robolab/tasks/benchmark/white_mugs_in_bin.py",
+      "sha256": "sha256:67213dc1bcd5a0a276f35f2d0fadb81db5b6abf6b9b0dd1c3504839e99221294"
+    },
+    {
+      "path": "robolab/tasks/benchmark/wood_spatula_to_bowl.py",
+      "sha256": "sha256:dc1c0f448958e2cc0576a9d614f797b924ff63caa43ce8c2924de68c13f21e79"
+    },
+    {
+      "path": "robolab/tasks/benchmark/yellow_and_white_objects_in_bin.py",
+      "sha256": "sha256:5a96febcfc22ff62a80aadb8291e1195449807a6cedcbb332ab801cd835b9563"
+    },
+    {
+      "path": "robolab/tasks/benchmark/yogurt_in_bowl.py",
+      "sha256": "sha256:569f73b6c2cab20d9e865f3e3416a94aa503f884ed34c92b3a3a5b719bc0ec9c"
+    },
+    {
+      "path": "robolab/tasks/randomize_initial_pose/banana_in_bowl_uniform_10cm.py",
+      "sha256": "sha256:bea6d8bfca1e32cd7fc5e05bf8b88af98ca782157bc59eda8462b9af5c6729fd"
+    },
+    {
+      "path": "robolab/tasks/randomize_initial_pose/banana_in_bowl_uniform_20cm.py",
+      "sha256": "sha256:e4a179bee476b4b6d5ddf7a36ad795babe12bcedd5690e52ef3603deffe948de"
+    },
+    {
+      "path": "robolab/tasks/randomize_initial_pose/banana_in_bowl_uniform_30cm.py",
+      "sha256": "sha256:d4edbf2df1cbfdac5d51148ec943d7c4119aff9b8eb71d88fa6d86046bab9f59"
+    },
+    {
+      "path": "robolab/tasks/randomize_initial_pose/rubiks_cube_and_banana_uniform_10cm.py",
+      "sha256": "sha256:b5266a2edb41dcd5c36ec46acf274f87d6c1b49ff2f8813750dde9db1e9d1620"
+    },
+    {
+      "path": "robolab/tasks/randomize_initial_pose/rubiks_cube_and_banana_uniform_20cm.py",
+      "sha256": "sha256:b4e4eab23ab1e50e377e0056d6d342b2a5e3db1a1a31dd12eb74152880074088"
+    },
+    {
+      "path": "robolab/tasks/randomize_initial_pose/rubiks_cube_and_banana_uniform_30cm.py",
+      "sha256": "sha256:e18e2b243e040ddf6e0c6aa1cd0596ac264c8ec3ee90a939661ff56e2960cd2e"
+    },
+    {
+      "path": "robolab/tasks/test_tasks/banana_in_bowl_task_explicit.py",
+      "sha256": "sha256:a823243769ae53d941955d1b0e2a7201a25d85c0570cd562b00eaee31a5fb01a"
+    },
+    {
+      "path": "robolab/tasks/test_tasks/banana_in_bowl_task_import.py",
+      "sha256": "sha256:0769176d627e3da887143ccaf689241c45cb9dd9bd2c2b0f7bc692fb23c25035"
+    },
+    {
+      "path": "robolab/tasks/test_tasks/conditionals_task.py",
+      "sha256": "sha256:26449ab29621836f44b21a216d6327a0fe018752b754e298981a663d47c38b18"
+    },
+    {
+      "path": "robolab/tasks/test_tasks/fruits_oranges_on_plate_test.py",
+      "sha256": "sha256:20018a2160575dc64fbf37a7abbc4e84c0b49c5cc3f32ab4081690e77f546c5a"
+    },
+    {
+      "path": "robolab/tasks/test_tasks/marble.py",
+      "sha256": "sha256:d2edb91a980fb24d07ef0e669e8612b9670d605ec26bf39c67138e444f2c06e4"
+    },
+    {
+      "path": "robolab/tasks/test_tasks/plate_banana_rubiks_cube.py",
+      "sha256": "sha256:5b613d08fe84f69b8a7828456427ed6b550ea6e8e70e454c3cc880f65b720eaf"
+    },
+    {
+      "path": "robolab/variations/backgrounds.py",
+      "sha256": "sha256:b1a9d286371d94a030928323951e9b9bff7b2235b70e4be23427daa378e1a2db"
+    },
+    {
+      "path": "robolab/variations/camera.py",
+      "sha256": "sha256:68b0b45db8d942a4d2cf2ea19d541a7dd39ecf30572507363eb0de9fb29d0a04"
+    },
+    {
+      "path": "robolab/variations/lighting.py",
+      "sha256": "sha256:5f7cb7fd53c9325c7b1aed45e8ed307cfe2da92a920c084c635e157bfad6e7a7"
+    }
+  ],
+  "release_version": "0.3.2",
+  "repository": "https://github.com/NVlabs/RoboLab"
+}
