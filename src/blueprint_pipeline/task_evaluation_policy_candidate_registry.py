@@ -279,7 +279,7 @@ HOSTED_REGISTRY: tuple[HostedPolicyCandidate, ...] = (
         ),
         published_price_note="US$3/hour (Dream-1) or US$2/hour (Dream-1-flash), per the October 2026 launch post; research beta.",
         status="integration_pending",
-        adapter_id=None,
+        adapter_id="dreamlabs_dream1.v1",
         observation_schema_id=HEAD_AND_WRIST_CAMERAS_OBSERVATION,
         action_schema_ids=(DREAM1_NATIVE_JOINT_ACTION, BIMANUAL_EEF_POSE_ACTION),
         native_embodiment_ids=("i2rt_yam_bimanual",),
@@ -287,14 +287,14 @@ HOSTED_REGISTRY: tuple[HostedPolicyCandidate, ...] = (
             "provider_account_access_unverified",
             "provider_inference_terms_and_data_use_not_reviewed",
             "provider_runtime_contract_not_validated",
-            "hosted_api_runtime_adapter_missing",
+            "hosted_api_runtime_integration_unverified",
             "no_runnable_embodiment_with_matching_camera_rig",
             "integration_canary_receipt_missing",
         ),
         reason=(
-            "Unavailable. Dream-1 is a hosted two-arm policy. Account access, inference and "
-            "image-use terms, a controlled-observation API adapter, and a matching two-arm, "
-            "three-camera runtime have not been verified. The configurable v2 robot runtime "
+            "Unavailable. Dream-1 has a controlled-observation API adapter, but its runtime "
+            "integration, account access, inference and image-use terms, and a matching "
+            "two-arm, three-camera runtime have not been verified. The configurable v2 robot runtime "
             "does not establish Dream-1 interface compatibility; the frozen single-arm DROID "
             "configuration cannot substitute for the provider's configuration."
         ),
