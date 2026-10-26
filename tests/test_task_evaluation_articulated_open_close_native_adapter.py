@@ -374,6 +374,11 @@ def test_normalized_sdk_assembly_keeps_capture_heading_and_task_goal(
     assert interval == pytest.approx([opening_fraction * case["plan"]["task_joint"]["limits_m"][1],
                                       case["plan"]["task_joint"]["limits_m"][1]])
     spec = result["native_task_definition"]["task_spec"]
+    assert spec["release_required"] is case["documents"][SUCCESS]["release_required"]
+    from blueprint_pipeline.task_evaluation_diagnostic_native_arena_compiler import _released_task_motion
+    motion = _released_task_motion(spec, definition=result["native_task_definition"],
+                                   asset=case["asset"], pose=result["native_task_definition"]["task_object_pose_world"])
+    assert motion["release_required"] is spec["release_required"]
     assert spec["articulation_graph"]["success_predicate"]["joint_intervals"] == {
         spec["executable_opening_threshold"]["target_joint_id"]: pytest.approx(interval)
     }

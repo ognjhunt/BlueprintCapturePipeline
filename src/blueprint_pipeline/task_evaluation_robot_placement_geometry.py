@@ -335,7 +335,8 @@ def _placed_task_asset_triangles(
 
 def _task_motion(value: Any) -> dict[str, Any]:
     """The joint a task drives, its span from reset to its success threshold, and
-    whether its part holds where it is released (absent: it does)."""
+    whether its part holds where released and whether release is required.
+    Absent fields retain the legacy assumptions: holds and requires release."""
     try:
         joint_id = str(value["joint_id"])
         task_range = [float(v) for v in value["task_range"]]
@@ -343,11 +344,14 @@ def _task_motion(value: Any) -> dict[str, Any]:
     except (KeyError, TypeError, ValueError) as exc:
         raise RobotPlacementGeometryError("robot_placement_task_motion_invalid") from exc
     if (not joint_id or len(task_range) != 2 or not all(map(math.isfinite, [*task_range, *reset.values()]))
-            or not isinstance(value.get("holds_released_position", True), bool)):
+            or not isinstance(value.get("holds_released_position", True), bool)
+            or not isinstance(value.get("release_required", True), bool)):
         raise RobotPlacementGeometryError("robot_placement_task_motion_invalid")
     motion = {"joint_id": joint_id, "task_range": task_range, "reset_joint_positions": reset}
     if "holds_released_position" in value:
         motion["holds_released_position"] = value["holds_released_position"]
+    if "release_required" in value:
+        motion["release_required"] = value["release_required"]
     return motion
 
 
@@ -356,7 +360,8 @@ def _task_motion_points(bindings: Sequence[Mapping[str, Any]], *, whole_range: b
     parts = [np.zeros((0, 3))]
     for binding in bindings:
         motion = binding.get("task_motion")
-        if motion is None or (falling_only and motion.get("holds_released_position", True)):
+        if motion is None or (falling_only and (motion.get("holds_released_position", True)
+                                               or not motion.get("release_required", True))):
             continue
         try:
             parts.append(task_motion_surface(

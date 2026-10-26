@@ -124,6 +124,14 @@
         "temporal_invariants"
       ],
       "properties": {
+        "release_and_retreat": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": {"$ref": "#/$defs/mode"}
+          }
+        },
         "target_joint": {
           "type": "object",
           "additionalProperties": false,

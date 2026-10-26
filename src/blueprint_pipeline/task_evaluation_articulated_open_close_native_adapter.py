@@ -363,6 +363,8 @@ def adapt_articulated_open_close_task_template(
             raise _error("configured_task_timing_mismatch")
     if success.get("task_joint_drive_forbidden") is not True:
         raise _error("task_joint_drive_not_forbidden")
+    if "release_required" in success and not isinstance(success["release_required"], bool):
+        raise _error("success_release_required_invalid")
     revolute = success.get("joint_type") == "revolute"
     # A hinge is scored in radians: its settle speed and locked tolerance must
     # be declared angular, and a slide must never carry angular units.
@@ -455,6 +457,7 @@ def adapt_articulated_open_close_task_template(
         "maximum_settled_target_speed": _number(success["maximum_settled_target_speed"]),
         "locked_joint_motion_tolerance": _number(success["locked_joint_motion_tolerance"]),
         "movement_epsilon": max(1e-4, mechanism["target_joint_limits"][1] / 100.0),
+        **({"release_required": success["release_required"]} if "release_required" in success else {}),
         "control_frequency_hz": int(control_frequency),
         "maximum_action_steps": maximum_steps,
         "configured_success_criteria": {

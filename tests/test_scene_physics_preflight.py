@@ -301,6 +301,37 @@ def test_admission_blocks_task_range_contact_and_reports_beyond_it(tmp_path):
     assert blocked.value.blockers == ["task_object:scene_physics_motion_contact:door_hinge@90deg"]
 
 
+def test_optional_release_keeps_fall_risk_visible_without_extending_the_required_task(tmp_path):
+    root, plan = _packet(tmp_path, _background(tmp_path, floor_bump=True), _asset(tmp_path))
+    _with_task(root, plan, success_start_deg=54)
+    plan["task_spec"]["release_required"] = False
+    path = root / "native_task_arena_scene_plan.v1.json"
+    path.write_text(json.dumps(plan))
+    report = spp.require_scene_physics_admission(root, **FAST)
+    assert report["status"] == "passed"
+    assert report["advisories"] == ["task_object:scene_physics_motion_contact_outside_task_range:door_hinge@90deg"]
+    motion = report["robot_clearance"]["motion"]
+    assert motion["holds_released_position"] is False and motion["release_required"] is False
+    assert motion["released_range"] == report["task_ranges"]["door_hinge"]
+    # Requiring that same 90-degree position still blocks, even without release.
+    plan["task_spec"]["executable_opening_threshold"]["success_interval"][0] = math.pi / 2
+    path.write_text(json.dumps(plan))
+    with pytest.raises(spp.ScenePhysicsAdmissionBlocked, match="scene_physics_motion_contact"):
+        spp.require_scene_physics_admission(root, **FAST)
+
+
+@pytest.mark.parametrize("bad", [None, "false", 0])
+def test_packet_release_rule_cannot_be_malformed_or_overridden(tmp_path, bad):
+    root, plan = _packet(tmp_path, _background(tmp_path), _asset(tmp_path))
+    _with_task(root, plan, success_start_deg=54)
+    plan["task_spec"]["release_required"] = bad
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    with pytest.raises(spp.ScenePhysicsPreflightError, match="scene_physics_task_release_unknown"):
+        spp.preflight_native_packet(root, **FAST)
+    with pytest.raises(spp.ScenePhysicsPreflightError, match="scene_physics_task_release_override_forbidden"):
+        spp.preflight_native_packet(root, release_required=False, **FAST)
+
+
 def test_a_door_gravity_carries_into_the_scene_blocks_beyond_the_threshold(tmp_path):
     # With authored gravity the released door falls onto the bump by itself, so the
     # scorer's task-scene contact would fail every episode that opens it.

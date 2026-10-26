@@ -908,8 +908,24 @@ def _normalize_graph_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]
 
 def _normalize_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     if spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION:
-        return _normalize_graph_articulated_spec(spec)
-    return _normalize_legacy_articulated_spec(spec)
+        normalized = _normalize_graph_articulated_spec(spec)
+    else:
+        normalized = _normalize_legacy_articulated_spec(spec)
+    if "release_required" in spec:
+        normalized["release_required"] = articulated_release_required(spec)
+    return normalized
+
+
+def articulated_release_required(spec: Mapping[str, Any]) -> bool:
+    """Read the frozen release/retreat rule; old packets retain required release.
+
+    Only the explicit executable field changes scoring. Nested source documents
+    in historical packets must not silently change their frozen behavior.
+    """
+    required = spec.get("release_required", True)
+    if not isinstance(required, bool):
+        raise TaskNeutralScoringError(["articulated_release_required_invalid"])
+    return required
 
 
 def validate_articulated_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -1150,6 +1166,11 @@ def score_articulated_task_episode(
         not sample["task_contact_active"] for sample in settle
     )
     retreat_completed = bool(normalized[-1]["retreat_completed"])
+    release_required = articulated_release_required(spec)
+    # Predicates express required-condition satisfaction; measurements below
+    # retain actual contact/release and retreat, including when optional.
+    release_satisfied = not release_required or released_in_settle
+    retreat_satisfied = not release_required or retreat_completed
     task_succeeded = bool(
         settle_in_interval
         and settle_speed_ok
@@ -1158,8 +1179,8 @@ def score_articulated_task_episode(
         and not containment_violation
         and not collision_failure
         and contact_before_motion
-        and released_in_settle
-        and retreat_completed
+        and release_satisfied
+        and retreat_satisfied
     )
     if task_succeeded:
         outcome = OUTCOME_OPENED_AND_SETTLED
@@ -1172,7 +1193,7 @@ def score_articulated_task_episode(
     elif not contact_before_motion:
         outcome = OUTCOME_CONTACT_NOT_ESTABLISHED
     elif settle_in_interval and settle_speed_ok and (
-        not released_in_settle or not retreat_completed
+        not release_satisfied or not retreat_satisfied
     ):
         # Reaching and stably holding the requested angle is materially farther
         # than a rebound, but the task contract still requires release and
@@ -1239,10 +1260,11 @@ def score_articulated_task_episode(
             "containment_respected": not containment_violation,
             "collision_failure_absent": not collision_failure,
             "task_contact_established_before_motion": contact_before_motion,
-            "task_contact_released": released_in_settle,
-            "retreat_completed": retreat_completed,
+            "task_contact_released": release_satisfied,
+            "retreat_completed": retreat_satisfied,
         },
         "thresholds": {
+            **({"release_required": release_required} if "release_required" in spec else {}),
             "target_success_interval_rad": [lower, upper],
             "target_success_intervals": success_intervals,
             "maximum_settled_target_speed_rad_s": spec[
@@ -1345,5 +1367,6 @@ __all__ = [
     "score_task_episode_from_spec",
     "seal_rigid_task_success_contract",
     "validate_articulated_task_spec",
+    "articulated_release_required",
     "validate_rigid_task_success_contract",
 ]
