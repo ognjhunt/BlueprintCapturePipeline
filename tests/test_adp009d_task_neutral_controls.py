@@ -403,8 +403,9 @@ def _synthetic_post_phase5_checkpoint() -> dict:
     return checkpoint
 
 
+@pytest.mark.parametrize("release_required", [None, True, False])
 def test_synthetic_checkpoint_executes_downstream_suffix_without_qualifying(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release_required
 ) -> None:
     from blueprint_pipeline import adp009d_control_episode as module
 
@@ -423,7 +424,13 @@ def test_synthetic_checkpoint_executes_downstream_suffix_without_qualifying(
         lambda **_kwargs: ({"status": "complete"}, []),
     )
     task = _task("articulated_open_close")
+    if release_required is not None:
+        task["release_required"] = release_required
     plan = _downstream_diagnostic_plan(task)
+    if release_required is False:
+        plan["scripted_positive_actions"] = [
+            row for row in plan["scripted_positive_actions"] if row["phase_id"] not in {"release", "retreat"}]
+        plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     environment = _DownstreamDiagnosticEnvironment()
 
     receipt = run_synthetic_post_phase5_downstream_diagnostic(
@@ -467,7 +474,7 @@ def test_synthetic_checkpoint_executes_downstream_suffix_without_qualifying(
     ]
     assert len(checkpoint_actions) == 2
     assert all(row["isaac_action"][-1] == 1.0 for row in checkpoint_actions)
-    assert receipt["executed_phase_ids"] == [
+    expected_phases = [
         "joint_path_01",
         "joint_path_02",
         "joint_path_03",
@@ -475,6 +482,13 @@ def test_synthetic_checkpoint_executes_downstream_suffix_without_qualifying(
         "release",
         "retreat",
     ]
+    if release_required is False:
+        expected_phases = expected_phases[:-2]
+        held = [row for row in receipt["action_trace"] if row["phase_id"] == "hold_settle"]
+        assert len(held) == task["settle_window_samples"]
+        assert all(row["isaac_action"][-1] == 1.0 for row in held)
+    assert receipt["requested_phase_ids"] == expected_phases
+    assert receipt["executed_phase_ids"] == expected_phases
     assert all(
         "terminal_commanded_joint_positions_rad" in row
         and "terminal_reached_joint_positions_rad" in row
