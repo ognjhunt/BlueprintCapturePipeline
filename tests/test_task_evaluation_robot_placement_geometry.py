@@ -266,7 +266,7 @@ def _cabinet_with_drop_door(tmp_path, *, task_range=(0.0, math.pi / 2), holds=No
     }
 
 
-def test_robot_base_in_the_task_doors_swing_is_rejected(tmp_path):
+def test_robot_base_in_the_task_doors_swing_is_rejected(tmp_path, monkeypatch):
     # 2026-10-26: a Franka placed in front of a drop-down dishwasher door had the
     # released door land on its shoulder; beside the swing the same task is clear.
     scene, robot = _assets(tmp_path)
@@ -308,8 +308,23 @@ def test_robot_base_in_the_task_doors_swing_is_rejected(tmp_path):
     unranked = replace(short_index, task_limit_points=np.zeros((0, 3)))
     assert reached(enumerate_robot_placement_geometry_candidates(
         index=unranked, target_position_world_m=target, maximum_candidates=4)) == [True] * 4
-    assert reached(enumerate_robot_placement_geometry_candidates(
-        index=short_index, target_position_world_m=target, maximum_candidates=4)) == [False] * 4
+    ranked = enumerate_robot_placement_geometry_candidates(
+        index=short_index, target_position_world_m=target, maximum_candidates=4)
+    assert reached(ranked) == [False] * 4
+    assert all(row["task_limit_contact_point_count"] == 0 for row in ranked)
+    # A common conservative sampling bias must not erase clearance differences.
+    # Real partial scenes can give even a volume-clear pose a few surface hits.
+    from blueprint_pipeline import task_evaluation_robot_placement_geometry as geometry
+    original_count = geometry._task_motion_contact_count
+
+    def biased_count(index, robot_id, position, yaw, points=None, **kwargs):
+        return original_count(index, robot_id, position, yaw, points, **kwargs) + (points is not None)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(geometry, "_task_motion_contact_count", biased_count)
+        biased = enumerate_robot_placement_geometry_candidates(
+            index=short_index, target_position_world_m=target, maximum_candidates=4)
+    assert [row["candidate_id"] for row in biased] == [row["candidate_id"] for row in ranked]
     # Released past 30 degrees, a door with authored gravity falls on that base anyway.
     (tmp_path / "falling").mkdir()
     falling = _cabinet_with_drop_door(tmp_path / "falling", task_range=(0.0, math.radians(30)), holds=False)
