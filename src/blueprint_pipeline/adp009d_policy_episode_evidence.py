@@ -680,7 +680,51 @@ def project_media_reserve_bytes(
     )
 
 
+def camera_render_counters(environment: Any) -> Mapping[str, Any] | None:
+    """Cumulative frame renders an environment reports, if it renders on reads."""
+
+    reader = getattr(environment, "camera_render_cadence", None)
+    return reader() if callable(reader) else None
+
+
+def performance_diagnostics(
+    timings_seconds: Mapping[str, float],
+    camera_renders_at_start: Mapping[str, Any] | None,
+    environment: Any,
+) -> dict[str, Any]:
+    """The receipt's cycle-time block, with the frame renders this episode issued.
+
+    An environment that renders on frame reads spends its renderer time inside
+    the first read of each rendered step, so those seconds are already part of
+    that read's timing bucket rather than ``environment_step_including_render``.
+    """
+
+    ended = camera_render_counters(environment)
+    cadence = None
+    if camera_renders_at_start is not None and ended is not None:
+        cadence = {
+            "policy": str(ended["policy"]),
+            "renders_issued": int(ended["renders_issued"])
+            - int(camera_renders_at_start["renders_issued"]),
+            "render_seconds": round(
+                float(ended["render_seconds"])
+                - float(camera_renders_at_start["render_seconds"]),
+                6,
+            ),
+            "render_seconds_included_in_read_buckets": True,
+        }
+    return {
+        "clock": "time.monotonic",
+        "claim_scope": "cycle_time_diagnostic_not_scientific_metric",
+        "environment_step_bucket_includes_renderer_when_enabled": True,
+        "timings_seconds": timings_seconds,
+        "camera_render_cadence": cadence,
+    }
+
+
 __all__ = [
+    "camera_render_counters",
+    "performance_diagnostics",
     "measured_source_hw",
     "policy_view_composite",
     "persist_evaluation_camera_observation",

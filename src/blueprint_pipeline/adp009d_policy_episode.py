@@ -137,6 +137,8 @@ except ModuleNotFoundError:  # repository package
     )
 try:  # flat provider-bundle layout
     from adp009d_policy_episode_evidence import (
+        camera_render_counters as _camera_render_counters,
+        performance_diagnostics as _performance_diagnostics,
         measured_source_hw,
         policy_view_composite,
         persist_evaluation_camera_observation,
@@ -156,6 +158,8 @@ try:  # flat provider-bundle layout
     )
 except ModuleNotFoundError:  # repository package
     from .adp009d_policy_episode_evidence import (
+        camera_render_counters as _camera_render_counters,
+        performance_diagnostics as _performance_diagnostics,
         measured_source_hw,
         policy_view_composite,
         persist_evaluation_camera_observation,
@@ -675,34 +679,6 @@ def _evidence(build: Callable[..., Any], **kwargs: Any) -> Any:
         raise PolicyEpisodeError(exc.errors) from exc
 
 
-def _camera_render_cadence(environment: EpisodeEnvironment) -> Mapping[str, Any] | None:
-    reader = getattr(environment, "camera_render_cadence", None)
-    return reader() if callable(reader) else None
-
-
-def _episode_camera_render_cadence(
-    started: Mapping[str, Any] | None, environment: EpisodeEnvironment
-) -> dict[str, Any] | None:
-    """Frame renders this episode issued, for the cycle-time receipt.
-
-    An environment that renders on frame reads spends its renderer time inside
-    the first read of each rendered step, so these seconds are already part of
-    that read's timing bucket rather than ``environment_step_including_render``.
-    """
-
-    ended = _camera_render_cadence(environment)
-    if started is None or ended is None:
-        return None
-    return {
-        "policy": str(ended["policy"]),
-        "renders_issued": int(ended["renders_issued"]) - int(started["renders_issued"]),
-        "render_seconds": round(
-            float(ended["render_seconds"]) - float(started["render_seconds"]), 6
-        ),
-        "render_seconds_included_in_read_buckets": True,
-    }
-
-
 def run_policy_episode(
     *,
     environment: EpisodeEnvironment,
@@ -888,7 +864,7 @@ def run_policy_episode(
         episode_progress["episode_readiness_verified"] = True
         _emit_progress("episode_readiness_verified")
     episode_started_monotonic = time.monotonic()
-    camera_render_cadence_at_start = _camera_render_cadence(environment)
+    camera_renders_at_start = _camera_render_counters(environment)
     timings_seconds = {
         "reset_and_initial_state": 0.0,
         "policy_input_read": 0.0,
@@ -1297,15 +1273,9 @@ def run_policy_episode(
             },
             "prestart_readiness": prestart_readiness,
             "lifecycle": lifecycle,
-            "performance_diagnostics": {
-                "clock": "time.monotonic",
-                "claim_scope": "cycle_time_diagnostic_not_scientific_metric",
-                "environment_step_bucket_includes_renderer_when_enabled": True,
-                "timings_seconds": rounded_timings,
-                "camera_render_cadence": _episode_camera_render_cadence(
-                    camera_render_cadence_at_start, environment
-                ),
-            },
+            "performance_diagnostics": _performance_diagnostics(
+                rounded_timings, camera_renders_at_start, environment
+            ),
         }
         receipt["receipt_digest"] = canonical_digest(
             receipt, digest_field="receipt_digest"
@@ -1993,15 +1963,9 @@ def run_policy_episode(
             if retained_policy_frames
             else None
         ),
-        "performance_diagnostics": {
-            "clock": "time.monotonic",
-            "claim_scope": "cycle_time_diagnostic_not_scientific_metric",
-            "environment_step_bucket_includes_renderer_when_enabled": True,
-            "timings_seconds": timings_seconds,
-            "camera_render_cadence": _episode_camera_render_cadence(
-                camera_render_cadence_at_start, environment
-            ),
-        },
+        "performance_diagnostics": _performance_diagnostics(
+            timings_seconds, camera_renders_at_start, environment
+        ),
     }
     if prestart_readiness is not None:
         receipt["prestart_readiness"] = prestart_readiness
