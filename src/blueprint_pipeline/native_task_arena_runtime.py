@@ -60,6 +60,9 @@ LOGICAL_CONTACT_SENSOR_IDS = frozenset(
 )
 PINHOLE_HORIZONTAL_APERTURE_MM = 20.955
 SCENE_PLAN_SCHEMA = "native_task_arena_scene_plan.v1"
+#: The observation group Arena composes from an embodiment's cameras
+#: (``isaaclab_arena.utils.cameras.make_camera_observation_cfg``).
+ARENA_CAMERA_OBSERVATION_GROUP = "camera_obs"
 
 
 class NativeTaskArenaRuntimeError(ValueError):
@@ -524,6 +527,26 @@ def _rotation_matrix_to_xyzw(matrix: Sequence[Sequence[float]]) -> list[float]:
     if quaternion[3] < 0.0:
         quaternion = [-value for value in quaternion]
     return quaternion
+
+
+def drop_per_step_camera_observations(cfg: Any) -> bool:
+    """Remove Arena's per-step camera observation group; return whether it existed.
+
+    Arena adds one ``mdp.image`` term per camera and data type whenever cameras
+    are enabled, and Isaac Lab computes every observation group after every
+    ``env.step()``.  In the pinned Isaac Lab a camera read is what pulls the
+    RTX ``app.update()``, so those terms rendered all three cameras on every
+    15 Hz control step: run 57749451 spent 227 s of a 441 s episode inside
+    ``env.step()``.  Nothing consumes them -- the episode adapter reads the
+    scene cameras directly and renders only on the steps whose frames it uses.
+    Isaac Lab's observation manager skips a ``None`` group.
+    """
+
+    observations = getattr(cfg, "observations", None)
+    if getattr(observations, ARENA_CAMERA_OBSERVATION_GROUP, None) is None:
+        return False
+    setattr(observations, ARENA_CAMERA_OBSERVATION_GROUP, None)
+    return True
 
 
 def camera_runtime_parameters(camera: Mapping[str, Any], *, robot_id: str = "franka_panda") -> dict[str, Any]:
@@ -1655,6 +1678,7 @@ def build_native_task_arena_environment(
     )
     scene = Scene(assets=assets)
     cadence = plan["cadence"]
+    camera_render_cadence: dict[str, Any] = {}
 
     def configure(cfg: Any) -> Any:
         from isaaclab_physx.physics import PhysxCfg
@@ -1672,6 +1696,11 @@ def build_native_task_arena_environment(
         # images at the previous pose even after the joint reset and forward.
         # Refresh before reset() returns observations, without a physics step.
         cfg.num_rerenders_on_reset = 1 if enable_cameras else 0
+        # Cameras render when the episode adapter reads a frame, not on every
+        # control step; see drop_per_step_camera_observations.
+        camera_render_cadence["arena_camera_observation_group_dropped"] = (
+            drop_per_step_camera_observations(cfg)
+        )
         # Pinned Isaac's PhysxManager publishes /isaaclab/fabric_enabled, but
         # FabricFrameView reads /physics/fabricEnabled and otherwise reads USD.
         # PhysX disables USD pose writes with Fabric enabled. Bind its legacy
@@ -1793,6 +1822,7 @@ def build_native_task_arena_environment(
             "direct_wrist_camera_aim": direct_camera_aim,
             "native_wrist_camera_attachment": native_camera_attachment,
             "camera_rerenders_on_reset": cfg.num_rerenders_on_reset,
+            "camera_render_cadence": dict(camera_render_cadence),
             "control_search_runtime": {
                 "num_envs": num_envs,
                 "cameras_enabled": enable_cameras,
@@ -1809,10 +1839,12 @@ def build_native_task_arena_environment(
 
 
 __all__ = [
+    "ARENA_CAMERA_OBSERVATION_GROUP",
     "NativeTaskArenaEnvironment",
     "NativeTaskArenaRuntimeError",
     "build_native_task_arena_environment",
     "camera_runtime_parameters",
+    "drop_per_step_camera_observations",
     "build_task_subject_link_dynamic_friction_override",
     "read_task_subject_link_dynamic_friction",
     "read_task_light_intensity_scale",

@@ -137,6 +137,8 @@ except ModuleNotFoundError:  # repository package
     )
 try:  # flat provider-bundle layout
     from adp009d_policy_episode_evidence import (
+        camera_render_counters as _camera_render_counters,
+        performance_diagnostics as _performance_diagnostics,
         measured_source_hw,
         policy_view_composite,
         persist_evaluation_camera_observation,
@@ -156,6 +158,8 @@ try:  # flat provider-bundle layout
     )
 except ModuleNotFoundError:  # repository package
     from .adp009d_policy_episode_evidence import (
+        camera_render_counters as _camera_render_counters,
+        performance_diagnostics as _performance_diagnostics,
         measured_source_hw,
         policy_view_composite,
         persist_evaluation_camera_observation,
@@ -860,6 +864,7 @@ def run_policy_episode(
         episode_progress["episode_readiness_verified"] = True
         _emit_progress("episode_readiness_verified")
     episode_started_monotonic = time.monotonic()
+    camera_renders_at_start = _camera_render_counters(environment)
     timings_seconds = {
         "reset_and_initial_state": 0.0,
         "policy_input_read": 0.0,
@@ -1268,12 +1273,9 @@ def run_policy_episode(
             },
             "prestart_readiness": prestart_readiness,
             "lifecycle": lifecycle,
-            "performance_diagnostics": {
-                "clock": "time.monotonic",
-                "claim_scope": "cycle_time_diagnostic_not_scientific_metric",
-                "environment_step_bucket_includes_renderer_when_enabled": True,
-                "timings_seconds": rounded_timings,
-            },
+            "performance_diagnostics": _performance_diagnostics(
+                rounded_timings, camera_renders_at_start, environment
+            ),
         }
         receipt["receipt_digest"] = canonical_digest(
             receipt, digest_field="receipt_digest"
@@ -1961,12 +1963,9 @@ def run_policy_episode(
             if retained_policy_frames
             else None
         ),
-        "performance_diagnostics": {
-            "clock": "time.monotonic",
-            "claim_scope": "cycle_time_diagnostic_not_scientific_metric",
-            "environment_step_bucket_includes_renderer_when_enabled": True,
-            "timings_seconds": timings_seconds,
-        },
+        "performance_diagnostics": _performance_diagnostics(
+            timings_seconds, camera_renders_at_start, environment
+        ),
     }
     if prestart_readiness is not None:
         receipt["prestart_readiness"] = prestart_readiness
