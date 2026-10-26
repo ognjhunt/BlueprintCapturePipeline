@@ -3152,6 +3152,7 @@ def run_synthetic_post_phase5_downstream_diagnostic(
                     f"downstream_diagnostic_task_checkpoint_out_of_bounds:{name}"
                 )
 
+    phase_ids = DOWNSTREAM_DIAGNOSTIC_PHASE_IDS[:-2] if task.get("release_required") is False else DOWNSTREAM_DIAGNOSTIC_PHASE_IDS
     actions = plan.get("scripted_positive_actions")
     rows_by_id = {
         str(row.get("phase_id") or ""): row
@@ -3160,7 +3161,7 @@ def run_synthetic_post_phase5_downstream_diagnostic(
     }
     downstream_rows = [
         dict(rows_by_id.get(phase_id) or {})
-        for phase_id in DOWNSTREAM_DIAGNOSTIC_PHASE_IDS
+        for phase_id in phase_ids
     ]
     if any(not row for row in downstream_rows):
         errors.append("downstream_diagnostic_phase_suffix_missing")
@@ -3170,9 +3171,9 @@ def run_synthetic_post_phase5_downstream_diagnostic(
             for row in actions or []
             if isinstance(row, Mapping)
             and str(row.get("phase_id") or "")
-            in DOWNSTREAM_DIAGNOSTIC_PHASE_IDS
+            in phase_ids
         ]
-        if ordered_phase_ids != list(DOWNSTREAM_DIAGNOSTIC_PHASE_IDS):
+        if ordered_phase_ids != list(phase_ids):
             errors.append("downstream_diagnostic_phase_suffix_order_invalid")
     if errors:
         raise ControlEpisodeError(errors)
@@ -3190,8 +3191,7 @@ def run_synthetic_post_phase5_downstream_diagnostic(
         }
         for _ in range(checkpoint_settle_steps)
     ]
-    release_settle_rows = _task_settle_rows(task, downstream_rows)
-    trajectory = [*checkpoint_rows, *downstream_rows, *release_settle_rows]
+    trajectory = [*checkpoint_rows, *downstream_rows, *_task_settle_rows(task, downstream_rows)]
     output = Path(output_dir).expanduser().resolve()
     _write_json(output / "adp_task_control_plan.v1.json", plan)
 
@@ -3250,7 +3250,7 @@ def run_synthetic_post_phase5_downstream_diagnostic(
         receipt_annotations={
             "checkpoint": frozen_checkpoint,
             "checkpoint_settle_steps": checkpoint_settle_steps,
-            "requested_phase_ids": list(DOWNSTREAM_DIAGNOSTIC_PHASE_IDS),
+            "requested_phase_ids": list(phase_ids),
         },
         initial_sample_validator=_initial_sample_blocker,
     )
@@ -3258,7 +3258,7 @@ def run_synthetic_post_phase5_downstream_diagnostic(
     for row in receipt["action_trace"]:
         phase_id = str(row.get("phase_id") or "")
         if (
-            phase_id in DOWNSTREAM_DIAGNOSTIC_PHASE_IDS
+            phase_id in phase_ids
             and phase_id not in executed_phase_ids
         ):
             executed_phase_ids.append(phase_id)
@@ -3289,10 +3289,10 @@ def run_synthetic_post_phase5_downstream_diagnostic(
             "phase5_qualified": False,
             "synthetic_checkpoint": frozen_checkpoint,
             "checkpoint_settle_steps": checkpoint_settle_steps,
-            "requested_phase_ids": list(DOWNSTREAM_DIAGNOSTIC_PHASE_IDS),
+            "requested_phase_ids": list(phase_ids),
             "executed_phase_ids": executed_phase_ids,
             "continuous_suffix_executed": executed_phase_ids
-            == list(DOWNSTREAM_DIAGNOSTIC_PHASE_IDS),
+            == list(phase_ids),
             "all_pose_gates_reached": bool(pose_phase_ids)
             and all(
                 arrivals.get(phase_id, {}).get("target_reached") is True
