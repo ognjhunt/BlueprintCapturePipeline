@@ -97,6 +97,28 @@ def test_rigid_scoring_environment_joins_native_safety_and_support_readback():
     assert environment.reset() is None
 
 
+def test_rigid_scoring_environment_fails_robot_scene_contact_only_at_its_floor():
+    # Owner rule 2026-10-26: a robot brushing the scene below the frozen floor is
+    # not a collision; an arm link on the object still fails at the general floor.
+    spec = {**_rigid_scoring_task_spec(), "robot_scene_collision_minimum_force_n": 20.0}
+
+    def sample(**forces):
+        return NativeRigidScoringEnvironment(environment=_RigidEpisodeEnvironment(),
+            task_readback=_RigidNativeReadback(**forces), task_spec=spec).read_object_sample()
+
+    brush = sample(robot_scene_contact_peak_force_n=8.0)
+    assert brush["robot_collision_failure"] is False and brush["robot_scene_collision_minimum_force_n"] == 20.0
+    assert sample(robot_scene_contact_peak_force_n=25.0)["robot_collision_failure"] is True
+    assert sample(robot_task_forbidden_collision_peak_force_n=6.0)["robot_collision_failure"] is True
+    legacy = NativeRigidScoringEnvironment(environment=_RigidEpisodeEnvironment(),
+        task_readback=_RigidNativeReadback(robot_scene_contact_peak_force_n=8.0),
+        task_spec=_rigid_scoring_task_spec()).read_object_sample()
+    assert legacy["robot_collision_failure"] is True and legacy["robot_scene_collision_minimum_force_n"] == 5.0
+    for invalid in (0.0, -1.0, float("nan"), True, "20"):
+        with pytest.raises(NativeTaskEpisodeEnvironmentError, match="native_task_rigid_scoring_contract_invalid"):
+            NativeRigidScoringEnvironment.validate_task_spec({**spec, "robot_scene_collision_minimum_force_n": invalid})
+
+
 def test_rigid_scoring_environment_retains_measured_contact_pair_identity():
     pairs = [
         {

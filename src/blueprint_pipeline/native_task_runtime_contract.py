@@ -521,6 +521,18 @@ def _camera_rows(
     return rows
 
 
+def _optional_robot_scene_floor(value: Mapping[str, Any], errors: list[str]) -> dict[str, float]:
+    """Carry a frozen robot-scene collision floor; bindings frozen before it have none."""
+    field = "robot_scene_collision_minimum_force_n"
+    number = value.get(field)
+    if number is None:
+        return {}
+    if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or number <= 0:
+        errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
+        return {}
+    return {field: float(number)}
+
+
 def _articulated_task_state_binding(
     value: Any,
     *,
@@ -592,6 +604,7 @@ def _articulated_task_state_binding(
             if not math.isfinite(number) or number <= 0.0:
                 errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
             thresholds[field] = number
+        thresholds.update(_optional_robot_scene_floor(value, errors))
         return {
             "schema_version": GRAPH_TASK_STATE_BINDING_SCHEMA_VERSION,
             "articulation_graph_digest": graph_digest,
@@ -672,6 +685,7 @@ def _articulated_task_state_binding(
         if not math.isfinite(number) or number <= 0.0:
             errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
         thresholds[field] = number
+    thresholds.update(_optional_robot_scene_floor(value, errors))
 
     return {
         "schema_version": TASK_STATE_BINDING_SCHEMA_VERSION,

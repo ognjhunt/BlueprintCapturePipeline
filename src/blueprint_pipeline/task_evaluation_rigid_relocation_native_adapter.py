@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_task_robot_contact_topology import ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N
 from .native_franka_action_math import (
     NativeFrankaActionMathError,
     grasp_orientation_contact_xyzw,
@@ -985,6 +986,7 @@ def adapt_rigid_relocation_task_template(
         "release_gripper_width_min_m": 0.06,
         "task_contact_minimum_force_n": 0.5,
         "collision_failure_minimum_force_n": 1.0,
+        "robot_scene_collision_minimum_force_n": ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N,
         "reset_translation_tolerance_m": 0.002,
         "reset_orientation_tolerance_rad": 0.01,
         "settle_position_tolerance_m": 0.005,

@@ -92,11 +92,22 @@ class NativeRigidScoringEnvironment:
             or len(lower) != 3
             or len(upper) != 3
             or any(low >= high for low, high in zip(lower, upper, strict=True))
+            or NativeRigidScoringEnvironment._robot_scene_floor(task_spec, collision_threshold) is None
         ):
             raise NativeTaskEpisodeEnvironmentError(
                 ["native_task_rigid_scoring_contract_invalid"]
             )
         return contact_threshold, collision_threshold, lower, upper
+
+    @staticmethod
+    def _robot_scene_floor(task_spec: Mapping[str, Any], collision_threshold: float) -> float | None:
+        """Robot-scene contact fails at the contract's own floor; older contracts keep the general one."""
+        value = task_spec.get("robot_scene_collision_minimum_force_n")
+        if value is None:
+            return collision_threshold
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if math.isfinite(value) and value > 0.0 else None
 
     def __init__(
         self,
@@ -115,6 +126,7 @@ class NativeRigidScoringEnvironment:
         self._task_readback = task_readback
         self._contact_threshold = contact_threshold
         self._collision_threshold = collision_threshold
+        self._robot_scene_threshold = self._robot_scene_floor(task_spec, collision_threshold)
         self._workspace_lower = lower
         self._workspace_upper = upper
         self._initial_support = task_spec.get("initial_source_support")
@@ -256,14 +268,13 @@ class NativeRigidScoringEnvironment:
                 "task_contact_active": task_force >= self._contact_threshold,
                 "support_contact_active": support_force
                 >= self._contact_threshold,
-                "robot_collision_failure": max(
-                    robot_force, forbidden_robot_force
-                )
-                >= self._collision_threshold,
+                "robot_collision_failure": robot_force >= self._robot_scene_threshold
+                or forbidden_robot_force >= self._collision_threshold,
                 "forbidden_robot_task_collision_failure": (
                     forbidden_robot_force >= self._collision_threshold
                 ),
                 "collision_failure_minimum_force_n": self._collision_threshold,
+                "robot_scene_collision_minimum_force_n": self._robot_scene_threshold,
                 "locked_joint_containment_violation": locked_joint_violation,
                 "scene_collision_failure": initial_support_failure or scene_force
                 >= self._collision_threshold,

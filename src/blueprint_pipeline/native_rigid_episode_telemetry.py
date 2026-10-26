@@ -58,6 +58,10 @@ class NativeRigidEpisodeTelemetry:
         grasp = _vector(native_grasp, 3)
         pose = _vector(sample.get("task_object_pose_world"), 7)
         threshold = self.spec["collision_failure_minimum_force_n"]
+        # Robot-scene contact has its own floor in contracts frozen after the
+        # owner rule; older contracts keep the general one.
+        scene_floor = self.spec.get("robot_scene_collision_minimum_force_n")
+        floors = {"robot_background": threshold if scene_floor is None else float(scene_floor)}
         configured = self.spec.get("task_success_contract", {}).get("criteria", {}).get("temporal_invariants", {})
         requested_classes = configured.get("forbidden_contact_classes", [])
         active_classes: list[str] = []
@@ -69,7 +73,7 @@ class NativeRigidEpisodeTelemetry:
             if (isinstance(force, bool) or not isinstance(force, (int, float))
                     or not math.isfinite(force) or force < 0):
                 complete = False
-            elif force >= threshold:
+            elif force >= floors.get(name, threshold):
                 active_classes.append(name)
         sample["contact_classes_active"] = active_classes if complete else None
         sample["contact_class_measurement_channels"] = dict(CONTACT_CHANNELS)

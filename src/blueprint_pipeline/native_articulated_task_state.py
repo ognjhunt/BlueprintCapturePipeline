@@ -235,6 +235,12 @@ def compile_native_articulated_task_sample(
     collision_threshold = float(
         task_state_binding["collision_failure_minimum_force_n"]
     )
+    # Robot contact with the scene fails only at the contract's own floor;
+    # contracts frozen before that rule keep the general collision floor.
+    scene_floor = task_state_binding.get("robot_scene_collision_minimum_force_n")
+    robot_scene_threshold = (
+        collision_threshold if scene_floor is None else float(scene_floor)
+    )
 
     root = _vector(
         task_root_pose_world,
@@ -291,10 +297,8 @@ def compile_native_articulated_task_sample(
         "task_contact_active": task_contact,
         "joint_limit_violation": joint_limit_violation,
         "containment_violation": containment_violation,
-        "robot_collision_failure": max(
-            robot_scene_peak, forbidden_robot_task_peak
-        )
-        >= collision_threshold,
+        "robot_collision_failure": robot_scene_peak >= robot_scene_threshold
+        or forbidden_robot_task_peak >= collision_threshold,
         "scene_collision_failure": task_scene_peak >= collision_threshold,
         "retreat_completed": retreat_completed,
         "native_readback": {

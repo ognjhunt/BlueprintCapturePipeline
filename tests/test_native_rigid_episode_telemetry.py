@@ -63,6 +63,19 @@ def test_contact_classes_are_filtered_force_measurements_and_missing_channels_re
     assert row["contact_classes_active"] is None
 
 
+def test_robot_background_class_uses_the_frozen_robot_scene_floor():
+    telemetry = NativeRigidEpisodeTelemetry({**_spec(), "robot_scene_collision_minimum_force_n": 20.})
+    brush = {**_sample(), "robot_scene_contact_peak_force_n": 8.}
+    telemetry.observe(brush)
+    assert brush["contact_classes_active"] == []
+    bump = {**_sample(), "robot_scene_contact_peak_force_n": 25.}
+    telemetry.observe(bump)
+    assert bump["contact_classes_active"] == ["robot_background"]
+    legacy = {**_sample(), "robot_scene_contact_peak_force_n": 8.}
+    NativeRigidEpisodeTelemetry(_spec()).observe(legacy)
+    assert legacy["contact_classes_active"] == ["robot_background"]
+
+
 def test_workspace_checks_oriented_collision_corners_and_measured_gripper():
     telemetry = NativeRigidEpisodeTelemetry(_spec())
     row = _sample()
