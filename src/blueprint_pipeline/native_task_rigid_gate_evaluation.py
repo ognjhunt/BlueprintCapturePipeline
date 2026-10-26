@@ -88,6 +88,11 @@ def evaluate_rigid_construction_gates(
     thresholds = phase_plan["thresholds"]
     contact_threshold = float(thresholds["task_contact_minimum_force_n"])
     collision_threshold = float(thresholds["collision_failure_minimum_force_n"])
+    # The episode scorer's rule: robot-scene contact fails only at or above its own floor when the plan
+    # carries one; forbidden robot-object and object-scene contact keep the general threshold.
+    robot_scene_threshold = float(
+        thresholds.get("robot_scene_collision_minimum_force_n", collision_threshold)
+    )
     start = list(phase_plan["start_position_world_m"])
     bounds = phase_plan["destination_position_bounds_world_m"]
     support = list(phase_plan["support_height_interval_m"])
@@ -102,8 +107,9 @@ def evaluate_rigid_construction_gates(
 
     all_samples = [sample for phase_id in expected_ids for sample in samples(phase_id)]
     collision_clear = all(
-        max(
-            float(sample.get("robot_scene_contact_peak_force_n", float("inf"))),
+        float(sample.get("robot_scene_contact_peak_force_n", float("inf")))
+        < robot_scene_threshold
+        and max(
             float(
                 sample.get(
                     "robot_task_forbidden_collision_peak_force_n", float("inf")

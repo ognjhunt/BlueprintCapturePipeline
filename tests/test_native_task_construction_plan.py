@@ -494,6 +494,31 @@ def test_planar_push_gate_uses_native_motion_contact_and_support_readback() -> N
     )
 
 
+def test_construction_gates_hold_robot_scene_contact_to_its_own_floor() -> None:
+    # The episode scorer fails robot-scene contact only at or above its floor (20 N); construction
+    # qualification compared it with the general 1 N threshold, so an 8 N brush blocked the run.
+    scene = _planar_push_fixture()
+    scene["task_spec"]["robot_scene_collision_minimum_force_n"] = 20.0
+    plan = materialize_native_task_construction_phase_plan(scene, rigid_waypoint_count=3)
+    assert plan["thresholds"]["robot_scene_collision_minimum_force_n"] == 20.0
+
+    def judged(plan, field, force):
+        results = _passing_push_phase_results(plan)
+        push_02 = next(row for row in results if row["phase_id"] == "push_02")
+        push_02["task_sample"][field] = force
+        return evaluate_rigid_construction_gates(phase_plan=plan, phase_results=results,
+                                                 reset_replay={"passed": True})
+
+    assert judged(plan, "robot_scene_contact_peak_force_n", 8.0)["passed"] is True
+    struck = judged(plan, "robot_scene_contact_peak_force_n", 25.0)
+    assert "native_rigid_construction_gate_failed:base_collision_clearance" in struck["blockers"]
+    forbidden = judged(plan, "robot_task_forbidden_collision_peak_force_n", 8.0)
+    assert "native_rigid_construction_gate_failed:base_collision_clearance" in forbidden["blockers"]
+    legacy = materialize_native_task_construction_phase_plan(_planar_push_fixture(), rigid_waypoint_count=3)
+    assert "robot_scene_collision_minimum_force_n" not in legacy["thresholds"]
+    assert judged(legacy, "robot_scene_contact_peak_force_n", 8.0)["passed"] is False
+
+
 def test_planar_push_targets_back_off_by_the_closed_fingertip_offset() -> None:
     """Scene-839873 franka-controls attempt 001: the pinch centre was
     commanded to the object face, the closed fingertips struck 39 mm early at

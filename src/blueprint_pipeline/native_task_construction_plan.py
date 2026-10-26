@@ -1463,6 +1463,16 @@ def materialize_rigid_construction_phase_plan(
         task_spec.get("collision_failure_minimum_force_n"),
         error="native_rigid_construction_collision_threshold_invalid",
     )
+    # Robot-scene contact fails only above its own floor; a task spec frozen before it has none and
+    # keeps the general threshold.
+    robot_scene_floor = (
+        None
+        if task_spec.get("robot_scene_collision_minimum_force_n") is None
+        else _positive(
+            task_spec.get("robot_scene_collision_minimum_force_n"),
+            error="native_rigid_construction_robot_scene_threshold_invalid",
+        )
+    )
     reset_translation = _positive(
         task_spec.get("reset_translation_tolerance_m"),
         error="native_rigid_construction_reset_translation_tolerance_invalid",
@@ -1948,6 +1958,11 @@ def materialize_rigid_construction_phase_plan(
         "thresholds": {
             "task_contact_minimum_force_n": contact_force,
             "collision_failure_minimum_force_n": collision_force,
+            **(
+                {"robot_scene_collision_minimum_force_n": robot_scene_floor}
+                if robot_scene_floor is not None
+                else {}
+            ),
             "reset_translation_tolerance_m": reset_translation,
             "reset_orientation_tolerance_rad": reset_orientation,
             "minimum_lift_m": lift,
