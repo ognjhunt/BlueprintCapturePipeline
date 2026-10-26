@@ -276,8 +276,17 @@ class _ArenaBuilder:
 
     def make_registered_and_return_cfg(self, *, render_mode):
         type(self).last_render_mode = render_mode
+        # Arena composes one image term per camera into ``camera_obs`` only
+        # when the embodiment enables cameras.
+        observations = SimpleNamespace(policy=SimpleNamespace())
+        if _Embodiment.last_enable_cameras:
+            observations.camera_obs = SimpleNamespace()
         cfg = SimpleNamespace(
-            sim=SimpleNamespace(), seed=None, decimation=None, episode_length_s=None
+            sim=SimpleNamespace(),
+            seed=None,
+            decimation=None,
+            episode_length_s=None,
+            observations=observations,
         )
         self.arena_env.env_cfg_callback(cfg)
         return "native-env", cfg
@@ -710,6 +719,33 @@ def test_builder_clones_lightweight_control_search_without_rendering(
         "cameras_enabled": False,
         "scene_appearance_included": False,
         "render_mode": None,
+    }
+
+
+def test_builder_drops_per_step_camera_observations_so_steps_never_render(
+    monkeypatch,
+) -> None:
+    """Arena's camera terms read every camera after every step, and in the
+    pinned Isaac Lab that read is the render; the episode adapter renders on
+    the frames it reads instead (tests/test_native_policy_camera_render_cadence.py)."""
+
+    _install_fake_native_runtime(monkeypatch)
+
+    built = build_native_task_arena_environment(_sealed_scene_plan())
+
+    assert built.cfg.observations.camera_obs is None
+    assert built.cfg.observations.policy is not None
+    assert built.native_configuration_readback["camera_render_cadence"] == {
+        "arena_camera_observation_group_dropped": True
+    }
+
+    camera_free = build_native_task_arena_environment(
+        _sealed_scene_plan(), enable_cameras=False
+    )
+
+    assert not hasattr(camera_free.cfg.observations, "camera_obs")
+    assert camera_free.native_configuration_readback["camera_render_cadence"] == {
+        "arena_camera_observation_group_dropped": False
     }
 
 

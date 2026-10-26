@@ -26,6 +26,7 @@ importable -- and testable -- off-GPU.
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -68,8 +69,11 @@ try:  # flat provider-bundle layout
 except ModuleNotFoundError:  # repository package
     from .rigid_frame_transforms import RigidFrameTransformError, apply_rigid_offset
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v15"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v16"
 ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
+# A control step is rendered once, right before its first frame read; see
+# ``IsaacEpisodeAdapter._render_for_frame_read``.
+CAMERA_RENDER_CADENCE = "render_once_per_control_step_before_first_frame_read"
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
     "orientation_first_bounded_local_increment"
@@ -720,6 +724,9 @@ class IsaacEpisodeAdapter:
             sage_collision_contact_sensors or {}
         )
         self._control_step_index = 0
+        self._frame_render_key: tuple[int, int] | None = None
+        self._frame_renders_issued = 0
+        self._frame_render_seconds = 0.0
         if self._rigid_object is None and self._task_sample_callback is None:
             raise IsaacEpisodeAdapterError(
                 ["isaac_episode_task_state_source_missing"]
@@ -815,6 +822,56 @@ class IsaacEpisodeAdapter:
                 "frame_index": generation, "control_step_index": self._control_step_index,
                 "reset_generation": getattr(self, "_reset_generation", 0)}
 
+    def _render_for_frame_read(self) -> None:
+        """Render once for this control step, right before its first frame read.
+
+        The pinned Isaac Lab camera pulls its RTX update only when its data is
+        read after physics moved, and the native runtime drops Arena's
+        per-step camera observation terms, so its steps never render on their
+        own.  Rendering here costs one render per step whose frames are used
+        -- a policy query, a review sample, a terminal or readiness
+        observation -- instead of one per 15 Hz control step.  ``sim.render()``
+        advances the render generation, so a read after a reset can never be
+        deduplicated against the render that preceded it.  Every camera buffer
+        is then refreshed here, so later reads in the same step reuse it.
+        """
+
+        key = (getattr(self, "_reset_generation", 0), self._control_step_index)
+        if self._frame_render_key == key:
+            return
+        unwrapped = self._env.unwrapped
+        render = getattr(getattr(unwrapped, "sim", None), "render", None)
+        if not callable(render):
+            raise IsaacEpisodeAdapterError(["isaac_episode_frame_render_seam_missing"])
+        started = time.monotonic()
+        render()
+        # The native wrist attachment writes its live mount pose and advances
+        # the render generation inside its own refresh, which forces an RTX
+        # update.  Refreshing it first lets the fixed cameras reuse that one
+        # update instead of each rendered step paying two.
+        for camera_id, camera_name in sorted(
+            self._camera_scene_names.items(), key=lambda item: item[0] != "wrist"
+        ):
+            try:
+                camera = unwrapped.scene[camera_name]
+            except (KeyError, TypeError) as exc:
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_evaluation_camera_missing:{camera_id}"]
+                ) from exc
+            camera.data  # reading an outdated buffer is what pulls the render
+        self._frame_render_seconds += time.monotonic() - started
+        self._frame_render_key = key
+        self._frame_renders_issued += 1
+
+    def camera_render_cadence(self) -> dict[str, Any]:
+        """Cumulative frame renders this adapter issued, for cycle-time receipts."""
+
+        return {
+            "policy": CAMERA_RENDER_CADENCE,
+            "renders_issued": self._frame_renders_issued,
+            "render_seconds": self._frame_render_seconds,
+        }
+
     def reset_to_diagnostic_checkpoint(
         self,
         *,
@@ -849,6 +906,8 @@ class IsaacEpisodeAdapter:
         if self._scripted_pose_controller_reset_callback is not None:
             self._scripted_pose_controller_reset_callback()
         self._control_step_index = 0
+        # The checkpoint wrote state without a step: the next read renders it.
+        self._frame_render_key = None
 
     def joint_limits(self) -> list[list[float]]:
         limits = self._to_torch(self._robot.data.joint_limits)[
@@ -857,6 +916,7 @@ class IsaacEpisodeAdapter:
         return [[float(row[0]), float(row[1])] for row in limits]
 
     def read_policy_inputs(self) -> dict[str, Any]:
+        self._render_for_frame_read()
         inputs: dict[str, Any] = {}
         freshness = {}
         for role, view in (
@@ -882,6 +942,7 @@ class IsaacEpisodeAdapter:
     def read_evaluation_camera_inputs(self) -> dict[str, Any]:
         """Lossless policy views plus the review-only fixed overview stream."""
 
+        self._render_for_frame_read()
         images: dict[str, Any] = {}
         for camera_id, camera_name in self._camera_scene_names.items():
             try:
@@ -1298,6 +1359,13 @@ class IsaacEpisodeAdapter:
             raise IsaacEpisodeAdapterError(
                 ["isaac_episode_simulation_step_seconds_missing"]
             )
+        self._render_for_frame_read()
+        reset_generation, render_step_index = self._frame_render_key
+        render = {
+            "source": "adapter_render_before_first_frame_read",
+            "control_step_index": render_step_index,
+            "reset_generation": reset_generation,
+        }
         calibrations: dict[str, Any] = {}
         source_devices: dict[str, str] = {}
         synchronizations: dict[str, dict[str, Any]] = {}
@@ -1370,6 +1438,7 @@ class IsaacEpisodeAdapter:
                 "host_bytes_ready": True,
                 "method": "environment_step_completed_before_read_only_host_copy",
                 "sensor_freshness": self._camera_freshness(camera_name, camera),
+                "render": dict(render),
             }
         simulation_time_s = self._control_step_index * self._simulation_step_seconds
         return {
@@ -1721,6 +1790,7 @@ def describe_adapter() -> dict[str, Any]:
         "rigid_task_scoring_frame_offset_supported": True,
         "rigid_task_asset_root_pose_retained": True,
         "camera_alpha_dropped_at_boundary": True,
+        "camera_render_cadence": CAMERA_RENDER_CADENCE,
         "arm_joint_count": ARM_JOINT_COUNT,
         "isaaclab_pose_quaternion_order": "xyzw",
     }
@@ -1815,6 +1885,8 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_rigid_asset_root_not_retained")
     if bindings.get("camera_alpha_dropped_at_boundary") is not True:
         errors.append("isaac_episode_adapter_alpha_not_dropped")
+    if bindings.get("camera_render_cadence") != CAMERA_RENDER_CADENCE:
+        errors.append("isaac_episode_adapter_camera_render_cadence_drifted")
     if bindings.get("isaaclab_pose_quaternion_order") != "xyzw":
         errors.append("isaac_episode_adapter_quaternion_order_drifted")
     return sorted(set(errors))
@@ -1822,6 +1894,7 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
 
 __all__ = [
     "ADAPTER_SCHEMA_VERSION",
+    "CAMERA_RENDER_CADENCE",
     "CAMERA_VIEW_BINDING",
     "DEFAULT_CAMERA_SCENE_NAMES",
     "DROID_ARM_JOINT_NAMES",

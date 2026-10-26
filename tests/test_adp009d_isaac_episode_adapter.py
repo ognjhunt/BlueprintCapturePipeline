@@ -443,6 +443,16 @@ class _Scene(dict):
     pass
 
 
+class _Sim:
+    """The ``sim.render()`` seam every frame read goes through first."""
+
+    def __init__(self):
+        self.render_calls = 0
+
+    def render(self):
+        self.render_calls += 1
+
+
 class _Env:
     def __init__(self, channels=4, camera_scene_names=None):
         self.reset_calls: list[int] = []
@@ -451,7 +461,9 @@ class _Env:
         scene = _Scene(
             {scene_name: _Camera(channels) for scene_name in names.values()}
         )
-        self.unwrapped = type("U", (), {"scene": scene, "device": "cpu"})()
+        self.unwrapped = type(
+            "U", (), {"scene": scene, "device": "cpu", "sim": _Sim()}
+        )()
 
     def reset(self, seed=None):
         self.reset_calls.append(seed)
@@ -590,6 +602,8 @@ def test_policy_inputs_carry_both_views_as_uint8_rgb() -> None:
         "wrist",
         "overview",
     }
+    # Both reads at one control step share a single render.
+    assert adapter._env.unwrapped.sim.render_calls == 1
 
 
 def test_groot_eef_state_is_expressed_in_robot_root_not_scene_world() -> None:

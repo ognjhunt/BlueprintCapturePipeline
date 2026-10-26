@@ -675,6 +675,34 @@ def _evidence(build: Callable[..., Any], **kwargs: Any) -> Any:
         raise PolicyEpisodeError(exc.errors) from exc
 
 
+def _camera_render_cadence(environment: EpisodeEnvironment) -> Mapping[str, Any] | None:
+    reader = getattr(environment, "camera_render_cadence", None)
+    return reader() if callable(reader) else None
+
+
+def _episode_camera_render_cadence(
+    started: Mapping[str, Any] | None, environment: EpisodeEnvironment
+) -> dict[str, Any] | None:
+    """Frame renders this episode issued, for the cycle-time receipt.
+
+    An environment that renders on frame reads spends its renderer time inside
+    the first read of each rendered step, so these seconds are already part of
+    that read's timing bucket rather than ``environment_step_including_render``.
+    """
+
+    ended = _camera_render_cadence(environment)
+    if started is None or ended is None:
+        return None
+    return {
+        "policy": str(ended["policy"]),
+        "renders_issued": int(ended["renders_issued"]) - int(started["renders_issued"]),
+        "render_seconds": round(
+            float(ended["render_seconds"]) - float(started["render_seconds"]), 6
+        ),
+        "render_seconds_included_in_read_buckets": True,
+    }
+
+
 def run_policy_episode(
     *,
     environment: EpisodeEnvironment,
@@ -860,6 +888,7 @@ def run_policy_episode(
         episode_progress["episode_readiness_verified"] = True
         _emit_progress("episode_readiness_verified")
     episode_started_monotonic = time.monotonic()
+    camera_render_cadence_at_start = _camera_render_cadence(environment)
     timings_seconds = {
         "reset_and_initial_state": 0.0,
         "policy_input_read": 0.0,
@@ -1273,6 +1302,9 @@ def run_policy_episode(
                 "claim_scope": "cycle_time_diagnostic_not_scientific_metric",
                 "environment_step_bucket_includes_renderer_when_enabled": True,
                 "timings_seconds": rounded_timings,
+                "camera_render_cadence": _episode_camera_render_cadence(
+                    camera_render_cadence_at_start, environment
+                ),
             },
         }
         receipt["receipt_digest"] = canonical_digest(
@@ -1966,6 +1998,9 @@ def run_policy_episode(
             "claim_scope": "cycle_time_diagnostic_not_scientific_metric",
             "environment_step_bucket_includes_renderer_when_enabled": True,
             "timings_seconds": timings_seconds,
+            "camera_render_cadence": _episode_camera_render_cadence(
+                camera_render_cadence_at_start, environment
+            ),
         },
     }
     if prestart_readiness is not None:
