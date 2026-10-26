@@ -105,3 +105,41 @@ def prepare_unallocated_session_resume(*, parent_job_dir: str | Path, successor_
         (successor / "unallocated_dispatch_continuation.json").write_text(
             json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return receipt
+
+
+def validate_unallocated_funding_reuse(path: str | Path, *, funding_admission: Mapping[str, Any]) -> dict[str, Any]:
+    """Revalidate a claimed, unused successor before reusing its original grant."""
+    path = Path(path).resolve()
+    receipt = json.loads(path.read_text())
+    parent = Path(receipt["parent_job_dir"]).resolve()
+    successor = Path(receipt["successor_job_dir"]).resolve()
+    if path != successor / "unallocated_dispatch_continuation.json" \
+        or receipt.get("schema_version") != "policy_canary_unallocated_dispatch_continuation.v1" \
+        or receipt.get("status") != "ready" \
+        or receipt.get("continuation_digest") != canonical_digest(receipt, digest_field="continuation_digest") \
+        or receipt.get("provider_allocations_observed") != 0 \
+        or receipt.get("maximum_remaining_provider_allocations") != 1 \
+        or receipt.get("new_preparation_requests_authorized") != 0 \
+        or receipt.get("allocation_binding_digest") != funding_admission.get("allocation_binding_digest") \
+        or receipt.get("maximum_cost_usd") != funding_admission.get("maximum_cost_usd") \
+        or funding_admission.get("provider") != "vast" or funding_admission.get("resource_class") != "gpu_render" \
+        or funding_admission.get("request_count") != 1:
+        raise ValueError("unallocated_resume_funding_binding_invalid")
+    if json.loads((parent / "unallocated_successor_claim.json").read_text()) != receipt \
+        or (successor / "policy_canary_session_consumption.json").exists():
+        raise ValueError("unallocated_resume_successor_not_unused")
+    required = {"policy_canary_session_consumption.json",
+        "attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json",
+        "attempts/attempt_001/vast_provider_run/vast_launch_lock_manifest.json",
+        "attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json"}
+    if not required.issubset(receipt.get("evidence_sha256", {})):
+        raise ValueError("unallocated_resume_evidence_invalid")
+    for relative, sha in receipt["evidence_sha256"].items():
+        evidence = parent / relative
+        if evidence.is_symlink() or not evidence.resolve().is_relative_to(parent) \
+            or "sha256:" + hashlib.sha256(evidence.read_bytes()).hexdigest() != sha:
+            raise ValueError("unallocated_resume_evidence_changed")
+    if sorted(p.name for p in (parent / "attempts").iterdir()) != ["attempt_001"] \
+        or not billing_staged_objects_absent({"attempt_root": str(parent / "attempts/attempt_001")})[0]:
+        raise ValueError("unallocated_resume_staging_absence_unproven")
+    return receipt
