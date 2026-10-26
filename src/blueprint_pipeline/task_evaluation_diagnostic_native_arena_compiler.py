@@ -388,7 +388,8 @@ def _released_task_motion(task_spec: Mapping[str, Any], *, definition: Mapping[s
     from .task_evaluation_native_arena_episode_compiler import _derive_runtime_joint_overlay
 
     motion = _task_motion(task_spec)
-    motion["release_required"] = articulated_release_required(task_spec)
+    if "release_required" in task_spec:
+        motion["release_required"] = articulated_release_required(task_spec)
     with tempfile.TemporaryDirectory(prefix="blueprint-released-motion-") as scratch:
         runtime, _ = _derive_runtime_joint_overlay(
             task_spec=task_spec, task_definition=definition, replacement_path=asset, output_root=Path(scratch))
