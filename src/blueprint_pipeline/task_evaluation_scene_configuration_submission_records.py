@@ -844,6 +844,10 @@ def articulated_stage_three_configuration(
     asset is one articulation root whose only free joint is the task joint.
     Every other part is a fixed joint. Interiors that the footage never shows
     are generated candidate geometry and must be tagged as such.
+
+    The planner may supply ``mechanism.gravity_response`` (mode and reason).
+    Unknown or absent evidence preserves gravity; counterbalance is an explicit
+    estimated mechanism choice, never inferred from the hinge's orientation.
     """
 
     authoring_backend = authoring_backend or default_backend()
@@ -852,6 +856,11 @@ def articulated_stage_three_configuration(
     joint_type = str(mechanism.get("joint_type") or "")
     if joint_type not in {"prismatic", "revolute"}:
         raise ValueError("articulated_mechanism_joint_type_invalid")
+    from .articulation_graph_contract import validate_joint_gravity_response
+
+    gravity_response = validate_joint_gravity_response(mechanism.get("gravity_response"))
+    if gravity_response is not None and gravity_response["mode"] == "counterbalanced" and joint_type != "revolute":
+        raise ValueError("articulated_gravity_response_unsupported")
     travel_key = "estimated_usable_stroke_m" if joint_type == "prismatic" else "estimated_usable_swing_rad"
     travel = float(mechanism[travel_key])
     if not math.isfinite(travel) or travel <= 0.0:
@@ -892,6 +901,7 @@ def articulated_stage_three_configuration(
                 "task_joint_drive": "none",
                 "joint_friction_bounds": [float(v) for v in physics_bounds["joint_friction_bounds"]],
                 "joint_damping_bounds": [float(v) for v in physics_bounds["joint_damping_bounds"]],
+                **({"gravity_response": gravity_response} if gravity_response is not None else {}),
             },
             **({"opening_effort_reference": dict(mechanism["opening_effort_reference"])}
                if "opening_effort_reference" in mechanism else {}),
@@ -968,6 +978,11 @@ def articulated_open_close_task_records(
     joint_type = str(mechanism["joint_type"])
     if joint_type not in {"prismatic", "revolute"}:
         raise ValueError("articulated_open_close_joint_type_invalid")
+    from .articulation_graph_contract import validate_joint_gravity_response
+
+    gravity_response = validate_joint_gravity_response(mechanism.get("gravity_response"))
+    if gravity_response is not None and gravity_response["mode"] == "counterbalanced" and joint_type != "revolute":
+        raise ValueError("articulated_gravity_response_unsupported")
     revolute = joint_type == "revolute"
     travel_key = "estimated_usable_stroke_m" if joint_type == "prismatic" else "estimated_usable_swing_rad"
     travel = float(mechanism[travel_key])
@@ -1017,6 +1032,7 @@ def articulated_open_close_task_records(
         "mechanism": {
             "task_part_label": str(mechanism["part_label"]),
             "joint_type": joint_type,
+            **({"gravity_response": gravity_response} if gravity_response is not None else {}),
             "target_joint_id": ARTICULATED_TARGET_JOINT_ID,
             "opening_axis_asset_frame": [1.0, 0.0, 0.0],
             "estimated_front_normal_world": front,

@@ -294,6 +294,21 @@ def test_articulated_assembly_without_whole_object_coverage_is_not_bought(tmp_pa
     assert "required_parts" not in value["authoring_inputs"]["configuration"]
 
 
+@pytest.mark.parametrize('mode', ['gravity_loaded', 'unknown'])
+def test_recorded_gravity_response_reaches_the_actual_website_authoring_configuration(tmp_path, mode):
+    inputs = _assembly_inputs(tmp_path)
+    response = {'mode': mode, 'reason': 'Mechanism estimate retained with the source review.'}
+    masks = inputs['task_masks']
+    record = masks['targets'][0]['authoring_coverage']
+    record['gravity_response'] = response
+    record['digest'] = canonical_digest(record, digest_field='digest')
+    masks['digest'] = canonical_digest(masks, digest_field='digest')
+    value = _compile(tmp_path, inputs)
+    assert value['status'] == 'intake_ready', value['blockers']
+    assert value['intake_request']['task']['articulation']['gravity_response'] == response
+    assert value['authoring_inputs']['configuration']['mechanism']['passive_dynamics']['gravity_response'] == response
+
+
 def test_articulated_assembly_compiles_into_an_open_close_intake(tmp_path):
     inputs = _assembly_inputs(tmp_path)
     value = _compile(tmp_path, inputs)

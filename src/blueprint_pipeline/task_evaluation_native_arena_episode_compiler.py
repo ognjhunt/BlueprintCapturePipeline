@@ -1117,8 +1117,8 @@ def _derive_runtime_joint_overlay(
 ) -> tuple[Path, dict[str, Any] | None]:
     """Preserve authored mounting, then adapt the target joint for runtime.
 
-    A legacy slide gets its passive breakaway prior; a door on a horizontal
-    hinge gets the counterbalance real appliance doors have.
+    A legacy slide gets its passive breakaway prior. A hinge gets an ideal
+    counterbalance only when its source or frozen task explicitly selects it.
     """
     from .articulation_graph_contract import validate_articulation_graph
     from .native_task_arena_runtime import (
@@ -1149,7 +1149,8 @@ def _derive_runtime_joint_overlay(
         author, key = author_passive_joint_friction_overlay, "passive_joint_friction"
         kind = "estimated_passive_joint_friction_overlay"
     try:
-        overlay = author(replacement_path, derived, joint_prim_path=joint_prim_path)
+        overlay = author(replacement_path, derived, joint_prim_path=joint_prim_path,
+            **({"gravity_response": task_spec.get("gravity_response")} if targets[0]["joint_type"] == "revolute" else {}))
     except NativeTaskArenaRuntimeError as exc:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             f"episode_compiler_{key}_overlay_invalid:" + ",".join(exc.errors)) from exc

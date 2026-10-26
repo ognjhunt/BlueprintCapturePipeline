@@ -23,7 +23,7 @@ from tests.test_task_evaluation_configured_scene_revision import revision
 
 
 def _passive_joint_overlay_binding(
-    tmp_path: Path, *, grounded: bool = True, counterbalanced: bool = False,
+    tmp_path: Path, *, grounded: bool = True, counterbalanced: bool = False, frozen_choice: bool = False,
 ) -> tuple[dict, dict, Path, dict]:
     from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -49,6 +49,9 @@ def _passive_joint_overlay_binding(
         hinge.CreateBody0Rel().SetTargets([body.GetPath()])
         hinge.CreateBody1Rel().SetTargets([door.GetPath()])
         hinge.CreateAxisAttr("Y")
+        if not frozen_choice:
+            hinge.GetPrim().SetCustomDataByKey("blueprint:gravityResponse", json.dumps({
+                "mode": "counterbalanced", "reason": "Fixture mechanism estimate."}, sort_keys=True))
     else:
         joint_path = "/Cabinet/joints/middle_drawer_joint"
         UsdPhysics.PrismaticJoint.Define(stage, joint_path)
@@ -59,7 +62,8 @@ def _passive_joint_overlay_binding(
     if counterbalanced:
         # Packets stage the compiler's derived .usda bytes, whatever the staged name.
         derived = tmp_path / "counterbalanced.usda"
-        overlay = author_counterbalanced_hinge_overlay(source, derived, joint_prim_path=joint_path)
+        overlay = author_counterbalanced_hinge_overlay(source, derived, joint_prim_path=joint_path,
+            gravity_response={"mode": "counterbalanced", "reason": "Frozen task estimate."} if frozen_choice else None)
         staged.write_bytes(derived.read_bytes())
         kind, key = "counterbalanced_hinge_overlay", "counterbalanced_hinge"
     else:
@@ -91,6 +95,8 @@ def _passive_joint_overlay_binding(
         "subject_asset_id": "admitted_can",
         "source_subject_identity": "admitted-can",
     }
+    if frozen_choice:
+        contract['task_spec']['gravity_response'] = {'mode': 'counterbalanced', 'reason': 'Frozen task estimate.'}
     contract["task_subject_asset_id"] = "admitted_can"
     contract["objects"] = [{
         "asset_id": "admitted_can", "task_subject": True,
@@ -111,6 +117,20 @@ def _passive_joint_overlay_binding(
         "staged_size_bytes": staged.stat().st_size,
     })
     return value, configured, packet, receipt
+
+
+def test_preparation_requires_the_frozen_task_choice_when_the_source_has_none(tmp_path):
+    value, configured, packet, receipt = _passive_joint_overlay_binding(
+        tmp_path, counterbalanced=True, frozen_choice=True)
+    arguments = dict(request=value, configured_revision=configured, packet_root=packet,
+        packet_receipt=receipt, sealed_task_asset_source=tmp_path / 'sealed-cabinet.usda')
+    _verify_task_subject_binding(**arguments)
+    contract_path = packet / 'native_task_runtime_contract.v1.json'
+    contract = json.loads(contract_path.read_text())
+    del contract['task_spec']['gravity_response']
+    contract_path.write_text(json.dumps(contract))
+    with pytest.raises(TaskEvaluationNativeArenaAdapterError, match='overlay_invalid'):
+        _verify_task_subject_binding(**arguments)
 
 
 def test_adapter_accepts_only_readback_verified_passive_joint_derivation(tmp_path: Path) -> None:

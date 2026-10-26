@@ -78,7 +78,7 @@ def _camera(role: str) -> dict:
     }
 
 
-def _fixture(root: Path) -> dict:
+def _fixture(root: Path, *, gravity_response=None) -> dict:
     evidence = root / "evidence"
     evidence.mkdir(parents=True)
     collision = evidence / "scene_collision.usda"
@@ -175,6 +175,8 @@ def _fixture(root: Path) -> dict:
                 MANIFESTS / f"third_scene_840920_task_{letter}_freeze.v1.json"
             ).read_text()
         )
+        if letter == "a" and gravity_response is not None:
+            base_freeze['gravity_response'] = gravity_response
         placement = _write(
             task_root / "placement.json",
             {
@@ -482,10 +484,11 @@ def _fixture(root: Path) -> dict:
     }
 
 
+@pytest.mark.parametrize('gravity_response', [None, {'mode': 'gravity_loaded', 'reason': 'Frozen task mechanism estimate.'}])
 def test_two_task_chain_orders_pre_arena_construction_arena_then_full_gate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gravity_response
 ) -> None:
-    fixture = _fixture(tmp_path)
+    fixture = _fixture(tmp_path, gravity_response=gravity_response)
     pre_arena_path = tmp_path / "pre_arena.json"
     pre_arena = materialize_paired_target_native_manipulation_preflight(
         paired_target_preflight_path=fixture["paired"],
@@ -529,6 +532,8 @@ def test_two_task_chain_orders_pre_arena_construction_arena_then_full_gate(
     request_by_task = {
         row["task_id"]: row["request"]["path"] for row in arena["tasks"]
     }
+    spec = json.loads(Path(request_by_task[TASKS[0][0]]).read_text())['task_spec']
+    assert spec.get('gravity_response') == gravity_response
     final_tasks = [dict(row) for row in fixture["manipulation_tasks"]]
     for row in final_tasks:
         row["native_task_arena_request_path"] = request_by_task[row["task_id"]]

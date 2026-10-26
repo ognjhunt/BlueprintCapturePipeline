@@ -507,6 +507,14 @@ def _stage_three_refusal(
             or not _bounded_pair((mechanism.get("passive_dynamics") or {}).get("joint_damping_bounds"), positive_lower=True)
         ):
             return "mechanism"
+        from .articulation_graph_contract import validate_joint_gravity_response
+
+        try:
+            response = validate_joint_gravity_response((mechanism.get("passive_dynamics") or {}).get("gravity_response"))
+        except ValueError:
+            return "mechanism_gravity_response"
+        if response is not None and response["mode"] == "counterbalanced" and mechanism["joint_type"] != "revolute":
+            return "mechanism_gravity_response"
         effort = mechanism.get("opening_effort_reference")
         if effort is not None:
             value = effort.get("value_n") if isinstance(effort, Mapping) else None

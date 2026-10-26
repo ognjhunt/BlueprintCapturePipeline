@@ -186,6 +186,64 @@ def _run(tmp_path, target, geometry, **overrides):
     return coverage.assembly_coverage(**{**arguments, **overrides})
 
 
+def test_agent_gravity_response_survives_coverage_and_replays_without_a_second_call(tmp_path, model):
+    calls, state = model
+    response = {"mode": "counterbalanced", "reason": "Released open part remains supported in these fixture views."}
+    state["answer"] = lambda binding: {**_answer(binding), "gravity_response": response}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    record = _run(tmp_path, target, geometry)
+    assert record["status"] == "complete", record["blockers"]
+    assert record["gravity_response"] == response
+    assert record["physical_measurement_proven"] is False
+    assert coverage.assembly_constraints(record, task_part="door")["gravity_response"] == response
+    assert "gravity_response" in calls[0]["prompt"] and "horizontal hinge" in calls[0]["prompt"]
+    before = len(calls)
+    assert _run(tmp_path, target, geometry) == record
+    assert len(calls) == before
+
+
+def test_conflicting_batch_estimates_leave_joint_gravity_response_unknown(tmp_path, model):
+    _, state = model
+    choices = []
+    def answer(binding):
+        mode = "counterbalanced" if not choices else "gravity_loaded"
+        choices.append(mode)
+        return {**_answer(binding), "gravity_response": {"mode": mode, "reason": f"Fixture batch suggests {mode}."}}
+    state["answer"] = answer
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track, frames=600), geometry, registry=_registry(600))
+    assert len(choices) > 1 and record["status"] == "complete", record["blockers"]
+    assert record["gravity_response"]["mode"] == "unknown"
+    assert "Conflicting mechanism estimates" in record["gravity_response"]["reason"]
+
+
+def test_revision_five_coverage_is_reused_without_inventing_a_gravity_estimate(tmp_path, model):
+    calls, _ = model
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    record = _run(tmp_path, target, geometry)
+    record["binding"].update(classifier_revision=5, prompt_digest=canonical_digest({
+        "prompt": coverage.PROMPT, "revolute": coverage.REVOLUTE_PROMPT,
+        "prismatic": coverage.PRISMATIC_PROMPT, "motions": coverage.MOTIONS_PROMPT,
+        "mounting": coverage.MOUNTING_PROMPT, "response": coverage.PRE_GRAVITY_RESPONSE_SHAPE}))
+    record["digest"] = canonical_digest(record, digest_field="digest")
+    assert coverage.coverage_matches(record, target=target, source_geometry=geometry, task_context=_context())
+    assert "gravity_response" not in record
+    before = len(calls)
+    masks = {"schema_version": "website_task_masks.v1", "targets": [{**target, "authoring_coverage": record}],
+             "source_frame_registry": _registry()}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    reused = coverage.attach_assembly_coverage(task_masks=masks, source_geometry=geometry,
+        removal_manifest={"entries": []}, task_context=_context(), source_video=None,
+        output_root=tmp_path / "reused-coverage")
+    assert reused["targets"][0]["authoring_coverage"] == record
+    assert len(calls) == before
+    record["gravity_response"] = {"mode": "counterbalanced", "reason": "Not present in the old classifier response."}
+    record["digest"] = canonical_digest(record, digest_field="digest")
+    assert not coverage.coverage_matches(record, target=target, source_geometry=geometry, task_context=_context())
+
+
 def test_mounting_review_survives_selection_and_legacy_records_stay_reusable(tmp_path, model):
     _, state = model
     geometry, track = _source_geometry(tmp_path / "geometry")

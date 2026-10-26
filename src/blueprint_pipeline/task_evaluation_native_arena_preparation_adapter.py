@@ -316,12 +316,14 @@ def _verify_task_subject_binding(
         staged_path = packet_root / str(binding.get("staged_relative_path") or "")
         try:
             if adaptation["adaptation"] == "usd_authored_world_fixed_base":
-                verify_grounded_articulation_overlay(sealed_source(), staged_path, adaptation)
+                verify_grounded_articulation_overlay(sealed_source(), staged_path, adaptation,
+                    gravity_response=task_spec.get("gravity_response"))
             elif adaptation["adaptation"] == "counterbalanced_hinge_overlay":
                 # Replay from the sealed bytes: a readback cannot see other edits.
                 if not isinstance(hinge, Mapping) or hinge.get("source_sha256") != asset["digest"]:
                     raise ValueError("counterbalanced_hinge_source_mismatch")
-                verify_counterbalanced_hinge_derivative(sealed_source(), staged_path, hinge)
+                verify_counterbalanced_hinge_derivative(sealed_source(), staged_path, hinge,
+                    gravity_response=task_spec.get("gravity_response"))
             else:
                 if not isinstance(friction, Mapping) or friction.get("source_sha256") != asset["digest"]:
                     raise ValueError("passive_joint_source_mismatch")

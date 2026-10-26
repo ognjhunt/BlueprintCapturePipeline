@@ -226,7 +226,8 @@ def test_each_stage_refuses_missing_config_before_provider_mutation(
         )
 
 
-def _articulated_map(*, authoring_backend="astra_cad_blender_v1") -> dict[str, dict]:
+def _articulated_map(*, authoring_backend="astra_cad_blender_v1", gravity_response=None,
+                     joint_type="prismatic") -> dict[str, dict]:
     from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
         articulated_stage_three_configuration, stage_five_configuration, stage_four_configuration,
     )
@@ -234,6 +235,11 @@ def _articulated_map(*, authoring_backend="astra_cad_blender_v1") -> dict[str, d
     third = configurations["stage-3"]
     mechanism = {"part_label": "middle drawer", "joint_type": "prismatic", "estimated_usable_stroke_m": 0.3,
                  "estimated_front_normal_world": [0.0, -1.0, 0.0], "lock_status": "unknown"}
+    if joint_type == "revolute":
+        mechanism.update(joint_type=joint_type, estimated_usable_swing_rad=1.5)
+        del mechanism["estimated_usable_stroke_m"]
+    if gravity_response is not None:
+        mechanism["gravity_response"] = gravity_response
     physics = {"mass_kg_bounds": [8.0, 30.0], "task_part_mass_kg_bounds": [0.5, 6.0],
                "static_friction_bounds": [0.3, 0.8], "dynamic_friction_bounds": [0.2, 0.6],
                "restitution_bounds": [0.0, 0.2], "joint_friction_bounds": [1.0, 15.0],
@@ -256,6 +262,45 @@ def test_artisan_articulated_contract_admits_explicit_unactuated_joint_roles():
     assert configurations["stage-3"]["required_output"]["non_task_joints_unactuated"] is True
     assert "non_task_joints_fixed" not in configurations["stage-3"]["required_output"]
     validate_immutable_stage_configurations(envelope=_envelope(), configurations=configurations)
+
+
+@pytest.mark.parametrize('mode', ['gravity_loaded', 'unknown'])
+def test_stage_configuration_retains_an_explicit_joint_gravity_response(mode):
+    configurations = _articulated_map(authoring_backend='artisan_v1')
+    response = {'mode': mode, 'reason': 'Mechanism estimate from retained task evidence.'}
+    configurations['stage-3']['mechanism']['passive_dynamics']['gravity_response'] = response
+    validate_immutable_stage_configurations(envelope=_envelope(), configurations=configurations)
+    assert configurations['stage-3']['mechanism']['passive_dynamics']['gravity_response'] == response
+
+
+@pytest.mark.parametrize('value', [True, {'mode': 'counterbalanced'},
+                                 {'mode': 'magic', 'reason': 'unsupported'},
+                                 {'mode': 'unknown', 'reason': ''}])
+def test_stage_configuration_refuses_malformed_gravity_response_before_authoring(value):
+    configurations = _articulated_map(authoring_backend='artisan_v1')
+    configurations['stage-3']['mechanism']['passive_dynamics']['gravity_response'] = value
+    with pytest.raises(ValueError, match='mechanism_gravity_response'):
+        validate_immutable_stage_configurations(envelope=_envelope(), configurations=configurations)
+
+
+def test_stage_configuration_does_not_apply_a_hinge_prior_to_a_slide():
+    configurations = _articulated_map(authoring_backend='artisan_v1')
+    configurations['stage-3']['mechanism']['passive_dynamics']['gravity_response'] = {
+        'mode': 'counterbalanced', 'reason': 'Unsupported on this prismatic joint.'}
+    with pytest.raises(ValueError, match='mechanism_gravity_response'):
+        validate_immutable_stage_configurations(envelope=_envelope(), configurations=configurations)
+
+
+def test_counterbalance_choice_reaches_the_immutable_authoring_configuration():
+    response = {'mode': 'counterbalanced', 'reason': 'Explicit mechanism estimate for this task.'}
+    configurations = _articulated_map(authoring_backend='artisan_v1', joint_type='revolute', gravity_response=response)
+    assert configurations['stage-3']['mechanism']['passive_dynamics']['gravity_response'] == response
+    validate_immutable_stage_configurations(envelope=_envelope(), configurations=configurations)
+
+
+def test_malformed_choice_is_refused_before_an_authoring_configuration_is_issued():
+    with pytest.raises(ValueError, match='articulation_gravity_response_invalid'):
+        _articulated_map(authoring_backend='artisan_v1', joint_type='revolute', gravity_response=True)
 
 
 def test_articulated_stage_configurations_pass_and_refuse_a_driven_task_joint() -> None:
