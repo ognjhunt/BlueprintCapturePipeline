@@ -361,18 +361,18 @@ def _task_motion_points(bindings: Sequence[Mapping[str, Any]], *, whole_range: b
 
 def _task_motion_contact_count(
     index: RobotPlacementGeometryIndex, robot_id: str, position: np.ndarray, yaw: float,
-    points: np.ndarray | None = None,
+    points: np.ndarray | None = None, margin_m: float = TASK_MOTION_CLEARANCE_M,
 ) -> int:
-    """Swept task-part samples inside the robot's fixed volumes at this base pose."""
+    """Swept task-part samples inside the robot's fixed volumes, grown by ``margin_m``, at this base pose."""
     try:
-        reach = robot_fixed_volume_extent(robot_id) + TASK_MOTION_CLEARANCE_M
+        reach = robot_fixed_volume_extent(robot_id) + margin_m
         points = index.task_motion_points if points is None else points
         near = points[(np.abs(points[:, 0] - position[0]) <= reach) & (np.abs(points[:, 1] - position[1]) <= reach)]
         relative = near - position
         cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
         local = np.c_[cos_yaw * relative[:, 0] + sin_yaw * relative[:, 1],
                       cos_yaw * relative[:, 1] - sin_yaw * relative[:, 0], relative[:, 2]]
-        return int(robot_fixed_volume_mask(robot_id, local, TASK_MOTION_CLEARANCE_M).sum())
+        return int(robot_fixed_volume_mask(robot_id, local, margin_m).sum())
     except ScenePhysicsPreflightError as exc:
         raise RobotPlacementGeometryError(f"robot_placement_task_motion_unmeasurable:{exc}") from exc
 
@@ -876,9 +876,10 @@ def validate_robot_placement_geometry_candidate(
     if len(index.task_motion_points):
         result["task_motion_contact_point_count"] = motion_contacts
         # Beyond the threshold a strike does not block: a policy may stop short.
-        # Counted here so the search can prefer a base the part never reaches.
+        # Counted here, as actual overlap without the blocking margin, so the
+        # search can prefer a base the part never reaches.
         result["task_limit_contact_point_count"] = _task_motion_contact_count(
-            index, robot_id, position, yaw, index.task_limit_points)
+            index, robot_id, position, yaw, index.task_limit_points, margin_m=0.0)
     result["geometry_gate_digest"] = canonical_digest(
         result, digest_field="geometry_gate_digest"
     )
