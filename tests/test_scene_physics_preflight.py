@@ -213,3 +213,87 @@ def test_packet_entry_checks_every_articulation_and_binds_its_bytes(tmp_path, ca
     (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
     with pytest.raises(spp.ScenePhysicsPreflightError, match="asset_digest_mismatch:task_object"):
         spp.preflight_native_packet(root, **FAST)
+
+
+def test_contact_beyond_the_task_range_is_reported_without_blocking(tmp_path):
+    asset, background = _asset(tmp_path), _background(tmp_path, floor_bump=True)
+
+    def run(ranges):
+        return spp.scene_physics_preflight(background_usd=background, asset_usd=asset, asset_pose_world=POSE,
+                                           task_ranges=ranges, **FAST)
+
+    beyond = run({"door_hinge": [0.0, math.radians(54)]})
+    assert beyond["status"] == "passed" and beyond["blockers"] == []
+    assert beyond["advisories"] == ["scene_physics_motion_contact_outside_task_range:door_hinge@90deg"]
+    assert beyond["motion_clearance"][0]["task_range"] == [0.0, pytest.approx(math.radians(54))]
+    assert run({"door_hinge": [0.0, math.radians(90)]})["blockers"] == ["scene_physics_motion_contact:door_hinge@90deg"]
+    # A joint the task does not command only reports.
+    passive = run({})
+    assert passive["status"] == "passed" and passive["advisories"] == beyond["advisories"]
+
+
+def test_task_range_never_excuses_rest_overlap_or_intrusion(tmp_path):
+    report = spp.scene_physics_preflight(background_usd=_background(tmp_path, back_wall_x=-0.27),
+                                         asset_usd=_asset(tmp_path), asset_pose_world=POSE, task_ranges={}, **FAST)
+    assert report["status"] == "blocked"
+    assert report["blockers"][0].startswith("scene_physics_rest_overlap:")
+    assert any(b.startswith("scene_physics_envelope_intrusion:x-:") for b in report["blockers"])
+
+
+def test_flat_or_empty_geometry_has_nothing_to_overlap(tmp_path):
+    def flat(stage):
+        mesh = UsdGeom.Mesh.Define(stage, "/Asset/door/flat")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(0.1, 0.2, 0.3)])
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+
+    model = spp.load_asset_model(_asset(tmp_path, extra_collider=flat))
+    assert model.skipped_colliders == ("/Asset/door/flat",) and len(model.colliders) == 2
+    empty = tmp_path / "empty.usda"
+    stage = _stage(empty)
+    UsdPhysics.CollisionAPI.Apply(UsdGeom.Mesh.Define(stage, "/World/floor").GetPrim())
+    stage.GetRootLayer().Save()
+    report = spp.scene_physics_preflight(background_usd=empty, asset_usd=_asset(tmp_path), asset_pose_world=POSE, **FAST)
+    assert report["status"] == "passed" and report["notices"] == ["scene_physics_background_empty_near_asset"]
+    hollow = tmp_path / "hollow.usda"
+    stage = _stage(hollow)
+    stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Asset").GetPrim())
+    UsdPhysics.RigidBodyAPI.Apply(UsdGeom.Xform.Define(stage, "/Asset/base").GetPrim())
+    flat_only = UsdGeom.Mesh.Define(stage, "/Asset/base/flat")
+    flat_only.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(0.1, 0.2, 0.3)])
+    UsdPhysics.CollisionAPI.Apply(flat_only.GetPrim())
+    stage.GetRootLayer().Save()
+    report = spp.scene_physics_preflight(background_usd=_background(tmp_path), asset_usd=hollow,
+                                         asset_pose_world=POSE, **FAST)
+    assert report["status"] == "passed" and report["notices"] == ["scene_physics_asset_solid_colliders_absent"]
+
+
+def _with_task(root, plan, *, success_start_deg):
+    plan["task_spec"] = {"task_kind": "articulated_open_close", "executable_opening_threshold": {
+        "target_joint_id": "door_hinge", "reset_position": 0.0,
+        "success_interval": [math.radians(success_start_deg), math.radians(90)]}}
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+
+
+def test_admission_blocks_task_range_contact_and_reports_beyond_it(tmp_path):
+    root, plan = _packet(tmp_path, _background(tmp_path, floor_bump=True), _asset(tmp_path))
+    _with_task(root, plan, success_start_deg=54)
+    report = spp.require_scene_physics_admission(root, **FAST)
+    assert report["status"] == "passed" and report["blockers"] == []
+    assert report["task_ranges"] == {"door_hinge": [0.0, pytest.approx(math.radians(54))]}
+    assert report["advisories"] == ["task_object:scene_physics_motion_contact_outside_task_range:door_hinge@90deg"]
+    _with_task(root, plan, success_start_deg=90)
+    with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
+        spp.require_scene_physics_admission(root, **FAST)
+    assert blocked.value.blockers == ["task_object:scene_physics_motion_contact:door_hinge@90deg"]
+
+
+def test_admission_refuses_what_it_cannot_measure_and_skips_rigid_scenes(tmp_path):
+    root, plan = _packet(tmp_path, _background(tmp_path), _asset(tmp_path))
+    plan["objects"][1]["sha256"] = "sha256:" + "0" * 64
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    with pytest.raises(spp.ScenePhysicsAdmissionBlocked, match="refused:scene_physics_packet_asset_digest_mismatch"):
+        spp.require_scene_physics_admission(root, **FAST)
+    plan["objects"][1]["object_type"] = "BASE"
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    report = spp.require_scene_physics_admission(root)
+    assert report["status"] == "not_applicable" and report["reason"] == "no_articulated_object"
