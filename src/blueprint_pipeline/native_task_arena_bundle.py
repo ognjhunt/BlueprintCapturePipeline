@@ -546,8 +546,14 @@ def build_native_task_arena_bundle(
         )
 
     packet_root, packet_receipt, packet_rows = _verified_packet(packet_dir)
-    # No paid native run starts from a scene the CPU physics check blocks or cannot
-    # measure: rest overlap, background inside the asset, or task-range contact.
+    # No paid native run starts from a scene the CPU checks block or cannot measure:
+    # rest overlap, background inside the asset, task-range contact, or a contact the
+    # policy camera cannot see through the captured scene.
+    from .scene_camera_visibility import (
+        PACKET_REPORT_FILENAME as CAMERA_REPORT_FILENAME,
+        SceneCameraVisibilityBlocked,
+        require_scene_camera_admission,
+    )
     from .scene_physics_preflight import (
         PACKET_REPORT_FILENAME,
         ScenePhysicsAdmissionBlocked,
@@ -559,6 +565,12 @@ def build_native_task_arena_bundle(
     except ScenePhysicsAdmissionBlocked as exc:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_scene_physics_blocked:" + item for item in exc.blockers]
+        ) from exc
+    try:
+        camera_report = require_scene_camera_admission(packet_root)
+    except SceneCameraVisibilityBlocked as exc:
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_scene_camera_blocked:" + item for item in exc.blockers]
         ) from exc
     try:
         packet_request = json.loads(
@@ -915,6 +927,7 @@ def build_native_task_arena_bundle(
     }
     # Evidence beside the receipt, bound to the same scene plan digest.
     write_json(job / PACKET_REPORT_FILENAME, physics_report)
+    write_json(job / CAMERA_REPORT_FILENAME, camera_report)
     write_json(job / "native_task_arena_provider_bundle_receipt.v1.json", receipt)
     return receipt
 
