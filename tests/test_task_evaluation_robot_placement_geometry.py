@@ -228,6 +228,80 @@ def test_placed_task_actor_blocks_previously_clear_robot_pose(tmp_path):
     assert validate_robot_placement_geometry_candidate(index=moved, **arguments)["status"] == "passed"
 
 
+def _cabinet_with_drop_door(tmp_path, *, task_range=(0.0, math.pi / 2)):
+    """A 0.6 x 0.6 x 0.9 m cabinet behind x = 0 whose 0.8 m door opens forward to the floor."""
+    from pxr import UsdPhysics
+
+    path = tmp_path / "cabinet.usda"
+    stage = Usd.Stage.CreateNew(str(path))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Cabinet").GetPrim())
+    for body, size, centre in (("base", (0.6, 0.6, 0.9), (-0.3, 0.0, 0.45)), ("door", (0.04, 0.6, 0.8), (0.02, 0.0, 0.45))):
+        UsdPhysics.RigidBodyAPI.Apply(UsdGeom.Xform.Define(stage, f"/Cabinet/{body}").GetPrim())
+        cube = UsdGeom.Cube.Define(stage, f"/Cabinet/{body}/col")
+        cube.CreateSizeAttr(1.0)
+        cube.AddTranslateOp().Set(Gf.Vec3d(*centre))
+        cube.AddScaleOp().Set(Gf.Vec3f(*size))
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    hinge = UsdPhysics.RevoluteJoint.Define(stage, "/Cabinet/door_hinge")
+    hinge.CreateBody0Rel().SetTargets(["/Cabinet/base"])
+    hinge.CreateBody1Rel().SetTargets(["/Cabinet/door"])
+    for create_pos, create_rot in ((hinge.CreateLocalPos0Attr, hinge.CreateLocalRot0Attr),
+                                   (hinge.CreateLocalPos1Attr, hinge.CreateLocalRot1Attr)):
+        create_pos().Set(Gf.Vec3f(0.02, 0.0, 0.05))
+        create_rot().Set(Gf.Quatf(1.0))
+    hinge.CreateAxisAttr().Set("Y")
+    hinge.CreateLowerLimitAttr().Set(0.0)
+    hinge.CreateUpperLimitAttr().Set(90.0)
+    stage.GetRootLayer().Save()
+    return {
+        "asset_id": "cabinet", "asset_usd_path": str(path),
+        "asset_digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        "pose": {"position_world_m": [0., 0., 0.], "orientation_xyzw": [0., 0., 0., 1.]},
+        "task_motion": {"joint_id": "door_hinge", "task_range": list(task_range),
+                        "reset_joint_positions": {"door_hinge": 0.0}},
+    }
+
+
+def test_robot_base_in_the_task_doors_swing_is_rejected(tmp_path):
+    # 2026-10-26: a Franka placed in front of a drop-down dishwasher door had the
+    # released door land on its shoulder; beside the swing the same task is clear.
+    scene, robot = _assets(tmp_path)
+    actor = _cabinet_with_drop_door(tmp_path)
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                                 task_assets=[actor])
+    assert len(index.task_motion_points) and index.task_asset_bindings[0]["task_motion"]["joint_id"] == "door_hinge"
+    floor = next(s for s in index.support_surfaces if s.prim_path == "/Scene/Floor")
+    target = [0.05, 0.0, 0.85]
+    in_front = validate_robot_placement_geometry_candidate(
+        index=index, proposal=_proposal(floor.surface_id, (0.55, 0.0, 0.0), math.pi), target_position_world_m=target)
+    assert "robot_base_in_task_motion_path" in in_front["blockers"]
+    assert in_front["task_motion_contact_point_count"] > 0
+    beside = validate_robot_placement_geometry_candidate(
+        index=index, proposal=_proposal(floor.surface_id, (0.3, 0.55, 0.0), math.atan2(-0.55, -0.25)),
+        target_position_world_m=target)
+    assert beside["status"] == "passed" and beside["task_motion_contact_point_count"] == 0
+    # Stopping short of the floor, the door never reaches the base in front.
+    (tmp_path / "short").mkdir()
+    short = _cabinet_with_drop_door(tmp_path / "short", task_range=(0.0, math.radians(30)))
+    short_index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                                       task_assets=[short])
+    assert "robot_base_in_task_motion_path" not in validate_robot_placement_geometry_candidate(
+        index=short_index, proposal=_proposal(floor.surface_id, (0.55, 0.0, 0.0), math.pi),
+        target_position_world_m=target)["blockers"]
+    # Without a declared motion the gate keeps its previous shape.
+    del actor["task_motion"]
+    still = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                                 task_assets=[actor])
+    assert "task_motion_contact_point_count" not in validate_robot_placement_geometry_candidate(
+        index=still, proposal=_proposal(floor.surface_id, (0.55, 0.0, 0.0), math.pi), target_position_world_m=target)
+    actor["task_motion"] = {"joint_id": "door_hinge", "task_range": [0.0]}
+    with pytest.raises(RobotPlacementGeometryError, match="robot_placement_task_motion_invalid"):
+        build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                             task_assets=[actor])
+
+
 def test_task_actor_rejects_changed_source_bytes(tmp_path):
     scene, robot = _assets(tmp_path)
     actor = _task_asset(tmp_path)

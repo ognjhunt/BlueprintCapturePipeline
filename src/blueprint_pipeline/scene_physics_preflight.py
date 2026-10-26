@@ -23,6 +23,12 @@ and background inside the asset's envelope block it. A moving part's contact blo
 only inside the task's range: the target joint between its reset position and the
 success threshold. Contact beyond that range, or on a joint the task does not
 command, is reported without blocking.
+
+The same sweep measures the robot: its base and shoulder, the parts no policy
+action can move, inside the asset at reset or in the target joint's path anywhere
+from reset to the far end of the success interval block too. On 2026-10-26 the
+dishwasher door, released at 30 degrees, fell onto the arm's shoulder and rested
+there, so the scorer flagged a collision no policy could have avoided.
 """
 from __future__ import annotations
 
@@ -614,6 +620,14 @@ def _reachable_triangles(triangles: np.ndarray, placements: Sequence[tuple[Colli
     return triangles[keep]
 
 
+def _sweep_values(joint: Joint, span: Sequence[float], revolute_step: float, prismatic_step: float) -> np.ndarray:
+    step = revolute_step if joint.kind == "revolute" else prismatic_step
+    values = np.linspace(joint.lower, joint.upper, max(2, int(math.ceil((joint.upper - joint.lower) / step)) + 1))
+    # Sample the task's own endpoints too: a goal between two sweep steps is
+    # exactly the position the task must reach.
+    return np.unique(np.concatenate([values, [float(v) for v in span if joint.lower <= float(v) <= joint.upper]]))
+
+
 def _joint_label(motion: Mapping[str, Any], sample: Mapping[str, Any]) -> str:
     return ("%.0fdeg" % math.degrees(sample["value"]) if motion["joint_type"] == "revolute"
             else "%.0fcm" % (100 * sample["value"]))
@@ -670,12 +684,7 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
     sweeps = []
     for joint in movable:
         moving = descendants(model, joint.joint_id)
-        step = revolute_step_rad if joint.kind == "revolute" else prismatic_step_m
-        values = np.linspace(joint.lower, joint.upper, max(2, int(math.ceil((joint.upper - joint.lower) / step)) + 1))
-        # Sample the task's own endpoints too: a goal between two sweep steps is
-        # exactly the position the task must reach.
-        span = (task_ranges or {}).get(joint.joint_id) or []
-        values = np.unique(np.concatenate([values, [float(v) for v in span if joint.lower <= float(v) <= joint.upper]]))
+        values = _sweep_values(joint, (task_ranges or {}).get(joint.joint_id) or [], revolute_step_rad, prismatic_step_m)
         sweeps.append((joint, moving, values, [placed_at({joint.joint_id: float(v)}, moving) for v in values]))
     every = rest + [pair for _, _, _, frames in sweeps for placed in frames for pair in placed]
     centres = np.asarray([w[:3, 3] for _, w in every])
@@ -748,6 +757,179 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
 
 
 
+# The robot parts no policy action can move out of a moving part's way, in the
+# robot's base frame, measured from the runtime USD named by
+# ``measured_from_sha256``: link 0's bounding box, and the cylinder about the base
+# axis that holds link 1 at every joint-1 angle and link 2's housing around the
+# joint-2 axis at every joint-2 angle.
+ROBOT_FIXED_VOLUMES: dict[str, dict[str, Any]] = {
+    "franka_panda": {
+        "measured_from_sha256": "sha256:c8d72259834e2e5290754f8580b37efbc0dec079ac6a98b27b167efe6461eb2c",
+        "boxes": (((-0.154, -0.095, 0.0), (0.072, 0.095, 0.140)),),
+        "cylinders": ((0.13, 0.140, 0.391),),  # radius, base-frame z low, z high
+    },
+}
+
+
+def robot_fixed_surface(robot_id: str, spacing: float = DEFAULT_SAMPLE_SPACING_M) -> np.ndarray:
+    """Surface samples of a robot's fixed volumes, in its base frame."""
+    volumes = ROBOT_FIXED_VOLUMES.get(robot_id)
+    if volumes is None:
+        raise ScenePhysicsPreflightError("scene_physics_robot_model_unmeasured:" + str(robot_id))
+
+    def steps(low: float, high: float) -> np.ndarray:
+        return np.linspace(low, high, max(2, int(math.ceil((high - low) / spacing)) + 1))
+
+    parts = []
+    for low, high in volumes["boxes"]:
+        low, high = np.asarray(low, dtype=float), np.asarray(high, dtype=float)
+        grid = np.stack(np.meshgrid(*(steps(low[i], high[i]) for i in range(3)), indexing="ij"), axis=-1).reshape(-1, 3)
+        parts.append(grid[np.isclose(grid, low).any(axis=1) | np.isclose(grid, high).any(axis=1)])
+    for radius, z_low, z_high in volumes["cylinders"]:
+        rings = []
+        for ring_radius in steps(0.0, radius):
+            angles = np.linspace(0.0, 2 * math.pi, max(1, int(math.ceil(2 * math.pi * ring_radius / spacing))),
+                                 endpoint=False)
+            rings.append(np.c_[ring_radius * np.cos(angles), ring_radius * np.sin(angles)])
+        heights, rim = steps(z_low, z_high), rings[-1]
+        parts.append(np.c_[np.tile(rim, (len(heights), 1)), np.repeat(heights, len(rim))])
+        parts.extend(np.c_[ring, np.full(len(ring), z)] for ring in rings for z in (z_low, z_high))
+    return np.concatenate(parts)
+
+
+def robot_motion_clearance(*, asset_usd: str | Path, asset_pose_world: Mapping[str, Sequence[float]],
+                           reset_joint_positions: Mapping[str, float] | None, joint_id: str,
+                           task_range: Sequence[float], robot_id: str,
+                           robot_pose_world: Mapping[str, Sequence[float]],
+                           sample_spacing_m: float = DEFAULT_SAMPLE_SPACING_M,
+                           rest_tolerance_m: float = DEFAULT_REST_TOLERANCE_M,
+                           motion_tolerance_m: float = DEFAULT_MOTION_TOLERANCE_M,
+                           revolute_step_rad: float = DEFAULT_REVOLUTE_STEP_RAD,
+                           prismatic_step_m: float = DEFAULT_PRISMATIC_STEP_M) -> dict[str, Any]:
+    """Measure the robot's fixed volumes against the placed asset at reset and along one joint.
+
+    Contact at reset or inside ``task_range`` blocks; contact elsewhere in the
+    joint's limits is an advisory.
+    """
+    from scipy.spatial import cKDTree
+
+    model = load_asset_model(asset_usd)
+    joint = next((j for j in model.joints if j.joint_id == joint_id and j.kind != "fixed"), None)
+    if joint is None:
+        raise ScenePhysicsPreflightError("scene_physics_joint_unknown:" + joint_id)
+    world_from_asset = _pose_matrix(asset_pose_world)
+    world_from_robot = _pose_matrix(robot_pose_world)
+    points = robot_fixed_surface(robot_id, sample_spacing_m) @ world_from_robot[:3, :3].T + world_from_robot[:3, 3]
+    tree = cKDTree(points)
+    reset = dict(reset_joint_positions or {})
+    moving = descendants(model, joint_id)
+
+    def placed_at(values: Mapping[str, float] | None, bodies: set[str] | None = None):
+        poses = {body: world_from_asset @ pose for body, pose in body_poses(model, {**reset, **(values or {})}).items()}
+        return [(c, w) for c, w in _placed(model.colliders, poses) if bodies is None or c.body in bodies]
+
+    rest = placed_at(None)
+    depth, _ = penetration(points, rest, tree=tree)
+    base, _ = penetration(points, [(c, w) for c, w in rest if c.body in moving], tree=tree)
+    motion = {"joint_id": joint_id, "joint_type": joint.kind, "limits": [joint.lower, joint.upper],
+              "task_range": sorted(float(v) for v in task_range), "samples": []}
+    for value in _sweep_values(joint, task_range, revolute_step_rad, prismatic_step_m):
+        d, _ = penetration(points, placed_at({joint_id: float(value)}, moving), tree=tree)
+        added = (d > motion_tolerance_m) & ~(base > motion_tolerance_m)
+        motion["samples"].append({"value": float(value), "contact_points": int(added.sum()),
+                                  "max_depth_m": float(d[added].max()) if np.any(added) else 0.0})
+    low, high = motion["task_range"]
+    contacts = [s for s in motion["samples"] if s["contact_points"]]
+    inside = [s for s in contacts if low - 1e-6 <= s["value"] <= high + 1e-6]
+    outside = [s for s in contacts if s not in inside]
+    blockers, advisories = [], []
+    overlap = depth > rest_tolerance_m
+    rest_depth = float(depth[overlap].max()) if np.any(overlap) else 0.0
+    if rest_depth:
+        blockers.append("scene_physics_robot_rest_overlap:%.1fcm" % (100 * rest_depth))
+    if inside:
+        blockers.append("scene_physics_robot_in_motion_path:%s@%s" % (joint_id, _joint_label(motion, inside[0])))
+    if outside:
+        advisories.append("scene_physics_robot_in_motion_path_outside_task_range:%s@%s"
+                          % (joint_id, _joint_label(motion, outside[0])))
+    return {"robot_id": robot_id, "robot_pose_world": {k: [float(v) for v in robot_pose_world[k]]
+                                                       for k in ("position_world_m", "orientation_xyzw")},
+            "measured_from_sha256": ROBOT_FIXED_VOLUMES[robot_id]["measured_from_sha256"],
+            "status": "blocked" if blockers else "passed", "blockers": blockers, "advisories": advisories,
+            "notices": [], "robot_samples": int(len(points)), "rest_max_depth_m": rest_depth,
+            "motion": motion}
+
+
+def robot_fixed_volume_mask(robot_id: str, points_base: np.ndarray, margin_m: float = 0.0) -> np.ndarray:
+    """Which base-frame points lie in a robot's fixed volumes grown by ``margin_m``."""
+    volumes = ROBOT_FIXED_VOLUMES.get(robot_id)
+    if volumes is None:
+        raise ScenePhysicsPreflightError("scene_physics_robot_model_unmeasured:" + str(robot_id))
+    inside = np.zeros(len(points_base), dtype=bool)
+    for low, high in volumes["boxes"]:
+        inside |= np.all((points_base >= np.asarray(low) - margin_m) & (points_base <= np.asarray(high) + margin_m),
+                         axis=1)
+    for radius, z_low, z_high in volumes["cylinders"]:
+        inside |= ((np.hypot(points_base[:, 0], points_base[:, 1]) <= radius + margin_m)
+                   & (points_base[:, 2] >= z_low - margin_m) & (points_base[:, 2] <= z_high + margin_m))
+    return inside
+
+
+def robot_fixed_volume_extent(robot_id: str) -> float:
+    """The farthest horizontal reach of a robot's fixed volumes from its base axis."""
+    volumes = ROBOT_FIXED_VOLUMES.get(robot_id)
+    if volumes is None:
+        raise ScenePhysicsPreflightError("scene_physics_robot_model_unmeasured:" + str(robot_id))
+    corners = [math.hypot(x, y) for low, high in volumes["boxes"] for x in (low[0], high[0]) for y in (low[1], high[1])]
+    return max(corners + [radius for radius, _, _ in volumes["cylinders"]])
+
+
+def _voxel_thin(points: np.ndarray, spacing: float) -> np.ndarray:
+    """One point per ``spacing`` cube, kept in input order."""
+    if not len(points):
+        return points
+    _, keep = np.unique(np.floor(points / spacing).astype(np.int64), axis=0, return_index=True)
+    return points[np.sort(keep)]
+
+
+def _collider_surface(collider: Collider, spacing: float) -> np.ndarray:
+    """Surface samples of one collider in its own frame; a box bounds a cylinder or sphere."""
+    if collider.kind == "hull":
+        from scipy.spatial import ConvexHull
+
+        return sample_surface(collider.vertices[ConvexHull(collider.vertices).simplices], spacing)[0]
+    corners = collider.local_corners()  # index = 4*(x>0) + 2*(y>0) + (z>0)
+    faces = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
+    triangles = np.asarray([corners[[a, b, c]] for a, b, c, d in faces] + [corners[[a, c, d]] for a, b, c, d in faces])
+    return sample_surface(triangles, spacing)[0]
+
+
+def task_motion_surface(*, asset_usd: str | Path, asset_pose_world: Mapping[str, Sequence[float]], joint_id: str,
+                        task_range: Sequence[float], reset_joint_positions: Mapping[str, float] | None = None,
+                        sample_spacing_m: float = 0.02, revolute_step_rad: float = DEFAULT_REVOLUTE_STEP_RAD,
+                        prismatic_step_m: float = DEFAULT_PRISMATIC_STEP_M) -> np.ndarray:
+    """World surface samples of every part ``joint_id`` moves, at each sweep step inside ``task_range``."""
+    model = load_asset_model(asset_usd)
+    joint = next((j for j in model.joints if j.joint_id == joint_id and j.kind != "fixed"), None)
+    if joint is None:
+        raise ScenePhysicsPreflightError("scene_physics_joint_unknown:" + joint_id)
+    low, high = sorted(float(v) for v in task_range)
+    moving = descendants(model, joint_id)
+    local = [(c, _voxel_thin(_collider_surface(c, sample_spacing_m), sample_spacing_m))
+             for c in model.colliders if c.body in moving]
+    world_from_asset = _pose_matrix(asset_pose_world)
+    reset = dict(reset_joint_positions or {})
+    parts = [np.zeros((0, 3))]
+    for value in _sweep_values(joint, [low, high], revolute_step_rad, prismatic_step_m):
+        if not low - 1e-9 <= value <= high + 1e-9:
+            continue
+        poses = body_poses(model, {**reset, joint_id: float(value)})
+        for collider, points in local:
+            world = world_from_asset @ poses[collider.body] @ collider.body_from_collider
+            parts.append(points @ world[:3, :3].T + world[:3, 3])
+    return _voxel_thin(np.concatenate(parts), sample_spacing_m)
+
+
 PACKET_REPORT_SCHEMA_VERSION = "native_task_scene_physics_preflight.v1"
 PACKET_REPORT_FILENAME = "native_task_scene_physics_preflight.v1.json"
 
@@ -762,11 +944,13 @@ def _file_sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def task_motion_ranges(plan: Mapping[str, Any]) -> dict[str, list[float]]:
+def task_motion_ranges(plan: Mapping[str, Any], *, through_success_interval: bool = False) -> dict[str, list[float]]:
     """The task subject's commanded span: its target joint from reset to the success threshold.
 
-    An articulated task whose span cannot be read is refused rather than treated as
-    commanding nothing, which would turn every contact into an advisory.
+    ``through_success_interval`` extends the span to the interval's far end, every
+    state a successful episode can leave the joint in. An articulated task whose
+    span cannot be read is refused rather than treated as commanding nothing,
+    which would turn every contact into an advisory.
     """
     spec = plan.get("task_spec") or {}
     if spec.get("task_kind") != "articulated_open_close":
@@ -775,7 +959,8 @@ def task_motion_ranges(plan: Mapping[str, Any]) -> dict[str, list[float]]:
     try:
         if threshold is not None:
             target = str(threshold["target_joint_id"])
-            reset, goal = float(threshold["reset_position"]), float(threshold["success_interval"][0])
+            interval = threshold["success_interval"]
+            reset, goal = float(threshold["reset_position"]), float(interval[1 if through_success_interval else 0])
         else:
             # Pre-v2 task specs command the scripted target from the scorer's reset.
             target = str(spec["target_joint_id"])
@@ -796,9 +981,11 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
     The background is the plan's one ``scene_collision`` object at its pose; each
     ``ARTICULATION`` object is checked at its reset root pose and joint positions.
     The task subject's target joint blocks only inside the task's range; other
-    articulated objects and joints report contact without blocking. Every file is
-    bound to the digest the plan recorded for it. A plan with no articulated object
-    is ``not_applicable``.
+    articulated objects and joints report contact without blocking. The robot's
+    fixed volumes, at the plan's base pose, block inside the subject at reset or in
+    its target joint's path through the success interval. Every file is bound to
+    the digest the plan recorded for it. A plan with no articulated object is
+    ``not_applicable``.
     """
     import json
 
@@ -843,10 +1030,27 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
         rows.append({"name": row.get("name"), "usd_path": row.get("usd_path"), "sha256": row.get("sha256"), **report})
         blockers.extend(f"{row.get('name')}:{b}" for b in report["blockers"])
         advisories.extend(f"{row.get('name')}:{a}" for a in report["advisories"])
+    robot_report = None
+    reach = task_motion_ranges(plan, through_success_interval=True) if len(subjects) == 1 else {}
+    if reach:
+        robot = plan.get("robot") or {}
+        if not isinstance(robot.get("base_pose_world"), Mapping):
+            raise ScenePhysicsPreflightError("scene_physics_robot_pose_missing")
+        subject, ((joint_id, span),) = subjects[0], reach.items()
+        reset = subject.get("reset_state") or {}
+        robot_report = robot_motion_clearance(
+            asset_usd=bound(subject), asset_pose_world=reset.get("root_pose_world") or subject["pose_world"],
+            reset_joint_positions=reset.get("joint_positions"), joint_id=joint_id, task_range=span,
+            robot_id=str(robot.get("robot_id")), robot_pose_world=robot["base_pose_world"], **options)
+        runtime = ((plan.get("articulation") or {}).get("robot_contact_topology") or {}).get("runtime_asset") or {}
+        if runtime.get("sha256") and runtime["sha256"] != robot_report["measured_from_sha256"]:
+            robot_report["notices"].append("scene_physics_robot_volumes_measured_on_other_asset")
+        blockers.extend(f"{subject.get('name')}:{b}" for b in robot_report["blockers"])
+        advisories.extend(f"{subject.get('name')}:{a}" for a in robot_report["advisories"])
     result = {"schema_version": PACKET_REPORT_SCHEMA_VERSION, "arena_scene_plan_digest": plan.get("plan_digest"),
               "scene_collision_sha256": collisions[0].get("sha256"), "status": "blocked" if blockers else "passed",
               "blockers": blockers, "advisories": advisories, "task_ranges": ranges, "objects": rows,
-              "simulator_executed": False, "provider_mutation_performed": False}
+              "robot_clearance": robot_report, "simulator_executed": False, "provider_mutation_performed": False}
     result["report_digest"] = canonical_digest(result, digest_field="report_digest")
     return result
 
