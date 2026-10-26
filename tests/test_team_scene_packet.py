@@ -221,3 +221,88 @@ def test_a_completed_source_launch_is_compiled_and_recorded_where_the_team_regis
     facts, blockers = offer_eligibility(profile)
     assert facts is None and blockers == ["team_evaluation_robot_free_probe_receipt_missing"]
     assert scene_facts(profile)["inputs"] == read_team_scene_inputs(prepared["path"])
+
+
+def _articulated_scene(tmp_path: Path, *, owner_confirmed: bool = True) -> dict[str, Any]:
+    """The configured drawer-cabinet revision, standing on a room's floor, published with its bundle."""
+
+    from pxr import UsdGeom
+
+    from tests.test_task_evaluation_articulated_open_close_native_adapter import DEFINITION, _case
+
+    case = _case(tmp_path / "case")
+    configured, references = case["configured"], case["references"]
+    if owner_confirmed:
+        reference = references[DEFINITION]
+        template = json.loads(Path(reference["materialized_path"]).read_text())
+        template["owner_success_contract_authority"] = {
+            "accepted_by": "owner-1", "authority_reference": "owner-chat:drawer-60-percent",
+            "basis": "owner_confirmed_proposed_rule", "confirmation_status": "confirmed"}
+        payload = (json.dumps(template, sort_keys=True) + "\n").encode()
+        Path(reference["materialized_path"]).write_bytes(payload)
+        reference.update(digest=_sha(payload), size_bytes=len(payload))
+        configured["task_template"]["definition"] = {key: reference[key] for key in ("uri", "digest", "size_bytes")}
+    room = _stage(tmp_path / "room.usda", "/Root")
+    _box(room, "/Root/Floor", (-3.0, -3.0, 0.0), (3.0, 3.0, 0.0))
+    _box(room, "/Root/BackWall", (-0.4, -3.0, 0.0), (-0.3, 3.0, 1.5))  # behind the cabinet's back
+    UsdGeom.SetStageMetersPerUnit(room, 1.0)
+    room.GetRootLayer().Save()
+    asset = Path(case["asset"])
+    payloads = {"appearance.usda": (tmp_path / "room.usda").read_bytes(),
+                "collision.usda": (tmp_path / "room.usda").read_bytes(), "replacement" + asset.suffix: asset.read_bytes()}
+    rows = [{"role": name.split(".")[0], "relative_path": name, "digest": _sha(data), "size_bytes": len(data)}
+            for name, data in payloads.items()]
+    manifest = {"schema_version": "task_evaluation_configured_scene_bundle_candidate.v1",
+                "status": "assembled_pending_control_plane_publication", "robot_neutral": True,
+                "robot_specific_base_registration_included": False, "assets": rows, "manifest_digest": ""}
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    bundle = tmp_path / "configured-scene.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for name, data in payloads.items():
+            archive.writestr(name, data)
+        archive.writestr("configured_scene_bundle_candidate.v1.json", json.dumps(manifest))
+    configured["configured_scene_bundle"] = {"uri": "s3://scenes/configured-scene.zip",
+                                             "digest": _sha(bundle.read_bytes()), "size_bytes": bundle.stat().st_size}
+    configured["revision_digest"] = canonical_digest(configured, digest_field="revision_digest")
+    store = {row["uri"]: Path(row["materialized_path"]).read_bytes() for row in references.values()}
+    documents = rigid.fetch_revision_documents(revision=configured, output_root=tmp_path / "work",
+                                               fetcher=lambda reference: store[reference["uri"]])
+    (tmp_path / "rigid").mkdir()
+    rigid_scene = _scene(tmp_path / "rigid")
+    return {**{key: rigid_scene[key] for key in ("droid_profile_path", "droid_profile_digest",
+                                                 "runtime_source_receipt_path", "profile")},
+            "revision": configured, "documents": documents, "configured_scene_bundle_path": bundle}
+
+
+def test_a_drawer_task_compiles_with_a_station_clear_of_the_drawers_travel(tmp_path) -> None:
+    from blueprint_pipeline.adp_articulated_task_success_contract import validate_task_success_contract
+    from blueprint_pipeline.scene_physics_preflight import require_scene_physics_admission
+
+    scene = _articulated_scene(tmp_path)
+    compiled, request = _compile(tmp_path, scene)
+    packet = Path(compiled["path"]).parent / "native-task-packet"
+    # The scene's own drawer task, as the website episode compiler builds it.
+    assert request["task_spec"]["task_kind"] == "articulated_open_close"
+    subject = request["assets"][2]
+    assert subject["object_type"] == "ARTICULATION" and subject["reset_state"]["joint_positions"] == {
+        "task_part_joint": 0.0}
+    assert request["articulated_kinematic_path_receipt"]["schema_version"]
+    # A floor cabinet puts the arm's mount on the floor, clear of the drawer's whole travel.
+    station = compiled["robot_station"]
+    assert station["position_world_m"][2] == pytest.approx(station["floor_z_m"], abs=1e-6)
+    assert station["task_motion_clearance"]["reached_beyond_task_range"] is False
+    report = require_scene_physics_admission(packet, sample_spacing_m=0.01)
+    assert report["robot_clearance"]["blockers"] == [] and report["robot_clearance"]["advisories"] == []
+    # The owner's confirmed criteria become the sealed contract, read by the team registry as a whole half.
+    half = read_team_scene_inputs(compiled["path"])
+    contract = validate_task_success_contract(half["task_success_contract"], task_kind="articulated_open_close")
+    assert contract["provenance"]["author_source"] == "task_owner"
+    facts = scene_facts({"team_scene_inputs_path": compiled["path"], "open_loop_horizon": 8})
+    assert facts["prompt"] and facts["max_policy_queries"] > 0 and facts["scene"]["task_spec"]["task_kind"] == (
+        "articulated_open_close")
+
+
+def test_a_drawer_task_whose_owner_contract_is_unconfirmed_is_refused(tmp_path) -> None:
+    scene = _articulated_scene(tmp_path, owner_confirmed=False)
+    with pytest.raises(TeamScenePacketError, match="team_scene_owner_contract_invalid"):
+        _compile(tmp_path, scene)
