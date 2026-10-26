@@ -27,10 +27,13 @@ command, is reported without blocking.
 The same sweep measures the robot: its base and shoulder, the parts no policy
 action can move, block when they sit inside the asset at reset or in the target
 joint's path before it reaches the success threshold, because then no successful
-episode avoids striking them. Contact beyond the threshold is reported: a policy
-can stop short of it, and runtime counterbalancing keeps a released door where it
-is left. On 2026-10-26 the dishwasher door, free-falling after release at 30
-degrees, came to rest on the arm's shoulder at 60 degrees.
+episode avoids striking them. Beyond the threshold it depends on the joint. One
+that holds where it is released (every carried body gravity-free, as a
+counterbalanced door is, a vertical hinge or a level slide) only goes further if a
+policy pushes it, so contact there is reported. Any other joint is carried on by
+gravity to its hard limit, so contact anywhere on that fall blocks. On 2026-10-26
+the dishwasher door, free-falling after release at 30 degrees, came to rest on the
+arm's shoulder at 60 degrees.
 """
 from __future__ import annotations
 
@@ -48,6 +51,9 @@ DEFAULT_MOTION_TOLERANCE_M = 0.002
 DEFAULT_REVOLUTE_STEP_RAD = math.radians(2.0)
 DEFAULT_PRISMATIC_STEP_M = 0.01
 _PUSH_DIRECTIONS = 1024
+#: A hinge within this of vertical, or a slide within this of level, takes no
+#: gravity drive along its axis.
+GRAVITY_FREE_AXIS_TOLERANCE_RAD = math.radians(2.0)
 
 
 class ScenePhysicsPreflightError(ValueError):
@@ -306,6 +312,57 @@ def body_poses(model: AssetModel, joint_values: Mapping[str, float] | None = Non
         if not progressed:
             raise ScenePhysicsPreflightError("scene_physics_joint_tree_disconnected")
     return poses
+
+
+def _movable_joint(model: AssetModel, joint_id: str) -> Joint:
+    joint = next((j for j in model.joints if j.joint_id == joint_id and j.kind != "fixed"), None)
+    if joint is None:
+        raise ScenePhysicsPreflightError("scene_physics_joint_unknown:" + joint_id)
+    return joint
+
+
+def _holds_released_position(model: AssetModel, asset_usd: str | Path, joint: Joint,
+                             asset_pose_world: Mapping[str, Sequence[float]] | None) -> bool:
+    from pxr import Usd
+
+    stage = Usd.Stage.Open(str(asset_usd))
+
+    def weightless(path: str) -> bool:
+        prim = stage.GetPrimAtPath(path)
+        attribute = prim.GetAttribute("physxRigidBody:disableGravity") if prim and prim.IsValid() else None
+        return bool(attribute and attribute.Get())
+
+    if all(weightless(body) for body in descendants(model, joint.joint_id)):
+        return True
+    world_from_asset = _pose_matrix(asset_pose_world) if asset_pose_world else np.eye(4)
+    axis = (world_from_asset[:3, :3] @ model.asset_from_body[joint.parent][:3, :3]
+            @ joint.parent_from_joint[:3, :3] @ joint.axis)
+    vertical = abs(float(axis[2])) / float(np.linalg.norm(axis))
+    if joint.kind == "revolute":
+        return vertical >= math.cos(GRAVITY_FREE_AXIS_TOLERANCE_RAD)
+    return vertical <= math.sin(GRAVITY_FREE_AXIS_TOLERANCE_RAD)
+
+
+def _released_span(joint: Joint, task_range: Sequence[float], reset_position: float, holds: bool) -> list[float]:
+    low, high = sorted(float(v) for v in task_range)
+    if not holds:
+        if high > reset_position:
+            high = max(high, joint.upper)
+        if low < reset_position:
+            low = min(low, joint.lower)
+    return [low, high]
+
+
+def joint_holds_released_position(asset_usd: str | Path, joint_id: str, *,
+                                  asset_pose_world: Mapping[str, Sequence[float]] | None = None) -> bool:
+    """Whether a joint stays where a policy releases it.
+
+    It does when gravity cannot drive it: every body it carries is gravity-free
+    (a counterbalanced door), its hinge is vertical or its slide is level. Any
+    other joint is carried on by gravity to its hard limit.
+    """
+    model = load_asset_model(asset_usd)
+    return _holds_released_position(model, asset_usd, _movable_joint(model, joint_id), asset_pose_world)
 
 
 def descendants(model: AssetModel, joint_id: str) -> set[str]:
@@ -810,15 +867,14 @@ def robot_motion_clearance(*, asset_usd: str | Path, asset_pose_world: Mapping[s
                            prismatic_step_m: float = DEFAULT_PRISMATIC_STEP_M) -> dict[str, Any]:
     """Measure the robot's fixed volumes against the placed asset at reset and along one joint.
 
-    Contact at reset or inside ``task_range`` blocks; contact elsewhere in the
-    joint's limits is an advisory.
+    Contact at reset or inside ``task_range`` blocks. Contact beyond it blocks
+    too when gravity would carry the released joint there (see
+    ``joint_holds_released_position``); otherwise it is an advisory.
     """
     from scipy.spatial import cKDTree
 
     model = load_asset_model(asset_usd)
-    joint = next((j for j in model.joints if j.joint_id == joint_id and j.kind != "fixed"), None)
-    if joint is None:
-        raise ScenePhysicsPreflightError("scene_physics_joint_unknown:" + joint_id)
+    joint = _movable_joint(model, joint_id)
     world_from_asset = _pose_matrix(asset_pose_world)
     world_from_robot = _pose_matrix(robot_pose_world)
     points = robot_fixed_surface(robot_id, sample_spacing_m) @ world_from_robot[:3, :3].T + world_from_robot[:3, 3]
@@ -833,17 +889,24 @@ def robot_motion_clearance(*, asset_usd: str | Path, asset_pose_world: Mapping[s
     rest = placed_at(None)
     depth, _ = penetration(points, rest, tree=tree)
     base, _ = penetration(points, [(c, w) for c, w in rest if c.body in moving], tree=tree)
+    holds = _holds_released_position(model, asset_usd, joint, asset_pose_world)
     motion = {"joint_id": joint_id, "joint_type": joint.kind, "limits": [joint.lower, joint.upper],
-              "task_range": sorted(float(v) for v in task_range), "samples": []}
+              "task_range": sorted(float(v) for v in task_range), "holds_released_position": holds,
+              "released_range": _released_span(joint, task_range, float(reset.get(joint_id, 0.0)), holds),
+              "samples": []}
     for value in _sweep_values(joint, task_range, revolute_step_rad, prismatic_step_m):
         d, _ = penetration(points, placed_at({joint_id: float(value)}, moving), tree=tree)
         added = (d > motion_tolerance_m) & ~(base > motion_tolerance_m)
         motion["samples"].append({"value": float(value), "contact_points": int(added.sum()),
                                   "max_depth_m": float(d[added].max()) if np.any(added) else 0.0})
-    low, high = motion["task_range"]
+
+    def within(span: Sequence[float], sample: Mapping[str, Any]) -> bool:
+        return span[0] - 1e-6 <= sample["value"] <= span[1] + 1e-6
+
     contacts = [s for s in motion["samples"] if s["contact_points"]]
-    inside = [s for s in contacts if low - 1e-6 <= s["value"] <= high + 1e-6]
-    outside = [s for s in contacts if s not in inside]
+    inside = [s for s in contacts if within(motion["task_range"], s)]
+    falling = [s for s in contacts if s not in inside and within(motion["released_range"], s)]
+    outside = [s for s in contacts if s not in inside and s not in falling]
     blockers, advisories = [], []
     overlap = depth > rest_tolerance_m
     rest_depth = float(depth[overlap].max()) if np.any(overlap) else 0.0
@@ -851,6 +914,8 @@ def robot_motion_clearance(*, asset_usd: str | Path, asset_pose_world: Mapping[s
         blockers.append("scene_physics_robot_rest_overlap:%.1fcm" % (100 * rest_depth))
     if inside:
         blockers.append("scene_physics_robot_in_motion_path:%s@%s" % (joint_id, _joint_label(motion, inside[0])))
+    if falling:
+        blockers.append("scene_physics_robot_in_fall_path:%s@%s" % (joint_id, _joint_label(motion, falling[0])))
     if outside:
         advisories.append("scene_physics_robot_in_motion_path_outside_task_range:%s@%s"
                           % (joint_id, _joint_label(motion, outside[0])))
@@ -915,9 +980,7 @@ def task_motion_surface(*, asset_usd: str | Path, asset_pose_world: Mapping[str,
     ``task_range=None`` sweeps the joint's whole limits.
     """
     model = load_asset_model(asset_usd)
-    joint = next((j for j in model.joints if j.joint_id == joint_id and j.kind != "fixed"), None)
-    if joint is None:
-        raise ScenePhysicsPreflightError("scene_physics_joint_unknown:" + joint_id)
+    joint = _movable_joint(model, joint_id)
     low, high = (joint.lower, joint.upper) if task_range is None else sorted(float(v) for v in task_range)
     moving = descendants(model, joint_id)
     local = [(c, _voxel_thin(_collider_surface(c, sample_spacing_m), sample_spacing_m))
@@ -985,7 +1048,8 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
     The task subject's target joint blocks only inside the task's range; other
     articulated objects and joints report contact without blocking. The robot's
     fixed volumes, at the plan's base pose, block inside the subject at reset or in
-    its target joint's path before the success threshold, and report beyond it.
+    its target joint's path before the success threshold. Beyond it they block where
+    gravity carries the released joint and are reported elsewhere.
     Every file is bound to the digest the plan recorded for it. A plan with no
     articulated object is ``not_applicable``.
     """

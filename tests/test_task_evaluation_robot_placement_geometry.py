@@ -229,7 +229,7 @@ def test_placed_task_actor_blocks_previously_clear_robot_pose(tmp_path):
     assert validate_robot_placement_geometry_candidate(index=moved, **arguments)["status"] == "passed"
 
 
-def _cabinet_with_drop_door(tmp_path, *, task_range=(0.0, math.pi / 2)):
+def _cabinet_with_drop_door(tmp_path, *, task_range=(0.0, math.pi / 2), holds=None):
     """A 0.6 x 0.6 x 0.9 m cabinet behind x = 0 whose 0.8 m door opens forward to the floor."""
     from pxr import UsdPhysics
 
@@ -261,7 +261,8 @@ def _cabinet_with_drop_door(tmp_path, *, task_range=(0.0, math.pi / 2)):
         "asset_digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
         "pose": {"position_world_m": [0., 0., 0.], "orientation_xyzw": [0., 0., 0., 1.]},
         "task_motion": {"joint_id": "door_hinge", "task_range": list(task_range),
-                        "reset_joint_positions": {"door_hinge": 0.0}},
+                        "reset_joint_positions": {"door_hinge": 0.0},
+                        **({} if holds is None else {"holds_released_position": holds})},
     }
 
 
@@ -309,16 +310,32 @@ def test_robot_base_in_the_task_doors_swing_is_rejected(tmp_path):
         index=unranked, target_position_world_m=target, maximum_candidates=4)) == [True] * 4
     assert reached(enumerate_robot_placement_geometry_candidates(
         index=short_index, target_position_world_m=target, maximum_candidates=4)) == [False] * 4
+    # Released past 30 degrees, a door with authored gravity falls on that base anyway.
+    (tmp_path / "falling").mkdir()
+    falling = _cabinet_with_drop_door(tmp_path / "falling", task_range=(0.0, math.radians(30)), holds=False)
+    falling_index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                                         task_assets=[falling])
+    under = validate_robot_placement_geometry_candidate(
+        index=falling_index, proposal=_proposal(floor.surface_id, (0.55, 0.0, 0.0), math.pi),
+        target_position_world_m=target)
+    assert "robot_base_in_task_part_fall_path" in under["blockers"] and under["task_fall_contact_point_count"] > 0
+    aside = validate_robot_placement_geometry_candidate(
+        index=falling_index, proposal=_proposal(floor.surface_id, (0.3, 0.55, 0.0), math.atan2(-0.55, -0.25)),
+        target_position_world_m=target)
+    assert aside["status"] == "passed" and aside["task_fall_contact_point_count"] == 0
+    assert "task_fall_contact_point_count" not in short_front
     # Without a declared motion the gate keeps its previous shape.
     del actor["task_motion"]
     still = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
                                                  task_assets=[actor])
     assert "task_motion_contact_point_count" not in validate_robot_placement_geometry_candidate(
         index=still, proposal=_proposal(floor.surface_id, (0.55, 0.0, 0.0), math.pi), target_position_world_m=target)
-    actor["task_motion"] = {"joint_id": "door_hinge", "task_range": [0.0]}
-    with pytest.raises(RobotPlacementGeometryError, match="robot_placement_task_motion_invalid"):
-        build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
-                                             task_assets=[actor])
+    for motion in ({"joint_id": "door_hinge", "task_range": [0.0]},
+                   {"joint_id": "door_hinge", "task_range": [0.0, 0.5], "holds_released_position": "no"}):
+        actor["task_motion"] = motion
+        with pytest.raises(RobotPlacementGeometryError, match="robot_placement_task_motion_invalid"):
+            build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                                 task_assets=[actor])
 
 
 def test_task_actor_rejects_changed_source_bytes(tmp_path):

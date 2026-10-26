@@ -89,6 +89,9 @@ class RobotPlacementGeometryIndex:
     # The same part across its whole joint range: where it can go if a policy
     # opens it further or lets it fall.
     task_limit_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    # The whole range of each part that does not hold where it is released:
+    # gravity carries it there whatever a policy does.
+    task_fall_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
 
 
 def _sha256(path: Path) -> str:
@@ -331,23 +334,29 @@ def _placed_task_asset_triangles(
 
 
 def _task_motion(value: Any) -> dict[str, Any]:
-    """The joint a task drives and its span, from reset to its success threshold."""
+    """The joint a task drives, its span from reset to its success threshold, and
+    whether its part holds where it is released (absent: it does)."""
     try:
         joint_id = str(value["joint_id"])
         task_range = [float(v) for v in value["task_range"]]
         reset = {str(k): float(v) for k, v in (value.get("reset_joint_positions") or {}).items()}
     except (KeyError, TypeError, ValueError) as exc:
         raise RobotPlacementGeometryError("robot_placement_task_motion_invalid") from exc
-    if not joint_id or len(task_range) != 2 or not all(map(math.isfinite, [*task_range, *reset.values()])):
+    if (not joint_id or len(task_range) != 2 or not all(map(math.isfinite, [*task_range, *reset.values()]))
+            or not isinstance(value.get("holds_released_position", True), bool)):
         raise RobotPlacementGeometryError("robot_placement_task_motion_invalid")
-    return {"joint_id": joint_id, "task_range": task_range, "reset_joint_positions": reset}
+    motion = {"joint_id": joint_id, "task_range": task_range, "reset_joint_positions": reset}
+    if "holds_released_position" in value:
+        motion["holds_released_position"] = value["holds_released_position"]
+    return motion
 
 
-def _task_motion_points(bindings: Sequence[Mapping[str, Any]], *, whole_range: bool = False) -> np.ndarray:
+def _task_motion_points(bindings: Sequence[Mapping[str, Any]], *, whole_range: bool = False,
+                        falling_only: bool = False) -> np.ndarray:
     parts = [np.zeros((0, 3))]
     for binding in bindings:
         motion = binding.get("task_motion")
-        if motion is None:
+        if motion is None or (falling_only and motion.get("holds_released_position", True)):
             continue
         try:
             parts.append(task_motion_surface(
@@ -361,18 +370,18 @@ def _task_motion_points(bindings: Sequence[Mapping[str, Any]], *, whole_range: b
 
 def _task_motion_contact_count(
     index: RobotPlacementGeometryIndex, robot_id: str, position: np.ndarray, yaw: float,
-    points: np.ndarray | None = None,
+    points: np.ndarray | None = None, margin_m: float = TASK_MOTION_CLEARANCE_M,
 ) -> int:
-    """Swept task-part samples inside the robot's fixed volumes at this base pose."""
+    """Swept task-part samples inside the robot's fixed volumes, grown by ``margin_m``, at this base pose."""
     try:
-        reach = robot_fixed_volume_extent(robot_id) + TASK_MOTION_CLEARANCE_M
+        reach = robot_fixed_volume_extent(robot_id) + margin_m
         points = index.task_motion_points if points is None else points
         near = points[(np.abs(points[:, 0] - position[0]) <= reach) & (np.abs(points[:, 1] - position[1]) <= reach)]
         relative = near - position
         cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
         local = np.c_[cos_yaw * relative[:, 0] + sin_yaw * relative[:, 1],
                       cos_yaw * relative[:, 1] - sin_yaw * relative[:, 0], relative[:, 2]]
-        return int(robot_fixed_volume_mask(robot_id, local, TASK_MOTION_CLEARANCE_M).sum())
+        return int(robot_fixed_volume_mask(robot_id, local, margin_m).sum())
     except ScenePhysicsPreflightError as exc:
         raise RobotPlacementGeometryError(f"robot_placement_task_motion_unmeasurable:{exc}") from exc
 
@@ -446,6 +455,7 @@ def build_robot_placement_geometry_index(
         task_asset_bindings=actor_bindings,
         task_motion_points=_task_motion_points(actor_bindings),
         task_limit_points=_task_motion_points(actor_bindings, whole_range=True),
+        task_fall_points=_task_motion_points(actor_bindings, whole_range=True, falling_only=True),
     )
 
 
@@ -792,6 +802,14 @@ def validate_robot_placement_geometry_candidate(
     )
     if motion_contacts:
         blockers.append("robot_base_in_task_motion_path")
+    # A part that falls once released strikes whatever stands anywhere on its way
+    # down. Measured as actual overlap; the paid preflight confirms it finely.
+    fall_contacts = (
+        _task_motion_contact_count(index, robot_id, position, yaw, index.task_fall_points, margin_m=0.0)
+        if len(index.task_fall_points) else 0
+    )
+    if fall_contacts:
+        blockers.append("robot_base_in_task_part_fall_path")
 
     shoulder = position + np.asarray([0.0, 0.0, profile.shoulder_above_root_m])
     shoulder_distance = float(np.linalg.norm(target - shoulder))
@@ -876,9 +894,12 @@ def validate_robot_placement_geometry_candidate(
     if len(index.task_motion_points):
         result["task_motion_contact_point_count"] = motion_contacts
         # Beyond the threshold a strike does not block: a policy may stop short.
-        # Counted here so the search can prefer a base the part never reaches.
+        # Counted here, as actual overlap without the blocking margin, so the
+        # search can prefer a base the part never reaches.
         result["task_limit_contact_point_count"] = _task_motion_contact_count(
-            index, robot_id, position, yaw, index.task_limit_points)
+            index, robot_id, position, yaw, index.task_limit_points, margin_m=0.0)
+    if len(index.task_fall_points):
+        result["task_fall_contact_point_count"] = fall_contacts
     result["geometry_gate_digest"] = canonical_digest(
         result, digest_field="geometry_gate_digest"
     )

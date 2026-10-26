@@ -119,6 +119,25 @@ def test_frozen_task_counterbalance_choice_reuses_the_sealed_geometry(tmp_path):
     verify_grounded_articulation_overlay(source, derived, adaptation, gravity_response=choice)
 
 
+def test_placement_learns_whether_the_runtime_door_holds_where_released(tmp_path):
+    # Authored gravity carries a released door to its limit; the declared
+    # counterbalance makes the simulator's door stay where a policy leaves it.
+    from tests.test_adp_task_scoring import _graph_spec
+    from tests.test_task_object_artisan_exports import mounted_fixture
+    from blueprint_pipeline.task_evaluation_diagnostic_native_arena_compiler import _released_task_motion
+
+    source, _, _ = mounted_fixture(tmp_path)
+    spec = _graph_spec()
+    spec["executable_opening_threshold"] = {"target_joint_id": "door_hinge", "reset_position": 0.0,
+                                            "success_interval": [0.7, 1.0]}
+    pose = {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    falling = _released_task_motion(spec, definition={}, asset=source, pose=pose)
+    assert falling == {"joint_id": "door_hinge", "task_range": [0.0, 0.7],
+                       "reset_joint_positions": {"door_hinge": 0.0}, "holds_released_position": False}
+    spec["gravity_response"] = {"mode": "counterbalanced", "reason": "Explicit estimate frozen before this task run."}
+    assert _released_task_motion(spec, definition={}, asset=source, pose=pose)["holds_released_position"] is True
+
+
 def _record(path: Path, contract_path: str) -> dict[str, object]:
     payload = path.read_bytes()
     return {
