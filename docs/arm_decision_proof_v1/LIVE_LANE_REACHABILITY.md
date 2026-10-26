@@ -6,7 +6,7 @@ denominator; a transport module is not a lane and one profile builder may emit
 more than one ordered probe kind.
 
 <!-- reachability-inventory:start -->
-Current executable inventory: **39 dispatched, 20 website-reachable, 19 named
+Current executable inventory: **40 dispatched, 20 website-reachable, 20 named
 non-reachable, 0 awaiting-builder.**
 <!-- reachability-inventory:end -->
 
@@ -75,7 +75,7 @@ campaign cap. The import cannot be authorized first.
 
 ## Named non-reachable probe kinds
 
-These nineteen allocator branches are deliberate decisions, not builder debt.
+These twenty allocator branches are deliberate decisions, not builder debt.
 
 ### Retired appearance/reference approaches (7)
 
@@ -139,6 +139,24 @@ public clip rights.
   bridge rather than a generic scene profile builder. Its installed-command,
   bundle, and queue contracts cover reachability; a fresh completed native run
   and private result delivery are still required to prove live fulfillment.
+
+### Rigid robot-free probe queue (1)
+
+- `rigid-robot-free-probe` — `not_a_website_lane`, **switched off by default**
+  (`BLUEPRINT_RIGID_ROBOT_FREE_PROBE_ENABLED`). Owner approval 2026-10-26: under
+  each capture's website grant, build the scene and run the no-robot check
+  automatically; the first real run is a capped test. The packet worker calls
+  `rigid_robot_free_probe_runner.enqueue_rigid_robot_free_probe(capture_root)`
+  once a scene's derived team profile is written; the path-activated
+  `blueprint-rigid-robot-free-probe-runner` then runs the isolated lane
+  (`rigid_robot_free_probe_lane`) for one capped session: zero retry, $1.00,
+  $0.80/h, 3600 s, US-only, RT GPU, 580-branch driver ceiling, independent
+  watchdog on `blueprint-rigid-robot-free-probe-`, funded by one
+  `gpu_render`/`vast` reservation from that capture's website preparation
+  grant. The worker records `team_embodiment_runtime.record_arena_robot_free_probe`
+  in the built scene with the robot idle and queries no policy; ingest retains
+  the receipt bound to the specification teams are scored with. No capped
+  canary has run yet, so this lane is unproven in production.
 
 ## Terminal and production rules
 

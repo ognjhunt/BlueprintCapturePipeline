@@ -150,6 +150,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-policy-runs", "work", "blueprint", "owner-scoped team policy run intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/team-evaluations", "work", "blueprint", "team evaluation run queue; each entry points to its run's job directory"),
+    StorageRoot(f"{_CONTROL_PLANE}/rigid-robot-free-probes", "work", "blueprint", "rigid robot-free probe queue and its capped attempts (inputs, bundle, allocator results)"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-policy-work", "work", "blueprint", "selected G1 preparation, run and settlement work"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaign-work", "work", "blueprint", "G1 campaign preparation and settlement work"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-preparations", "work", "blueprint", "preparation queue"),
