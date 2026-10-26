@@ -907,15 +907,18 @@ def _collider_surface(collider: Collider, spacing: float) -> np.ndarray:
 
 
 def task_motion_surface(*, asset_usd: str | Path, asset_pose_world: Mapping[str, Sequence[float]], joint_id: str,
-                        task_range: Sequence[float], reset_joint_positions: Mapping[str, float] | None = None,
+                        task_range: Sequence[float] | None, reset_joint_positions: Mapping[str, float] | None = None,
                         sample_spacing_m: float = 0.02, revolute_step_rad: float = DEFAULT_REVOLUTE_STEP_RAD,
                         prismatic_step_m: float = DEFAULT_PRISMATIC_STEP_M) -> np.ndarray:
-    """World surface samples of every part ``joint_id`` moves, at each sweep step inside ``task_range``."""
+    """World surface samples of every part ``joint_id`` moves, at each sweep step inside ``task_range``.
+
+    ``task_range=None`` sweeps the joint's whole limits.
+    """
     model = load_asset_model(asset_usd)
     joint = next((j for j in model.joints if j.joint_id == joint_id and j.kind != "fixed"), None)
     if joint is None:
         raise ScenePhysicsPreflightError("scene_physics_joint_unknown:" + joint_id)
-    low, high = sorted(float(v) for v in task_range)
+    low, high = (joint.lower, joint.upper) if task_range is None else sorted(float(v) for v in task_range)
     moving = descendants(model, joint_id)
     local = [(c, _voxel_thin(_collider_surface(c, sample_spacing_m), sample_spacing_m))
              for c in model.colliders if c.body in moving]
