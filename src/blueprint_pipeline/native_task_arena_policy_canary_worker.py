@@ -10,9 +10,12 @@ from blueprint_pipeline.policy_canary_media_integrity import (
 from copy import deepcopy
 from dataclasses import dataclass
 from blueprint_pipeline.native_policy_canary_control_gate import controls_required, execute_native_controls, validate_controls_receipt
-from blueprint_pipeline.native_policy_canary_matrix_gate import execute_strict_matrix, _episode_embodiment_parity_diagnostic
+from blueprint_pipeline.native_policy_canary_matrix_gate import (
+    execute_strict_matrix, _episode_embodiment_parity_diagnostic,
+    ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS as ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
+    _HARD_DEADLINE_ENV, _isolated_cell_timeout_seconds,
+)
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -49,13 +52,6 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 )
 
 
-# Includes native renderer startup and both complete 675-action candidates.
-# The independent allocation watchdog remains the total-session hard stop.
-ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 2700
-# Leave time for interrupted evidence sealing, compression and the existing PUT.
-# This only shortens work; the independent watchdog retains its original deadline.
-POLICY_CANARY_EXPORT_RESERVE_SECONDS = 300
-_HARD_DEADLINE_ENV = "BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH"
 DROID_PARITY_MINIMUM_APPROACH_M = 0.05
 _CELL_PROGRESS_FD_ENV = "BLUEPRINT_POLICY_CANARY_PROGRESS_FD"
 _CELL_PROGRESS_STAGES = frozenset({
@@ -1245,20 +1241,6 @@ def _aggregate_isolated_cell_results(
     return result
 
 
-def _isolated_cell_timeout_seconds() -> float:
-    deadline = os.environ.get(_HARD_DEADLINE_ENV)
-    if deadline is None:
-        return float(ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS)
-    try:
-        epoch = float(deadline)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("policy_canary_hard_deadline_invalid") from exc
-    if not math.isfinite(epoch) or epoch <= 0:
-        raise ValueError("policy_canary_hard_deadline_invalid")
-    return max(0.0, min(float(ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS),
-                       epoch - time.time() - POLICY_CANARY_EXPORT_RESERVE_SECONDS))
-
-
 def _spawn_isolated_cell_process(
     *, index: int, runtime_root: Path, output_root: Path, child_root: Path, controls_only: bool = False
 ) -> int:
@@ -1435,41 +1417,9 @@ def _run_isolated_cell_processes(
                     children=child_results, construction_lineage_mode=construction_lineage_mode,
                     reason=reason, interrupted_cell_index=index)
                 return 1
-            retained_children = [*child_results, child]
-            episodes = [
-                _prefix_episode_evidence_paths(row, prefix=f"cell_runs/{child_index:02d}")
-                for child_index, retained in enumerate(retained_children)
-                for row in retained.get("episodes", [])
-            ]
-            inventory = [
-                {**row, "relative_path": f"cell_runs/{child_index:02d}/{row['relative_path']}"}
-                for child_index, retained in enumerate(retained_children)
-                for row in retained.get("artifact_inventory", [])
-            ]
-            result = {
-                "schema_version": "native_task_arena_policy_canary_session_result.v1",
-                "status": "blocked", "run_kind": inputs.get("run_kind") or "internal_policy_canary",
-                "claim_ceiling": "diagnostic_policy_execution",
-                "task_success_contract": inputs["task_success_contract"],
-                "task_success_contract_digest": inputs["task_success_contract_digest"],
-                "episodes": episodes, "artifact_inventory": inventory,
-                "artifact_inventory_digest": _digest(inventory),
-                "candidate_policy_queried": any(
-                    retained.get("candidate_policy_queried") is True for retained in retained_children
-                ),
-                "candidate_policy_query_attempted": any(
-                    row.get("candidate_policy_query_attempted") is True
-                    for row in episodes
-                ),
-                "blockers": [reason],
-                "official_ranking_performed": False,
-                "scene_promotion_performed": False,
-                "provider_zero_required_after_return": True,
-                "interrupted_cell_index": index,
-                "interrupted_child_result_digest": child["result_digest"],
-            }
-            result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-            _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+            from blueprint_pipeline.policy_canary_interrupted_cell_recovery import seal_interrupted_session_result
+            seal_interrupted_session_result(inputs=inputs, children=[*child_results, child],
+                output_root=output_root, interrupted_cell_index=index, reason=reason, seal=_seal_result)
             return 1
         except Exception:
             _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
