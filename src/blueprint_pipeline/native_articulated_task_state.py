@@ -27,6 +27,9 @@ except ModuleNotFoundError:  # repository package
 
 SCHEMA_VERSION = "native_articulated_task_state.v1"
 TASK_SPEC_GRAPH_SCHEMA_VERSION = "adp_task_spec.v2"
+# Frozen by ``native_task_robot_contact_topology`` into new contracts: the task part touching the static
+# scene is a collision only while the part is short of its success interval.
+TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS = "before_success"
 
 
 class NativeArticulatedTaskStateError(ValueError):
@@ -135,6 +138,19 @@ def _joint_contract(task_spec: Mapping[str, Any]) -> tuple[dict[str, float], dic
     return normalized_resets, normalized_limits
 
 
+def _success_intervals(task_spec: Mapping[str, Any]) -> dict[str, list[float]]:
+    """The joint intervals in which the task counts as done, by joint id."""
+    if task_spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION:
+        intervals = ((task_spec.get("articulation_graph") or {}).get("success_predicate") or {}).get("joint_intervals")
+    else:
+        target = task_spec.get("target_joint_id")
+        intervals = {target: task_spec.get("target_success_interval_rad")} if target else {}
+    try:
+        return {str(key): [float(value[0]), float(value[1])] for key, value in (intervals or {}).items()}
+    except (IndexError, TypeError, ValueError) as exc:
+        raise NativeArticulatedTaskStateError(["native_articulated_task_success_interval_invalid"]) from exc
+
+
 def compile_native_articulated_task_sample(
     *,
     task_spec: Mapping[str, Any],
@@ -241,6 +257,16 @@ def compile_native_articulated_task_sample(
     robot_scene_threshold = (
         collision_threshold if scene_floor is None else float(scene_floor)
     )
+    # The part touching the scene counts only while the task is short of success, for contracts that
+    # freeze that scope; see TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS. Earlier contracts count it always.
+    intervals = _success_intervals(task_spec)
+    succeeded = bool(intervals) and all(
+        joint_id in joint_positions and low - 1.0e-6 <= joint_positions[joint_id] <= high + 1.0e-6
+        for joint_id, (low, high) in intervals.items()
+    )
+    scene_contact_counts = not (
+        task_state_binding.get("task_scene_contact_scope") == TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS and succeeded
+    )
 
     root = _vector(
         task_root_pose_world,
@@ -299,7 +325,7 @@ def compile_native_articulated_task_sample(
         "containment_violation": containment_violation,
         "robot_collision_failure": robot_scene_peak >= robot_scene_threshold
         or forbidden_robot_task_peak >= collision_threshold,
-        "scene_collision_failure": task_scene_peak >= collision_threshold,
+        "scene_collision_failure": scene_contact_counts and task_scene_peak >= collision_threshold,
         "retreat_completed": retreat_completed,
         "native_readback": {
             "task_robot_contact_peak_force_n": task_contact_peak,

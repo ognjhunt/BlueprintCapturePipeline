@@ -30,7 +30,7 @@ from .native_droid_grasp_swept_volume import (
     SCHEMA_VERSION as DROID_GRASP_SWEPT_VOLUME_SCHEMA,
 )
 from .decision_evidence_contracts import canonical_digest
-from .native_task_robot_contact_topology import ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N
+from .native_task_robot_contact_topology import ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N, TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS
 from .native_task_construction_plan import (
     MAX_JOINT_DELTA_RAD,
     MAX_JOINT_SETPOINT_LEAD_RAD,
@@ -464,6 +464,7 @@ def _articulated_task_spec(
         "task_contact_minimum_force_n": 0.5,
         "collision_failure_minimum_force_n": 1.0,
         "robot_scene_collision_minimum_force_n": ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N,
+        "task_scene_contact_scope": TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS,
         "retreat_minimum_separation_m": 0.10,
         "root_translation_tolerance_m": 0.002,
         "root_orientation_tolerance_rad": 0.01,

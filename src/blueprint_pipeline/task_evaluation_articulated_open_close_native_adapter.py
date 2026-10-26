@@ -22,7 +22,7 @@ from typing import Any
 
 from .articulation_graph_contract import ArticulationGraphContractError, validate_articulation_graph
 from .decision_evidence_contracts import canonical_digest
-from .native_task_robot_contact_topology import ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N
+from .native_task_robot_contact_topology import ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N, TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS
 from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError, validate_configured_scene_revision,
 )
@@ -523,6 +523,7 @@ def adapt_articulated_open_close_task_template(
         "task_contact_minimum_force_n": TASK_CONTACT_MINIMUM_FORCE_N,
         "collision_failure_minimum_force_n": COLLISION_FAILURE_MINIMUM_FORCE_N,
         "robot_scene_collision_minimum_force_n": ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N,
+        "task_scene_contact_scope": TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS,
         "retreat_minimum_separation_m": RETREAT_MINIMUM_SEPARATION_M,
         "root_translation_tolerance_m": ROOT_TRANSLATION_TOLERANCE_M,
         "root_orientation_tolerance_rad": ROOT_ORIENTATION_TOLERANCE_RAD,
