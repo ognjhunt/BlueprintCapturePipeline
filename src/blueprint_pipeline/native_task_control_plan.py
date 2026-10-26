@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .adp_task_scoring import articulated_release_required
 from .native_franka_action_math import is_unauthored_identity_quaternion_xyzw
 from .native_articulated_control_plan import (
     materialize_native_articulated_control_plan,
@@ -1005,6 +1006,8 @@ def materialize_native_graph_articulated_control_plan(
                     ),
                 }
             )
+    if not articulated_release_required(task_spec):
+        actions = [row for row in actions if row["phase_id"] not in {"release", "retreat"}]
     if any(not row["phase_id"] for row in actions) or len(
         {row["phase_id"] for row in actions}
     ) != len(actions):

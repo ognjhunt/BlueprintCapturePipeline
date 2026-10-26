@@ -88,6 +88,18 @@ def test_qualified_native_construction_freezes_bounded_contact_arc() -> None:
     )
 
 
+@pytest.mark.parametrize("release_required", [True, False])
+def test_explicit_release_requirement_controls_completion_phases(release_required) -> None:
+    scene = _scene()
+    scene["task_spec"]["release_required"] = release_required
+    scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+    plan = materialize_native_articulated_control_plan(
+        scene_plan=scene, construction_result=_construction(scene))
+    actions = plan["scripted_positive_actions"]
+    assert ({"release", "retreat"} <= {row["phase_id"] for row in actions}) is release_required
+    assert actions[-1]["gripper_state"] == ("open" if release_required else "closed")
+
+
 @pytest.mark.parametrize(
     "mutation,expected",
     (

@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .articulated_control_planner import plan_articulated_handle_trajectory
+from .adp_task_scoring import articulated_release_required
 from .decision_evidence_contracts import canonical_digest
 from .native_task_construction_plan import (
     MAX_JOINT_DELTA_RAD,
@@ -215,6 +216,8 @@ def materialize_native_articulated_control_plan(
             gripper_state="open",
         ),
     ]
+    if not articulated_release_required(scene["task_spec"]):
+        actions = [row for row in actions if row["phase_id"] not in {"release", "retreat"}]
     maximum_steps = sum(int(row["maximum_steps"]) for row in actions) + int(
         scene["task_spec"]["settle_window_samples"]
     )

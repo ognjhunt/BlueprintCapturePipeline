@@ -38,6 +38,7 @@ try:  # flat provider-bundle layout
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
         TASK_KIND_RIGID_PICK_PLACE,
         TaskNeutralScoringError,
+        articulated_release_required,
         score_task_episode_from_spec,
         validate_articulated_task_spec,
     )
@@ -47,6 +48,7 @@ except ModuleNotFoundError:  # repository package
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
         TASK_KIND_RIGID_PICK_PLACE,
         TaskNeutralScoringError,
+        articulated_release_required,
         score_task_episode_from_spec,
         validate_articulated_task_spec,
     )
@@ -2114,6 +2116,25 @@ def validate_task_control_plan(
     return checked
 
 
+def _task_settle_rows(
+    task_spec: Mapping[str, Any], actions: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    hold_closed = (
+        task_spec["task_kind"] == TASK_KIND_ARTICULATED_OPEN_CLOSE
+        and not articulated_release_required(task_spec)
+        and bool(actions)
+        and actions[-1].get("gripper_state") == "closed"
+    )
+    return [
+        {
+            "phase_id": "hold_settle" if hold_closed else "release_settle",
+            "mode": "hold_current_joint_positions",
+            **({"gripper_state": "closed"} if hold_closed else {}),
+        }
+        for _ in range(int(task_spec["settle_window_samples"]))
+    ]
+
+
 def _run_task_control_episode(
     *,
     environment: ControlEnvironment,
@@ -2179,13 +2200,7 @@ def _run_task_control_episode(
         ]
     else:
         trajectory = [dict(row) for row in plan["scripted_positive_actions"]]
-        trajectory.extend(
-            {
-                "phase_id": "release_settle",
-                "mode": "hold_current_joint_positions",
-            }
-            for _ in range(int(task_spec["settle_window_samples"]))
-        )
+        trajectory.extend(_task_settle_rows(task_spec, trajectory))
     row_index = 0
     attempt_number = 1
     commanded_position_bias = [0.0, 0.0, 0.0]
@@ -2281,8 +2296,13 @@ def _run_task_control_episode(
                 environment.read_arm_dynamics_observation()
             )
             if row.get("mode") == "hold_current_joint_positions":
+                state = row.get("gripper_state", "open")
+                if state not in {"open", "closed"}:
+                    raise ControlEpisodeError(["task_control_hold_gripper_state_invalid"])
+                if state == "closed" and gripper_closed_command is None:
+                    raise ControlEpisodeError(["task_control_gripper_closed_command_missing"])
                 action = environment.hold_action(
-                    gripper_command=float(gripper_open_command)
+                    gripper_command=float(gripper_closed_command if state == "closed" else gripper_open_command)
                 )
             elif pose_mode:
                 state = str(row["gripper_state"])
@@ -3180,13 +3200,7 @@ def run_synthetic_post_phase5_downstream_diagnostic(
         }
         for _ in range(checkpoint_settle_steps)
     ]
-    release_settle_rows = [
-        {
-            "phase_id": "release_settle",
-            "mode": "hold_current_joint_positions",
-        }
-        for _ in range(int(task["settle_window_samples"]))
-    ]
+    release_settle_rows = _task_settle_rows(task, downstream_rows)
     trajectory = [*checkpoint_rows, *downstream_rows, *release_settle_rows]
     output = Path(output_dir).expanduser().resolve()
     _write_json(output / "adp_task_control_plan.v1.json", plan)
