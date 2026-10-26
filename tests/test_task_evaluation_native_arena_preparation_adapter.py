@@ -23,14 +23,17 @@ from tests.test_task_evaluation_configured_scene_revision import revision
 
 
 def _passive_joint_overlay_binding(
-    tmp_path: Path, *, grounded: bool = True,
+    tmp_path: Path, *, grounded: bool = True, counterbalanced: bool = False,
 ) -> tuple[dict, dict, Path, dict]:
     from pxr import Usd, UsdGeom, UsdPhysics
 
-    from blueprint_pipeline.native_task_arena_runtime import author_passive_joint_friction_overlay
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_counterbalanced_hinge_overlay, author_passive_joint_friction_overlay,
+    )
 
     source = tmp_path / "sealed-cabinet.usda"
     stage = Usd.Stage.CreateNew(str(source))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     cabinet = UsdGeom.Xform.Define(stage, "/Cabinet")
     stage.SetDefaultPrim(cabinet.GetPrim())
     body = UsdGeom.Xform.Define(stage, "/Cabinet/body")
@@ -38,21 +41,37 @@ def _passive_joint_overlay_binding(
     if grounded:
         anchor = UsdPhysics.FixedJoint.Define(stage, "/Cabinet/fixed_base_anchor")
         anchor.GetBody1Rel().SetTargets([body.GetPath()])
-    joint_path = "/Cabinet/joints/middle_drawer_joint"
-    UsdPhysics.PrismaticJoint.Define(stage, joint_path)
+    if counterbalanced:
+        door = UsdGeom.Xform.Define(stage, "/Cabinet/door")
+        UsdPhysics.RigidBodyAPI.Apply(door.GetPrim())
+        joint_path = "/Cabinet/joints/door_hinge"
+        hinge = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
+        hinge.CreateBody0Rel().SetTargets([body.GetPath()])
+        hinge.CreateBody1Rel().SetTargets([door.GetPath()])
+        hinge.CreateAxisAttr("Y")
+    else:
+        joint_path = "/Cabinet/joints/middle_drawer_joint"
+        UsdPhysics.PrismaticJoint.Define(stage, joint_path)
     stage.GetRootLayer().Save()
 
     packet = _packet(tmp_path, scene_id="public-scene-17")
     staged = packet / "assets/task_object.usd"
-    friction = author_passive_joint_friction_overlay(
-        source, staged, joint_prim_path=joint_path)
-    assert friction is not None
+    if counterbalanced:
+        # Packets stage the compiler's derived .usda bytes, whatever the staged name.
+        derived = tmp_path / "counterbalanced.usda"
+        overlay = author_counterbalanced_hinge_overlay(source, derived, joint_prim_path=joint_path)
+        staged.write_bytes(derived.read_bytes())
+        kind, key = "counterbalanced_hinge_overlay", "counterbalanced_hinge"
+    else:
+        overlay = author_passive_joint_friction_overlay(source, staged, joint_prim_path=joint_path)
+        kind, key = "estimated_passive_joint_friction_overlay", "passive_joint_friction"
+    assert overlay is not None
     adaptation = {
-        "adaptation": "estimated_passive_joint_friction_overlay",
+        "adaptation": kind,
         "fixed_base_body_prim_path": "/Cabinet/body" if grounded else None,
         "candidate_bytes_modified": False,
         "derived_from_sha256": _identity(source)["digest"],
-        "passive_joint_friction": friction,
+        key: overlay,
     }
     value = request()
     value["task"]["kind"] = "articulated_manipulation"
@@ -119,6 +138,31 @@ def test_adapter_accepts_only_readback_verified_passive_joint_derivation(tmp_pat
         _verify_task_subject_binding(
             request=value, configured_revision=configured,
             packet_root=packet, packet_receipt=receipt)
+
+
+def test_adapter_replays_a_counterbalanced_door_from_its_sealed_source(tmp_path: Path) -> None:
+    from pxr import Usd, UsdGeom
+
+    value, configured, packet, receipt = _passive_joint_overlay_binding(tmp_path, counterbalanced=True)
+    arguments = dict(request=value, configured_revision=configured, packet_root=packet, packet_receipt=receipt)
+    source = tmp_path / "sealed-cabinet.usda"
+    with pytest.raises(TaskEvaluationNativeArenaAdapterError, match="overlay_invalid"):
+        _verify_task_subject_binding(**arguments)
+    _verify_task_subject_binding(**arguments, sealed_task_asset_source=source)
+    # Weightless bodies read back fine after another edit; only the replay sees it.
+    staged = packet / "assets/task_object.usd"
+    stage = Usd.Stage.Open(str(staged))
+    UsdGeom.Cube.Define(stage, "/Cabinet/unadmitted_geometry")
+    stage.GetRootLayer().Save()
+    digest, size = _identity(staged)["digest"], staged.stat().st_size
+    contract_path = packet / "native_task_runtime_contract.v1.json"
+    contract = json.loads(contract_path.read_text())
+    contract["objects"][0]["sha256"] = digest
+    contract_path.write_text(json.dumps(contract))
+    binding = next(row for row in receipt["source_bindings"] if row["semantic_role"] == "task_object")
+    binding.update(staged_sha256=digest, staged_size_bytes=size, source={"sha256": digest, "size_bytes": size})
+    with pytest.raises(TaskEvaluationNativeArenaAdapterError, match="overlay_invalid"):
+        _verify_task_subject_binding(**arguments, sealed_task_asset_source=source)
 
 
 def test_adapter_preserves_verified_movable_articulation_base(tmp_path: Path) -> None:

@@ -54,7 +54,7 @@ def test_website_compiler_derives_legacy_prismatic_resistance_without_changing_s
     task_spec["articulation_graph"]["success_predicate"]["joint_intervals"] = {
         target["joint_id"]: [0.23, 0.30]}
 
-    derived, adaptation = compiler._derive_runtime_prismatic_friction_overlay(
+    derived, adaptation = compiler._derive_runtime_joint_overlay(
         task_spec=task_spec,
         task_definition={"task_joint_bindings": [{
             "joint_id": target["joint_id"], "role": "target", "joint_prim_path": joint_path}]},
@@ -80,14 +80,21 @@ def test_compiler_replays_mounting_without_changing_sealed_source(tmp_path: Path
     source, _, _ = mounted_fixture(tmp_path)
     digest = _sha(source)
     retained = Usd.Stage.Open(str(source))
-    derived, adaptation = compiler._derive_runtime_prismatic_friction_overlay(
+    derived, adaptation = compiler._derive_runtime_joint_overlay(
         task_spec=_graph_spec(), task_definition={}, replacement_path=source,
         output_root=tmp_path / "episode")
     assert derived != source and _sha(source) == digest
     assert adaptation["adaptation"] == "usd_authored_world_fixed_base"
     assert verify_grounded_articulation(derived)["grounded"] is True
     assert UsdPhysics.RigidBodyAPI(retained.GetPrimAtPath("/Asset/body")).GetKinematicEnabledAttr().Get() is True
+    # The fixture's door swings on a horizontal hinge, so it is counterbalanced after grounding.
+    assert adaptation["counterbalanced_hinge"]["gravity_compensated_body_prim_paths"] == ["/Asset/door"]
     verify_grounded_articulation_overlay(source, derived, adaptation)
+    tampered = Usd.Stage.Open(str(derived))
+    tampered.GetPrimAtPath("/Asset/door").GetAttribute("physxRigidBody:disableGravity").Set(False)
+    tampered.GetRootLayer().Save()
+    with pytest.raises(Exception, match="grounding_derivative_mismatch"):
+        verify_grounded_articulation_overlay(source, derived, adaptation)
 
 
 def _record(path: Path, contract_path: str) -> dict[str, object]:

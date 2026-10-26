@@ -816,6 +816,7 @@ def materialize_paired_target_native_arena_requests(
     # sealed bytes are never modified; provenance records their digest.
     from .native_task_arena_runtime import (
         NativeTaskArenaRuntimeError,
+        author_counterbalanced_hinge_overlay,
         author_grounded_articulation,
         author_passive_joint_friction_overlay,
     )
@@ -856,20 +857,25 @@ def materialize_paired_target_native_arena_requests(
             if registered_row["freeze"]["task_kind"] == "articulated_interaction":
                 graph = validate_articulation_graph(registered_row["freeze"]["articulation_graph"])
                 target_joints = [joint for joint in graph["joints"] if joint["role"] == "target"]
-            if len(target_joints) == 1 and target_joints[0]["joint_type"] == "prismatic":
-                friction_path = destination / "runtime_articulation" / f"{asset_id}-passive.usda"
-                friction = author_passive_joint_friction_overlay(
-                    staged_path, friction_path,
+            if len(target_joints) == 1 and target_joints[0]["joint_type"] in {"prismatic", "revolute"}:
+                revolute = target_joints[0]["joint_type"] == "revolute"
+                overlay_path = destination / "runtime_articulation" / (
+                    f"{asset_id}-counterbalanced.usda" if revolute else f"{asset_id}-passive.usda")
+                overlay = (author_counterbalanced_hinge_overlay if revolute
+                           else author_passive_joint_friction_overlay)(
+                    staged_path, overlay_path,
                     joint_prim_path=f"/Asset/joints/{target_joints[0]['joint_id']}",
                 )
-                if friction is not None:
-                    staged_path = friction_path
+                if overlay is not None:
+                    staged_path = overlay_path
                     adaptation = {**(adaptation or {}),
-                        "adaptation": (adaptation or {}).get("adaptation") or "estimated_passive_joint_friction_overlay",
+                        "adaptation": (adaptation or {}).get("adaptation") or (
+                            "counterbalanced_hinge_overlay" if revolute
+                            else "estimated_passive_joint_friction_overlay"),
                         "fixed_base_body_prim_path": (adaptation or {}).get("fixed_base_body_prim_path"),
                         "candidate_bytes_modified": False,
                         "derived_from_sha256": _sha256(registered_row["usd_path"]),
-                        "passive_joint_friction": friction}
+                        ("counterbalanced_hinge" if revolute else "passive_joint_friction"): overlay}
         except NativeTaskArenaRuntimeError as exc:
             raise PairedTargetNativeArenaRequestError(";".join(exc.errors)) from exc
         except Exception as exc:  # pxr raises Tf.ErrorException on bad usda

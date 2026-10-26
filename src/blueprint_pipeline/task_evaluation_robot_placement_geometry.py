@@ -84,7 +84,7 @@ class RobotPlacementGeometryIndex:
     background_collision_digest: str
     task_asset_bindings: tuple[Mapping[str, Any], ...]
     # Surface samples of every pose a task asset's moving part takes between
-    # reset and the far end of its success interval.
+    # reset and its success threshold.
     task_motion_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
 
 
@@ -328,7 +328,7 @@ def _placed_task_asset_triangles(
 
 
 def _task_motion(value: Any) -> dict[str, Any]:
-    """The joint a task drives and its span, from reset to the success interval's far end."""
+    """The joint a task drives and its span, from reset to its success threshold."""
     try:
         joint_id = str(value["joint_id"])
         task_range = [float(v) for v in value["task_range"]]

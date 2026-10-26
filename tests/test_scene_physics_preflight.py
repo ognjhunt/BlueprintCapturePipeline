@@ -294,19 +294,27 @@ def test_admission_blocks_task_range_contact_and_reports_beyond_it(tmp_path):
     assert blocked.value.blockers == ["task_object:scene_physics_motion_contact:door_hinge@90deg"]
 
 
-def test_robot_standing_where_the_door_lands_blocks(tmp_path):
-    # 2026-10-26: the released dishwasher door fell onto the arm's shoulder at 60 degrees.
+def test_robot_in_the_doors_path_blocks_only_before_the_success_threshold(tmp_path):
+    # A base the door strikes before reaching 54 degrees makes success impossible; one
+    # it would strike only beyond (the 2026-10-26 shoulder at 60 degrees) is reported.
     root, plan = _packet(tmp_path, _background(tmp_path), _asset(tmp_path))
-    _with_task(root, plan, success_start_deg=54, robot_x=1.0)
+    _with_task(root, plan, success_start_deg=54, robot_x=0.75)
     with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
         spp.require_scene_physics_admission(root, **FAST)
     (blocker,) = blocked.value.blockers
     assert blocker.startswith("task_object:scene_physics_robot_in_motion_path:door_hinge@")
-    assert 54 < int(blocker.rsplit("@", 1)[1].removesuffix("deg")) < 90
+    assert int(blocker.rsplit("@", 1)[1].removesuffix("deg")) < 54
+    _with_task(root, plan, success_start_deg=54, robot_x=1.0)
+    beyond = spp.require_scene_physics_admission(root, **FAST)
+    assert beyond["status"] == "passed" and beyond["robot_clearance"]["blockers"] == []
+    (advisory,) = beyond["robot_clearance"]["advisories"]
+    assert advisory.startswith("scene_physics_robot_in_motion_path_outside_task_range:door_hinge@")
+    assert 54 < int(advisory.rsplit("@", 1)[1].removesuffix("deg")) < 90
     _with_task(root, plan, success_start_deg=54)
     report = spp.require_scene_physics_admission(root, **FAST)
-    assert report["robot_clearance"]["status"] == "passed" and report["robot_clearance"]["rest_max_depth_m"] == 0.0
-    assert report["robot_clearance"]["motion"]["task_range"] == [0.0, pytest.approx(math.pi / 2)]
+    assert report["robot_clearance"]["status"] == "passed" and report["robot_clearance"]["advisories"] == []
+    assert report["robot_clearance"]["rest_max_depth_m"] == 0.0
+    assert report["robot_clearance"]["motion"]["task_range"] == [0.0, pytest.approx(math.radians(54))]
     _with_task(root, plan, success_start_deg=54, robot_x=0.1)
     with pytest.raises(spp.ScenePhysicsAdmissionBlocked, match="task_object:scene_physics_robot_rest_overlap:"):
         spp.require_scene_physics_admission(root, **FAST)
@@ -323,7 +331,6 @@ def test_pre_v2_task_spec_commands_its_scripted_target_and_an_unreadable_span_is
                             "joint_reset_positions_rad": {"door": 0.1}, "scripted_positive_target_rad": 0.9},
               "articulation": {"task_joint_prim_paths": {"door": "{ENV_REGEX_NS}/task_object/joints/door_hinge"}}}
     assert spp.task_motion_ranges(legacy) == {"door_hinge": [0.1, 0.9]}
-    assert spp.task_motion_ranges(legacy, through_success_interval=True) == {"door_hinge": [0.1, 0.9]}
     del legacy["task_spec"]["scripted_positive_target_rad"]
     with pytest.raises(spp.ScenePhysicsPreflightError, match="scene_physics_task_range_unknown"):
         spp.task_motion_ranges(legacy)
