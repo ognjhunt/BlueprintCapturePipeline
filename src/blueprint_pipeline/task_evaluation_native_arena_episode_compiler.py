@@ -1090,15 +1090,40 @@ def packet_appearance_variant(native_appearance: Mapping[str, Any]) -> dict[str,
     }
 
 
-def _derive_runtime_prismatic_friction_overlay(
+def _target_joint_prim_path(task_definition: Mapping[str, Any], target: Mapping[str, Any],
+                            replacement_path: Path) -> str:
+    """The target joint's prim: its declared binding, else the one authored joint carrying its id."""
+    bindings = [row for row in task_definition.get("task_joint_bindings") or []
+                if row.get("joint_id") == target["joint_id"] and row.get("role") == "target"]
+    if len(bindings) == 1:
+        return str(bindings[0]["joint_prim_path"])
+    if bindings or target["joint_type"] == "prismatic":
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            f"episode_compiler_{target['joint_type']}_joint_binding_missing")
+    from pxr import Usd, UsdPhysics
+
+    names = {target["joint_id"], "joint_" + target["joint_id"]}
+    stage = Usd.Stage.Open(str(replacement_path))
+    matches = [str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdPhysics.Joint)
+               and (prim.GetCustomDataByKey("blueprint:jointId") == target["joint_id"] or prim.GetName() in names)]
+    if len(matches) != 1:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError("episode_compiler_revolute_joint_binding_missing")
+    return matches[0]
+
+
+def _derive_runtime_joint_overlay(
     *, task_spec: Mapping[str, Any], task_definition: Mapping[str, Any],
     replacement_path: Path, output_root: Path,
 ) -> tuple[Path, dict[str, Any] | None]:
-    """Preserve authored mounting before applying a legacy slide's passive prior."""
+    """Preserve authored mounting, then adapt the target joint for runtime.
+
+    A legacy slide gets its passive breakaway prior; a door on a horizontal
+    hinge gets the counterbalance real appliance doors have.
+    """
     from .articulation_graph_contract import validate_articulation_graph
     from .native_task_arena_runtime import (
-        NativeTaskArenaRuntimeError, author_grounded_articulation, author_passive_joint_friction_overlay,
-        verify_grounded_articulation,
+        NativeTaskArenaRuntimeError, author_counterbalanced_hinge_overlay, author_grounded_articulation,
+        author_passive_joint_friction_overlay, verify_grounded_articulation,
     )
 
     graph = validate_articulation_graph(task_spec["articulation_graph"])
@@ -1113,20 +1138,21 @@ def _derive_runtime_prismatic_friction_overlay(
     if mounting is not None:
         replacement_path = grounded
     targets = [joint for joint in graph["joints"] if joint["role"] == "target"]
-    if len(targets) != 1 or targets[0]["joint_type"] != "prismatic":
+    if len(targets) != 1 or targets[0]["joint_type"] not in {"prismatic", "revolute"}:
         return replacement_path, mounting
-    bindings = [row for row in task_definition.get("task_joint_bindings") or []
-                if row.get("joint_id") == targets[0]["joint_id"] and row.get("role") == "target"]
-    if len(bindings) != 1:
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_prismatic_joint_binding_missing")
-    derived = output_root / "runtime-passive-joint" / "replacement.usda"
+    joint_prim_path = _target_joint_prim_path(task_definition, targets[0], replacement_path)
+    if targets[0]["joint_type"] == "revolute":
+        derived = output_root / "runtime-counterbalanced-hinge" / "replacement.usda"
+        author, key, kind = author_counterbalanced_hinge_overlay, "counterbalanced_hinge", "counterbalanced_hinge_overlay"
+    else:
+        derived = output_root / "runtime-passive-joint" / "replacement.usda"
+        author, key = author_passive_joint_friction_overlay, "passive_joint_friction"
+        kind = "estimated_passive_joint_friction_overlay"
     try:
-        overlay = author_passive_joint_friction_overlay(
-            replacement_path, derived, joint_prim_path=bindings[0]["joint_prim_path"])
+        overlay = author(replacement_path, derived, joint_prim_path=joint_prim_path)
     except NativeTaskArenaRuntimeError as exc:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_passive_joint_overlay_invalid:" + ",".join(exc.errors)) from exc
+            f"episode_compiler_{key}_overlay_invalid:" + ",".join(exc.errors)) from exc
     if overlay is None:
         return replacement_path, mounting
     try:
@@ -1136,11 +1162,11 @@ def _derive_runtime_prismatic_friction_overlay(
             "episode_compiler_passive_joint_grounding_invalid:" + ",".join(exc.errors)) from exc
     return derived, {
         **(mounting or {}),
-        "adaptation": (mounting or {}).get("adaptation", "estimated_passive_joint_friction_overlay"),
+        "adaptation": (mounting or {}).get("adaptation", kind),
         "fixed_base_body_prim_path": grounding["fixed_base_body_prim_path"],
         "candidate_bytes_modified": False,
         "derived_from_sha256": _sha256_and_size(original)[0],
-        "passive_joint_friction": overlay,
+        key: overlay,
     }
 
 
@@ -1431,7 +1457,7 @@ def compile_native_arena_episode(
     runtime_articulation_adaptation = None
     if articulated:
         runtime_replacement_path, runtime_articulation_adaptation = (
-            _derive_runtime_prismatic_friction_overlay(
+            _derive_runtime_joint_overlay(
                 task_spec=task_spec, task_definition=task_definition,
                 replacement_path=runtime_replacement_path, output_root=root))
     construction_inputs = None

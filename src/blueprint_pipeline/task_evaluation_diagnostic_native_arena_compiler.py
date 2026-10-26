@@ -364,14 +364,14 @@ def _derive_task_aware_franka_reset(
 
 
 def _task_motion(task_spec: Mapping[str, Any]) -> dict[str, Any]:
-    """The target joint from reset to the success interval's far end: every pose placement must keep clear."""
+    """The target joint from reset to its success threshold: every pose a success must pass through."""
     try:
         threshold = task_spec["executable_opening_threshold"]
         joint_id, reset = str(threshold["target_joint_id"]), float(threshold["reset_position"])
-        far_end = float(threshold["success_interval"][1])
+        goal = float(threshold["success_interval"][0])
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise TaskEvaluationDiagnosticNativeArenaCompilerError("diagnostic_native_compiler_task_motion_unknown") from exc
-    return {"joint_id": joint_id, "task_range": [reset, far_end], "reset_joint_positions": {joint_id: reset}}
+    return {"joint_id": joint_id, "task_range": [reset, goal], "reset_joint_positions": {joint_id: reset}}
 
 
 def diagnostic_robot_placement_inputs(
@@ -481,18 +481,21 @@ def _runtime_articulated_assets(*, rows, context, output_root):
     if context["task_spec"]["task_kind"] != "articulated_open_close":
         return paths, None, context
     from .task_evaluation_native_arena_episode_compiler import (
-        _derive_runtime_prismatic_friction_overlay,
+        _derive_runtime_joint_overlay,
     )
-    derived, adaptation = _derive_runtime_prismatic_friction_overlay(
+    derived, adaptation = _derive_runtime_joint_overlay(
         task_spec=context["task_spec"], task_definition=definition,
         replacement_path=paths["replacement"], output_root=output_root)
     if adaptation is None:
         return paths, None, context
     from .native_task_arena_runtime import (
-        verify_grounded_articulation_overlay, verify_passive_joint_friction_overlay,
+        verify_counterbalanced_hinge_overlay, verify_grounded_articulation_overlay,
+        verify_passive_joint_friction_overlay,
     )
     if adaptation["adaptation"] == "usd_authored_world_fixed_base":
         verify_grounded_articulation_overlay(paths["replacement"], derived, adaptation)
+    elif "counterbalanced_hinge" in adaptation:
+        verify_counterbalanced_hinge_overlay(derived, adaptation["counterbalanced_hinge"])
     else:
         verify_passive_joint_friction_overlay(derived, adaptation["passive_joint_friction"])
     # Keep sealed evidence intact. A common per-run root lets packet staging

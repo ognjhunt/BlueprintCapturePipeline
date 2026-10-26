@@ -48,6 +48,60 @@ def test_legacy_prismatic_joint_gets_readback_verified_passive_friction_only_on_
         verify_passive_joint_friction_overlay(derived, altered)
 
 
+def _hinged_appliance(path, *, axis):
+    """A base with a sliding rack and a door (carrying a fixed handle) on one revolute hinge."""
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateNew(str(path))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Asset").GetPrim())
+    for body in ("base", "door", "handle", "rack"):
+        UsdPhysics.RigidBodyAPI.Apply(UsdGeom.Xform.Define(stage, f"/Asset/{body}").GetPrim())
+    for name, kind, ends in (("task_part_joint", UsdPhysics.RevoluteJoint, ("base", "door")),
+                             ("handle_fixed", UsdPhysics.FixedJoint, ("door", "handle")),
+                             ("rack_slide", UsdPhysics.PrismaticJoint, ("base", "rack"))):
+        joint = kind.Define(stage, f"/Asset/joints/{name}")
+        joint.CreateBody0Rel().SetTargets([f"/Asset/{ends[0]}"])
+        joint.CreateBody1Rel().SetTargets([f"/Asset/{ends[1]}"])
+        if name == "task_part_joint":
+            joint.CreateAxisAttr(axis)
+    stage.GetRootLayer().Save()
+
+
+def test_drop_down_door_is_counterbalanced_only_on_a_derived_copy(tmp_path):
+    # 2026-10-26: the dishwasher's free-falling door landed on the robot's shoulder.
+    from pxr import Usd
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_counterbalanced_hinge_overlay, verify_counterbalanced_hinge_overlay,
+    )
+
+    sealed, derived = tmp_path / "sealed.usda", tmp_path / "derived.usda"
+    _hinged_appliance(sealed, axis="Y")
+    original_sha = hashlib.sha256(sealed.read_bytes()).hexdigest()
+    record = author_counterbalanced_hinge_overlay(sealed, derived, joint_prim_path="/Asset/joints/task_part_joint")
+    assert record["gravity_compensated_body_prim_paths"] == ["/Asset/door", "/Asset/handle"]
+    assert record["hinge_axis_asset_frame"] == [0.0, 1.0, 0.0] and record["physical_measurement_proven"] is False
+    assert hashlib.sha256(sealed.read_bytes()).hexdigest() == original_sha
+    verify_counterbalanced_hinge_overlay(derived, record)
+    stage = Usd.Stage.Open(str(derived))
+    assert stage.GetPrimAtPath("/Asset/rack").GetAttribute("physxRigidBody:disableGravity").Get() is None
+    # The same input from another directory derives the same bytes, so a replay can prove it.
+    moved = tmp_path / "elsewhere" / "sealed.usda"
+    moved.parent.mkdir()
+    moved.write_bytes(sealed.read_bytes())
+    author_counterbalanced_hinge_overlay(moved, tmp_path / "again.usda", joint_prim_path="/Asset/joints/task_part_joint")
+    assert (tmp_path / "again.usda").read_bytes() == derived.read_bytes()
+    stage.GetPrimAtPath("/Asset/handle").GetAttribute("physxRigidBody:disableGravity").Set(False)
+    stage.GetRootLayer().Save()
+    with pytest.raises(NativeTaskArenaRuntimeError, match="counterbalance_readback_mismatch"):
+        verify_counterbalanced_hinge_overlay(derived, record)
+    upright = tmp_path / "upright.usda"
+    _hinged_appliance(upright, axis="Z")
+    assert author_counterbalanced_hinge_overlay(
+        upright, tmp_path / "unused.usda", joint_prim_path="/Asset/joints/task_part_joint") is None
+    assert not (tmp_path / "unused.usda").exists()
+
+
 def _camera(role: str, matrix: list[float] | None = None) -> dict:
     wrist = role == "wrist"
     return {

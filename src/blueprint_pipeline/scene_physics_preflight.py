@@ -25,10 +25,12 @@ success threshold. Contact beyond that range, or on a joint the task does not
 command, is reported without blocking.
 
 The same sweep measures the robot: its base and shoulder, the parts no policy
-action can move, inside the asset at reset or in the target joint's path anywhere
-from reset to the far end of the success interval block too. On 2026-10-26 the
-dishwasher door, released at 30 degrees, fell onto the arm's shoulder and rested
-there, so the scorer flagged a collision no policy could have avoided.
+action can move, block when they sit inside the asset at reset or in the target
+joint's path before it reaches the success threshold, because then no successful
+episode avoids striking them. Contact beyond the threshold is reported: a policy
+can stop short of it, and runtime counterbalancing keeps a released door where it
+is left. On 2026-10-26 the dishwasher door, free-falling after release at 30
+degrees, came to rest on the arm's shoulder at 60 degrees.
 """
 from __future__ import annotations
 
@@ -944,13 +946,11 @@ def _file_sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def task_motion_ranges(plan: Mapping[str, Any], *, through_success_interval: bool = False) -> dict[str, list[float]]:
+def task_motion_ranges(plan: Mapping[str, Any]) -> dict[str, list[float]]:
     """The task subject's commanded span: its target joint from reset to the success threshold.
 
-    ``through_success_interval`` extends the span to the interval's far end, every
-    state a successful episode can leave the joint in. An articulated task whose
-    span cannot be read is refused rather than treated as commanding nothing,
-    which would turn every contact into an advisory.
+    An articulated task whose span cannot be read is refused rather than treated as
+    commanding nothing, which would turn every contact into an advisory.
     """
     spec = plan.get("task_spec") or {}
     if spec.get("task_kind") != "articulated_open_close":
@@ -959,8 +959,7 @@ def task_motion_ranges(plan: Mapping[str, Any], *, through_success_interval: boo
     try:
         if threshold is not None:
             target = str(threshold["target_joint_id"])
-            interval = threshold["success_interval"]
-            reset, goal = float(threshold["reset_position"]), float(interval[1 if through_success_interval else 0])
+            reset, goal = float(threshold["reset_position"]), float(threshold["success_interval"][0])
         else:
             # Pre-v2 task specs command the scripted target from the scorer's reset.
             target = str(spec["target_joint_id"])
@@ -983,9 +982,9 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
     The task subject's target joint blocks only inside the task's range; other
     articulated objects and joints report contact without blocking. The robot's
     fixed volumes, at the plan's base pose, block inside the subject at reset or in
-    its target joint's path through the success interval. Every file is bound to
-    the digest the plan recorded for it. A plan with no articulated object is
-    ``not_applicable``.
+    its target joint's path before the success threshold, and report beyond it.
+    Every file is bound to the digest the plan recorded for it. A plan with no
+    articulated object is ``not_applicable``.
     """
     import json
 
@@ -1031,7 +1030,7 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
         blockers.extend(f"{row.get('name')}:{b}" for b in report["blockers"])
         advisories.extend(f"{row.get('name')}:{a}" for a in report["advisories"])
     robot_report = None
-    reach = task_motion_ranges(plan, through_success_interval=True) if len(subjects) == 1 else {}
+    reach = ranges if len(subjects) == 1 else {}
     if reach:
         robot = plan.get("robot") or {}
         if not isinstance(robot.get("base_pose_world"), Mapping):

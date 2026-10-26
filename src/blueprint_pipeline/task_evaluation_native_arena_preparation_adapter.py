@@ -58,6 +58,10 @@ MANIFEST_NAME = "task_evaluation_adapter_bundle_manifest.v1.json"
 PAYLOAD_PREFIX = "payload/"
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024 * 1024
+# The only physics adaptations a staged task subject may differ from its
+# configured asset by; each replays or reads back before any GPU is rented.
+_RUNTIME_OVERLAY_KINDS = frozenset({
+    "estimated_passive_joint_friction_overlay", "usd_authored_world_fixed_base", "counterbalanced_hinge_overlay"})
 _ROLES = frozenset({"construction_packet", "runtime_source"})
 # A wrapper member above this size is published once, by content digest, as an
 # external layer; the wrapper archive keeps only its digest, size, and URI.
@@ -274,11 +278,11 @@ def _verify_task_subject_binding(
             if isinstance(adaptation, Mapping)
             else None
         )
+        hinge = adaptation.get("counterbalanced_hinge") if isinstance(adaptation, Mapping) else None
         if (
             task["kind"] != "articulated_manipulation"
             or not isinstance(adaptation, Mapping)
-            or adaptation.get("adaptation") not in {
-                "estimated_passive_joint_friction_overlay", "usd_authored_world_fixed_base"}
+            or adaptation.get("adaptation") not in _RUNTIME_OVERLAY_KINDS
             or adaptation.get("candidate_bytes_modified") is not False
             or adaptation.get("derived_from_sha256") != asset["digest"]
             or (
@@ -295,6 +299,7 @@ def _verify_task_subject_binding(
                 "task_evaluation_adapter_task_subject_binding_mismatch"
             )
         from .native_task_arena_runtime import (
+            verify_counterbalanced_hinge_overlay,
             verify_grounded_articulation,
             verify_grounded_articulation_overlay,
             verify_passive_joint_friction_overlay,
@@ -310,6 +315,10 @@ def _verify_task_subject_binding(
                     raise ValueError("sealed_task_asset_source_missing_or_changed")
                 verify_grounded_articulation_overlay(
                     sealed_task_asset_source, staged_path, adaptation)
+            elif adaptation["adaptation"] == "counterbalanced_hinge_overlay":
+                if not isinstance(hinge, Mapping) or hinge.get("source_sha256") != asset["digest"]:
+                    raise ValueError("counterbalanced_hinge_source_mismatch")
+                verify_counterbalanced_hinge_overlay(staged_path, hinge)
             else:
                 if not isinstance(friction, Mapping) or friction.get("source_sha256") != asset["digest"]:
                     raise ValueError("passive_joint_source_mismatch")
@@ -323,8 +332,7 @@ def _verify_task_subject_binding(
             raise TaskEvaluationNativeArenaAdapterError(
                 "task_evaluation_adapter_task_subject_overlay_invalid"
             )
-    elif isinstance(adaptation, Mapping) and adaptation.get("adaptation") in {
-        "estimated_passive_joint_friction_overlay", "usd_authored_world_fixed_base"}:
+    elif isinstance(adaptation, Mapping) and adaptation.get("adaptation") in _RUNTIME_OVERLAY_KINDS:
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_task_subject_binding_mismatch"
         )

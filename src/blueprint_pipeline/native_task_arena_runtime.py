@@ -839,6 +839,16 @@ def verify_grounded_articulation_overlay(
             if replayed is None or replayed != friction:
                 raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_friction_mismatch"])
             expected = with_friction
+        hinge = declared.get("counterbalanced_hinge")
+        if hinge is not None:
+            if not isinstance(hinge, Mapping):
+                raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_counterbalance_invalid"])
+            balanced = Path(scratch) / "counterbalanced.usda"
+            replayed = author_counterbalanced_hinge_overlay(
+                expected, balanced, joint_prim_path=str(hinge.get("joint_prim_path") or ""))
+            if replayed is None or replayed != hinge:
+                raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_counterbalance_mismatch"])
+            expected = balanced
         if _sha256(expected) != _sha256(Path(staged_usd)):
             raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_derivative_mismatch"])
 
@@ -951,6 +961,109 @@ def verify_passive_joint_friction_overlay(staged_usd: str | Path, declared: Mapp
             != [float(declared["static_effort_n"]), float(declared["dynamic_effort_n"])]
             or prim.GetCustomDataByKey("blueprint:passiveFrictionBasis") != declared.get("basis")):
         raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_readback_mismatch"])
+
+
+#: A hinge whose axis rises more than 30 degrees from horizontal carries too
+#: little gravity torque to need a counterbalance; it is left as authored.
+COUNTERBALANCE_MAXIMUM_AXIS_RISE_SINE = 0.5
+COUNTERBALANCE_BASIS = "counterbalanced_hinge_gravity_compensation_prior"
+
+
+def author_counterbalanced_hinge_overlay(
+    source_usd: str | Path, destination: str | Path, *, joint_prim_path: str,
+) -> dict[str, Any] | None:
+    """Make a task door on a horizontal hinge hold its position, as counterbalanced doors do.
+
+    Dishwasher and oven doors are spring-balanced: released part-open, they
+    stay. The authored hinge carries only a viscous damper, so in simulation a
+    released door fell until something stopped it. On 2026-10-26 that was the
+    robot's shoulder, turning a reachable success into a forbidden collision.
+    This derived runtime copy turns gravity off for every body the hinge
+    carries, the simulated form of a perfect counterbalance; the authored
+    damping and joint friction still settle the door where it is left. A hinge
+    near vertical is left as authored (``None``). The sealed candidate stays
+    untouched; one video cannot measure a spring, so this is a labelled prior.
+    """
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+    source = Path(source_usd).expanduser().resolve()
+    output = Path(destination).expanduser().resolve()
+    if output == source:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_would_mutate_source"])
+    # Mutate a private composition, as grounding does, never the shared layer.
+    # Flattening names the source path in the layer's doc; keep the source's
+    # own doc instead so a replay from another directory derives the same bytes.
+    composed = Usd.Stage.Open(str(source))
+    flattened = composed.Flatten()
+    flattened.documentation = composed.GetRootLayer().documentation
+    stage = Usd.Stage.Open(flattened)
+    prim = stage.GetPrimAtPath(joint_prim_path)
+    if not prim or not prim.IsValid() or not prim.IsA(UsdPhysics.RevoluteJoint):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_target_invalid"])
+    if UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_up_axis_unsupported"])
+    hinge = UsdPhysics.RevoluteJoint(prim)
+    base_targets, door_targets = hinge.GetBody0Rel().GetTargets(), hinge.GetBody1Rel().GetTargets()
+    if len(base_targets) != 1 or len(door_targets) != 1:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_bodies_invalid"])
+    local = hinge.GetLocalRot0Attr().Get() or Gf.Quatf(1.0)
+    unit = {"X": Gf.Vec3d(1, 0, 0), "Y": Gf.Vec3d(0, 1, 0), "Z": Gf.Vec3d(0, 0, 1)}[str(hinge.GetAxisAttr().Get())]
+    axis = Gf.Rotation(Gf.Quatd(float(local.GetReal()), Gf.Vec3d(local.GetImaginary()))).TransformDir(unit)
+    axis = UsdGeom.XformCache().GetLocalToWorldTransform(stage.GetPrimAtPath(base_targets[0])).TransformDir(axis)
+    axis = axis.GetNormalized()
+    if abs(axis[2]) > COUNTERBALANCE_MAXIMUM_AXIS_RISE_SINE:
+        return None
+    base, door = str(base_targets[0]), str(door_targets[0])
+    edges = []
+    for other in stage.Traverse():
+        if other.IsA(UsdPhysics.Joint) and other.GetPath() != prim.GetPath():
+            typed = UsdPhysics.Joint(other)
+            ends = typed.GetBody0Rel().GetTargets(), typed.GetBody1Rel().GetTargets()
+            if all(len(end) == 1 for end in ends):
+                edges.append((str(ends[0][0]), str(ends[1][0])))
+    moving, frontier = {door}, [door]
+    while frontier:
+        current = frontier.pop()
+        for first, second in edges:
+            for here, there in ((first, second), (second, first)):
+                if here == current and there not in moving:
+                    moving.add(there)
+                    frontier.append(there)
+    if base in moving:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_door_joined_to_base"])
+    for path in sorted(moving):
+        body = stage.GetPrimAtPath(path)
+        if not body.HasAPI(UsdPhysics.RigidBodyAPI):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_body_not_rigid:" + path])
+        body.AddAppliedSchema("PhysxRigidBodyAPI")
+        body.CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool, custom=False).Set(True)
+    prim.SetCustomDataByKey("blueprint:counterbalanceBasis", COUNTERBALANCE_BASIS)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stage.GetRootLayer().Export(str(output))
+    result = {"joint_prim_path": joint_prim_path, "hinge_axis_asset_frame": [round(float(v), 6) for v in axis],
+              "gravity_compensated_body_prim_paths": sorted(moving), "basis": COUNTERBALANCE_BASIS,
+              "physical_measurement_proven": False, "source_sha256": _sha256(source)}
+    verify_counterbalanced_hinge_overlay(output, result)
+    return result
+
+
+def verify_counterbalanced_hinge_overlay(staged_usd: str | Path, declared: Mapping[str, Any]) -> None:
+    """Read the authored gravity compensation back before a GPU can be rented."""
+    from pxr import Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(Path(staged_usd).expanduser().resolve()))
+    prim = stage.GetPrimAtPath(str(declared.get("joint_prim_path") or "")) if stage else None
+    bodies = declared.get("gravity_compensated_body_prim_paths")
+    if (prim is None or not prim.IsValid() or not prim.IsA(UsdPhysics.RevoluteJoint)
+            or not isinstance(bodies, list) or not bodies
+            or prim.GetCustomDataByKey("blueprint:counterbalanceBasis") != declared.get("basis")):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_readback_invalid"])
+    for path in bodies:
+        body = stage.GetPrimAtPath(str(path))
+        schemas = body.GetMetadata("apiSchemas") if body and body.IsValid() else None
+        if (schemas is None or "PhysxRigidBodyAPI" not in schemas.GetAppliedItems()
+                or body.GetAttribute("physxRigidBody:disableGravity").Get() is not True):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_readback_mismatch"])
 
 
 #: PhysX refuses to build GPU-compatible convex hulls for very thin shapes
@@ -1178,6 +1291,8 @@ def _validate_articulation_adaptability(
         declared = row.get("articulation_adaptation")
         if isinstance(declared, Mapping) and isinstance(declared.get("passive_joint_friction"), Mapping):
             verify_passive_joint_friction_overlay(usd, declared["passive_joint_friction"])
+        if isinstance(declared, Mapping) and isinstance(declared.get("counterbalanced_hinge"), Mapping):
+            verify_counterbalanced_hinge_overlay(usd, declared["counterbalanced_hinge"])
         declared_base = (
             declared.get("fixed_base_body_prim_path")
             if isinstance(declared, Mapping)
