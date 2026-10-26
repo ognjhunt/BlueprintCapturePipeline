@@ -782,3 +782,55 @@ def test_finalizer_never_replaces_conflicting_registration_alias(tmp_path, monke
         terminal.finalize_operator_policy_canary(intent)
     assert alias.read_bytes() == original
     assert alias.is_symlink() == (conflict == 'symlink')
+
+
+def test_complete_streamed_evidence_is_contained_for_archive_downloads(tmp_path):
+    from blueprint_pipeline.task_evaluation_result_archive_members import (
+        build_archive_member_references, open_evidence_view,
+    )
+    from tests.test_provider_output_member_view import FRAME, RESULT, _streamed
+
+    streamed = _streamed(tmp_path / 'provider-job')
+    source = streamed.evidence / RESULT
+    original = {str(p): p.read_bytes() for p in streamed.attempt.rglob('*') if p.is_file()}
+    root = tmp_path / 'website-run'
+    root.mkdir()
+    raw = {'status': 'runtime_completed_unqualified_pending_closeout', 'episodes': [{}] * 20}
+    result, evidence, origin = terminal._native_result({}, {}, {}, root, observed=(raw, source))
+    assert result == raw and origin == terminal.file_record(source)
+    assert evidence.is_relative_to(root)
+    view = open_evidence_view(evidence)
+    row = view.member(FRAME)
+    registry = {'run_id': 'retained-run', 'registry_digest': 'sha256:' + 'a' * 64,
+                'artifacts': [{'evidence_root': str(evidence), 'relative_path': FRAME,
+                               'sha256': row['sha256'], 'size_bytes': row['size']}]}
+    references = build_archive_member_references(run_root=root, registry=registry, view=view)
+    relative = (evidence / FRAME).relative_to(root).as_posix()
+    assert references['members'][relative]['archive_path'] == FRAME
+    assert references['archive']['sha256'] == streamed.index['archive']['sha256']
+    assert not (evidence / FRAME).exists()  # Bulk media stays in the verified archive.
+    assert view.descriptor == streamed.descriptor
+    assert terminal.file_record(evidence / RESULT)['sha256'] == origin['sha256']
+    assert terminal._native_result({}, {}, {}, root, observed=(raw, source))[1] == evidence
+    assert {str(p): p.read_bytes() for p in streamed.attempt.rglob('*') if p.is_file()} == original
+    assert streamed.presigns == []
+
+
+@pytest.mark.parametrize('tamper', ['bytes', 'symlink'])
+def test_complete_native_custody_refuses_changed_copy_and_preserves_source(tmp_path, tamper):
+    source = _write(tmp_path / 'provider-job/native/result.json', {'retained': True})
+    original = source.read_bytes()
+    root = tmp_path / 'website-run'
+    root.mkdir()
+    raw = {'status': 'runtime_completed_unqualified_pending_closeout', 'episodes': [{}] * 20}
+    _, evidence, _ = terminal._native_result({}, {}, {}, root, observed=(raw, source))
+    copied = evidence / source.name
+    assert copied.is_relative_to(root)
+    if tamper == 'bytes':
+        copied.write_bytes(b'changed')
+    else:
+        copied.unlink()
+        copied.symlink_to(source)
+    with pytest.raises(terminal.OperatorTerminalDeliveryError):
+        terminal._native_result({}, {}, {}, root, observed=(raw, source))
+    assert source.read_bytes() == original
