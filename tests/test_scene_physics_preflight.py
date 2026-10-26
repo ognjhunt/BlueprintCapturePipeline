@@ -271,10 +271,13 @@ def test_flat_or_empty_geometry_has_nothing_to_overlap(tmp_path):
     assert report["status"] == "passed" and report["notices"] == ["scene_physics_asset_solid_colliders_absent"]
 
 
-def _with_task(root, plan, *, success_start_deg):
+def _with_task(root, plan, *, success_start_deg, robot_x=1.6):
     plan["task_spec"] = {"task_kind": "articulated_open_close", "executable_opening_threshold": {
         "target_joint_id": "door_hinge", "reset_position": 0.0,
         "success_interval": [math.radians(success_start_deg), math.radians(90)]}}
+    # A Franka on the floor facing the cabinet; the open door reaches x = 1.14 m.
+    plan["robot"] = {"robot_id": "franka_panda", "base_pose_world": {
+        "position_world_m": [robot_x, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 1.0, 0.0]}}
     (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
 
 
@@ -291,11 +294,36 @@ def test_admission_blocks_task_range_contact_and_reports_beyond_it(tmp_path):
     assert blocked.value.blockers == ["task_object:scene_physics_motion_contact:door_hinge@90deg"]
 
 
+def test_robot_standing_where_the_door_lands_blocks(tmp_path):
+    # 2026-10-26: the released dishwasher door fell onto the arm's shoulder at 60 degrees.
+    root, plan = _packet(tmp_path, _background(tmp_path), _asset(tmp_path))
+    _with_task(root, plan, success_start_deg=54, robot_x=1.0)
+    with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
+        spp.require_scene_physics_admission(root, **FAST)
+    (blocker,) = blocked.value.blockers
+    assert blocker.startswith("task_object:scene_physics_robot_in_motion_path:door_hinge@")
+    assert 54 < int(blocker.rsplit("@", 1)[1].removesuffix("deg")) < 90
+    _with_task(root, plan, success_start_deg=54)
+    report = spp.require_scene_physics_admission(root, **FAST)
+    assert report["robot_clearance"]["status"] == "passed" and report["robot_clearance"]["rest_max_depth_m"] == 0.0
+    assert report["robot_clearance"]["motion"]["task_range"] == [0.0, pytest.approx(math.pi / 2)]
+    _with_task(root, plan, success_start_deg=54, robot_x=0.1)
+    with pytest.raises(spp.ScenePhysicsAdmissionBlocked, match="task_object:scene_physics_robot_rest_overlap:"):
+        spp.require_scene_physics_admission(root, **FAST)
+    for robot, refusal in (({"robot_id": "ur5e", "base_pose_world": POSE}, "robot_model_unmeasured:ur5e"),
+                           ({"robot_id": "franka_panda"}, "robot_pose_missing")):
+        plan["robot"] = robot
+        (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+        with pytest.raises(spp.ScenePhysicsAdmissionBlocked, match="refused:scene_physics_" + refusal):
+            spp.require_scene_physics_admission(root, **FAST)
+
+
 def test_pre_v2_task_spec_commands_its_scripted_target_and_an_unreadable_span_is_refused():
     legacy = {"task_spec": {"task_kind": "articulated_open_close", "target_joint_id": "door",
                             "joint_reset_positions_rad": {"door": 0.1}, "scripted_positive_target_rad": 0.9},
               "articulation": {"task_joint_prim_paths": {"door": "{ENV_REGEX_NS}/task_object/joints/door_hinge"}}}
     assert spp.task_motion_ranges(legacy) == {"door_hinge": [0.1, 0.9]}
+    assert spp.task_motion_ranges(legacy, through_success_interval=True) == {"door_hinge": [0.1, 0.9]}
     del legacy["task_spec"]["scripted_positive_target_rad"]
     with pytest.raises(spp.ScenePhysicsPreflightError, match="scene_physics_task_range_unknown"):
         spp.task_motion_ranges(legacy)
