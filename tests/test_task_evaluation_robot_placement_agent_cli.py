@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -86,7 +87,7 @@ def test_task_pose_requires_object_collision_input_before_output_or_model_call(t
 
 def test_empty_search_retains_geometry_diagnostics_before_any_model_call(tmp_path, monkeypatch):
     import blueprint_pipeline.task_evaluation_robot_placement_agent_cli as module
-    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: object())
+    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: SimpleNamespace(task_asset_bindings=()))
     monkeypatch.setattr(module, "summarize_robot_placement_geometry", lambda *_a, **_k: {
         "geometry_summary_digest": "sha256:summary", "scene_collision_digest": "sha256:scene"
     })
@@ -130,6 +131,16 @@ def test_no_match_verdict_names_what_ruled_every_base_out():
         {"detailed_geometry_tested_count": 5, "geometry_passing_count": 2}, robot_id="franka_panda")
     assert reachable["reason_code"] == "task_path_unreachable"
     assert placement_no_match_verdict({}, robot_id="franka_panda")["reason_code"] == "candidate_inventory_rejected"
+    # Bases that clear the scene and reach the path, but where the moving part would strike the arm.
+    struck = placement_no_match_verdict(
+        {"detailed_geometry_tested_count": 5, "geometry_passing_count": 2, "arm_path_tested_count": 2,
+         "arm_path_rejected_count": 2}, robot_id="franka_panda")
+    assert struck["reason_code"] == "task_part_strikes_arm"
+    assert struck["summary"].startswith("Not a match: 2 franka_panda base positions clear the scene")
+    partly = placement_no_match_verdict(
+        {"detailed_geometry_tested_count": 5, "geometry_passing_count": 2, "arm_path_tested_count": 0,
+         "arm_path_rejected_count": 0}, robot_id="franka_panda")
+    assert partly["reason_code"] == "task_path_unreachable"
 
 
 def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
@@ -170,7 +181,7 @@ def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
     rendered_waypoints = []
 
     monkeypatch.setattr(module.os, "cpu_count", lambda: 4)
-    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: object())
+    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: SimpleNamespace(task_asset_bindings=()))
     monkeypatch.setattr(module, "summarize_robot_placement_geometry", lambda *_a, **_k: {})
     def enumerate_candidates(**kwargs):
         assert kwargs["trajectory_waypoints_world_m"] == [
@@ -356,9 +367,10 @@ def test_candidate_inventory_checkpoint_revalidates_before_reuse(monkeypatch) ->
     import blueprint_pipeline.task_evaluation_robot_placement_inventory as inventory
 
     monkeypatch.setattr(inventory, "validate_robot_placement_geometry_candidate", validate)
+    rigid_index = SimpleNamespace(task_asset_bindings=())
     restored = validate_candidate_inventory_checkpoint(
         checkpoint=checkpoint,
-        index=object(),
+        index=rigid_index,
         robot_id="franka_panda",
         target_position_world_m=[3.0, -6.7, 0.8],
         maximum_candidates=48,
@@ -374,13 +386,26 @@ def test_candidate_inventory_checkpoint_revalidates_before_reuse(monkeypatch) ->
     ):
         validate_candidate_inventory_checkpoint(
             checkpoint=checkpoint,
-            index=object(),
+            index=rigid_index,
             robot_id="franka_panda",
             target_position_world_m=[3.1, -6.7, 0.8],
             maximum_candidates=48,
             trajectory_digest="sha256:plan",
             geometry_summary_digest="sha256:geometry-summary",
         )
+    # A task that moves a part was searched with the arm-path gate; an inventory without it is not reused.
+    moving_index = SimpleNamespace(task_asset_bindings=({"task_motion": {"joint_id": "door_hinge"}},))
+    arguments = dict(index=moving_index, robot_id="franka_panda", target_position_world_m=[3.0, -6.7, 0.8],
+                     maximum_candidates=48, trajectory_digest="sha256:plan",
+                     geometry_summary_digest="sha256:geometry-summary")
+    with pytest.raises(ValueError, match="robot_placement_candidate_inventory_checkpoint_invalid"):
+        validate_candidate_inventory_checkpoint(checkpoint=checkpoint, **arguments)
+    for status in ("passed", "not_applicable"):
+        gated = dict(candidate, arm_path_clearance={"status": status})
+        reused = build_candidate_inventory_checkpoint(
+            robot_id="franka_panda", target_position_world_m=[3.0, -6.7, 0.8], maximum_candidates=48,
+            trajectory_digest="sha256:plan", geometry_summary_digest="sha256:geometry-summary", candidates=[gated])
+        assert validate_candidate_inventory_checkpoint(checkpoint=reused, **arguments) == [gated]
 
 
 def test_deterministic_selection_never_invokes_paid_model(tmp_path, monkeypatch) -> None:
@@ -411,7 +436,7 @@ def test_deterministic_selection_never_invokes_paid_model(tmp_path, monkeypatch)
     gate["geometry_gate_digest"] = canonical_digest(
         gate, digest_field="geometry_gate_digest"
     )
-    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: object())
+    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: SimpleNamespace(task_asset_bindings=()))
     monkeypatch.setattr(module, "summarize_robot_placement_geometry", lambda *_a, **_k: {})
     monkeypatch.setattr(
         module, "enumerate_robot_placement_geometry_candidates", lambda **_: [candidate]
@@ -499,7 +524,7 @@ def test_live_selection_persists_interruption_safe_inference_audit(
         "geometry_gate_digest": "sha256:geometry",
     }
     monkeypatch.setattr(
-        module, "build_robot_placement_geometry_index", lambda **_: object()
+        module, "build_robot_placement_geometry_index", lambda **_: SimpleNamespace(task_asset_bindings=())
     )
     monkeypatch.setattr(
         module, "summarize_robot_placement_geometry", lambda *_a, **_k: {}
