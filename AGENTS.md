@@ -116,6 +116,12 @@ dependent step as blocked instead of guessing.
     counted as demand evidence for what to build next.
   - Scene builds and the robot-free check run automatically under each capture's
     website grant. The first real run of each new lane is a capped test.
+  - Blueprint's own finalist scoring can back a recommended pilot, not only
+    partner-run evaluations. The owner's words: "let Blueprint's own finalist
+    scoring back a recommended pilot on the website, not only partner-run
+    evaluations."
+  - The evidence bar is unchanged: a simulator-scored site evaluation of that
+    job, the job's pass mark, an admitted runtime, and a passed robot-free probe.
 - Preserve rights, privacy, provenance, and capture truth through the pipeline.
 - Treat readiness and review *outputs* (qualification summaries, trust scores, readiness matrices) as optional support layers. Do not confuse that posture with the module historically named for it: `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) is the core capture→package orchestration spine, not a secondary readiness module.
 - Do not make downstream generated artifacts appear more authoritative than raw capture evidence.
