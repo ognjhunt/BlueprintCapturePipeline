@@ -636,6 +636,20 @@ def test_graph_state_binding_carries_a_frozen_robot_scene_floor() -> None:
             materialize_native_task_runtime_contract(**fixture)
 
 
+def test_graph_state_binding_carries_a_frozen_task_scene_scope() -> None:
+    assert "task_scene_contact_scope" not in materialize_native_task_runtime_contract(
+        **_graph_articulated_fixture())["task_state_binding"]
+    fixture = _graph_articulated_fixture()
+    fixture["task_state_binding"]["task_scene_contact_scope"] = "before_success"
+    state = materialize_native_task_runtime_contract(**fixture)["task_state_binding"]
+    assert state["task_scene_contact_scope"] == "before_success"
+    for invalid in ("always", True, 1):
+        fixture["task_state_binding"]["task_scene_contact_scope"] = invalid
+        with pytest.raises(NativeTaskRuntimeContractError,
+                           match="native_task_runtime_state_threshold_invalid:task_scene_contact_scope"):
+            materialize_native_task_runtime_contract(**fixture)
+
+
 def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() -> None:
     articulated = _articulated_fixture()
     articulated["assets"] = _dual_replacement_assets()

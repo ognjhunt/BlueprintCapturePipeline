@@ -311,6 +311,8 @@ def test_configured_drawer_task_adapts_to_a_passive_joint_native_definition(tmp_
     assert state["interaction_affordance_digest"] == affordance["affordance_digest"]
     # Owner rule 2026-10-26: robot-scene contact fails at 20 N, everything else at 1 N.
     assert (state["collision_failure_minimum_force_n"], state["robot_scene_collision_minimum_force_n"]) == (1.0, 20.0)
+    # The part touching the scene fails only before success: a door at rest open is the scene's, not the policy's.
+    assert state["task_scene_contact_scope"] == "before_success"
     # The assembly's own base lands on the registered support top, not below it.
     assert definition["task_object_pose_world"]["position_world_m"][2] == pytest.approx(SUPPORT_TOP_Z_M, abs=1e-9)
     assert definition["task_object_reset_joint_positions"] == {"task_part_joint": 0.0}
@@ -635,6 +637,7 @@ def test_adapted_drawer_task_freezes_a_native_contract_and_scene_plan(tmp_path: 
     scenario = adapted["native_episode_execution"]["scenario"]
     assert _validated_scenario_context(scenario) == scenario
     contract, plan = materialize_contract_and_plan(case, adapted, tmp_path)
+    assert contract["task_state_binding"]["task_scene_contact_scope"] == "before_success"
     assert contract["task_kind"] == "articulated_open_close"
     assert contract["runtime_readback_required"]["task_joint_indices"] is True
     assert contract["scoring_contract"]["policy_may_grade_itself"] is False

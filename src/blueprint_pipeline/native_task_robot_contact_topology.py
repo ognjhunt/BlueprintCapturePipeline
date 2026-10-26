@@ -22,6 +22,14 @@ ENV_ROOT = "{ENV_REGEX_NS}"
 #: Contact with the task object is judged by body instead: any gripper body may
 #: touch it, and an arm link may not at any force.
 ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N = 20.0
+#: An articulated task part touching the static scene is a collision only while the part is short of
+#: its success interval. Once the task is done, a part at rest against the scene -- a drop-down door
+#: lying open over a scanned floor -- is the scene, not the policy. On 2026-10-26 pi0.5 opened the
+#: dishwasher to 88.8 degrees, inside the 54-90 degree success interval, and the door settled at 52.7 N
+#: on reconstruction noise 3-9 cm above the floor the robot stands on; the real door clears it. The
+#: physics preflight already blocks only contact before success (#2931); the scorer now agrees
+#: (``native_articulated_task_state`` holds the same value, so the provider bundle needs no import).
+TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS = "before_success"
 
 
 class NativeTaskRobotContactTopologyError(ValueError):

@@ -123,6 +123,42 @@ def test_robot_scene_contact_fails_only_at_the_frozen_floor() -> None:
     assert _sample(robot_scene_contact_forces_w_n=[[0.0, 8.0, 0.0]])["robot_collision_failure"] is True
 
 
+def test_the_task_part_touching_the_scene_fails_only_before_success() -> None:
+    # 2026-10-26: pi0.5 opened the dishwasher to 88.8 degrees, inside its success interval, and the door
+    # settled at 52.7 N on scanned-floor noise the real door clears. Contracts that freeze the scope fail
+    # that contact only while the part is short of success; contracts frozen before it fail it always.
+    scoped = {**STATE, "task_scene_contact_scope": "before_success"}
+    resting = [[0.0, 0.0, 52.7]]
+    done = _sample(task_state_binding=scoped, task_scene_contact_forces_w_n=resting)  # 50 deg, inside 45-55
+    assert done["scene_collision_failure"] is False
+    assert done["native_readback"]["task_scene_contact_peak_force_n"] == pytest.approx(52.7)
+    short = _sample(task_state_binding=scoped, task_scene_contact_forces_w_n=resting, native_joint_positions_rad=[0.5, 0.0])
+    assert short["scene_collision_failure"] is True
+    assert _sample(task_scene_contact_forces_w_n=resting)["scene_collision_failure"] is True
+    # The robot touching the scene still fails inside the success interval.
+    assert _sample(task_state_binding={**scoped, "robot_scene_collision_minimum_force_n": 20.0},
+                   robot_scene_contact_forces_w_n=[[0.0, 25.0, 0.0]])["robot_collision_failure"] is True
+    # A graph task reads the interval from its graph's success predicate.
+    task_spec = {"schema_version": "adp_task_spec.v2", "task_kind": "articulated_open_close",
+                 "articulation_graph": THIRD_SCENE_GRAPH}
+    joint_ids = [row["joint_id"] for row in THIRD_SCENE_GRAPH["joints"]]
+
+    def graph(position):
+        return _sample(task_spec=task_spec, task_state_binding=scoped, native_joint_names=joint_ids,
+                       task_sample_binding={"joint_ids": joint_ids, "native_joint_names": {j: j for j in joint_ids}},
+                       native_joint_positions_rad=[position if j == "door_hinge" else 0.0 for j in joint_ids],
+                       native_joint_velocities_rad_s=[0.0] * len(joint_ids), task_scene_contact_forces_w_n=resting)
+
+    assert graph(0.8)["scene_collision_failure"] is False and graph(0.0)["scene_collision_failure"] is True
+
+
+def test_the_scorer_and_the_contract_freezer_agree_on_the_scope_value() -> None:
+    from blueprint_pipeline import native_articulated_task_state, native_task_robot_contact_topology
+
+    assert (native_articulated_task_state.TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS
+            == native_task_robot_contact_topology.TASK_SCENE_CONTACT_SCOPE_BEFORE_SUCCESS == "before_success")
+
+
 def test_an_arm_link_on_the_task_object_fails_whatever_the_scene_floor() -> None:
     task_spec = {"schema_version": "adp_task_spec.v2", "task_kind": "articulated_open_close",
                  "articulation_graph": THIRD_SCENE_GRAPH}

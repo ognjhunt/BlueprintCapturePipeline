@@ -533,6 +533,18 @@ def _optional_robot_scene_floor(value: Mapping[str, Any], errors: list[str]) -> 
     return {field: float(number)}
 
 
+def _optional_task_scene_scope(value: Mapping[str, Any], errors: list[str]) -> dict[str, str]:
+    """Carry a frozen task-scene contact scope; bindings frozen before it score every such contact."""
+    field = "task_scene_contact_scope"
+    scope = value.get(field)
+    if scope is None:
+        return {}
+    if scope != "before_success":
+        errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
+        return {}
+    return {field: scope}
+
+
 def _articulated_task_state_binding(
     value: Any,
     *,
@@ -605,6 +617,7 @@ def _articulated_task_state_binding(
                 errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
             thresholds[field] = number
         thresholds.update(_optional_robot_scene_floor(value, errors))
+        thresholds.update(_optional_task_scene_scope(value, errors))
         return {
             "schema_version": GRAPH_TASK_STATE_BINDING_SCHEMA_VERSION,
             "articulation_graph_digest": graph_digest,
@@ -686,6 +699,7 @@ def _articulated_task_state_binding(
             errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
         thresholds[field] = number
     thresholds.update(_optional_robot_scene_floor(value, errors))
+    thresholds.update(_optional_task_scene_scope(value, errors))
 
     return {
         "schema_version": TASK_STATE_BINDING_SCHEMA_VERSION,
