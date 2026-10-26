@@ -309,6 +309,8 @@ def test_configured_drawer_task_adapts_to_a_passive_joint_native_definition(tmp_
     assert state["schema_version"] == "native_articulated_graph_task_state_binding.v1"
     assert set(state["link_native_body_names"]) == {"carcass", "drawer_0", "drawer_1", "drawer_2"}
     assert state["interaction_affordance_digest"] == affordance["affordance_digest"]
+    # Owner rule 2026-10-26: robot-scene contact fails at 20 N, everything else at 1 N.
+    assert (state["collision_failure_minimum_force_n"], state["robot_scene_collision_minimum_force_n"]) == (1.0, 20.0)
     # The assembly's own base lands on the registered support top, not below it.
     assert definition["task_object_pose_world"]["position_world_m"][2] == pytest.approx(SUPPORT_TOP_Z_M, abs=1e-9)
     assert definition["task_object_reset_joint_positions"] == {"task_part_joint": 0.0}

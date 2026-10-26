@@ -109,6 +109,35 @@ def test_contact_and_collision_are_thresholded_from_independent_sensors() -> Non
     assert sample["robot_collision_failure"] is True
 
 
+def test_robot_scene_contact_fails_only_at_the_frozen_floor() -> None:
+    # Owner rule 2026-10-26: brushing the counter at 8 N, as pi0.5 did on
+    # 2026-10-26, is not a collision; 25 N is. The general 1 N floor still
+    # governs the task object touching the scene.
+    floored = {**STATE, "robot_scene_collision_minimum_force_n": 20.0}
+    brush = _sample(task_state_binding=floored, robot_scene_contact_forces_w_n=[[0.0, 8.0, 0.0]],
+                    task_scene_contact_forces_w_n=[[0.0, 0.0, 1.1]])
+    assert brush["robot_collision_failure"] is False and brush["scene_collision_failure"] is True
+    assert _sample(task_state_binding=floored,
+                   robot_scene_contact_forces_w_n=[[0.0, 25.0, 0.0]])["robot_collision_failure"] is True
+    # A binding frozen before the rule keeps scoring robot-scene contact at 1 N.
+    assert _sample(robot_scene_contact_forces_w_n=[[0.0, 8.0, 0.0]])["robot_collision_failure"] is True
+
+
+def test_an_arm_link_on_the_task_object_fails_whatever_the_scene_floor() -> None:
+    task_spec = {"schema_version": "adp_task_spec.v2", "task_kind": "articulated_open_close",
+                 "articulation_graph": THIRD_SCENE_GRAPH}
+    joint_ids = [row["joint_id"] for row in THIRD_SCENE_GRAPH["joints"]]
+    sample = _sample(
+        task_spec=task_spec,
+        task_sample_binding={"joint_ids": joint_ids, "native_joint_names": {j: j for j in joint_ids}},
+        task_state_binding={**STATE, "robot_scene_collision_minimum_force_n": 20.0},
+        native_joint_names=joint_ids, native_joint_positions_rad=[0.0] * len(joint_ids),
+        native_joint_velocities_rad_s=[0.0] * len(joint_ids),
+        robot_task_forbidden_contact_forces_w_n=[[0.0, 0.0, 2.0]],
+    )
+    assert sample["robot_collision_failure"] is True
+
+
 def test_missing_contact_sensor_readback_never_defaults_to_no_contact() -> None:
     with pytest.raises(
         NativeArticulatedTaskStateError,

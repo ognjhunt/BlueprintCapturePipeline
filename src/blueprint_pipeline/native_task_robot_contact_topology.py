@@ -17,6 +17,11 @@ from typing import Any, Mapping, Sequence
 
 SCHEMA_VERSION = "native_task_robot_contact_topology.v1"
 ENV_ROOT = "{ENV_REGEX_NS}"
+#: Owner rule, 2026-10-26: robot contact with the static scene is a collision
+#: only at or above this force; below it is a light brush a real arm shrugs off.
+#: Contact with the task object is judged by body instead: any gripper body may
+#: touch it, and an arm link may not at any force.
+ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N = 20.0
 
 
 class NativeTaskRobotContactTopologyError(ValueError):
@@ -67,10 +72,9 @@ _PROFILES: Mapping[str, Mapping[str, Any]] = {
             "spawn_prim_path": _DROID_ASSET_ROOT,
             "identity_observed_not_runtime_bytes_reverified": True,
         },
-        "task_contact_body_paths": (
-            f"{_DROID_GRIPPER_ROOT}/left_inner_finger",
-            f"{_DROID_GRIPPER_ROOT}/right_inner_finger",
-        ),
+        # Pushing a door or hooking a handle with the outside of a finger is
+        # still manipulation, so every gripper body is a task contact body.
+        "task_contact_body_paths": _DROID_GRIPPER_BODIES,
         "protected_collision_body_paths": (
             *_DROID_ARM_BODIES,
             *_DROID_GRIPPER_BODIES,

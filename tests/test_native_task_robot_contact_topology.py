@@ -17,17 +17,15 @@ def test_franka_droid_profile_binds_every_contact_body_to_an_exact_path() -> Non
     assert topology["runtime_asset"]["sha256"] == (
         "sha256:c8d72259834e2e5290754f8580b37efbc0dec079ac6a98b27b167efe6461eb2c"
     )
-    assert topology["task_contact_body_paths"] == [
-        (
-            "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
-            "left_inner_finger"
-        ),
-        (
-            "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
-            "right_inner_finger"
-        ),
-    ]
+    # Owner rule 2026-10-26: any gripper body may touch the task object; only an
+    # arm link touching it is a forbidden collision.
+    gripper = "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
+    assert topology["task_contact_body_paths"] == [gripper + name for name in (
+        "base_link", "left_outer_knuckle", "left_outer_finger", "left_inner_finger", "left_inner_knuckle",
+        "right_outer_knuckle", "right_outer_finger", "right_inner_finger", "right_inner_knuckle")]
     assert len(topology["protected_collision_body_paths"]) == 18
+    forbidden = set(topology["protected_collision_body_paths"]) - set(topology["task_contact_body_paths"])
+    assert forbidden == {f"{{ENV_REGEX_NS}}/Robot/panda_link{index}" for index in range(9)}
     assert all(
         "*" not in path for path in topology["protected_collision_body_paths"]
     )

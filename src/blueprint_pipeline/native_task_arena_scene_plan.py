@@ -740,10 +740,12 @@ def _graph_articulation_plan(
             for field in (
                 "task_contact_minimum_force_n",
                 "collision_failure_minimum_force_n",
+                "robot_scene_collision_minimum_force_n",
                 "retreat_minimum_separation_m",
                 "root_translation_tolerance_m",
                 "root_orientation_tolerance_rad",
             )
+            if field in state_binding
         },
     }
 
@@ -1317,10 +1319,12 @@ def _articulation_plan(
             for key in (
                 "task_contact_minimum_force_n",
                 "collision_failure_minimum_force_n",
+                "robot_scene_collision_minimum_force_n",
                 "retreat_minimum_separation_m",
                 "root_translation_tolerance_m",
                 "root_orientation_tolerance_rad",
             )
+            if key in state_binding
         },
     }
 

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_task_robot_contact_topology import ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N
 from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
@@ -559,6 +560,7 @@ def materialize_rigid_relocation_construction_authority(
         "release_gripper_width_min_m": RELEASE_GRIPPER_WIDTH_MIN_M,
         "task_contact_minimum_force_n": TASK_CONTACT_MINIMUM_FORCE_N,
         "collision_failure_minimum_force_n": COLLISION_FAILURE_MINIMUM_FORCE_N,
+        "robot_scene_collision_minimum_force_n": ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N,
         "reset_translation_tolerance_m": settle_translation,
         "reset_orientation_tolerance_rad": settle_rotation,
         "settle_position_tolerance_m": settle_translation,
