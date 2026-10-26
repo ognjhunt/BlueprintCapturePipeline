@@ -92,3 +92,45 @@ def test_unallocated_resume_cannot_change_or_replenish_funding(tmp_path, monkeyp
     args["funding_admission"]["maximum_cost_usd"] += 1
     with pytest.raises(ValueError, match="funding_binding_invalid"):
         resume.prepare_unallocated_session_resume(**args)
+
+
+@pytest.mark.parametrize("fault", [None, "missing_original", "missing_proof", "changed_original",
+    "changed_proof", "successor_consumed", "evidence_changed", "cleanup_unknown"])
+def test_only_claimed_unallocated_gpu_dispatch_can_reuse_original_api_reservation(tmp_path, monkeypatch, fault):
+    from blueprint_pipeline import website_task_context as website
+    from tests.test_website_task_context import context
+
+    args, _ = _case(tmp_path, monkeypatch)
+    resume.prepare_unallocated_session_resume(**args, apply=True)
+    task = context()
+    retained = {**args["funding_admission"], "task_context_digest": task["context_digest"],
+        "schema_version": "paid_lane_admission.v1", "blockers": [],
+        "external_disclosure_allowed": True, "expires_at_epoch": 9_999_999_999}
+    response = {**retained, "status": "already_reserved"}
+    monkeypatch.setattr(website, "website_webapp_request", lambda **kw: response)
+    proof = args["successor_job_dir"] / "unallocated_dispatch_continuation.json"
+    if fault == "changed_original":
+        retained = {**retained, "maximum_cost_usd": 3}
+    if fault == "changed_proof":
+        value = json.loads(proof.read_text())
+        value["maximum_cost_usd"] = 5
+        proof.write_text(json.dumps(value))
+    if fault == "successor_consumed":
+        (args["successor_job_dir"] / "policy_canary_session_consumption.json").write_text('{}')
+    if fault == "evidence_changed":
+        (args["parent_job_dir"] / "attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json").write_text('{}')
+    if fault == "cleanup_unknown":
+        monkeypatch.setattr(resume, "billing_staged_objects_absent", lambda row: (False, None))
+    saved = []
+    kwargs = dict(task_context=task, binding_digest=response["allocation_binding_digest"],
+        maximum_cost_usd=4, request_count=1, resource_class="gpu_render", provider="vast",
+        retained_admission=None if fault == "missing_original" else retained,
+        unallocated_continuation_path=None if fault == "missing_proof" else proof, retain_admission=saved.append)
+    if fault:
+        with pytest.raises((ValueError, RuntimeError)):
+            website.reserve_website_preparation_spend(**kwargs)
+        assert saved == []
+    else:
+        value, grant = website.reserve_website_preparation_spend(**kwargs)
+        assert value == retained and saved == [retained]
+        assert grant.resource_class == "gpu_render" and grant.allocation_binding_digest == response["allocation_binding_digest"]

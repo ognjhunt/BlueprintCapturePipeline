@@ -95,6 +95,7 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
                                      source_video_digest: str | None = None,
                                      atlas_auxiliary: bool = False,
                                      retained_admission: Mapping[str, Any] | None = None,
+                                     unallocated_continuation_path: str | Path | None = None,
                                      retain_admission: Callable[[Mapping[str, Any]], None] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
@@ -126,14 +127,16 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
             or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):
         raise ValueError("website_preparation_spend_receipt_invalid")
     if value.get("status") == "already_reserved" and retained_admission is not None:
-        # Only the Atlas adapters' durable recovery may reuse this grant,
-        # between its uploads and its one submission. It locks and persists
-        # intent before mutating; unknown outcomes still refuse, and another
-        # worker without the original local admission cannot turn an existing
-        # reservation into new authority.
+        # Reuse requires the original authenticated admission. Atlas retains
+        # its upload/submission intent; GPU recovery additionally proves that
+        # the previous dispatch never called the provider or allocated a worker.
         retained = {key: item for key, item in retained_admission.items() if key != "source_commit"}
-        if (resource_class != "provider_reconstruction_api" or provider != "world_labs_atlas"
-                or retained != {**value, "status": "admitted"}):
+        if retained != {**value, "status": "admitted"}:
+            raise ValueError("website_preparation_retained_admission_mismatch")
+        if (resource_class, provider) == ("gpu_render", "vast") and unallocated_continuation_path is not None:
+            from .policy_canary_unallocated_resume import validate_unallocated_funding_reuse
+            validate_unallocated_funding_reuse(unallocated_continuation_path, funding_admission=retained)
+        elif (resource_class, provider) != ("provider_reconstruction_api", "world_labs_atlas"):
             raise ValueError("website_preparation_retained_admission_mismatch")
         value = retained
     if (retain_admission is not None and value.get("status") == "admitted"
