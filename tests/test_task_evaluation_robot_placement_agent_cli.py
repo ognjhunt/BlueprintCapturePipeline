@@ -134,9 +134,17 @@ def test_no_match_verdict_names_what_ruled_every_base_out():
     # Bases that clear the scene and reach the path, but where the moving part would strike the arm.
     struck = placement_no_match_verdict(
         {"detailed_geometry_tested_count": 5, "geometry_passing_count": 2, "arm_path_tested_count": 2,
-         "arm_path_rejected_count": 2}, robot_id="franka_panda")
+         "arm_path_rejected_count": 2, "arm_path_blocker_counts": {"robot_arm_in_task_part_path": 1,
+                                                                   "robot_arm_path_grip_unreachable": 1}},
+        robot_id="franka_panda")
     assert struck["reason_code"] == "task_part_strikes_arm"
     assert struck["summary"].startswith("Not a match: 2 franka_panda base positions clear the scene")
+    # Position-only reach is not a held grip: with no grip held, no strike was measured.
+    unheld = placement_no_match_verdict(
+        {"detailed_geometry_tested_count": 5, "geometry_passing_count": 2, "arm_path_tested_count": 2,
+         "arm_path_rejected_count": 2, "arm_path_blocker_counts": {"robot_arm_path_grip_unreachable": 2}},
+        robot_id="franka_panda")
+    assert unheld["reason_code"] == "task_grip_unreachable" and "strike" not in unheld["summary"]
     partly = placement_no_match_verdict(
         {"detailed_geometry_tested_count": 5, "geometry_passing_count": 2, "arm_path_tested_count": 0,
          "arm_path_rejected_count": 0}, robot_id="franka_panda")
