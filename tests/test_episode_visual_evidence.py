@@ -22,6 +22,21 @@ from blueprint_pipeline.episode_visual_evidence import (
 )
 
 
+def test_frames_stay_lossless_at_the_faster_compression_level(tmp_path):
+    # Every retained frame is encoded inside the GPU rental: level 3 must still decode exactly.
+    from PIL import Image
+
+    from blueprint_pipeline import episode_visual_evidence
+
+    assert episode_visual_evidence.LOSSLESS_FRAME_COMPRESS_LEVEL == 3
+    frame = np.random.default_rng(57749451).integers(0, 256, (72, 128, 3), dtype=np.uint8)
+    record = persist_observation_frame(frame, output_dir=tmp_path, episode_id="episode", frame_index=0,
+                                       kind="policy-input")
+    with Image.open(tmp_path / record["relative_path"]) as image:
+        assert image.format == "PNG"
+        assert np.array_equal(np.asarray(image.convert("RGB")), frame)
+
+
 def test_review_video_normalizes_only_derived_pixels_and_binds_source_transforms(tmp_path):
     import hashlib
     from PIL import Image
