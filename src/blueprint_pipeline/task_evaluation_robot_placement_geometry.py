@@ -1298,9 +1298,9 @@ def enumerate_robot_placement_geometry_candidates(
             if gate["status"] != "passed":
                 continue
             score = (
-                # A base clear of the part's whole range survives a policy that
-                # opens past the threshold; the door then cannot land on it.
-                bool(gate.get("task_limit_contact_point_count")),
+                # Preserve clearance differences even when conservative surface
+                # sampling gives every pose some hits. This adds no rejection.
+                int(gate.get("task_limit_contact_point_count") or 0),
                 -float(
                     gate["trajectory_position_ik_gate"]["minimum_manipulability"]
                     or 0.0
@@ -1348,6 +1348,9 @@ def enumerate_robot_placement_geometry_candidates(
                 "trajectory_position_ik_gate"
             ]["minimum_manipulability"],
             "trajectory_position_ik_gate": gate["trajectory_position_ik_gate"],
+            **({"task_motion_contact_point_count": gate["task_motion_contact_point_count"],
+                "task_limit_contact_point_count": gate["task_limit_contact_point_count"]}
+               if "task_limit_contact_point_count" in gate else {}),
         }
         for _score, proposal, gate in candidates[: int(maximum_candidates)]
     ]
