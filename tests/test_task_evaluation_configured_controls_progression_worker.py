@@ -348,8 +348,10 @@ def test_expired_dynamic_window_creates_versioned_refresh(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize("embedded_intent", [False, True])
 @pytest.mark.parametrize("release_matches", [False, True])
+@pytest.mark.parametrize("placement_outcome", ["plan", "not_a_match", "setup_error"])
 def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, embedded_intent: bool, release_matches: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, embedded_intent: bool, release_matches: bool,
+    placement_outcome: str,
 ) -> None:
     launch_id = "scene-839873-2deff449-r1"
     launch_root = tmp_path / "launch-runs"
@@ -399,9 +401,18 @@ def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
         lambda _value: adoption,
     )
     observed: dict[str, object] = {}
+    verdict = {"status": "not_a_match", "robot_id": "franka_panda",
+               "reason_code": "robot_base_in_task_motion_path",
+               "summary": "No tested supported placement clears the required motion.",
+               "support_search_exhausted": True}
 
     def materialize(**kwargs: object) -> dict[str, object]:
         observed.update(kwargs)
+        if placement_outcome == "not_a_match":
+            from blueprint_pipeline.task_evaluation_robot_placement_agent_cli import RobotPlacementNoMatch
+            raise RobotPlacementNoMatch(verdict)
+        if placement_outcome == "setup_error":
+            raise ValueError("configured_scene_geometry_unreadable")
         return {
             "status": "agent_binding_accepted_plan_materialized",
             "selected_candidate_id": "candidate-0001",
@@ -420,13 +431,25 @@ def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
         activation_queue_root=tmp_path / "activations",
     )
 
-    assert report["status"] == "completed"
+    assert report["status"] == ("blocked" if release_matches and placement_outcome == "setup_error" else "completed")
     if not release_matches:
         assert observed == {}
         return
     assert observed["source_launch_id"] == launch_id
     assert observed["intent_path_override"] == adoption_path
     assert observed["intent_path_override"] != automatic_path
+    if placement_outcome == "not_a_match":
+        row = next(row for row in report["rows"] if row["status"] == "not_a_match")
+        assert row == {"status": "not_a_match", "source_launch_id": launch_id,
+                       "match_verdict": verdict, "policy_executed": False,
+                       "paid_execution_requested": False, "native_placement_qualified": False}
+        assert report["provider_mutation_performed"] is False
+        assert report["allocator_invoked"] is False
+        for name in ("plans", "preparations", "activations"):
+            assert not (tmp_path / name).exists()
+    elif placement_outcome == "setup_error":
+        row = next(row for row in report["rows"] if row["status"] == "blocked")
+        assert row["blockers"] == ["configured_scene_geometry_unreadable"]
 
 
 def test_process_plans_forwards_compilation_root_to_controls(
