@@ -45,6 +45,47 @@ from .task_evaluation_supervisor.inference_reservations import (
 )
 
 
+_BLOCKER_WORDS = {
+    "robot_base_in_task_motion_path": "in the path of the task's moving part",
+    "robot_reset_bounds_overlap_scene_geometry": "colliding with the scene",
+    "robot_base_support_coverage_incomplete": "not fully supported",
+    "task_target_outside_analytic_reach": "out of reach",
+    "robot_not_facing_task_workspace": "not facing the task",
+}
+
+
+class RobotPlacementNoMatch(ValueError):
+    """No base pose for this robot passes: a verdict about robot, site and task, not a harness fault."""
+
+    def __init__(self, verdict: Mapping[str, Any]):
+        super().__init__("robot_placement_geometry_candidate_inventory_empty")
+        self.verdict = dict(verdict)
+
+
+def placement_no_match_verdict(diagnostics: Mapping[str, Any], *, robot_id: str) -> dict[str, Any]:
+    """Why no base pose exists, from the search's own diagnostics, in terms a robot team can act on."""
+    counts = {str(k): int(v) for k, v in (diagnostics.get("detailed_geometry_blocker_counts") or {}).items()}
+    tested = int(diagnostics.get("detailed_geometry_tested_count") or 0)
+    clear = int(diagnostics.get("geometry_passing_count") or 0)
+    if not diagnostics:
+        reason, summary = "candidate_inventory_rejected", f"No supplied {robot_id} base pose passed the geometry gate."
+    elif not tested:
+        reason, summary = "no_supported_base_within_reach", (
+            f"Not a match: no surface within {robot_id}'s reach of the task can hold its base.")
+    elif clear:
+        reason, summary = "task_path_unreachable", (
+            f"Not a match: {clear} {robot_id} base positions clear the scene, but from none of them can the arm "
+            "follow the task's path.")
+    else:
+        ranked = sorted(counts.items(), key=lambda row: (-row[1], row[0]))
+        reason = ranked[0][0] if ranked else "geometry_rejected"
+        summary = (f"Not a match: none of the {tested} reachable, supported {robot_id} base positions passed ("
+                   + ", ".join(f"{n} {_BLOCKER_WORDS.get(k, k)}" for k, n in ranked) + ").")
+    return {"status": "not_a_match", "robot_id": robot_id, "reason_code": reason, "summary": summary,
+            "blocker_counts": counts, "detailed_geometry_tested_count": tested,
+            "support_search_exhausted": bool(diagnostics.get("support_search_exhausted"))}
+
+
 def _read_mapping(path: Path, *, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -211,10 +252,12 @@ def run_robot_placement_cli(
         "policy_executed": False,
         "record_digest": "",
     }
+    if not candidates:
+        search_record["match_verdict"] = placement_no_match_verdict(search_diagnostics, robot_id=robot_id)
     search_record["record_digest"] = canonical_digest(search_record, digest_field="record_digest")
     write_json(root / "task_evaluation_robot_placement_geometry_search.v1.json", search_record)
     if not candidates:
-        raise ValueError("robot_placement_geometry_candidate_inventory_empty")
+        raise RobotPlacementNoMatch(search_record["match_verdict"])
     candidate_inventory_digest = canonical_digest(
         {"trajectory_digest": trajectory_digest, "candidates": candidates}
     )
@@ -608,43 +651,48 @@ def main(argv: Sequence[str] | None = None) -> int:
                 native_result_path=args.prior_native_construction_result,
             )
         )
-    receipt = run_robot_placement_cli(
-        run_id=args.run_id,
-        scene_collision_usd=args.scene_collision_usd,
-        robot_asset_usd=args.robot_asset_usd,
-        target_position_world_m=args.target_position_world_m,
-        scene_binding=_read_mapping(args.scene_binding, label="scene_binding"),
-        task_binding=_read_mapping(args.task_binding, label="task_binding"),
-        overview_image_paths=args.overview_image,
-        output_dir=args.output_dir,
-        max_rounds=args.max_rounds,
-        candidate_inventory_cap=args.candidate_inventory_cap,
-        max_input_tokens=args.max_input_tokens,
-        max_inference_cost_usd=args.max_inference_cost_usd,
-        allow_live_invocation=args.allow_live_invocation,
-        tracing_disabled=args.disable_tracing,
-        robot_id=args.robot_id,
-        execute_candidate=execute_candidate,
-        task_trajectory=task_trajectory,
-        prior_native_attempts=prior_native_attempts,
-        candidate_inventory_checkpoint=(
-            _read_mapping(
-                args.candidate_inventory_checkpoint,
-                label="candidate_inventory_checkpoint",
-            )
-            if args.candidate_inventory_checkpoint
-            else None
-        ),
-        record_inference_reservations=args.record_inference_reservations,
-        expected_proposal_reuse_probability=(
-            args.expected_proposal_reuse_probability
-        ),
-        expected_visual_review_reuse_probability=(
-            args.expected_visual_review_reuse_probability
-        ),
-        expected_proposal_reuse_count=args.expected_proposal_reuse_count,
-        expected_visual_review_reuse_count=args.expected_visual_review_reuse_count,
-    )
+    try:
+        receipt = run_robot_placement_cli(
+            run_id=args.run_id,
+            scene_collision_usd=args.scene_collision_usd,
+            robot_asset_usd=args.robot_asset_usd,
+            target_position_world_m=args.target_position_world_m,
+            scene_binding=_read_mapping(args.scene_binding, label="scene_binding"),
+            task_binding=_read_mapping(args.task_binding, label="task_binding"),
+            overview_image_paths=args.overview_image,
+            output_dir=args.output_dir,
+            max_rounds=args.max_rounds,
+            candidate_inventory_cap=args.candidate_inventory_cap,
+            max_input_tokens=args.max_input_tokens,
+            max_inference_cost_usd=args.max_inference_cost_usd,
+            allow_live_invocation=args.allow_live_invocation,
+            tracing_disabled=args.disable_tracing,
+            robot_id=args.robot_id,
+            execute_candidate=execute_candidate,
+            task_trajectory=task_trajectory,
+            prior_native_attempts=prior_native_attempts,
+            candidate_inventory_checkpoint=(
+                _read_mapping(
+                    args.candidate_inventory_checkpoint,
+                    label="candidate_inventory_checkpoint",
+                )
+                if args.candidate_inventory_checkpoint
+                else None
+            ),
+            record_inference_reservations=args.record_inference_reservations,
+            expected_proposal_reuse_probability=(
+                args.expected_proposal_reuse_probability
+            ),
+            expected_visual_review_reuse_probability=(
+                args.expected_visual_review_reuse_probability
+            ),
+            expected_proposal_reuse_count=args.expected_proposal_reuse_count,
+            expected_visual_review_reuse_count=args.expected_visual_review_reuse_count,
+        )
+    except RobotPlacementNoMatch as no_match:
+        # A verdict about this robot, site and task, distinct from a crash (1) or a rejection (2).
+        print(json.dumps(no_match.verdict, sort_keys=True))
+        return 3
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["status"] == "accepted" else 2
 
@@ -653,4 +701,4 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 
 
-__all__ = ["main", "run_robot_placement_cli"]
+__all__ = ["RobotPlacementNoMatch", "main", "placement_no_match_verdict", "run_robot_placement_cli"]

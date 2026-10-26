@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.task_evaluation_robot_placement_agent_cli import (
+    RobotPlacementNoMatch,
     _persist_images,
     _read_mapping,
+    placement_no_match_verdict,
     run_robot_placement_cli,
 )
 from blueprint_pipeline.task_evaluation_robot_placement_agent import (
@@ -94,7 +96,7 @@ def test_empty_search_retains_geometry_diagnostics_before_any_model_call(tmp_pat
         return []
 
     monkeypatch.setattr(module, "enumerate_robot_placement_geometry_candidates", empty)
-    with pytest.raises(ValueError, match="candidate_inventory_empty"):
+    with pytest.raises(RobotPlacementNoMatch, match="candidate_inventory_empty") as no_match:
         run_robot_placement_cli(
             run_id="empty", scene_collision_usd=tmp_path / "scene.usd",
             robot_asset_usd=tmp_path / "robot.usd", target_position_world_m=[0., 0., 0.],
@@ -106,9 +108,28 @@ def test_empty_search_retains_geometry_diagnostics_before_any_model_call(tmp_pat
     record = json.loads((tmp_path / "out/task_evaluation_robot_placement_geometry_search.v1.json").read_text())
     assert record["status"] == "no_candidate"
     assert record["search_diagnostics"]["support_or_reach_prefilter_rejected_count"] == 72
+    assert record["match_verdict"] == no_match.value.verdict
+    assert record["match_verdict"]["reason_code"] == "no_supported_base_within_reach"
     assert record["record_digest"] == canonical_digest(record, digest_field="record_digest")
     assert record["native_placement_qualified"] is False
     assert record["policy_executed"] is False
+
+
+def test_no_match_verdict_names_what_ruled_every_base_out():
+    # 2026-10-26 dishwasher: every reachable floor spot was in the door's swing or in the cabinets.
+    verdict = placement_no_match_verdict({
+        "detailed_geometry_tested_count": 31, "geometry_passing_count": 0, "support_search_exhausted": True,
+        "detailed_geometry_blocker_counts": {"robot_base_in_task_motion_path": 31,
+                                             "robot_reset_bounds_overlap_scene_geometry": 12}},
+        robot_id="franka_panda")
+    assert verdict["status"] == "not_a_match" and verdict["reason_code"] == "robot_base_in_task_motion_path"
+    assert verdict["summary"] == (
+        "Not a match: none of the 31 reachable, supported franka_panda base positions passed "
+        "(31 in the path of the task's moving part, 12 colliding with the scene).")
+    reachable = placement_no_match_verdict(
+        {"detailed_geometry_tested_count": 5, "geometry_passing_count": 2}, robot_id="franka_panda")
+    assert reachable["reason_code"] == "task_path_unreachable"
+    assert placement_no_match_verdict({}, robot_id="franka_panda")["reason_code"] == "candidate_inventory_rejected"
 
 
 def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
