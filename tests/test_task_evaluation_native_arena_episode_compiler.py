@@ -92,7 +92,7 @@ def test_compiler_replays_mounting_without_changing_sealed_source(tmp_path: Path
     assert adaptation["adaptation"] == "usd_authored_world_fixed_base"
     assert verify_grounded_articulation(derived)["grounded"] is True
     assert UsdPhysics.RigidBodyAPI(retained.GetPrimAtPath("/Asset/body")).GetKinematicEnabledAttr().Get() is True
-    # The fixture's door swings on a horizontal hinge, so it is counterbalanced after grounding.
+    # The fixture explicitly declares counterbalance, applied after grounding.
     assert adaptation["counterbalanced_hinge"]["gravity_compensated_body_prim_paths"] == ["/Asset/door"]
     verify_grounded_articulation_overlay(source, derived, adaptation)
     tampered = Usd.Stage.Open(str(derived))
