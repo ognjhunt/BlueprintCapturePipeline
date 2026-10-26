@@ -1147,7 +1147,8 @@ def enumerate_robot_placement_geometry_candidates(
         surface
         for surface in index.support_surfaces
         if surface.height_m <= target[2] + 0.10
-        and target[2] - surface.height_m <= profile.max_shoulder_to_affordance_m()
+        # The arm reaches from its shoulder, which stands above the support.
+        and target[2] - surface.height_m - profile.shoulder_above_root_m <= profile.max_shoulder_to_affordance_m()
         and surface.minimum_xy_m[0] - profile.standoff_range_m[1] <= target[0]
         <= surface.maximum_xy_m[0] + profile.standoff_range_m[1]
         and surface.minimum_xy_m[1] - profile.standoff_range_m[1] <= target[1]
