@@ -57,18 +57,29 @@ def _measure(tmp_path, x, y):
 
 
 def test_a_door_that_comes_down_on_the_elbow_is_held_nearer_the_robot(tmp_path):
-    # 2026-10-26 dishwasher: from the one base 45 cm to the side, holding the middle of the handle put the
-    # elbow 57 mm inside the door at 49 degrees; holding it 10-20 cm toward the robot cleared it.
-    report = _measure(tmp_path, 0.60, 0.45)
+    # From a base off to the side, holding the middle of the handle leaves the door coming down on the
+    # elbow from every arm pose tried; holding it toward the robot keeps the arm clear.
+    report = _measure(tmp_path, 0.75, 0.45)
     planned = report["grips"][0]
     assert (planned["slide_m"], planned["roll_deg"], planned["reached"]) == (0.0, 0.0, True)
-    assert planned["link"] == "panda_link4" and planned["minimum_clearance_m"] < -0.03
+    assert planned["link"] == "panda_link4" and planned["minimum_clearance_m"] < -0.01
     assert report["status"] == "passed" and report["blockers"] == []
     best = report["best_grip"]
     assert best["slide_m"] > 0.05 and best["clear"] is True  # toward the robot, which stands at +y
     assert report["handle_free_length_m"] == [0.28, 0.28]
     np.testing.assert_allclose(report["handle_axis_world"], [0.0, 1.0, 0.0], atol=1e-9)
     assert report["simulator_executed"] is False and report["report_digest"].startswith("sha256:")
+
+
+def test_the_planned_grip_counts_when_any_arm_pose_holds_it_clear(tmp_path):
+    # 2026-10-26 dishwasher: the middle grip struck the door from the reach check's arm solution and
+    # cleared it by 9 cm from the rest pose. The elbow's place is the arm's choice, not the grip's.
+    from blueprint_pipeline import robot_arm_path_clearance as module
+
+    report = _measure(tmp_path, 0.60, 0.45)
+    assert report["status"] == "passed" and report["grips_tried"] == 1
+    assert report["best_grip"]["slide_m"] == 0.0 and report["best_grip"]["minimum_clearance_m"] > 0.04
+    assert module.REST_SEED_RAD["franka_panda"] == pytest.approx((0.0, -0.6283, 0.0, -2.5133, 0.0, 1.8850, 0.0))
 
 
 def test_a_base_under_the_doors_arc_has_no_clean_grip(tmp_path):

@@ -59,8 +59,12 @@ IK_POSITION_TOLERANCE_M = 0.002
 IK_ORIENTATION_TOLERANCE_RAD = math.radians(2.0)
 IK_ORIENTATION_WEIGHT_M = 0.3
 IK_MAX_ITERATIONS = 200
-# A fixed mid-range arm pose, tried after any supplied seed for the first grip pose.
+# Arm poses each grip's path is also solved from, after any supplied seed: a mid-range pose, and the
+# runtime asset's rest pose. A seven-axis arm holds one grip with its elbow in different places, and
+# the path keeps the elbow where the first solve put it; on 2026-10-26 the dishwasher's middle grip
+# struck the door from the reach check's solution and cleared it by 9 cm from either of these.
 NOMINAL_SEED_RAD = (0.0, -0.3, 0.0, -1.8, 0.0, 1.6, 0.785)
+REST_SEED_RAD = {"franka_panda": (0.0, -0.6283, 0.0, -2.5133, 0.0, 1.8850, 0.0)}
 
 
 class RobotArmPathClearanceError(ValueError):
@@ -348,7 +352,36 @@ def arm_path_clearance(*, robot_id: str, base_pose_world: Mapping[str, Sequence[
     values = [float(v) for v in np.linspace(start, goal, max(2, int(math.ceil(abs(goal - start) / step)) + 1))]
     carried = {v: world_poses(v)[joint.child] @ np.linalg.inv(rest[joint.child]) for v in values}
     flip = np.diag([-1.0, -1.0, 1.0])  # the same grip with the hand turned half a turn about the approach
-    seeds = [s for s in (seed_joint_positions, NOMINAL_SEED_RAD) if s is not None]
+    seeds = []
+    for seed in (seed_joint_positions, NOMINAL_SEED_RAD, REST_SEED_RAD.get(robot_id)):
+        if seed is not None and tuple(float(v) for v in seed) not in seeds:
+            seeds.append(tuple(float(v) for v in seed))
+
+    def follow(poses: list, seed: Sequence[float]) -> tuple[list, float | None]:
+        """Solve each pose from the previous solution; the joint value where the arm first falls short."""
+        path, previous = [], np.asarray(seed, dtype=float)
+        for position, orientation, value in poses:
+            joints, position_error, angle_error = solve_grasp_ik(
+                base_from_world=base_from_world, position_world=position, rotation_world=orientation,
+                seed=previous, grasp_point_flange=grasp_point)
+            if position_error >= IK_POSITION_TOLERANCE_M or angle_error >= IK_ORIENTATION_TOLERANCE_RAD:
+                return path, value
+            path.append((joints, value))
+            previous = joints
+        return path, None
+
+    def measure(path: list) -> tuple[float | None, str | None, float | None]:
+        least, which, where = None, None, None
+        checks = [path[0]]
+        for (qa, va), (qb, vb) in zip(path, path[1:]):
+            count = max(1, int(math.ceil(float(np.abs(qb - qa).max()) / MAXIMUM_JOINT_STEP_RAD)))
+            checks += [(qa + t * (qb - qa), va + t * (vb - va)) for t in np.linspace(1.0 / count, 1.0, count)]
+        for joints, value in checks:
+            gap, link = clearance(joints, value)
+            if math.isfinite(gap) and (least is None or gap < least):
+                least, which, where = round(gap, 4), link, round(float(value), 4)
+        return least, which, where
+
     grips, best = [], None
     for slide, roll_deg in _grip_rows(free):
         approach_in = _about(bar, math.radians(roll_deg)) @ -approach_out
@@ -359,32 +392,21 @@ def arm_path_clearance(*, robot_id: str, base_pose_world: Mapping[str, Sequence[
             rotation = np.column_stack([bar, np.cross(approach_in, bar), approach_in]) @ turn
             poses = [(grip - standoff * approach_in, rotation, start)]
             poses += [(carried[v][:3, :3] @ grip + carried[v][:3, 3], carried[v][:3, :3] @ rotation, v) for v in values]
-            path, previous = [], None
-            for position, orientation, value in poses:
-                for seed in ([previous] if previous is not None else seeds):
-                    joints, position_error, angle_error = solve_grasp_ik(
-                        base_from_world=base_from_world, position_world=position, rotation_world=orientation,
-                        seed=seed, grasp_point_flange=grasp_point)
-                    if position_error < IK_POSITION_TOLERANCE_M and angle_error < IK_ORIENTATION_TOLERANCE_RAD:
-                        break
-                else:
-                    row["at_joint_value"] = round(value, 4)
+            for seed in seeds:
+                path, short = follow(poses, seed)
+                if short is not None:
+                    if not row["reached"]:
+                        row["at_joint_value"] = round(short, 4)
+                    continue
+                least, link, where = measure(path)
+                clear = least is None or least >= margin_m
+                if not row["reached"] or clear or (least is not None and row["minimum_clearance_m"] is not None
+                                                   and least > row["minimum_clearance_m"]):
+                    row.update(reached=True, clear=clear, minimum_clearance_m=least, link=link, at_joint_value=where)
+                if clear:
                     break
-                path.append((joints, value))
-                previous = joints
-            if len(path) == len(poses):
+            if row["reached"]:
                 break
-        if len(path) == len(poses):
-            row["reached"], row["at_joint_value"] = True, None
-            checks = [path[0]]
-            for (qa, va), (qb, vb) in zip(path, path[1:]):
-                count = max(1, int(math.ceil(float(np.abs(qb - qa).max()) / MAXIMUM_JOINT_STEP_RAD)))
-                checks += [(qa + t * (qb - qa), va + t * (vb - va)) for t in np.linspace(1.0 / count, 1.0, count)]
-            for joints, value in checks:
-                gap, link = clearance(joints, value)
-                if math.isfinite(gap) and (row["minimum_clearance_m"] is None or gap < row["minimum_clearance_m"]):
-                    row.update(minimum_clearance_m=round(gap, 4), link=link, at_joint_value=round(float(value), 4))
-            row["clear"] = row["minimum_clearance_m"] is None or row["minimum_clearance_m"] >= margin_m
         grips.append(row)
         if row["clear"]:
             best = row
