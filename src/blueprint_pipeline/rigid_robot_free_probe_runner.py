@@ -40,6 +40,10 @@ trace is written once, immutably, to
 specification, retains the receipt (a decided receipt is never replaced) and
 republishes the job's offer. An undecided receipt leaves the capture queued for
 its one further funded attempt.
+
+For the capped canary: ``preflight --capture-root X --scratch-dir Y`` stages
+one attempt outside the queue and runs the lane dry (no grant, no GPU), and
+``run-queue --capture-root X --max-attempts 1`` starts at most one GPU attempt.
 """
 
 from __future__ import annotations
@@ -445,7 +449,7 @@ def _seal_terminal(root: Path, item: Path, entry: Mapping[str, Any], job: Path, 
 
 
 def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state: Mapping[str, Any],
-             hooks: Mapping[str, Callable[..., Any]]) -> dict[str, Any]:
+             hooks: Mapping[str, Callable[..., Any]], max_attempts: int | None) -> dict[str, Any]:
     staged_now: set[Path] = set()
     while True:
         terminal = _read_optional(job / TERMINAL_FILENAME)
@@ -474,6 +478,10 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
         if state["status"] != "probe_required" or _job_dir(root, state) != job:
             return {"status": "deferred", "capture_root": entry.get("capture_root"),
                     "reason": "request_changed" if state["status"] == "probe_required" else state["status"]}
+        if max_attempts is not None and len(staged_now) >= max_attempts:
+            # A capped canary pass: its attempts are settled, and nothing more is sealed or spent.
+            return {"status": "deferred", "capture_root": state["capture_root"],
+                    "reason": "attempt_limit_reached_for_this_pass", "last": settled}
         blockers = precheck_blockers(state, job=job)
         if blockers:
             return {"status": "deferred", "capture_root": state["capture_root"], "blockers": sorted(set(blockers))}
@@ -487,7 +495,8 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
         hooks["allocator_runner"](staged["argv"], attempt=staged["root"])
 
 
-def _process_entry(root: Path, item: Path, hooks: Mapping[str, Callable[..., Any]]) -> dict[str, Any]:
+def _process_entry(root: Path, item: Path, hooks: Mapping[str, Callable[..., Any]],
+                   max_attempts: int | None = None) -> dict[str, Any]:
     entry = _read(item)
     state = current_probe_state(str(entry.get("capture_root") or ""))
     if state["status"] in FINAL_STATES:
@@ -501,13 +510,20 @@ def _process_entry(root: Path, item: Path, hooks: Mapping[str, Callable[..., Any
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"status": "locked", "capture_root": state["capture_root"]}
-        return _advance(root, item, entry, job, state, hooks)
+        return _advance(root, item, entry, job, state, hooks, max_attempts)
 
 
 def run_queue(queue_root: str | Path | None = None, *, capture_root: str | Path | None = None,
-              hooks: Mapping[str, Callable[..., Any]] | None = None) -> list[dict[str, Any]]:
-    """Advance every pending capture (or just ``capture_root``); with the lane switched off, touch nothing."""
+              hooks: Mapping[str, Callable[..., Any]] | None = None,
+              max_attempts: int | None = None) -> list[dict[str, Any]]:
+    """Advance every pending capture (or just ``capture_root``); with the lane switched off, touch nothing.
 
+    ``max_attempts`` caps the GPU attempts this pass may start per capture (the
+    capped canary runs one); the scene's own budget is unchanged.
+    """
+
+    if max_attempts is not None and (type(max_attempts) is not int or max_attempts < 1):
+        raise ValueError("rigid_robot_free_probe_max_attempts_invalid")
     root = _queue_root(queue_root)
     pending = sorted((root / "pending").glob("*.json"))
     if capture_root is not None:
@@ -518,7 +534,7 @@ def run_queue(queue_root: str | Path | None = None, *, capture_root: str | Path 
     rows = []
     for item in pending:
         try:
-            rows.append(_process_entry(root, item, bound))
+            rows.append(_process_entry(root, item, bound, max_attempts))
         except Exception as exc:  # noqa: BLE001 - one capture's failure never stops the others
             rows.append({"status": "error", "entry": item.name, "reason": f"{type(exc).__name__}:{str(exc)[:200]}"})
     return rows
@@ -555,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
     run = commands.add_parser("run-queue", help="advance pending captures (the path-activated runner)")
     run.add_argument("--queue-root", type=Path)
     run.add_argument("--capture-root", help="advance only this capture's entry (a capped canary)")
+    run.add_argument("--max-attempts", type=int, help="start at most this many GPU attempts per capture this pass")
     enqueue = commands.add_parser("enqueue", help="queue one capture's probe; launches nothing")
     enqueue.add_argument("--capture-root", required=True)
     enqueue.add_argument("--queue-root", type=Path)
@@ -573,7 +590,8 @@ def main(argv: list[str] | None = None) -> int:
         outcome = preflight_capture(args.capture_root, scratch_dir=args.scratch_dir)
         print(json.dumps(outcome, sort_keys=True, default=str))
         return 0 if outcome["status"] == "ready" else 1
-    print(json.dumps(run_queue(args.queue_root, capture_root=args.capture_root), sort_keys=True, default=str))
+    rows = run_queue(args.queue_root, capture_root=args.capture_root, max_attempts=args.max_attempts)
+    print(json.dumps(rows, sort_keys=True, default=str))
     return 0
 
 

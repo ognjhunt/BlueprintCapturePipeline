@@ -563,6 +563,22 @@ def test_an_undecided_run_is_retried_once_then_decided(tmp_path, monkeypatch) ->
     assert len(world["allocator_calls"]) == 2 and len(world["webapp_calls"]) == 2
 
 
+def test_a_capped_canary_pass_starts_one_attempt_and_seals_nothing(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch, readback_fails=True)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    row = runner.run_queue(world["queue"], capture_root=world["capture"], hooks=runner_hooks(world),
+                           max_attempts=1)[0]
+    assert row["status"] == "deferred" and row["reason"] == "attempt_limit_reached_for_this_pass", row
+    assert row["last"]["state"] == "undecided" and len(world["allocator_calls"]) == 1
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    assert not (job / runner.TERMINAL_FILENAME).exists()
+    world["host_options"] = {}
+    assert runner.run_queue(world["queue"], hooks=runner_hooks(world))[0]["status"] == "decided"
+    assert len(world["allocator_calls"]) == 2 and _receipt(world)["status"] == "passed"
+    with pytest.raises(ValueError, match="max_attempts_invalid"):
+        runner.run_queue(world["queue"], max_attempts=0)
+
+
 def test_two_undecided_funded_attempts_exhaust_the_scene(tmp_path, monkeypatch) -> None:
     world = build_world(tmp_path, monkeypatch, readback_fails=True)
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
