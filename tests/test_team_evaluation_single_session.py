@@ -206,6 +206,9 @@ def test_a_prefix_with_only_prepolicy_failures_is_retained_without_invented_epis
             temporary.replace(path)
             return result
         if index == 3 and failure in ('timeout', 'recovery_failed'):
+            # Recovery is needed only if the child timed out before sealing.
+            # A valid receipt followed by a close hang has separate coverage.
+            path.unlink()
             raise subprocess.TimeoutExpired('isolated-child', 2700)
         child = {'schema_version': 'native_task_arena_policy_canary_session_result.v1',
                  'selected_cell_index': index, 'status': 'blocked',
