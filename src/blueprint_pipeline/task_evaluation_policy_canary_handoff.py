@@ -373,6 +373,7 @@ def rebind_policy_controller_configuration_to_scene(
     scene_id: str,
     task_id: str,
     scene_revision_digest: str,
+    scene_plan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Rebind the paired-policy controller configuration to one scene and its Quick-10 matrix.
 
@@ -391,7 +392,7 @@ def rebind_policy_controller_configuration_to_scene(
         raise PolicyCanaryHandoffError("policy_canary_handoff_controller_template_invalid")
     if _IDENTIFIER.fullmatch(scene_id) is None or _IDENTIFIER.fullmatch(task_id) is None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_scene_identity_invalid")
-    cells = _quick_cells(scene_revision_digest, scene_id=scene_id)
+    cells = _quick_cells(scene_revision_digest, scene_id=scene_id, scene_plan=scene_plan)
     quick = dict(template["quick_10"])
     quick.update({"cells": cells, "matrix_digest": canonical_digest({"cells": cells})})
     document = dict(template)
@@ -831,11 +832,13 @@ def advance_policy_canary_handoff(
                 raise PolicyCanaryHandoffError("scene_policy_owner_authority_window_too_short")
             authorization["valid_for_seconds"] = min(authorization["valid_for_seconds"], remaining)
         native_controller_path = repo / MANIFESTS["native_controller_configuration"]
+        policy_scene_plan = _load(Path(compiled["scene_plan_path"]), blocker="policy_canary_scene_plan_invalid")
         controller_document = rebind_policy_controller_configuration_to_scene(
             template_path=repo / MANIFESTS["policy_controller_template"],
             scene_id=policy_scene_id,
             task_id=task_id,
             scene_revision_digest=str(base["configured_scene_revision_digest"]),
+            scene_plan=policy_scene_plan,
         )
         controller_path = inputs / f"scene{policy_scene_id}_policy_canary_controller_configuration.v1.json"
         _write_or_reuse(controller_path, controller_document)
@@ -918,10 +921,11 @@ def advance_policy_canary_handoff(
                 directive=omission, scene_plan_path=Path(compiled["scene_plan_path"]))
             from .task_evaluation_scene_control_omission import bind_camera_start
             typed_omission["policy_canary_camera_start_configuration"] = bind_camera_start(
-                directive=omission, plan=_load(Path(compiled["scene_plan_path"]), blocker="policy_canary_scene_plan_invalid"),
+                directive=omission, plan=policy_scene_plan,
                 scene_plan_path=Path(compiled["scene_plan_path"]),
                 construction=(None if direct else _load(Path(_published_paths["construction_result"]), blocker="policy_canary_construction_result_invalid")),
-                contract=contract, cells=_quick_cells(str(base["configured_scene_revision_digest"]), scene_id=policy_scene_id))
+                contract=contract, cells=_quick_cells(str(base["configured_scene_revision_digest"]), scene_id=policy_scene_id,
+                                                     scene_plan=policy_scene_plan))
             typed_omission["authority_digest"] = canonical_digest(typed_omission, digest_field="authority_digest")
             parameters.update(task_success_contract=contract, diagnostic_control_omission_authority=typed_omission)
         parameters = _write_or_reuse(inputs / "presubmission_parameters.json", parameters)

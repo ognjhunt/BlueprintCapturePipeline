@@ -116,6 +116,36 @@ def test_full_handoff_uses_real_construction_without_a_controls_receipt(tmp_path
     assert len(webapp.calls)==1
 
 
+@pytest.mark.slow
+def test_installed_subject_context_reaches_controller_and_camera_handoff(tmp_path, monkeypatch):
+    state, _, _, _ = prepared(tmp_path, monkeypatch)
+    packet = tmp_path / 'compiled-episodes' / rehearsal.PREPARATION_ID / 'native-task-packet'
+    plan_path = packet / 'native_task_arena_scene_plan.v1.json'
+    plan = json.loads(plan_path.read_bytes())
+    subject = next(row for row in plan['objects'] if row.get('task_subject') is True)
+    subject['articulation_adaptation'] = {'scene_mounting': {'mode': 'fixed_in_scene'}}
+    plan['plan_digest'] = canonical_digest(plan, digest_field='plan_digest')
+    plan_path.write_text(json.dumps(plan))
+    receipt_path = packet / 'native_task_arena_packet_receipt.v1.json'
+    receipt = json.loads(receipt_path.read_bytes())
+    receipt['arena_scene_plan_digest'] = plan['plan_digest']
+    receipt_path.write_text(json.dumps(receipt))
+    webapp, publisher = rehearsal._WebApp(), rehearsal._Publisher()
+
+    result = rehearsal._advance(tmp_path, state=state, webapp=webapp,
+                                publisher=publisher, profile_calls=[])
+
+    assert result['status'] == 'canary_launch_submitted'
+    parameters = json.loads((state / 'policy-canary-inputs/presubmission_parameters.json').read_bytes())
+    controller = json.loads(publisher.published[parameters['policy_controller_configuration']['uri']])
+    expected = rehearsal.handoff._quick_cells(rehearsal.REVISION_DIGEST,
+        scene_id=rehearsal.SCENE_ID.removeprefix('interiorgs-'), scene_plan=plan)
+    assert controller['quick_10']['cells'] == expected
+    assert controller['quick_10']['matrix_digest'] == canonical_digest({'cells': expected})
+    assert expected[2]['resolved_scenario']['runtime_coverage_gaps']
+    assert len(webapp.calls) == 1
+
+
 @pytest.mark.parametrize('missing',['launch_receipt.json','post_teardown_provider_zero_receipt.json','webapp_sync_succeeded.json'])
 def test_omission_does_not_bypass_construction_closeout(tmp_path,monkeypatch,missing):
     state,_,_,_=prepared(tmp_path,monkeypatch)

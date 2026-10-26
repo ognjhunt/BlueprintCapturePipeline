@@ -565,6 +565,19 @@ def test_controller_configuration_is_rebound_to_the_scene_and_its_quick10_matrix
     assert "839873" not in json.dumps(document)
 
 
+def test_controller_rebind_keeps_declared_scene_mounting_in_its_matrix():
+    plan = {"objects": [{"task_subject": True,
+        "articulation_adaptation": {"scene_mounting": {"mode": "fixed_in_scene"}}}]}
+    document = handoff.rebind_policy_controller_configuration_to_scene(
+        template_path=REPO_ROOT / handoff.MANIFESTS["policy_controller_template"],
+        scene_id="another-site", task_id="another-task", scene_revision_digest=REVISION_DIGEST,
+        scene_plan=plan)
+    expected = handoff._quick_cells(REVISION_DIGEST, scene_id="another-site", scene_plan=plan)
+    assert document["quick_10"]["cells"] == expected
+    assert document["quick_10"]["matrix_digest"] == canonical_digest({"cells": expected})
+    assert expected[2]["resolved_scenario"]["runtime_coverage_gaps"]
+
+
 def test_handoff_rejects_valid_stale_intent_before_publication(tmp_path: Path) -> None:
     state = _prepared(tmp_path)
     path = next((tmp_path / "activation-intents").glob("*.json"))
