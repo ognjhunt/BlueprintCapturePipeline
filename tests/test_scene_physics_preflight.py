@@ -230,6 +230,10 @@ def test_contact_beyond_the_task_range_is_reported_without_blocking(tmp_path):
     # A joint the task does not command only reports.
     passive = run({})
     assert passive["status"] == "passed" and passive["advisories"] == beyond["advisories"]
+    # A goal between two sweep steps (85 and 90 degrees here) is sampled itself.
+    between = run({"door_hinge": [0.0, math.radians(88)]})
+    assert between["blockers"] == ["scene_physics_motion_contact:door_hinge@88deg"]
+    assert between["advisories"] == ["scene_physics_motion_contact_outside_task_range:door_hinge@90deg"]
 
 
 def test_task_range_never_excuses_rest_overlap_or_intrusion(tmp_path):
@@ -285,6 +289,17 @@ def test_admission_blocks_task_range_contact_and_reports_beyond_it(tmp_path):
     with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
         spp.require_scene_physics_admission(root, **FAST)
     assert blocked.value.blockers == ["task_object:scene_physics_motion_contact:door_hinge@90deg"]
+
+
+def test_pre_v2_task_spec_commands_its_scripted_target_and_an_unreadable_span_is_refused():
+    legacy = {"task_spec": {"task_kind": "articulated_open_close", "target_joint_id": "door",
+                            "joint_reset_positions_rad": {"door": 0.1}, "scripted_positive_target_rad": 0.9},
+              "articulation": {"task_joint_prim_paths": {"door": "{ENV_REGEX_NS}/task_object/joints/door_hinge"}}}
+    assert spp.task_motion_ranges(legacy) == {"door_hinge": [0.1, 0.9]}
+    del legacy["task_spec"]["scripted_positive_target_rad"]
+    with pytest.raises(spp.ScenePhysicsPreflightError, match="scene_physics_task_range_unknown"):
+        spp.task_motion_ranges(legacy)
+    assert spp.task_motion_ranges({"task_spec": {"task_kind": "rigid_pick_place"}}) == {}
 
 
 def test_admission_refuses_what_it_cannot_measure_and_skips_rigid_scenes(tmp_path):

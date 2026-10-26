@@ -672,6 +672,10 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
         moving = descendants(model, joint.joint_id)
         step = revolute_step_rad if joint.kind == "revolute" else prismatic_step_m
         values = np.linspace(joint.lower, joint.upper, max(2, int(math.ceil((joint.upper - joint.lower) / step)) + 1))
+        # Sample the task's own endpoints too: a goal between two sweep steps is
+        # exactly the position the task must reach.
+        span = (task_ranges or {}).get(joint.joint_id) or []
+        values = np.unique(np.concatenate([values, [float(v) for v in span if joint.lower <= float(v) <= joint.upper]]))
         sweeps.append((joint, moving, values, [placed_at({joint.joint_id: float(v)}, moving) for v in values]))
     every = rest + [pair for _, _, _, frames in sweeps for placed in frames for pair in placed]
     centres = np.asarray([w[:3, 3] for _, w in every])
@@ -759,19 +763,28 @@ def _file_sha256(path: Path) -> str:
 
 
 def task_motion_ranges(plan: Mapping[str, Any]) -> dict[str, list[float]]:
-    """The task subject's commanded span: its target joint from reset to the success threshold."""
+    """The task subject's commanded span: its target joint from reset to the success threshold.
+
+    An articulated task whose span cannot be read is refused rather than treated as
+    commanding nothing, which would turn every contact into an advisory.
+    """
     spec = plan.get("task_spec") or {}
-    threshold = spec.get("executable_opening_threshold") or {}
-    if spec.get("task_kind") != "articulated_open_close" or not threshold.get("target_joint_id"):
+    if spec.get("task_kind") != "articulated_open_close":
         return {}
+    threshold = spec.get("executable_opening_threshold")
     try:
-        reset = float(threshold["reset_position"])
-        goal = float(threshold["success_interval"][0])
+        if threshold is not None:
+            target = str(threshold["target_joint_id"])
+            reset, goal = float(threshold["reset_position"]), float(threshold["success_interval"][0])
+        else:
+            # Pre-v2 task specs command the scripted target from the scorer's reset.
+            target = str(spec["target_joint_id"])
+            reset = float(spec["joint_reset_positions_rad"][target])
+            goal = float(spec["scripted_positive_target_rad"])
     except (KeyError, IndexError, TypeError, ValueError) as exc:
-        raise ScenePhysicsPreflightError("scene_physics_task_threshold_invalid") from exc
-    if not (math.isfinite(reset) and math.isfinite(goal)):
-        raise ScenePhysicsPreflightError("scene_physics_task_threshold_invalid")
-    target = str(threshold["target_joint_id"])
+        raise ScenePhysicsPreflightError("scene_physics_task_range_unknown") from exc
+    if not target or not (math.isfinite(reset) and math.isfinite(goal)):
+        raise ScenePhysicsPreflightError("scene_physics_task_range_unknown")
     # The plan names the joint by graph id; the asset's joint prim carries the USD name.
     prim = ((plan.get("articulation") or {}).get("task_joint_prim_paths") or {}).get(target)
     return {str(prim).rsplit("/", 1)[-1] if prim else target: sorted([reset, goal])}
