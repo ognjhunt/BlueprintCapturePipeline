@@ -81,6 +81,7 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.task_evaluation_launch_preparation_worker",
     "blueprint_pipeline.task_evaluation_sam31_preparation_execution",
     "blueprint_pipeline.scene_object_discovery_worker",
+    "blueprint_pipeline.team_scene_packet_worker",
     "blueprint_pipeline.task_evaluation_launch_activation_worker",
     "blueprint_pipeline.task_evaluation_episode_compilation_worker",
     "blueprint_pipeline.task_evaluation_episode_compilation_collector",

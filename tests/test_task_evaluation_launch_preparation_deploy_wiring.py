@@ -250,6 +250,7 @@ def test_exact_sha_deployer_installs_and_arms_all_no_spend_intake_paths() -> Non
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-scene-object-discovery.path",
+        "blueprint-team-scene-packet.path",
     )
     assert "blueprint-scene-object-discovery.service" in (
         deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS

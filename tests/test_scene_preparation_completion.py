@@ -21,8 +21,7 @@ def save(path, value, field=None):
     return value
 
 
-@pytest.fixture
-def prepared(tmp_path, monkeypatch):
+def _prepare(tmp_path, monkeypatch, request):
     # The published references here are placeholders; retention of the robot-free
     # readiness receipt is pinned by tests/test_robot_free_readiness_retention.py.
     retained = []
@@ -31,7 +30,7 @@ def prepared(tmp_path, monkeypatch):
     root, result_path = _source(tmp_path)
     run = root / 'scene-839873-qualifying'
     intent_root = tmp_path / 'intents'
-    staged = intake.stage_scene_intent(value=preparation_request(), queue_root=intent_root,
+    staged = intake.stage_scene_intent(value=request, queue_root=intent_root,
         authenticated_client='webapp', trusted_clients={'webapp'}, now=100)
     intent = intake._read(intent_root / staged['intent_id'] / 'intent.json', 'intent_digest')
     attempt = intake.reserve_scene_attempt(queue_root=intent_root, intent_id=intent['intent_id'],
@@ -78,6 +77,11 @@ def prepared(tmp_path, monkeypatch):
             value['launch_profile_digest'] = profile['profile_digest']
         save(run / name, value, field)
     return dict(intent=intent, config={'launch_execution_root': str(root), 'intent_root': str(intent_root)}), run, result_path
+
+
+@pytest.fixture
+def prepared(tmp_path, monkeypatch):
+    return _prepare(tmp_path, monkeypatch, preparation_request())
 
 
 def test_scene_preparation_finishes_without_robot_or_policy_result(prepared):
@@ -140,3 +144,76 @@ def test_preparation_join_never_finishes_a_robot_evaluation(prepared):
     args, _, _ = prepared
     args['intent']['request']['execution'].pop('purpose')
     assert reconcile_preparation_completion(**args) is None
+
+
+def _website_request():
+    """What website scene preparation submits: its capture id, and a task named for the capture's task context."""
+    value = preparation_request()
+    value['submission_id'] = 'walkthrough-req-1'
+    value['task']['task_id'] = 'website-0123456789abcdef0123'
+    return value
+
+
+def test_completion_enqueues_one_team_scene_request_and_launches_nothing(tmp_path, monkeypatch):
+    import subprocess
+
+    from blueprint_pipeline import team_scene_packet
+    from blueprint_pipeline import team_scene_packet_worker as worker
+
+    args, run, result_path = _prepare(tmp_path, monkeypatch, _website_request())
+    queue = tmp_path / 'team-scene-packets'
+    monkeypatch.setenv(worker.QUEUE_ROOT_ENV, str(queue))
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('scene preparation completion must not compile or start anything')
+
+    monkeypatch.setattr(team_scene_packet, 'prepare_team_scene', forbidden)
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    result = reconcile_preparation_completion(**args)
+    assert result['status'] == 'completed' and result['phase'] == 'scene_prepared'
+    queued = result['state']['scene_preparation_completion']['team_scene_request']
+    assert queued['status'] == 'enqueued'
+    pending = sorted((queue / 'pending').glob('*.json'))
+    assert [path.stem for path in pending] == [queued['request_key']]
+    # One sealed request: the capture, the launch its probe receipt sits beside, and the published revision.
+    request = worker.validated_request(json.loads(pending[0].read_text()))
+    published = json.loads(result_path.read_text())
+    assert request['request_digest'] == queued['request_digest']
+    assert (request['capture_id'], request['task_id']) == ('walkthrough-req-1', 'website-0123456789abcdef0123')
+    assert request['source_launch_root'] == str(run.resolve())
+    assert request['scene_revision_digest'] == published['configured_scene_revision_digest']
+    assert request['robot_free_readiness_status'] == 'probe_unavailable'
+    # A retried join never queues the same scene revision twice.
+    again = reconcile_preparation_completion(**args)
+    assert again['state']['scene_preparation_completion']['team_scene_request']['status'] == 'already_enqueued'
+    assert len(list((queue / 'pending').glob('*.json'))) == 1
+    assert not list((queue / 'processing').iterdir()) and not list((queue / 'processed').iterdir())
+
+
+@pytest.mark.parametrize('case', ['not_a_website_scene', 'receipt_not_retained', 'probe_failed',
+                                  'queue_not_configured'])
+def test_completion_queues_no_team_scene_request_without_a_website_scene_and_its_retained_receipt(
+        tmp_path, monkeypatch, case):
+    from blueprint_pipeline import team_scene_packet_worker as worker
+
+    args, _run, _ = _prepare(tmp_path, monkeypatch,
+                             preparation_request() if case == 'not_a_website_scene' else _website_request())
+    if case == 'receipt_not_retained':
+        monkeypatch.setattr(retention, 'retain_robot_free_readiness',
+                            lambda **_kwargs: {'status': 'refused', 'reason': 'x', 'retained': False})
+    if case == 'probe_failed':
+        monkeypatch.setattr(retention, 'retain_robot_free_readiness',
+                            lambda **_kwargs: {'status': 'failed', 'retained': True, 'write': 'written'})
+    queue = tmp_path / 'team-scene-packets'
+    if case == 'queue_not_configured':
+        monkeypatch.delenv(worker.QUEUE_ROOT_ENV, raising=False)
+    else:
+        monkeypatch.setenv(worker.QUEUE_ROOT_ENV, str(queue))
+    result = reconcile_preparation_completion(**args)
+    assert result['status'] == 'completed'
+    assert result['state']['scene_preparation_completion']['team_scene_request'] == {
+        'not_a_website_scene': {'status': 'not_a_website_scene'},
+        'receipt_not_retained': {'status': 'not_enqueued', 'reason': 'robot_free_readiness_not_retained'},
+        'probe_failed': {'status': 'not_enqueued', 'reason': 'robot_free_probe_failed'},
+        'queue_not_configured': {'status': 'not_configured'}}[case]
+    assert not list(queue.glob('pending/*.json'))

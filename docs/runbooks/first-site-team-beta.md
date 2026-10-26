@@ -41,6 +41,44 @@ on the exact task, with state traces and media that agree with the independent
 outcome check. Preserve strict-control requirements when a contract asks for
 them; the ordinary team packet must not waive them to become eligible.
 
+## Compile the scene's team half
+
+No operator command is needed per scene. When a website scene's preparation
+completes and its robot-free readiness receipt is retained, scene progression
+queues one request under
+`/var/lib/blueprint/pipeline-control-plane/team-scene-packets/pending`, and
+`blueprint-team-scene-packet.path` starts the no-spend worker
+(`python -m blueprint_pipeline.team_scene_packet_worker`). It compiles the
+scene half on the CPU, writes the capture's derived row with scenario
+`nominal`, and republishes the job's offer. An operator row for the capture,
+or a derived row holding a frozen internal pair, always wins and nothing is
+compiled.
+
+The worker stays off, with the typed reason
+`team_scene_packet_inputs_not_configured`, until the protected registry's
+`derived_profiles` names the inputs only the operator fixes. Refresh the
+registry digest after adding them (the paths are illustrations):
+
+```json
+{
+  "packet_inputs": {
+    "droid_profile_path": "/etc/blueprint/team-scene/droid_profile.json",
+    "droid_profile_digest": "sha256:<64 lowercase hexadecimal characters>",
+    "runtime_source_receipt_path": "/etc/blueprint/team-scene/runtime_source_packet.json",
+    "output_root": "/var/lib/blueprint/task-evaluation-inputs/team-scene-packets"
+  }
+}
+```
+
+Both files must be operator-owned and not group- or world-writable. Each
+request ends in `team-scene-packets/status/<key>.json`: `completed`, `skipped`
+with a reason, or `blocked` with typed blockers. After fixing the cause, run
+`python -m blueprint_pipeline.team_scene_packet_worker --queue-root
+/var/lib/blueprint/pipeline-control-plane/team-scene-packets --requeue-unfinished`
+as the service account; the path unit then runs those requests again. A
+retry reuses a scene half already recorded at the same revision. Scenes that
+completed before this worker was deployed queued nothing.
+
 ## Connect the team's own robot and policy
 
 The current qualified route uses the team's declared, verified robot model.
