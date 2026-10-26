@@ -224,10 +224,22 @@ def _fixture(root: Path) -> dict:
         # newline-separated metadata: pxr's usda parser rejects the
         # space-separated form, and the request compiler now opens this stage
         # to ground articulated assets
+        # A side-hinged door: the request compiler resolves the frozen target
+        # joint to decide whether a drop-down door needs counterbalancing.
         usd.write_text(
             '#usda 1.0\n(\n    defaultPrim = "Asset"\n'
             '    metersPerUnit = 1\n    upAxis = "Z"\n)\n'
-            'def Xform "Asset" {}\n',
+            'def Xform "Asset" {\n'
+            '    def Xform "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}\n'
+            '    def Xform "door" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}\n'
+            '    def Xform "joints" {\n'
+            '        def PhysicsRevoluteJoint "door_hinge" {\n'
+            '            uniform token physics:axis = "Z"\n'
+            '            rel physics:body0 = </Asset/body>\n'
+            '            rel physics:body1 = </Asset/door>\n'
+            '        }\n'
+            '    }\n'
+            '}\n',
             encoding="utf-8",
         )
         usd_record = _record(usd)
