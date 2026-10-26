@@ -1,4 +1,4 @@
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
 RUN pip install --no-cache-dir onnx==1.23.0 onnxruntime==1.30.0 fastapi==0.115.12 uvicorn==0.34.3 rfc8785==0.1.4
 COPY src/blueprint_pipeline/policy_model_onnx.py /opt/blueprint_pipeline/policy_model_onnx.py
 COPY src/blueprint_pipeline/policy_model_server.py /opt/blueprint_pipeline/policy_model_server.py
