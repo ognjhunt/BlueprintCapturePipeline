@@ -38,7 +38,6 @@ try:  # flat provider-bundle layout
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
         TASK_KIND_RIGID_PICK_PLACE,
         TaskNeutralScoringError,
-        articulated_release_required,
         score_task_episode_from_spec,
         validate_articulated_task_spec,
     )
@@ -48,7 +47,6 @@ except ModuleNotFoundError:  # repository package
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
         TASK_KIND_RIGID_PICK_PLACE,
         TaskNeutralScoringError,
-        articulated_release_required,
         score_task_episode_from_spec,
         validate_articulated_task_spec,
     )
@@ -2116,21 +2114,13 @@ def validate_task_control_plan(
     return checked
 
 
-def _task_settle_rows(
-    task_spec: Mapping[str, Any], actions: Sequence[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
-    hold_closed = (
-        task_spec["task_kind"] == TASK_KIND_ARTICULATED_OPEN_CLOSE
-        and not articulated_release_required(task_spec)
-        and bool(actions)
-        and actions[-1].get("gripper_state") == "closed"
-    )
+def _task_settle_rows(task_spec: Mapping[str, Any], actions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    # The task spec has already passed strict boolean/schema validation.
+    optional_release = task_spec["task_kind"] == TASK_KIND_ARTICULATED_OPEN_CLOSE and task_spec.get("release_required") is False
+    hold_closed = optional_release and bool(actions) and actions[-1].get("gripper_state") == "closed"
     return [
-        {
-            "phase_id": "hold_settle" if hold_closed else "release_settle",
-            "mode": "hold_current_joint_positions",
-            **({"gripper_state": "closed"} if hold_closed else {}),
-        }
+        {"phase_id": "hold_settle" if hold_closed else "release_settle", "mode": "hold_current_joint_positions",
+         **({"gripper_state": "closed"} if hold_closed else {})}
         for _ in range(int(task_spec["settle_window_samples"]))
     ]
 
