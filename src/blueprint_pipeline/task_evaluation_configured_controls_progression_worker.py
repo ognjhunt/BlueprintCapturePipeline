@@ -1658,6 +1658,7 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
         TaskEvaluationConfiguredControlsAutostartError,
         materialize_configured_controls_autostart,
     )
+    from .task_evaluation_robot_placement_agent_cli import RobotPlacementNoMatch
 
     # Canary launches bound to another release can never activate here; a branch
     # checkout has no release identity and filters nothing.
@@ -1832,6 +1833,10 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
                 "selected_candidate_id": auto["selected_candidate_id"],
                 "plan_digest": auto["plan_digest"],
             })
+        except RobotPlacementNoMatch as exc:
+            rows.append({"status": "not_a_match", "source_launch_id": run_root.name,
+                         "match_verdict": exc.verdict, "policy_executed": False,
+                         "paid_execution_requested": False, "native_placement_qualified": False})
         except (
             TaskEvaluationConfiguredControlsAutostartError,
             TaskEvaluationConfiguredControlsProgressionError,
