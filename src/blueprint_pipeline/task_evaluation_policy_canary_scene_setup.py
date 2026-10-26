@@ -313,7 +313,8 @@ def _immutable_ref(value: Mapping[str, Any], *, code: str) -> dict[str, Any]:
 
 
 def _quick_cells(
-    scene_revision_digest: str, *, scene_id: str = SCENE_ID
+    scene_revision_digest: str, *, scene_id: str = SCENE_ID,
+    scene_plan: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}", scene_id):
         raise PolicyCanarySetupError(["policy_canary_scene_id_invalid"])
@@ -341,6 +342,9 @@ def _quick_cells(
             16,
         ) % (2**31)
         scenario = {"family": family, "ordinal": index, "parameters": resolved}
+        if scene_plan is not None:
+            from .policy_canary_scene_resolution import constrain_diagnostic_scenario
+            scenario = constrain_diagnostic_scenario(scene_plan, scenario)
         cells.append(
             {
                 "cell_id": f"scene{scene_id}.quick10.{index:02d}.{family}",
@@ -843,7 +847,7 @@ def materialize_scene839873_policy_canary_setup(
             "policy_output_schema", {}
         ).get("joint_order") != [f"panda_joint{i}" for i in range(1, 8)]:
             blockers.append(f"policy_canary_{candidate_id}_action_schema_invalid")
-    cells = _quick_cells(scene_revision_digest, scene_id=scene_id)
+    cells = _quick_cells(scene_revision_digest, scene_id=scene_id, scene_plan=scene_plan)
     if Counter(row["family"] for row in cells) != Counter(QUICK_FAMILY_COUNTS):
         blockers.append("policy_canary_quick10_coverage_invalid")
     if blockers:

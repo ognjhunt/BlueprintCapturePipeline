@@ -18,6 +18,48 @@ from typing import Any
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
+_ROOT_POSE_PARAMETERS = (
+    "object_start_x_delta_m", "object_start_y_delta_m", "object_yaw_delta_degrees",
+)
+
+
+def _fixed_task_subject(plan: Mapping[str, Any]) -> bool:
+    for subject in plan.get("objects") or []:
+        if subject.get("task_subject") is not True:
+            continue
+        adaptation = subject.get("articulation_adaptation") or {}
+        mounting = adaptation.get("scene_mounting") or {}
+        # A simulation anchor alone does not prove the object is installed at
+        # the site; portable articulations can also have a world-fixed root.
+        if mounting.get("mode") == "fixed_in_scene":
+            return True
+    return False
+
+
+def constrain_diagnostic_scenario(
+    plan: Mapping[str, Any], scenario: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep declared fixtures installed and retain every omitted diagnostic dimension.
+
+    A repeated anchor is not evidence of placement/yaw robustness. Scored or
+    externally supplied plans are never silently rewritten by the resolver.
+    """
+    result = deepcopy(dict(scenario))
+    if not _fixed_task_subject(plan):
+        return result
+    parameters = result.get("parameters") or {}
+    omitted = {key: parameters[key] for key in _ROOT_POSE_PARAMETERS
+               if key in parameters and float(parameters[key]) != 0.0}
+    if omitted:
+        result["parameters"] = {key: value for key, value in parameters.items() if key not in omitted}
+        result.setdefault("runtime_coverage_gaps", []).append({
+            "family": result.get("family"), "reason": "task_subject_root_fixed_in_scene",
+            "parameters_not_exercised": omitted, "fallback": "canonical_task_root",
+            "qualified_variation_claim_permitted": False,
+        })
+    return result
+
+
 def _yaw_quaternion_xyzw(degrees: float) -> list[float]:
     half = math.radians(degrees) / 2.0
     return [0.0, 0.0, math.sin(half), math.cos(half)]
@@ -82,8 +124,13 @@ def resolved_scene_plan(
         scenario["resolved_scenario_digest"] = cell["resolved_scenario_digest"]
     parameters = dict(scenario.get("parameters") or {})
     applications: list[dict[str, Any]] = []
-    coverage_gaps: list[dict[str, Any]] = []
+    coverage_gaps: list[dict[str, Any]] = deepcopy(scenario.get("runtime_coverage_gaps") or [])
     subject = next(row for row in plan["objects"] if row.get("task_subject") is True)
+    if _fixed_task_subject(plan):
+        forbidden = [key for key in _ROOT_POSE_PARAMETERS
+                     if key in parameters and float(parameters[key]) != 0.0]
+        if forbidden:
+            raise RuntimeError("policy_canary_fixed_subject_root_variation_forbidden:" + ",".join(forbidden))
     # A scored team evaluation shifts the start on both table axes; the
     # published Quick-10 cells shift only y.
     for axis, parameter_id in ((0, "object_start_x_delta_m"), (1, "object_start_y_delta_m")):
@@ -214,4 +261,4 @@ def resolved_scene_plan(
     return apply_droid_policy_canary_profile(plan)
 
 
-__all__ = ["resolved_scene_plan"]
+__all__ = ["constrain_diagnostic_scenario", "resolved_scene_plan"]

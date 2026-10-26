@@ -37,3 +37,11 @@ Container tasks retain their exact orientation and destination-volume requiremen
 Completion evidence for this change: focused owner-binding, controller callback,
 allocator no-launch, native no-execution, and terminal closeout tests. Live proof
 requires deployment and a controller-origin policy run; merge is not that proof.
+
+Internal diagnostic cells respect each subject's declared scene mounting. A
+`fixed_in_scene` subject keeps its captured root pose. Unsupported root
+translation/yaw dimensions become explicit runtime coverage gaps and repeated
+anchors; they cannot establish placement/yaw robustness. Unadapted supplied
+or scored cells that move that fixed root refuse in the sealed static
+preflight before allocation. A simulation world anchor alone does not prove
+site installation. Loose-object cell generation remains unchanged.
