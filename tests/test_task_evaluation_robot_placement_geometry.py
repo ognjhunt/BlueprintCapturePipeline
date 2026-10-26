@@ -59,6 +59,15 @@ def test_spatial_collision_lookup_matches_exhaustive_boxes() -> None:
             robot_maximum=robot_maximum,
         ) == expected
         assert 0 in expected
+        # Dropping scene boxes that miss every robot part's box first loses no match.
+        assert _overlapping_scene_triangle_indices(
+            scene_minimum=scene_minimum,
+            scene_maximum=scene_maximum,
+            scene_indices=selected,
+            robot_minimum=robot_minimum,
+            robot_maximum=robot_maximum,
+            robot_parts=random.integers(0, 7, len(robot_minimum)),
+        ) == expected
 
 
 def test_spatial_collision_lookup_handles_empty_geometry() -> None:
