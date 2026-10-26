@@ -1,0 +1,6402 @@
+{
+  "S01_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics01.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 501,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 01 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 501,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 01 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 501,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 01 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S01_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics01.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 201,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 01 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 201,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 01 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 201,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 01 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S01_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics01.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 201,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 01 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 201,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 01 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 201,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 01 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S01_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics01.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 501,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 01 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 501,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 01 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 501,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 01 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 01",
+                "url": "https://robotics01.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S02_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics02.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 502,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 02 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 502,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 02 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 502,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 02 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S02_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics02.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 202,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 02 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 202,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 02 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 202,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 02 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S02_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics02.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 202,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 02 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 202,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 02 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 202,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 02 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S02_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics02.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 502,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 02 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 502,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 02 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 502,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 02 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 02",
+                "url": "https://robotics02.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S03_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics03.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 503,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 03 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 503,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 03 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 503,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 03 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S03_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics03.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 203,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 03 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 203,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 03 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 203,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 03 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S03_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics03.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 203,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 03 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 203,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 03 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 203,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 03 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S03_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics03.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 503,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 03 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 503,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 03 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 503,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 03 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 03",
+                "url": "https://robotics03.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S04_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics04.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 504,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 04 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 504,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 04 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 504,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 04 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S04_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics04.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 204,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 04 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 204,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 04 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 204,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 04 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S04_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics04.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 204,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 04 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 204,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 04 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 204,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 04 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S04_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics04.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 504,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 04 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 504,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 04 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 504,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 04 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 04",
+                "url": "https://robotics04.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S05_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics05.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 505,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 05 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 505,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 05 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 505,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 05 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S05_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics05.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 205,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 05 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 205,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 05 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 205,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 05 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S05_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics05.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 205,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 05 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 205,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 05 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 205,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 05 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S05_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics05.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 505,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 05 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 505,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 05 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 505,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 05 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 05",
+                "url": "https://robotics05.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S06_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics06.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 506,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 06 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 506,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 06 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 506,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 06 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S06_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics06.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 206,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 06 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 206,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 06 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 206,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 06 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S06_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics06.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 206,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 06 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 206,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 06 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 206,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 06 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S06_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics06.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 506,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 06 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 506,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 06 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 506,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 06 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 06",
+                "url": "https://robotics06.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S07_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics07.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 507,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 07 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 507,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 07 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 507,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 07 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S07_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics07.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 207,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 07 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 207,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 07 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 207,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 07 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S07_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics07.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 207,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 07 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 207,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 07 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 207,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 07 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S07_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics07.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 507,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 07 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 507,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 07 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 507,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 07 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 07",
+                "url": "https://robotics07.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S08_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics08.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 508,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 08 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 508,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 08 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 508,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 08 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S08_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics08.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 208,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 08 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 208,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 08 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 208,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 08 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S08_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics08.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 208,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 08 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 208,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 08 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 208,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 08 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S08_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics08.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 508,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 08 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 508,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 08 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 508,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 08 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 08",
+                "url": "https://robotics08.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S09_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics09.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 509,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 09 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 509,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 09 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 509,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 09 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S09_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics09.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 209,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 09 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 209,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 09 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 209,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 09 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S09_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics09.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 209,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 09 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 209,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 09 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 209,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 09 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S09_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics09.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 509,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 09 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 509,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 09 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 509,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 09 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 09",
+                "url": "https://robotics09.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S10_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics10.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 510,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 10 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 510,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 10 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 510,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 10 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S10_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics10.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 210,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 10 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 210,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 10 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 210,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 10 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S10_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics10.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 210,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 10 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 210,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 10 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 210,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 10 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S10_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics10.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 510,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 10 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 510,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 10 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 510,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 10 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 10",
+                "url": "https://robotics10.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S11_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics11.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 511,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 11 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 511,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 11 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 511,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 11 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S11_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics11.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 211,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 11 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 211,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 11 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 211,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 11 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S11_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics11.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 211,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 11 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 211,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 11 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 211,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 11 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S11_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics11.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 511,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 11 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 511,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 11 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 511,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 11 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 11",
+                "url": "https://robotics11.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S12_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics12.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 512,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 12 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 512,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 12 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 512,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 12 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S12_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics12.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 212,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 12 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 212,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 12 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 212,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 12 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S12_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics12.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 212,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 12 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 212,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 12 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 212,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 12 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S12_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics12.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 512,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 12 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 512,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 12 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 512,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 12 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 12",
+                "url": "https://robotics12.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S13_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics13.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 513,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 13 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 513,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 13 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 513,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 13 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S13_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics13.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 213,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 13 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 213,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 13 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 213,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 13 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S13_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics13.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 213,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 13 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 213,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 13 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 213,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 13 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S13_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics13.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 513,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 13 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 513,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 13 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 513,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 13 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 13",
+                "url": "https://robotics13.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S14_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics14.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 514,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 14 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 514,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 14 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 514,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 14 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S14_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics14.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 214,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 14 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 214,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 14 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 214,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 14 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S14_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics14.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 214,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 14 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 214,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 14 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 214,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 14 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S14_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics14.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 514,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 14 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 514,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 14 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 514,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 14 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 14",
+                "url": "https://robotics14.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S15_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics15.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 515,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 15 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 515,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 15 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 515,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 15 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S15_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics15.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 215,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 15 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 215,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 15 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 215,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 15 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S15_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics15.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 215,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 15 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 215,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 15 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 215,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 15 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S15_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics15.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 515,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 15 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 515,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 15 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 515,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 15 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 15",
+                "url": "https://robotics15.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S16_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics16.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 516,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 16 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 516,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 16 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 516,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 16 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S16_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics16.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 216,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 16 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 216,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 16 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 216,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 16 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S16_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics16.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 216,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 16 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 216,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 16 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 216,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 16 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S16_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics16.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 516,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 16 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 516,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 16 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 516,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 16 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 16",
+                "url": "https://robotics16.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S17_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics17.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 517,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 17 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 517,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 17 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 517,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 17 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S17_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics17.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 217,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 17 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 217,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 17 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 217,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 17 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S17_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics17.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 217,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 17 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 217,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 17 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 217,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 17 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S17_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics17.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 517,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 17 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 517,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 17 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 517,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 17 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 17",
+                "url": "https://robotics17.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S18_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics18.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 518,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 18 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 518,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 18 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 518,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 18 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S18_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics18.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 218,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 18 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 218,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 18 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 218,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 18 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S18_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics18.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 218,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 18 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 218,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 18 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 218,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 18 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S18_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics18.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 518,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 18 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 518,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 18 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 518,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 18 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 18",
+                "url": "https://robotics18.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S19_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics19.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 519,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 19 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 519,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 19 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 519,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 19 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S19_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics19.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 219,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 19 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 219,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 19 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 219,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 19 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S19_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics19.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 219,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 19 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 219,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 19 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 219,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 19 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S19_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics19.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 519,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 19 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 519,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 19 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 519,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 19 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 19",
+                "url": "https://robotics19.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S20_parallel_advanced": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics20.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 520,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 20 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 520,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 20 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 520,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 20 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S20_parallel_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics20.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 220,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 20 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 220,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 20 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 220,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "excerpts": [
+                  "Synthetic Robotics 20 advertises rigid object pick and place."
+                ],
+                "publish_date": "2026-09-01",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S20_perplexity_fast": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics20.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 220,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 20 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 220,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 20 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 220,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 20 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "S20_perplexity_standard": {
+    "answer": {
+      "claims": [
+        {
+          "citations": [
+            "https://robotics20.example/capabilities"
+          ],
+          "claim_id": "advertised_pick_place",
+          "state": "supported"
+        },
+        {
+          "citations": [],
+          "claim_id": "site_ready",
+          "state": "unknown"
+        }
+      ]
+    },
+    "controller_usage": {
+      "cache_write_tokens": 0,
+      "cached_input_tokens": 200,
+      "input_tokens": 1400,
+      "model": "gpt-6.1-sol",
+      "output_tokens": 400,
+      "reasoning_tokens": 100,
+      "service_tier": "standard"
+    },
+    "queries": [
+      [
+        {
+          "latency_ms": 520,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 20 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 520,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 20 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "latency_ms": 520,
+          "outcome": "success",
+          "raw": {
+            "results": [
+              {
+                "date": "2026-09-01",
+                "snippet": "Synthetic Robotics 20 advertises rigid object pick and place.",
+                "title": "Synthetic Robotics 20",
+                "url": "https://robotics20.example/capabilities"
+              }
+            ]
+          }
+        }
+      ]
+    ]
+  }
+}

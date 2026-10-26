@@ -1,0 +1,205 @@
+{
+  "cases": [
+    {
+      "case_id": "S01",
+      "hypothetical_scenario": "Entirely hypothetical site 01: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 01. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 01 capability documentation",
+        "Synthetic Robotics 01 deployment case study",
+        "Synthetic Robotics 01 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S02",
+      "hypothetical_scenario": "Entirely hypothetical site 02: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 02. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 02 capability documentation",
+        "Synthetic Robotics 02 deployment case study",
+        "Synthetic Robotics 02 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S03",
+      "hypothetical_scenario": "Entirely hypothetical site 03: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 03. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 03 capability documentation",
+        "Synthetic Robotics 03 deployment case study",
+        "Synthetic Robotics 03 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S04",
+      "hypothetical_scenario": "Entirely hypothetical site 04: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 04. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 04 capability documentation",
+        "Synthetic Robotics 04 deployment case study",
+        "Synthetic Robotics 04 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S05",
+      "hypothetical_scenario": "Entirely hypothetical site 05: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 05. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 05 capability documentation",
+        "Synthetic Robotics 05 deployment case study",
+        "Synthetic Robotics 05 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S06",
+      "hypothetical_scenario": "Entirely hypothetical site 06: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 06. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 06 capability documentation",
+        "Synthetic Robotics 06 deployment case study",
+        "Synthetic Robotics 06 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S07",
+      "hypothetical_scenario": "Entirely hypothetical site 07: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 07. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 07 capability documentation",
+        "Synthetic Robotics 07 deployment case study",
+        "Synthetic Robotics 07 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S08",
+      "hypothetical_scenario": "Entirely hypothetical site 08: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 08. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 08 capability documentation",
+        "Synthetic Robotics 08 deployment case study",
+        "Synthetic Robotics 08 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S09",
+      "hypothetical_scenario": "Entirely hypothetical site 09: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 09. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 09 capability documentation",
+        "Synthetic Robotics 09 deployment case study",
+        "Synthetic Robotics 09 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S10",
+      "hypothetical_scenario": "Entirely hypothetical site 10: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 10. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 10 capability documentation",
+        "Synthetic Robotics 10 deployment case study",
+        "Synthetic Robotics 10 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S11",
+      "hypothetical_scenario": "Entirely hypothetical site 11: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 11. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 11 capability documentation",
+        "Synthetic Robotics 11 deployment case study",
+        "Synthetic Robotics 11 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S12",
+      "hypothetical_scenario": "Entirely hypothetical site 12: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 12. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 12 capability documentation",
+        "Synthetic Robotics 12 deployment case study",
+        "Synthetic Robotics 12 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S13",
+      "hypothetical_scenario": "Entirely hypothetical site 13: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 13. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 13 capability documentation",
+        "Synthetic Robotics 13 deployment case study",
+        "Synthetic Robotics 13 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S14",
+      "hypothetical_scenario": "Entirely hypothetical site 14: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 14. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 14 capability documentation",
+        "Synthetic Robotics 14 deployment case study",
+        "Synthetic Robotics 14 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S15",
+      "hypothetical_scenario": "Entirely hypothetical site 15: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 15. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 15 capability documentation",
+        "Synthetic Robotics 15 deployment case study",
+        "Synthetic Robotics 15 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S16",
+      "hypothetical_scenario": "Entirely hypothetical site 16: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 16. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 16 capability documentation",
+        "Synthetic Robotics 16 deployment case study",
+        "Synthetic Robotics 16 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S17",
+      "hypothetical_scenario": "Entirely hypothetical site 17: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 17. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 17 capability documentation",
+        "Synthetic Robotics 17 deployment case study",
+        "Synthetic Robotics 17 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S18",
+      "hypothetical_scenario": "Entirely hypothetical site 18: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 18. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 18 capability documentation",
+        "Synthetic Robotics 18 deployment case study",
+        "Synthetic Robotics 18 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S19",
+      "hypothetical_scenario": "Entirely hypothetical site 19: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 19. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 19 capability documentation",
+        "Synthetic Robotics 19 deployment case study",
+        "Synthetic Robotics 19 fixed arm integration"
+      ]
+    },
+    {
+      "case_id": "S20",
+      "hypothetical_scenario": "Entirely hypothetical site 20: one fixed arm moves opaque rigid totes. No actual deployment, customer, CRM, geometry, safety or readiness claim.",
+      "prompt": "Investigate Synthetic Robotics 20. Separate publicly sourced advertised capabilities from unknown site-specific claims. Cite each assertion and abstain when evidence is missing.",
+      "search_queries": [
+        "Synthetic Robotics 20 capability documentation",
+        "Synthetic Robotics 20 deployment case study",
+        "Synthetic Robotics 20 fixed arm integration"
+      ]
+    }
+  ],
+  "schema": "synthetic_provider_cases.v1"
+}

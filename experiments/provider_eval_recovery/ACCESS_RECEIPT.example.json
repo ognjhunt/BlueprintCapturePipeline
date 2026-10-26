@@ -1,0 +1,17 @@
+{
+  "status": "existing_access_configured",
+  "openai_project": "proj_F2tFJuxLaovJru8RrtXRaqNj",
+  "allowed_hosts": ["api.parallel.ai", "api.perplexity.ai", "api.openai.com"],
+  "parallel_x_api_key_supported": "unverified",
+  "parallel_header_pilot_probe_authorized": true,
+  "tokenizer_id": "openai.responses.input_tokens:gpt-6.1-sol:v1",
+  "execution_owner_task_id": "01a0f3b8-6abe-775b-bfea-5102185b80ce",
+  "catalog_version": "6abd5bd3b9f081a18f7946316d12ad95",
+  "budget_approval": "Sentinel_741e7736ff8c8191a085c8e2ece40576: yes i approve",
+  "key_presence": {"parallel": true, "perplexity": true, "openai": true},
+  "openai_model_http_status": 200,
+  "verified_model": "gpt-6.1-sol",
+  "prior_spend_usd": "0.00",
+  "prior_paid_calls": 0,
+  "journal_root": "/workspace/provider-eval-private-live-20260930"
+}
