@@ -77,7 +77,12 @@ def test_compiler_replays_mounting_without_changing_sealed_source(tmp_path: Path
     from blueprint_pipeline.native_task_arena_runtime import (
         verify_grounded_articulation, verify_grounded_articulation_overlay,
     )
-    source, _, _ = mounted_fixture(tmp_path)
+    original, _, _ = mounted_fixture(tmp_path)
+    declared = Usd.Stage.Open(str(original))
+    declared.GetPrimAtPath("/Asset/joints/door_hinge").SetCustomDataByKey(
+        "blueprint:gravityResponse", json.dumps({"mode": "counterbalanced", "reason": "Fixture mechanism estimate."}, sort_keys=True))
+    source = tmp_path / "declared-mounted.usda"
+    declared.Export(str(source))
     digest = _sha(source)
     retained = Usd.Stage.Open(str(source))
     derived, adaptation = compiler._derive_runtime_joint_overlay(
@@ -95,6 +100,23 @@ def test_compiler_replays_mounting_without_changing_sealed_source(tmp_path: Path
     tampered.GetRootLayer().Save()
     with pytest.raises(Exception, match="grounding_derivative_mismatch"):
         verify_grounded_articulation_overlay(source, derived, adaptation)
+
+
+def test_frozen_task_counterbalance_choice_reuses_the_sealed_geometry(tmp_path):
+    from tests.test_adp_task_scoring import _graph_spec
+    from tests.test_task_object_artisan_exports import mounted_fixture
+    from blueprint_pipeline.native_task_arena_runtime import verify_grounded_articulation_overlay
+
+    source, _, _ = mounted_fixture(tmp_path)
+    digest = _sha(source)
+    spec = _graph_spec()
+    choice = {"mode": "counterbalanced", "reason": "Explicit estimate frozen before this task run."}
+    spec['gravity_response'] = choice
+    derived, adaptation = compiler._derive_runtime_joint_overlay(
+        task_spec=spec, task_definition={}, replacement_path=source, output_root=tmp_path / 'episode')
+    assert _sha(source) == digest and derived != source
+    assert adaptation['counterbalanced_hinge']['gravity_response'] == choice
+    verify_grounded_articulation_overlay(source, derived, adaptation, gravity_response=choice)
 
 
 def _record(path: Path, contract_path: str) -> dict[str, object]:

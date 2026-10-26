@@ -274,6 +274,8 @@ def _display_color_surface(stage):
 
 
 def _declared_joint_dynamics(configuration):
+    from .articulation_graph_contract import validate_joint_gravity_response
+
     mechanism = configuration.get('mechanism') or {}
     policy = mechanism.get('passive_dynamics') or {}
     if not policy:
@@ -292,6 +294,14 @@ def _declared_joint_dynamics(configuration):
                   damping=sum(result['joint_damping_bounds']) / 2,
                   units='N_m' if result['joint_type'] == 'revolute' else 'N',
                   basis='estimated_unobserved_joint_resistance_prior', physical_measurement_proven=False)
+    try:
+        response = validate_joint_gravity_response(policy.get('gravity_response'))
+    except ValueError as exc:
+        raise AuthoringContractError('artisan_joint_gravity_response_invalid') from exc
+    if response is not None:
+        require(response['mode'] != 'counterbalanced' or result['joint_type'] == 'revolute',
+                'artisan_joint_gravity_response_unsupported')
+        result['gravity_response'] = response
     return result
 
 
@@ -338,6 +348,7 @@ def _assembly_mounting_overlay(stage, request, *, author):
 def _passive_joint_dynamics(stage, configuration, *, author):
     """Carry the admitted, unactuated resistance into imported and read-back USD."""
     from pxr import Sdf, UsdPhysics
+    from .articulation_graph_contract import GRAVITY_RESPONSE_CUSTOM_DATA_KEY
     policy = _declared_joint_dynamics(configuration)
     if policy is None:
         return None
@@ -345,6 +356,15 @@ def _passive_joint_dynamics(stage, configuration, *, author):
                and prim.GetCustomDataByKey('blueprint:jointId') == policy['joint_id']]
     require(len(matches) == 1, 'artisan_passive_joint_unresolved')
     prim = matches[0]
+    response = policy.get('gravity_response')
+    if response is not None:
+        encoded = json.dumps(response, sort_keys=True)
+        existing = prim.GetCustomDataByKey(GRAVITY_RESPONSE_CUSTOM_DATA_KEY)
+        if author:
+            require(existing is None or existing == encoded, 'artisan_joint_gravity_response_conflict')
+            prim.SetCustomDataByKey(GRAVITY_RESPONSE_CUSTOM_DATA_KEY, encoded)
+        require(prim.GetCustomDataByKey(GRAVITY_RESPONSE_CUSTOM_DATA_KEY) == encoded,
+                'artisan_joint_gravity_response_missing_or_changed')
     angular = policy['joint_type'] == 'revolute'
     require(prim.IsA(UsdPhysics.RevoluteJoint if angular else UsdPhysics.PrismaticJoint),
             'artisan_passive_joint_type_changed')

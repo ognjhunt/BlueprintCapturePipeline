@@ -200,6 +200,32 @@ def test_declared_passive_joint_dynamics_survive_import_and_packaged_readback(tm
         validate_final_usd(altered, request)
 
 
+@pytest.mark.parametrize('mode', ['counterbalanced', 'gravity_loaded', 'unknown'])
+def test_gravity_response_choice_survives_export_and_independent_readback(tmp_path, mode):
+    request = construction_request(articulated=True)
+    response = {'mode': mode, 'reason': 'Retained mechanism estimate, not a physical measurement.'}
+    request['configuration']['mechanism']['passive_dynamics'] = {
+        'task_joint_drive': 'none', 'joint_friction_bounds': [1., 15.],
+        'joint_damping_bounds': [1., 30.], 'gravity_response': response}
+    request['request_digest'] = canonical_digest(request, digest_field='request_digest')
+    source = usd_fixture(tmp_path, articulated=True)
+    final = tmp_path / 'final.usdz'
+    result = adapt_usd(source, final, request, annotations_path=annotations(tmp_path, request))
+    stage = Usd.Stage.Open(str(final))
+    joint = stage.GetPrimAtPath('/Asset/joints/door_hinge')
+    assert json.loads(joint.GetCustomDataByKey('blueprint:gravityResponse')) == response
+    assert result['joint_dynamics_overlay']['gravity_response'] == response
+    assert result['joint_dynamics_overlay']['physical_measurement_proven'] is False
+    assert validate_final_usd(final, request)['task_joint']['drive']['stiffness'] == 0
+    working = Usd.Stage.Open(str(final.with_suffix('.usda')))
+    working.GetPrimAtPath('/Asset/joints/door_hinge').ClearCustomDataByKey('blueprint:gravityResponse')
+    working.GetRootLayer().Save()
+    altered = tmp_path / 'missing-choice.usdz'
+    assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(final.with_suffix('.usda'))), str(altered))
+    with pytest.raises(AuthoringContractError, match='gravity_response_missing_or_changed'):
+        validate_final_usd(altered, request)
+
+
 def test_passive_joint_overlay_refuses_an_upstream_motor_instead_of_erasing_it(tmp_path):
     request = construction_request(articulated=True)
     request['configuration']['mechanism']['passive_dynamics'] = {'task_joint_drive': 'none',

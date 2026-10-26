@@ -489,13 +489,15 @@ def _runtime_articulated_assets(*, rows, context, output_root):
     if adaptation is None:
         return paths, None, context
     from .native_task_arena_runtime import (
-        verify_counterbalanced_hinge_overlay, verify_grounded_articulation_overlay,
+        verify_counterbalanced_hinge_derivative, verify_grounded_articulation_overlay,
         verify_passive_joint_friction_overlay,
     )
     if adaptation["adaptation"] == "usd_authored_world_fixed_base":
-        verify_grounded_articulation_overlay(paths["replacement"], derived, adaptation)
+        verify_grounded_articulation_overlay(paths["replacement"], derived, adaptation,
+            gravity_response=context["task_spec"].get("gravity_response"))
     elif "counterbalanced_hinge" in adaptation:
-        verify_counterbalanced_hinge_overlay(derived, adaptation["counterbalanced_hinge"])
+        verify_counterbalanced_hinge_derivative(paths["replacement"], derived, adaptation["counterbalanced_hinge"],
+            gravity_response=context["task_spec"].get("gravity_response"))
     else:
         verify_passive_joint_friction_overlay(derived, adaptation["passive_joint_friction"])
     # Keep sealed evidence intact. A common per-run root lets packet staging

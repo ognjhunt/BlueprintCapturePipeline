@@ -448,6 +448,11 @@ def _articulated_task_spec(
         "control_frequency_hz": int(execution["control_frequency_hz"]),
         "maximum_action_steps": int(execution["maximum_steps"]),
     }
+    from .articulation_graph_contract import validate_joint_gravity_response
+
+    response = validate_joint_gravity_response(freeze.get("gravity_response"))
+    if response is not None:
+        spec["gravity_response"] = response
     state = {
         "schema_version": "native_articulated_graph_task_state_binding.v1",
         "articulation_graph_digest": graph_digest,
@@ -865,6 +870,7 @@ def materialize_paired_target_native_arena_requests(
                            else author_passive_joint_friction_overlay)(
                     staged_path, overlay_path,
                     joint_prim_path=f"/Asset/joints/{target_joints[0]['joint_id']}",
+                    **({"gravity_response": registered_row["freeze"].get("gravity_response")} if revolute else {}),
                 )
                 if overlay is not None:
                     staged_path = overlay_path

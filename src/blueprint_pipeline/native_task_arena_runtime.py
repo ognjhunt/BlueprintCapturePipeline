@@ -841,6 +841,7 @@ def author_grounded_articulation(
 
 def verify_grounded_articulation_overlay(
     source_usd: str | Path, staged_usd: str | Path, declared: Mapping[str, Any],
+    *, gravity_response: Mapping[str, Any] | None = None,
 ) -> None:
     """Reproduce the permitted physics-only derivative from the sealed source."""
     source = Path(source_usd).expanduser().resolve()
@@ -868,7 +869,8 @@ def verify_grounded_articulation_overlay(
                 raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_counterbalance_invalid"])
             balanced = Path(scratch) / "counterbalanced.usda"
             replayed = author_counterbalanced_hinge_overlay(
-                expected, balanced, joint_prim_path=str(hinge.get("joint_prim_path") or ""))
+                expected, balanced, joint_prim_path=str(hinge.get("joint_prim_path") or ""),
+                gravity_response=gravity_response)
             if replayed is None or replayed != hinge:
                 raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_counterbalance_mismatch"])
             expected = balanced
@@ -986,28 +988,29 @@ def verify_passive_joint_friction_overlay(staged_usd: str | Path, declared: Mapp
         raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_readback_mismatch"])
 
 
-#: A hinge whose axis rises more than 30 degrees from horizontal carries too
-#: little gravity torque to need a counterbalance; it is left as authored.
+#: The supported ideal-counterbalance approximation is limited to hinges within
+#: 30 degrees of horizontal. Orientation gates applicability, never the choice.
 COUNTERBALANCE_MAXIMUM_AXIS_RISE_SINE = 0.5
 COUNTERBALANCE_BASIS = "counterbalanced_hinge_gravity_compensation_prior"
 
 
 def author_counterbalanced_hinge_overlay(
     source_usd: str | Path, destination: str | Path, *, joint_prim_path: str,
+    gravity_response: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Make a task door on a horizontal hinge hold its position, as counterbalanced doors do.
+    """Apply an explicitly selected counterbalance prior to a derived copy.
 
-    Dishwasher and oven doors are spring-balanced: released part-open, they
-    stay. The authored hinge carries only a viscous damper, so in simulation a
-    released door fell until something stopped it. On 2026-10-26 that was the
-    robot's shoulder, turning a reachable success into a forbidden collision.
-    This derived runtime copy turns gravity off for every body the hinge
-    carries, the simulated form of a perfect counterbalance; the authored
-    damping and joint friction still settle the door where it is left. A hinge
-    near vertical is left as authored (``None``). The sealed candidate stays
-    untouched; one video cannot measure a spring, so this is a labelled prior.
+    A frozen task choice or source joint annotation chooses this approximation.
+    An absent, unknown or gravity-loaded declaration preserves authored physics;
+    a horizontal axis alone never chooses counterbalance. The source-bound
+    choice remains an estimate, and any authored spring or moving drive is
+    refused instead of being combined with ideal gravity compensation.
     """
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+    from .articulation_graph_contract import (
+        GRAVITY_RESPONSE_CUSTOM_DATA_KEY,
+        validate_joint_gravity_response,
+    )
 
     source = Path(source_usd).expanduser().resolve()
     output = Path(destination).expanduser().resolve()
@@ -1023,6 +1026,21 @@ def author_counterbalanced_hinge_overlay(
     prim = stage.GetPrimAtPath(joint_prim_path)
     if not prim or not prim.IsValid() or not prim.IsA(UsdPhysics.RevoluteJoint):
         raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_target_invalid"])
+    raw_response = prim.GetCustomDataByKey(GRAVITY_RESPONSE_CUSTOM_DATA_KEY)
+    try:
+        source_response = validate_joint_gravity_response(json.loads(raw_response) if raw_response is not None else None)
+        response = validate_joint_gravity_response(gravity_response) if gravity_response is not None else source_response
+    except (TypeError, ValueError) as exc:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_choice_invalid"]) from exc
+    if response is None or response["mode"] != "counterbalanced":
+        return None
+    for axis_name in ("angular", "linear"):
+        if prim.HasAPI(UsdPhysics.DriveAPI, axis_name):
+            drive = UsdPhysics.DriveAPI(prim, axis_name)
+            values = [float(drive.GetStiffnessAttr().Get() or 0),
+                      float(drive.GetTargetVelocityAttr().Get() or 0)]
+            if not all(math.isfinite(value) for value in values) or any(value != 0 for value in values):
+                raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_authored_drive_conflict"])
     if UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z:
         raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_up_axis_unsupported"])
     hinge = UsdPhysics.RevoluteJoint(prim)
@@ -1060,12 +1078,13 @@ def author_counterbalanced_hinge_overlay(
             raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_body_not_rigid:" + path])
         body.AddAppliedSchema("PhysxRigidBodyAPI")
         body.CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool, custom=False).Set(True)
+    prim.SetCustomDataByKey(GRAVITY_RESPONSE_CUSTOM_DATA_KEY, json.dumps(response, sort_keys=True))
     prim.SetCustomDataByKey("blueprint:counterbalanceBasis", COUNTERBALANCE_BASIS)
     output.parent.mkdir(parents=True, exist_ok=True)
     stage.GetRootLayer().Export(str(output))
     result = {"joint_prim_path": joint_prim_path, "hinge_axis_asset_frame": [round(float(v), 6) for v in axis],
               "gravity_compensated_body_prim_paths": sorted(moving), "basis": COUNTERBALANCE_BASIS,
-              "physical_measurement_proven": False, "source_sha256": _sha256(source)}
+              "gravity_response": response, "physical_measurement_proven": False, "source_sha256": _sha256(source)}
     verify_counterbalanced_hinge_overlay(output, result)
     return result
 
@@ -1073,12 +1092,21 @@ def author_counterbalanced_hinge_overlay(
 def verify_counterbalanced_hinge_overlay(staged_usd: str | Path, declared: Mapping[str, Any]) -> None:
     """Read the authored gravity compensation back before a GPU can be rented."""
     from pxr import Usd, UsdPhysics
+    from .articulation_graph_contract import GRAVITY_RESPONSE_CUSTOM_DATA_KEY, validate_joint_gravity_response
 
     stage = Usd.Stage.Open(str(Path(staged_usd).expanduser().resolve()))
     prim = stage.GetPrimAtPath(str(declared.get("joint_prim_path") or "")) if stage else None
     bodies = declared.get("gravity_compensated_body_prim_paths")
+    try:
+        response = validate_joint_gravity_response(declared.get("gravity_response"))
+        raw_response = prim.GetCustomDataByKey(GRAVITY_RESPONSE_CUSTOM_DATA_KEY) if prim and prim.IsValid() else None
+        source_response = validate_joint_gravity_response(json.loads(raw_response) if raw_response is not None else None)
+    except (TypeError, ValueError) as exc:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_choice_invalid"]) from exc
     if (prim is None or not prim.IsValid() or not prim.IsA(UsdPhysics.RevoluteJoint)
             or not isinstance(bodies, list) or not bodies
+            or response is None or response["mode"] != "counterbalanced"
+            or source_response != response
             or prim.GetCustomDataByKey("blueprint:counterbalanceBasis") != declared.get("basis")):
         raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_readback_invalid"])
     for path in bodies:
@@ -1091,6 +1119,7 @@ def verify_counterbalanced_hinge_overlay(staged_usd: str | Path, declared: Mappi
 
 def verify_counterbalanced_hinge_derivative(
     source_usd: str | Path, staged_usd: str | Path, declared: Mapping[str, Any],
+    *, gravity_response: Mapping[str, Any] | None = None,
 ) -> None:
     """Replay the counterbalance from the sealed source and require the staged bytes.
 
@@ -1103,7 +1132,8 @@ def verify_counterbalanced_hinge_derivative(
     with tempfile.TemporaryDirectory(prefix="blueprint-counterbalance-replay-") as scratch:
         expected = Path(scratch) / "counterbalanced.usda"
         replayed = author_counterbalanced_hinge_overlay(
-            source, expected, joint_prim_path=str(declared.get("joint_prim_path") or ""))
+            source, expected, joint_prim_path=str(declared.get("joint_prim_path") or ""),
+            gravity_response=gravity_response)
         if replayed is None or replayed != dict(declared):
             raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_declaration_mismatch"])
         if _sha256(expected) != _sha256(Path(staged_usd)):

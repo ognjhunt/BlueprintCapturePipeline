@@ -247,6 +247,24 @@ def test_diagnostic_route_reuses_qualified_geometry_with_canonical_mounting_and_
     verify_grounded_articulation_overlay(case["asset"], paths["replacement"], adaptation)
 
 
+def test_frozen_mechanism_choice_reaches_the_native_task_spec(tmp_path):
+    case = _case(tmp_path)
+    response = {'mode': 'gravity_loaded', 'reason': 'Estimate frozen with the retained task.'}
+    template = case['documents'][DEFINITION]
+    template['mechanism']['gravity_response'] = response
+    reference = case['references'][DEFINITION]
+    path = Path(reference['materialized_path'])
+    path.write_text(json.dumps(template, sort_keys=True) + '\n')
+    reference['digest'] = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+    reference['size_bytes'] = path.stat().st_size
+    case['configured']['task_template']['definition'] = {k:v for k,v in reference.items()
+                                                      if k in {'uri', 'digest', 'size_bytes'}}
+    case['configured']['revision_digest'] = canonical_digest(case['configured'], digest_field='revision_digest')
+    adapted = adapt_articulated_open_close_task_template(
+        configured_revision=case['configured'], materialized_references=case['references'])
+    assert adapted['native_task_definition']['task_spec']['gravity_response'] == response
+
+
 def test_configured_drawer_task_adapts_to_a_passive_joint_native_definition(tmp_path: Path) -> None:
     case = _case(tmp_path)
     result = adapt_articulated_open_close_task_template(

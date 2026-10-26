@@ -1149,7 +1149,8 @@ def _derive_runtime_joint_overlay(
         author, key = author_passive_joint_friction_overlay, "passive_joint_friction"
         kind = "estimated_passive_joint_friction_overlay"
     try:
-        overlay = author(replacement_path, derived, joint_prim_path=joint_prim_path)
+        overlay = author(replacement_path, derived, joint_prim_path=joint_prim_path,
+            **({"gravity_response": task_spec.get("gravity_response")} if targets[0]["joint_type"] == "revolute" else {}))
     except NativeTaskArenaRuntimeError as exc:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             f"episode_compiler_{key}_overlay_invalid:" + ",".join(exc.errors)) from exc

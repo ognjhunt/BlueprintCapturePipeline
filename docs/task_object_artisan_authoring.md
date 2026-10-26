@@ -103,6 +103,26 @@ current native settling adapter cannot certify coupled motion: static admission
 refuses such candidates with `artisan_coupled_joint_requires_native_adapter_support`.
 General coupled-motion qualification remains a named implementation dependency.
 
+For a revolute task joint, the planner can supply `mechanism.gravity_response`
+as `{"mode": "counterbalanced", "reason": "..."}` in the stage-three input.
+The other modes are `gravity_loaded` and `unknown`; omission preserves authored
+gravity. The immutable configuration retains the choice under `passive_dynamics`,
+and the export records it on the exact joint as `blueprint:gravityResponse`.
+Only an explicit counterbalanced declaration enables the runtime's ideal gravity
+compensation prior. A horizontal hinge alone does not select it. The choice and
+source bytes are checked during export, staging and replay, and existing spring
+or moving drive behaviour is refused rather than silently overwritten. This
+remains an estimated mechanism, not a physical measurement.
+The existing assembly footage review can propose the same choice, with a reason,
+for new captures. Conflicting view batches merge to `unknown`. Complete revision-5
+coverage records remain reusable without another paid classification; their
+missing gravity-response estimate stays missing.
+An explicitly frozen task template also carries the choice into the native task
+specification. Runtime compilation can therefore derive the same labelled prior
+from an older qualified asset without regenerating its CAD or editing its sealed
+bytes. The derivative receipt retains the choice and replays it against that
+exact source; this does not retroactively change earlier episode results.
+
 ## Budget and recovery
 
 Set **one** future-request setting, without changing Python:

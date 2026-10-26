@@ -910,6 +910,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                      "observation_timestamps_seconds": sorted({float(frames_by_id[row["source_frame_id"]].get("timestamp_seconds") or 0.0)
                                                               for row in track["observations"]}),
                      "physical_measurement_proven": False}
+        if coverage_bound and coverage.get("gravity_response") is not None:
+            from .articulation_graph_contract import validate_joint_gravity_response
+            mechanism["gravity_response"] = validate_joint_gravity_response(coverage["gravity_response"])
         if articulation_kind == "prismatic" and isinstance(spec, Mapping):
             if (spec.get("status") == "researched"
                     and spec.get("digest") == canonical_digest(spec, digest_field="digest")):

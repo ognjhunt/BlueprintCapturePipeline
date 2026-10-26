@@ -479,6 +479,13 @@ def adapt_articulated_open_close_task_template(
     owner_authority = template.get("owner_success_contract_authority")
     if isinstance(owner_authority, Mapping):
         native_task_spec["configured_owner_authority"] = dict(owner_authority)
+    from .articulation_graph_contract import validate_joint_gravity_response
+
+    response = validate_joint_gravity_response((template.get("mechanism") or {}).get("gravity_response"))
+    if response is not None:
+        if response["mode"] == "counterbalanced" and mechanism["target_joint_type"] != "revolute":
+            raise _error("gravity_response_unsupported")
+        native_task_spec["gravity_response"] = response
     joint_by_id = {str(row["joint_id"]): row for row in graph["joints"]}
     static_digest = documents[STATIC_QUALIFICATION_CONTRACT_PATH]["result_digest"]
     task_joint_bindings: list[dict[str, Any]] = []

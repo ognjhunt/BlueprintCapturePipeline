@@ -45,8 +45,8 @@ MIN_CANDIDATE_SPACING_SECONDS = 0.4
 MIN_MASK_AREA_FRACTION = 0.01
 CLASSIFY_BATCH = 12
 CLASSIFIER_MODEL = "gemini-3.8-flash"
-# 5: reserve room for the answer and explicitly bound thinking effort.
-CLASSIFIER_REVISION = 5
+# 6: optional primary-joint gravity-response estimate, never inferred from axis alone.
+CLASSIFIER_REVISION = 6
 # Selection output shape; a change recomputes records while replaying retained
 # classifier receipts for free. 4: seed required-motion witnesses and select for
 # coverage rather than padding an articulated task's image budget.
@@ -164,6 +164,18 @@ MOUNTING_RESPONSE_SHAPE_V1 = ('Return JSON only: {"hinge_edge": ..., "task_part_
                   '"assembly_mounting": {"mode": ..., "source_frame_ids": [...], "reason": ...}}. ')
 RESPONSE_SHAPE = MOUNTING_RESPONSE_SHAPE_V1.replace(
     '"reason": ...}}', '"reason": ..., "body_envelope_excludes_environment": true/false/null}}')
+PRE_GRAVITY_RESPONSE_SHAPE = RESPONSE_SHAPE
+RESPONSE_SHAPE = RESPONSE_SHAPE.replace('Return JSON only: {',
+    'Return JSON only: {"gravity_response": {"mode": ..., "reason": ...}, ', 1)
+GRAVITY_RESPONSE_PROMPT = (
+    "For the primary task joint, optionally give gravity_response with mode counterbalanced, gravity_loaded, "
+    "or unknown and a reason. This is a mechanism estimate, never a physical measurement. "
+    "Counterbalanced means passive support is expected to resist the part falling under its own weight. "
+    "Use visible mechanism or release behaviour to justify the estimate; a horizontal hinge or the object's "
+    "name alone does not establish it. A hand holding the part is not evidence that it stays unsupported. "
+    "Choose unknown when these frames cannot distinguish the behaviours. Only revolute joints currently "
+    "support the counterbalanced approximation; do not select it for a sliding part. "
+)
 LEGACY_RESPONSE_SHAPE = MOUNTING_RESPONSE_SHAPE_V1.replace(
     ', "assembly_mounting": {"mode": ..., "source_frame_ids": [...], "reason": ...}', '')
 # 2026-09-27 website capture: a stylized brand wordmark on the closed task
@@ -396,7 +408,7 @@ def validate_classification(value: Any, *, frame_ids: Sequence[str], articulatio
     leaves its part listed without one (``validate_part_boxes``).
     """
     keys = {"hinge_edge", "task_part_components", "frames"}
-    if not isinstance(value, Mapping) or not keys <= set(value) <= keys | {"required_motions", "assembly_mounting"}:
+    if not isinstance(value, Mapping) or not keys <= set(value) <= keys | {"required_motions", "assembly_mounting", "gravity_response"}:
         raise ValueError("website_assembly_coverage_classification_invalid")
     hinge = value["hinge_edge"]
     if (articulation_kind == "revolute" and hinge not in (*HINGE_EDGES, "not_visible")
@@ -427,8 +439,13 @@ def validate_classification(value: Any, *, frame_ids: Sequence[str], articulatio
         known_parts=set(known_parts) | {part for row in frames for part in row["visible_parts"]},
         source_frame_ids=frame_ids)
     mount = assembly_mounting(value.get("assembly_mounting"), source_frame_ids=frame_ids)
+    from .articulation_graph_contract import validate_joint_gravity_response
+    response = validate_joint_gravity_response(value.get("gravity_response"))
+    if response is not None and response["mode"] == "counterbalanced" and articulation_kind != "revolute":
+        raise ValueError("website_assembly_gravity_response_unsupported")
     return {"hinge_edge": None if hinge == "not_visible" else hinge, "task_part_components": components,
             "frames": frames, "required_motions": motions,
+            **({"gravity_response": response} if response is not None else {}),
             **({"assembly_mounting": mount} if mount is not None else {})}
 
 
@@ -463,6 +480,7 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
 
     vocabulary: set[str] = set()
     classified, components, hinges, receipts, motions, mounts = [], set(), set(), [], [], []
+    gravity_responses = []
     for start in range(0, len(frames), CLASSIFY_BATCH):
         batch = list(frames[start:start + CLASSIFY_BATCH])
         images = [_classifier_copy(Path(row["path"])) for row in batch]
@@ -473,7 +491,8 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
                 "part_names_already_used_for_this_object": sorted(vocabulary),
                 "frames": [{"frame_id": row["frame_id"], "subject_box_xywh_normalized": row["subject_box_xywh_normalized"]}
                            for row in batch]}
-        prompt = (PROMPT + MOTIONS_PROMPT + MOUNTING_PROMPT + (REVOLUTE_PROMPT if articulation_kind == "revolute" else PRISMATIC_PROMPT)
+        prompt = (PROMPT + MOTIONS_PROMPT + MOUNTING_PROMPT + GRAVITY_RESPONSE_PROMPT
+                  + (REVOLUTE_PROMPT if articulation_kind == "revolute" else PRISMATIC_PROMPT)
                   + RESPONSE_SHAPE + json.dumps(data, sort_keys=True))
         binding = {"kind": "website_assembly_coverage_classification", "revision": CLASSIFIER_REVISION,
                    "json_repair_turns": JSON_REPAIR_TURNS,
@@ -548,6 +567,7 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
             from .task_object_required_motions import merge_required_motions
             motions = merge_required_motions(motions, value["required_motions"])
             mounts.append(value.get("assembly_mounting"))
+            gravity_responses.append(value.get("gravity_response"))
         except ValueError as exc:
             raise CoverageClassificationInvalid(receipts) from exc
         for row, label in zip(batch, value["frames"], strict=True):
@@ -564,8 +584,11 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
             "website_assembly_required_primary_motion_missing")
     from .task_object_required_motions import merge_assembly_mounting
     mount = merge_assembly_mounting(mounts)
+    from .articulation_graph_contract import merge_joint_gravity_responses
+    response = merge_joint_gravity_responses(gravity_responses)
     return {"frames": classified, "task_part_components": sorted(components), "hinge_edges": sorted(hinges),
             "required_motions": motions, "receipts": receipts,
+            **({"gravity_response": response} if response is not None else {}),
             **({"assembly_mounting": mount} if mount is not None else {})}
 
 
@@ -1130,6 +1153,7 @@ def coverage_record(*, target_id: str, binding: Mapping[str, Any], articulation_
              "articulation_kind": articulation_kind, "observed_parts": observed,
              "task_part_components": list(classified["task_part_components"]),
              "required_motions": classified.get("required_motions", []),
+             **({"gravity_response": classified["gravity_response"]} if classified.get("gravity_response") else {}),
              **({"assembly_mounting": classified["assembly_mounting"]} if classified.get("assembly_mounting") else {}),
              "observed_states": sorted({row["part_state"] for row in frames} - {"not_visible"}),
              "selected_frames": [{"frame_id": row["frame_id"], "timestamp_seconds": row["timestamp_seconds"],
@@ -1186,6 +1210,7 @@ def coverage_binding(*, target: Mapping[str, Any], source_geometry: Mapping[str,
                if task_context is not None else {}),
             "prompt_digest": canonical_digest({"prompt": PROMPT, "revolute": REVOLUTE_PROMPT,
                 "prismatic": PRISMATIC_PROMPT, "motions": MOTIONS_PROMPT,
+                "gravity_response": GRAVITY_RESPONSE_PROMPT,
                 "mounting": MOUNTING_PROMPT, "response": RESPONSE_SHAPE}),
             "legacy_reference_frame_cap": MAX_REFERENCE_FRAMES, "selection_revision": SELECTION_REVISION,
             "motion_reference_selection": "required_witnesses_then_part_state_and_view_coverage",
@@ -1196,18 +1221,34 @@ def coverage_binding(*, target: Mapping[str, Any], source_geometry: Mapping[str,
 
 def coverage_matches(record: Mapping[str, Any] | None, *, target: Mapping[str, Any],
                      source_geometry: Mapping[str, Any], task_context: Mapping[str, Any] | None = None) -> bool:
+    if (not isinstance(record, Mapping) or record.get("schema_version") != SCHEMA_VERSION
+            or record.get("digest") != canonical_digest(record, digest_field="digest")):
+        return False
     expected = coverage_binding(target=target, source_geometry=source_geometry, task_context=task_context)
+    if record.get("binding") == expected:
+        return True
+    if "gravity_response" in record:
+        return False
     legacy = {**expected, "prompt_digest": canonical_digest({"prompt": PROMPT, "revolute": REVOLUTE_PROMPT,
         "prismatic": PRISMATIC_PROMPT, "motions": MOTIONS_PROMPT, "response": LEGACY_RESPONSE_SHAPE})}
     previous_mounting = {**expected, "prompt_digest": canonical_digest({"prompt": PROMPT,
         "revolute": REVOLUTE_PROMPT, "prismatic": PRISMATIC_PROMPT, "motions": MOTIONS_PROMPT,
         "mounting": LEGACY_MOUNTING_PROMPT, "response": MOUNTING_RESPONSE_SHAPE_V1})}
-    return (isinstance(record, Mapping) and record.get("schema_version") == SCHEMA_VERSION
-            and record.get("digest") == canonical_digest(record, digest_field="digest")
-            and (record.get("binding") == expected or
-                 "body_envelope_excludes_environment" not in (record.get("assembly_mounting") or {})
-                 and record.get("binding") == previous_mounting or
-                 "assembly_mounting" not in record and record.get("binding") == legacy))
+    # Existing complete reviews remain usable without buying new classifications.
+    # Their missing optional mechanism estimate stays missing, never guessed.
+    previous_gravity = {**expected, "prompt_digest": canonical_digest({"prompt": PROMPT,
+        "revolute": REVOLUTE_PROMPT, "prismatic": PRISMATIC_PROMPT, "motions": MOTIONS_PROMPT,
+        "mounting": MOUNTING_PROMPT, "response": PRE_GRAVITY_RESPONSE_SHAPE})}
+    revisions = {CLASSIFIER_REVISION, 5} if CLASSIFIER_REVISION == 6 else {CLASSIFIER_REVISION}
+    for revision in revisions:
+        if record.get("binding") == {**previous_gravity, "classifier_revision": revision}:
+            return True
+        if ("body_envelope_excludes_environment" not in (record.get("assembly_mounting") or {})
+                and record.get("binding") == {**previous_mounting, "classifier_revision": revision}):
+            return True
+        if "assembly_mounting" not in record and record.get("binding") == {**legacy, "classifier_revision": revision}:
+            return True
+    return False
 
 
 def coverage_blockers(record: Mapping[str, Any] | None, *, target_id: str, several: bool) -> list[str]:
@@ -1372,6 +1413,7 @@ def assembly_constraints(record: Mapping[str, Any], *, task_part: str) -> dict[s
     return {"required_parts": list(record["observed_parts"]), "task_part": task_part,
             "task_part_components": list(record["task_part_components"]),
             "required_motions": motions,
+            **({"gravity_response": record["gravity_response"]} if record.get("gravity_response") else {}),
             "fixed_parts": [part for part in record["observed_parts"] if part not in moving],
             "hinge_edge": record["hinge_edge"],
             **({"assembly_mounting": record["assembly_mounting"]} if record.get("assembly_mounting") else {})}

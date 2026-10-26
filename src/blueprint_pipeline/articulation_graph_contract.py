@@ -21,6 +21,7 @@ JOINT_ROLES = frozenset({"target", "dependent", "passive", "locked"})
 JOINT_TYPES = frozenset({"revolute", "prismatic", "continuous", "fixed"})
 DRIVE_TYPES = frozenset({"force", "acceleration", "none"})
 COLLISION_PAIR_DEFAULT_ENABLED = True
+GRAVITY_RESPONSE_CUSTOM_DATA_KEY = "blueprint:gravityResponse"
 
 
 class ArticulationGraphContractError(ValueError):
@@ -29,6 +30,34 @@ class ArticulationGraphContractError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def validate_joint_gravity_response(value: Any) -> dict[str, str] | None:
+    """Normalize a declared mechanism estimate; orientation does not supply one."""
+    if value is None:
+        return None
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"mode", "reason"}
+        or not isinstance(value.get("mode"), str)
+        or value["mode"] not in {"counterbalanced", "gravity_loaded", "unknown"}
+        or not isinstance(value.get("reason"), str)
+        or not value["reason"].strip()
+    ):
+        raise ArticulationGraphContractError(["articulation_gravity_response_invalid"])
+    return {"mode": value["mode"], "reason": value["reason"].strip()}
+
+
+def merge_joint_gravity_responses(values: Sequence[Any]) -> dict[str, str] | None:
+    """Combine partial-view estimates; conflicting mechanisms remain unknown."""
+    rows = [row for value in values if (row := validate_joint_gravity_response(value)) is not None]
+    if not rows:
+        return None
+    informative = [row for row in rows if row["mode"] != "unknown"]
+    modes = {row["mode"] for row in informative}
+    reasons = " ".join(dict.fromkeys(row["reason"] for row in informative or rows))
+    return {"mode": next(iter(modes)) if len(modes) == 1 else "unknown",
+            "reason": ("Conflicting mechanism estimates. " if len(modes) > 1 else "") + reasons}
 
 
 def _finite(value: Any) -> float | None:

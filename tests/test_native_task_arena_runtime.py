@@ -48,7 +48,7 @@ def test_legacy_prismatic_joint_gets_readback_verified_passive_friction_only_on_
         verify_passive_joint_friction_overlay(derived, altered)
 
 
-def _hinged_appliance(path, *, axis):
+def _hinged_appliance(path, *, axis, gravity_response=None):
     """A base with a sliding rack and a door (carrying a fixed handle) on one revolute hinge."""
     from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -65,6 +65,10 @@ def _hinged_appliance(path, *, axis):
         joint.CreateBody1Rel().SetTargets([f"/Asset/{ends[1]}"])
         if name == "task_part_joint":
             joint.CreateAxisAttr(axis)
+            if gravity_response is not None:
+                import json
+                joint.GetPrim().SetCustomDataByKey("blueprint:gravityResponse", json.dumps({
+                    "mode": gravity_response, "reason": "Explicit mechanism estimate in the task fixture."}, sort_keys=True))
     stage.GetRootLayer().Save()
 
 
@@ -76,7 +80,7 @@ def test_drop_down_door_is_counterbalanced_only_on_a_derived_copy(tmp_path):
     )
 
     sealed, derived = tmp_path / "sealed.usda", tmp_path / "derived.usda"
-    _hinged_appliance(sealed, axis="Y")
+    _hinged_appliance(sealed, axis="Y", gravity_response="counterbalanced")
     original_sha = hashlib.sha256(sealed.read_bytes()).hexdigest()
     record = author_counterbalanced_hinge_overlay(sealed, derived, joint_prim_path="/Asset/joints/task_part_joint")
     assert record["gravity_compensated_body_prim_paths"] == ["/Asset/door", "/Asset/handle"]
@@ -96,10 +100,64 @@ def test_drop_down_door_is_counterbalanced_only_on_a_derived_copy(tmp_path):
     with pytest.raises(NativeTaskArenaRuntimeError, match="counterbalance_readback_mismatch"):
         verify_counterbalanced_hinge_overlay(derived, record)
     upright = tmp_path / "upright.usda"
-    _hinged_appliance(upright, axis="Z")
+    _hinged_appliance(upright, axis="Z", gravity_response="counterbalanced")
     assert author_counterbalanced_hinge_overlay(
         upright, tmp_path / "unused.usda", joint_prim_path="/Asset/joints/task_part_joint") is None
     assert not (tmp_path / "unused.usda").exists()
+
+
+@pytest.mark.parametrize("choice", [None, "unknown", "gravity_loaded"])
+def test_horizontal_hinge_without_a_counterbalance_choice_keeps_authored_gravity(tmp_path, choice):
+    from blueprint_pipeline.native_task_arena_runtime import author_counterbalanced_hinge_overlay
+
+    sealed, derived = tmp_path / "gravity-loaded.usda", tmp_path / "derived.usda"
+    _hinged_appliance(sealed, axis="Y", gravity_response=choice)
+    original = sealed.read_bytes()
+    assert author_counterbalanced_hinge_overlay(
+        sealed, derived, joint_prim_path="/Asset/joints/task_part_joint") is None
+    assert sealed.read_bytes() == original
+    assert not derived.exists()
+
+
+def test_counterbalance_does_not_override_an_authored_spring(tmp_path):
+    from pxr import Usd, UsdPhysics
+    from blueprint_pipeline.native_task_arena_runtime import author_counterbalanced_hinge_overlay
+
+    sealed, derived = tmp_path / "spring-loaded.usda", tmp_path / "derived.usda"
+    _hinged_appliance(sealed, axis="Y", gravity_response="counterbalanced")
+    stage = Usd.Stage.Open(str(sealed))
+    UsdPhysics.DriveAPI.Apply(stage.GetPrimAtPath("/Asset/joints/task_part_joint"), "angular").CreateStiffnessAttr(2.)
+    stage.GetRootLayer().Save()
+    original = sealed.read_bytes()
+    with pytest.raises(NativeTaskArenaRuntimeError, match="counterbalance_authored_drive_conflict"):
+        author_counterbalanced_hinge_overlay(sealed, derived, joint_prim_path="/Asset/joints/task_part_joint")
+    assert sealed.read_bytes() == original and not derived.exists()
+
+
+def test_frozen_task_choice_can_reuse_an_asset_without_a_gravity_annotation(tmp_path):
+    from pxr import Usd
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_counterbalanced_hinge_overlay, verify_counterbalanced_hinge_derivative,
+    )
+
+    sealed, derived = tmp_path / "retained.usda", tmp_path / "derived.usda"
+    _hinged_appliance(sealed, axis="Y")
+    original = sealed.read_bytes()
+    choice = {"mode": "counterbalanced", "reason": "Explicit estimate frozen in this new task version."}
+    record = author_counterbalanced_hinge_overlay(sealed, derived,
+        joint_prim_path="/Asset/joints/task_part_joint", gravity_response=choice)
+    assert record["gravity_response"] == choice
+    assert sealed.read_bytes() == original
+    retained = Usd.Stage.Open(str(sealed))
+    assert retained.GetPrimAtPath("/Asset/joints/task_part_joint").GetCustomDataByKey(
+        "blueprint:gravityResponse") is None
+    # A derivative cannot authorize its own mechanism choice.
+    with pytest.raises(NativeTaskArenaRuntimeError, match="counterbalance_declaration_mismatch"):
+        verify_counterbalanced_hinge_derivative(sealed, derived, record)
+    verify_counterbalanced_hinge_derivative(sealed, derived, record, gravity_response=choice)
+    altered = {**record, "gravity_response": {"mode": "gravity_loaded", "reason": "Changed after staging."}}
+    with pytest.raises(NativeTaskArenaRuntimeError, match="counterbalance_declaration_mismatch"):
+        verify_counterbalanced_hinge_derivative(sealed, derived, altered, gravity_response=choice)
 
 
 def _camera(role: str, matrix: list[float] | None = None) -> dict:
