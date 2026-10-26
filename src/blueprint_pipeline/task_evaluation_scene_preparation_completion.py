@@ -55,6 +55,12 @@ def reconcile_preparation_completion(*, intent, config):
             readiness = retention.retain_robot_free_readiness(
                 run_root=run, revision_reference=result['configured_scene_revision_reference'],
                 revision_digest=result['configured_scene_revision_digest'])
+            # Beta L5: with the receipt retained, a website scene's team half is
+            # compiled by its own no-spend worker. This join only enqueues one
+            # sealed request for it; an I/O failure raises and it is retried.
+            from .team_scene_packet_worker import enqueue_team_scene_request
+            team_scene = enqueue_team_scene_request(intent=intent, run_root=run, receipt=receipt,
+                                                    result=result, readiness=readiness)
             return {'status': 'completed', 'phase': 'scene_prepared', 'blockers': [],
                 'result_reference': result['configured_scene_revision_reference'],
                 'state': {'scene_preparation_completion': {
@@ -62,6 +68,7 @@ def reconcile_preparation_completion(*, intent, config):
                     'provider_zero': record(run / 'post_teardown_provider_zero_receipt.json'),
                     'website_readback': record(run / 'webapp_sync_succeeded.json'),
                     'robot_free_readiness': readiness,
+                    'team_scene_request': team_scene,
                     'robot_evaluation_performed': False}}}
         except (ValueError, OSError, KeyError, TypeError, RuntimeError) as exc:
             return {'status': 'awaiting_execution', 'phase': 'scene_publication',
