@@ -750,21 +750,12 @@ ARENA_ANCHOR_JOINT = "fixed_base_anchor"
 def author_grounded_articulation(
     source_usd: str | Path, destination: str | Path, *, scene_mounting: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Author the probe's proven fixed-base mechanism into a derived asset.
+    """Anchor a kinematic articulation base in a source-preserving derivative.
 
-    Isaac Lab's ``fix_root_link`` raises NotImplementedError for an
-    articulation whose root prim is not itself a rigid body -- exactly the
-    topology every sealed asset here uses (`ArticulationRootAPI` on the root
-    Xform, links beneath). The articulated native probe never used that API:
-    it authors ``kinematicEnabled = 0`` on the base link plus a world
-    ``PhysicsFixedJoint`` whose ``body1`` is that link, and that stage measured
-    this washer's door on a GPU. This writes the same adaptation into a
-    derived copy of the sealed asset, on the host, where the result is
-    verifiable with pxr before any spend.
-
-    Returns the adaptation record, or ``None`` when the asset has no kinematic
-    articulated link (nothing to adapt; no derived file is written). The
-    sealed source bytes are never modified.
+    For an articulation rooted on an Xform, Isaac's ``fix_root_link`` is
+    unsupported. Clear the base's kinematic flag and author a world fixed joint
+    instead. Return its verifiable adaptation record, or ``None`` when no
+    kinematic link needs adapting. Never modify the sealed source bytes.
     """
 
     from pxr import Sdf, Usd, UsdPhysics
@@ -879,12 +870,9 @@ def verify_grounded_articulation_overlay(
 
 
 def verify_grounded_articulation(staged_usd: str | Path) -> dict[str, Any]:
-    """Prove a staged articulated asset is one PhysX can actually create.
+    """Read back the absence of kinematic links and the base's world anchor.
 
-    Two properties, both host-checkable with pxr and both learned from paid
-    attempts: no articulated link may be kinematic (PhysX refuses the whole
-    articulation), and when the asset was grounded, the anchor joint must
-    really target the base link.
+    These host checks do not establish native simulation validity.
     """
 
     from pxr import Usd, UsdPhysics
@@ -998,13 +986,10 @@ def author_counterbalanced_hinge_overlay(
     source_usd: str | Path, destination: str | Path, *, joint_prim_path: str,
     gravity_response: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Apply an explicitly selected counterbalance prior to a derived copy.
+    """Apply a frozen task or source joint's explicit counterbalance estimate.
 
-    A frozen task choice or source joint annotation chooses this approximation.
-    An absent, unknown or gravity-loaded declaration preserves authored physics;
-    a horizontal axis alone never chooses counterbalance. The source-bound
-    choice remains an estimate, and any authored spring or moving drive is
-    refused instead of being combined with ideal gravity compensation.
+    Absent, unknown and gravity-loaded choices preserve authored physics.
+    Orientation alone never selects it; authored springs or moving drives refuse it.
     """
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
     from .articulation_graph_contract import (
@@ -1121,11 +1106,7 @@ def verify_counterbalanced_hinge_derivative(
     source_usd: str | Path, staged_usd: str | Path, declared: Mapping[str, Any],
     *, gravity_response: Mapping[str, Any] | None = None,
 ) -> None:
-    """Replay the counterbalance from the sealed source and require the staged bytes.
-
-    A readback alone proves the bodies are weightless, not that nothing else in
-    the staged asset changed; the replay proves both.
-    """
+    """Replay from sealed source to verify both compensation and unchanged geometry."""
     source = Path(source_usd).expanduser().resolve()
     if _sha256(source) != declared.get("source_sha256"):
         raise NativeTaskArenaRuntimeError(["native_task_arena_counterbalance_source_mismatch"])
