@@ -18,14 +18,24 @@ Read first (repo-root-relative):
 
 Key rules (full text and precedents in `AGENTS.md`):
 
-- Two programs are active (owner decision 2026-10-14): the **free beta's
-  evaluated, recommended pilot** (customer-facing: invited teams' own policies
-  evaluated on website site scenes, one recommendation when a run passes) and
-  **Arm Decision Proof v1** (the evidence program: one partner, site, fixed arm,
-  rigid-object task, and two real frozen candidates, prospectively sealed and
-  physically adjudicated). ADP keeps sole authority over physical-validation
-  claims. The fixed-arm envelope is the default build target for both, not a
-  ban on other robot forms.
+- Two programs are active.
+  - The **free beta's job-first automation service**. Owner direction
+    2026-10-21 supersedes the invited-team evaluation.
+  - **Arm Decision Proof v1**, the evidence program: one partner, site, fixed
+    arm, rigid-object task, and two real frozen candidates, prospectively sealed
+    and physically adjudicated. ADP keeps sole authority over
+    physical-validation claims.
+  - The fixed-arm envelope is the default build target for both, not a ban on
+    other robot forms.
+- Owner decisions 2026-10-26 (full text in `AGENTS.md`):
+  - Blueprint itself runs many candidate policies, APIs and embodiments per
+    site. The standing screening budget is $15 per site; finalists need the
+    owner's OK.
+  - Blueprint never relies on robot teams.
+  - No job is refused by task kind unless the harness finds that no team has the
+    capability.
+  - Jobs a team could do but our simulator can't score yet are accepted, held,
+    and counted as demand evidence.
 - Every task must name the beta journey step, or the ADP backlog item and day
   gate, it unblocks. Existing captures/scenes may exercise downstream seams only
   as `development_only`; beta site-capture results stay out of ADP qualified
@@ -52,8 +62,9 @@ Key rules (full text and precedents in `AGENTS.md`):
   approved allowances; sending and automatic first contact stay off.
   Five-policy/general-ranking, world-model, provider bakeoff, post-training,
   cross-site generalization claims, and product work unrelated to the beta
-  journeys stay frozen; scene preparation and evaluation throughput for several
-  concurrent beta sites is active beta work.
+  journeys stay frozen. Active beta work includes scene preparation and
+  evaluation throughput for several concurrent beta sites, and per-site
+  candidate screening under the 2026-10-26 budget.
 - Keep world-model backends swappable behind stable contracts.
 - Protect provenance, rights, privacy, and raw capture truth.
 - Optimize for the single customer-facing Task Evaluation Run. Treat the

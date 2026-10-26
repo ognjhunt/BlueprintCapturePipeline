@@ -98,6 +98,24 @@ dependent step as blocked instead of guessing.
   independent scoring, media, holdouts and authoritative physical joins.
   Legacy five-policy, policy-improvement, post-training, humanoid, world-model
   and provider contracts remain compatibility/internal machinery.
+- **Owner decisions 2026-10-26 (beta).**
+  - Blueprint runs the candidates itself: "WE will run many
+    policies/apis/embodiments, etc. - then contact deployment companies that
+    support the winning approach so we shouldnt be relying on robot teams for
+    anything."
+  - For each prepared site, an automatic screening round runs Blueprint's
+    candidate policies, policy APIs and embodiments. It has a standing budget of
+    $15 per site, about 10 episodes per candidate. Full scoring of finalists
+    needs the owner's per-site OK. Deployment companies are contacted only with
+    owner approval.
+  - No job is refused by task kind. Refuse only when the harness determines that
+    no robot team has proven the capability (for example, mining with a
+    pickaxe).
+  - A job a team could do but the simulator cannot score yet is accepted. The
+    site is told the evaluation is being prepared, and the job is held and
+    counted as demand evidence for what to build next.
+  - Scene builds and the robot-free check run automatically under each capture's
+    website grant. The first real run of each new lane is a capped test.
 - Preserve rights, privacy, provenance, and capture truth through the pipeline.
 - Treat readiness and review *outputs* (qualification summaries, trust scores, readiness matrices) as optional support layers. Do not confuse that posture with the module historically named for it: `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) is the core capture→package orchestration spine, not a secondary readiness module.
 - Do not make downstream generated artifacts appear more authoritative than raw capture evidence.
@@ -148,7 +166,10 @@ dependent step as blocked instead of guessing.
   still need an observed blocker in one of the two active programs and an
   explicit scope change. Serving many beta sites is not that frozen item:
   scene preparation and evaluation throughput for several concurrent beta
-  sites, with spend caps, is active beta work.
+  sites, with spend caps, is active beta work. Per-site candidate screening
+  under the 2026-10-26 standing budget is also active beta work. It compares
+  candidates for one site's job and makes no general or cross-site ranking
+  claim.
 
 ## Repo Map
 
