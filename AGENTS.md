@@ -168,8 +168,13 @@ dependent step as blocked instead of guessing.
   scene preparation and evaluation throughput for several concurrent beta
   sites, with spend caps, is active beta work. Per-site candidate screening
   under the 2026-10-26 standing budget is also active beta work. It compares
-  candidates for one site's job and makes no general or cross-site ranking
-  claim.
+  candidates for one site's job, and it is a different claim from the closed,
+  inconclusive general-ranking thesis:
+  - Screening-round results are diagnostic.
+  - A recommendation needs the finalists' full scoring within its qualified
+    scope.
+  - Physical-validation claims stay with Arm Decision Proof.
+  - It makes no general or cross-site ranking claim.
 
 ## Repo Map
 
