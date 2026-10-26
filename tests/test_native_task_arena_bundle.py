@@ -487,10 +487,24 @@ def test_bundle_refuses_a_packet_the_physics_check_blocks(
         "implementation_commit": "a" * 40,
         "generated_at": "fixed",
     }
+    from blueprint_pipeline import scene_camera_visibility as camera
+
     build_native_task_arena_bundle(job_dir=tmp_path / "job", **kwargs)
-    report = json.loads((tmp_path / "job" / physics.PACKET_REPORT_FILENAME).read_text())
-    assert report["status"] == "not_applicable"
-    assert report["arena_scene_plan_digest"] == "sha256:" + "p" * 64
+    for name in (physics.PACKET_REPORT_FILENAME, camera.PACKET_REPORT_FILENAME):
+        report = json.loads((tmp_path / "job" / name).read_text())
+        assert report["status"] == "not_applicable"
+        assert report["arena_scene_plan_digest"] == "sha256:" + "p" * 64
+
+    def hidden(packet_dir):
+        raise camera.SceneCameraVisibilityBlocked(["scene_camera_contact_occluded_by_scene:external:37%"])
+
+    monkeypatch.setattr(camera, "require_scene_camera_admission", hidden)
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        build_native_task_arena_bundle(job_dir=tmp_path / "job-hidden", **kwargs)
+    assert error.value.errors == (
+        "native_task_arena_bundle_scene_camera_blocked:scene_camera_contact_occluded_by_scene:external:37%",
+    )
+    assert not (tmp_path / "job-hidden").exists()
 
     def blocked(packet_dir, **_options):
         raise physics.ScenePhysicsAdmissionBlocked(["task_object:scene_physics_rest_overlap:1.3cm"])
