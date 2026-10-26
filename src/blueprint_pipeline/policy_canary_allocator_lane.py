@@ -13,6 +13,7 @@ from .common import write_json
 from .native_task_arena_policy_canary_session import (
     PROBE_KIND,
     TEAM_RUN_KIND,
+    BETA_RUN_KIND,
     validate_provider_bundle,
     validate_session_authority,
 )
@@ -50,6 +51,7 @@ REQUIRE_INTEGRATION_CANARY_ENV = "BLUEPRINT_REQUIRE_POLICY_INTEGRATION_CANARY"
 
 
 def add_policy_canary_allocator_arguments(parser: Any) -> None:
+    parser.add_argument("--beta-screening-credential-file", help="Operator-owned private token file for a beta HTTPS policy.")
     parser.add_argument("--team-candidate-execution-deadline-epoch", type=float,
                         help="Current authenticated execution deadline; can only shorten the sealed funding expiry.")
     parser.add_argument("--native-task-arena-policy-canary-session-authority")
@@ -194,23 +196,33 @@ def run_policy_canary_allocator_lane(
     # Beta L5: a team-candidate authority needs its private credential file; the pair never takes one.
     team = authority is not None and authority.get("run_kind") == TEAM_RUN_KIND
     credential_file = getattr(args, "team_candidate_credential_file", None)
+    beta_credential = getattr(args, "beta_screening_credential_file", None)
+    beta_remote = ((authority or {}).get("run_kind") == BETA_RUN_KIND
+                   and bool((prepared_bundle or {}).get("team_credential_env")))
+    if beta_remote:
+        if credential_file:
+            blockers.append("policy_canary_credential_file_unexpected")
+        credential_file = beta_credential
+    elif beta_credential:
+        blockers.append("beta_screening_credential_file_unexpected")
     execution_deadline = getattr(args, "team_candidate_execution_deadline_epoch", None)
     if execution_deadline is not None and not team:
         blockers.append("team_evaluation_execution_deadline_unexpected")
     if team:
         _deadline, window_blockers = team_execution_deadline(authority, execution_deadline)
         blockers.extend(window_blockers)
-    if team:
+    if team or beta_remote:
         blockers.extend(credential_file_blockers(credential_file))
     elif credential_file:
         blockers.append("policy_canary_credential_file_unexpected")
-    program_id = "blueprint-free-beta-evaluated-pilot" if team else "arm-decision-proof-v1"
+    program_id = ("blueprint-free-beta-evaluated-pilot"
+                  if team or (authority or {}).get("run_kind") == BETA_RUN_KIND else "arm-decision-proof-v1")
     candidate_ids = list((authority or {}).get("candidate_ids") or ["pi05_droid", "groot_n17_droid"])
     binding = {
         "program_id": program_id,
         "probe_kind": PROBE_KIND,
         "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
-        "run_kind": TEAM_RUN_KIND if team else "internal_policy_canary",
+        "run_kind": (authority or {}).get("run_kind", "internal_policy_canary"),
         "claim_ceiling": "diagnostic_policy_execution",
         "bundle_sha256": prepared_bundle.get("bundle_sha256") if prepared_bundle else None,
         "runtime_inputs_digest": (
@@ -273,7 +285,7 @@ def run_policy_canary_allocator_lane(
             "blockers": sorted(set(blockers)),
             "provider_mutations_performed": 0,
         }
-    elif team:
+    elif team or beta_remote:
         result = run_team_candidate_session_vast(
             job_dir=args.adp_job_dir, prepared_bundle=prepared_bundle, session_authority=authority,
             paid_resource_admission_grant=grant, execute=args.execute, credential_file=credential_file,

@@ -305,11 +305,13 @@ class _GripperWidth:
         return None
 
 
-def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mapping[str, Any], prompt: str,
+def _team_episode_events(*, built: Any, task_readback: Any, policy: Any, plan: Mapping[str, Any], prompt: str,
                      max_policy_queries: int, open_loop_horizon: int, media_root: Path, episode_id: str,
                      progress: dict[str, Any], to_action: Callable[[list[float]], Any] | None = None
                      ) -> dict[str, Any]:
     """One closed-loop episode of the team's policy on the team's robot, scored by the sealed contract."""
+
+    from .policy_episode_events import NativeStep, PolicyQuery
 
     import numpy as np
 
@@ -642,6 +644,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
 
     def advance(targets: Sequence[float]) -> None:
         nonlocal step, fell
+        yield NativeStep(list(targets))
         env.step(to_action(list(targets)))
         step += 1
         if fall_height is not None and float(_array(robot.data.root_pose_w)[0][2]) < fall_height:
@@ -681,7 +684,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
         else:
             retain_request(capture_request(current_observation, transport="injected_policy_client"))
         try:
-            chunk = policy.infer(current_observation)
+            chunk = yield PolicyQuery(current_observation)
         except Exception:
             # Only an inference exception marks a policy failure. The retained
             # request sink marks its own disk/media failures as infrastructure.
@@ -753,7 +756,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
                 commanded.append({"step_index": step, "targets": targets,
                                   **({"pose_servo": servo_receipts} if servo_receipts else {}),
                                   "policy_action_row": action_index, "hold_tick": hold_index})
-                advance(targets)
+                yield from advance(targets)
                 queries[-1]["native_steps_executed"] += 1
                 progress["candidate_action_applied"] = True
                 last = targets
@@ -761,7 +764,7 @@ def run_team_episode(*, built: Any, task_readback: Any, policy: Any, plan: Mappi
     if velocity_columns:  # the wheels stop while the task object settles
         last = [*last[:len(last) - len(velocity_columns)], *([0.0] * len(velocity_columns))]
     for _ in range(settle_steps):  # hold the last command while the task object settles
-        advance(last)
+        yield from advance(last)
     if samples[-1]["simulation_time_s"] != step * step_seconds:
         # A fall can leave a partial sample stride before the settling window.
         # Retain that actual terminal state so its clock includes every step.
@@ -904,3 +907,17 @@ __all__ = [
     "run_team_episode",
     "team_observation_gate",
 ]
+
+
+def run_team_episode(*, evaluation_backend: str | None = None, **kwargs: Any) -> dict[str, Any]:
+    """Drive the team's native actuators with the shared episode/scoring contract."""
+    from .policy_episode_events import drive_episode_events
+
+    cadence = kwargs["plan"]["cadence"]
+    return drive_episode_events(
+        _team_episode_events(**kwargs), policy=kwargs["policy"],
+        backend=evaluation_backend, prompt=str(kwargs["prompt"]),
+        maximum_steps=int(cadence["maximum_action_steps"]) + int(cadence["settle_window_samples"]),
+        control_hz=float(cadence["control_frequency_hz"]),
+        action_dimension=len(kwargs["plan"]["robot"]["joint_names"]) + len(kwargs["plan"]["robot"]["gripper_joints"]),
+    )

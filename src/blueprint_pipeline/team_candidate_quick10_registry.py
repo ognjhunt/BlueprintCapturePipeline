@@ -62,7 +62,8 @@ DERIVED_FIELDS = ("capture_root", "scene_id", "task_id", "scenario_id", "robot_f
 REQUIRED_DERIVED_FIELDS = DERIVED_FIELDS[:6]
 # What only the operator decides: who may fund a run, at what rate, and each team's rights.
 OPERATOR_FIELDS = ("allowed_founder_approvers", "max_hourly_rate_usd", "open_loop_horizon", "team_rights",
-                   "machine_avoidlist_path", "private_robot_models", "prepared_robot_models")
+                   "machine_avoidlist_path", "private_robot_models", "prepared_robot_models",
+                   "screening_candidates", "screening_hard_ttl_seconds", "screening_candidate_cap_usd")
 # The scene's nominal cell: what the prompt and query budget are read from.
 NOMINAL_CELL = {"cell_id": "scene.nominal", "seed": 0, "family": "canonical_anchor",
                 "resolved_scenario": {"family": "canonical_anchor", "ordinal": 0, "parameters": {}}}

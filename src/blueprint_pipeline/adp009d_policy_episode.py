@@ -30,8 +30,10 @@ from typing import Any, Protocol
 
 try:
     from policy_scientific_reset import compare_reset_readbacks
+    from policy_episode_events import run_droid_policy_episode as run_policy_episode
 except ModuleNotFoundError:
     from .policy_scientific_reset import compare_reset_readbacks
+    from .policy_episode_events import run_droid_policy_episode as run_policy_episode
 
 try:  # flat provider-bundle layout
     from adp009d_droid_action_execution import (
@@ -222,11 +224,13 @@ try:  # flat provider-bundle layout
     from adp009d_policy_episode_native_validation import (
         PolicyEpisodeError, NativeJointStateBoundsError, validate_native_joint_state,
         BLOCKER_PRESTART_READINESS, _validate_task_reset_restoration,
+        maximum_policy_queries_for_task_spec,
     )
 except ModuleNotFoundError:
     from .adp009d_policy_episode_native_validation import (
         PolicyEpisodeError, NativeJointStateBoundsError, validate_native_joint_state,
         BLOCKER_PRESTART_READINESS, _validate_task_reset_restoration,
+        maximum_policy_queries_for_task_spec,
     )
 
 def _measured_source_hw(observed):
@@ -283,33 +287,6 @@ def _sample_with_index(
             [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{required_field}_missing"]
         )
     return sample
-
-
-def maximum_policy_queries_for_task_spec(
-    task_spec: Mapping[str, Any], *, open_loop_horizon: int
-) -> int:
-    """Return the shared full-step query budget for one frozen task.
-
-    Both candidates execute the same number of actions from each returned
-    chunk. Taking the integer number of complete chunks that fit inside the
-    task's action ceiling gives them the same maximum interaction time without
-    permitting either policy to overrun the preregistered episode.
-    """
-
-    raw_steps = task_spec.get("maximum_action_steps")
-    if (
-        isinstance(raw_steps, bool)
-        or not isinstance(raw_steps, int)
-        or raw_steps <= 0
-        or isinstance(open_loop_horizon, bool)
-        or not isinstance(open_loop_horizon, int)
-        or open_loop_horizon <= 0
-    ):
-        raise PolicyEpisodeError(["policy_episode_action_budget_invalid"])
-    queries = raw_steps // open_loop_horizon
-    if queries <= 0:
-        raise PolicyEpisodeError(["policy_episode_action_budget_invalid"])
-    return queries
 
 
 def _resolved_task_spec(
@@ -679,7 +656,7 @@ def _evidence(build: Callable[..., Any], **kwargs: Any) -> Any:
         raise PolicyEpisodeError(exc.errors) from exc
 
 
-def run_policy_episode(
+def _policy_episode_events(
     *,
     environment: EpisodeEnvironment,
     policy: DroidPolicyClient,
@@ -714,6 +691,11 @@ def run_policy_episode(
     episode's own shape violates its contract.  Scoring errors surface as
     :class:`~blueprint_pipeline.adp009d_task_scoring.TaskScoringError`.
     """
+
+    try:
+        from policy_episode_events import NativeStep, PolicyQuery
+    except ModuleNotFoundError:
+        from .policy_episode_events import NativeStep, PolicyQuery
 
     interface = interface_candidate_id or candidate_id  # observation/action contract key
     if interface not in CANDIDATE_REQUIRED_VIEWS:
@@ -1420,7 +1402,7 @@ def run_policy_episode(
         else:
             retain_request(capture_request(observation, transport="injected_policy_client"))
         try:
-            chunk = policy.infer(observation)
+            chunk = yield PolicyQuery(observation)
         except Exception as exc:
             episode_progress["policy_inference_failed"] = True
             timings_seconds["policy_inference"] += time.monotonic() - phase_started
@@ -1639,6 +1621,7 @@ def run_policy_episode(
             phase_started = time.monotonic()
             action_record["environment_step_attempted"] = True
             _emit_progress("environment_step_started")
+            yield NativeStep(action["isaac_action"])
             environment.step(action["isaac_action"])
             timings_seconds["environment_step_including_render"] += (
                 time.monotonic() - phase_started
@@ -1745,6 +1728,7 @@ def run_policy_episode(
     settle_start_index = step_index
     for _ in range(int(settle_window_samples)):
         phase_started = time.monotonic()
+        yield NativeStep(release_action)
         environment.step(release_action)
         step_index += 1
         after = _read_arm_joint_positions(environment)

@@ -1,0 +1,330 @@
+{
+  "candidates": [
+    {
+      "candidate_id": "pi05_droid",
+      "configuration_digest": "sha256:667f2ad06a2e65e82b8876736f93ddbc11e3b875d0c92a0946ae84a2573cd445",
+      "display_name": "\u03c00.5 DROID",
+      "eligibility": {
+        "blockers": [],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": true,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": {
+        "action_horizon": 15,
+        "action_schema_id": "droid_absolute_joint_position_v1",
+        "camera_roles": [
+          "external",
+          "wrist"
+        ],
+        "control_hz": 15,
+        "execution_horizon": 8,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 224,
+        "image_preprocessing": "resize_with_padding",
+        "image_width": 224,
+        "normalization_digest": null,
+        "observation_profile_id": "droid_two_camera_robot_state_v1",
+        "policy_interface_id": "openpi_droid.v1",
+        "robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"
+      },
+      "policy": {
+        "digest": "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "digest_kind": "downloaded_snapshot_inventory",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-inventory:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "source": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris"
+      },
+      "runtime": {
+        "backend": "robolab.v1",
+        "minimum_gpu_memory_gb": 12,
+        "runtime_id": "native_task_arena_policy_canary.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place",
+        "articulated_open_close"
+      ]
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "configuration_digest": "sha256:bee000dea18063838a80c1f4e362b3e6b360c5c32c1a5824c3e77b86e0e58692",
+      "display_name": "GR00T N1.7 DROID",
+      "eligibility": {
+        "blockers": [],
+        "commercial_use": "allowed",
+        "enabled": true,
+        "license_id": "nvidia-open-model-license",
+        "license_note": "NVIDIA Open Model License; Apache-2.0 code.",
+        "requires_credentials": []
+      },
+      "interface": {
+        "action_horizon": 40,
+        "action_schema_id": "droid_absolute_joint_position_v1",
+        "camera_roles": [
+          "external",
+          "wrist"
+        ],
+        "control_hz": 15,
+        "execution_horizon": 8,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 180,
+        "image_preprocessing": "resize_without_padding",
+        "image_width": 320,
+        "normalization_digest": null,
+        "observation_profile_id": "droid_two_camera_robot_state_v1",
+        "policy_interface_id": "groot_n17_droid.v1",
+        "robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"
+      },
+      "policy": {
+        "digest": "sha256:5d1d83ab34215da2dcaa049d70e93ccec18687591ad5760c5183fc1fd6e035fd",
+        "digest_kind": "downloaded_snapshot_inventory",
+        "kind": "checkpoint",
+        "revision": "05e7cc97e40dbd33b0890c35cc0214fcb0547ab5",
+        "source": "https://huggingface.co/nvidia/GR00T-N1.7-DROID"
+      },
+      "runtime": {
+        "backend": "robolab.v1",
+        "minimum_gpu_memory_gb": 24,
+        "runtime_id": "native_task_arena_policy_canary.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place",
+        "articulated_open_close"
+      ]
+    },
+    {
+      "candidate_id": "cosmos3_nano_policy_droid",
+      "configuration_digest": "sha256:81c48b00e23218df84bee4723a496570628ec9d4c909aa1f8b8e2c400c04355c",
+      "display_name": "Cosmos 3 Nano Policy DROID",
+      "eligibility": {
+        "blockers": [
+          "canary_runtime_serving_path_missing",
+          "second_exterior_camera_not_in_policy_views",
+          "absolute_joint_position_plus_gripper_mapping_missing",
+          "session_gpu_memory_below_co_resident_requirement",
+          "checkpoint_bytes_not_downloaded_and_verified",
+          "integration_canary_receipt_missing"
+        ],
+        "commercial_use": "allowed",
+        "enabled": false,
+        "license_id": "openmdw-1.1",
+        "license_note": "OpenMDW-1.1 per the model card: ready for commercial and non-commercial use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:efcf09c97b0382aba67ccf4c3311671b999511fc545b8e553cce60eb4a8710d4",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "805c0d6d46196ecdc789213a6de72303c383895b",
+        "source": "https://huggingface.co/nvidia/Cosmos3-Nano-Policy-DROID"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "molmoact2_droid",
+      "configuration_digest": "sha256:53c28e92991ff7a8bfd3ebc6bf396d9397509533e596cda367e4dfae87379960",
+      "display_name": "MolmoAct 2 DROID",
+      "eligibility": {
+        "blockers": [
+          "license_review_pending",
+          "canary_runtime_serving_path_missing",
+          "checkpoint_bytes_not_downloaded_and_verified",
+          "integration_canary_receipt_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "apache-2.0-research-intent",
+        "license_note": "Weights stated as Apache-2.0 but 'intended for research and educational use'; the Molmo2 base card notes non-commercial training data. Needs legal review.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:c33efc98a197940e29aeaa8bc1caaa63d20bdc9e085a73e9c8368099c6bc8fb2",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "d8c1abd8a27d8e859455bbe514df2bcc617db0fb",
+        "source": "https://huggingface.co/allenai/MolmoAct2-DROID"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "flux3_action_droid",
+      "configuration_digest": "sha256:b3fbf2b533d74a93005cc6a51db58b0583ed5ef94efd471ddd68116791a2a993",
+      "display_name": "FLUX 3 Action DROID",
+      "eligibility": {
+        "blockers": [
+          "license_review_pending",
+          "canary_runtime_serving_path_missing",
+          "second_exterior_camera_not_in_policy_views",
+          "checkpoint_bytes_not_downloaded_and_verified",
+          "integration_canary_receipt_missing"
+        ],
+        "commercial_use": "not_allowed",
+        "enabled": false,
+        "license_id": "flux-kommunity-1.0",
+        "license_note": "FLUX Kommunity License v1.0: non-commercial by default; outputs-only commercial use for qualifying users under US$5M revenue; no use to improve other models. Needs a written license or legal sign-off.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:855bea9ad3c809ac45e42b19b3acba5f826f2e3f56886495f56f9420d41450f1",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "3d0887bdc7acee1686b19afac267125d519ff4f1",
+        "source": "https://huggingface.co/black-forest-labs/flux-3-action-droid"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "cosmos3_edge_policy_droid",
+      "configuration_digest": "sha256:a4b0d6b14444d21678713419d7d3468dbfbd99e5a271e16c70e2f9cd8c096c94",
+      "display_name": "Cosmos 3 Edge Policy DROID",
+      "eligibility": {
+        "blockers": [
+          "beta_robolab_interface_not_admitted",
+          "three_camera_profile_not_verified"
+        ],
+        "commercial_use": "allowed",
+        "enabled": false,
+        "license_id": "openmdw-1.1",
+        "license_note": "OpenMDW 1.1 model card; exact deployment artifacts and scene integration remain separately verified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:f1da4f2c70e31b7c80c0069abdebf5d46d9a45a2e588b3aa84984a862f18568f",
+        "digest_kind": "downloaded_snapshot_inventory",
+        "kind": "checkpoint",
+        "revision": "3ea407af3e156c0af3b4bb6edd85842cc9a58777",
+        "source": "https://huggingface.co/nvidia/Cosmos3-Edge-Policy-DROID"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "dreamlabs_dream1",
+      "configuration_digest": "sha256:ee61d8eb20817bb5afc95cdc0907519b79813d7d7082ff70b0b0dfb4cf11ce73",
+      "display_name": "Dream-1",
+      "eligibility": {
+        "blockers": [
+          "provider_account_access_unverified",
+          "provider_inference_terms_and_data_use_not_reviewed",
+          "provider_runtime_contract_not_validated",
+          "hosted_api_runtime_integration_unverified",
+          "no_runnable_embodiment_with_matching_camera_rig",
+          "integration_canary_receipt_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "hosted-service-terms-unverified",
+        "license_note": "Account inference, retention and training terms have not been reviewed. The Apache-2.0 client license does not grant hosted-service rights. Client 1.0.3 records observations to an additional live service by default; an approved adapter must disable that recording and send only approved observations.",
+        "requires_credentials": [
+          "DREAM_API_KEY"
+        ]
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": "dreamlabs/dream-1",
+        "source": "https://dreamlabs.ai/research/dream-1/"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "dreamzero_droid",
+      "configuration_digest": "sha256:e4c7539aeb29ca9589f9aad3ce7f556a55ea14b421fbc77f4eeb367b84f6df46",
+      "display_name": "DreamZero DROID",
+      "eligibility": {
+        "blockers": [
+          "commercial_license_not_admitted",
+          "checkpoint_bytes_not_verified",
+          "beta_runtime_integration_unverified"
+        ],
+        "commercial_use": "not_allowed",
+        "enabled": false,
+        "license_id": "cc-by-nc-4.0",
+        "license_note": "Published source is discovery evidence only; exact deployed artifact, component terms and runtime contract require independent admission.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://huggingface.co/GEAR-Dreams/DreamZero-DROID"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "openwam_alpha_franka",
+      "configuration_digest": "sha256:6b4f07b1e8d35ff60f20dd8fa64c5db43847903ca8a054edcb9f15b6042cd28c",
+      "display_name": "OpenWAM Alpha Franka",
+      "eligibility": {
+        "blockers": [
+          "checkpoint_bytes_not_verified",
+          "exact_embodiment_contract_unverified",
+          "beta_runtime_integration_unverified"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0",
+        "license_note": "Published source is discovery evidence only; exact deployed artifact, component terms and runtime contract require independent admission.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://huggingface.co/OpenWAM/OpenWAM-Alpha-Real-Single-Arm-Franka"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "physical_intelligence_pi_api",
+      "configuration_digest": "sha256:d03cbe65f608051f4a8af391507ede6b40deb553fe76b084d71116a0ea0fb3e9",
+      "display_name": "Physical Intelligence Pi API",
+      "eligibility": {
+        "blockers": [
+          "provider_account_access_unverified",
+          "provider_contract_not_published",
+          "beta_runtime_integration_unverified"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "hosted-service-terms-unverified",
+        "license_note": "Published source is discovery evidence only; exact deployed artifact, component terms and runtime contract require independent admission.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.pi.website/blog/api-beta"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    }
+  ],
+  "catalog_digest": "sha256:ce71fbd1bbe63c90052fb498ff89a3ec659aa7398f116bff2ab4780b97eca31b",
+  "catalog_id": "blueprint-beta-policies",
+  "revision": "2026-10-26.1",
+  "schema_version": "beta_policy_candidate_catalog.v1"
+}

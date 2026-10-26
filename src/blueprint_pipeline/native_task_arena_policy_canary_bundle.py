@@ -7,6 +7,8 @@ import hashlib
 from collections.abc import Mapping
 from importlib.metadata import distribution
 import json
+import shlex
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -33,8 +35,7 @@ from .native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
 from .provider_runtime_import_closure import assert_provider_runtime_import_closure
 from .native_task_arena_policy_canary_session import (
     CLAIM_CEILING,
-    EPISODES_PER_POLICY,
-    LEARNED_ROLLOUT_COUNT,
+    EXECUTION_MODES,
     PROVIDER_BUNDLE_SCHEMA_VERSION,
     PROVIDER_RESULT_FILENAME,
     RUN_KIND,
@@ -186,7 +187,38 @@ def _validate_spec(value: Mapping[str, Any], *, candidate: str) -> dict[str, Any
     return spec
 
 
-def _entrypoint() -> str:
+def _entrypoint(*, local_candidates: tuple[str, ...] = ("pi05_droid", "groot_n17_droid"),
+                run_kind: str = RUN_KIND, credential_env: str | None = None) -> str:
+    if credential_env is not None and re.fullmatch(r"[A-Z][A-Z0-9_]{2,58}_FILE", credential_env) is None:
+        raise ValueError("beta_robolab_https_credential_binding_invalid")
+    credential_check = "" if credential_env is None else f'''/isaac-sim/python.sh - {shlex.quote(credential_env)} <<'PYCREDENTIAL'
+import os, stat, sys
+from pathlib import Path
+raw = os.environ.get(sys.argv[1])
+try:
+    path = Path(raw) if raw else None
+    info = path.lstat() if path is not None else None
+    valid = (path is not None and path.is_absolute() and not path.is_symlink()
+             and stat.S_ISREG(info.st_mode) and not info.st_mode & 0o077
+             and 0 < info.st_size <= 65536)
+except OSError:
+    valid = False
+raise SystemExit(0 if valid else 86)
+PYCREDENTIAL
+credential_rc=$?
+if [ $credential_rc -ne 0 ]; then
+  write_fallback_result beta_robolab_private_credential_file_invalid "$credential_rc"
+  exit $credential_rc
+fi
+'''
+    names = " ".join(shlex.quote(candidate) for candidate in local_candidates)
+    provisioning = "\n".join(
+        f'cp "$RUNTIME_DIR/runtime_inputs/policy_execution_spec.{candidate}.json" '
+        f'"$RUNTIME_DIR/{POLICY_EXECUTION_SPEC_STAGED_NAME}"\n'
+        f'bash "$RUNTIME_DIR/adp009d_policy_provisioning.{candidate}.sh" '
+        f'>"$OUT_DIR/policy_provisioning.{candidate}.log" 2>&1 || exit $?'
+        for candidate in local_candidates
+    )
     return f'''#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -207,7 +239,7 @@ from pathlib import Path
 Path(sys.argv[1]).write_text(json.dumps({{
   "schema_version": "native_task_arena_policy_canary_session_result.v1",
   "status": "blocked",
-  "run_kind": "internal_policy_canary",
+  "run_kind": "{run_kind}",
   "claim_ceiling": "diagnostic_policy_execution",
   "candidate_policy_queried": False,
   "blockers": [sys.argv[3]],
@@ -221,7 +253,7 @@ teardown_servers() {{
   original_rc=$?
   trap - EXIT INT TERM HUP
   write_fallback_result policy_canary_entrypoint_failed_without_result "$original_rc"
-  for candidate in pi05_droid groot_n17_droid; do
+  for candidate in {names}; do
     /isaac-sim/python.sh "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
       --terminate-ready-server \
       --receipt "$OUT_DIR/adp009d_policy_server_receipt.$candidate.json" \
@@ -232,6 +264,7 @@ teardown_servers() {{
 }}
 trap teardown_servers EXIT INT TERM HUP
 
+{credential_check}
 /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \
   --source-receipt "$SOURCE_RECEIPT" --source-packet "$SOURCE_PACKET" \
   --extraction-dir "$RUNTIME_DIR/provisioned_runtime_sources" \
@@ -280,14 +313,7 @@ elif [ "$strict_controls" != legacy ]; then
   exit 86
 fi
 
-cp "$RUNTIME_DIR/runtime_inputs/policy_execution_spec.pi05_droid.json" \
-  "$RUNTIME_DIR/{POLICY_EXECUTION_SPEC_STAGED_NAME}"
-bash "$RUNTIME_DIR/adp009d_policy_provisioning.pi05_droid.sh" \
-  >"$OUT_DIR/policy_provisioning.pi05_droid.log" 2>&1 || exit $?
-cp "$RUNTIME_DIR/runtime_inputs/policy_execution_spec.groot_n17_droid.json" \
-  "$RUNTIME_DIR/{POLICY_EXECUTION_SPEC_STAGED_NAME}"
-bash "$RUNTIME_DIR/adp009d_policy_provisioning.groot_n17_droid.sh" \
-  >"$OUT_DIR/policy_provisioning.groot_n17_droid.log" 2>&1 || exit $?
+{provisioning}
 
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
@@ -303,9 +329,11 @@ def build_policy_canary_session_bundle(
     runtime_source_packet_receipt: str | Path,
     runtime_input_manifest_path: str | Path,
     session_authority_path: str | Path,
-    pi05_execution_spec_path: str | Path,
-    groot_execution_spec_path: str | Path,
-    pi05_checkpoint_inventory_path: str | Path,
+    pi05_execution_spec_path: str | Path | None = None,
+    groot_execution_spec_path: str | Path | None = None,
+    pi05_checkpoint_inventory_path: str | Path | None = None,
+    execution_spec_paths: Mapping[str, str | Path] | None = None,
+    checkpoint_inventory_paths: Mapping[str, str | Path] | None = None,
     implementation_commit: str,
     hotfix_overlay_path: str | Path | None = None,
     generated_at: str | None = None,
@@ -350,14 +378,35 @@ def build_policy_canary_session_bundle(
         inputs["construction_result"],
         code="policy_canary_construction_result_record_invalid",
     )
-    specs = {
-        "pi05_droid": _validate_spec(
-            _read(pi05_execution_spec_path), candidate="pi05_droid"
-        ),
-        "groot_n17_droid": _validate_spec(
-            _read(groot_execution_spec_path), candidate="groot_n17_droid"
-        ),
-    }
+    from .policy_interface_binding import TEAM_HTTPS_INTERFACES, resolve_policy_interface
+    from .beta_robolab_runtime import stage_robolab_source, validate_robolab_policy_execution_spec
+
+    spec_paths = dict(execution_spec_paths or {})
+    if not spec_paths:
+        if pi05_execution_spec_path is None or groot_execution_spec_path is None:
+            raise ValueError("policy_canary_execution_specs_missing")
+        spec_paths = {"pi05_droid": pi05_execution_spec_path, "groot_n17_droid": groot_execution_spec_path}
+    specs = {candidate: _validate_spec(_read(path), candidate=candidate) for candidate, path in spec_paths.items()}
+    local_candidates = []
+    for candidate, spec in specs.items():
+        interface = resolve_policy_interface(spec)
+        if interface not in TEAM_HTTPS_INTERFACES:
+            if candidate not in ("pi05_droid", "groot_n17_droid"):
+                raise ValueError("policy_canary_local_provisioning_identity_not_admitted")
+            local_candidates.append(candidate)
+        if inputs.get("run_kind") == "blueprint_beta_screening":
+            validate_robolab_policy_execution_spec(spec, candidate_id=candidate)
+    remote_specs = [spec for spec in specs.values() if resolve_policy_interface(spec) in TEAM_HTTPS_INTERFACES]
+    credential_env = None
+    if remote_specs:
+        if inputs.get("run_kind") != "blueprint_beta_screening" or len(remote_specs) != 1 or len(specs) != 1:
+            raise ValueError("policy_canary_remote_candidate_session_invalid")
+        credential_env = str(remote_specs[0]["policy_endpoint"]["credential_env"])
+    inventory_paths = dict(checkpoint_inventory_paths or {})
+    if pi05_checkpoint_inventory_path is not None:
+        inventory_paths.setdefault("pi05_droid", pi05_checkpoint_inventory_path)
+    if "pi05_droid" in local_candidates and "pi05_droid" not in inventory_paths:
+        raise ValueError("policy_canary_openpi_inventory_missing")
     if set(specs) != set(inputs["candidate_ids"]) or set(specs) != set(authority["candidate_ids"]):
         raise ValueError("policy_canary_provider_candidate_interfaces_not_admitted")
     if any(
@@ -421,8 +470,7 @@ def build_policy_canary_session_bundle(
         bound_runtime_inputs={
             "policy_canary_runtime_inputs.json": runtime_input_manifest_path,
             "policy_canary_session_authority.json": session_authority_path,
-            "policy_execution_spec.pi05_droid.json": pi05_execution_spec_path,
-            "policy_execution_spec.groot_n17_droid.json": groot_execution_spec_path,
+            **{f"policy_execution_spec.{candidate}.json": path for candidate, path in spec_paths.items()},
             "native_task_arena_construction_result.v1.json": construction_result_path,
         },
         generated_at=generated_at,
@@ -433,7 +481,9 @@ def build_policy_canary_session_bundle(
             archive.extractall(root)
         runtime = root / "provider_runtime"
         contract_dependency = stage_policy_contract_dependencies(runtime)
-        for candidate in inputs["candidate_ids"]:
+        robolab_dependency = (stage_robolab_source(runtime)
+                              if any(spec.get("evaluation_backend") == "robolab.v1" for spec in specs.values()) else None)
+        for candidate in local_candidates:
             script = runtime / f"adp009d_policy_provisioning.{candidate}.sh"
             script.write_text(build_provisioning_script(candidate), encoding="utf-8")
             script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
@@ -447,24 +497,22 @@ def build_policy_canary_session_bundle(
             if hotfix_overlay_path is not None
             else None
         )
-        shutil.copy2(
-            pi05_checkpoint_inventory_path,
-            runtime / CHECKPOINT_INVENTORY_STAGED_NAME,
-        )
+        if "pi05_droid" in local_candidates:
+            shutil.copy2(inventory_paths["pi05_droid"], runtime / CHECKPOINT_INVENTORY_STAGED_NAME)
         entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
-        entrypoint.write_text(_entrypoint(), encoding="utf-8")
+        entrypoint.write_text(_entrypoint(local_candidates=tuple(local_candidates), run_kind=inputs["run_kind"], credential_env=credential_env), encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         manifest_path = runtime / "adp_arena_provider_manifest.json"
         manifest = _read(manifest_path)
         manifest.update(
             {
                 "schema_version": PROVIDER_BUNDLE_SCHEMA_VERSION,
-                "execution_mode": "internal_policy_canary_paired_session",
-                "run_kind": RUN_KIND,
+                "execution_mode": EXECUTION_MODES[inputs["run_kind"]],
+                "run_kind": inputs["run_kind"],
                 "claim_ceiling": CLAIM_CEILING,
                 "candidate_ids": list(inputs["candidate_ids"]),
-                "episodes_per_policy": EPISODES_PER_POLICY,
-                "learned_policy_rollout_count": LEARNED_ROLLOUT_COUNT,
+                "episodes_per_policy": len(inputs["cells"]),
+                "learned_policy_rollout_count": len(inputs["cells"]) * len(inputs["candidate_ids"]),
                 "maximum_provider_allocations": 1,
                 "retry_cap": 0,
                 "authority_digest": authority["authority_digest"],
@@ -482,7 +530,12 @@ def build_policy_canary_session_bundle(
                     candidate: spec["execution_spec_digest"]
                     for candidate, spec in specs.items()
                 },
-                "contract_python_dependencies": [contract_dependency],
+                "contract_python_dependencies": [contract_dependency] + ([robolab_dependency] if robolab_dependency else []),
+                **({"beta_screening_admission": inputs["beta_screening_admission"], "evaluation_backend": "robolab.v1"}
+                   if inputs.get("run_kind") == "blueprint_beta_screening" else {}),
+                **({"team_credential_env": credential_env,
+                    "team_policy_interface_id": resolve_policy_interface(remote_specs[0]),
+                    "secret_material_bundled": False} if credential_env is not None else {}),
                 "static_startup_preflight": static_preflight,
                 "input_digest": "",
             }

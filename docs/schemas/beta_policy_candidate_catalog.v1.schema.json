@@ -1,0 +1,319 @@
+{
+  "$id": "beta_policy_candidate_catalog.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidates": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+            "type": "string"
+          },
+          "configuration_digest": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "display_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+            "type": "string"
+          },
+          "eligibility": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "maxLength": 300,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "commercial_use": {
+                "enum": [
+                  "allowed",
+                  "allowed_with_conditions",
+                  "under_review",
+                  "not_allowed"
+                ]
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "license_id": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "license_note": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "requires_credentials": {
+                "items": {
+                  "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "enabled",
+              "commercial_use",
+              "license_id",
+              "license_note",
+              "requires_credentials",
+              "blockers"
+            ],
+            "type": "object"
+          },
+          "interface": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "action_horizon": {
+                    "maximum": 10000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "action_schema_id": {
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+                    "type": "string"
+                  },
+                  "camera_roles": {
+                    "items": {
+                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "control_hz": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1000,
+                    "type": "number"
+                  },
+                  "execution_horizon": {
+                    "maximum": 10000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "history_frames": {
+                    "maximum": 10000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "image_encoding": {
+                    "enum": [
+                      "rgb_uint8",
+                      "rgb_float32",
+                      "jpeg",
+                      "png"
+                    ]
+                  },
+                  "image_height": {
+                    "maximum": 16384,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "image_preprocessing": {
+                    "maxLength": 2048,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "image_width": {
+                    "maximum": 16384,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "normalization_digest": {
+                    "anyOf": [
+                      {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "observation_profile_id": {
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+                    "type": "string"
+                  },
+                  "policy_interface_id": {
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+                    "type": "string"
+                  },
+                  "robot_profile_id": {
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "policy_interface_id",
+                  "robot_profile_id",
+                  "observation_profile_id",
+                  "action_schema_id",
+                  "control_hz",
+                  "action_horizon",
+                  "execution_horizon",
+                  "camera_roles",
+                  "image_height",
+                  "image_width",
+                  "image_encoding",
+                  "image_preprocessing",
+                  "history_frames",
+                  "normalization_digest"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy": {
+            "additionalProperties": false,
+            "properties": {
+              "digest": {
+                "anyOf": [
+                  {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "digest_kind": {
+                "enum": [
+                  "downloaded_snapshot_inventory",
+                  "hub_tree_listing",
+                  "provider_metadata",
+                  "unverified"
+                ]
+              },
+              "kind": {
+                "enum": [
+                  "checkpoint",
+                  "hosted"
+                ]
+              },
+              "revision": {
+                "maxLength": 2048,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "revision",
+              "digest",
+              "digest_kind"
+            ],
+            "type": "object"
+          },
+          "runtime": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "backend": {
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+                    "type": "string"
+                  },
+                  "minimum_gpu_memory_gb": {
+                    "exclusiveMinimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "runtime_id": {
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "backend",
+                  "runtime_id",
+                  "minimum_gpu_memory_gb"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "supported_task_kinds": {
+            "items": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "candidate_id",
+          "display_name",
+          "policy",
+          "interface",
+          "runtime",
+          "supported_task_kinds",
+          "eligibility",
+          "configuration_digest"
+        ],
+        "type": "object"
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "type": "array"
+    },
+    "catalog_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "catalog_id": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+      "type": "string"
+    },
+    "revision": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "beta_policy_candidate_catalog.v1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "catalog_id",
+    "revision",
+    "candidates",
+    "catalog_digest"
+  ],
+  "type": "object"
+}

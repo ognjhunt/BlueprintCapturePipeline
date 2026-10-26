@@ -585,8 +585,11 @@ def run_native_task_arena_policy_canary_session_vast(
         raise ValueError("policy_canary_session_authority_missing")
     validated_environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
     from .native_task_arena_paired_witness_staging import build_paired_witness_binding
-    witness_binding = build_paired_witness_binding(prepared_bundle, authority, validated_environment)
-    witness_capacity = witness_binding['maximum_archive_bytes']
+    # A beta attempt contains one candidate. The paired intermediate-delivery
+    # slot reads both frozen specs and is only meaningful for the ADP pair.
+    witness_binding = (None if authority.get('run_kind') == 'blueprint_beta_screening'
+                       else build_paired_witness_binding(prepared_bundle, authority, validated_environment))
+    witness_capacity = witness_binding['maximum_archive_bytes'] if witness_binding else 0
     # The output delivery mode is settled before the authority is consumed:
     # an invalid mode, or streaming without the B2 store, allocates nothing.
     # Unset is auto (stream only with a store promotion accepts and the host's

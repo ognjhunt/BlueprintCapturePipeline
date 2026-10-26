@@ -45,9 +45,12 @@ RUN_KIND = "internal_policy_canary"
 # Beta L5: the same warm Quick-10 runtime running ONE admitted team candidate
 # in place of the frozen pair. Its admission binding travels in the inputs.
 TEAM_RUN_KIND = "team_candidate_evaluation"
-RUN_KINDS = (RUN_KIND, TEAM_RUN_KIND)
+BETA_RUN_KIND = "blueprint_beta_screening"
+BETA_ADMISSION_SCHEMA_VERSION = "blueprint.beta_policy_screening_admission.v1"
+RUN_KINDS = (RUN_KIND, TEAM_RUN_KIND, BETA_RUN_KIND)
 EXECUTION_MODES = {RUN_KIND: "internal_policy_canary_paired_session",
-                   TEAM_RUN_KIND: "team_candidate_evaluation_session"}
+                   TEAM_RUN_KIND: "team_candidate_evaluation_session",
+                   BETA_RUN_KIND: "blueprint_beta_screening_session"}
 TEAM_ADMISSION_SCHEMA_VERSION = "blueprint.team_candidate_admission.v2"
 CLAIM_CEILING = "diagnostic_policy_execution"
 CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
@@ -130,20 +133,20 @@ def _candidate_pair(value: Any) -> tuple[str, str]:
 
 def _candidate_set(value: Any, run_kind: Any) -> tuple[str, ...]:
     """The frozen pair for the internal canary; exactly one non-frozen team candidate otherwise."""
-    if run_kind != TEAM_RUN_KIND:
+    if run_kind not in (TEAM_RUN_KIND, BETA_RUN_KIND):
         return _candidate_pair(value)
     if (not isinstance(value, (list, tuple)) or len(value) != 1
-            or _REGISTRY_ID.fullmatch(str(value[0] or "")) is None or value[0] in CANDIDATE_IDS):
+            or _REGISTRY_ID.fullmatch(str(value[0] or "")) is None or (run_kind == TEAM_RUN_KIND and value[0] in CANDIDATE_IDS)):
         raise PolicyCanarySessionError("policy_canary_team_candidate_invalid")
     return (str(value[0]),)
 
 
 def episodes_per_policy_for(run_kind: Any, cell_count: Any) -> int:
     """The episode count a session of ``run_kind`` with ``cell_count`` cells must carry."""
-    if run_kind != TEAM_RUN_KIND:
+    if run_kind not in (TEAM_RUN_KIND, BETA_RUN_KIND):
         return EPISODES_PER_POLICY
     if (isinstance(cell_count, bool) or not isinstance(cell_count, int)
-            or not 1 <= cell_count <= TEAM_MAX_CELLS_PER_SESSION):
+            or not 1 <= cell_count <= (EPISODES_PER_POLICY if run_kind == BETA_RUN_KIND else TEAM_MAX_CELLS_PER_SESSION)):
         raise PolicyCanarySessionError("policy_canary_team_cell_count_invalid")
     return cell_count
 
@@ -168,6 +171,25 @@ def _team_admission_binding(payload: Mapping[str, Any]) -> None:
             or row.get("scene_revision_digest") != payload.get("scene_revision_digest")
             or row.get("task_success_contract_digest") != payload.get("task_success_contract_digest")):
         raise PolicyCanarySessionError("policy_canary_team_admission_binding_invalid")
+
+
+def _beta_admission_binding(payload: Mapping[str, Any]) -> None:
+    binding = payload.get("beta_screening_admission")
+    if payload.get("run_kind") != BETA_RUN_KIND:
+        if binding is not None:
+            raise PolicyCanarySessionError("policy_canary_beta_admission_unexpected")
+        return
+    row = _mapping(binding)
+    digests = ("admission_digest", "plan_digest", "configuration_digest", "scene_revision_digest",
+               "task_success_contract_digest", "robot_free_probe_receipt_digest")
+    if (set(row) != {"schema_version", "candidate_id", "evaluation_purpose", "backend", *digests}
+            or row.get("schema_version") != BETA_ADMISSION_SCHEMA_VERSION
+            or row.get("evaluation_purpose") != "screening" or row.get("backend") != "robolab.v1"
+            or not all(_digest(row.get(key)) for key in digests)
+            or [row.get("candidate_id")] != list(payload.get("candidate_ids") or [])
+            or any(row.get(key) != payload.get(key) for key in
+                   ("scene_revision_digest", "task_success_contract_digest", "plan_digest", "configuration_digest"))):
+        raise PolicyCanarySessionError("policy_canary_beta_admission_binding_invalid")
 
 
 def _record(value: Any, *, code: str) -> dict[str, Any]:
@@ -272,6 +294,7 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         "runtime_inputs_digest",
         "diagnostic_continuation_protocol",
         "team_candidate_admission",
+        "beta_screening_admission",
     }
     if (
         not set(payload).issubset(allowed_fields)
@@ -283,6 +306,7 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         raise PolicyCanarySessionError("policy_canary_runtime_input_identity_invalid")
     _candidate_set(payload.get("candidate_ids"), payload.get("run_kind"))
     _team_admission_binding(payload)
+    _beta_admission_binding(payload)
     for field in ("activation_digest", "configuration_digest", "plan_digest"):
         if not _digest(payload.get(field)):
             raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
@@ -390,6 +414,7 @@ def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
         or payload.get("official_ranking_authorized") is not False
     ):
         raise PolicyCanarySessionError("policy_canary_session_authority_identity_invalid")
+    _beta_admission_binding(payload)
     for field in ("activation_manifest", "runtime_inputs"):
         _record(payload.get(field), code=f"policy_canary_session_{field}_invalid")
     _execution_release(payload.get("execution_release"))
@@ -556,6 +581,9 @@ def build_session_authority(
             if execution_release is not None
             else {}
         ),
+        **({"beta_screening_admission": inputs["beta_screening_admission"],
+            **{key: inputs[key] for key in ("scene_revision_digest", "plan_digest", "configuration_digest")}}
+           if inputs["run_kind"] == BETA_RUN_KIND else {}),
         "authority_digest": "",
     }
     payload["authority_digest"] = canonical_digest(
@@ -698,6 +726,7 @@ def validate_session_result(
         or not strict_result_controls_valid(payload)
     ):
         raise PolicyCanarySessionError("policy_canary_session_result_identity_invalid")
+    _beta_admission_binding(payload)
     raw_success_contract = payload.get("task_success_contract")
     raw_success_contract_digest = payload.get("task_success_contract_digest")
     if raw_success_contract is None and raw_success_contract_digest is None:
@@ -978,6 +1007,9 @@ def execute_paired_session(
         "episodes_per_policy": len(inputs["cells"]),
         "learned_policy_rollout_count": len(episodes),
         "planned_learned_policy_rollout_count": expected_episode_count,
+        **({"beta_screening_admission": inputs["beta_screening_admission"],
+            **{key: inputs[key] for key in ("scene_revision_digest", "plan_digest", "configuration_digest")}}
+           if inputs["run_kind"] == BETA_RUN_KIND else {}),
         "provider_allocations_observed": (
             None
             if provider_closeout_pending
@@ -1039,6 +1071,8 @@ def execute_paired_session(
 
 __all__ = [
     "AUTHORITY_SCHEMA_VERSION",
+    "BETA_RUN_KIND",
+    "BETA_ADMISSION_SCHEMA_VERSION",
     "CANDIDATE_IDS",
     "CANONICAL_ALLOCATOR",
     "CLAIM_CEILING",
