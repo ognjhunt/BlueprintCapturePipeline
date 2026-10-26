@@ -36,6 +36,19 @@ TRAJECTORY_IK_GATE_SCHEMA_VERSION = (
 # part takes, which covers the 2 cm spacing of the swept samples and keeps an
 # accepted pose clear of the paid-run sweep.
 TASK_MOTION_CLEARANCE_M = 0.02
+SUPPORT_HEIGHT_TOLERANCE_M = 0.02
+MAXIMUM_SUPPORT_HEIGHT_TOLERANCE_M = 0.05
+# A reconstructed floor reads a few centimetres up and down, with holes, where an authored floor is
+# flat. On the 2026-10-26 Atlas dishwasher scan the in-cell spread was 1.6 cm at the median and the
+# floor beside the dishwasher read 0-4 cm with 6-8 cm bumps, so the base's five footprint samples never
+# all found floor within 2 cm and every spot beside the appliance failed support. Roughness is measured
+# per 25 cm cell, where a room's slow tilt does not add to it.
+SUPPORT_ROUGHNESS_CELL_M = 0.25
+SUPPORT_ROUGHNESS_MINIMUM_TRIANGLES = 30
+# Only a scan rougher than this gets the scanned rule, and only when the strict rule found fewer than
+# MINIMUM_STRICT_SUPPORT_CANDIDATES bases: the wider rule sends several times more poses to the full gate.
+SCANNED_SUPPORT_ROUGHNESS_M = 0.005
+MINIMUM_STRICT_SUPPORT_CANDIDATES = 3
 
 
 class RobotPlacementGeometryError(ValueError):
@@ -95,6 +108,8 @@ class RobotPlacementGeometryIndex:
     task_fall_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     # Which mesh part of the robot each of ``robot_triangles`` belongs to.
     robot_triangle_parts: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    # How far a scanned support reads up and down over a few centimetres (0 for an authored one).
+    support_roughness_m: float = 0.0
 
 
 def _sha256(path: Path) -> str:
@@ -245,6 +260,52 @@ def _support_surfaces(
     if not surfaces:
         raise RobotPlacementGeometryError("robot_placement_support_surfaces_missing")
     return tuple(surfaces)
+
+
+def _support_roughness(triangles: np.ndarray, normal_abs_z: np.ndarray) -> float:
+    """Median over 25 cm cells of the area-weighted p10-p90 height spread of upward triangles.
+
+    Each cell keeps its dominant level (within 10 cm of its weighted median), so a counter edge
+    sharing a cell with the floor does not count as roughness. A cell needs enough triangles to
+    have a spread; an authored scene's few large triangles give none, and its roughness is 0.
+    """
+    up = normal_abs_z >= 0.95
+    if not np.any(up):
+        return 0.0
+    selected = triangles[up]
+    centroid = selected.mean(axis=1)
+    area = 0.5 * np.linalg.norm(np.cross(selected[:, 1] - selected[:, 0], selected[:, 2] - selected[:, 0]), axis=1)
+    cells = np.floor(centroid[:, :2] / SUPPORT_ROUGHNESS_CELL_M).astype(np.int64)
+    _, inverse, counts = np.unique(cells, axis=0, return_inverse=True, return_counts=True)
+    inverse = inverse.reshape(-1)
+
+    def quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
+        order = np.argsort(values)
+        cumulative = np.cumsum(weights[order])
+        return float(values[order][min(len(values) - 1, int(np.searchsorted(cumulative, q * cumulative[-1])))])
+
+    spreads = []
+    for cell in np.flatnonzero(counts >= SUPPORT_ROUGHNESS_MINIMUM_TRIANGLES):
+        members = inverse == cell
+        z, w = centroid[members, 2], area[members]
+        level = np.abs(z - quantile(z, w, 0.5)) <= 0.10
+        if level.sum() < SUPPORT_ROUGHNESS_MINIMUM_TRIANGLES or w[level].sum() <= 0.0:
+            continue
+        spreads.append(quantile(z[level], w[level], 0.9) - quantile(z[level], w[level], 0.1))
+    return float(np.median(spreads)) if spreads else 0.0
+
+
+def _support_tolerance(index: "RobotPlacementGeometryIndex", *, scanned: bool) -> tuple[float, int, float]:
+    """Height band, missing footprint samples and facet tilt a support may show.
+
+    The strict rule holds unless a candidate searched under the scanned rule stands on a measurably
+    rough scan: then the band is twice the roughness (2-5 cm), one footprint sample may miss, and
+    facets may tilt to 45 degrees. A wall still fails, its triangles spanning far more than the band.
+    """
+    if not scanned or index.support_roughness_m <= SCANNED_SUPPORT_ROUGHNESS_M:
+        return SUPPORT_HEIGHT_TOLERANCE_M, 0, 0.95
+    tolerance = min(MAXIMUM_SUPPORT_HEIGHT_TOLERANCE_M, max(SUPPORT_HEIGHT_TOLERANCE_M, 2.0 * index.support_roughness_m))
+    return tolerance, 1, math.cos(math.radians(45.0))
 
 
 def _watertight_prim_bounds(
@@ -410,6 +471,11 @@ def build_robot_placement_geometry_index(
     # Task actors are obstacles at their actual scene poses. They do not become
     # mounting/support surfaces merely by having a horizontal panel or rack.
     support_surfaces = _support_surfaces(triangles, prim_paths)
+    edges = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    lengths = np.linalg.norm(edges, axis=1)
+    background_up = np.zeros(len(triangles))
+    background_up[lengths > 1.0e-12] = np.abs(edges[lengths > 1.0e-12, 2]) / lengths[lengths > 1.0e-12]
+    support_roughness = _support_roughness(triangles, background_up)
     actor_triangles, actor_paths, actor_bindings = _placed_task_asset_triangles(task_assets)
     background_digest = _sha256(scene_path)
     scene_digest = background_digest
@@ -468,6 +534,7 @@ def build_robot_placement_geometry_index(
         task_limit_points=_task_motion_points(actor_bindings, whole_range=True),
         task_fall_points=_task_motion_points(actor_bindings, whole_range=True, falling_only=True),
         robot_triangle_parts=robot_parts,
+        support_roughness_m=round(support_roughness, 4),
     )
 
 
@@ -575,7 +642,7 @@ def _rotated_bounds(
 
 def _support_triangles_within_height_tolerance(
     *, index: RobotPlacementGeometryIndex, surface: SupportSurface,
-    root_height_m: float, tolerance_m: float,
+    root_height_m: float, tolerance_m: float, minimum_normal_abs_z: float = 0.95,
 ) -> np.ndarray:
     """Include neighboring height bins within the declared support tolerance.
 
@@ -585,7 +652,7 @@ def _support_triangles_within_height_tolerance(
     """
 
     eligible = np.flatnonzero(
-        (index.triangle_normal_abs_z >= 0.95)
+        (index.triangle_normal_abs_z >= minimum_normal_abs_z)
         & (index.triangle_minimum[:, 2] >= root_height_m - tolerance_m)
         & (index.triangle_maximum[:, 2] <= root_height_m + tolerance_m)
     )
@@ -704,7 +771,8 @@ def _candidate_support_and_reach_can_pass(
         return False
     surface_id = str(proposal.get("support_surface_id") or "")
     surface = next((s for s in index.support_surfaces if s.surface_id == surface_id), None)
-    if surface is None or abs(float(position[2]) - surface.height_m) > 0.02:
+    tolerance, missing, facet = _support_tolerance(index, scanned=proposal.get("support_rule") == "scanned")
+    if surface is None or abs(float(position[2]) - surface.height_m) > tolerance:
         return False
     rotation = np.asarray([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
     samples = np.asarray(
@@ -713,9 +781,10 @@ def _candidate_support_and_reach_can_pass(
     key = (surface_id, float(position[2]))
     if key not in support_triangles:
         support_triangles[key] = _support_triangles_within_height_tolerance(
-            index=index, surface=surface, root_height_m=float(position[2]), tolerance_m=0.02,
+            index=index, surface=surface, root_height_m=float(position[2]), tolerance_m=tolerance,
+            minimum_normal_abs_z=facet,
         )
-    return _supported_sample_count(samples, support_triangles[key]) == len(samples)
+    return _supported_sample_count(samples, support_triangles[key]) >= len(samples) - missing
 
 
 def validate_robot_placement_geometry_candidate(
@@ -724,12 +793,16 @@ def validate_robot_placement_geometry_candidate(
     proposal: Mapping[str, Any],
     target_position_world_m: Sequence[float],
     robot_id: str = "franka_panda",
-    support_height_tolerance_m: float = 0.02,
+    support_height_tolerance_m: float | None = None,
     trajectory_waypoints_world_m: Sequence[Sequence[float]] = (),
     trajectory_phase_ids: Sequence[str] = (),
     trajectory_orientations_world_xyzw: Sequence[Sequence[float]] = (),
     trajectory_gate_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    scanned_rule = proposal.get("support_rule") == "scanned"
+    measured_tolerance, missing_allowed, facet_normal = _support_tolerance(index, scanned=scanned_rule)
+    if support_height_tolerance_m is None:
+        support_height_tolerance_m = measured_tolerance
     candidate_id = str(proposal.get("candidate_id") or "")
     pose = proposal.get("pose") if isinstance(proposal.get("pose"), Mapping) else {}
     try:
@@ -767,13 +840,13 @@ def validate_robot_placement_geometry_candidate(
     else:
         selected = _support_triangles_within_height_tolerance(
             index=index, surface=surface, root_height_m=float(position[2]),
-            tolerance_m=support_height_tolerance_m,
+            tolerance_m=support_height_tolerance_m, minimum_normal_abs_z=facet_normal,
         )
         support_height_error_m = abs(float(position[2]) - surface.height_m)
         supported_count = _supported_sample_count(samples, selected)
         if support_height_error_m > support_height_tolerance_m:
             blockers.append("robot_root_not_on_declared_support_height")
-        if supported_count != len(samples):
+        if supported_count < len(samples) - missing_allowed:
             blockers.append("robot_base_support_coverage_incomplete")
 
     robot_minimum, robot_maximum = _rotated_bounds(
@@ -894,7 +967,7 @@ def validate_robot_placement_geometry_candidate(
             surface is not None
             and support_height_error_m is not None
             and support_height_error_m <= support_height_tolerance_m
-            and supported_count == len(samples)
+            and supported_count >= len(samples) - missing_allowed
         ),
         "collision_passed": len(collision_indices) == 0 and not containing_prim_paths,
         "reachability_passed": bool(
@@ -906,6 +979,10 @@ def validate_robot_placement_geometry_candidate(
         "support_sample_count": len(samples),
         "supported_sample_count": supported_count,
         "support_height_error_m": support_height_error_m,
+        "support_height_tolerance_m": support_height_tolerance_m,
+        "support_samples_allowed_missing": missing_allowed,
+        "support_roughness_m": index.support_roughness_m,
+        "support_rule": "scanned" if scanned_rule and missing_allowed else "strict",
         "robot_reset_world_aabb_m": {
             "minimum": [float(value) for value in robot_minimum],
             "maximum": [float(value) for value in robot_maximum],
@@ -1250,6 +1327,17 @@ def enumerate_robot_placement_geometry_candidates(
         and surface.minimum_xy_m[1] - profile.standoff_range_m[1] <= target[1]
         <= surface.maximum_xy_m[1] + profile.standoff_range_m[1]
     ]
+    # A scan splits one floor into 1 cm height bins. Within its support band they are one level,
+    # so the scanned pass mounts once per level, from its largest bin, instead of once per bin.
+    scanned_levels: list[SupportSurface] = []
+    if index.support_roughness_m > SCANNED_SUPPORT_ROUGHNESS_M:
+        tolerance = _support_tolerance(index, scanned=True)[0]
+        for surface in sorted(surfaces, key=lambda row: (-row.area_m2, row.surface_id)):
+            if not any(kept.prim_path == surface.prim_path and abs(kept.height_m - surface.height_m) <= tolerance
+                       for kept in scanned_levels):
+                scanned_levels.append(surface)
+        scanned_levels.sort(key=lambda surface: (abs(surface.height_m - target[2]), -surface.area_m2,
+                                                 surface.surface_id))
     surfaces.sort(
         key=lambda surface: (
             abs(surface.height_m - target[2]),
@@ -1262,9 +1350,6 @@ def enumerate_robot_placement_geometry_candidates(
         np.arange(minimum_radius, maximum_radius + 1.0e-9, profile.probe_step_m),
         key=lambda value: (abs(float(value) - 0.45), float(value)),
     )
-    geometry_work: list[
-        tuple[dict[str, Any], SupportSurface, float, int]
-    ] = []
     # Surfaces are ranked by how close they sit to the target height, which is
     # the right instinct for mounting an arm at working height -- but the cap
     # then silently discarded the floor. Scene 840938: the floor ranked 18th of
@@ -1295,12 +1380,9 @@ def enumerate_robot_placement_geometry_candidates(
     )
     arm_path_tested = 0
     arm_path_blockers: Counter[str] = Counter()
-    for support_batch in (considered, remaining):
-        if not support_batch:
-            continue
-        considered = support_batch
+    def evaluate(batch: Sequence[SupportSurface], first: int, support_rule: str):
         geometry_work = []
-        for surface_index, surface in enumerate(considered, start=searched_surface_count):
+        for surface_index, surface in enumerate(batch, start=first):
             for radius_index, radius in enumerate(radii):
                 for angle_index in range(72):
                     angle = 2.0 * math.pi * angle_index / 72.0
@@ -1311,7 +1393,8 @@ def enumerate_robot_placement_geometry_candidates(
                     ]
                     proposal = {
                         "candidate_id": (
-                            f"geometry_{surface_index:02d}_{radius_index:02d}_"
+                            f"{'scanned' if support_rule == 'scanned' else 'geometry'}_"
+                            f"{surface_index:02d}_{radius_index:02d}_"
                             f"{surface.height_m:.3f}_"
                             f"{float(radius):.3f}_{angle_index:02d}"
                         ),
@@ -1325,6 +1408,7 @@ def enumerate_robot_placement_geometry_candidates(
                                 math.cos(angle / 2.0),
                             ],
                         },
+                        **({"support_rule": "scanned"} if support_rule == "scanned" else {}),
                     }
                     geometry_work.append(
                         (proposal, surface, float(radius), angle_index)
@@ -1353,7 +1437,7 @@ def enumerate_robot_placement_geometry_candidates(
             trajectory_orientations_world_xyzw=trajectory_orientations_world_xyzw,
             worker_count=trajectory_worker_count,
         )
-        candidates = []
+        found = []
         for (
             proposal,
             _cheap_gate,
@@ -1383,12 +1467,16 @@ def enumerate_robot_placement_geometry_candidates(
                 gate["shoulder_to_target_distance_m"],
                 float(angle_index),
             )
-            candidates.append((score, proposal, gate))
-        if arm_inputs is not None and candidates:
+            found.append((score, proposal, gate))
+        return found, geometry_gates, trajectory_gates, len(prequalified)
+
+    def gate_arm_path(found):
+        nonlocal arm_path_tested
+        if arm_inputs is not None and found:
             # The part must not strike the arm: test bases in rank order until enough hold a clean grip.
-            candidates.sort(key=lambda item: item[0])
+            found.sort(key=lambda item: item[0])
             kept = []
-            for score, proposal, gate in candidates:
+            for score, proposal, gate in found:
                 if len(kept) >= int(maximum_candidates):
                     break
                 seed = next((row["solved_joint_positions"] for row in gate["trajectory_position_ik_gate"]["waypoints"]
@@ -1407,17 +1495,35 @@ def enumerate_robot_placement_geometry_candidates(
                 # rehearsal hold the handle there, and so most likely does a policy.
                 planned = record["grip_slide_m"] == 0.0 and record["grip_roll_deg"] == 0.0
                 kept.append(((0 if planned else 1, *score), {**proposal, "arm_path_clearance": record}, gate))
-            candidates = kept
-        elif arm_path_not_applicable and candidates:
-            candidates = [(score, {**proposal, "arm_path_clearance": arm_path_not_applicable}, gate)
-                          for score, proposal, gate in candidates]
+            return kept
+        if arm_path_not_applicable and found:
+            return [(score, {**proposal, "arm_path_clearance": arm_path_not_applicable}, gate)
+                    for score, proposal, gate in found]
+        return found
+
+    for support_batch in (considered, remaining):
+        if not support_batch:
+            continue
+        found, geometry_gates, trajectory_gates, passing = evaluate(support_batch, searched_surface_count, "strict")
+        candidates = gate_arm_path(found)
         all_geometry_gates.extend(geometry_gates)
         all_trajectory_gates.extend(trajectory_gates)
-        geometry_passing_count += len(prequalified)
-        searched_surface_count += len(considered)
+        geometry_passing_count += passing
+        searched_surface_count += len(support_batch)
         search_pass_count += 1
         if candidates:
             break
+    scanned_pass = False
+    if scanned_levels and len(candidates) < MINIMUM_STRICT_SUPPORT_CANDIDATES:
+        # The strict rule found too few bases on a scanned floor; search again with the scan's own
+        # roughness, keeping what the strict rule found.
+        found, geometry_gates, trajectory_gates, passing = evaluate(scanned_levels, 0, "scanned")
+        candidates = candidates + gate_arm_path(found)
+        all_geometry_gates.extend(geometry_gates)
+        all_trajectory_gates.extend(trajectory_gates)
+        geometry_passing_count += passing
+        search_pass_count += 1
+        scanned_pass = True
     candidates.sort(key=lambda item: item[0])
     if diagnostics is not None:
         diagnostics.update({
@@ -1438,6 +1544,9 @@ def enumerate_robot_placement_geometry_candidates(
             "searched_support_surface_count": searched_surface_count,
             "available_support_surface_count": len(surfaces),
             "support_search_exhausted": searched_surface_count == len(surfaces),
+            "support_roughness_m": index.support_roughness_m,
+            "scanned_support_pass": scanned_pass,
+            "scanned_support_level_count": len(scanned_levels),
         })
     return [
         {

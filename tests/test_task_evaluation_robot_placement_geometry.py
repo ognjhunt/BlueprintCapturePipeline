@@ -451,6 +451,76 @@ def test_placement_keeps_only_bases_whose_arm_the_moving_part_misses(tmp_path, m
     assert diagnostics["arm_path_tested_count"] == diagnostics["arm_path_rejected_count"] > 0
 
 
+def _scanned_floor_scene(tmp_path, *, noise_m, name):
+    """A 2.4 m square floor meshed at 4 cm like a reconstruction, with holes and, optionally, noise."""
+    rng = np.random.default_rng(7)
+    n, step = 60, 0.04
+    heights = rng.uniform(-noise_m, noise_m, size=(n + 1, n + 1))
+    points = [(-1.2 + i * step, -1.2 + j * step, float(heights[i, j])) for i in range(n + 1) for j in range(n + 1)]
+    holes = {(i, j) for i in range(n) for j in range(n) if (i * 7 + j * 13) % 29 == 0}
+    faces = [(i * (n + 1) + j, (i + 1) * (n + 1) + j, (i + 1) * (n + 1) + j + 1, i * (n + 1) + j + 1)
+             for i in range(n) for j in range(n) if (i, j) not in holes]
+    scene_path = tmp_path / f"{name}.usda"
+    scene = Usd.Stage.CreateNew(str(scene_path))
+    scene.SetDefaultPrim(UsdGeom.Xform.Define(scene, "/Scene").GetPrim())
+    _mesh(scene, "/Scene/Floor", points, faces)
+    scene.GetRootLayer().Save()
+    return scene_path
+
+
+def test_a_rough_scanned_floor_holds_the_base_and_an_authored_floor_keeps_the_strict_rule(tmp_path, monkeypatch):
+    # 2026-10-26 Atlas dishwasher: the scanned floor read 0-4 cm with holes, and every spot beside the
+    # appliance failed base support although the floor was there.
+    from blueprint_pipeline import task_evaluation_robot_placement_geometry as geometry
+
+    _, robot = _assets(tmp_path)
+    rough = build_robot_placement_geometry_index(
+        scene_collision_usd_path=_scanned_floor_scene(tmp_path, noise_m=0.015, name="rough"), robot_asset_usd_path=robot)
+    flat = build_robot_placement_geometry_index(
+        scene_collision_usd_path=_scanned_floor_scene(tmp_path, noise_m=0.0, name="flat"), robot_asset_usd_path=robot)
+    assert flat.support_roughness_m == 0.0
+    assert 0.01 < rough.support_roughness_m < 0.03
+
+    def gates(index, rule=None):
+        floor = max(index.support_surfaces, key=lambda surface: surface.area_m2)
+        rows = []
+        for x in (-0.6, -0.3, 0.0):
+            for y in (-0.4, 0.0, 0.4):
+                proposal = _proposal(floor.surface_id, (x, y, floor.height_m))
+                if rule:
+                    proposal["support_rule"] = rule
+                rows.append(validate_robot_placement_geometry_candidate(
+                    index=index, proposal=proposal, target_position_world_m=[x + 0.5, y, 0.4]))
+        return rows
+
+    def supported(rows):
+        return len([g for g in rows if "robot_base_support_coverage_incomplete" not in g["blockers"]])
+
+    # Holes sit under some footprint corners; the strict rule refuses those bases on any floor.
+    for rows in (gates(flat), gates(flat, "scanned"), gates(rough)):
+        assert all((g["support_rule"], g["support_samples_allowed_missing"], g["support_height_tolerance_m"])
+                   == ("strict", 0, 0.02) for g in rows)
+    assert any("robot_base_support_coverage_incomplete" in g["blockers"] for g in gates(flat))
+    scanned = gates(rough, "scanned")
+    assert all(g["support_rule"] == "scanned" and g["support_samples_allowed_missing"] == 1
+               and 0.02 < g["support_height_tolerance_m"] <= 0.05 for g in scanned)
+    assert supported(scanned) > supported(gates(rough))
+    # The scanned rule runs only when the strict search finds too few bases, once per floor level.
+    assert len([s for s in rough.support_surfaces if s.prim_path == "/Scene/Floor"]) > 1
+    monkeypatch.setattr(geometry, "MINIMUM_STRICT_SUPPORT_CANDIDATES", 10_000)
+    diagnostics = {}
+    candidates = enumerate_robot_placement_geometry_candidates(
+        index=rough, target_position_world_m=[0.5, 0.0, 0.4], maximum_candidates=64, diagnostics=diagnostics)
+    assert diagnostics["scanned_support_pass"] is True and diagnostics["scanned_support_level_count"] == 1
+    scanned_rows = [row for row in candidates if row.get("support_rule") == "scanned"]
+    assert scanned_rows and all(row["candidate_id"].startswith("scanned_") for row in scanned_rows)
+    monkeypatch.setattr(geometry, "MINIMUM_STRICT_SUPPORT_CANDIDATES", 0)
+    diagnostics = {}
+    enumerate_robot_placement_geometry_candidates(
+        index=rough, target_position_world_m=[0.5, 0.0, 0.4], maximum_candidates=8, diagnostics=diagnostics)
+    assert diagnostics["scanned_support_pass"] is False
+
+
 def test_task_actor_rejects_changed_source_bytes(tmp_path):
     scene, robot = _assets(tmp_path)
     actor = _task_asset(tmp_path)
