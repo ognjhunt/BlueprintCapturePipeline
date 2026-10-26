@@ -43,6 +43,7 @@ from .adp_isaac_lab_arena_vast import (
     _vast_credential_file_present,
 )
 from .team_candidate_quick10_vast import credential_file_blockers, run_team_candidate_session_vast, team_execution_deadline
+from .vast_launch_slots import inspect_vast_launch_admission
 
 
 REQUIRE_INTEGRATION_CANARY_ENV = "BLUEPRINT_REQUIRE_POLICY_INTEGRATION_CANARY"
@@ -106,7 +107,7 @@ def _launch_environment_blockers(args: Any, authority: Mapping[str, Any], bundle
     Dry and execute modes use the same checks. Provider offer selection and live
     process arming still occur in the transport immediately before allocation.
     """
-    blockers = []
+    blockers = list(inspect_vast_launch_admission()["blockers"])
     try:
         validate_independent_vast_watchdog_names(
             pod_name_prefix="blueprint-native-task-policy-canary-",

@@ -28,6 +28,7 @@ from blueprint_pipeline.team_evaluation_worker_retention import (
 from blueprint_pipeline.team_embodiment import apply_team_embodiment, is_team_plan
 from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan as _resolved_scene_plan
 from blueprint_pipeline.policy_canary_worker_evidence import (
+    _prepolicy_refusal_result,
     _write_episode_failure_gap, _write_episode_json_artifact,
     _write_indexed_telemetry as _write_policy_canary_telemetry,
 )
@@ -1480,6 +1481,11 @@ def _run_isolated_cell_processes(
             diagnostic_continuation_gate = assess_diagnostic_first_cell(runtime_root=runtime, child_root=child_root)
             _seal_result(result_path=output_root / GATE_FILENAME, result=diagnostic_continuation_gate)
             if diagnostic_continuation_gate["status"] != "passed":
+                if diagnostic_continuation_gate.get("failure_stage") == "prepolicy_observation":
+                    result = _prepolicy_refusal_result(child=child_result, gate=diagnostic_continuation_gate,
+                        output_root=output_root, cell_index=index, planned_cells=len(inputs["cells"]), gate_filename=GATE_FILENAME)
+                    _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+                    return 1
                 raise RuntimeError("diagnostic_continuation_first_cell_blocked:" + ",".join(diagnostic_continuation_gate["blockers"]))
         elif index == 0 and inputs.get("run_kind") != TEAM_RUN_KIND:
             # The DROID harness-parity probe qualifies Blueprint's frozen canary; a team's

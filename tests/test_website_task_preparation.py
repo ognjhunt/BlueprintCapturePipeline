@@ -233,7 +233,8 @@ def _covered(masks, source_geometry, root: Path, *, views=DRAWER_VIEWS):
             body, blockers = coverage.estimate_body_bounds(track=row["track"], frames=source_geometry["frames"],
                 states={label["frame_id"]: label["part_state"] for label in classified["frames"]})
             row = {**row, "authoring_coverage": coverage.coverage_record(target_id=row["target_id"],
-                binding=coverage.coverage_binding(target=row, source_geometry=source_geometry),
+                binding=coverage.coverage_binding(target=row, source_geometry=source_geometry,
+                                                  task_context=_task_context()),
                 articulation_kind="prismatic", classified=classified,
                 selected=coverage.select_reference_frames(classified["frames"]), body_bounds=body,
                 body_blockers=blockers, candidate_count=len(frames))}

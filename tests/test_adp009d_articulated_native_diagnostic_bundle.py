@@ -4,15 +4,17 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 import zipfile
 
 import pytest
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
+from blueprint_pipeline import articulated_native_diagnostic_runtime as diagnostic_runtime
 from blueprint_pipeline.articulated_native_diagnostic_bundle import (
     ArticulatedNativeDiagnosticError,
     REQUEST_SCHEMA,
@@ -21,9 +23,15 @@ from blueprint_pipeline.articulated_native_diagnostic_bundle import (
 )
 from blueprint_pipeline.articulated_native_diagnostic_runtime import (
     _author_fixed_base_anchor,
+    _apply_joint_targets,
+    _joint_state,
     _require_runtime_symbols,
+    _usd_world_pose,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_task_arena_execution_contract import (
+    native_task_arena_execution_transport_completed,
+)
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
     _container_missing_max_seconds,
@@ -146,6 +154,62 @@ def _request(asset: Path, *, scene_id: str = "840796") -> dict:
     return value
 
 
+def test_required_motion_bundle_binds_static_receipt_and_reads_hinges_and_slides(tmp_path: Path) -> None:
+    from blueprint_pipeline.articulated_required_motion_probe import required_motion_plan_from_static_receipt
+    asset = _asset(tmp_path / "asset.usda")
+    stage = Usd.Stage.Open(str(asset))
+    prim = UsdGeom.Xform.Define(stage, "/Asset/carriage").GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(prim)
+    slide = UsdPhysics.PrismaticJoint.Define(stage, "/Asset/joints/carriage_slide")
+    slide.CreateLowerLimitAttr(0.0)
+    slide.CreateUpperLimitAttr(0.4)
+    slide.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+    slide.CreateBody1Rel().SetTargets(["/Asset/carriage"])
+    stage.GetRootLayer().Save()
+    graph = {"joints": [
+        {"joint_id": name, "joint_type": kind, "limits": limits, "reset_position": 0.0, "reset_tolerance": 0.001}
+        for name, kind, limits in (
+            ("upper_door_hinge", "revolute", [0.0, 1.5707963267948966]),
+            ("lower_door_hinge", "revolute", [0.0, 1.5707963267948966]),
+            ("carriage_slide", "prismatic", [0.0, 0.4]))]}
+    static = {"schema_version": "task_evaluation_articulated_replacement_static_qualification.v1",
+        "status": "authored_structure_statically_qualified", "replacement_usd": {"sha256": _sha256(asset)},
+        "articulation_graph": graph, "source_constraints": {"required_motion_readback": {
+            "requirements_digest": "sha256:" + "a" * 64,
+            "motions": [{"motion_id": row["joint_id"], **{key: row[key] for key in ("joint_id", "joint_type", "limits")}}
+                        for row in graph["joints"]]}}}
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    static_path = tmp_path / "static.json"
+    static_path.write_text(json.dumps(static))
+    request = _request(asset)
+    request.pop("request_digest")
+    request["articulation"].update(locked_joint_prim_paths=[], expected_joint_count=3, expected_dof_count=3)
+    request["required_motion_probe"] = required_motion_plan_from_static_receipt(static)
+    request["required_motion_static_receipt_sha256"] = _sha256(static_path)
+    request = build_articulated_native_diagnostic_request(request)
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request))
+    harness = tmp_path / "harness.json"
+    harness.write_text("{}")
+    result = build_articulated_native_diagnostic_bundle(job_dir=tmp_path / "job", asset_path=asset,
+        request_path=request_path, harness_manifest_path=harness, implementation_commit=_implementation_commit(),
+        static_qualification_receipt_path=static_path)
+    assert result["exact_bundle_entrypoint_rehearsal"]["status"] == "passed"
+    with zipfile.ZipFile(result["bundle_path"]) as archive:
+        assert "provider_runtime/articulated_required_motion_probe.py" in archive.namelist()
+        assert "provider_runtime/articulated_static_qualification_receipt.v1.json" in archive.namelist()
+        extracted = tmp_path / "isolated_bundle"
+        archive.extractall(extracted)
+    subprocess.run([sys.executable, "-I", "-B", "-c",
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "import articulated_native_diagnostic_runtime as runtime; "
+        "assert runtime.execute_required_motion_probe.__module__ == 'articulated_required_motion_probe'",
+        str(extracted / "provider_runtime")], check=True, capture_output=True, text=True)
+    with pytest.raises(ArticulatedNativeDiagnosticError, match="required_motion_static_receipt_missing"):
+        build_articulated_native_diagnostic_bundle(job_dir=tmp_path / "refused", asset_path=asset,
+            request_path=request_path, harness_manifest_path=harness, implementation_commit=_implementation_commit())
+
+
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])
 def test_request_is_scene_neutral_and_allows_multiple_joints(
     tmp_path: Path, scene_id: str
@@ -177,6 +241,50 @@ def test_request_rejects_policy_leakage_and_driven_joint_lock(tmp_path: Path) ->
 
     assert "articulated_native_request_policy_outcome_leakage" in excinfo.value.codes
     assert "articulated_native_request_locked_joints_invalid" in excinfo.value.codes
+
+
+def test_fixed_connections_and_passive_slides_have_separate_dof_count(tmp_path: Path) -> None:
+    asset = _asset(tmp_path / "mixed.usda")
+    stage = Usd.Stage.Open(str(asset))
+    for name in ("trim", "shelf"):
+        prim = UsdGeom.Xform.Define(stage, f"/Asset/{name}").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+    fixed = UsdPhysics.FixedJoint.Define(stage, "/Asset/joints/trim_fixed")
+    fixed.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+    fixed.CreateBody1Rel().SetTargets(["/Asset/trim"])
+    slide = UsdPhysics.PrismaticJoint.Define(stage, "/Asset/joints/shelf_slide")
+    slide.CreateAxisAttr("Y")
+    slide.CreateBody0Rel().SetTargets(["/Asset/cabinet"])
+    slide.CreateBody1Rel().SetTargets(["/Asset/shelf"])
+    stage.GetRootLayer().Save()
+    request = _request(asset)
+    request.pop("request_digest")
+    request['articulation'].update(expected_joint_count=4, expected_dof_count=3)
+    request_path = tmp_path / 'request.json'
+    request_path.write_text(json.dumps(build_articulated_native_diagnostic_request(request)))
+    harness = tmp_path / 'harness.json'
+    harness.write_text('{"schema_version":"fixture"}')
+    args = dict(job_dir=tmp_path / 'bundle', asset_path=asset, request_path=request_path,
+                harness_manifest_path=harness, implementation_commit=_implementation_commit())
+    bundle = build_articulated_native_diagnostic_bundle(**args)
+    assert len(bundle['static_inventory']['joint_prim_paths']) == 4
+    assert len(bundle['static_inventory']['movable_joint_prim_paths']) == 3
+    request['articulation']['expected_dof_count'] = 2
+    request_path.write_text(json.dumps(build_articulated_native_diagnostic_request(request)))
+    with pytest.raises(ArticulatedNativeDiagnosticError) as excinfo:
+        build_articulated_native_diagnostic_bundle(**args)
+    assert 'articulated_native_dof_count_mismatch' in excinfo.value.codes
+
+
+@pytest.mark.parametrize('count', [True, 0, 1, 3, 2.5])
+def test_request_rejects_incoherent_movable_joint_count(tmp_path: Path, count) -> None:
+    asset = _asset(tmp_path / 'asset.usda')
+    request = _request(asset)
+    request.pop('request_digest')
+    request['articulation']['expected_dof_count'] = count
+    with pytest.raises(ArticulatedNativeDiagnosticError) as excinfo:
+        build_articulated_native_diagnostic_request(request)
+    assert 'articulated_native_request_dof_count_invalid' in excinfo.value.codes
 
 
 def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
@@ -242,6 +350,54 @@ def test_bundle_is_deterministic_and_binds_exact_asset(tmp_path: Path) -> None:
     assert preflight["blockers"] == []
     assert preflight["status"] == "passed"
     assert preflight["zip_required_entries_present"] is True
+
+
+@pytest.mark.parametrize("suffix", [".usd", ".usda", ".usdc", ".usdz"])
+def test_bundle_preserves_the_actual_openusd_asset_format(tmp_path: Path, suffix: str) -> None:
+    asset = tmp_path / ("asset" + suffix)
+    if suffix == ".usdz":
+        source = _asset(tmp_path / "source.usda")
+        assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(source)), str(asset))
+    else:
+        _asset(asset)
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps(_request(asset)))
+    harness = tmp_path / "harness.json"
+    harness.write_text('{"schema_version":"fixture"}')
+    job = tmp_path / "bundle"
+    receipt = build_articulated_native_diagnostic_bundle(job_dir=job, asset_path=asset,
+        request_path=request, harness_manifest_path=harness, implementation_commit=_implementation_commit())
+    filename = "articulated_task_asset" + suffix
+    packaged = job / "provider_runtime/assets" / filename
+    assert receipt["asset_binding"]["filename"] == filename
+    assert packaged.read_bytes() == asset.read_bytes()
+    assert Usd.Stage.Open(str(packaged)) is not None
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        assert "provider_runtime/assets/" + filename in archive.namelist()
+        entrypoint = archive.read("provider_runtime/run_adp_arena_provider_runtime.sh").decode()
+    assert '--asset "$RUNTIME_DIR/assets/' + filename + '"' in entrypoint
+    preflight = _blueprint_bundle_preflight(job_dir=tmp_path / "preflight", generated_at="fixed",
+        enable_blueprint_bundle=True, enable_isaac_smoke=True, provider_bundle_kind="adp009d_articulated_native",
+        bundle_path=Path(receipt["bundle_path"]), provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
+        provider_output_put_url="https://example.com/output.zip?sig=redacted")
+    assert preflight["blockers"] == []
+
+
+def test_native_preflight_refuses_two_possible_asset_formats(tmp_path: Path) -> None:
+    asset = _asset(tmp_path / "asset.usda")
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps(_request(asset)))
+    harness = tmp_path / "harness.json"
+    harness.write_text('{"schema_version":"fixture"}')
+    receipt = build_articulated_native_diagnostic_bundle(job_dir=tmp_path / "bundle", asset_path=asset,
+        request_path=request, harness_manifest_path=harness, implementation_commit=_implementation_commit())
+    with zipfile.ZipFile(receipt["bundle_path"], "a") as archive:
+        archive.writestr("provider_runtime/assets/articulated_task_asset.usdz", asset.read_bytes())
+    preflight = _blueprint_bundle_preflight(job_dir=tmp_path / "preflight", generated_at="fixed",
+        enable_blueprint_bundle=True, enable_isaac_smoke=True, provider_bundle_kind="adp009d_articulated_native",
+        bundle_path=Path(receipt["bundle_path"]), provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
+        provider_output_put_url="https://example.com/output.zip?sig=redacted")
+    assert "articulated_native_bundle_asset_format_ambiguous" in preflight["blockers"]
 
 
 def test_articulated_bundle_uses_complete_native_isaac_transport_closure(
@@ -355,13 +511,18 @@ def test_paid_offer_and_post_create_gates_include_storage_in_hourly_cap(
 
 def test_runtime_capability_probe_reports_complete_missing_module_set() -> None:
     available = {
-        name: SimpleNamespace(SingleArticulation=object, Camera=object)
+        name: SimpleNamespace(
+            SingleArticulation=object, Camera=object, ArticulationAction=object,
+            SimulationContext=object,
+        )
         for name in (
             "carb",
             "numpy",
             "omni.timeline",
             "omni.usd",
             "isaacsim.core.prims",
+            "isaacsim.core.utils.types",
+            "isaacsim.core.api",
             "isaacsim.sensors.camera",
             "PIL.Image",
             "pxr.Gf",
@@ -397,6 +558,198 @@ def test_provider_runtime_uses_isaac6_articulation_api_not_removed_dynamic_contr
     assert "joint_command_started" in source
     assert "joint_command_completed" in source
     assert "runtime_capabilities_resolved" in source
+
+
+def test_joint_controller_requires_drive_api_and_never_teleports() -> None:
+    import numpy as np
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("joint state setters cannot substitute for a drive command")
+
+    articulation = SimpleNamespace(set_joint_positions=forbidden)
+    with pytest.raises(RuntimeError, match="articulated_native_apply_action_unavailable"):
+        _apply_joint_targets(
+            articulation, SimpleNamespace, np.zeros(1), np.asarray([0])
+        )
+
+
+@pytest.mark.parametrize("positions,velocities,code", [
+    ([float("nan")], [0.0], "nonfinite"),
+    ([0.0], [float("inf")], "nonfinite"),
+    ([], [], "shape_invalid"),
+])
+def test_nonfinite_or_missing_joint_state_cannot_pass(
+    positions: Any, velocities: Any, code: str,
+) -> None:
+    articulation = SimpleNamespace(
+        get_joint_positions=lambda: positions, get_joint_velocities=lambda: velocities,
+    )
+    with pytest.raises(RuntimeError, match=f"articulated_native_joint_state_{code}:reset"):
+        _joint_state(articulation, count=1, phase="reset")
+
+
+def test_nonfinite_body_pose_cannot_pass_a_zero_drift_comparison() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/Body").AddTranslateOp().Set(Gf.Vec3d(float("nan"), 0, 0))
+    with pytest.raises(RuntimeError, match="articulated_native_body_pose_nonfinite"):
+        _usd_world_pose(stage, "/Body", UsdGeom)
+
+
+@pytest.mark.parametrize("reset", [0.0, float("nan"), float("inf")])
+def test_consumer_rejects_legacy_nonfinite_completion_receipts(reset: float) -> None:
+    import math
+
+    result = {
+        "schema_version": "adp009d_articulated_native_diagnostic.v1",
+        "status": "completed", "articulation_readback": {"reset_readback_degrees": reset},
+    }
+    assert native_task_arena_execution_transport_completed(
+        result, expected_output_filename="adp009d_native_microcheck.json"
+    ) is math.isfinite(reset)
+
+
+@pytest.mark.parametrize("invalid_reset", [None, float("nan"), float("inf")])
+def test_complete_diagnostic_loop_uses_single_articulation_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_reset: float | None
+) -> None:
+    """CPU API rehearsal only: fake joint readback does not establish physics."""
+    import numpy as np
+    from PIL import Image
+    from pxr import UsdLux
+
+    asset = _asset(tmp_path / "source.usda")
+    request = _request(asset)
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request))
+    output = tmp_path / "scratch" / "result.json"
+    stage = Usd.Stage.Open(str(asset))
+    actions = []
+    lifecycle = []
+    physics_steps = []
+
+    class App:
+        def __init__(self, config: Any) -> None:
+            lifecycle.append("started")
+
+        def update(self) -> None:
+            pass
+
+        def close(self) -> None:
+            lifecycle.append("closed")
+
+    class Simulation:
+        def __init__(self, *, physics_dt: float, **kwargs: Any) -> None:
+            self.dt = physics_dt
+
+        def initialize_physics(self) -> None:
+            lifecycle.append("physics_initialized")
+
+        def get_physics_dt(self) -> float:
+            return self.dt
+
+        def play(self) -> None:
+            lifecycle.append("playing")
+
+        def step(self, *, render: bool) -> None:
+            physics_steps.append(render)
+
+    class Articulation:
+        # Match the actual SingleArticulation API: no target/state setter methods.
+        handles_initialized = True
+        dof_names = ["upper_door_hinge", "lower_door_hinge"]
+        num_dof = 2
+        num_bodies = 3
+
+        def __init__(self, **kwargs: Any) -> None:
+            self.positions = np.zeros(2)
+            self.has_opened = False
+            self.reset_applied = False
+
+        def initialize(self) -> None:
+            pass
+
+        def get_dof_index(self, name: str) -> int:
+            return self.dof_names.index(name)
+
+        def apply_action(self, action: Any) -> None:
+            actions.append(action)
+            self.positions[action.joint_indices] = action.joint_positions
+            self.has_opened |= self.positions[0] > 0.1
+            self.reset_applied = self.has_opened and self.positions[0] == 0.0
+
+        def get_joint_positions(self) -> Any:
+            values = self.positions.copy()
+            if invalid_reset is not None and self.reset_applied:
+                values[0] = invalid_reset
+            return values
+
+        def get_joint_velocities(self) -> Any:
+            return np.zeros(2)
+
+    class Camera:
+        def __init__(self, *, resolution: Any, **kwargs: Any) -> None:
+            width, height = resolution
+            self.rgba = np.zeros((height, width, 4), dtype=np.uint8)
+            self.rgba[:, :width // 2, :3] = 255
+
+        def initialize(self) -> None:
+            pass
+
+        def get_rgba(self) -> Any:
+            return self.rgba
+
+    context = SimpleNamespace(open_stage=lambda path: None, get_stage=lambda: stage)
+    timeline = SimpleNamespace(play=lambda: None, stop=lambda: lifecycle.append("stopped"))
+    symbols = {
+        "carb": SimpleNamespace(settings=SimpleNamespace(
+            get_settings=lambda: SimpleNamespace(get=lambda key: "cpu_api_rehearsal")
+        )),
+        "numpy": np,
+        "timeline": SimpleNamespace(get_timeline_interface=lambda: timeline),
+        "usd_context": SimpleNamespace(get_context=lambda: context),
+        "single_articulation": Articulation,
+        "articulation_action": SimpleNamespace,
+        "simulation_context": Simulation,
+        "camera": Camera,
+        "image": Image,
+        "gf": Gf,
+        "usd_geom": UsdGeom,
+        "usd_lux": UsdLux,
+        "usd_physics": UsdPhysics,
+        "usd_shade": UsdShade,
+    }
+    monkeypatch.setitem(sys.modules, "isaacsim", SimpleNamespace(SimulationApp=App))
+    monkeypatch.setattr(diagnostic_runtime, "_require_runtime_symbols", lambda: symbols)
+
+    code = diagnostic_runtime.main([
+        "--asset", str(asset), "--request", str(request_path), "--output", str(output)
+    ])
+    result = json.loads(output.read_text())
+    angles = request["articulation"]["commanded_angles_degrees"]
+    ramp_steps = request["runtime"]["settle_steps_per_command"]
+    assert len(actions) == (len(angles) + 1) * ramp_steps
+    for action, angle in zip(actions[ramp_steps - 1::ramp_steps], [*angles, 0.0], strict=True):
+        np.testing.assert_allclose(action.joint_positions, [np.deg2rad(angle), 0.0])
+        np.testing.assert_array_equal(action.joint_indices, [0, 1])
+        np.testing.assert_array_equal(action.joint_velocities, [0.0, 0.0])
+    if invalid_reset is None:
+        assert code == 0
+        assert result["articulation_readback"]["reset_readback_degrees"] == 0.0
+        assert result["native_runtime"]["physics_timestep_seconds"] == 1 / 120
+        assert lifecycle[-2:] == ["stopped", "closed"]
+    else:
+        assert code == 1
+        assert result["status"] == "blocked"
+        assert result["blockers"] == ["articulated_native_joint_state_nonfinite:command_ramp"]
+        assert result["articulation_readback"]["reset_readback_degrees"] is None
+        assert "NaN" not in output.read_text() and "Infinity" not in output.read_text()
+        assert lifecycle[-1] == "closed"
+    assert result["candidate_policy_queried"] is False
+    assert result["native_material_render_readback"]["frame_count"] == len(angles) * 2
+    assert lifecycle[:3] == ["started", "physics_initialized", "playing"]
+    assert physics_steps and any(physics_steps) and not all(physics_steps)
+    targets = [float(action.joint_positions[0]) for action in actions]
+    assert max(abs(b - a) for a, b in zip(targets, targets[1:])) < 0.02
 
 
 def test_native_articulation_anchor_is_fixed_to_world_and_not_kinematic(
@@ -601,9 +954,11 @@ def test_allocator_routes_articulated_diagnostic_without_canned_inputs(
 
     monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
 
-    assert allocator.main(_allocator_args(tmp_path)) == 0
+    arguments = [*_allocator_args(tmp_path), "--adp009d-articulated-diagnostic-static-receipt", str(tmp_path / "static.json")]
+    assert allocator.main(arguments) == 0
     assert "approved_can_path" not in observed["build"]
     assert observed["build"]["asset_path"] == str(tmp_path / "asset.usda")
+    assert observed["build"]["static_qualification_receipt_path"] == str(tmp_path / "static.json")
     admission = json.loads((tmp_path / "admission.json").read_text())
     binding = admission["allocation_binding"]
     assert binding["articulated_native_diagnostic_requested"] is True

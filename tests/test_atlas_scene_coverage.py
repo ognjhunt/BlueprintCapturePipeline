@@ -175,6 +175,115 @@ def test_reference_selection_refuses_changed_semantic_plan(tmp_path):
         coverage.refine_scene_coverage(**args)
 
 
+def test_offline_export_refresh_preserves_old_bytes_and_reuses_current_cache(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_depth_splat
+
+    args = fixture(tmp_path)
+    saved = args['splat_root'] / 'atlas_depth_splat_manifest.json'
+    old = json.loads(saved.read_text())
+    old.pop('fusion_profile')
+    old['digest'] = canonical_digest(old, digest_field='digest')
+    saved.write_text(json.dumps(old))
+    original_manifest = saved.read_bytes()
+    original_spz = (args['splat_root'] / 'atlas_depth_splat.spz').read_bytes()
+    monkeypatch.setattr(completion, 'complete_scene', lambda **_: pytest.fail('offline replay bought a repair'))
+    args['completed_exports_only'] = True
+    (_, manifest, root), result = coverage.refine_scene_coverage(**args)
+    assert root != args['splat_root'] and manifest['fusion_profile'] == atlas_depth_splat.fusion_profile()
+    assert manifest['rebuild_source_manifest_digest'] == old['digest']
+    assert manifest['voxel_footprint_multiple'] == old['voxel_footprint_multiple']
+    assert manifest['generated_result_digests'] == ['original']
+    assert result['stop_reason'] == 'retained_exports_replayed_without_new_generation'
+    assert not result['task_coverage_sufficient'] and not result['simulation_qualified']
+    assert saved.read_bytes() == original_manifest
+    assert (args['splat_root'] / 'atlas_depth_splat.spz').read_bytes() == original_spz
+    assert (tmp_path / 'completion_coverage/replay-latest.json').is_file()
+    assert not (tmp_path / 'completion_coverage/latest.json').exists()
+    monkeypatch.setattr(atlas_depth_splat, 'write_depth_splat',
+                        lambda **_: pytest.fail('unchanged derived export was rebuilt'))
+    (_, reused, reused_root), _ = coverage.refine_scene_coverage(**args)
+    assert reused['digest'] == manifest['digest'] and reused_root == root
+    with (root / 'atlas_depth_splat.spz').open('ab') as stream:
+        stream.write(b'changed')
+    with pytest.raises(ValueError, match='refreshed_export_changed'):
+        coverage.refine_scene_coverage(**args)
+
+
+def test_completed_paid_repair_is_adopted_before_fusion_upgrade(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_scene_recovery, atlas_scene_task_regions, atlas_depth_splat
+
+    args = fixture(tmp_path)
+    saved = args['splat_root'] / 'atlas_depth_splat_manifest.json'
+    old = json.loads(saved.read_text())
+    old.pop('fusion_profile')
+    old['digest'] = canonical_digest(old, digest_field='digest')
+    saved.write_text(json.dumps(old))
+    binding = {'revision': 'v3-complete-surface-review', 'export_digest': old['digest'],
+               'task_region_plan_digest': args['region_plan']['digest'], 'task_context_digest': 'task-context'}
+    identity = canonical_digest(binding)
+    repair_root = tmp_path / 'completion_coverage' / identity[7:23]
+    native_root = repair_root / 'generated/0'
+    native_root.mkdir(parents=True)
+    native = {'status': 'completed', 'operation': {'id': 'already-paid'}}
+    native['digest'] = canonical_digest(native, digest_field='digest')
+    (native_root / 'result.json').write_text(json.dumps(native))
+    retained = report()
+    retained['generated_roots'] = [str(native_root)]
+    retained['digest'] = canonical_digest(retained, digest_field='digest')
+    (repair_root / 'completion.json').write_text(json.dumps(retained))
+    new = deepcopy(args['reviewed_views'][0]['frame'])
+    new['frame_id'] = 'registered-repair'
+    view = {'frame': new, 'native_result_digest': native['digest'], 'native_frame_index': 0,
+            'review_digest': retained['digest'], 'registration_digest': 'registration'}
+    regions = deepcopy(args['region_plan'])
+    regions['native_bindings'] = {new['frame_id']: canonical_digest(_frame_binding(new))}
+    regions['proposal']['views'][0]['frame_id'] = new['frame_id']
+    regions['digest'] = canonical_digest(regions, digest_field='digest')
+    old_repair_root = tmp_path / ('background_refined_splat-' + identity[7:23])
+    previous = write_depth_splat(frames=[args['frames'][0], new], result=args['pose'],
+        output_root=old_repair_root,
+        generated_result_digests=['original', 'repair-native-result', 'registration', 'recovery'],
+        visual_review_digest=canonical_digest({'previous': 'review', 'review': retained['review']}))
+    previous.pop('fusion_profile')
+    previous['digest'] = canonical_digest(previous, digest_field='digest')
+    (old_repair_root / 'atlas_depth_splat_manifest.json').write_text(json.dumps(previous))
+    calls = []
+    def complete(**kw):
+        calls.append(kw['root'])
+        assert kw['root'] == repair_root
+        return [new], retained
+    monkeypatch.setattr(completion, 'complete_scene', complete)
+    monkeypatch.setattr(atlas_scene_recovery, 'register_generated_completion', lambda **_: ([view], {
+        'digest': 'registration', 'preservation_paths': [], 'depth_basis': 'registered_native'}))
+    monkeypatch.setattr(atlas_scene_task_regions, 'plan_task_regions', lambda **_: regions)
+    monkeypatch.setattr(atlas_scene_recovery, 'recover_reviewed_geometry', lambda **_: ([new], {
+        'digest': 'recovery', 'preservation_paths': [], 'added_geometry_pixels': 100, 'exportable_samples': 100}))
+    progress = []
+    args.update(completed_exports_only=True, checkpoint=lambda stage, **fields: progress.append((stage, fields)))
+    (geometry, manifest, _), result = coverage.refine_scene_coverage(**args)
+    assert calls == [repair_root] and len(geometry) == 2 and len(result['completion_reports']) == 1
+    assert manifest['fusion_profile'] == atlas_depth_splat.fusion_profile()
+    assert manifest['generated_result_digests'] == previous['generated_result_digests']
+    upgraded = [fields for stage, fields in progress if stage == 'automation_export_refresh_fusion']
+    assert len(upgraded) == 1 and upgraded[0]['retained_frame_count'] == 2
+
+
+def test_missing_completed_native_bytes_refuse_instead_of_repurchasing(tmp_path):
+    retained = report()
+    retained['generated_roots'] = [str(tmp_path / 'missing-native')]
+    retained['digest'] = canonical_digest(retained, digest_field='digest')
+    (tmp_path / 'completion.json').write_text(json.dumps(retained))
+    with pytest.raises(ValueError, match='retained_native_result_missing'):
+        coverage._retained_native_repair(tmp_path)
+
+
+def test_offline_replay_verifies_current_export_bytes_too(tmp_path):
+    args = fixture(tmp_path)
+    (args['splat_root'] / 'atlas_depth_splat.spz').write_bytes(b'changed')
+    with pytest.raises(ValueError, match='refreshed_export_changed'):
+        coverage.refine_scene_coverage(**args, completed_exports_only=True)
+
+
 def test_recorded_source_action_is_recovered_fused_and_conditioned_before_generation(tmp_path, monkeypatch):
     args = fixture(tmp_path)
     args['pose']['digest'] = 'pose'

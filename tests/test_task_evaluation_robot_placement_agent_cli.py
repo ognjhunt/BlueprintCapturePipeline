@@ -68,6 +68,49 @@ def test_paid_visual_review_cannot_disable_geometry_previews(tmp_path):
             allow_live_invocation=True,tracing_disabled=True,render_geometry_previews=False)
 
 
+def test_task_pose_requires_object_collision_input_before_output_or_model_call(tmp_path):
+    with pytest.raises(ValueError, match="task_asset_collision_context_required"):
+        run_robot_placement_cli(
+            run_id="missing-actor", scene_collision_usd=tmp_path / "missing.usd",
+            robot_asset_usd=tmp_path / "robot.usd", target_position_world_m=[0., 0., 0.],
+            scene_binding={}, task_binding={"asset_scene_pose": {"position_world_m": [0., 0., 0.]}},
+            overview_image_paths=[], output_dir=tmp_path / "out", max_rounds=1,
+            candidate_inventory_cap=12, max_input_tokens=1000, max_inference_cost_usd=.01,
+            allow_live_invocation=False, tracing_disabled=True, deterministic_selection=True,
+            render_geometry_previews=False,
+        )
+    assert not (tmp_path / "out").exists()
+
+
+def test_empty_search_retains_geometry_diagnostics_before_any_model_call(tmp_path, monkeypatch):
+    import blueprint_pipeline.task_evaluation_robot_placement_agent_cli as module
+    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: object())
+    monkeypatch.setattr(module, "summarize_robot_placement_geometry", lambda *_a, **_k: {
+        "geometry_summary_digest": "sha256:summary", "scene_collision_digest": "sha256:scene"
+    })
+
+    def empty(**kwargs):
+        kwargs["diagnostics"].update({"proposal_count": 72, "support_or_reach_prefilter_rejected_count": 72})
+        return []
+
+    monkeypatch.setattr(module, "enumerate_robot_placement_geometry_candidates", empty)
+    with pytest.raises(ValueError, match="candidate_inventory_empty"):
+        run_robot_placement_cli(
+            run_id="empty", scene_collision_usd=tmp_path / "scene.usd",
+            robot_asset_usd=tmp_path / "robot.usd", target_position_world_m=[0., 0., 0.],
+            scene_binding={}, task_binding={}, overview_image_paths=[], output_dir=tmp_path / "out",
+            max_rounds=1, candidate_inventory_cap=12, max_input_tokens=12000,
+            max_inference_cost_usd=.01, allow_live_invocation=False, tracing_disabled=True,
+            deterministic_selection=True, render_geometry_previews=False,
+        )
+    record = json.loads((tmp_path / "out/task_evaluation_robot_placement_geometry_search.v1.json").read_text())
+    assert record["status"] == "no_candidate"
+    assert record["search_diagnostics"]["support_or_reach_prefilter_rejected_count"] == 72
+    assert record["record_digest"] == canonical_digest(record, digest_field="record_digest")
+    assert record["native_placement_qualified"] is False
+    assert record["policy_executed"] is False
+
+
 def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
     tmp_path, monkeypatch
 ) -> None:

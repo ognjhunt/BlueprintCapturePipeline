@@ -164,6 +164,8 @@ standing-authorization directory or binding root is missing while the
 control-plane root exists), `release_protection_binding_invalid:<binding>`,
 `release_protection_binding_changed:<binding>` (binding bytes no longer match
 the sidecar's `binding_sha256`), `release_protection_lease_invalid:<binding>`,
+`release_protection_lease_unreadable:<binding>` (the reading account may not
+open the sidecar or its directory; see below),
 `release_protection_lease_write_failed:<binding>`,
 `release_protection_config_unreadable:<name>`, and
 `release_protection_control_plane_root_missing`. A permission error, a symlink
@@ -193,6 +195,16 @@ A sidecar that fails those checks blocks all retirement with
 `release_protection_lease_invalid:<binding>`. The ordinary way to end a lease is
 to let its run end: the next explicit retention evaluation reports it as `run_terminal`. The binding
 itself is evidence and is never edited or removed to end a lease.
+
+Retirement may run as root, which must delete root-owned release trees, while
+deploys and the capacity controller read leases as the `blueprint` service
+account. A sidecar root writes therefore stays root-owned but takes the service
+account's group (`root:blueprint`, directories `0750`, sidecars `0640`). A
+root-only sidecar written before that rule blocks retirement for the service
+account as `release_protection_lease_unreadable:<binding>`; restore the group
+on `release-leases/` and its `bindings/` rather than editing the sidecar. A
+2026-09-27 migration left 106 such sidecars, which read as invalid to the
+service account until 2026-10-25.
 
 ## Deployment preserves trees; retirement is separate
 

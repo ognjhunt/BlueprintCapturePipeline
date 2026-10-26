@@ -142,6 +142,9 @@ def apply_droid_policy_canary_profile(plan: Mapping[str, Any]) -> dict[str, Any]
         },
         "preserve_official_policy_camera_calibration": value.get("operator_wrist_camera_aim") is None,
         "preserve_official_policy_camera_intrinsics": True,
+        "preserve_official_external_camera_translation": not (
+            start_binding is not None and "external_camera_position_parent_m" in start_binding
+        ),
         "preserve_official_reset_joint_positions": start_binding is None,
         "visible_target_marker": marker,
         "policy_camera_roles": ["external", "wrist"],

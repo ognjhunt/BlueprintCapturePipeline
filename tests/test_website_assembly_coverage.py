@@ -120,7 +120,17 @@ def _answer(binding, *, hinge="bottom"):
     frames = [dict(zip(("task_part_state", "view", "visible_parts"), _label(int(i[8:]))), frame_id=i,
                    label_text=["BOSCH", "800 Series"] if int(i[8:]) < 40 else []) for i in ids]
     visible = {part for row in frames for part in row["visible_parts"]}
-    return {"hinge_edge": hinge, "task_part_components": sorted(MOVING & visible), "frames": frames}
+    moving = sorted(MOVING & visible)
+    witnesses = {}
+    for row in frames:
+        if set(row["visible_parts"]) & MOVING:
+            witnesses.setdefault(row["task_part_state"], row["frame_id"])
+    return {"hinge_edge": hinge, "task_part_components": moving, "frames": frames,
+            "assembly_mounting": {"mode": "unknown", "source_frame_ids": [],
+                "reason": "These fixture views do not establish mounting."},
+            "required_motions": [{"motion_id": "primary_motion", "part_ids": moving,
+                "joint_type": "revolute", "task_actions": ["open", "close"],
+                "source_frame_ids": list(witnesses.values())}] if moving else []}
 
 
 def _no_brand(binding):
@@ -176,6 +186,43 @@ def _run(tmp_path, target, geometry, **overrides):
     return coverage.assembly_coverage(**{**arguments, **overrides})
 
 
+def test_mounting_review_survives_selection_and_legacy_records_stay_reusable(tmp_path, model):
+    _, state = model
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    def answer(binding):
+        value = _answer(binding)
+        value["assembly_mounting"] = {"mode": "fixed_in_scene",
+            "source_frame_ids": [binding["images"][0]["frame_id"]],
+            "reason": "Visible installation."}
+        return value
+    state["answer"] = answer
+    record = _run(tmp_path, target, geometry)
+    mounting = record["assembly_mounting"]
+    assert set(mounting["source_frame_ids"]) <= {r["frame_id"] for r in record["selected_frames"]}
+    assert coverage.assembly_constraints(record, task_part="door")["assembly_mounting"] == mounting
+    previous = json.loads(json.dumps(record))
+    previous["binding"]["prompt_digest"] = canonical_digest({"prompt": coverage.PROMPT,
+        "revolute": coverage.REVOLUTE_PROMPT, "prismatic": coverage.PRISMATIC_PROMPT,
+        "motions": coverage.MOTIONS_PROMPT, "mounting": coverage.LEGACY_MOUNTING_PROMPT,
+        "response": coverage.MOUNTING_RESPONSE_SHAPE_V1})
+    previous["digest"] = canonical_digest(previous, digest_field="digest")
+    assert coverage.coverage_matches(previous, target=target, source_geometry=geometry, task_context=_context())
+    previous["assembly_mounting"]["body_envelope_excludes_environment"] = True
+    previous["digest"] = canonical_digest(previous, digest_field="digest")
+    assert not coverage.coverage_matches(previous, target=target, source_geometry=geometry, task_context=_context())
+    legacy = json.loads(json.dumps(record))
+    legacy.pop("assembly_mounting")
+    legacy["binding"]["prompt_digest"] = canonical_digest({"prompt": coverage.PROMPT,
+        "revolute": coverage.REVOLUTE_PROMPT, "prismatic": coverage.PRISMATIC_PROMPT,
+        "motions": coverage.MOTIONS_PROMPT, "response": coverage.LEGACY_RESPONSE_SHAPE})
+    legacy["digest"] = canonical_digest(legacy, digest_field="digest")
+    assert coverage.coverage_matches(legacy, target=target, source_geometry=geometry, task_context=_context())
+    legacy["assembly_mounting"] = mounting
+    legacy["digest"] = canonical_digest(legacy, digest_field="digest")
+    assert not coverage.coverage_matches(legacy, target=target, source_geometry=geometry, task_context=_context())
+
+
 def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp_path, model):
     calls, _ = model
     geometry, track = _source_geometry(tmp_path / "geometry")
@@ -185,7 +232,8 @@ def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp
     assert record["status"] == "complete", record["blockers"]
     assert record["digest"] == canonical_digest(record, digest_field="digest")
     selected = record["selected_frames"]
-    assert len(selected) == coverage.MAX_REFERENCE_FRAMES == 12
+    assert len(selected) <= record["reference_frame_cap"]
+    assert record["reference_frame_cap"] == record["candidate_frame_count"]
     shown = {part for row in selected for part in row["visible_parts"]}
     assert shown == set(record["observed_parts"]) == set(FRONT_PARTS + OPEN_PARTS + ["left_side", "right_side"])
     assert record["missing_parts"] == []
@@ -215,7 +263,7 @@ def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp
     readings = record["label_readings"]
     assert readings and all(row["label_text"] == ["BOSCH", "800 Series"] and int(row["frame_id"][8:]) < 40
                             and Path(row["path"]).is_file() for row in readings)
-    assert "label_text" in calls[0]["prompt"] and record["classifier"]["revision"] == 3
+    assert "label_text" in calls[0]["prompt"] and record["classifier"]["revision"] == coverage.CLASSIFIER_REVISION
     assert "part_boxes" in calls[0]["prompt"] and "box_xywh_normalized" in calls[0]["prompt"]
     # Retained receipts: a restart buys nothing and reproduces the record.
     assert _run(tmp_path, target, geometry, registry=_registry(600)) == record
@@ -490,6 +538,15 @@ def test_malformed_classification_is_a_typed_incomplete_record_never_rebought(tm
     assert len(calls) == 1
 
 
+def test_new_reviews_explicitly_report_mounting_even_when_unknown(tmp_path, model):
+    _, state = model
+    state["answer"] = lambda binding: {k: v for k, v in _answer(binding).items() if k != "assembly_mounting"}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track), geometry)
+    assert record["status"] == "incomplete"
+    assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
+
+
 def test_malformed_classification_is_held_every_tick_until_a_revision_bump(tmp_path, model, monkeypatch):
     calls, state = model
     state["answer"] = lambda binding: {**_answer(binding), "extra": True}
@@ -518,6 +575,70 @@ def test_inconsistent_hinge_is_a_blocker(tmp_path, model):
     assert len(record["classifier"]["receipts"]) > 1
     assert record["status"] == "incomplete"
     assert record["blockers"] == ["website_assembly_hinge_edge_inconsistent"]
+
+
+def test_full_task_secondary_motions_reach_authoring_and_their_evidence_is_selected(tmp_path, model):
+    calls, state = model
+    def answer(binding):
+        value = _answer(binding)
+        visible = {part for row in value["frames"] for part in row["visible_parts"]}
+        for name in ("upper_rack", "lower_rack"):
+            if name in visible:
+                parts = [name] + (["cutlery_basket"] if name == "lower_rack" and "cutlery_basket" in visible else [])
+                witness = next(row["frame_id"] for row in value["frames"] if name in row["visible_parts"])
+                value["required_motions"].append({"motion_id": "slide_" + name, "part_ids": parts,
+                    "joint_type": "prismatic", "task_actions": ["extend", "retract"], "source_frame_ids": [witness]})
+        return value
+    state["answer"] = answer
+    context = {**_context(), "description": "Open and close the door and slide both racks."}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    record = _run(tmp_path, target, geometry, task_context=context)
+    assert record["status"] == "complete"
+    assert {row["motion_id"] for row in record["required_motions"]} == {
+        "primary_motion", "slide_upper_rack", "slide_lower_rack"}
+    constraints = coverage.assembly_constraints(record, task_part="door")
+    assert not {"upper_rack", "lower_rack", "cutlery_basket"} & set(constraints["fixed_parts"])
+    assert set(constraints["task_part_components"]) == MOVING  # Secondary motions cannot inflate door sizing.
+    shown = {row["frame_id"] for row in record["selected_frames"]}
+    assert all(set(row["source_frame_ids"]) <= shown for row in record["required_motions"])
+    assert context["description"] in calls[0]["prompt"]
+    assert coverage.coverage_matches(record, target=target, source_geometry=geometry, task_context=context)
+    changed = {**context, "description": "Only open the door."}
+    changed["context_digest"] = canonical_digest(changed, digest_field="context_digest")
+    assert not coverage.coverage_matches(record, target=target, source_geometry=geometry, task_context=changed)
+
+
+def test_a_later_batch_need_not_repeat_a_task_motion_already_identified(tmp_path, model):
+    calls, state = model
+    named = []
+
+    def answer(binding):
+        value = _answer(binding)
+        # The prompt lists earlier motions as already identified; a later batch
+        # that shows the door may answer with only what is new.
+        if named and value["task_part_components"]:
+            value["required_motions"] = []
+        named.extend(row["motion_id"] for row in value["required_motions"])
+        return value
+    state["answer"] = answer
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track, frames=600), geometry, registry=_registry(600))
+    door_batches = [binding for binding in calls if set(MOVING) & {part for row in _answer(binding)["frames"]
+                                                                   for part in row["visible_parts"]}]
+    assert len(door_batches) > 1 and named == ["primary_motion"]
+    assert record["status"] == "complete", record["blockers"]
+    assert [row["motion_id"] for row in record["required_motions"]] == ["primary_motion"]
+
+
+def test_a_clip_that_never_names_a_motion_for_the_task_part_is_refused(tmp_path, model):
+    _, state = model
+    state["answer"] = lambda binding: {**_answer(binding), "required_motions": []}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track, frames=600), geometry, registry=_registry(600))
+    assert record["status"] == "incomplete"
+    assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
 
 
 def test_each_articulated_target_gets_its_own_record_and_uncaptured_ones_are_not_complete(tmp_path, model):
@@ -553,12 +674,13 @@ def test_each_articulated_target_gets_its_own_record_and_uncaptured_ones_are_not
 
 
 def test_uncaptured_target_is_held_by_the_preparation_gate(tmp_path):
-    from tests.test_website_task_preparation import _assembly_inputs, _compile
+    from tests.test_website_task_preparation import _assembly_inputs, _compile, _task_context
     inputs = _assembly_inputs(tmp_path, covered=False)
     masks = inputs["task_masks"]
     target = masks["targets"][0]
     record = coverage.empty_record(target_id=target["target_id"],
-        binding=coverage.coverage_binding(target=target, source_geometry=inputs["source_geometry"]),
+        binding=coverage.coverage_binding(target=target, source_geometry=inputs["source_geometry"],
+                                          task_context=_task_context()),
         articulation_kind="prismatic", status="not_captured", blocker="website_assembly_not_captured")
     masks["targets"][0] = {**target, "authoring_coverage": record}
     masks["digest"] = canonical_digest(masks, digest_field="digest")
@@ -639,7 +761,9 @@ def _fake_genai(monkeypatch, answer):
         def generate_content(self, *, model, contents, config):
             calls.append({"model": model, "contents": contents, "config": config})
             text, reason = answer(contents)
-            return NS(candidates=[NS(finish_reason=reason)], text=text)
+            return NS(candidates=[NS(finish_reason=reason)], text=text,
+                      usage_metadata=NS(prompt_token_count=1234, candidates_token_count=1000,
+                                        thoughts_token_count=7192, total_token_count=9426))
 
     class Client:
         def __init__(self, **_):
@@ -653,6 +777,7 @@ def _fake_genai(monkeypatch, answer):
 
     genai, types_module = module_types.ModuleType("google.genai"), module_types.ModuleType("google.genai.types")
     types_module.HttpOptions = types_module.HttpRetryOptions = types_module.GenerateContentConfig = lambda **k: k
+    types_module.ThinkingConfig = lambda **k: k
     types_module.Part = NS(from_bytes=lambda data, mime_type: ("image", len(data)))
     genai.Client, genai.types = Client, types_module
     google = sys.modules.get("google") or module_types.ModuleType("google")
@@ -700,6 +825,11 @@ def test_the_real_classifier_call_repairs_malformed_json_in_the_same_receipt(tmp
     assert record["status"] == "complete", record.get("blockers")
     repairs = [call for call in calls if "is not valid JSON" in call["contents"][0]]
     assert repairs and all(len(call["contents"]) == 1 for call in repairs)  # text only, no images
+    classifications = [call for call in calls if '{"assembly"' in call["contents"][0]]
+    assert classifications
+    for call in classifications + repairs:
+        assert call["config"]["thinking_config"] == {"thinking_level": "LOW"}
+        assert call["config"]["max_output_tokens"] == 16384
     receipts_dir = next((tmp_path / "coverage").rglob("receipts"))
     stored = [json.loads(path.read_text()) for path in receipts_dir.glob("*.json")]
     assert stored and all(row["status"] == "completed" for row in stored)
@@ -711,4 +841,9 @@ def test_a_cut_off_classification_is_retained_invalid_not_left_uncertain(tmp_pat
     assert record["status"] == "incomplete"
     assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
     receipts_dir = next((tmp_path / "coverage").rglob("receipts"))
-    assert all(json.loads(path.read_text())["status"] == "completed" for path in receipts_dir.glob("*.json"))
+    stored = [json.loads(path.read_text()) for path in receipts_dir.glob("*.json")]
+    assert stored and all(row["status"] == "completed" for row in stored)
+    assert all(row["result"]["finish_reason"] == "MAX_TOKENS" for row in stored)
+    assert all(len(row["result"]["partial_output"]) == 500 for row in stored)
+    assert all(row["request"]["binding"]["thinking_level"] == "LOW" for row in stored)
+    assert all(row["result"]["token_usage"]["thoughts_token_count"] == 7192 for row in stored)

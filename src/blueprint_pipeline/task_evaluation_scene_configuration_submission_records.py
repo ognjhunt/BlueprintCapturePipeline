@@ -12,6 +12,7 @@ from __future__ import annotations
 from .task_object_authoring_backend import AUTHORING_BACKENDS, backend_configuration, default_backend
 
 import math
+from decimal import Decimal
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -190,7 +191,8 @@ def stage_sequence() -> list[dict[str, Any]]:
 
 
 def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost_usd: float | None = None,
-                requires_artifixer: bool = True, authoring_provider: str = "openai") -> dict[str, Any]:
+                requires_artifixer: bool = True, authoring_provider: str = "openai",
+                maximum_total_spend_usd: float | None = None) -> dict[str, Any]:
     if authoring_provider not in {"openai", "anthropic"} or (authoring_provider == "anthropic"
             and (authoring_backend != "astra_cad_blender_v1" or requires_artifixer)):
         raise ValueError("scene_configuration_authoring_provider_invalid")
@@ -207,12 +209,32 @@ def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost
         caps["content_agents"] = 0.0
     openai_cap = round(sum(caps.values()), 6)
     external_cap = round(openai_cap + anthropic_cap, 6)
+    compute_cap = MAX_PROVIDER_COMPUTE_SPEND_USD
+    hourly_cap = MAX_HOURLY_RATE_USD
+    total_cap = (MAX_ATTEMPT_SPEND_USD if authoring_backend == "content_agents"
+                 else round(compute_cap + external_cap, 6))
+    if maximum_total_spend_usd is not None:
+        if (isinstance(maximum_total_spend_usd, bool)
+                or not isinstance(maximum_total_spend_usd, (int, float))
+                or not math.isfinite(maximum_total_spend_usd)
+                or maximum_total_spend_usd <= 0):
+            raise ValueError("scene_configuration_total_spend_invalid")
+        # Keep the issued authoring pool intact. Only prospective compute and
+        # the offer-price ceiling shrink; the complete parent TTL still fits.
+        ceiling_micros = int(Decimal(str(maximum_total_spend_usd)) * 1_000_000)
+        external_micros = int(Decimal(str(external_cap)) * 1_000_000)
+        compute_micros = min(int(compute_cap * 1_000_000), ceiling_micros - external_micros)
+        compute_cap = compute_micros / 1_000_000
+        hourly_cap = min(hourly_cap,
+            (compute_micros * 3600 // REQUIRED_PARENT_TTL_SECONDS) / 1_000_000)
+        if compute_cap <= 0 or hourly_cap <= 0:
+            raise ValueError("scene_configuration_compute_budget_missing")
+        total_cap = min(total_cap, round(compute_cap + external_cap, 6))
     return {
-        "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
-        "hard_cap_usd": (MAX_ATTEMPT_SPEND_USD if authoring_backend == "content_agents"
-                         else round(MAX_PROVIDER_COMPUTE_SPEND_USD + external_cap, 6)),
+        "maximum_hourly_rate_usd": hourly_cap,
+        "hard_cap_usd": total_cap,
         "hard_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
-        "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
+        "provider_compute_spend_cap_usd": compute_cap,
         "external_service_caps": {
             "openai": {
                 "maximum_cost_usd": openai_cap,

@@ -37,6 +37,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_franka_action_math.py",
     "native_pose_transforms.py",
     "rigid_frame_transforms.py",
+    "native_articulation_root_frame.py",
     "native_task_arena_readback.py",
     "native_task_arena_device_readback.py",
     "native_task_arena_dependency_contract.py",
@@ -47,6 +48,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "gear_sonic_joint_order_contract.py",
     "native_task_arena_preconstruction.py",
     "native_task_arena_runtime.py",
+    "task_object_required_motions.py",
     "native_rigid_friction_scenario.py",
     "native_task_direct_camera_aim.py",
     "native_task_isaaclab_launch.py",
@@ -61,6 +63,9 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_nurec_render_setup.py",
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
+    "native_task_runtime_dependency_download.py",
+    "provider_output_range_transport.py",
+    "safe_outbound_http.py",
     "native_task_torch_runtime_lock.py",
     "native_task_g1_runtime_lock.py",
     # The warm construction-repair loop invokes cuRobo as a separate process
@@ -138,6 +143,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_franka_grasp_geometry.py",
     "native_pose_transforms.py",
     "rigid_frame_transforms.py",
+    "native_articulation_root_frame.py",
     "native_task_arena_actuator_sweep.py",
     "native_task_arena_bounded_orientation.py",
     "native_task_arena_branch_continuity.py",
@@ -157,6 +163,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_arena_device_readback.py",
     "native_task_arena_readback.py",
     "native_task_arena_runtime.py",
+    "task_object_required_motions.py",
     "native_rigid_friction_scenario.py",
     "native_task_direct_camera_aim.py",
     "native_task_isaaclab_launch.py",
@@ -177,6 +184,9 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_episode_environment.py",
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
+    "native_task_runtime_dependency_download.py",
+    "provider_output_range_transport.py",
+    "safe_outbound_http.py",
     "native_task_torch_runtime_lock.py",
     "native_task_g1_runtime_lock.py",
     "native_task_servo_command_limits.py",
@@ -346,6 +356,13 @@ def native_task_arena_execution_transport_completed(
     a policy or ordinary controls result cannot borrow this transport status.
     """
 
+    if result.get("schema_version") == "adp009d_articulated_native_diagnostic.v1":
+        # Older workers emitted NaN after unstable resets while saying completed.
+        # Those retained bytes are not a valid JSON completion receipt either.
+        try:
+            json.dumps(dict(result), allow_nan=False)
+        except (TypeError, ValueError):
+            return False
     if expected_output_filename == "native_g1_team_provider_result.v1.json":
         # This proves transport only. The paid controller must reopen the real
         # selected worker's score/frame/video bytes and settle resource costs.

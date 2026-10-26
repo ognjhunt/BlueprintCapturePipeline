@@ -12,6 +12,9 @@ import pytest
 
 @pytest.mark.slow
 def test_joined_runner_keeps_both_activation_bindings_and_retires_real_cache(tmp_path, monkeypatch):
+    # The fixture launches a standalone operator; CI's parent service is not
+    # that operator's declared watchdog-survival contract.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
     from blueprint_pipeline import control_plane_disk_budget as budget
     from blueprint_pipeline import task_evaluation_launch_preparation_worker as preparation
     from blueprint_pipeline import task_evaluation_episode_compilation_worker as compilation

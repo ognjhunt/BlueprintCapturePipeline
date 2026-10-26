@@ -70,6 +70,26 @@ def test_website_compiler_derives_legacy_prismatic_resistance_without_changing_s
     verify_passive_joint_friction_overlay(derived, adaptation["passive_joint_friction"])
 
 
+def test_compiler_replays_mounting_without_changing_sealed_source(tmp_path: Path) -> None:
+    from pxr import Usd, UsdPhysics
+    from tests.test_adp_task_scoring import _graph_spec
+    from tests.test_task_object_artisan_exports import mounted_fixture
+    from blueprint_pipeline.native_task_arena_runtime import (
+        verify_grounded_articulation, verify_grounded_articulation_overlay,
+    )
+    source, _, _ = mounted_fixture(tmp_path)
+    digest = _sha(source)
+    retained = Usd.Stage.Open(str(source))
+    derived, adaptation = compiler._derive_runtime_prismatic_friction_overlay(
+        task_spec=_graph_spec(), task_definition={}, replacement_path=source,
+        output_root=tmp_path / "episode")
+    assert derived != source and _sha(source) == digest
+    assert adaptation["adaptation"] == "usd_authored_world_fixed_base"
+    assert verify_grounded_articulation(derived)["grounded"] is True
+    assert UsdPhysics.RigidBodyAPI(retained.GetPrimAtPath("/Asset/body")).GetKinematicEnabledAttr().Get() is True
+    verify_grounded_articulation_overlay(source, derived, adaptation)
+
+
 def _record(path: Path, contract_path: str) -> dict[str, object]:
     payload = path.read_bytes()
     return {

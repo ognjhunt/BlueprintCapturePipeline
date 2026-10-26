@@ -5,13 +5,15 @@ from __future__ import annotations
 import hashlib
 import math
 import multiprocessing
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-from pxr import Usd, UsdGeom
+from pxr import Gf, Usd, UsdGeom
+from scipy.spatial import cKDTree
 
 from .decision_evidence_contracts import canonical_digest
 from .franka_kinematics import solve_world_position_ik
@@ -69,6 +71,8 @@ class RobotPlacementGeometryIndex:
     support_surfaces: tuple[SupportSurface, ...]
     robot_local_bounds_minimum_m: tuple[float, float, float]
     robot_local_bounds_maximum_m: tuple[float, float, float]
+    background_collision_digest: str
+    task_asset_bindings: tuple[Mapping[str, Any], ...]
 
 
 def _sha256(path: Path) -> str:
@@ -93,18 +97,47 @@ def _triangulate(counts: Sequence[int], indices: Sequence[int]) -> np.ndarray:
 def _stage_triangles(stage: Usd.Stage, *, root_prim: Usd.Prim | None = None) -> tuple[np.ndarray, tuple[str, ...]]:
     triangles: list[np.ndarray] = []
     prim_paths: list[str] = []
-    prims = (Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies())
-             if root_prim is not None else stage.Traverse())
+    prims = Usd.PrimRange(
+        root_prim if root_prim is not None else stage.GetPseudoRoot(),
+        Usd.TraverseInstanceProxies(),
+    )
     for prim in prims:
-        if not prim.IsA(UsdGeom.Mesh):
+        if prim.IsA(UsdGeom.Mesh):
+            mesh = UsdGeom.Mesh(prim)
+            points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=np.float64)
+            counts = list(mesh.GetFaceVertexCountsAttr().Get() or [])
+            indices = list(mesh.GetFaceVertexIndicesAttr().Get() or [])
+            if len(points) < 3 or not counts or not indices:
+                continue
+            faces = _triangulate(counts, indices)
+        elif any(prim.IsA(schema) for schema in (
+            UsdGeom.Cube, UsdGeom.Cylinder, UsdGeom.Capsule,
+            UsdGeom.Cone, UsdGeom.Sphere,
+        )):
+            # USD/PhysX analytic shapes are geometry too. Use their computed
+            # local envelope, then the exact USD transform. This is exact for
+            # cubes and conservative for curved shapes; native contact remains
+            # required. Never silently omit an authored rack, panel or mount.
+            extent = UsdGeom.Boundable.ComputeExtentFromPlugins(
+                UsdGeom.Boundable(prim), Usd.TimeCode.Default()
+            )
+            if extent is None or len(extent) != 2:
+                raise RobotPlacementGeometryError("robot_placement_primitive_extent_missing")
+            low, high = np.asarray(extent, dtype=np.float64)
+            if not np.all(np.isfinite([low, high])) or np.any(high <= low):
+                raise RobotPlacementGeometryError("robot_placement_primitive_extent_invalid")
+            points = np.asarray([
+                [low[0], low[1], low[2]], [high[0], low[1], low[2]],
+                [high[0], high[1], low[2]], [low[0], high[1], low[2]],
+                [low[0], low[1], high[2]], [high[0], low[1], high[2]],
+                [high[0], high[1], high[2]], [low[0], high[1], high[2]],
+            ])
+            faces = _triangulate(
+                [4] * 6, [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4,
+                          1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7],
+            )
+        else:
             continue
-        mesh = UsdGeom.Mesh(prim)
-        points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=np.float64)
-        counts = list(mesh.GetFaceVertexCountsAttr().Get() or [])
-        indices = list(mesh.GetFaceVertexIndicesAttr().Get() or [])
-        if len(points) < 3 or not counts or not indices:
-            continue
-        faces = _triangulate(counts, indices)
         if not len(faces):
             continue
         matrix = np.asarray(
@@ -198,11 +231,11 @@ def _watertight_prim_bounds(
     """Identify closed triangle shells for conservative inside-volume checks."""
 
     result = []
-    for prim_path in sorted(set(prim_paths)):
-        indices = np.asarray(
-            [index for index, value in enumerate(prim_paths) if value == prim_path],
-            dtype=np.int64,
-        )
+    grouped_indices: dict[str, list[int]] = {}
+    for index, prim_path in enumerate(prim_paths):
+        grouped_indices.setdefault(prim_path, []).append(index)
+    for prim_path, group in sorted(grouped_indices.items()):
+        indices = np.asarray(group, dtype=np.int64)
         selected = triangles[indices]
         if len(selected) < 4:
             continue
@@ -223,8 +256,64 @@ def _watertight_prim_bounds(
     return tuple(result)
 
 
+def _placed_task_asset_triangles(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[np.ndarray], list[str], tuple[Mapping[str, Any], ...]]:
+    triangles: list[np.ndarray] = []
+    paths: list[str] = []
+    bindings: list[Mapping[str, Any]] = []
+    asset_ids: set[str] = set()
+    for ordinal, row in enumerate(rows):
+        asset_id = str(row.get("asset_id") or "")
+        if not asset_id or asset_id in asset_ids:
+            raise RobotPlacementGeometryError("robot_placement_task_asset_id_invalid")
+        asset_ids.add(asset_id)
+        asset_path = Path(str(row.get("asset_usd_path") or "")).expanduser().resolve(strict=True)
+        asset_digest = _sha256(asset_path)
+        if row.get("asset_digest") != asset_digest:
+            raise RobotPlacementGeometryError("robot_placement_task_asset_digest_mismatch")
+        pose = row.get("pose")
+        if not isinstance(pose, Mapping):
+            raise RobotPlacementGeometryError("robot_placement_task_asset_pose_invalid")
+        position = np.asarray(pose.get("position_world_m"), dtype=np.float64)
+        quaternion = np.asarray(pose.get("orientation_xyzw"), dtype=np.float64)
+        if (position.shape != (3,) or quaternion.shape != (4,)
+            or not np.all(np.isfinite(position)) or not np.all(np.isfinite(quaternion))
+            or abs(float(np.linalg.norm(quaternion)) - 1.0) > 1.0e-5):
+            raise RobotPlacementGeometryError("robot_placement_task_asset_pose_invalid")
+        stage = Usd.Stage.CreateInMemory()
+        actor = UsdGeom.Xform.Define(stage, f"/TaskActors/Actor_{ordinal:04d}")
+        source = UsdGeom.Xform.Define(stage, f"{actor.GetPath()}/Asset")
+        if not source.GetPrim().GetReferences().AddReference(str(asset_path)):
+            raise RobotPlacementGeometryError("robot_placement_task_asset_reference_invalid")
+        actor.AddTranslateOp().Set(Gf.Vec3d(*position))
+        actor.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(
+            Gf.Quatd(float(quaternion[3]), Gf.Vec3d(*quaternion[:3]))
+        )
+        actor_triangles, actor_paths = _stage_triangles(stage)
+        triangles.append(actor_triangles)
+        paths.extend(actor_paths)
+        # Hash each loaded external USD layer as well as package containers.
+        # A root layer digest alone does not bind referenced collision meshes.
+        layer_paths = {asset_path}
+        for layer in stage.GetUsedLayers():
+            if not layer.anonymous:
+                layer_paths.add(Path(layer.realPath.split("[", 1)[0]).resolve(strict=True))
+        bindings.append({
+            "asset_id": asset_id, "asset_usd_path": str(asset_path),
+            "asset_digest": asset_digest,
+            "pose": {"position_world_m": position.tolist(), "orientation_xyzw": quaternion.tolist()},
+            "collision_layers": [
+                {"path": str(path), "digest": _sha256(path)} for path in sorted(layer_paths)
+            ],
+            "triangle_count": len(actor_triangles),
+        })
+    return triangles, paths, tuple(bindings)
+
+
 def build_robot_placement_geometry_index(
-    *, scene_collision_usd_path: str | Path, robot_asset_usd_path: str | Path
+    *, scene_collision_usd_path: str | Path, robot_asset_usd_path: str | Path,
+    task_assets: Sequence[Mapping[str, Any]] = (),
 ) -> RobotPlacementGeometryIndex:
     scene_path = Path(scene_collision_usd_path).expanduser().resolve(strict=True)
     robot_path = Path(robot_asset_usd_path).expanduser().resolve(strict=True)
@@ -235,6 +324,20 @@ def build_robot_placement_geometry_index(
     if robot_stage is None:
         raise RobotPlacementGeometryError("robot_placement_robot_usd_invalid")
     triangles, prim_paths = _stage_triangles(scene_stage)
+    # Task actors are obstacles at their actual scene poses. They do not become
+    # mounting/support surfaces merely by having a horizontal panel or rack.
+    support_surfaces = _support_surfaces(triangles, prim_paths)
+    actor_triangles, actor_paths, actor_bindings = _placed_task_asset_triangles(task_assets)
+    background_digest = _sha256(scene_path)
+    scene_digest = background_digest
+    if actor_bindings:
+        triangles = np.concatenate([triangles, *actor_triangles], axis=0)
+        prim_paths = (*prim_paths, *actor_paths)
+        scene_digest = canonical_digest({
+            "schema_version": "robot_placement_collision_context.v1",
+            "background_collision_digest": background_digest,
+            "task_assets": actor_bindings,
+        })
     minimum = triangles.min(axis=1)
     maximum = triangles.max(axis=1)
     edges_a = triangles[:, 1] - triangles[:, 0]
@@ -260,7 +363,7 @@ def build_robot_placement_geometry_index(
         raise RobotPlacementGeometryError("robot_placement_robot_preview_triangles_missing")
     return RobotPlacementGeometryIndex(
         scene_path=str(scene_path),
-        scene_digest=_sha256(scene_path),
+        scene_digest=scene_digest,
         robot_asset_path=str(robot_path),
         robot_asset_digest=_sha256(robot_path),
         robot_triangles=robot_triangles,
@@ -270,9 +373,11 @@ def build_robot_placement_geometry_index(
         triangle_maximum=maximum,
         triangle_normal_abs_z=normal_abs_z,
         watertight_prim_bounds=_watertight_prim_bounds(triangles, prim_paths),
-        support_surfaces=_support_surfaces(triangles, prim_paths),
+        support_surfaces=support_surfaces,
         robot_local_bounds_minimum_m=robot_minimum,
         robot_local_bounds_maximum_m=robot_maximum,
+        background_collision_digest=background_digest,
+        task_asset_bindings=actor_bindings,
     )
 
 
@@ -290,6 +395,9 @@ def summarize_robot_placement_geometry(
     result: dict[str, Any] = {
         "schema_version": GEOMETRY_SUMMARY_SCHEMA_VERSION,
         "scene_collision_digest": index.scene_digest,
+        "background_collision_digest": index.background_collision_digest,
+        "task_assets": list(index.task_asset_bindings),
+        "analytic_primitive_collision_method": "transformed_conservative_local_envelope",
         "robot_asset_digest": index.robot_asset_digest,
         "robot_id": robot_id,
         "target_position_world_m": target,
@@ -375,6 +483,130 @@ def _rotated_bounds(
     return world.min(axis=0), world.max(axis=0)
 
 
+def _support_triangles_within_height_tolerance(
+    *, index: RobotPlacementGeometryIndex, surface: SupportSurface,
+    root_height_m: float, tolerance_m: float,
+) -> np.ndarray:
+    """Include neighboring height bins within the declared support tolerance.
+
+    Height bins discover candidate planes; they are not separate physical
+    surfaces. Every included vertex must still lie inside the allowed height
+    band, and support stays on the declared source mesh.
+    """
+
+    eligible = np.flatnonzero(
+        (index.triangle_normal_abs_z >= 0.95)
+        & (index.triangle_minimum[:, 2] >= root_height_m - tolerance_m)
+        & (index.triangle_maximum[:, 2] <= root_height_m + tolerance_m)
+    )
+    same_mesh = np.fromiter(
+        (index.triangle_prim_paths[int(i)] == surface.prim_path for i in eligible),
+        dtype=bool, count=len(eligible),
+    )
+    return index.triangles[eligible[same_mesh]]
+
+
+def _overlapping_scene_triangle_indices(
+    *,
+    scene_minimum: np.ndarray,
+    scene_maximum: np.ndarray,
+    scene_indices: np.ndarray,
+    robot_minimum: np.ndarray,
+    robot_maximum: np.ndarray,
+) -> list[int]:
+    """Apply the exact AABB predicate after a conservative spatial lookup.
+
+    Overlapping boxes have center distance in each axis at most the sum of
+    their half extents. The infinity-norm search therefore cannot discard an
+    overlapping pair; the original inclusive comparisons decide every match.
+    Querying one scene triangle at a time also bounds temporary storage.
+    """
+
+    if not len(scene_indices) or not len(robot_minimum):
+        return []
+    robot_centers = (robot_minimum + robot_maximum) * 0.5
+    robot_radii = np.max((robot_maximum - robot_minimum) * 0.5, axis=1)
+    # Separate triangle size scales so a few large faces cannot inflate every
+    # lookup for the much more numerous small faces in a detailed robot asset.
+    exponents = np.frexp(robot_radii)[1]
+    groups = []
+    for exponent in np.unique(exponents):
+        indices = np.flatnonzero(exponents == exponent)
+        groups.append(
+            (indices, cKDTree(robot_centers[indices]), float(np.max(robot_radii[indices])))
+        )
+    coordinate_scale = max(
+        1.0,
+        float(np.max(np.abs(robot_minimum))),
+        float(np.max(np.abs(robot_maximum))),
+        float(np.max(np.abs(scene_minimum[scene_indices]))),
+        float(np.max(np.abs(scene_maximum[scene_indices]))),
+    )
+    padding = 16.0 * np.finfo(np.float64).eps * coordinate_scale
+    result: list[int] = []
+    for scene_index in scene_indices:
+        minimum = scene_minimum[int(scene_index)]
+        maximum = scene_maximum[int(scene_index)]
+        center = (minimum + maximum) * 0.5
+        radius = float(np.max((maximum - minimum) * 0.5))
+        for indices, tree, robot_radius in groups:
+            nearby = tree.query_ball_point(center, radius + robot_radius + padding, p=np.inf)
+            if nearby:
+                selected = indices[nearby]
+                if np.any(
+                    np.all(
+                        (robot_maximum[selected] >= minimum)
+                        & (robot_minimum[selected] <= maximum),
+                        axis=1,
+                    )
+                ):
+                    result.append(int(scene_index))
+                    break
+    return result
+
+
+def _candidate_support_and_reach_can_pass(
+    *,
+    index: RobotPlacementGeometryIndex,
+    proposal: Mapping[str, Any],
+    target: np.ndarray,
+    robot_id: str,
+    support_triangles: dict[tuple[str, float], np.ndarray],
+) -> bool:
+    """Reject necessary support/reach failures before detailed collision work."""
+
+    pose = proposal["pose"]
+    position = np.asarray(pose["position_world_m"], dtype=np.float64)
+    yaw, upright = _yaw_from_quaternion(pose["orientation_xyzw"])
+    profile = get_robot_profile(robot_id)
+    shoulder = position + np.asarray([0.0, 0.0, profile.shoulder_above_root_m])
+    half_x, half_y = profile.footprint_half_extent_xyz[:2]
+    delta = target[:2] - position[:2]
+    target_yaw = math.atan2(float(delta[1]), float(delta[0]))
+    facing_error = abs(math.atan2(math.sin(target_yaw - yaw), math.cos(target_yaw - yaw)))
+    if (
+        not upright
+        or float(np.linalg.norm(target - shoulder)) > profile.max_shoulder_to_affordance_m()
+        or float(np.linalg.norm(delta)) <= max(half_x, half_y) + profile.probe_clearance_m
+        or math.degrees(facing_error) > profile.max_facing_error_deg
+    ):
+        return False
+    surface_id = str(proposal.get("support_surface_id") or "")
+    surface = next((s for s in index.support_surfaces if s.surface_id == surface_id), None)
+    if surface is None or abs(float(position[2]) - surface.height_m) > 0.02:
+        return False
+    rotation = np.asarray([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
+    samples = np.asarray(
+        [[0.0, 0.0], [-half_x, -half_y], [-half_x, half_y], [half_x, -half_y], [half_x, half_y]]
+    ) @ rotation.T + position[:2]
+    key = (surface_id, float(position[2]))
+    if key not in support_triangles:
+        support_triangles[key] = _support_triangles_within_height_tolerance(
+            index=index, surface=surface, root_height_m=float(position[2]), tolerance_m=0.02,
+        )
+    return _supported_sample_count(samples, support_triangles[key]) == len(samples)
+
+
 def validate_robot_placement_geometry_candidate(
     *,
     index: RobotPlacementGeometryIndex,
@@ -422,7 +654,10 @@ def validate_robot_placement_geometry_candidate(
     if surface is None:
         blockers.append("declared_support_surface_missing")
     else:
-        selected = index.triangles[np.asarray(surface.triangle_indices, dtype=np.int64)]
+        selected = _support_triangles_within_height_tolerance(
+            index=index, surface=surface, root_height_m=float(position[2]),
+            tolerance_m=support_height_tolerance_m,
+        )
         support_height_error_m = abs(float(position[2]) - surface.height_m)
         supported_count = _supported_sample_count(samples, selected)
         if support_height_error_m > support_height_tolerance_m:
@@ -463,14 +698,13 @@ def validate_robot_placement_geometry_candidate(
         robot_triangles_world = index.robot_triangles @ rotation_3d.T + position
         robot_triangle_minimum = robot_triangles_world.min(axis=1)
         robot_triangle_maximum = robot_triangles_world.max(axis=1)
-        for scene_index in broad_collision_indices:
-            scene_minimum = index.triangle_minimum[int(scene_index)]
-            scene_maximum = index.triangle_maximum[int(scene_index)]
-            if np.any(np.all(
-                (robot_triangle_maximum >= scene_minimum)
-                & (robot_triangle_minimum <= scene_maximum), axis=1,
-            )):
-                collision_indices.append(int(scene_index))
+        collision_indices = _overlapping_scene_triangle_indices(
+            scene_minimum=index.triangle_minimum,
+            scene_maximum=index.triangle_maximum,
+            scene_indices=broad_collision_indices,
+            robot_minimum=robot_triangle_minimum,
+            robot_maximum=robot_triangle_maximum,
+        )
     robot_center = 0.5 * (robot_minimum + robot_maximum)
     containing_prim_paths = []
     containment_tolerance_m = 1.0e-4
@@ -593,18 +827,29 @@ def _geometry_gate_chunk_worker(
         Sequence[Mapping[str, Any]],
         Sequence[float],
         str,
+        bool,
     ],
 ) -> list[dict[str, Any]]:
-    index, proposals, target, robot_id = work
-    return [
-        validate_robot_placement_geometry_candidate(
+    index, proposals, target, robot_id, prefilter = work
+    support_triangles: dict[tuple[str, float], np.ndarray] = {}
+    target_array = np.asarray(target, dtype=np.float64)
+    result = []
+    for proposal in proposals:
+        if prefilter and not _candidate_support_and_reach_can_pass(
+            index=index, proposal=proposal, target=target_array, robot_id=robot_id,
+            support_triangles=support_triangles,
+        ):
+            # Internal enumeration sentinel only. Every retained candidate gets
+            # the complete gate below, including the unchanged collision rule.
+            result.append({"status": "rejected"})
+            continue
+        result.append(validate_robot_placement_geometry_candidate(
             index=index,
             proposal=proposal,
             target_position_world_m=target,
             robot_id=robot_id,
-        )
-        for proposal in proposals
-    ]
+        ))
+    return result
 
 
 def _validated_worker_count(worker_count: int, *, blocker: str) -> int:
@@ -624,6 +869,7 @@ def _parallel_geometry_gates(
     target_position_world_m: Sequence[float],
     robot_id: str,
     worker_count: int,
+    prefilter_nonpassing: bool = False,
 ) -> list[dict[str, Any]]:
     """Evaluate complete geometry gates concurrently, retaining proposal order."""
 
@@ -632,25 +878,25 @@ def _parallel_geometry_gates(
     )
     if workers == 1 or len(proposals) <= 1:
         return _geometry_gate_chunk_worker(
-            (index, proposals, target_position_world_m, robot_id)
+            (index, proposals, target_position_world_m, robot_id, prefilter_nonpassing)
         )
     active_workers = min(workers, len(proposals))
-    chunk_size = math.ceil(len(proposals) / active_workers)
     work = [
         (
             index,
-            [dict(proposal) for proposal in proposals[offset : offset + chunk_size]],
+            [dict(proposal) for proposal in proposals[offset::active_workers]],
             list(target_position_world_m),
             robot_id,
+            prefilter_nonpassing,
         )
-        for offset in range(0, len(proposals), chunk_size)
+        for offset in range(active_workers)
     ]
     context = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(
         max_workers=active_workers, mp_context=context
     ) as executor:
-        chunks = executor.map(_geometry_gate_chunk_worker, work)
-        return [gate for chunk in chunks for gate in chunk]
+        chunks = list(executor.map(_geometry_gate_chunk_worker, work))
+        return [chunks[i % active_workers][i // active_workers] for i in range(len(proposals))]
 
 
 def _parallel_trajectory_gates(
@@ -815,6 +1061,7 @@ def enumerate_robot_placement_geometry_candidates(
     trajectory_orientations_world_xyzw: Sequence[Sequence[float]] = (),
     geometry_worker_count: int = 1,
     trajectory_worker_count: int = 1,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Return ranked, deterministic, geometry-passing candidates for agent context."""
 
@@ -865,87 +1112,124 @@ def enumerate_robot_placement_geometry_candidates(
             considered.append(surface)
             considered_ids.add(surface.surface_id)
 
-    for surface_index, surface in enumerate(considered):
-        for radius_index, radius in enumerate(radii):
-            for angle_index in range(72):
-                angle = 2.0 * math.pi * angle_index / 72.0
-                position = [
-                    float(target[0] - radius * math.cos(angle)),
-                    float(target[1] - radius * math.sin(angle)),
-                    float(surface.height_m),
-                ]
-                proposal = {
-                    "candidate_id": (
-                        f"geometry_{surface_index:02d}_{radius_index:02d}_"
-                        f"{surface.height_m:.3f}_"
-                        f"{float(radius):.3f}_{angle_index:02d}"
-                    ),
-                    "support_surface_id": surface.surface_id,
-                    "pose": {
-                        "position_world_m": position,
-                        "orientation_xyzw": [
-                            0.0,
-                            0.0,
-                            math.sin(angle / 2.0),
-                            math.cos(angle / 2.0),
-                        ],
-                    },
-                }
-                geometry_work.append(
-                    (proposal, surface, float(radius), angle_index)
-                )
-
-    geometry_gates = _parallel_geometry_gates(
-        index=index,
-        proposals=[row[0] for row in geometry_work],
-        target_position_world_m=target,
-        robot_id=robot_id,
-        worker_count=geometry_worker_count,
-    )
-    prequalified = [
-        (proposal, gate, surface, radius, angle_index)
-        for (proposal, surface, radius, angle_index), gate in zip(
-            geometry_work, geometry_gates, strict=True
-        )
-        if gate["status"] == "passed"
-    ]
-
-    trajectory_gates = _parallel_trajectory_gates(
-        proposals=[row[0] for row in prequalified],
-        trajectory_waypoints_world_m=trajectory_waypoints_world_m,
-        trajectory_phase_ids=trajectory_phase_ids,
-        trajectory_orientations_world_xyzw=trajectory_orientations_world_xyzw,
-        worker_count=trajectory_worker_count,
-    )
+    remaining = [surface for surface in surfaces if surface.surface_id not in considered_ids]
+    all_geometry_gates: list[dict[str, Any]] = []
+    all_trajectory_gates: list[dict[str, Any]] = []
+    geometry_passing_count = 0
+    searched_surface_count = 0
+    search_pass_count = 0
     candidates: list[tuple[tuple[float, ...], dict[str, Any], dict[str, Any]]] = []
-    for (
-        proposal,
-        _cheap_gate,
-        surface,
-        radius,
-        angle_index,
-    ), trajectory_gate in zip(prequalified, trajectory_gates, strict=True):
-        gate = validate_robot_placement_geometry_candidate(
+    for support_batch in (considered, remaining):
+        if not support_batch:
+            continue
+        considered = support_batch
+        geometry_work = []
+        for surface_index, surface in enumerate(considered, start=searched_surface_count):
+            for radius_index, radius in enumerate(radii):
+                for angle_index in range(72):
+                    angle = 2.0 * math.pi * angle_index / 72.0
+                    position = [
+                        float(target[0] - radius * math.cos(angle)),
+                        float(target[1] - radius * math.sin(angle)),
+                        float(surface.height_m),
+                    ]
+                    proposal = {
+                        "candidate_id": (
+                            f"geometry_{surface_index:02d}_{radius_index:02d}_"
+                            f"{surface.height_m:.3f}_"
+                            f"{float(radius):.3f}_{angle_index:02d}"
+                        ),
+                        "support_surface_id": surface.surface_id,
+                        "pose": {
+                            "position_world_m": position,
+                            "orientation_xyzw": [
+                                0.0,
+                                0.0,
+                                math.sin(angle / 2.0),
+                                math.cos(angle / 2.0),
+                            ],
+                        },
+                    }
+                    geometry_work.append(
+                        (proposal, surface, float(radius), angle_index)
+                    )
+
+        geometry_gates = _parallel_geometry_gates(
             index=index,
-            proposal=proposal,
+            proposals=[row[0] for row in geometry_work],
             target_position_world_m=target,
             robot_id=robot_id,
-            trajectory_gate_override=trajectory_gate,
+            worker_count=geometry_worker_count,
+            prefilter_nonpassing=True,
         )
-        if gate["status"] != "passed":
-            continue
-        score = (
-            -float(
-                gate["trajectory_position_ik_gate"]["minimum_manipulability"]
-                or 0.0
-            ),
-            abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
-            abs(radius - 0.45),
-            gate["shoulder_to_target_distance_m"],
-            float(angle_index),
+        prequalified = [
+            (proposal, gate, surface, radius, angle_index)
+            for (proposal, surface, radius, angle_index), gate in zip(
+                geometry_work, geometry_gates, strict=True
+            )
+            if gate["status"] == "passed"
+        ]
+
+        trajectory_gates = _parallel_trajectory_gates(
+            proposals=[row[0] for row in prequalified],
+            trajectory_waypoints_world_m=trajectory_waypoints_world_m,
+            trajectory_phase_ids=trajectory_phase_ids,
+            trajectory_orientations_world_xyzw=trajectory_orientations_world_xyzw,
+            worker_count=trajectory_worker_count,
         )
-        candidates.append((score, proposal, gate))
+        candidates = []
+        for (
+            proposal,
+            _cheap_gate,
+            surface,
+            radius,
+            angle_index,
+        ), trajectory_gate in zip(prequalified, trajectory_gates, strict=True):
+            gate = validate_robot_placement_geometry_candidate(
+                index=index,
+                proposal=proposal,
+                target_position_world_m=target,
+                robot_id=robot_id,
+                trajectory_gate_override=trajectory_gate,
+            )
+            if gate["status"] != "passed":
+                continue
+            score = (
+                -float(
+                    gate["trajectory_position_ik_gate"]["minimum_manipulability"]
+                    or 0.0
+                ),
+                abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
+                abs(radius - 0.45),
+                gate["shoulder_to_target_distance_m"],
+                float(angle_index),
+            )
+            candidates.append((score, proposal, gate))
+        all_geometry_gates.extend(geometry_gates)
+        all_trajectory_gates.extend(trajectory_gates)
+        geometry_passing_count += len(prequalified)
+        searched_surface_count += len(considered)
+        search_pass_count += 1
+        if candidates:
+            break
     candidates.sort(key=lambda item: item[0])
+    if diagnostics is not None:
+        diagnostics.update({
+            "proposal_count": len(all_geometry_gates),
+            "support_or_reach_prefilter_rejected_count": sum(len(gate) == 1 for gate in all_geometry_gates),
+            "detailed_geometry_tested_count": sum(len(gate) > 1 for gate in all_geometry_gates),
+            "detailed_geometry_blocker_counts": dict(Counter(
+                blocker for gate in all_geometry_gates for blocker in gate.get("blockers", [])
+            )),
+            "geometry_passing_count": geometry_passing_count,
+            "trajectory_waypoint_count": len(trajectory_waypoints_world_m),
+            "trajectory_rejected_count": sum(gate["status"] == "rejected" for gate in all_trajectory_gates),
+            "candidate_count": min(len(candidates), int(maximum_candidates)),
+            "support_search_pass_count": search_pass_count,
+            "searched_support_surface_count": searched_surface_count,
+            "available_support_surface_count": len(surfaces),
+            "support_search_exhausted": searched_surface_count == len(surfaces),
+        })
     return [
         {
             **proposal,

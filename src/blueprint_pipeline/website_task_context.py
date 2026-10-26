@@ -101,7 +101,7 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
 
     from .paid_resource_admission import require_paid_resource_admission, require_paid_resource_budget
     if (resource_class, provider) not in {("evaluator_api", "meta"), ("evaluator_api", "google"), ("openai_api_candidate", "openai"),
-                                         ("provider_reconstruction_api", "world_labs_atlas")}:
+                                         ("provider_reconstruction_api", "world_labs_atlas"), ("gpu_render", "vast")}:
         raise ValueError("website_preparation_provider_resource_mismatch")
     command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": binding_digest,
                "resource_class": resource_class, "provider": provider, "maximum_cost_usd": maximum_cost_usd,
@@ -237,6 +237,27 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
         from .website_preparation_contracts import validate_preparation_authority
         validate_preparation_authority(task_context=task_context, authority=value, now=now)
     return value
+
+
+# The WebApp's typed refusal of a create=False read once the retained grant's
+# window has passed. It is answered only after the WebApp has checked the capture
+# binding, the assessment proposal, the expected context digest and the retained
+# grant's digest, policy, purpose and context.
+_SPONSORSHIP_EXPIRED = "website_control_scene-sponsorship_http_409:consent_expired"
+
+
+def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: float) -> str:
+    """Status evidence only: "current" or "expired"; any other answer raises.
+
+    The read never creates or renews a grant, and its answer authorizes nothing.
+    """
+    try:
+        load_website_scene_sponsorship(task_context=task_context, now=now, create=False)
+    except ValueError as exc:
+        if str(exc) == _SPONSORSHIP_EXPIRED:
+            return "expired"
+        raise
+    return "current"
 
 
 def enqueue_website_prepared_scene(*, task_context: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:

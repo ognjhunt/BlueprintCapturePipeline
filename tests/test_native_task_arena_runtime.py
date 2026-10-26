@@ -955,6 +955,7 @@ def test_the_runtime_admits_every_sensor_the_scene_plan_can_emit() -> None:
 KINEMATIC_ARTICULATION_USDA = """#usda 1.0
 (
     defaultPrim = "Asset"
+    metersPerUnit = 1
 )
 
 def Xform "Asset" (
@@ -982,6 +983,37 @@ def Xform "Asset" (
 """
 
 
+def test_scene_mounting_anchors_an_existing_dynamic_assembly_without_changing_source(tmp_path):
+    from pxr import Usd, UsdPhysics
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_grounded_articulation, verify_grounded_articulation_overlay,
+        verify_grounded_articulation, NativeTaskArenaRuntimeError,
+    )
+    source, derived = tmp_path / "sealed.usda", tmp_path / "mounted.usda"
+    source.write_text(KINEMATIC_ARTICULATION_USDA.replace("kinematicEnabled = 1", "kinematicEnabled = 0"))
+    original = source.read_bytes()
+    retained = Usd.Stage.Open(str(source))
+    mounting = {"mode": "fixed_in_scene", "source_frame_ids": ["observed-view"],
+                "reason": "Capture shows the installed base; hidden mounting is estimated."}
+    adaptation = author_grounded_articulation(source, derived, scene_mounting=mounting)
+    assert adaptation["fixed_base_body_prim_path"] == "/Asset/links/body"
+    assert adaptation["scene_mounting"] == mounting
+    assert adaptation["scene_mounting_physical_measurement_proven"] is False
+    assert verify_grounded_articulation(derived)["grounded"] is True
+    verify_grounded_articulation_overlay(source, derived, adaptation)
+    assert source.read_bytes() == original
+    assert not retained.GetPrimAtPath("/Asset/fixed_base_anchor")
+    mounted = Usd.Stage.Open(str(derived))
+    assert not UsdPhysics.RigidBodyAPI(mounted.GetPrimAtPath("/Asset/links/door")).GetKinematicEnabledAttr().Get()
+    assert str(UsdPhysics.FixedJoint(mounted.GetPrimAtPath("/Asset/fixed_base_anchor")).GetBody1Rel().GetTargets()[0]) == "/Asset/links/body"
+    changed = dict(adaptation)
+    with pytest.raises(NativeTaskArenaRuntimeError, match="grounding_derivative_mismatch|grounding_declaration_mismatch"):
+        # A scene review is bound in the declaration; changing its mode cannot
+        # silently remove the anchor from the canonical replay.
+        changed["scene_mounting"] = {**mounting, "mode": "unknown"}
+        verify_grounded_articulation_overlay(source, derived, changed)
+
+
 def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
     """A sealed plan whose assets really exist, as the packet stages them."""
 
@@ -1001,6 +1033,8 @@ def _staged_packet(tmp_path: Path) -> tuple[Path, dict]:
     # the same released function, never the raw sealed bytes
     adaptation = author_grounded_articulation(sealed, task)
     assert adaptation is not None
+    from blueprint_pipeline.native_articulation_root_frame import derive_root_frame_binding
+    adaptation["native_root_frame_binding"] = derive_root_frame_binding(task)
     plan = _sealed_scene_plan()
     plan["asset_directory"] = "assets"
     for row, path in zip(plan["objects"], (collision, task), strict=True):
@@ -1224,6 +1258,29 @@ def test_the_anchor_survives_reference_composition(tmp_path: Path) -> None:
     assert (
         UsdPhysics.RigidBodyAPI(body).GetKinematicEnabledAttr().Get() is False
     )
+
+
+def test_grounding_and_passive_resistance_replay_together_without_source_mutation(tmp_path):
+    from pxr import Usd, UsdPhysics
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_grounded_articulation, author_passive_joint_friction_overlay,
+        verify_grounded_articulation_overlay,
+    )
+    source = tmp_path / "sealed.usda"
+    source.write_text(KINEMATIC_ARTICULATION_USDA)
+    stage = Usd.Stage.Open(str(source))
+    joint = UsdPhysics.PrismaticJoint.Define(stage, "/Asset/door_hinge")
+    joint_path = str(joint.GetPath())
+    stage.GetRootLayer().Save()
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    grounded, passive = tmp_path / "grounded.usda", tmp_path / "passive.usda"
+    adaptation = author_grounded_articulation(source, grounded)
+    assert adaptation is not None
+    adaptation["passive_joint_friction"] = author_passive_joint_friction_overlay(
+        grounded, passive, joint_prim_path=joint_path)
+    assert adaptation["passive_joint_friction"] is not None
+    verify_grounded_articulation_overlay(source, passive, adaptation)
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == digest
 
 
 def test_the_physics_backend_is_stated_not_inherited(monkeypatch) -> None:

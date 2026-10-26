@@ -1124,6 +1124,32 @@ def test_cli_sigterm_unwinds_deploy_and_restores_signal_handler(tmp_path, monkey
     assert signal.getsignal(signal.SIGTERM) is original
 
 
+def test_a_follow_up_signal_cannot_abort_deploy_rollback(tmp_path, monkeypatch, capsys):
+    # Stopping a deploy unit sends SIGINT, then SIGTERM to whatever is left once
+    # its main process exits; that second signal used to abort the watcher
+    # rollback and left 15 production timers stopped (2026-10-25).
+    original = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)
+    rolled_back = []
+
+    def interrupted(**_kwargs):
+        try:
+            signal.raise_signal(signal.SIGINT)
+        finally:
+            signal.raise_signal(signal.SIGTERM)
+            rolled_back.append(True)
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", interrupted)
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"),
+    ]) == 2
+    assert "deploy_interrupted:SIGINT" in capsys.readouterr().out
+    assert rolled_back == [True]
+    assert {number: signal.getsignal(number) for number in original} == original
+
+
 def test_cli_defers_sigterm_during_active_release_transition(tmp_path, monkeypatch):
     original = signal.getsignal(signal.SIGTERM)
     monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)

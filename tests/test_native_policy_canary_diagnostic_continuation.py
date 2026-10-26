@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import hashlib
 import json
 import shutil
@@ -323,6 +324,65 @@ def test_real_parent_reaches_cell01_only_for_fully_verified_opt_in_rejection(tmp
         assert _read(output / GATE_FILENAME)["status"] == "passed"
     else:
         assert not (output / GATE_FILENAME).exists()
+
+
+def test_real_parent_preserves_prepolicy_refusal_and_zero_executed_rollouts(tmp_path, monkeypatch):
+    runtime, child, _inputs = _setup(tmp_path)
+    output = child.parent.parent
+    child.rmdir()
+    _complete_fixture_native_channels(monkeypatch)
+    calls, isaacs = [], []
+    reason = 'external:task_object:composition_contact_background_occlusion_requires_review'
+    server_log = output / 'adp009d_policy_server.pi05_droid.log'
+    server_log.write_text('ready\n')
+    def factory(isaac):
+        def gate(**_kwargs):
+            value = {'schema_version': 'policy_canary_runtime_observation_integrity_gate.v1',
+                'policy_observation_integrity_passed': False, 'candidate_policy_loaded': False,
+                'candidate_policy_queried': False, 'blockers': [reason]}
+            value['gate_digest'] = canonical_digest(value, digest_field='gate_digest')
+            return value
+        def forbidden_client(*_args, **_kwargs):
+            pytest.fail('A refused scene must not construct a policy client')
+        return replace(_rehearsal_runtime(isaac), prepolicy_camera_gate=gate, policy_client=forbidden_client)
+    def spawn(**kwargs):
+        calls.append(kwargs['index'])
+        return _run_cell_in_process(**kwargs, isaacs=isaacs, runtime_factory=factory)
+    assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=spawn) == 1
+    assert calls == [0]
+    gate = _read(output / GATE_FILENAME)
+    assert gate['failure_stage'] == 'prepolicy_observation'
+    assert reason in gate['blockers']
+    result = _read(output / worker.PROVIDER_RESULT_FILENAME)
+    assert result['result_digest'] == canonical_digest(result, digest_field='result_digest')
+    assert result['episodes'] == [] and result['policy_loads'] == []
+    assert result['candidate_policy_queried'] is False
+    assert result['learned_policy_rollout_count'] == 0 and result['planned_episodes_per_policy'] == 10
+    assert reason in result['blockers']
+    assert result['artifact_inventory']
+    server_log.write_text('ready\nclosed after the worker returned\n')
+    assert all(row['relative_path'] != server_log.name for row in result['artifact_inventory'])
+    assert result['telemetry']['message_count'] == 0
+    assert result['telemetry']['index_digest'] == canonical_digest(result['telemetry'], digest_field='index_digest')
+    for key in ('artifact', 'schema'):
+        row = result['telemetry'][key]
+        assert row['sha256'] == 'sha256:' + hashlib.sha256((output / row['path']).read_bytes()).hexdigest()
+    for row in result['artifact_inventory']:
+        assert row['relative_path'].startswith('cell_runs/00/') or row['role'] in {
+            'indexed_episode_telemetry', 'telemetry_schema', 'telemetry_index'} or row['relative_path'] == GATE_FILENAME
+        path = output / row['relative_path']
+        assert row['size_bytes'] == path.stat().st_size
+        assert row['sha256'] == 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+    # A resealed child cannot smuggle an unsealed gate into this classification.
+    source = child / worker.PROVIDER_RESULT_FILENAME
+    changed = _read(source)
+    changed['preload_observation_gate']['blockers'].append('unsealed_change')
+    changed['result_digest'] = canonical_digest(changed, digest_field='result_digest')
+    source.chmod(0o640)
+    _write(source, changed)
+    refused = assess_diagnostic_first_cell(runtime_root=runtime, child_root=child)
+    assert refused['status'] == 'blocked'
+    assert refused['blockers'] == ['diagnostic_continuation_prepolicy_gate_identity_invalid']
 
 
 def test_required_controls_and_unknown_protocols_are_not_admitted(tmp_path):

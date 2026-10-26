@@ -25,6 +25,10 @@ from .native_articulated_motion_geometry import (
     NativeArticulatedMotionGeometryError,
     derive_native_articulated_motion_geometry,
 )
+from .native_articulation_root_frame import (
+    NativeArticulationRootFrameError,
+    derive_root_frame_binding,
+)
 from .native_task_camera_framing_expectation import (
     FRAMING_MINIMUM_EXPECTED_BBOX_AREA_PX,
     NativeTaskCameraFramingExpectationError,
@@ -92,6 +96,9 @@ def _verified_articulation_row(
 
     try:
         verified = verify_grounded_articulation(asset_path)
+        root_frame_binding = derive_root_frame_binding(asset_path)
+    except NativeArticulationRootFrameError as exc:
+        raise NativeTaskArenaScenePlanError([str(exc)]) from exc
     except NativeTaskArenaRuntimeError as exc:
         raise NativeTaskArenaScenePlanError(list(exc.errors)) from exc
     except Exception as exc:  # pxr raises Tf.ErrorException on unreadable usd
@@ -112,13 +119,13 @@ def _verified_articulation_row(
             verify_passive_joint_friction_overlay(asset_path, declared["passive_joint_friction"])
         except NativeTaskArenaRuntimeError as exc:
             raise NativeTaskArenaScenePlanError(list(exc.errors)) from exc
-    if isinstance(declared, Mapping):
-        return dict(declared)
-    return {
+    adaptation = dict(declared) if isinstance(declared, Mapping) else {
         "fixed_base_body_prim_path": None,
         "adaptation": "candidate_authored_dynamic_articulation",
         "candidate_bytes_modified": False,
     }
+    adaptation["native_root_frame_binding"] = root_frame_binding
+    return adaptation
 
 
 def _exact_scene_contact_body_paths(scene_collision_asset_path: Path) -> list[str]:

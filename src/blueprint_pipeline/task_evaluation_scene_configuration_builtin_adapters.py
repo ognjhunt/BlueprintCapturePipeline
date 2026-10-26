@@ -1416,6 +1416,18 @@ def execute_simready_native_import_qualification(
         raise TaskEvaluationSceneConfigurationAdapterError(
             "simready_native_import_result_invalid"
         )
+    from .articulated_required_motion_probe import (
+        required_motion_plan_from_static_receipt, validate_required_motion_probe_result,
+    )
+    static_value = json.loads(static_receipt.read_text(encoding="utf-8"))
+    if static_value.get("asset_kind") == "articulated_assembly":
+        plan = required_motion_plan_from_static_receipt(static_value)
+        if plan is not None:
+            try:
+                validate_required_motion_probe_result(runtime.get("required_motion_probe"), plan)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise TaskEvaluationSceneConfigurationAdapterError(
+                    "simready_native_required_motion_probe_invalid") from exc
     retained_asset = _copy_artifact(
         asset, output_root / f"native_qualified_replacement_asset{asset.suffix}"
     )

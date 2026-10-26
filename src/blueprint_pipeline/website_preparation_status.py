@@ -9,6 +9,11 @@ below) also learns that preparation ended for good (failed_terminal, with a
 reason) and that an attempt only waits for control-plane capacity
 (capacity_delayed) rather than for anything the site provides. Every other
 caller, including a WebApp that predates v2, keeps the exact v1 receipt.
+
+A preparation-only task stays unconfirmed, so its read also asks the WebApp
+where the grant stands. A grant that expired still names the context it was
+issued for, so the ledger is reported as for a current one. A preparation with
+no grant yet is not read. The read never creates, renews or spends a grant.
 """
 from __future__ import annotations
 
@@ -174,8 +179,10 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         # A completed job always retained its context; never hand off without it.
         _require(retained is not None or before.get("status") != "completed")
         if current.get("confirmed") is False:
-            from .website_task_context import load_website_scene_sponsorship
-            load_website_scene_sponsorship(task_context=current, now=time.time(), create=False)
+            from .website_task_context import website_scene_sponsorship_standing
+            # A status grants nothing, so a grant that expired still binds the
+            # context it was issued for. It never changes the reported state.
+            website_scene_sponsorship_standing(task_context=current, now=time.time())
         terminal_reason = None
         if before.get("status") == "completed":
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")

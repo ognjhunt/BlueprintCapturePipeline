@@ -199,14 +199,65 @@ def test_native_driver_seals_only_three_matching_contact_settles(
 
 
 def test_native_driver_rejects_nondeterministic_reset(tmp_path: Path) -> None:
+    environment = _environment(tmp_path)
     with pytest.raises(
         TaskEvaluationSceneConfigurationNativeImportDriverError,
-        match="native_import_qualification_failed",
+        match="native_import_qualification_failed:deterministic_reset",
     ):
         execute_native_import_component(
-            environment=_environment(tmp_path),
+            environment=environment,
             native_runner=_native_runner(_observed(mismatch=True)),
         )
+    root = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    raw = json.loads((root / "native_import_observation.v1.json").read_text())
+    assert raw["status"] == "ungraded" and raw["observation"] == _observed(mismatch=True)
+    assert raw["claim_ceiling"] == "development_only"
+    assert not Path(environment["BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"]).exists()
+
+
+@pytest.mark.parametrize("repeat_index", [0, 1, 2])
+@pytest.mark.parametrize("measurement", ["settle_translation_m", "settle_rotation_rad"])
+def test_native_driver_preserves_unserializable_failed_observation(tmp_path: Path, repeat_index, measurement) -> None:
+    environment = _environment(tmp_path)
+    observed = _observed()
+    observed["repeats"][repeat_index][measurement] = float("nan")
+    predicate = "settle_translation" if measurement == "settle_translation_m" else "settle_rotation"
+    with pytest.raises(TaskEvaluationSceneConfigurationNativeImportDriverError,
+            match="native_import_qualification_failed:" + predicate):
+        execute_native_import_component(environment=environment, native_runner=_native_runner(observed))
+    root = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    raw = json.loads((root / "native_import_observation.v1.json").read_text())
+    assert raw["status"] == "unserializable_observation"
+    assert raw["serialization_error_type"] == "ValueError"
+    assert "nan" in raw["observation_repr"]
+    assert not Path(environment["BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"]).exists()
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_native_fast_shutdown_preserves_result_and_failure_exit_status(tmp_path, monkeypatch, capsys, valid):
+    environment = _environment(tmp_path)
+
+    class FastSimulationApp:
+        def __init__(self, config):
+            pass
+
+        def close(self, *, exit_code=0):
+            raise SystemExit(exit_code)
+
+    monkeypatch.setattr(driver, "_bind_isaac_runtime_environment", lambda: None)
+    monkeypatch.setattr(driver, "_import_simulation_app", lambda: FastSimulationApp)
+    observed = _observed(mismatch=not valid)
+    monkeypatch.setattr(driver, "_observe_isaac_runtime_identity", lambda app: observed["runtime_identity"])
+    repeats = iter(observed["repeats"])
+    monkeypatch.setattr(driver, "_one_native_settle", lambda **kwargs: next(repeats))
+    with pytest.raises(SystemExit) as error:
+        execute_native_import_component(environment=environment)
+    assert error.value.code == (0 if valid else 1)
+    root = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    assert json.loads((root / "native_import_observation.v1.json").read_text())["observation"] == observed
+    assert Path(environment["BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"]).exists() is valid
+    if not valid:
+        assert "native_import_qualification_failed:deterministic_reset" in capsys.readouterr().err
 
 
 def test_native_driver_rejects_unexpected_isaac_runtime_identity(
@@ -285,6 +336,51 @@ def test_native_driver_rejects_invalid_bounds_before_runtime(tmp_path: Path) -> 
             native_runner=native_runner,
         )
     assert executed is False
+
+
+def test_native_failure_predicate_is_printed_before_fast_isaac_shutdown(monkeypatch, capsys):
+    class FastShutdown:
+        def __init__(self, _config):
+            pass
+
+        def close(self):
+            raise SystemExit(0)
+
+    monkeypatch.setattr(driver, "_bind_isaac_runtime_environment", lambda: None)
+    monkeypatch.setattr(driver, "_import_simulation_app", lambda: FastShutdown)
+    monkeypatch.setattr(driver, "_observe_isaac_runtime_identity", lambda app: {"engine_version": "6.0.1"})
+    def refuse(**kwargs):
+        raise RuntimeError("scene_configuration_native_import_handle_mismatch")
+    monkeypatch.setattr(driver, "_one_native_settle", refuse)
+    with pytest.raises(SystemExit):
+        driver._run_native_import(asset_path=Path("retained.usdz"),
+            required_checks={"state_digest_repeat_count": 3, "gravity_settle_seconds": 3},
+            observation_consumer=lambda row: row)
+    assert "RuntimeError: scene_configuration_native_import_handle_mismatch" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("phase", ["constructor", "runtime"])
+def test_native_startup_system_exit_is_reported_before_cleanup(monkeypatch, capsys, phase):
+    class ExitingApp:
+        def __init__(self, config):
+            if phase == "constructor":
+                raise SystemExit(23)
+
+        def close(self, *, exit_code=0):
+            raise SystemExit(exit_code)
+
+    def exit_during_runtime(app):
+        raise SystemExit(23)
+
+    monkeypatch.setattr(driver, "_bind_isaac_runtime_environment", lambda: None)
+    monkeypatch.setattr(driver, "_import_simulation_app", lambda: ExitingApp)
+    monkeypatch.setattr(driver, "_observe_isaac_runtime_identity", exit_during_runtime)
+    with pytest.raises(SystemExit) as error:
+        driver._run_native_import(asset_path=Path("retained.usdz"),
+            required_checks={"state_digest_repeat_count": 3, "gravity_settle_seconds": 3},
+            observation_consumer=lambda row: row)
+    assert error.value.code == 23
+    assert "SystemExit: 23" in capsys.readouterr().err
 
 
 # --- supplemental passive destination imported in the same Isaac session -----
@@ -930,3 +1026,66 @@ def test_the_probe_changes_nothing_else_in_the_sealed_runtime_result(tmp_path: P
     with_probe = sealed(tmp_path / "probe", {**_articulated_observed(), "robot_free_success_probe": probe})
     strip = lambda value: {k: v for k, v in value.items() if k not in {"robot_free_success_probe", "result_digest"}}  # noqa: E731
     assert strip(with_probe) == strip(baseline) and with_probe["robot_free_success_probe"] == probe
+
+
+@pytest.mark.parametrize("mode", ["missing", "forged_pass", "complete"])
+def test_required_motion_readback_is_enforced_by_real_native_component_consumer(tmp_path: Path, mode: str) -> None:
+    from blueprint_pipeline.articulated_required_motion_probe import (
+        required_motion_plan_from_static_receipt, execute_required_motion_probe,
+    )
+    environment = _articulated_environment(tmp_path)
+    static_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"]) / "static.json"
+    static = json.loads(static_path.read_text())
+    target = next(row for row in static["articulation_graph"]["joints"] if row["role"] == "target")
+    static["source_constraints"] = {"required_motion_readback": {
+        "requirements_digest": "sha256:" + "a" * 64,
+        "motions": [{"motion_id": "carriage", **{key: target[key] for key in ("joint_id", "joint_type", "limits")}}]}}
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    static_path.write_text(json.dumps(static))
+    dependencies_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"])
+    dependencies = json.loads(dependencies_path.read_text())
+    dependencies[0]["output_artifacts"][1].update(digest=_sha256(static_path), size_bytes=static_path.stat().st_size)
+    dependencies_path.write_text(json.dumps(dependencies))
+    plan = required_motion_plan_from_static_receipt(static)
+    state = {}
+    probe = execute_required_motion_probe(plan,
+        command=lambda positions: state.update({name: [coordinate, 0.0] for name, coordinate in positions.items()}),
+        read_state=lambda: state)
+    if mode == "forged_pass":
+        probe["phase_rows"][2]["joint_readback"][target["joint_id"]]["position"] = target["reset_position"]
+        probe["result_digest"] = canonical_digest(probe, digest_field="result_digest")
+
+    def runner(*, observation_consumer, **_kwargs):
+        return observation_consumer({**_articulated_observed(),
+            **({"required_motion_probe": probe} if mode != "missing" else {})})
+
+    if mode != "complete":
+        with pytest.raises(driver.TaskEvaluationSceneConfigurationNativeImportDriverError, match="required_motion_probe_failed"):
+            execute_native_import_component(environment=environment, native_runner=runner)
+    else:
+        result = execute_native_import_component(environment=environment, native_runner=runner)
+        artifact = next(row for row in result["artifacts"] if row["role"] == "native_import_runtime_result")
+        assert json.loads(Path(artifact["path"]).read_text())["required_motion_probe"] == probe
+        from blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters import execute_simready_native_import_qualification
+        from blueprint_pipeline.task_evaluation_scene_configuration_adapters import TaskEvaluationSceneConfigurationAdapterError
+        stage_input_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"])
+        stage_input = json.loads(stage_input_path.read_text())
+        adapter_root = tmp_path / "real_consumer"
+        adapter_root.mkdir()
+        kwargs = dict(envelope={"recipe": {"subject_identity": static["replacement_identity"]}},
+            stage={"stage_id": "stage-5", "capability": "native_import", "execution_class": "gpu_canary"},
+            configuration=stage_input["configuration"], configuration_path=stage_input_path,
+            dependency_results=tuple(dependencies), provider_runtime_artifacts=tuple(result["artifacts"]))
+        assert execute_simready_native_import_qualification(output_root=adapter_root, **kwargs)["status"] == "completed"
+        # An old worker could emit a qualified result without exercising all
+        # motions. The stable downstream consumer must independently refuse it.
+        runtime_path = Path(artifact["path"])
+        runtime = json.loads(runtime_path.read_text())
+        runtime.pop("required_motion_probe")
+        runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
+        runtime_path.write_text(json.dumps(runtime))
+        artifact.update(digest=_sha256(runtime_path), size_bytes=runtime_path.stat().st_size)
+        refused = tmp_path / "old_worker_consumer"
+        refused.mkdir()
+        with pytest.raises(TaskEvaluationSceneConfigurationAdapterError, match="required_motion_probe_invalid"):
+            execute_simready_native_import_qualification(output_root=refused, **kwargs)

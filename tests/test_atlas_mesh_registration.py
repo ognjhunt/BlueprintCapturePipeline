@@ -107,3 +107,31 @@ def test_two_supported_declared_frames_are_ambiguous(tmp_path):
     glb = exported_glb(tmp_path / "mesh.glb", grid(-2.0))
     with pytest.raises(ValueError, match="atlas_mesh_frame_ambiguous"):
         registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+
+
+def test_depth_filter_removes_splat_supported_phantom_and_binds_pose(tmp_path):
+    from blueprint_pipeline.atlas_depth_splat import posed_frame
+
+    def view(frame_id, x=0.):
+        return posed_frame(frame_id=frame_id, rgb=np.zeros((64, 64, 3), np.uint8),
+            depth=np.full((64, 64), 2., np.float32), confidence=np.ones((64, 64), np.float32),
+            camera={"intrinsics": {"fx": 32., "fy": 32., "cx": 32., "cy": 32., "width": 64, "height": 64},
+                    "extrinsics": {"position": [x, 0., 0.], "quaternion": [0., 0., 0., 1.], "coordinateSystem": "rub"}})
+
+    observed, phantom = grid(-2., extent=.2), grid(-1.8, extent=.2)
+    root = splat_root(tmp_path / "splat", np.concatenate([observed[0], phantom[0]]))
+    manifest_path = root / "atlas_depth_splat_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    pose_digest = "sha256:" + "a" * 64
+    manifest["pose_result_digest"] = pose_digest
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    manifest_path.write_text(json.dumps(manifest))
+    glb = exported_glb(tmp_path / "mesh.glb", observed, phantom)
+    record = registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered",
+        reference_frames=[view("left", x=-.2), view("right", x=.2)], reference_pose_digest=pose_digest)
+    assert record["faces_kept"] == len(observed[1])
+    assert record["depth_free_space_filter"]["faces_removed"] == len(phantom[1])
+    assert record["depth_free_space_filter"]["reference_pose_digest"] == pose_digest
+    with pytest.raises(ValueError, match="pose_binding_invalid"):
+        registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "bad",
+            reference_frames=[view("a")], reference_pose_digest="sha256:" + "b" * 64)

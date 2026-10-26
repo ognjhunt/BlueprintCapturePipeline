@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import math
+import hashlib
 
 import numpy as np
+import pytest
 from pxr import Gf, Usd, UsdGeom
 
 from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
+    _overlapping_scene_triangle_indices,
     _parallel_geometry_gates,
     _parallel_trajectory_gates,
     _supported_sample_count,
+    _stage_triangles,
+    _placed_task_asset_triangles,
+    RobotPlacementGeometryError,
     build_robot_placement_geometry_index,
     enumerate_robot_placement_geometry_candidates,
     render_robot_placement_geometry_previews,
@@ -16,6 +22,55 @@ from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
     validate_robot_placement_geometry_candidate,
     validate_robot_placement_trajectory_position_ik,
 )
+
+
+def test_spatial_collision_lookup_matches_exhaustive_boxes() -> None:
+    random = np.random.default_rng(8062)
+    for offset in (0.0, 1.0e6):
+        robot_minimum = random.uniform(-2.0, 2.0, (350, 3)) + offset
+        robot_maximum = robot_minimum + random.uniform(0.0, 0.4, (350, 3))
+        scene_minimum = random.uniform(-3.0, 3.0, (180, 3)) + offset
+        scene_maximum = scene_minimum + random.uniform(0.0, 0.8, (180, 3))
+        # Include a touching point and a very elongated box, then retain a
+        # non-sorted subset to check inclusive boundaries and result ordering.
+        scene_minimum[0] = robot_maximum[0]
+        scene_maximum[0] = robot_maximum[0]
+        scene_minimum[1] = [-100.0 + offset, offset, offset]
+        scene_maximum[1] = [100.0 + offset, offset, offset]
+        selected = np.r_[0, 1, random.permutation(np.arange(2, 180))[:90]]
+        expected = [
+            int(index)
+            for index in selected
+            if np.any(
+                np.all(
+                    (robot_maximum >= scene_minimum[index])
+                    & (robot_minimum <= scene_maximum[index]),
+                    axis=1,
+                )
+            )
+        ]
+
+        assert _overlapping_scene_triangle_indices(
+            scene_minimum=scene_minimum,
+            scene_maximum=scene_maximum,
+            scene_indices=selected,
+            robot_minimum=robot_minimum,
+            robot_maximum=robot_maximum,
+        ) == expected
+        assert 0 in expected
+
+
+def test_spatial_collision_lookup_handles_empty_geometry() -> None:
+    empty = np.empty((0, 3), dtype=np.float64)
+    point = np.zeros((1, 3), dtype=np.float64)
+    for selected, robot in ((np.asarray([], dtype=int), point), (np.asarray([0]), empty)):
+        assert _overlapping_scene_triangle_indices(
+            scene_minimum=point,
+            scene_maximum=point,
+            scene_indices=selected,
+            robot_minimum=robot,
+            robot_maximum=robot,
+        ) == []
 
 
 def test_support_coverage_batches_samples_against_all_triangles() -> None:
@@ -121,6 +176,138 @@ def _proposal(surface_id, position=(0.0, 0.0, 0.0), yaw=0.0):
             "orientation_xyzw": [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)],
         },
     }
+
+
+@pytest.mark.parametrize("schema", [UsdGeom.Cube, UsdGeom.Cylinder, UsdGeom.Capsule, UsdGeom.Sphere, UsdGeom.Cone])
+def test_analytic_shapes_are_conservative_transformed_geometry(schema):
+    stage = Usd.Stage.CreateInMemory()
+    shape = schema.Define(stage, "/Shape")
+    xform = UsdGeom.Xformable(shape)
+    xform.AddTranslateOp().Set(Gf.Vec3d(3.0, -2.0, 1.0))
+    xform.AddRotateZOp().Set(35.0)
+    xform.AddScaleOp().Set(Gf.Vec3f(0.3, 0.5, 0.7))
+    triangles, paths = _stage_triangles(stage)
+    bounds = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"]).ComputeWorldBound(shape.GetPrim()).ComputeAlignedRange()
+    assert len(triangles) == 12
+    assert set(paths) == {"/Shape"}
+    np.testing.assert_allclose(triangles.min(axis=(0, 1)), list(bounds.GetMin()), atol=1.e-7)
+    np.testing.assert_allclose(triangles.max(axis=(0, 1)), list(bounds.GetMax()), atol=1.e-7)
+
+
+def _task_asset(tmp_path):
+    path = tmp_path / "task.usda"
+    stage = Usd.Stage.CreateNew(str(path))
+    stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Task").GetPrim())
+    panel = UsdGeom.Cube.Define(stage, "/Task/Panel")
+    panel.CreateSizeAttr(0.5)
+    stage.GetRootLayer().Save()
+    return {
+        "asset_id": "task-actor",
+        "asset_usd_path": str(path),
+        "asset_digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        "pose": {"position_world_m": [0., 0., 0.4], "orientation_xyzw": [0., 0., 0., 1.]},
+    }
+
+
+def test_placed_task_actor_blocks_previously_clear_robot_pose(tmp_path):
+    scene, robot = _assets(tmp_path)
+    background = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot)
+    floor = next(s for s in background.support_surfaces if s.prim_path == "/Scene/Floor")
+    arguments = dict(proposal=_proposal(floor.surface_id), target_position_world_m=[0.8, 0., 0.5])
+    assert validate_robot_placement_geometry_candidate(index=background, **arguments)["status"] == "passed"
+    actor = _task_asset(tmp_path)
+    combined = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot, task_assets=[actor])
+    gate = validate_robot_placement_geometry_candidate(index=combined, **arguments)
+    assert gate["collision_passed"] is False
+    assert any(path.startswith("/TaskActors/") for path in gate["scene_overlap_prim_paths"])
+    assert combined.support_surfaces == background.support_surfaces
+    assert combined.scene_digest != background.scene_digest
+    actor["pose"]["position_world_m"] = [-1., 0., 0.4]
+    moved = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot, task_assets=[actor])
+    assert moved.scene_digest != combined.scene_digest
+    assert validate_robot_placement_geometry_candidate(index=moved, **arguments)["status"] == "passed"
+
+
+def test_task_actor_rejects_changed_source_bytes(tmp_path):
+    scene, robot = _assets(tmp_path)
+    actor = _task_asset(tmp_path)
+    with open(actor["asset_usd_path"], "a") as stream:
+        stream.write("\n# changed source\n")
+    with pytest.raises(RobotPlacementGeometryError, match="task_asset_digest_mismatch"):
+        build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot, task_assets=[actor])
+
+
+def test_actor_pose_preserves_asset_root_transform_and_binds_referenced_layer(tmp_path):
+    actor = _task_asset(tmp_path)
+    path = actor["asset_usd_path"]
+    stage = Usd.Stage.Open(path)
+    root = UsdGeom.Xformable(stage.GetDefaultPrim())
+    root.AddTranslateOp().Set(Gf.Vec3d(0.2, 0., 0.))
+    stage.GetRootLayer().Save()
+    wrapper = tmp_path / "wrapper.usda"
+    outer = Usd.Stage.CreateNew(str(wrapper))
+    outer.SetDefaultPrim(UsdGeom.Xform.Define(outer, "/Wrapper").GetPrim())
+    outer.GetDefaultPrim().GetReferences().AddReference(path)
+    outer.GetRootLayer().Save()
+    actor.update(asset_usd_path=str(wrapper), asset_digest="sha256:" + hashlib.sha256(wrapper.read_bytes()).hexdigest())
+    actor["pose"] = {"position_world_m": [1., 2., 3.], "orientation_xyzw": [0., 0., math.sqrt(.5), math.sqrt(.5)]}
+    triangles, _, bindings = _placed_task_asset_triangles([actor])
+    np.testing.assert_allclose(triangles[0].mean(axis=(0, 1)), [1., 2.2, 3.], atol=1.e-7)
+    assert {row["path"] for row in bindings[0]["collision_layers"]} == {path, str(wrapper)}
+
+
+def test_enumeration_prefilter_preserves_every_passing_gate(tmp_path) -> None:
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene, robot_asset_usd_path=robot
+    )
+    floor = next(s for s in index.support_surfaces if s.prim_path == "/Scene/Floor")
+    proposals = [
+        _proposal(floor.surface_id, position=position, yaw=yaw)
+        for position in ((0.0, 0.0, 0.0), (1.5, 0.0, 0.0), (2.1, 0.0, 0.0), (0.0, 0.0, 0.1))
+        for yaw in (0.0, math.pi / 2, math.pi)
+    ]
+    arguments = dict(index=index, proposals=proposals, target_position_world_m=[0.8, 0.0, 0.5],
+                     robot_id="franka_panda", worker_count=1)
+    complete = _parallel_geometry_gates(**arguments)
+    filtered = _parallel_geometry_gates(**arguments, prefilter_nonpassing=True)
+    assert [g for g in complete if g["status"] == "passed"]
+    assert [g for g in filtered if g["status"] == "passed"] == [
+        g for g in complete if g["status"] == "passed"
+    ]
+    assert any(len(g) == 1 for g in filtered)
+
+
+@pytest.mark.parametrize("neighbor_height,expected", [(0.01, True), (0.04, False)])
+def test_support_uses_adjacent_height_bins_only_within_declared_tolerance(
+    tmp_path, neighbor_height, expected
+) -> None:
+    scene_path, robot_path = _assets(tmp_path)
+    scene = Usd.Stage.Open(str(scene_path))
+    scene.RemovePrim("/Scene/Floor")
+    _mesh(
+        scene, "/Scene/Floor",
+        [(-2, -2, 0), (0, -2, 0), (0, 2, 0), (-2, 2, 0),
+         (0, -2, neighbor_height), (2, -2, neighbor_height),
+         (2, 2, neighbor_height), (0, 2, neighbor_height)],
+        [(0, 1, 2, 3), (4, 5, 6, 7)],
+    )
+    scene.GetRootLayer().Save()
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene_path, robot_asset_usd_path=robot_path
+    )
+    floor = next(s for s in index.support_surfaces if s.prim_path == "/Scene/Floor" and s.height_m == 0.0)
+    proposal = _proposal(floor.surface_id)
+    gate = validate_robot_placement_geometry_candidate(
+        index=index, proposal=proposal, target_position_world_m=[0.8, 0.0, 0.5]
+    )
+    assert gate["support_passed"] is expected
+    assert (gate["supported_sample_count"] == 5) is expected
+    prefiltered = _parallel_geometry_gates(
+        index=index, proposals=[proposal], target_position_world_m=[0.8, 0.0, 0.5],
+        robot_id="franka_panda", worker_count=1, prefilter_nonpassing=True,
+    )
+    assert (prefiltered[0]["status"] == "passed") is expected
 
 
 def test_geometry_gate_uses_batched_support_coverage(tmp_path, monkeypatch) -> None:
@@ -229,6 +416,57 @@ def _shelf_scene(tmp_path):
     _box(robot, "/Robot/Body", (-0.15, -0.15, 0), (0.15, 0.15, 0.75))
     robot.GetRootLayer().Save()
     return scene_path, robot_path
+
+
+def test_empty_initial_support_search_expands_to_other_observed_surfaces(tmp_path):
+    scene_path, robot_path = _assets(tmp_path)
+    scene = Usd.Stage.Open(str(scene_path))
+    scene.RemovePrim("/Scene/Floor")
+    scene.RemovePrim("/Scene/Obstacle")
+    # The largest surfaces lie inside a solid obstruction. The surfaces
+    # closest to task height are too small to support the base.
+    _box(scene, "/Scene/Occupied", (-0.2, -0.9, 0.0), (1.3, 0.9, 2.0))
+    for n, z in enumerate((0.1, 0.2, 0.3)):
+        _mesh(scene, f"/Scene/Large_{n}",
+              [(-0.2, -0.9, z), (1.3, -0.9, z), (1.3, 0.9, z), (-0.2, 0.9, z)],
+              [(0, 1, 2, 3)])
+    for n in range(13):
+        z = 0.7 + 0.005 * n
+        _mesh(scene, f"/Scene/Small_{n}",
+              [(0.4, -0.07, z), (0.54, -0.07, z), (0.54, 0.07, z), (0.4, 0.07, z)],
+              [(0, 1, 2, 3)])
+    _mesh(scene, "/Scene/UsableShelf",
+          [(-0.9, -0.35, 0.4), (-0.25, -0.35, 0.4), (-0.25, 0.35, 0.4), (-0.9, 0.35, 0.4)],
+          [(0, 1, 2, 3)])
+    scene.GetRootLayer().Save()
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene_path, robot_asset_usd_path=robot_path
+    )
+    diagnostics = {}
+    candidates = enumerate_robot_placement_geometry_candidates(
+        index=index, target_position_world_m=[0.0, 0.0, 0.9], maximum_candidates=3,
+        diagnostics=diagnostics,
+    )
+    assert candidates
+    assert all(p["support_surface_id"].startswith("/Scene/UsableShelf@") for p in candidates)
+    assert diagnostics["support_search_pass_count"] == 2
+    assert diagnostics["support_search_exhausted"] is True
+    assert diagnostics["searched_support_surface_count"] > 15
+    assert diagnostics["searched_support_surface_count"] == diagnostics["available_support_surface_count"]
+
+
+def test_no_eligible_observed_support_returns_an_empty_inventory(tmp_path):
+    scene_path, robot_path = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene_path, robot_asset_usd_path=robot_path
+    )
+    diagnostics = {}
+    assert enumerate_robot_placement_geometry_candidates(
+        index=index, target_position_world_m=[0.0, 0.0, 10.0], diagnostics=diagnostics
+    ) == []
+    assert diagnostics["proposal_count"] == 0
+    assert diagnostics["available_support_surface_count"] == 0
+    assert diagnostics["support_search_exhausted"] is True
 
 
 def test_enumeration_keeps_the_largest_support_when_height_ranking_buries_it(

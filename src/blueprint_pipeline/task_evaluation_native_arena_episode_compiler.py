@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .common import write_json
+from .native_articulated_construction_inputs import materialize_articulated_construction_inputs
 from .task_evaluation_articulated_open_close_native_adapter import (
     adapt_articulated_open_close_task_template,
 )
@@ -1093,17 +1094,27 @@ def _derive_runtime_prismatic_friction_overlay(
     *, task_spec: Mapping[str, Any], task_definition: Mapping[str, Any],
     replacement_path: Path, output_root: Path,
 ) -> tuple[Path, dict[str, Any] | None]:
-    """Preserve a sealed asset while binding a legacy slide's passive prior."""
+    """Preserve authored mounting before applying a legacy slide's passive prior."""
     from .articulation_graph_contract import validate_articulation_graph
     from .native_task_arena_runtime import (
-        NativeTaskArenaRuntimeError, author_passive_joint_friction_overlay,
+        NativeTaskArenaRuntimeError, author_grounded_articulation, author_passive_joint_friction_overlay,
         verify_grounded_articulation,
     )
 
     graph = validate_articulation_graph(task_spec["articulation_graph"])
+    original = replacement_path
+    grounded = output_root / "runtime-grounded-articulation" / "replacement.usda"
+    try:
+        mounting = author_grounded_articulation(replacement_path, grounded,
+                                               scene_mounting=task_definition.get("assembly_mounting"))
+    except NativeTaskArenaRuntimeError as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_articulation_grounding_invalid:" + ",".join(exc.errors)) from exc
+    if mounting is not None:
+        replacement_path = grounded
     targets = [joint for joint in graph["joints"] if joint["role"] == "target"]
     if len(targets) != 1 or targets[0]["joint_type"] != "prismatic":
-        return replacement_path, None
+        return replacement_path, mounting
     bindings = [row for row in task_definition.get("task_joint_bindings") or []
                 if row.get("joint_id") == targets[0]["joint_id"] and row.get("role") == "target"]
     if len(bindings) != 1:
@@ -1117,17 +1128,18 @@ def _derive_runtime_prismatic_friction_overlay(
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_passive_joint_overlay_invalid:" + ",".join(exc.errors)) from exc
     if overlay is None:
-        return replacement_path, None
+        return replacement_path, mounting
     try:
         grounding = verify_grounded_articulation(derived)
     except NativeTaskArenaRuntimeError as exc:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_passive_joint_grounding_invalid:" + ",".join(exc.errors)) from exc
     return derived, {
-        "adaptation": "estimated_passive_joint_friction_overlay",
+        **(mounting or {}),
+        "adaptation": (mounting or {}).get("adaptation", "estimated_passive_joint_friction_overlay"),
         "fixed_base_body_prim_path": grounding["fixed_base_body_prim_path"],
         "candidate_bytes_modified": False,
-        "derived_from_sha256": overlay["source_sha256"],
+        "derived_from_sha256": _sha256_and_size(original)[0],
         "passive_joint_friction": overlay,
     }
 
@@ -1422,6 +1434,20 @@ def compile_native_arena_episode(
             _derive_runtime_prismatic_friction_overlay(
                 task_spec=task_spec, task_definition=task_definition,
                 replacement_path=runtime_replacement_path, output_root=root))
+    construction_inputs = None
+    task_state_binding = task_definition.get("task_state_binding")
+    if articulated:
+        construction_inputs = materialize_articulated_construction_inputs(
+            task_spec=task_spec,
+            definition=task_definition,
+            asset=runtime_replacement_path,
+            asset_digest=_sha256_and_size(runtime_replacement_path)[0],
+            link_prim_paths=task_adapter["source_documents"]["documents"][
+                "scene.configured_revision.replacement.static_qualification"
+            ]["link_prim_paths"],
+        )
+        task_spec = construction_inputs["task_spec"]
+        task_state_binding = construction_inputs["task_state_binding"]
     packet_assets = []
     for role, semantic_role in (
         ("appearance", "scene_appearance"),
@@ -1502,7 +1528,11 @@ def compile_native_arena_episode(
         "task_id": request["task"]["identity"]["id"],
         "task_spec": task_spec,
         "task_joint_bindings": task_definition.get("task_joint_bindings") or [],
-        "task_state_binding": task_definition.get("task_state_binding"),
+        "task_state_binding": task_state_binding,
+        "articulated_kinematic_path_receipt": (
+            construction_inputs["articulated_kinematic_path_receipt"]
+            if construction_inputs is not None else None
+        ),
         "assets": packet_assets,
         "robot_base_pose_world": base.get("pose_world"),
         "robot_joint_reset_positions_rad": robot.get("joint_reset_positions_rad"),
@@ -1690,9 +1720,12 @@ def compile_native_arena_episode(
         output_root=root / "native-arena-adapter",
         content_store_root=root.parent / "content-addressed" / "adapter-members" / "sha256",
         external_layers={
+            revision["replacement"]["asset"]["digest"]: configured_assets["replacement"],
+            **{
             str(row["digest"]): Path(str(row["materialized_path"]))
             for contract_path, row in materialized_references.items()
             if contract_path.startswith(RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX)
+            },
         },
     )
     output: dict[str, Any] = {

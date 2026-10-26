@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -193,6 +194,44 @@ def test_articulated_drawer_placement_uses_qualified_asset_and_passive_joint(tmp
         fetcher=lambda reference: payloads[reference["uri"]],
     )
     assert json.loads(Path(resolved["native_trajectory_plan_path"]).read_text()) == plan
+
+
+@pytest.mark.parametrize("hinge", ["bottom", "left"])
+def test_hinged_placement_follows_qualified_arc_and_rotates_the_grasp(tmp_path, hinge):
+    from pxr import Gf
+    from tests.test_articulated_hinged_door_appliance import _revolute_case
+
+    case = _revolute_case(tmp_path, hinge)
+    revision = case["configured"]
+    asset = case["asset"]
+    payload = asset.read_bytes()
+    revision["replacement"]["asset"] = {
+        "uri": "s3://blueprint-production-inputs/hinged.usdz",
+        "digest": "sha256:" + hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload),
+    }
+    revision["revision_digest"] = canonical_digest(revision, digest_field="revision_digest")
+    documents = {key: Path(row["materialized_path"]) for key, row in case["references"].items()}
+    documents["scene.configured_revision.replacement.asset"] = asset
+    plan = deferred.derive_native_trajectory_plan(revision=revision, documents=documents)
+    motion = plan["motion_geometry"]
+    pivot = Gf.Vec3d(*motion["hinge_point_world_m"])
+    axis = Gf.Vec3d(*motion["hinge_axis_world_unit"])
+    closed = Gf.Vec3d(*motion["handle_grasp_point_closed_world_m"])
+    endpoint = pivot + Gf.Rotation(axis, math.degrees(plan["minimum_opening_rad"])).TransformDir(closed - pivot)
+    assert plan["phases"][-1]["position_world_m"] == pytest.approx(list(endpoint))
+    assert plan["minimum_opening_rad"] == pytest.approx(0.84)
+    assert "minimum_opening_m" not in plan
+    assert len(plan["phases"]) > 3
+    assert plan["phases"][-1]["orientation_world_xyzw"] != pytest.approx(
+        plan["phases"][1]["orientation_world_xyzw"]
+    )
+    for phase in plan["phases"][1:]:
+        relative = Gf.Vec3d(*phase["position_world_m"]) - pivot
+        assert relative.GetLength() == pytest.approx((closed - pivot).GetLength())
+        assert Gf.Dot(relative, axis) == pytest.approx(Gf.Dot(closed - pivot, axis))
+    assert motion["source"]["derived_from_openusd_joint_and_body_transforms"] is True
+    assert plan["claim_boundary"]["placement_only_no_task_joint_command"] is True
+    assert placement_trajectory_from_native_plan(plan)["source_plan_digest"] == plan["plan_digest"]
 
 
 def test_adapter_binds_the_task_from_the_revision_alone_exactly_as_a_request_would(

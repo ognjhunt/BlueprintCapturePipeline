@@ -20,6 +20,13 @@ from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_usd_dependency_closure import G1_KIT_RUNTIME_ASSETS
+from .native_articulation_root_frame import (
+    NativeArticulationRootFrameError,
+    convert_root_pose,
+    derive_root_frame_binding,
+    rebind_root_frame_after_overlay,
+    root_bound_usd_spawner,
+)
 
 #: Every logical contact sensor the scene plan is allowed to emit.
 #:
@@ -718,7 +725,7 @@ ARENA_ANCHOR_JOINT = "fixed_base_anchor"
 
 
 def author_grounded_articulation(
-    source_usd: str | Path, destination: str | Path
+    source_usd: str | Path, destination: str | Path, *, scene_mounting: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Author the probe's proven fixed-base mechanism into a derived asset.
 
@@ -740,7 +747,14 @@ def author_grounded_articulation(
     from pxr import Sdf, Usd, UsdPhysics
 
     source = Path(source_usd).expanduser().resolve()
-    stage = Usd.Stage.Open(str(source))
+    output = Path(destination).expanduser().resolve()
+    if output == source:
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_grounding_would_mutate_source"]
+        )
+    # USD layers are shared in process. Mutate a private composition so a
+    # retained source stage cannot silently become grounded in memory.
+    stage = Usd.Stage.Open(Usd.Stage.Open(str(source)).Flatten())
     root = stage.GetDefaultPrim()
     if not root:
         raise NativeTaskArenaRuntimeError(
@@ -752,6 +766,28 @@ def author_grounded_articulation(
         usd_physics=UsdPhysics,
     )
     fixed_base = adaptation["fixed_base_body_prim_path"]
+    if scene_mounting is not None:
+        from .task_object_required_motions import assembly_mounting
+        try:
+            declared = assembly_mounting(scene_mounting)
+        except ValueError as exc:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_scene_mounting_invalid"]) from exc
+        if declared["mode"] == "free" and fixed_base:
+            raise NativeTaskArenaRuntimeError(["native_task_arena_scene_mounting_conflicts_with_asset"])
+        if declared["mode"] == "fixed_in_scene":
+            children = set()
+            for prim in stage.Traverse():
+                if not prim.IsA(UsdPhysics.Joint):
+                    continue
+                typed = UsdPhysics.Joint(prim)
+                if len(typed.GetBody0Rel().GetTargets()) == 1:
+                    children.update(str(path) for path in typed.GetBody1Rel().GetTargets())
+            roots = set(adaptation["articulation_body_prim_paths"]) - children
+            if len(roots) != 1 or fixed_base and fixed_base not in roots:
+                raise NativeTaskArenaRuntimeError(["native_task_arena_scene_mounting_root_ambiguous"])
+            fixed_base = roots.pop()
+            adaptation = {**adaptation, "fixed_base_body_prim_path": fixed_base, "scene_mounting": declared,
+                          "scene_mounting_physical_measurement_proven": False}
     if not fixed_base:
         return None
 
@@ -762,7 +798,6 @@ def author_grounded_articulation(
     )
     joint.GetBody1Rel().SetTargets([Sdf.Path(fixed_base)])
 
-    output = Path(destination).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     stage.GetRootLayer().Export(str(output))
 
@@ -779,6 +814,33 @@ def author_grounded_articulation(
         ),
         "derived_from_sha256": _sha256(source),
     }
+
+
+def verify_grounded_articulation_overlay(
+    source_usd: str | Path, staged_usd: str | Path, declared: Mapping[str, Any],
+) -> None:
+    """Reproduce the permitted physics-only derivative from the sealed source."""
+    source = Path(source_usd).expanduser().resolve()
+    if _sha256(source) != declared.get("derived_from_sha256"):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_source_mismatch"])
+    with tempfile.TemporaryDirectory(prefix="blueprint-grounding-replay-") as scratch:
+        expected = Path(scratch) / "grounded.usda"
+        adaptation = author_grounded_articulation(source, expected, scene_mounting=declared.get("scene_mounting"))
+        if adaptation is None or any(declared.get(k) != v for k, v in adaptation.items()):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_declaration_mismatch"])
+        friction = declared.get("passive_joint_friction")
+        if friction is not None:
+            if not isinstance(friction, Mapping):
+                raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_friction_invalid"])
+            with_friction = Path(scratch) / "passive.usda"
+            replayed = author_passive_joint_friction_overlay(
+                expected, with_friction,
+                joint_prim_path=str(friction.get("joint_prim_path") or ""))
+            if replayed is None or replayed != friction:
+                raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_friction_mismatch"])
+            expected = with_friction
+        if _sha256(expected) != _sha256(Path(staged_usd)):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_grounding_derivative_mismatch"])
 
 
 def verify_grounded_articulation(staged_usd: str | Path) -> dict[str, Any]:
@@ -1130,6 +1192,16 @@ def _validate_articulation_adaptability(
                     f"{row.get('name') or row.get('semantic_role')}"
                 ]
             )
+        binding = (declared or {}).get("native_root_frame_binding")
+        if not isinstance(binding, Mapping):
+            raise NativeTaskArenaRuntimeError(
+                [f"native_task_arena_articulation_root_binding_missing:{row.get('name') or row.get('semantic_role')}"]
+            )
+        try:
+            if derive_root_frame_binding(usd) != binding:
+                raise NativeArticulationRootFrameError("native_articulation_spawn_binding_mismatch")
+        except NativeArticulationRootFrameError as exc:
+            raise NativeTaskArenaRuntimeError([str(exc)]) from exc
 
 
 def build_native_task_arena_environment(
@@ -1183,6 +1255,11 @@ def build_native_task_arena_environment(
             value=float(application["expected_native_value"]),
         )
         subject["usd_path"] = override["derived_usd"]
+        root_binding = (subject.get("articulation_adaptation") or {}).get("native_root_frame_binding")
+        if root_binding is not None:
+            subject["articulation_adaptation"]["native_root_frame_binding"] = (
+                rebind_root_frame_after_overlay(root_binding, subject["usd_path"])
+            )
         material_override_readbacks[application["parameter_id"]] = override
 
     from blueprint_pipeline.native_task_arena_preconstruction import (
@@ -1396,15 +1473,17 @@ def build_native_task_arena_environment(
         task_subject = row.get("task_subject") is True or role == "task_object"
         spawn_addon: dict[str, Any] = {"visible": bool(row["visible"])}
         adaptation = row.get("articulation_adaptation")
+        native_pose = row["pose_world"]
         if row["object_type"] == "ARTICULATION" and isinstance(adaptation, Mapping):
-            # The staged asset already carries the probe-proven grounding --
-            # base link dynamic plus a world PhysicsFixedJoint authored in the
-            # USD itself -- so no Isaac Lab articulation-root override is
-            # needed here. (fix_root_link raises NotImplementedError for a
-            # root Xform that is not itself a rigid body, which every sealed
-            # asset here is; attempt r5 paid for that discovery.) Record the
-            # adaptation so the readback shows what was spawned.
+            # A namespace ArticulationRootAPI lets PhysX select a moving link.
+            # New plans bind one explicit body while preserving fixed/floating
+            # semantics and the original source bytes. Legacy sealed plans
+            # remain replayable without inventing an unsealed frame binding.
             articulation_adaptations[runtime_name] = dict(adaptation)
+            root_binding = adaptation.get("native_root_frame_binding")
+            if root_binding is not None:
+                native_pose = convert_root_pose(native_pose, root_binding, to_native=True)
+                spawn_addon["func"] = root_bound_usd_spawner(root_binding)
         if task_subject:
             spawn_addon["semantic_tags"] = [("class", "task_object")]
         elif role == "task_support":
@@ -1417,6 +1496,8 @@ def build_native_task_arena_environment(
             "object_type": ObjectType[row["object_type"]],
             "usd_path": row["usd_path"],
             "initial_pose": Pose(
+                # Arena's bounding-box/relationship API describes the USD
+                # namespace. Only its native config/reset uses the body pose.
                 position_xyz=tuple(row["pose_world"]["position_world_m"]),
                 rotation_xyzw=tuple(row["pose_world"]["orientation_xyzw"]),
             ),
@@ -1445,10 +1526,10 @@ def build_native_task_arena_environment(
         # gate claimed its root still matched.
         obj.object_cfg.init_state = obj.object_cfg.init_state.replace(
             pos=tuple(
-                float(value) for value in row["pose_world"]["position_world_m"]
+                float(value) for value in native_pose["position_world_m"]
             ),
             rot=tuple(
-                contract_xyzw_to_native_xyzw(row["pose_world"]["orientation_xyzw"])
+                contract_xyzw_to_native_xyzw(native_pose["orientation_xyzw"])
             ),
         )
         if row["object_type"] == "ARTICULATION":

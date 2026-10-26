@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import zipfile
@@ -39,6 +40,13 @@ from blueprint_pipeline.vast_provider_adapter import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_supervisor_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The CI runner's service is not the mocked provider launcher's supervisor.
+    # Watchdog contract tests set their own systemd context explicitly.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+
 def _approval_path(tmp_path: Path) -> Path:
     receipt = build_founder_approval_receipt(
         statement=expected_founder_approval_statement(),
@@ -47,6 +55,167 @@ def _approval_path(tmp_path: Path) -> Path:
     path = tmp_path / "approval.json"
     write_json(path, receipt)
     return path
+
+
+def _dry_run_bundle(tmp_path: Path) -> dict:
+    bundle_path = tmp_path / "retained-bundle.zip"
+    with zipfile.ZipFile(bundle_path, "w") as archive:
+        archive.writestr("retained-input.txt", "retained input")
+    return {
+        "status": "ready",
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("guard_mode", ["missing", "unsafe", "required", "production"])
+def test_live_dry_run_refuses_the_actual_spend_guard_before_provider_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, guard_mode: str
+) -> None:
+    monkeypatch.delenv(arena.SPEND_ADMISSION_LOCK_PATH_ENV, raising=False)
+    monkeypatch.delenv(arena.REQUIRE_SPEND_ADMISSION_LOCK_ENV, raising=False)
+    monkeypatch.delenv("BLUEPRINT_LAUNCH_PROOF_MODE", raising=False)
+    lock_path = tmp_path / "spend-lock.json"
+    if guard_mode in {"missing", "unsafe"}:
+        monkeypatch.setenv(arena.SPEND_ADMISSION_LOCK_PATH_ENV, str(lock_path))
+        if guard_mode == "unsafe":
+            lock_path.write_text("{}")
+            lock_path.chmod(0o660)
+    elif guard_mode == "required":
+        monkeypatch.setenv(arena.REQUIRE_SPEND_ADMISSION_LOCK_ENV, "true")
+    else:
+        monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
+    monkeypatch.setattr(arena, "_vast_credential_file_present", lambda: True)
+
+    def forbidden_provider(**_kwargs):
+        raise AssertionError("a dry run must not enter the provider adapter")
+
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", forbidden_provider)
+    monkeypatch.setattr(arena, "arm_independent_vast_watchdog", forbidden_provider)
+    job = tmp_path / "job"
+    result = arena.run_arena_native_control_vast(
+        approval_path=".", job_dir=job, execute=False,
+        prepared_bundle=_dry_run_bundle(tmp_path), paid_resource_admission_grant=None,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["live_spend_preflight_checked"] is True
+    assert result["provider_mutations_performed"] == 0
+    assert result["estimated_cost_usd"] == 0.0
+    assert any(b.startswith("spend_admission:") for b in result["blockers"])
+    if guard_mode == "unsafe":
+        assert "spend_admission:spend_admission_lock_permission_unsafe" in result["blockers"]
+    assert not (job / "attempts").exists()
+    recorded = json.loads((job / "dry_run_pre_spend/pre_spend_preflight.json").read_text())
+    assert recorded["status"] == "FAIL"
+    assert recorded["spend_allowed"] is False
+
+
+def test_live_dry_run_uses_the_launch_contract_without_allocating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(arena.REQUIRE_SPEND_ADMISSION_LOCK_ENV, "true")
+    monkeypatch.setattr(arena, "_vast_credential_file_present", lambda: True)
+    observed = {}
+
+    def preflight(**kwargs):
+        observed.update(kwargs)
+        return {"status": "PASS", "blockers": [], "spend_allowed": True}
+
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
+    result = arena.run_arena_native_control_vast(
+        approval_path=".", job_dir=tmp_path / "job", execute=False,
+        prepared_bundle=_dry_run_bundle(tmp_path), paid_resource_admission_grant=None,
+        provider_bundle_kind="adp009d_articulated_native",
+        max_hourly_rate_usd=0.60, hard_cap_usd=1.0, hard_ttl_seconds=2400,
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["live_spend_preflight_checked"] is True
+    assert result["pre_spend_preflight"]["status"] == "PASS"
+    assert result["provider_mutations_performed"] == 0
+    assert observed["lane"] == "adp009d_articulated_native"
+    assert observed["provider"] == "vast"
+    assert observed["credential_present"] is True
+    assert observed["spend_gate_open"] is True
+    assert observed["runtime_contract"]["startup_timeout_seconds"] == 2400
+
+
+def test_offline_dry_run_explicitly_does_not_claim_live_spend_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(arena.SPEND_ADMISSION_LOCK_PATH_ENV, raising=False)
+    monkeypatch.delenv(arena.REQUIRE_SPEND_ADMISSION_LOCK_ENV, raising=False)
+    monkeypatch.delenv("BLUEPRINT_LAUNCH_PROOF_MODE", raising=False)
+
+    def forbidden_credentials():
+        raise AssertionError("offline bundle inspection needs no provider credentials")
+
+    monkeypatch.setattr(arena, "_vast_credential_file_present", forbidden_credentials)
+    result = arena.run_arena_native_control_vast(
+        approval_path=".", job_dir=tmp_path / "job", execute=False,
+        prepared_bundle=_dry_run_bundle(tmp_path), paid_resource_admission_grant=None,
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["live_spend_preflight_checked"] is False
+    assert "pre_spend_preflight" not in result
+    assert result["provider_mutations_performed"] == 0
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_missing_watchdog_survival_contract_is_refused_before_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
+) -> None:
+    from blueprint_pipeline import vast_independent_watchdog_control as watchdog
+
+    monkeypatch.setenv("INVOCATION_ID", "hermetic-systemd-invocation")
+    monkeypatch.delenv(watchdog.CALLER_EXIT_SURVIVAL_ENV, raising=False)
+
+    def forbidden(**_kwargs):
+        raise AssertionError("unsupported launcher must stop before staging or arming")
+
+    monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", forbidden)
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", forbidden)
+    monkeypatch.setattr(arena, "arm_independent_vast_watchdog", forbidden)
+    job = tmp_path / "job"
+    result = arena.run_arena_native_control_vast(
+        approval_path=".", job_dir=job, execute=execute,
+        prepared_bundle=_dry_run_bundle(tmp_path), paid_resource_admission_grant=None,
+        require_independent_watchdog=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["all_staged_objects_absent"] is True
+    assert result["blockers"] == ["adp_arena_independent_watchdog_caller_exit_survival_unproven"]
+    assert result["independent_watchdog_preflight"]["watchdog_armed"] is False
+    assert not (job / "attempts").exists()
+
+
+def test_supported_watchdog_launch_contract_does_not_claim_it_is_armed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import vast_independent_watchdog_control as watchdog
+
+    monkeypatch.setenv("INVOCATION_ID", "hermetic-systemd-invocation")
+    monkeypatch.setenv(watchdog.CALLER_EXIT_SURVIVAL_ENV, watchdog.SYSTEMD_KILL_MODE_PROCESS_SURVIVAL)
+    monkeypatch.delenv(arena.SPEND_ADMISSION_LOCK_PATH_ENV, raising=False)
+    monkeypatch.delenv(arena.REQUIRE_SPEND_ADMISSION_LOCK_ENV, raising=False)
+    monkeypatch.delenv("BLUEPRINT_LAUNCH_PROOF_MODE", raising=False)
+    result = arena.run_arena_native_control_vast(
+        approval_path=".", job_dir=tmp_path / "job", execute=False,
+        prepared_bundle=_dry_run_bundle(tmp_path), paid_resource_admission_grant=None,
+        require_independent_watchdog=True,
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["independent_watchdog_preflight"] == {
+        "caller_exit_survival_contract": watchdog.SYSTEMD_KILL_MODE_PROCESS_SURVIVAL,
+        "caller_exit_survival_supported": True,
+        "watchdog_armed": False,
+    }
+    assert result["provider_mutations_performed"] == 0
 
 
 def test_policy_query_blocker_does_not_invent_query_when_receipt_is_missing() -> None:
@@ -1012,7 +1181,10 @@ def test_avoidlist_already_in_the_job_directory_does_not_abort_the_launch(
     assert not staged.exists()
 
 
-def test_native_pre_spend_waits_for_fresh_billing_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("bundle_kind", ["native_task_arena", "adp009d_articulated_native"])
+def test_native_pre_spend_waits_for_fresh_billing_lock(
+    monkeypatch: pytest.MonkeyPatch, bundle_kind: str
+) -> None:
     seen: list[int] = []
     sleeps: list[int] = []
 
@@ -1027,7 +1199,7 @@ def test_native_pre_spend_waits_for_fresh_billing_lock(monkeypatch: pytest.Monke
     monkeypatch.setattr(arena, "require_pre_spend_preflight", preflight)
     monkeypatch.setattr(arena.time, "sleep", sleeps.append)
     assert arena._require_native_pre_spend_preflight(
-        provider_bundle_kind="native_task_arena", preflight_args={}
+        provider_bundle_kind=bundle_kind, preflight_args={}
     ) == {"status": "PASS"}
     assert len(seen) == 2 and sleeps == [15]
 
@@ -1173,3 +1345,20 @@ def test_failed_download_keeps_paid_remote_evidence_and_recovery_access(tmp_path
         assert 'test-only-protected-reference' not in json.dumps(result)
     else:
         assert result['status'] == 'completed' and not remote and not access.exists()
+
+
+@pytest.mark.parametrize('absent,continuing', [(True, False), (False, False), (True, True), (True, None)])
+def test_missing_archive_cleanup_requires_independent_provider_zero(tmp_path, monkeypatch, absent, continuing):
+    calls = []
+    def cleanup(path, **kwargs):
+        calls.append((path, kwargs))
+        return {'status': 'completed', 'all_objects_absent': True}
+    monkeypatch.setattr(arena, 'cleanup_staged_wam_provider_objects', cleanup)
+    result = arena._cleanup_downloaded_provider_objects(staging_dir=tmp_path, output_zip=tmp_path / 'missing.zip',
+        adapter={'provider_create_attempted': True, 'continuing_spend_from_this_run': continuing},
+        provider_zero_confirmed=absent)
+    if absent and continuing is False:
+        assert calls == [(tmp_path, {'require_outputs_absent': True})]
+        assert result['status'] == 'completed'
+    else:
+        assert not calls and result['remote_objects_retained_for_recovery'] is True

@@ -23,6 +23,7 @@ bound below only ratchets down.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,10 @@ SCRIPTS = REPO_ROOT / "scripts"
 #: reachable, so that final change lowers the net count by three.
 #: It may fall and never rise.
 #:
+#: #2908 pushed it to 70: the articulated construction inputs and the native
+#: continuation controls input landed with no command line. Both now have one,
+#: and with #2920's two camera-start producers reachable it is 66.
+#:
 #: It went to 76 once, when the semantic-teacher image-edit lane landed with all
 #: three of its terminal materializers -- result, provider zero, and the
 #: no-allocation closeout -- reachable from nothing. That is the shape this
@@ -52,7 +57,10 @@ SCRIPTS = REPO_ROOT / "scripts"
 #: Naming all 73 individually would be a list nobody maintains; the population
 #: is rediscovered every run and only its size is pinned, so a new unreachable
 #: materializer fails here even though no name was ever written down.
-UNREACHABLE_MATERIALIZER_BUDGET = 68
+UNREACHABLE_MATERIALIZER_BUDGET = 66
+
+
+_TOP_LEVEL_MATERIALIZER = re.compile(r"^def\s+materialize_", re.MULTILINE)
 
 
 def _module_sources() -> dict[Path, str]:
@@ -70,6 +78,10 @@ def _unreachable() -> list[tuple[str, str]]:
     scripts = _script_sources()
     found: list[tuple[str, str]] = []
     for path, text in modules.items():
+        # Only a module with a top-level materializer can add one; parsing the
+        # rest is most of the cost of running this on every pull request.
+        if not _TOP_LEVEL_MATERIALIZER.search(text):
+            continue
         tree = ast.parse(text)
         names = [
             node.name
@@ -104,6 +116,7 @@ def test_the_population_is_discoverable() -> None:
     total = sum(
         1
         for text in modules.values()
+        if _TOP_LEVEL_MATERIALIZER.search(text)
         for node in ast.parse(text).body
         if isinstance(node, ast.FunctionDef) and node.name.startswith("materialize_")
     )
@@ -121,6 +134,17 @@ def test_unreachable_materializers_only_ever_decrease() -> None:
         "new one an entry point rather than raising this number: a receipt "
         "producer nothing can call is a lane that dead-ends on a missing input.\n"
         + "\n".join(f"  {module}.{name}" for module, name in sorted(unreachable)[:12])
+    )
+
+
+def test_the_ratchet_runs_on_every_pull_request() -> None:
+    """#2908 merged green and turned main red: only the full suite ran this."""
+
+    from blueprint_pipeline.impacted_test_selection import SENTINEL_TESTS
+
+    assert (
+        "tests/test_materializer_reachability.py::"
+        "test_unreachable_materializers_only_ever_decrease" in SENTINEL_TESTS
     )
 
 

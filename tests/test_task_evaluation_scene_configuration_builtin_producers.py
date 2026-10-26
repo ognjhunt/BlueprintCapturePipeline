@@ -44,6 +44,31 @@ def _toolchain(tmp_path: Path, commit: str) -> Path:
     return root
 
 
+def test_registry_checks_its_shared_runtime_once_and_rechecks_the_next_operation(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_configuration_builtin_producers as module
+    commit = "a" * 40
+    root = _toolchain(tmp_path, commit)
+    original = module._validate_toolchain
+    calls = []
+    def validate(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+    monkeypatch.setattr(module, "_validate_toolchain", validate)
+    registry = module.builtin_scene_configuration_stage_producer_registry(
+        toolchain_root=root, expected_source_commit=commit, environment={})
+    assert registry is not None and len(calls) == 1
+    # No verdict survives the operation. A changed installed entrypoint must
+    # refuse even though this exact root was valid in the preceding call.
+    entrypoint = next(path for path in (root / "stages").iterdir() if path.is_file())
+    entrypoint.chmod(0o755)
+    entrypoint.write_bytes(entrypoint.read_bytes() + b"\n# changed\n")
+    entrypoint.chmod(0o555)
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError):
+        module.builtin_scene_configuration_stage_producer_registry(
+            toolchain_root=root, expected_source_commit=commit, environment={})
+    assert len(calls) == 2
+
+
 def test_builtin_producer_executes_only_sealed_entrypoint_and_redacts_secret(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

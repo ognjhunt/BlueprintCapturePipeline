@@ -36,6 +36,7 @@ SENTINEL_TESTS = (
     "tests/test_release_quality_governance.py::test_repository_source_governance_policy_is_satisfied",
     "tests/test_release_engineering_contracts.py::test_risk_based_verification_workflows_are_bounded",
     "tests/test_lane_writer_governance.py::test_reviewed_lane_writer_manifest_is_satisfied",
+    "tests/test_materializer_reachability.py::test_unreachable_materializers_only_ever_decrease",
 )
 
 CROSS_CUTTING_FILES = {

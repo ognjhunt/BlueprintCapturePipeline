@@ -8,7 +8,6 @@ for log redaction and never placed in argv, JSON inputs, receipts, or outputs.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -21,6 +20,7 @@ from typing import Any
 
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .immutable_file_digest import sha256_file
 from .task_evaluation_scene_configuration_component_package import (
     TaskEvaluationSceneConfigurationComponentPackageError,
     validate_scene_configuration_component_package,
@@ -123,11 +123,7 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return sha256_file(path)
 
 
 def _read(path: Path, *, code: str) -> dict[str, Any]:
@@ -365,8 +361,9 @@ def _handler(
     diagnostic_only: bool,
     runner: Runner,
     environment: Mapping[str, str],
+    validated_toolchain: tuple[dict[str, Any], dict[str, Path]] | None = None,
 ) -> Callable[..., Mapping[str, Any]]:
-    manifest, entrypoints = _validate_toolchain(
+    manifest, entrypoints = validated_toolchain or _validate_toolchain(
         root=toolchain_root, expected_source_commit=expected_source_commit
     )
     executable = entrypoints[identity.adapter_id]
@@ -544,6 +541,10 @@ def builtin_scene_configuration_stage_producer_registry(
             "scene_configuration_toolchain_environment_missing"
         )
     root = Path(unresolved).expanduser().resolve()
+    # Every handler belongs to this same published tree. Validate its full
+    # inventory once for this construction, rather than once per handler.
+    # A later registry construction performs a fresh validation.
+    validated = _validate_toolchain(root=root, expected_source_commit=expected_source_commit)
     handlers = {
         identity: _handler(
             identity=identity,
@@ -552,6 +553,7 @@ def builtin_scene_configuration_stage_producer_registry(
             diagnostic_only=diagnostic_only,
             runner=runner,
             environment=values,
+            validated_toolchain=validated,
         )
         for identity in ADMITTED_PRODUCER_IDENTITIES
     }

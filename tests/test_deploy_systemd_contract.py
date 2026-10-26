@@ -1050,3 +1050,12 @@ def test_streamed_canary_units_bind_the_b2_artifact_store() -> None:
         lines = unit.splitlines()
         assert [line for line in lines if line in bindings] == bindings, name
         assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in lines, name
+
+
+def test_intake_reads_website_preparation_status_from_the_listener_tree() -> None:
+    """Beta L3/L6: the signed status route finds a website capture that no capture-root map
+    names in the listener's own tree. The intake unit binds that tree itself, exactly as the
+    listener does, instead of depending on what the shared environment file happens to set."""
+    binding = "Environment=BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT=/var/lib/blueprint/pubsub-handoffs"
+    for name in ("blueprint-pipeline-intake.service", "blueprint-pubsub-handoff-listener.service"):
+        assert binding in _read(name).splitlines(), name
