@@ -99,6 +99,51 @@ def test_bundle_cli_exposes_every_immutable_input(monkeypatch, capsys) -> None:
     assert '"status": "ready"' in capsys.readouterr().out
 
 
+def _generic_cli_args() -> list[str]:
+    return ["--job-dir", "job", "--packet-dir", "packet",
+            "--runtime-source-packet-receipt", "runtime.json", "--runtime-input-manifest-path", "inputs.json",
+            "--session-authority-path", "authority.json", "--implementation-commit", "a" * 40]
+
+
+def test_bundle_cli_rebuilds_a_hosted_candidate_without_legacy_pair_inputs(monkeypatch) -> None:
+    observed = {}
+    monkeypatch.setattr(bundle, "build_policy_canary_session_bundle",
+                        lambda **kwargs: observed.update(kwargs) or {"status": "ready"})
+    assert bundle.main([*_generic_cli_args(), "--execution-spec-path", "hosted_alpha=/sealed/policy=a.json"]) == 0
+    assert observed["execution_spec_paths"] == {"hosted_alpha": "/sealed/policy=a.json"}
+    assert observed["checkpoint_inventory_paths"] is None
+    assert observed["pi05_execution_spec_path"] is None and observed["groot_execution_spec_path"] is None
+
+
+def test_bundle_cli_passes_repeatable_specs_and_checkpoint_inventory_mapping(monkeypatch) -> None:
+    observed = {}
+    monkeypatch.setattr(bundle, "build_policy_canary_session_bundle",
+                        lambda **kwargs: observed.update(kwargs) or {"status": "ready"})
+    assert bundle.main([*_generic_cli_args(),
+        "--execution-spec-path", "pi05_droid=pi05.json", "--execution-spec-path", "groot_n17_droid=groot.json",
+        "--checkpoint-inventory-path", "pi05_droid=/sealed/inventory with spaces.json"]) == 0
+    assert observed["execution_spec_paths"] == {"pi05_droid": "pi05.json", "groot_n17_droid": "groot.json"}
+    assert observed["checkpoint_inventory_paths"] == {"pi05_droid": "/sealed/inventory with spaces.json"}
+
+
+@pytest.mark.parametrize("flags", [
+    ["--execution-spec-path", "missing-separator"],
+    ["--execution-spec-path", "../unsafe=spec.json"],
+    ["--execution-spec-path", "candidate="],
+    ["--execution-spec-path", "candidate=spec.json", "--execution-spec-path", "candidate=other.json"],
+    ["--execution-spec-path", "candidate=spec.json", "--pi05-execution-spec-path", "ignored.json"],
+    ["--execution-spec-path", "candidate=spec.json", "--checkpoint-inventory-path", "candidate=inventory.json",
+     "--checkpoint-inventory-path", "candidate=other.json"],
+    ["--execution-spec-path", "candidate=spec.json", "--checkpoint-inventory-path", "pi05_droid=inventory.json",
+     "--pi05-checkpoint-inventory-path", "ignored.json"],
+])
+def test_bundle_cli_rejects_ambiguous_candidate_paths_before_build(monkeypatch, flags) -> None:
+    monkeypatch.setattr(bundle, "build_policy_canary_session_bundle", lambda **kwargs: pytest.fail("must not build"))
+    with pytest.raises(SystemExit) as raised:
+        bundle.main([*_generic_cli_args(), *flags])
+    assert raised.value.code == 2
+
+
 def test_provider_entrypoint_provisions_both_servers_once_and_runs_one_worker() -> None:
     script = bundle._entrypoint()
 

@@ -573,13 +573,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runtime-source-packet-receipt", required=True)
     parser.add_argument("--runtime-input-manifest-path", required=True)
     parser.add_argument("--session-authority-path", required=True)
-    parser.add_argument("--pi05-execution-spec-path", required=True)
-    parser.add_argument("--groot-execution-spec-path", required=True)
-    parser.add_argument("--pi05-checkpoint-inventory-path", required=True)
+    parser.add_argument("--pi05-execution-spec-path")
+    parser.add_argument("--groot-execution-spec-path")
+    parser.add_argument("--pi05-checkpoint-inventory-path")
+    parser.add_argument("--execution-spec-path", action="append", dest="execution_spec_paths",
+                        metavar="CANDIDATE=PATH", help="Repeat for each admitted candidate; replaces the legacy pair flags.")
+    parser.add_argument("--checkpoint-inventory-path", action="append", dest="checkpoint_inventory_paths",
+                        metavar="CANDIDATE=PATH", help="Repeat for each candidate needing a local checkpoint inventory.")
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--hotfix-overlay")
     parser.add_argument("--generated-at")
     args = parser.parse_args(argv)
+
+    def named_paths(values: list[str] | None, flag: str) -> dict[str, str] | None:
+        if values is None:
+            return None
+        result = {}
+        for value in values:
+            candidate, separator, path = value.partition("=")
+            if (not separator or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", candidate) is None
+                    or not path.strip() or any(ord(char) < 32 or ord(char) == 127 for char in path)):
+                parser.error(f"{flag} requires CANDIDATE=PATH with a valid candidate ID and nonempty path")
+            if candidate in result:
+                parser.error(f"{flag} repeats candidate {candidate}")
+            result[candidate] = path
+        return result
+
+    args.execution_spec_paths = named_paths(args.execution_spec_paths, "--execution-spec-path")
+    args.checkpoint_inventory_paths = named_paths(args.checkpoint_inventory_paths, "--checkpoint-inventory-path")
+    if args.execution_spec_paths and (args.pi05_execution_spec_path or args.groot_execution_spec_path):
+        parser.error("use --execution-spec-path or the legacy pair spec flags, not both")
+    if args.checkpoint_inventory_paths and args.pi05_checkpoint_inventory_path:
+        parser.error("use --checkpoint-inventory-path or --pi05-checkpoint-inventory-path, not both")
+    if not args.execution_spec_paths and not (args.pi05_execution_spec_path and args.groot_execution_spec_path):
+        parser.error("provide --execution-spec-path or both legacy pair spec flags")
     receipt = build_policy_canary_session_bundle(
         job_dir=args.job_dir,
         packet_dir=args.packet_dir,
@@ -589,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
         pi05_execution_spec_path=args.pi05_execution_spec_path,
         groot_execution_spec_path=args.groot_execution_spec_path,
         pi05_checkpoint_inventory_path=args.pi05_checkpoint_inventory_path,
+        execution_spec_paths=args.execution_spec_paths,
+        checkpoint_inventory_paths=args.checkpoint_inventory_paths,
         implementation_commit=args.implementation_commit,
         hotfix_overlay_path=args.hotfix_overlay,
         generated_at=args.generated_at,
