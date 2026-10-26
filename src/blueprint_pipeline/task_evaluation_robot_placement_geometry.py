@@ -1374,7 +1374,11 @@ def enumerate_robot_placement_geometry_candidates(
                 if report["status"] != "passed":
                     arm_path_blockers.update(blocker.split(":", 1)[0] for blocker in report["blockers"])
                     continue
-                kept.append((score, {**proposal, "arm_path_clearance": _arm_path_record(report)}, gate))
+                record = _arm_path_record(report)
+                # A base where the planned grip clears ranks first: the reset pose and a scripted
+                # rehearsal hold the handle there, and so most likely does a policy.
+                planned = record["grip_slide_m"] == 0.0 and record["grip_roll_deg"] == 0.0
+                kept.append(((0 if planned else 1, *score), {**proposal, "arm_path_clearance": record}, gate))
             candidates = kept
         elif arm_path_not_applicable and candidates:
             candidates = [(score, {**proposal, "arm_path_clearance": arm_path_not_applicable}, gate)

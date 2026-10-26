@@ -408,21 +408,26 @@ def test_placement_keeps_only_bases_whose_arm_the_moving_part_misses(tmp_path, m
         y = base_pose_world["position_world_m"][1]
         tested.append(y)
         struck = abs(y) < 0.3  # in front of the 0.6 m wide door
-        return {"status": "blocked" if struck else "passed", "margin_m": 0.02, "grips_tried": 25,
+        # On one side the planned grip clears; on the other only a grip slid along the handle does.
+        slide = 0.0 if y < 0 else 0.11
+        return {"status": "blocked" if struck else "passed", "margin_m": 0.02, "grips_tried": 1 if slide == 0 else 6,
                 "blockers": ["robot_arm_in_task_part_path:door_hinge@50deg:panda_link4"] if struck else [],
-                "best_grip": None if struck else {"slide_m": 0.11, "roll_deg": 0.0, "minimum_clearance_m": None},
+                "best_grip": None if struck else {"slide_m": slide, "roll_deg": 0.0, "minimum_clearance_m": None},
                 "report_digest": "sha256:" + "0" * 64}
 
     monkeypatch.setattr(geometry, "arm_path_clearance", gate)
     ids, waypoints = _door_trajectory()
     diagnostics = {}
     candidates = enumerate_robot_placement_geometry_candidates(
-        index=index, target_position_world_m=[0.06, 0.0, 0.8], maximum_candidates=3,
+        index=index, target_position_world_m=[0.06, 0.0, 0.8], maximum_candidates=8,
         trajectory_waypoints_world_m=waypoints, trajectory_phase_ids=ids, diagnostics=diagnostics)
     assert candidates and all(abs(row["pose"]["position_world_m"][1]) >= 0.3 for row in candidates)
-    assert all(row["arm_path_clearance"] == {
-        "status": "passed", "margin_m": 0.02, "grips_tried": 25, "grip_slide_m": 0.11, "grip_roll_deg": 0.0,
-        "minimum_clearance_m": None, "report_digest": "sha256:" + "0" * 64} for row in candidates)
+    records = [row["arm_path_clearance"] for row in candidates]
+    assert all(record["status"] == "passed" and record["report_digest"] == "sha256:" + "0" * 64
+               and record["grip_roll_deg"] == 0.0 for record in records)
+    # Bases where the planned grip clears come first, each group in the search's own order.
+    slides = [record["grip_slide_m"] for record in records]
+    assert 0.0 in slides and 0.11 in slides and slides == sorted(slides)
     assert diagnostics["arm_path_tested_count"] == len(tested) <= len(candidates) + diagnostics["arm_path_rejected_count"]
     assert diagnostics["arm_path_blocker_counts"] == (
         {"robot_arm_in_task_part_path": diagnostics["arm_path_rejected_count"]}
