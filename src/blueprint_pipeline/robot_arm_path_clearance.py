@@ -38,14 +38,17 @@ from .scene_physics_preflight import (
     ScenePhysicsPreflightError,
     _collider_surface,
     _depths,
+    _file_sha256,
     _movable_joint,
     _pose_matrix,
     body_poses,
     descendants,
     load_asset_model,
+    task_motion_ranges,
 )
 
 SCHEMA_VERSION = "robot_arm_path_clearance.v1"
+PACKET_REPORT_FILENAME = "native_task_robot_arm_path_clearance.v1.json"
 DEFAULT_MARGIN_M = 0.02
 # Where along the handle's free half-length the hand closes, and how far it is turned about the handle.
 GRIP_SLIDE_FRACTIONS = (0.0, -0.4, 0.4, -0.8, 0.8)
@@ -69,6 +72,14 @@ REST_SEED_RAD = {"franka_panda": (0.0, -0.6283, 0.0, -2.5133, 0.0, 1.8850, 0.0)}
 
 class RobotArmPathClearanceError(ValueError):
     """Stable refusal codes."""
+
+
+class RobotArmPathAdmissionBlocked(RobotArmPathClearanceError):
+    """A paid native run would start where the task's moving part strikes the arm."""
+
+    def __init__(self, blockers: Sequence[str]):
+        super().__init__(",".join(blockers))
+        self.blockers = list(blockers)
 
 
 def _directions() -> np.ndarray:
@@ -433,3 +444,80 @@ def arm_path_clearance(*, robot_id: str, base_pose_world: Mapping[str, Sequence[
     }
     result["report_digest"] = canonical_digest(result, digest_field="report_digest")
     return result
+
+
+def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
+    """The gate on a compiled native packet, read from its scene plan alone.
+
+    The base is the plan's robot pose and the part is the task subject at its reset. The contact and
+    approach are the task's interaction affordance: the point on the contact link, the outward approach
+    and the pre-contact clearance, the same contact the placement trajectory plans. The arm starts from
+    the plan's reset pose. A plan that moves no part is not applicable.
+    """
+    import json
+
+    from .articulated_control_planner import DEFAULT_APPROACH_STANDOFF_M
+    from .decision_evidence_contracts import canonical_digest as digest
+
+    root = Path(packet_dir)
+    plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
+
+    def not_applicable(reason: str) -> dict[str, Any]:
+        result = {"schema_version": SCHEMA_VERSION, "status": "not_applicable", "reason": reason,
+                  "arena_scene_plan_digest": plan.get("plan_digest"), "blockers": [], "report_digest": ""}
+        result["report_digest"] = digest(result, digest_field="report_digest")
+        return result
+
+    articulated = [o for o in plan.get("objects") or [] if isinstance(o, Mapping) and o.get("object_type") == "ARTICULATION"]
+    if not articulated:
+        return not_applicable("no_articulated_object")
+    try:
+        ranges = task_motion_ranges(plan)
+    except ScenePhysicsPreflightError as exc:
+        raise RobotArmPathClearanceError(f"robot_arm_path_task_range_unknown:{exc}") from exc
+    if not ranges:
+        return not_applicable("task_moves_no_part")
+    subjects = [o for o in articulated if o.get("task_subject") is True or o.get("semantic_role") == "task_object"]
+    if len(subjects) != 1 or len(ranges) != 1:
+        raise RobotArmPathClearanceError("robot_arm_path_task_subject_ambiguous")
+    subject, ((joint_id, span),) = subjects[0], ranges.items()
+    asset = (root / str(subject.get("usd_path") or "")).resolve()
+    if root.resolve() not in asset.parents or not asset.is_file() or _file_sha256(asset) != subject.get("sha256"):
+        raise RobotArmPathClearanceError("robot_arm_path_task_asset_unbound")
+    reset = subject.get("reset_state") or {}
+    pose = reset.get("root_pose_world") or subject["pose_world"]
+    affordance = (plan.get("task_spec") or {}).get("interaction_affordance") or {}
+    try:
+        (link,) = affordance["contact_body_prim_paths"]
+        point = np.asarray(affordance["contact_point_link_m"], dtype=float)
+        outward = np.asarray(affordance["approach_unit_asset_root"], dtype=float)
+        standoff = float(affordance.get("precontact_clearance_m", DEFAULT_APPROACH_STANDOFF_M))
+        robot = plan["robot"]
+        seed = [float(robot["joint_reset_positions_rad"][f"panda_joint{i}"]) for i in range(1, 8)]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RobotArmPathClearanceError("robot_arm_path_contact_affordance_invalid") from exc
+    try:
+        model = load_asset_model(asset)
+        world_from_link = _pose_matrix(pose) @ body_poses(model, reset.get("joint_positions"))[str(link)]
+    except (ScenePhysicsPreflightError, KeyError) as exc:
+        raise RobotArmPathClearanceError(f"robot_arm_path_contact_link_unmeasurable:{exc}") from exc
+    contact = world_from_link[:3, :3] @ point + world_from_link[:3, 3]
+    approach = contact + standoff * (_pose_matrix(pose)[:3, :3] @ outward)
+    report = arm_path_clearance(
+        robot_id=str(robot.get("robot_id")), base_pose_world=robot["base_pose_world"], asset_usd=asset,
+        asset_pose_world=pose, joint_id=joint_id, task_range=span, reset_joint_positions=reset.get("joint_positions"),
+        contact_point_world=contact, approach_point_world=approach, seed_joint_positions=seed)
+    report = {**report, "arena_scene_plan_digest": plan.get("plan_digest"), "report_digest": ""}
+    report["report_digest"] = digest(report, digest_field="report_digest")
+    return report
+
+
+def require_robot_arm_path_admission(packet_dir: str | Path) -> dict[str, Any]:
+    """Refuse a paid native run whose packet the gate blocks or cannot measure."""
+    try:
+        report = packet_arm_path_clearance(packet_dir)
+    except RobotArmPathClearanceError as exc:
+        raise RobotArmPathAdmissionBlocked(["robot_arm_path_refused:" + str(exc)]) from exc
+    if report["status"] == "blocked":
+        raise RobotArmPathAdmissionBlocked(report["blockers"])
+    return report

@@ -487,13 +487,26 @@ def test_bundle_refuses_a_packet_the_physics_check_blocks(
         "implementation_commit": "a" * 40,
         "generated_at": "fixed",
     }
+    from blueprint_pipeline import robot_arm_path_clearance as arm
     from blueprint_pipeline import scene_camera_visibility as camera
 
     build_native_task_arena_bundle(job_dir=tmp_path / "job", **kwargs)
-    for name in (physics.PACKET_REPORT_FILENAME, camera.PACKET_REPORT_FILENAME):
+    for name in (physics.PACKET_REPORT_FILENAME, camera.PACKET_REPORT_FILENAME, arm.PACKET_REPORT_FILENAME):
         report = json.loads((tmp_path / "job" / name).read_text())
         assert report["status"] == "not_applicable"
         assert report["arena_scene_plan_digest"] == "sha256:" + "p" * 64
+
+    def struck(packet_dir):
+        raise arm.RobotArmPathAdmissionBlocked(["robot_arm_in_task_part_path:door_hinge@54deg:panda_link2"])
+
+    with monkeypatch.context() as patch:
+        patch.setattr(arm, "require_robot_arm_path_admission", struck)
+        with pytest.raises(NativeTaskArenaBundleError) as error:
+            build_native_task_arena_bundle(job_dir=tmp_path / "job-struck", **kwargs)
+    assert error.value.errors == (
+        "native_task_arena_bundle_robot_arm_path_blocked:robot_arm_in_task_part_path:door_hinge@54deg:panda_link2",
+    )
+    assert not (tmp_path / "job-struck").exists()
 
     def hidden(packet_dir):
         raise camera.SceneCameraVisibilityBlocked(["scene_camera_contact_occluded_by_scene:external:37%"])

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import shutil
 
 import numpy as np
 import pytest
@@ -9,9 +12,12 @@ from pxr import Gf, Usd, UsdGeom, UsdPhysics
 from blueprint_pipeline.robot_arm_path_clearance import (
     ARM_LINK_BOUNDS,
     DIRECTIONS,
+    RobotArmPathAdmissionBlocked,
     RobotArmPathClearanceError,
     arm_path_clearance,
     measure_arm_link_bounds,
+    packet_arm_path_clearance,
+    require_robot_arm_path_admission,
 )
 from blueprint_pipeline.scene_physics_preflight import ROBOT_FIXED_VOLUMES
 
@@ -134,3 +140,61 @@ def test_the_link_table_is_bound_to_the_runtime_robot_the_base_volumes_were_meas
         arm_path_clearance(robot_id="ur5e", base_pose_world={}, asset_usd="x", asset_pose_world={}, joint_id="j",
                            task_range=[0.0, 1.0], reset_joint_positions=None, contact_point_world=[0.0, 0.0, 0.0],
                            approach_point_world=[0.1, 0.0, 0.0])
+
+
+def _packet(tmp_path, x, y):
+    """A compiled packet's scene plan around the cabinet: the paid gate reads nothing else."""
+    root = tmp_path / f"packet-{x}-{y}"
+    (root / "assets").mkdir(parents=True)
+    asset = root / "assets" / "cabinet.usda"
+    shutil.copy(_cabinet(tmp_path), asset)
+    yaw = math.atan2(-y, 0.05 - x)
+    plan = {
+        "plan_digest": "sha256:" + "p" * 64,
+        "objects": [{"name": "task_object", "object_type": "ARTICULATION", "semantic_role": "task_object",
+                     "usd_path": "assets/cabinet.usda", "sha256": "sha256:" + hashlib.sha256(asset.read_bytes()).hexdigest(),
+                     "pose_world": {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
+                     "reset_state": {"joint_positions": {"door_hinge": 0.0}}}],
+        "articulation": {"task_joint_prim_paths": {"door": "{ENV_REGEX_NS}/task_object/door_hinge"}},
+        "task_spec": {"task_kind": "articulated_open_close",
+                      "executable_opening_threshold": {"target_joint_id": "door", "reset_position": 0.0,
+                                                       "success_interval": [math.radians(54), math.radians(90)]},
+                      "interaction_affordance": {"contact_body_prim_paths": ["/Cabinet/door"],
+                                                 "contact_point_link_m": [0.06, 0.0, 0.80],
+                                                 "approach_unit_asset_root": [1.0, 0.0, 0.0],
+                                                 "precontact_clearance_m": 0.10}},
+        "robot": {"robot_id": "franka_panda",
+                  "base_pose_world": {"position_world_m": [x, y, 0.0],
+                                      "orientation_xyzw": [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)]},
+                  "joint_reset_positions_rad": {f"panda_joint{i}": v for i, v in
+                                                enumerate((0.0, -0.6283, 0.0, -2.5133, 0.0, 1.885, 0.0), start=1)}},
+    }
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    return root
+
+
+def test_the_paid_launch_rechecks_a_packet_from_its_own_plan(tmp_path):
+    # A packet compiled before the placement gate existed reaches the paid launch with no record of it.
+    diagonal = _packet(tmp_path, 0.60, 0.45)
+    clear = packet_arm_path_clearance(diagonal)
+    assert clear["status"] == "passed" and clear["arena_scene_plan_digest"] == "sha256:" + "p" * 64
+    assert clear["joint_id"] == "door_hinge" and clear["joint_span"] == [0.0, pytest.approx(math.radians(54))]
+    assert require_robot_arm_path_admission(diagonal)["report_digest"] == clear["report_digest"]
+    with pytest.raises(RobotArmPathAdmissionBlocked) as struck:
+        require_robot_arm_path_admission(_packet(tmp_path, 0.60, 0.0))
+    (blocker,) = struck.value.blockers
+    assert blocker.startswith("robot_arm_in_task_part_path:door_hinge@")
+
+
+def test_the_paid_launch_refuses_what_it_cannot_measure_and_skips_rigid_tasks(tmp_path):
+    packet = _packet(tmp_path, 0.60, 0.45)
+    (packet / "assets" / "cabinet.usda").write_text("#usda 1.0\n")
+    with pytest.raises(RobotArmPathAdmissionBlocked) as unbound:
+        require_robot_arm_path_admission(packet)
+    assert unbound.value.blockers == ["robot_arm_path_refused:robot_arm_path_task_asset_unbound"]
+    rigid = _packet(tmp_path, 0.75, 0.30)
+    plan = json.loads((rigid / "native_task_arena_scene_plan.v1.json").read_text())
+    plan["task_spec"]["task_kind"] = "rigid_pick_place"
+    (rigid / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    report = require_robot_arm_path_admission(rigid)
+    assert (report["status"], report["reason"]) == ("not_applicable", "task_moves_no_part")

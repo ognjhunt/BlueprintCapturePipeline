@@ -572,6 +572,19 @@ def build_native_task_arena_bundle(
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_scene_camera_blocked:" + item for item in exc.blockers]
         ) from exc
+    # Nor from a base where the task's moving part strikes the arm whatever the grip.
+    from .robot_arm_path_clearance import (
+        PACKET_REPORT_FILENAME as ARM_PATH_REPORT_FILENAME,
+        RobotArmPathAdmissionBlocked,
+        require_robot_arm_path_admission,
+    )
+
+    try:
+        arm_path_report = require_robot_arm_path_admission(packet_root)
+    except RobotArmPathAdmissionBlocked as exc:
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_robot_arm_path_blocked:" + item for item in exc.blockers]
+        ) from exc
     try:
         packet_request = json.loads(
             (packet_root / "native_task_arena_packet_request.v1.json").read_text(
@@ -928,6 +941,7 @@ def build_native_task_arena_bundle(
     # Evidence beside the receipt, bound to the same scene plan digest.
     write_json(job / PACKET_REPORT_FILENAME, physics_report)
     write_json(job / CAMERA_REPORT_FILENAME, camera_report)
+    write_json(job / ARM_PATH_REPORT_FILENAME, arm_path_report)
     write_json(job / "native_task_arena_provider_bundle_receipt.v1.json", receipt)
     return receipt
 
