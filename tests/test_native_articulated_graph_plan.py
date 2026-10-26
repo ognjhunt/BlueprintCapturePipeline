@@ -935,12 +935,32 @@ class _GraphControlEnvironment:
         }
 
 
+class _GravityLoadedGraphControlEnvironment(_GraphControlEnvironment):
+    """A released part falls past its success interval; the robot must hold it."""
+
+    def reset(self) -> None:
+        super().reset()
+        self.opened = False
+        self.actions = []
+
+    def step(self, action) -> None:
+        super().step(action)
+        self.actions.append(list(action))
+        self.opened = self.opened or self.joints["panel_hinge"] >= 0.8
+        if self.opened and self.gripper <= 0.5:
+            self.joints.update(panel_hinge=1.0, follower_hinge=0.05)
+
+
+@pytest.mark.parametrize("release_required", [None, True, False])
 def test_graph_articulated_control_runs_zero_then_positive_through_shared_scorer(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path, monkeypatch: pytest.MonkeyPatch, release_required
 ) -> None:
     from blueprint_pipeline import adp009d_control_episode as controls_module
 
     scene = _scene()
+    if release_required is not None:
+        scene["task_spec"]["release_required"] = release_required
+        scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
     construction = _construction(scene)
     plan = materialize_native_task_control_plan(
         scene_plan=scene, construction_result=construction
@@ -970,8 +990,13 @@ def test_graph_articulated_control_runs_zero_then_positive_through_shared_scorer
         ),
     )
 
+    environment = (
+        _GravityLoadedGraphControlEnvironment(construction, plan)
+        if release_required is False
+        else _GraphControlEnvironment(construction, plan)
+    )
     pair = run_task_neutral_controls(
-        environment=_GraphControlEnvironment(construction, plan),
+        environment=environment,
         task_spec=scene["task_spec"],
         control_plan=plan,
         gripper_open_command=0.0,
@@ -985,6 +1010,10 @@ def test_graph_articulated_control_runs_zero_then_positive_through_shared_scorer
     ]
     assert [row["control_passed"] for row in pair["controls"]] == [True, True]
     assert pair["cell_admitted_for_policy_execution"] is True
+    if release_required is False:
+        assert not {"release", "retreat"} & {
+            row["phase_id"] for row in plan["scripted_positive_actions"]}
+        assert all(row[-1] == 1.0 for row in environment.actions[-scene["task_spec"]["settle_window_samples"]:])
 
 
 def _scene_with_grasp_orientation(orientation: list[float]) -> dict:
