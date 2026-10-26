@@ -48,6 +48,13 @@ REVIEW_VIDEO_FOURCC = "avc1"
 REVIEW_VIDEO_ENCODER = "ffmpeg_libx264"
 
 
+# zlib level for every retained PNG frame; any level is lossless. On a real
+# 1280x720 policy frame from run 57749451, level 3 encoded in 59 ms against
+# 103 ms at level 6 for 3% more bytes, and an episode writes about 360 such
+# frames inside the GPU rental.
+LOSSLESS_FRAME_COMPRESS_LEVEL = 3
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -98,7 +105,7 @@ def persist_observation_frame(
     Image.fromarray(array, mode="RGB").save(
         path,
         format="PNG",
-        compress_level=6,
+        compress_level=LOSSLESS_FRAME_COMPRESS_LEVEL,
         optimize=False,
     )
     return {
@@ -283,7 +290,7 @@ def persist_camera_observation_frame(
     Image.fromarray(array, mode="RGB").save(
         path,
         format="PNG",
-        compress_level=6,
+        compress_level=LOSSLESS_FRAME_COMPRESS_LEVEL,
         optimize=False,
     )
     record = {
