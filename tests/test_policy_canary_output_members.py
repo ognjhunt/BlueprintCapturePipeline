@@ -371,11 +371,10 @@ def test_needed_set_budget_covers_the_measured_quick10_shape():
                                index_file_bytes=8 * 1024**2) < 1024**3
 
 
-def test_forecast_hold_is_the_budget_hold_not_the_role_ceiling():
-    """Review minor 5: before the run, when neither the index nor its member count exists, the
-    forecast holds the needed-set budget plus the metadata of up to FORECAST_MEMBER_COUNT members
-    (about three times the production shape's 6,745; index rows measured at 484 bytes), not the
-    role's whole 1 GiB footprint, which the live dispatch hold beside it already overlapped."""
+def test_forecast_hold_fits_dense_observations_inside_the_existing_role():
+    """Reserve dense metadata before the run, with no role increase or later hold growth."""
+    from blueprint_pipeline.control_plane_disk_ledger import ROLE_FOOTPRINT_BYTES
+
     contract = members.POLICY_CANARY_OUTPUT_CONTRACT
     forecast = contract.forecast_hold_bytes()
 
@@ -383,7 +382,12 @@ def test_forecast_hold_is_the_budget_hold_not_the_role_ceiling():
         needed_bytes=contract.needed_set_budget_bytes, member_count=members.FORECAST_MEMBER_COUNT,
         index_file_bytes=members.FORECAST_MEMBER_COUNT * members.FORECAST_INDEX_ROW_BYTES)
     assert members.FORECAST_MEMBER_COUNT >= 3 * 6_745 - 300 and members.FORECAST_INDEX_ROW_BYTES >= 2 * 484
-    assert forecast < 700 * 1024**2 < 1024**3
+    assert forecast == ROLE_FOOTPRINT_BYTES[members.OUTPUT_ROLE]
+    # The retained dense-observation shape exceeds the old 640 MiB estimate.
+    assert contract.admits(needed_bytes=981_095_202, member_count=9_940,
+                           hold_cap_bytes=forecast)
+    assert not contract.admits(needed_bytes=forecast + 1, member_count=9_940,
+                               hold_cap_bytes=forecast)
     # Any run the contract admits (a needed set within budget, members and index rows within the
     # allowance) shrinks the forecast in place: its exact hold never needs growth.
     assert contract.hold_bytes(needed_bytes=contract.needed_set_budget_bytes, member_count=6_745,

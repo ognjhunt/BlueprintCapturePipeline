@@ -492,6 +492,19 @@ def test_ssh_fallback_in_stream_mode_publishes_then_ingests_by_range(lane, tmp_p
     assert not any(path.name == "vast_provider_runtime_output.zip" for path in tmp_path.rglob("*"))
 
 
+def test_collector_and_promotion_share_the_admitted_transfer_forecast(lane):
+    """An output above the legacy fallback still imports within the quoted byte budget."""
+    archive, _ = _small_archive()
+    lane.monkeypatch.setattr(streaming, "OUTPUT_ARCHIVE_MAXIMUM_BYTES", archive.size - 1)
+
+    result = lane.run_session(lane.adapter(archive))
+
+    assert result["status"] == "completed"
+    assert result["provider_output_promotion"]["status"] == "promoted"
+    assert result["expected_provider_upload_bytes"] == 8_001_000_000
+    assert result["all_staged_objects_absent"] is True
+
+
 def test_forecast_hold_is_taken_before_consumption_and_refused_without_room(lane):
     """Review I3: the needed members' hold is admitted before the authority is consumed, so a
     host without room refuses before any spend; during the run it is live beside the dispatch hold."""
@@ -503,9 +516,9 @@ def test_forecast_hold_is_taken_before_consumption_and_refused_without_room(lane
         return lane.adapter(archive)(**kwargs)
 
     assert lane.run_session(adapter)["status"] == "completed"
-    # The budget's hold (review minor 5), not the role's 1 GiB ceiling, from before consumption
-    # through the paid window.
-    assert seen == [POLICY_CANARY_OUTPUT_CONTRACT.forecast_hold_bytes()] and seen[0] < 1024**3
+    # The role-sized metadata forecast is held before consumption, throughout
+    # the paid window; ingestion may only shrink it.
+    assert seen == [POLICY_CANARY_OUTPUT_CONTRACT.forecast_hold_bytes()] and seen[0] == 1024**3
 
     full = SimpleNamespace(total=100 * 1024**3, used=99 * 1024**3, free=1024**3)
     lane.monkeypatch.setattr(streaming, "disk_usage_provider", lambda _path: full)
