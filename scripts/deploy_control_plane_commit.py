@@ -456,6 +456,9 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-native-g1-team-campaign-settlement.timer",
     "blueprint-scene-object-discovery.service",
     "blueprint-scene-object-discovery.path",
+    # A prepared website scene's robot-team half, compiled on this host; no allocator.
+    "blueprint-team-scene-packet.service",
+    "blueprint-team-scene-packet.path",
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
@@ -498,6 +501,9 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.path",
     "blueprint-scene-object-discovery.path",
+    # CPU compile of a prepared scene's team half, its derived registry row and a
+    # signed offer republish (facts, never authority); it holds no provider path.
+    "blueprint-team-scene-packet.path",
 )
 #: Paid execution is still impossible without a consumed, digest-bound
 #: activation authority, a clear global spend guard, and the provider-zero

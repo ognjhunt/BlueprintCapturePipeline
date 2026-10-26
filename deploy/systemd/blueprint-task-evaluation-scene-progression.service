@@ -37,6 +37,8 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-eva
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
+# A completed website scene's team-half request (team_scene_packet_worker); blueprint-team-scene-packet.path wakes its worker.
+Environment=BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/team-scene-packets
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS=launch_preparation=/var/lib/blueprint/task-evaluation-inputs/prepared-references,episode_compilation=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes,launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,handoff_staging=/var/lib/blueprint/pubsub-handoffs,scene_configuration_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
 # Prefix reuse performs an account-wide, read-only Vast inventory observation
 # before adopting retained work. The key is file-backed and the service has no

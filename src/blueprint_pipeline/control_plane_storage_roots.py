@@ -159,6 +159,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-scene-configuration-activation-intents", "work", "blueprint", "configured-scene activation intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-scene-constructions", "work", "blueprint", "scene construction queue"),
     StorageRoot(f"{_CONTROL_PLANE}/scene-object-discoveries", "work", "blueprint", "scene object discovery queue"),
+    StorageRoot(f"{_CONTROL_PLANE}/team-scene-packets", "work", "blueprint",
+                "prepared website scenes' team-half compile requests and their statuses"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-terminal-resource-releases", "work", "blueprint", "terminal resource release queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-terminal-resource-releases-state", "work", "blueprint", "terminal resource release state"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-configured-controls", "work", "blueprint", "configured controls progression state"),

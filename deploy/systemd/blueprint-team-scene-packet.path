@@ -1,0 +1,13 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-team-scene-packet.path.json
+Description=Watch prepared website scenes waiting for their robot-team scene half
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/team-scene-packets/pending
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/team-scene-packets/pending/*.json
+Unit=blueprint-team-scene-packet.service
+
+[Install]
+WantedBy=multi-user.target

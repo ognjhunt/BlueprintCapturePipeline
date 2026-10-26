@@ -598,6 +598,14 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/scene-object-discoveries/pending/*.json\n",
         encoding="utf-8",
     )
+    team_scene_service = unit_dir / "blueprint-team-scene-packet.service"
+    team_scene_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-team-scene-packet\n", encoding="utf-8"
+    )
+    team_scene_path = unit_dir / "blueprint-team-scene-packet.path"
+    team_scene_path.write_text(
+        "[Path]\nPathExistsGlob=/team-scene-packets/pending/*.json\n", encoding="utf-8"
+    )
     progression_service = (
         unit_dir
         / "blueprint-task-evaluation-configured-controls-progression.service"
@@ -725,6 +733,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         g1_settlement_timer,
         discovery_service,
         discovery_path,
+        team_scene_service,
+        team_scene_path,
         progression_service,
         progression_timer,
         progression_path,
@@ -799,6 +809,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-native-g1-team-campaign-settlement.timer",
         "blueprint-scene-object-discovery.service",
         "blueprint-scene-object-discovery.path",
+        "blueprint-team-scene-packet.service",
+        "blueprint-team-scene-packet.path",
         "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
@@ -833,6 +845,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-scene-object-discovery.path",
+        "blueprint-team-scene-packet.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
         "blueprint-task-evaluation-launch-preparation.timer",
