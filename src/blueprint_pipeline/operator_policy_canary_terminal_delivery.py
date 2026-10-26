@@ -272,6 +272,7 @@ def _inputs(intent, *, require_relocated=False):
             or registration.get('plan_digest') != runtime['plan_digest']
             or registration.get('configuration_digest') != runtime['configuration_digest']
             or any(registration.get(key) != setup.get(key) for key in ('capture_session_id', 'intake_id', 'request_digest'))
+            or registration.get('capture_source') != setup.get('capture_source')
             or registration.get('task_success_contract') != runtime['task_success_contract']):
         raise OperatorTerminalDeliveryError('operator_terminal_input_identity_mismatch')
     omission = None
