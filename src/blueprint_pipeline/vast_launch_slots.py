@@ -94,6 +94,46 @@ def _vast_launch_lock_path() -> Path:
     return (api_key_path.parent / DEFAULT_VAST_LAUNCH_LOCK_FILENAME).resolve()
 
 
+def inspect_vast_launch_admission(lock_path: Path | None = None) -> dict[str, Any]:
+    """Observe the real deploy gate and every configured slot without changing them.
+
+    This is an early admission check, not a reservation: the provider adapter
+    still acquires the gate and slot immediately before any provider request.
+    """
+    slots = vast_launch_lock_paths(lock_path)
+    gate_path = vast_launch_gate_path(lock_path)
+    held = []
+    try:
+        gate = gate_path.open("r+", encoding="utf-8")
+        held.append(gate)
+        try:
+            fcntl.flock(gate.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"status": "deferred", "blockers": ["vast_release_deployment_in_progress"]}
+        unusable = []
+        for slot in slots:
+            try:
+                handle = slot.open("r+", encoding="utf-8")
+            except OSError as exc:
+                unusable.append(f"{slot.name}:{type(exc).__name__}")
+                continue
+            held.append(handle)
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            return {"status": "available", "blockers": [], "slot": str(slot)}
+        return {"status": "deferred", "blockers": [
+            "vast_paid_launch_lock_unusable" if len(unusable) == len(slots) else "vast_paid_launch_lock_busy"],
+            "unusable_lock_slots": unusable}
+    except OSError as exc:
+        return {"status": "blocked", "blockers": ["vast_paid_launch_lock_unusable"],
+                "error_type": type(exc).__name__}
+    finally:
+        for handle in held:
+            handle.close()
+
+
 def _try_acquire_vast_launch_lock(
     *,
     job_dir: Path,

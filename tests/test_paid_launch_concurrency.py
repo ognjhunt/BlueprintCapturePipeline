@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import vast_provider_adapter as vpa
+from blueprint_pipeline.vast_launch_slots import inspect_vast_launch_admission
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
@@ -79,6 +80,20 @@ def test_slot_zero_keeps_the_historical_filename(tmp_path: Path) -> None:
         "vast_paid_launch.slot1.lock",
         "vast_paid_launch.slot2.lock",
     ]
+
+
+def test_readonly_admission_sees_deploy_and_all_slots_without_changing_records(tmp_path):
+    base = tmp_path / "locks/vast_paid_launch.lock"
+    held = [_acquire(tmp_path, f"probe-{i}", base)[0] for i in range(3)]
+    before = {p: p.read_bytes() for p in base.parent.iterdir()}
+    assert inspect_vast_launch_admission(base)["blockers"] == ["vast_paid_launch_lock_busy"]
+    vpa._release_vast_launch_lock(held.pop())
+    assert inspect_vast_launch_admission(base)["status"] == "available"
+    for handle in held:
+        vpa._release_vast_launch_lock(handle)
+    with deploy._holding_paid_launch_gate([str(base)]):
+        assert inspect_vast_launch_admission(base)["blockers"] == ["vast_release_deployment_in_progress"]
+    assert {p: p.read_bytes() for p in before} == before
 
 
 def test_the_env_override_cannot_widen_past_the_compiled_policy(monkeypatch) -> None:
