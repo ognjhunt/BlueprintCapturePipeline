@@ -221,7 +221,8 @@ def test_packet_entry_checks_every_articulation_and_binds_its_bytes(tmp_path, ca
 
 
 def test_contact_beyond_the_task_range_is_reported_without_blocking(tmp_path):
-    asset, background = _asset(tmp_path), _background(tmp_path, floor_bump=True)
+    # A counterbalanced door goes past the threshold only if a policy pushes it.
+    asset, background = _asset(tmp_path, counterbalanced=True), _background(tmp_path, floor_bump=True)
 
     def run(ranges):
         return spp.scene_physics_preflight(background_usd=background, asset_usd=asset, asset_pose_world=POSE,
@@ -287,7 +288,7 @@ def _with_task(root, plan, *, success_start_deg, robot_x=1.6):
 
 
 def test_admission_blocks_task_range_contact_and_reports_beyond_it(tmp_path):
-    root, plan = _packet(tmp_path, _background(tmp_path, floor_bump=True), _asset(tmp_path))
+    root, plan = _packet(tmp_path, _background(tmp_path, floor_bump=True), _asset(tmp_path, counterbalanced=True))
     _with_task(root, plan, success_start_deg=54)
     report = spp.require_scene_physics_admission(root, **FAST)
     assert report["status"] == "passed" and report["blockers"] == []
@@ -297,6 +298,16 @@ def test_admission_blocks_task_range_contact_and_reports_beyond_it(tmp_path):
     with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
         spp.require_scene_physics_admission(root, **FAST)
     assert blocked.value.blockers == ["task_object:scene_physics_motion_contact:door_hinge@90deg"]
+
+
+def test_a_door_gravity_carries_into_the_scene_blocks_beyond_the_threshold(tmp_path):
+    # With authored gravity the released door falls onto the bump by itself, so the
+    # scorer's task-scene contact would fail every episode that opens it.
+    root, plan = _packet(tmp_path, _background(tmp_path, floor_bump=True), _asset(tmp_path))
+    _with_task(root, plan, success_start_deg=54)
+    with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
+        spp.require_scene_physics_admission(root, **FAST)
+    assert blocked.value.blockers == ["task_object:scene_physics_fall_contact:door_hinge@90deg"]
 
 
 def test_robot_in_the_doors_path_blocks_only_before_the_success_threshold(tmp_path):
