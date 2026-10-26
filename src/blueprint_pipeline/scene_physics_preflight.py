@@ -611,8 +611,11 @@ def _summary(points: np.ndarray, depth: np.ndarray, owner: np.ndarray, placed, t
         entry["points"] += int(rows.sum())
         entry["max_depth_m"] = max(entry["max_depth_m"], float(depth[rows].max()))
     heights = points[inside, 2]
+    # A sample outside every collider's own box keeps -inf (see ``penetration``); with none nearer, report 0
+    # as for no samples rather than an infinity no JSON reader takes.
+    measured = depth[np.isfinite(depth)]
     return {"penetrating_points": int(inside.sum()),
-            "max_depth_m": float(depth.max()) if len(depth) else 0.0,
+            "max_depth_m": float(measured.max()) if len(measured) else 0.0,
             "penetration_by_body": dict(sorted(by_body.items())),
             "penetration_height_range_m": [float(heights.min()), float(heights.max())] if len(heights) else None}
 
