@@ -7,7 +7,7 @@ import math
 import multiprocessing
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -17,6 +17,12 @@ from scipy.spatial import cKDTree
 
 from .decision_evidence_contracts import canonical_digest
 from .franka_kinematics import solve_world_position_ik
+from .scene_physics_preflight import (
+    ScenePhysicsPreflightError,
+    robot_fixed_volume_extent,
+    robot_fixed_volume_mask,
+    task_motion_surface,
+)
 from .scene_placement.robot_profile import get_robot_profile
 
 
@@ -25,6 +31,10 @@ GEOMETRY_SUMMARY_SCHEMA_VERSION = "task_evaluation_robot_placement_geometry_summ
 TRAJECTORY_IK_GATE_SCHEMA_VERSION = (
     "task_evaluation_robot_placement_trajectory_position_ik_gate.v1"
 )
+# A placed robot's fixed volumes keep this far from every pose the task's moving
+# part takes, which covers the 2 cm spacing of the swept samples and keeps an
+# accepted pose clear of the paid-run sweep.
+TASK_MOTION_CLEARANCE_M = 0.02
 
 
 class RobotPlacementGeometryError(ValueError):
@@ -73,6 +83,9 @@ class RobotPlacementGeometryIndex:
     robot_local_bounds_maximum_m: tuple[float, float, float]
     background_collision_digest: str
     task_asset_bindings: tuple[Mapping[str, Any], ...]
+    # Surface samples of every pose a task asset's moving part takes between
+    # reset and the far end of its success interval.
+    task_motion_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
 
 
 def _sha256(path: Path) -> str:
@@ -299,7 +312,7 @@ def _placed_task_asset_triangles(
         for layer in stage.GetUsedLayers():
             if not layer.anonymous:
                 layer_paths.add(Path(layer.realPath.split("[", 1)[0]).resolve(strict=True))
-        bindings.append({
+        binding = {
             "asset_id": asset_id, "asset_usd_path": str(asset_path),
             "asset_digest": asset_digest,
             "pose": {"position_world_m": position.tolist(), "orientation_xyzw": quaternion.tolist()},
@@ -307,8 +320,57 @@ def _placed_task_asset_triangles(
                 {"path": str(path), "digest": _sha256(path)} for path in sorted(layer_paths)
             ],
             "triangle_count": len(actor_triangles),
-        })
+        }
+        if row.get("task_motion") is not None:
+            binding["task_motion"] = _task_motion(row["task_motion"])
+        bindings.append(binding)
     return triangles, paths, tuple(bindings)
+
+
+def _task_motion(value: Any) -> dict[str, Any]:
+    """The joint a task drives and its span, from reset to the success interval's far end."""
+    try:
+        joint_id = str(value["joint_id"])
+        task_range = [float(v) for v in value["task_range"]]
+        reset = {str(k): float(v) for k, v in (value.get("reset_joint_positions") or {}).items()}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RobotPlacementGeometryError("robot_placement_task_motion_invalid") from exc
+    if not joint_id or len(task_range) != 2 or not all(map(math.isfinite, [*task_range, *reset.values()])):
+        raise RobotPlacementGeometryError("robot_placement_task_motion_invalid")
+    return {"joint_id": joint_id, "task_range": task_range, "reset_joint_positions": reset}
+
+
+def _task_motion_points(bindings: Sequence[Mapping[str, Any]]) -> np.ndarray:
+    parts = [np.zeros((0, 3))]
+    for binding in bindings:
+        motion = binding.get("task_motion")
+        if motion is None:
+            continue
+        try:
+            parts.append(task_motion_surface(
+                asset_usd=binding["asset_usd_path"], asset_pose_world=binding["pose"],
+                joint_id=motion["joint_id"], task_range=motion["task_range"],
+                reset_joint_positions=motion["reset_joint_positions"]))
+        except ScenePhysicsPreflightError as exc:
+            raise RobotPlacementGeometryError(f"robot_placement_task_motion_unmeasurable:{exc}") from exc
+    return np.concatenate(parts)
+
+
+def _task_motion_contact_count(
+    index: RobotPlacementGeometryIndex, robot_id: str, position: np.ndarray, yaw: float
+) -> int:
+    """Swept task-part samples inside the robot's fixed volumes at this base pose."""
+    try:
+        reach = robot_fixed_volume_extent(robot_id) + TASK_MOTION_CLEARANCE_M
+        points = index.task_motion_points
+        near = points[(np.abs(points[:, 0] - position[0]) <= reach) & (np.abs(points[:, 1] - position[1]) <= reach)]
+        relative = near - position
+        cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+        local = np.c_[cos_yaw * relative[:, 0] + sin_yaw * relative[:, 1],
+                      cos_yaw * relative[:, 1] - sin_yaw * relative[:, 0], relative[:, 2]]
+        return int(robot_fixed_volume_mask(robot_id, local, TASK_MOTION_CLEARANCE_M).sum())
+    except ScenePhysicsPreflightError as exc:
+        raise RobotPlacementGeometryError(f"robot_placement_task_motion_unmeasurable:{exc}") from exc
 
 
 def build_robot_placement_geometry_index(
@@ -378,6 +440,7 @@ def build_robot_placement_geometry_index(
         robot_local_bounds_maximum_m=robot_maximum,
         background_collision_digest=background_digest,
         task_asset_bindings=actor_bindings,
+        task_motion_points=_task_motion_points(actor_bindings),
     )
 
 
@@ -717,6 +780,13 @@ def validate_robot_placement_geometry_candidate(
             containing_prim_paths.append(prim_path)
     if len(collision_indices) or containing_prim_paths:
         blockers.append("robot_reset_bounds_overlap_scene_geometry")
+    # The base and shoulder cannot move out of a door's way, so a pose where the
+    # task's moving part would strike them fails every episode it opens.
+    motion_contacts = (
+        _task_motion_contact_count(index, robot_id, position, yaw) if len(index.task_motion_points) else 0
+    )
+    if motion_contacts:
+        blockers.append("robot_base_in_task_motion_path")
 
     shoulder = position + np.asarray([0.0, 0.0, profile.shoulder_above_root_m])
     shoulder_distance = float(np.linalg.norm(target - shoulder))
@@ -798,6 +868,8 @@ def validate_robot_placement_geometry_candidate(
         "native_reset_contact_and_ik_still_required": True,
         "geometry_gate_digest": "",
     }
+    if len(index.task_motion_points):
+        result["task_motion_contact_point_count"] = motion_contacts
     result["geometry_gate_digest"] = canonical_digest(
         result, digest_field="geometry_gate_digest"
     )

@@ -860,6 +860,76 @@ def robot_motion_clearance(*, asset_usd: str | Path, asset_pose_world: Mapping[s
             "motion": motion}
 
 
+def robot_fixed_volume_mask(robot_id: str, points_base: np.ndarray, margin_m: float = 0.0) -> np.ndarray:
+    """Which base-frame points lie in a robot's fixed volumes grown by ``margin_m``."""
+    volumes = ROBOT_FIXED_VOLUMES.get(robot_id)
+    if volumes is None:
+        raise ScenePhysicsPreflightError("scene_physics_robot_model_unmeasured:" + str(robot_id))
+    inside = np.zeros(len(points_base), dtype=bool)
+    for low, high in volumes["boxes"]:
+        inside |= np.all((points_base >= np.asarray(low) - margin_m) & (points_base <= np.asarray(high) + margin_m),
+                         axis=1)
+    for radius, z_low, z_high in volumes["cylinders"]:
+        inside |= ((np.hypot(points_base[:, 0], points_base[:, 1]) <= radius + margin_m)
+                   & (points_base[:, 2] >= z_low - margin_m) & (points_base[:, 2] <= z_high + margin_m))
+    return inside
+
+
+def robot_fixed_volume_extent(robot_id: str) -> float:
+    """The farthest horizontal reach of a robot's fixed volumes from its base axis."""
+    volumes = ROBOT_FIXED_VOLUMES.get(robot_id)
+    if volumes is None:
+        raise ScenePhysicsPreflightError("scene_physics_robot_model_unmeasured:" + str(robot_id))
+    corners = [math.hypot(x, y) for low, high in volumes["boxes"] for x in (low[0], high[0]) for y in (low[1], high[1])]
+    return max(corners + [radius for radius, _, _ in volumes["cylinders"]])
+
+
+def _voxel_thin(points: np.ndarray, spacing: float) -> np.ndarray:
+    """One point per ``spacing`` cube, kept in input order."""
+    if not len(points):
+        return points
+    _, keep = np.unique(np.floor(points / spacing).astype(np.int64), axis=0, return_index=True)
+    return points[np.sort(keep)]
+
+
+def _collider_surface(collider: Collider, spacing: float) -> np.ndarray:
+    """Surface samples of one collider in its own frame; a box bounds a cylinder or sphere."""
+    if collider.kind == "hull":
+        from scipy.spatial import ConvexHull
+
+        return sample_surface(collider.vertices[ConvexHull(collider.vertices).simplices], spacing)[0]
+    corners = collider.local_corners()  # index = 4*(x>0) + 2*(y>0) + (z>0)
+    faces = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
+    triangles = np.asarray([corners[[a, b, c]] for a, b, c, d in faces] + [corners[[a, c, d]] for a, b, c, d in faces])
+    return sample_surface(triangles, spacing)[0]
+
+
+def task_motion_surface(*, asset_usd: str | Path, asset_pose_world: Mapping[str, Sequence[float]], joint_id: str,
+                        task_range: Sequence[float], reset_joint_positions: Mapping[str, float] | None = None,
+                        sample_spacing_m: float = 0.02, revolute_step_rad: float = DEFAULT_REVOLUTE_STEP_RAD,
+                        prismatic_step_m: float = DEFAULT_PRISMATIC_STEP_M) -> np.ndarray:
+    """World surface samples of every part ``joint_id`` moves, at each sweep step inside ``task_range``."""
+    model = load_asset_model(asset_usd)
+    joint = next((j for j in model.joints if j.joint_id == joint_id and j.kind != "fixed"), None)
+    if joint is None:
+        raise ScenePhysicsPreflightError("scene_physics_joint_unknown:" + joint_id)
+    low, high = sorted(float(v) for v in task_range)
+    moving = descendants(model, joint_id)
+    local = [(c, _voxel_thin(_collider_surface(c, sample_spacing_m), sample_spacing_m))
+             for c in model.colliders if c.body in moving]
+    world_from_asset = _pose_matrix(asset_pose_world)
+    reset = dict(reset_joint_positions or {})
+    parts = [np.zeros((0, 3))]
+    for value in _sweep_values(joint, [low, high], revolute_step_rad, prismatic_step_m):
+        if not low - 1e-9 <= value <= high + 1e-9:
+            continue
+        poses = body_poses(model, {**reset, joint_id: float(value)})
+        for collider, points in local:
+            world = world_from_asset @ poses[collider.body] @ collider.body_from_collider
+            parts.append(points @ world[:3, :3].T + world[:3, 3])
+    return _voxel_thin(np.concatenate(parts), sample_spacing_m)
+
+
 PACKET_REPORT_SCHEMA_VERSION = "native_task_scene_physics_preflight.v1"
 PACKET_REPORT_FILENAME = "native_task_scene_physics_preflight.v1.json"
 

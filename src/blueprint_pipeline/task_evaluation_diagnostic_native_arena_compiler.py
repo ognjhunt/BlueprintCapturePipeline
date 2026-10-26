@@ -363,6 +363,17 @@ def _derive_task_aware_franka_reset(
     return derived_reset, report
 
 
+def _task_motion(task_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """The target joint from reset to the success interval's far end: every pose placement must keep clear."""
+    try:
+        threshold = task_spec["executable_opening_threshold"]
+        joint_id, reset = str(threshold["target_joint_id"]), float(threshold["reset_position"])
+        far_end = float(threshold["success_interval"][1])
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise TaskEvaluationDiagnosticNativeArenaCompilerError("diagnostic_native_compiler_task_motion_unknown") from exc
+    return {"joint_id": joint_id, "task_range": [reset, far_end], "reset_joint_positions": {joint_id: reset}}
+
+
 def diagnostic_robot_placement_inputs(
     *, diagnostic_controls_input: Mapping[str, Any],
     droid_profile_reference: Mapping[str, Any],
@@ -436,7 +447,8 @@ def diagnostic_robot_placement_inputs(
         "collision_asset_digest": rows["diagnostic_output.collision.usda"]["digest"],
         "task_assets": [{"asset_id": task_spec["subject_asset_id"], "asset_usd_path": str(asset),
                          "asset_digest": rows["diagnostic_output.replacement.usdz"]["digest"],
-                         "pose": definition["task_object_pose_world"]}],
+                         "pose": definition["task_object_pose_world"],
+                         **({"task_motion": _task_motion(task_spec)} if articulated else {})}],
     }
     task_binding = {
         "schema_version": "diagnostic_robot_placement_task_binding.v1",
