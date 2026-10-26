@@ -20,9 +20,10 @@ Nothing here runs a simulator, calls a provider or changes an input file.
 
 Every paid native bundle passes ``require_scene_physics_admission``. Rest overlap
 and background inside the asset's envelope block it. A moving part's contact blocks
-only inside the task's range: the target joint between its reset position and the
-success threshold. Contact beyond that range, or on a joint the task does not
-command, is reported without blocking.
+inside the task's range: the target joint between its reset position and the
+success threshold. Beyond that range it blocks only where gravity carries the
+released part (see below); there and on a joint the task does not command, contact
+is reported without blocking.
 
 The same sweep measures the robot: its base and shoulder, the parts no policy
 action can move, block when they sit inside the asset at reset or in the target
@@ -706,8 +707,9 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
     """Measure one placed asset against the static background; raises only on unusable input.
 
     ``task_ranges`` maps a joint to the span the task drives it through. With it,
-    contact inside a span blocks and every other contact is an advisory; without
-    it, every contact blocks.
+    contact inside a span blocks, and so does contact beyond it where gravity
+    carries the released part on to its limit; every other contact is an
+    advisory. Without it, every contact blocks.
     """
     from scipy.spatial import cKDTree
 
@@ -795,14 +797,25 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
     for motion in motions:
         contacts = [s for s in motion["samples"] if s["contact_points"]]
         span = None if task_ranges is None else task_ranges.get(motion["joint_id"])
+        released = None
         if span is not None:
             low_value, high_value = sorted(float(v) for v in span)
             motion["task_range"] = [low_value, high_value]
+            joint = _movable_joint(model, motion["joint_id"])
+            holds = _holds_released_position(model, asset_usd, joint, asset_pose_world)
+            released = _released_span(joint, span, float(reset.get(joint.joint_id, 0.0)), holds)
+            motion["holds_released_position"], motion["released_range"] = holds, released
         inside = [s for s in contacts if task_ranges is None
                   or (span is not None and low_value - 1e-6 <= s["value"] <= high_value + 1e-6)]
-        outside = [s for s in contacts if s not in inside]
+        falling = [s for s in contacts if s not in inside and released is not None
+                   and released[0] - 1e-6 <= s["value"] <= released[1] + 1e-6]
+        outside = [s for s in contacts if s not in inside and s not in falling]
         if inside:
             blockers.append("scene_physics_motion_contact:%s@%s" % (motion["joint_id"], _joint_label(motion, inside[0])))
+        if falling:
+            # A released part lands there on its own, so every episode that opens it
+            # past the threshold ends in a scene collision.
+            blockers.append("scene_physics_fall_contact:%s@%s" % (motion["joint_id"], _joint_label(motion, falling[0])))
         if outside:
             advisories.append("scene_physics_motion_contact_outside_task_range:%s@%s"
                               % (motion["joint_id"], _joint_label(motion, outside[0])))
