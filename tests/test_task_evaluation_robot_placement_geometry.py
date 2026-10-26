@@ -363,6 +363,85 @@ def test_robot_base_in_the_task_doors_swing_is_rejected(tmp_path, monkeypatch):
                                                  task_assets=[actor])
 
 
+def _door_trajectory():
+    """A planned grip on the door's top edge: approach, contact, then the door at 54 degrees."""
+    hinge, angle = np.array([0.02, 0.0, 0.05]), math.radians(54)
+    open_contact = hinge + np.array([0.04 * math.cos(angle) + 0.75 * math.sin(angle), 0.0,
+                                     -0.04 * math.sin(angle) + 0.75 * math.cos(angle)])
+    return ["approach", "handle_contact", "minimum_opening_reach"], [[0.16, 0.0, 0.8], [0.06, 0.0, 0.8],
+                                                                      open_contact.tolist()]
+
+
+def test_the_arm_path_gate_measures_the_part_the_placement_index_binds(tmp_path):
+    # The gate reads the task part, its motion and the planned contact from the same index the base checks use.
+    from blueprint_pipeline.robot_arm_path_clearance import arm_path_clearance
+    from blueprint_pipeline.task_evaluation_robot_placement_geometry import _arm_path_inputs
+
+    scene, robot = _assets(tmp_path)
+    actor = _cabinet_with_drop_door(tmp_path, task_range=(0.0, math.radians(54)))
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                                 task_assets=[actor])
+    ids, waypoints = _door_trajectory()
+    inputs = _arm_path_inputs(index, ids, waypoints)
+    assert inputs["joint_id"] == "door_hinge" and inputs["contact_point_world"] == [0.06, 0.0, 0.8]
+    assert inputs["asset_usd"] == actor["asset_usd_path"] and inputs["task_range"] == [0.0, math.radians(54)]
+    diagonal = _proposal("floor", (0.60, 0.45, 0.0), math.atan2(-0.45, -0.55))["pose"]
+    in_front = _proposal("floor", (0.60, 0.0, 0.0), math.pi)["pose"]
+    assert arm_path_clearance(robot_id="franka_panda", base_pose_world=diagonal, **inputs)["status"] == "passed"
+    assert arm_path_clearance(robot_id="franka_panda", base_pose_world=in_front, **inputs)["status"] == "blocked"
+    assert _arm_path_inputs(index, ids[1:], waypoints[1:]) is None
+    rigid = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot)
+    assert _arm_path_inputs(rigid, ids, waypoints) is None
+
+
+def test_placement_keeps_only_bases_whose_arm_the_moving_part_misses(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_robot_placement_geometry as geometry
+
+    scene, robot = _assets(tmp_path)
+    actor = _cabinet_with_drop_door(tmp_path, task_range=(0.0, math.radians(54)))
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                                 task_assets=[actor])
+    tested = []
+
+    def gate(*, base_pose_world, seed_joint_positions, **inputs):
+        assert inputs["joint_id"] == "door_hinge" and len(seed_joint_positions) == 7
+        y = base_pose_world["position_world_m"][1]
+        tested.append(y)
+        struck = abs(y) < 0.3  # in front of the 0.6 m wide door
+        # On one side the planned grip clears; on the other only a grip slid along the handle does.
+        slide = 0.0 if y < 0 else 0.11
+        return {"status": "blocked" if struck else "passed", "margin_m": 0.02, "grips_tried": 1 if slide == 0 else 6,
+                "blockers": ["robot_arm_in_task_part_path:door_hinge@50deg:panda_link4"] if struck else [],
+                "best_grip": None if struck else {"slide_m": slide, "roll_deg": 0.0, "minimum_clearance_m": None},
+                "report_digest": "sha256:" + "0" * 64}
+
+    monkeypatch.setattr(geometry, "arm_path_clearance", gate)
+    ids, waypoints = _door_trajectory()
+    diagnostics = {}
+    candidates = enumerate_robot_placement_geometry_candidates(
+        index=index, target_position_world_m=[0.06, 0.0, 0.8], maximum_candidates=8,
+        trajectory_waypoints_world_m=waypoints, trajectory_phase_ids=ids, diagnostics=diagnostics)
+    assert candidates and all(abs(row["pose"]["position_world_m"][1]) >= 0.3 for row in candidates)
+    records = [row["arm_path_clearance"] for row in candidates]
+    assert all(record["status"] == "passed" and record["report_digest"] == "sha256:" + "0" * 64
+               and record["grip_roll_deg"] == 0.0 for record in records)
+    # Bases where the planned grip clears come first, each group in the search's own order.
+    slides = [record["grip_slide_m"] for record in records]
+    assert 0.0 in slides and 0.11 in slides and slides == sorted(slides)
+    assert diagnostics["arm_path_tested_count"] == len(tested) <= len(candidates) + diagnostics["arm_path_rejected_count"]
+    assert diagnostics["arm_path_blocker_counts"] == (
+        {"robot_arm_in_task_part_path": diagnostics["arm_path_rejected_count"]}
+        if diagnostics["arm_path_rejected_count"] else {})
+    # Every base struck: nothing is offered, and the search says why.
+    monkeypatch.setattr(geometry, "arm_path_clearance", lambda **kwargs: {**gate(**kwargs), "status": "blocked",
+                                                                          "blockers": ["robot_arm_path_grip_unreachable"]})
+    diagnostics = {}
+    assert enumerate_robot_placement_geometry_candidates(
+        index=index, target_position_world_m=[0.06, 0.0, 0.8], maximum_candidates=3,
+        trajectory_waypoints_world_m=waypoints, trajectory_phase_ids=ids, diagnostics=diagnostics) == []
+    assert diagnostics["arm_path_tested_count"] == diagnostics["arm_path_rejected_count"] > 0
+
+
 def test_task_actor_rejects_changed_source_bytes(tmp_path):
     scene, robot = _assets(tmp_path)
     actor = _task_asset(tmp_path)

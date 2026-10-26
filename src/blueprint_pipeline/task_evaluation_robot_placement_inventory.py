@@ -84,7 +84,11 @@ def validate_candidate_inventory_checkpoint(
     )
     if value.get("candidate_inventory_digest") != inventory_digest:
         raise ValueError("robot_placement_candidate_inventory_checkpoint_invalid")
+    # A task that moves a part was searched with the arm-path gate; a resumed inventory must have been too.
+    moves_part = any(binding.get("task_motion") for binding in index.task_asset_bindings)
     for candidate in candidates:
+        if moves_part and (candidate.get("arm_path_clearance") or {}).get("status") not in ("passed", "not_applicable"):
+            raise ValueError("robot_placement_candidate_inventory_checkpoint_invalid")
         trajectory_gate = candidate.get("trajectory_position_ik_gate")
         if not isinstance(trajectory_gate, Mapping):
             raise ValueError("robot_placement_candidate_inventory_checkpoint_invalid")

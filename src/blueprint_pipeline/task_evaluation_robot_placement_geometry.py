@@ -23,6 +23,7 @@ from .scene_physics_preflight import (
     robot_fixed_volume_mask,
     task_motion_surface,
 )
+from .robot_arm_path_clearance import RobotArmPathClearanceError, arm_path_clearance
 from .scene_placement.robot_profile import get_robot_profile
 
 
@@ -1151,6 +1152,38 @@ def validate_robot_placement_trajectory_position_ik(
     return result
 
 
+def _arm_path_inputs(
+    index: RobotPlacementGeometryIndex,
+    phase_ids: Sequence[str],
+    waypoints: Sequence[Sequence[float]],
+) -> dict[str, Any] | None:
+    """What the arm-path gate needs: the one part the task moves and its planned handle contact.
+
+    A task that moves no part, or plans no handle contact, leaves the gate nothing to measure.
+    """
+    moving = [binding for binding in index.task_asset_bindings if binding.get("task_motion")]
+    phases = dict(zip(phase_ids, waypoints))
+    if len(moving) != 1 or "handle_contact" not in phases or "approach" not in phases:
+        return None
+    motion = moving[0]["task_motion"]
+    return {
+        "asset_usd": moving[0]["asset_usd_path"], "asset_pose_world": moving[0]["pose"],
+        "joint_id": motion["joint_id"], "task_range": motion["task_range"],
+        "reset_joint_positions": motion["reset_joint_positions"],
+        "contact_point_world": [float(v) for v in phases["handle_contact"]],
+        "approach_point_world": [float(v) for v in phases["approach"]],
+    }
+
+
+def _arm_path_record(report: Mapping[str, Any]) -> dict[str, Any]:
+    best = report.get("best_grip") or {}
+    return {
+        "status": report["status"], "margin_m": report["margin_m"], "grips_tried": report["grips_tried"],
+        "grip_slide_m": best.get("slide_m"), "grip_roll_deg": best.get("roll_deg"),
+        "minimum_clearance_m": best.get("minimum_clearance_m"), "report_digest": report["report_digest"],
+    }
+
+
 #: How many surfaces the height-proximity ranking contributes to the search.
 _HEIGHT_RANKED_SURFACE_LIMIT = 12
 #: How many of the largest supports are always searched regardless of height.
@@ -1227,6 +1260,13 @@ def enumerate_robot_placement_geometry_candidates(
     searched_surface_count = 0
     search_pass_count = 0
     candidates: list[tuple[tuple[float, ...], dict[str, Any], dict[str, Any]]] = []
+    arm_inputs = _arm_path_inputs(index, trajectory_phase_ids, trajectory_waypoints_world_m)
+    arm_path_not_applicable = (
+        {"status": "not_applicable", "reason": "task_path_without_handle_contact"}
+        if arm_inputs is None and any(b.get("task_motion") for b in index.task_asset_bindings) else None
+    )
+    arm_path_tested = 0
+    arm_path_blockers: Counter[str] = Counter()
     for support_batch in (considered, remaining):
         if not support_batch:
             continue
@@ -1316,6 +1356,33 @@ def enumerate_robot_placement_geometry_candidates(
                 float(angle_index),
             )
             candidates.append((score, proposal, gate))
+        if arm_inputs is not None and candidates:
+            # The part must not strike the arm: test bases in rank order until enough hold a clean grip.
+            candidates.sort(key=lambda item: item[0])
+            kept = []
+            for score, proposal, gate in candidates:
+                if len(kept) >= int(maximum_candidates):
+                    break
+                seed = next((row["solved_joint_positions"] for row in gate["trajectory_position_ik_gate"]["waypoints"]
+                             if row["phase_id"] == "approach"), None)
+                try:
+                    report = arm_path_clearance(robot_id=robot_id, base_pose_world=proposal["pose"],
+                                                seed_joint_positions=seed, **arm_inputs)
+                except RobotArmPathClearanceError as exc:
+                    raise RobotPlacementGeometryError(f"robot_placement_arm_path_unmeasurable:{exc}") from exc
+                arm_path_tested += 1
+                if report["status"] != "passed":
+                    arm_path_blockers.update(blocker.split(":", 1)[0] for blocker in report["blockers"])
+                    continue
+                record = _arm_path_record(report)
+                # A base where the planned grip clears ranks first: the reset pose and a scripted
+                # rehearsal hold the handle there, and so most likely does a policy.
+                planned = record["grip_slide_m"] == 0.0 and record["grip_roll_deg"] == 0.0
+                kept.append(((0 if planned else 1, *score), {**proposal, "arm_path_clearance": record}, gate))
+            candidates = kept
+        elif arm_path_not_applicable and candidates:
+            candidates = [(score, {**proposal, "arm_path_clearance": arm_path_not_applicable}, gate)
+                          for score, proposal, gate in candidates]
         all_geometry_gates.extend(geometry_gates)
         all_trajectory_gates.extend(trajectory_gates)
         geometry_passing_count += len(prequalified)
@@ -1335,6 +1402,9 @@ def enumerate_robot_placement_geometry_candidates(
             "geometry_passing_count": geometry_passing_count,
             "trajectory_waypoint_count": len(trajectory_waypoints_world_m),
             "trajectory_rejected_count": sum(gate["status"] == "rejected" for gate in all_trajectory_gates),
+            "arm_path_tested_count": arm_path_tested,
+            "arm_path_rejected_count": sum(arm_path_blockers.values()),
+            "arm_path_blocker_counts": dict(arm_path_blockers),
             "candidate_count": min(len(candidates), int(maximum_candidates)),
             "support_search_pass_count": search_pass_count,
             "searched_support_surface_count": searched_surface_count,
