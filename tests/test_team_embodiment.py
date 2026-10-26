@@ -681,6 +681,40 @@ def write_room_usd(path: Path) -> Path:
     return path
 
 
+def test_a_moving_task_part_keeps_the_station_out_of_its_way(tmp_path) -> None:
+    from blueprint_pipeline.scene_physics_preflight import robot_fixed_volume_extent
+    from blueprint_pipeline.team_embodiment_stance import ground_stance
+
+    room = write_room_usd(tmp_path / "collision.usda")
+    common = {"collision_path": room, "collision_sha256": "sha256:" + "0" * 64, "offset": [0.0, 0.0, 0.0],
+              "subject_center": [2.0, 0.0, 0.8], "subject_minimum": [1.95, -0.05, 0.75],
+              "subject_maximum": [2.05, 0.05, 0.85], "footprint_half_extent_m": [0.15, 0.15], "root_world_z_m": 0.75}
+
+    def shoulder_slab(x: float, y: float) -> Any:
+        # Samples of a part sweeping 0.3 m above the mount top, where the arm's shoulder stands.
+        return np.array([[x + dx, y + dy, 1.05] for dx in np.linspace(-0.2, 0.2, 9) for dy in np.linspace(-0.2, 0.2, 9)])
+
+    free = ground_stance(**common)
+    path = shoulder_slab(*free["position_world_m"][:2])
+    moved = ground_stance(**common, task_motion={"robot_id": "franka_panda", "path_points": path})
+    assert moved["task_motion_clearance"]["struck_stances"] > 0
+    nearest = np.min(np.hypot(path[:, 0] - moved["position_world_m"][0], path[:, 1] - moved["position_world_m"][1]))
+    assert nearest > robot_fixed_volume_extent("franka_panda")
+    # Among clear stances, one the part's whole range never reaches comes first.
+    reached = shoulder_slab(*moved["position_world_m"][:2])
+    preferred = ground_stance(**common, task_motion={"robot_id": "franka_panda", "path_points": path,
+                                                     "limit_points": np.concatenate([path, reached])})
+    assert preferred["position_world_m"] != moved["position_world_m"]
+    assert preferred["task_motion_clearance"]["reached_beyond_task_range"] is False
+    # A part that falls through a stance blocks it like its path does.
+    fallen = ground_stance(**common, task_motion={"robot_id": "franka_panda", "path_points": path,
+                                                  "fall_points": reached})
+    assert fallen["position_world_m"] != moved["position_world_m"]
+    with pytest.raises(TeamEmbodimentError, match="team_embodiment_task_motion_no_clear_stance"):
+        everywhere = np.array([[x, y, 1.05] for x in np.arange(0.2, 3.8, 0.1) for y in np.arange(-1.8, 1.8, 0.1)])
+        ground_stance(**common, task_motion={"robot_id": "franka_panda", "path_points": everywhere})
+
+
 def test_a_free_base_starts_at_the_closest_clear_floor_spot_facing_the_task(tmp_path) -> None:
     from blueprint_pipeline.team_embodiment_stance import free_base_stance
 

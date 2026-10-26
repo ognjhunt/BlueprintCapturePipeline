@@ -8,6 +8,9 @@ object, facing it, with nothing that reaches the floor under its footprint
 below its root (``scene_placement.validation.validate_stand_pose``, the
 validator the G1 humanoid lane uses). The floor is the dominant low horizontal
 band of the scene's own collision mesh (``external_scene_robot_placement``).
+A task part that moves, such as a door or a drawer, also keeps the station out
+of its way: no stance the part strikes on its way to success, or anywhere on a
+fall gravity carries it through, and a stance it never reaches is preferred.
 Host-side and deterministic (OpenUSD), so a robot with no clear stance is
 refused by name before any GPU time is spent.
 """
@@ -27,6 +30,9 @@ from .team_embodiment import TeamEmbodimentError
 SCHEMA = "blueprint.team_free_base_stance.v1"
 SEARCH_RADIUS_M = 1.6
 GRID_STEP_M = 0.05
+#: A task supported by the floor itself (an installed appliance, a floor
+#: cabinet) puts a fixed arm's mount on the floor; this absorbs floor-fit noise.
+FLOOR_MOUNT_TOLERANCE_M = 0.02
 
 
 def _scene_collision(plan: Mapping[str, Any], packet_dir: Path) -> tuple[Path, str, list[float]]:
@@ -79,13 +85,41 @@ def _world_triangles(path: Path, offset: list[float]) -> tuple[Any, Any]:
     return np.asarray(vertices, dtype=float), np.asarray(faces, dtype=np.int64)
 
 
+def _strikes(points: Any, *, base: Any, yaw: float, root: float, footprint: list[float],
+             robot_id: str, margin_m: float) -> bool:
+    """Whether moving-part samples enter the station's mount or the robot's fixed volumes on it."""
+
+    import numpy as np
+
+    from .scene_physics_preflight import robot_fixed_volume_extent, robot_fixed_volume_mask
+
+    if points is None or not len(points):
+        return False
+    reach = max(robot_fixed_volume_extent(robot_id), math.hypot(*footprint)) + margin_m
+    near = points[(np.abs(points[:, 0] - base[0]) <= reach) & (np.abs(points[:, 1] - base[1]) <= reach)]
+    if not len(near):
+        return False
+    relative = near - base
+    cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+    local = np.c_[cos_yaw * relative[:, 0] + sin_yaw * relative[:, 1],
+                  cos_yaw * relative[:, 1] - sin_yaw * relative[:, 0], relative[:, 2]]
+    mount = ((np.abs(local[:, 0]) <= footprint[0] + margin_m) & (np.abs(local[:, 1]) <= footprint[1] + margin_m)
+             & (local[:, 2] >= -root - margin_m) & (local[:, 2] <= margin_m))
+    return bool(mount.any() or robot_fixed_volume_mask(robot_id, local, margin_m).any())
+
+
 def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[float],
                   subject_center: list[float], subject_minimum: list[float], subject_maximum: list[float],
                   footprint_half_extent_m: list[float], root_height_m: float | None = None,
-                  root_world_z_m: float | None = None) -> dict[str, Any]:
+                  root_world_z_m: float | None = None, task_motion: Mapping[str, Any] | None = None
+                  ) -> dict[str, Any]:
     """The closest clear floor stance facing the subject, or raise by name (no GPU).
 
     The root stands ``root_height_m`` above the floor, or at ``root_world_z_m``.
+    ``task_motion`` holds world samples of a moving task part, for ``robot_id``'s
+    fixed volumes on the station: ``path_points`` (reset to the success
+    threshold) and ``fall_points`` (where gravity carries it) block a stance, and
+    a stance ``limit_points`` (its whole range) reaches ranks after the rest.
     """
 
     from .external_scene_robot_placement import (
@@ -102,7 +136,9 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
     except ExternalSceneRobotPlacementError as exc:
         raise TeamEmbodimentError(["team_embodiment_scene_floor_not_found"]) from exc
     root = float(root_height_m) if root_height_m is not None else float(root_world_z_m) - float(floor_z)
-    if not math.isfinite(root) or root <= 0.0:
+    if root_height_m is None and -FLOOR_MOUNT_TOLERANCE_M <= root <= 0.0:
+        root = 0.0
+    if not math.isfinite(root) or root < 0.0 or (root_height_m is not None and root <= 0.0):
         raise TeamEmbodimentError(["team_embodiment_stance_height_invalid"])
     def shifted(point: Any) -> tuple[float, ...]:
         return tuple(float(v) + offset[axis] for axis, v in enumerate(point))
@@ -115,7 +151,16 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
                           bbox_min=tuple(float(v) for v in subject_minimum),
                           bbox_max=tuple(float(v) for v in subject_maximum))
     footprint = (*(float(v) for v in footprint_half_extent_m), root)
-    steps, best, clear = math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9), None, 0
+    motion = dict(task_motion or {})
+    if motion:
+        import numpy as np
+
+        from .task_evaluation_robot_placement_geometry import TASK_MOTION_CLEARANCE_M
+
+        robot_id = str(motion.get("robot_id") or "")
+        clearance = {key: np.asarray(motion.get(key, np.zeros((0, 3))), dtype=float).reshape(-1, 3)
+                     for key in ("path_points", "fall_points", "limit_points")}
+    steps, best, clear, struck = math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9), None, 0, 0
     for ix in range(-steps, steps + 1):
         for iy in range(-steps, steps + 1):
             x, y = start[0] + ix * GRID_STEP_M, start[1] + iy * GRID_STEP_M
@@ -126,17 +171,30 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
             if not validate_stand_pose((x, y, floor_z + root), yaw, subject, obstacles, floor_z,
                                        footprint_half_extent=footprint, pelvis_height=root).ok:
                 continue
+            reached = False
+            if motion:
+                # The path takes the sampling margin; a fall or the whole range counts actual overlap.
+                place = {"base": np.asarray([x, y, floor_z + root]), "yaw": yaw, "root": root,
+                         "footprint": list(footprint[:2]), "robot_id": robot_id}
+                if (_strikes(clearance["path_points"], margin_m=TASK_MOTION_CLEARANCE_M, **place)
+                        or _strikes(clearance["fall_points"], margin_m=0.0, **place)):
+                    struck += 1
+                    continue
+                reached = _strikes(clearance["limit_points"], margin_m=0.0, **place)
             clear += 1
-            if best is None or (distance, ix, iy) < best[0]:
-                best = ((distance, ix, iy), x, y, yaw)
+            if best is None or (reached, distance, ix, iy) < best[0]:
+                best = ((reached, distance, ix, iy), x, y, yaw)
     if best is None:
-        raise TeamEmbodimentError(["team_embodiment_free_base_no_clear_stance"])
-    _, x, y, yaw = best
+        raise TeamEmbodimentError(["team_embodiment_task_motion_no_clear_stance" if struck
+                                   else "team_embodiment_free_base_no_clear_stance"])
+    (reached, *_), x, y, yaw = best
     stance = {"schema_version": SCHEMA, "floor_z_m": float(floor_z),
               "position_world_m": [x, y, float(floor_z) + root],
               "orientation_xyzw": [0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0)], "yaw_rad": yaw,
               "footprint_half_extent_m": [float(v) for v in footprint_half_extent_m],
               "clear_stances": clear, "search_radius_m": SEARCH_RADIUS_M, "grid_step_m": GRID_STEP_M,
+              **({"task_motion_clearance": {"robot_id": robot_id, "struck_stances": struck,
+                                            "reached_beyond_task_range": reached}} if motion else {}),
               "scene_collision_sha256": collision_sha256,
               "validator": "scene_placement.validation.validate_stand_pose", "stance_digest": ""}
     stance["stance_digest"] = canonical_digest(stance, digest_field="stance_digest")
