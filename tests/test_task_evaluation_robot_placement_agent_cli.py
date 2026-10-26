@@ -145,6 +145,13 @@ def test_no_match_verdict_names_what_ruled_every_base_out():
          "arm_path_rejected_count": 2, "arm_path_blocker_counts": {"robot_arm_path_grip_unreachable": 2}},
         robot_id="franka_panda")
     assert unheld["reason_code"] == "task_grip_unreachable" and "strike" not in unheld["summary"]
+    # Mostly the room, not the part, is in the arm's way: a counter, wall or cabinet on every grip.
+    walled = placement_no_match_verdict(
+        {"detailed_geometry_tested_count": 5, "geometry_passing_count": 3, "arm_path_tested_count": 3,
+         "arm_path_rejected_count": 3, "arm_path_blocker_counts": {"robot_arm_in_scene_path": 2,
+                                                                   "robot_arm_in_task_part_path": 1}},
+        robot_id="franka_panda")
+    assert walled["reason_code"] == "scene_strikes_arm" and "counter, wall or cabinet" in walled["summary"]
     partly = placement_no_match_verdict(
         {"detailed_geometry_tested_count": 5, "geometry_passing_count": 2, "arm_path_tested_count": 0,
          "arm_path_rejected_count": 0}, robot_id="franka_panda")
@@ -408,12 +415,19 @@ def test_candidate_inventory_checkpoint_revalidates_before_reuse(monkeypatch) ->
                      geometry_summary_digest="sha256:geometry-summary")
     with pytest.raises(ValueError, match="robot_placement_candidate_inventory_checkpoint_invalid"):
         validate_candidate_inventory_checkpoint(checkpoint=checkpoint, **arguments)
-    for status in ("passed", "not_applicable"):
-        gated = dict(candidate, arm_path_clearance={"status": status})
+    for record in ({"status": "passed", "scene_obstacles_digest": "sha256:room"}, {"status": "not_applicable"}):
+        gated = dict(candidate, arm_path_clearance=record)
         reused = build_candidate_inventory_checkpoint(
             robot_id="franka_panda", target_position_world_m=[3.0, -6.7, 0.8], maximum_candidates=48,
             trajectory_digest="sha256:plan", geometry_summary_digest="sha256:geometry-summary", candidates=[gated])
         assert validate_candidate_inventory_checkpoint(checkpoint=reused, **arguments) == [gated]
+    # A pass from before the gate measured the room is searched again.
+    roomless = build_candidate_inventory_checkpoint(
+        robot_id="franka_panda", target_position_world_m=[3.0, -6.7, 0.8], maximum_candidates=48,
+        trajectory_digest="sha256:plan", geometry_summary_digest="sha256:geometry-summary",
+        candidates=[dict(candidate, arm_path_clearance={"status": "passed"})])
+    with pytest.raises(ValueError, match="robot_placement_candidate_inventory_checkpoint_invalid"):
+        validate_candidate_inventory_checkpoint(checkpoint=roomless, **arguments)
 
 
 def test_deterministic_selection_never_invokes_paid_model(tmp_path, monkeypatch) -> None:

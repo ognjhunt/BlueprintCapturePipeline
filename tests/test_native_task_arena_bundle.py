@@ -4281,12 +4281,9 @@ def test_camera_framing_expectation_ships_beside_observability() -> None:
 
 
 def _incompressible_bytes(size: int) -> bytes:
-    chunks = []
-    counter = 0
-    while sum(len(chunk) for chunk in chunks) < size:
-        chunks.append(hashlib.sha256(counter.to_bytes(8, "big")).digest())
-        counter += 1
-    return b"".join(chunks)[:size]
+    # One 32-byte digest per counter value. Re-summing every chunk's length each loop was quadratic
+    # and took minutes for 3 MiB.
+    return b"".join(hashlib.sha256(counter.to_bytes(8, "big")).digest() for counter in range(-(-size // 32)))[:size]
 
 
 def test_zip_member_compression_stores_entropy_coded_bytes_and_deflates_text(

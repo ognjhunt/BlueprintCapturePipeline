@@ -23,7 +23,13 @@ from .scene_physics_preflight import (
     robot_fixed_volume_mask,
     task_motion_surface,
 )
-from .robot_arm_path_clearance import RobotArmPathClearanceError, arm_path_clearance
+from .robot_arm_path_clearance import (
+    RobotArmPathClearanceError,
+    SceneObstacles,
+    arm_path_clearance,
+    sample_scene_obstacles,
+    scene_radius_m,
+)
 from .scene_placement.robot_profile import get_robot_profile
 
 
@@ -1280,12 +1286,27 @@ def _arm_path_inputs(
     }
 
 
+def _arm_scene_obstacles(
+    index: RobotPlacementGeometryIndex, *, centre: Sequence[float], radius: float,
+) -> SceneObstacles:
+    """The static scene the arm must clear: the background and every task actor but the one the task moves.
+
+    The gate adds the moving actor's fixed bodies itself, since only it knows which of its bodies move.
+    """
+    moving = tuple(f"/TaskActors/Actor_{ordinal:04d}/" for ordinal, binding in enumerate(index.task_asset_bindings)
+                   if binding.get("task_motion"))
+    keep = np.fromiter((not path.startswith(moving) for path in index.triangle_prim_paths), dtype=bool,
+                       count=len(index.triangle_prim_paths))
+    return sample_scene_obstacles(index.triangles[keep], centre=centre, radius=radius)
+
+
 def _arm_path_record(report: Mapping[str, Any]) -> dict[str, Any]:
     best = report.get("best_grip") or {}
     return {
         "status": report["status"], "margin_m": report["margin_m"], "grips_tried": report["grips_tried"],
         "grip_slide_m": best.get("slide_m"), "grip_roll_deg": best.get("roll_deg"),
-        "minimum_clearance_m": best.get("minimum_clearance_m"), "report_digest": report["report_digest"],
+        "minimum_clearance_m": best.get("minimum_clearance_m"),
+        "scene_obstacles_digest": report.get("scene_obstacles_digest"), "report_digest": report["report_digest"],
     }
 
 
@@ -1378,6 +1399,14 @@ def enumerate_robot_placement_geometry_candidates(
         {"status": "not_applicable", "reason": "task_path_without_handle_contact"}
         if arm_inputs is None and any(b.get("task_motion") for b in index.task_asset_bindings) else None
     )
+    arm_scene = None
+    if arm_inputs is not None:
+        # The arm must clear the room as well as the part. One sample of the scene serves every base: the
+        # region holds any base the search can propose (within the standoff of the target, on a support
+        # as low as the lowest) and everything its arm can come near.
+        lowest = min((surface.height_m for surface in surfaces), default=float(target[2]))
+        arm_scene = _arm_scene_obstacles(index, centre=target, radius=math.hypot(
+            profile.standoff_range_m[1], float(target[2]) - lowest) + scene_radius_m(robot_id))
     arm_path_tested = 0
     arm_path_blockers: Counter[str] = Counter()
     def evaluate(batch: Sequence[SupportSurface], first: int, support_rule: str):
@@ -1483,7 +1512,7 @@ def enumerate_robot_placement_geometry_candidates(
                              if row["phase_id"] == "approach"), None)
                 try:
                     report = arm_path_clearance(robot_id=robot_id, base_pose_world=proposal["pose"],
-                                                seed_joint_positions=seed, **arm_inputs)
+                                                seed_joint_positions=seed, scene_obstacles=arm_scene, **arm_inputs)
                 except RobotArmPathClearanceError as exc:
                     raise RobotPlacementGeometryError(f"robot_placement_arm_path_unmeasurable:{exc}") from exc
                 arm_path_tested += 1
@@ -1539,6 +1568,7 @@ def enumerate_robot_placement_geometry_candidates(
             "arm_path_tested_count": arm_path_tested,
             "arm_path_rejected_count": sum(arm_path_blockers.values()),
             "arm_path_blocker_counts": dict(arm_path_blockers),
+            "arm_path_scene_sample_count": len(arm_scene.points) if arm_scene is not None else 0,
             "candidate_count": min(len(candidates), int(maximum_candidates)),
             "support_search_pass_count": search_pass_count,
             "searched_support_surface_count": searched_surface_count,

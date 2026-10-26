@@ -384,7 +384,7 @@ def _door_trajectory():
 def test_the_arm_path_gate_measures_the_part_the_placement_index_binds(tmp_path):
     # The gate reads the task part, its motion and the planned contact from the same index the base checks use.
     from blueprint_pipeline.robot_arm_path_clearance import arm_path_clearance
-    from blueprint_pipeline.task_evaluation_robot_placement_geometry import _arm_path_inputs
+    from blueprint_pipeline.task_evaluation_robot_placement_geometry import _arm_path_inputs, _arm_scene_obstacles
 
     scene, robot = _assets(tmp_path)
     actor = _cabinet_with_drop_door(tmp_path, task_range=(0.0, math.radians(54)))
@@ -398,6 +398,13 @@ def test_the_arm_path_gate_measures_the_part_the_placement_index_binds(tmp_path)
     in_front = _proposal("floor", (0.60, 0.0, 0.0), math.pi)["pose"]
     assert arm_path_clearance(robot_id="franka_panda", base_pose_world=diagonal, **inputs)["status"] == "passed"
     assert arm_path_clearance(robot_id="franka_panda", base_pose_world=in_front, **inputs)["status"] == "blocked"
+    # The room the arm must clear is the index's background without the part the task moves: the
+    # floor and the obstacle are in it, the cabinet is not (the gate adds the cabinet's fixed body).
+    room = _arm_scene_obstacles(index, centre=[0.06, 0.0, 0.8], radius=2.0)
+    on_floor = np.abs(room.points[:, 2]) < 1e-9
+    assert on_floor.any() and np.all(on_floor | ((room.points[:, 0] >= 1.2 - 1e-9) & (room.points[:, 0] <= 1.8 + 1e-9)))
+    with_room = arm_path_clearance(robot_id="franka_panda", base_pose_world=diagonal, scene_obstacles=room, **inputs)
+    assert with_room["status"] == "passed" and with_room["scene_obstacles_digest"] == room.digest
     assert _arm_path_inputs(index, ids[1:], waypoints[1:]) is None
     rigid = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot)
     assert _arm_path_inputs(rigid, ids, waypoints) is None
@@ -410,10 +417,11 @@ def test_placement_keeps_only_bases_whose_arm_the_moving_part_misses(tmp_path, m
     actor = _cabinet_with_drop_door(tmp_path, task_range=(0.0, math.radians(54)))
     index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
                                                  task_assets=[actor])
-    tested = []
+    tested, rooms = [], set()
 
-    def gate(*, base_pose_world, seed_joint_positions, **inputs):
+    def gate(*, base_pose_world, seed_joint_positions, scene_obstacles, **inputs):
         assert inputs["joint_id"] == "door_hinge" and len(seed_joint_positions) == 7
+        rooms.add(id(scene_obstacles))
         y = base_pose_world["position_world_m"][1]
         tested.append(y)
         struck = abs(y) < 0.3  # in front of the 0.6 m wide door
@@ -438,6 +446,8 @@ def test_placement_keeps_only_bases_whose_arm_the_moving_part_misses(tmp_path, m
     slides = [record["grip_slide_m"] for record in records]
     assert 0.0 in slides and 0.11 in slides and slides == sorted(slides)
     assert diagnostics["arm_path_tested_count"] == len(tested) <= len(candidates) + diagnostics["arm_path_rejected_count"]
+    # One sample of the room serves every base the search tests.
+    assert len(rooms) == 1 and diagnostics["arm_path_scene_sample_count"] > 0
     assert diagnostics["arm_path_blocker_counts"] == (
         {"robot_arm_in_task_part_path": diagnostics["arm_path_rejected_count"]}
         if diagnostics["arm_path_rejected_count"] else {})
