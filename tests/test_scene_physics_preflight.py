@@ -115,6 +115,16 @@ def test_clean_placement_passes(tmp_path):
     assert report["simulator_executed"] is False
 
 
+def test_an_asset_clear_of_every_sample_reports_finite_json(tmp_path):
+    # Lifted off the floor, no background sample falls inside any collider's box, so every depth is
+    # -inf; the report must still be strict JSON.
+    lifted = {"position_world_m": [0.0, 0.0, 0.05], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    report = spp.scene_physics_preflight(background_usd=_background(tmp_path), asset_usd=_asset(tmp_path),
+                                         asset_pose_world=lifted, **FAST)
+    assert report["rest_overlap"]["penetrating_points"] == 0 and report["rest_overlap"]["max_depth_m"] == 0.0
+    json.dumps(report, allow_nan=False)
+
+
 def test_wall_inside_the_volume_is_found_by_face_depth_and_push(tmp_path):
     report = spp.scene_physics_preflight(background_usd=_background(tmp_path, back_wall_x=-0.27),
                                          asset_usd=_asset(tmp_path), asset_pose_world=POSE, **FAST)
