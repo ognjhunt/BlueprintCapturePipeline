@@ -1395,7 +1395,7 @@ def _run_isolated_cell_processes(
                       else "policy_canary_isolated_cell_process_timeout")
             try:
                 child_result_path = child_root / PROVIDER_RESULT_FILENAME
-                if child_result_path.is_file():
+                if child_was_sealed := child_result_path.is_file():
                     # Isaac may hang while closing after sealing its final result.
                     # Keep that verified receipt instead of trying to overwrite it.
                     child = _read(child_result_path)
@@ -1412,9 +1412,9 @@ def _run_isolated_cell_processes(
                     children=child_results, construction_lineage_mode=construction_lineage_mode,
                     reason="policy_canary_isolated_cell_timeout_recovery_failed", interrupted_cell_index=index)
                 raise
-            if inputs.get("run_kind") == TEAM_RUN_KIND and child_results:
+            if inputs.get("run_kind") == TEAM_RUN_KIND and (child_results or child_was_sealed):
                 _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
-                    children=child_results, construction_lineage_mode=construction_lineage_mode,
+                    children=[*child_results, child] if child_was_sealed else child_results, construction_lineage_mode=construction_lineage_mode,
                     reason=reason, interrupted_cell_index=index)
                 return 1
             from blueprint_pipeline.policy_canary_interrupted_cell_recovery import seal_interrupted_session_result
