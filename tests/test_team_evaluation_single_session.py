@@ -122,6 +122,30 @@ def test_lost_child_preserves_completed_prefix_without_starting_another_case(tmp
     assert len(list((output / "cell_runs").glob("*/" + PROVIDER_RESULT_FILENAME))) == 30
 
 
+@pytest.mark.parametrize("close_at", [0, 3])
+def test_close_timeout_retains_completed_current_child_and_earlier_prefix(tmp_path, monkeypatch, close_at):
+    import subprocess
+
+    runtime, output, _inputs, _authority, seen, spawn = _campaign(tmp_path, monkeypatch)
+
+    def close_timeout(**kwargs):
+        exit_code = spawn(**kwargs)
+        if kwargs["index"] == close_at:
+            raise subprocess.TimeoutExpired("isaac-close", 60)
+        return exit_code
+
+    assert worker._run_isolated_cell_processes(
+        runtime_root=runtime, output_root=output, run_cell_process=close_timeout,
+    ) == 1
+    result = json.loads((output / PROVIDER_RESULT_FILENAME).read_text())
+    assert seen == list(range(close_at + 1))
+    assert result["status"] == "blocked" and len(result["episodes"]) == close_at + 1
+    assert result["episodes"][-1]["episode"]["score"]["status"] == "scored"
+    assert result["interrupted_cell_index"] == close_at
+    assert result["result_digest"] == canonical_digest(result, digest_field="result_digest")
+    assert not (output / "cell_runs" / f"{close_at + 1:02d}").exists()
+
+
 @pytest.mark.parametrize("deadline", [True, float("inf"), -1, "tomorrow"])
 def test_authority_refuses_invalid_absolute_deadline(tmp_path, monkeypatch, deadline):
     _runtime, _output, _inputs, authority, _seen, _spawn = _campaign(tmp_path, monkeypatch)
@@ -206,6 +230,9 @@ def test_a_prefix_with_only_prepolicy_failures_is_retained_without_invented_epis
             temporary.replace(path)
             return result
         if index == 3 and failure in ('timeout', 'recovery_failed'):
+            # Recovery is needed only if the child timed out before sealing.
+            # A valid receipt followed by a close hang has separate coverage.
+            path.unlink()
             raise subprocess.TimeoutExpired('isolated-child', 2700)
         child = {'schema_version': 'native_task_arena_policy_canary_session_result.v1',
                  'selected_cell_index': index, 'status': 'blocked',

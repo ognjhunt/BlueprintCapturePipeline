@@ -1791,3 +1791,27 @@ def test_real_canary_lifecycle_reads_proxy_storage_and_refuses_true_reset_drift(
             assert episode['typed_harness_failure'] == 'ScientificResetScenarioMismatch'
         else:
             assert row['native_storage_comparison']['absolute_error_stored_value'] == 0
+def test_close_timeout_preserves_already_sealed_pair_and_never_launches_next_cell(tmp_path):
+    import subprocess
+
+    runtime, output = _stage_runtime_root(tmp_path, scene_plan=_destination_scene_plan())
+    isaacs = []
+    calls = []
+
+    def close_timeout(**kwargs):
+        calls.append(kwargs["index"])
+        assert _run_cell_in_process(**kwargs, isaacs=isaacs) == 0
+        raise subprocess.TimeoutExpired("isaac-close", timeout=60)
+
+    assert worker._run_isolated_cell_processes(
+        runtime_root=runtime, output_root=output, run_cell_process=close_timeout,
+    ) == 1
+    result = _sealed_result(output / PROVIDER_RESULT_FILENAME)
+    child = _sealed_result(output / "cell_runs/00" / PROVIDER_RESULT_FILENAME)
+    assert calls == [0]
+    assert result["status"] == "blocked"
+    assert result["candidate_policy_queried"] is True
+    assert len(result["episodes"]) == 2
+    assert result["interrupted_child_result_digest"] == child["result_digest"]
+    assert [row["episode"]["score"] for row in result["episodes"]] == [row["episode"]["score"] for row in child["episodes"]]
+    assert not (output / "cell_runs/01").exists()

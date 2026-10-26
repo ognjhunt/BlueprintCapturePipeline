@@ -5,14 +5,34 @@ from copy import deepcopy
 
 import json
 import math
+import os
 import mimetypes
 from pathlib import Path
+import time
 from typing import Any, Callable, Mapping
 
 from .decision_evidence_contracts import canonical_digest
 from .native_policy_canary_control_gate import _file, verify_files
 
 RESULT_FILENAME = "native_task_arena_policy_canary_session_result.v1.json"
+ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 2700
+POLICY_CANARY_EXPORT_RESERVE_SECONDS = 300
+_HARD_DEADLINE_ENV = "BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH"
+
+
+def _isolated_cell_timeout_seconds() -> float:
+    """Bound each cell by the original rental deadline, leaving time to export."""
+    deadline = os.environ.get(_HARD_DEADLINE_ENV)
+    if deadline is None:
+        return float(ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS)
+    try:
+        epoch = float(deadline)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("policy_canary_hard_deadline_invalid") from exc
+    if not math.isfinite(epoch) or epoch <= 0:
+        raise ValueError("policy_canary_hard_deadline_invalid")
+    return max(0.0, min(float(ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS),
+                       epoch - time.time() - POLICY_CANARY_EXPORT_RESERVE_SECONDS))
 
 
 def paired_gate(child: Mapping[str, Any], *, root: Path, candidate_ids: list[str]) -> dict[str, Any]:

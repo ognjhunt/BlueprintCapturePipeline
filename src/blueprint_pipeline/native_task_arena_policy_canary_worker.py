@@ -10,7 +10,11 @@ from blueprint_pipeline.policy_canary_media_integrity import (
 from copy import deepcopy
 from dataclasses import dataclass
 from blueprint_pipeline.native_policy_canary_control_gate import controls_required, execute_native_controls, validate_controls_receipt
-from blueprint_pipeline.native_policy_canary_matrix_gate import execute_strict_matrix, _episode_embodiment_parity_diagnostic
+from blueprint_pipeline.native_policy_canary_matrix_gate import (
+    execute_strict_matrix, _episode_embodiment_parity_diagnostic,
+    ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS as ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
+    _HARD_DEADLINE_ENV, _isolated_cell_timeout_seconds,
+)
 import json
 import os
 from pathlib import Path
@@ -48,9 +52,6 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 )
 
 
-# Includes native renderer startup and both complete 675-action candidates.
-# The independent allocation watchdog remains the total-session hard stop.
-ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 2700
 DROID_PARITY_MINIMUM_APPROACH_M = 0.05
 _CELL_PROGRESS_FD_ENV = "BLUEPRINT_POLICY_CANARY_PROGRESS_FD"
 _CELL_PROGRESS_STAGES = frozenset({
@@ -1245,6 +1246,9 @@ def _spawn_isolated_cell_process(
 ) -> int:
     """Run exactly one matrix cell in a fresh interpreter (and a fresh Isaac)."""
 
+    timeout_seconds = _isolated_cell_timeout_seconds()
+    if timeout_seconds <= 0:
+        raise subprocess.TimeoutExpired("policy_canary_export_deadline", timeout=0)
     child_log = child_root / "worker_console.log"
     environment = dict(os.environ)
     environment["BLUEPRINT_POLICY_CANARY_CELL_INDEX"] = str(index)
@@ -1266,7 +1270,7 @@ def _spawn_isolated_cell_process(
                 env=environment,
                 stdout=stream,
                 stderr=subprocess.STDOUT,
-                timeout=ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
                 check=False,
                 pass_fds=(progress_fd,) if progress_fd is not None else (),
             )
@@ -1383,44 +1387,39 @@ def _run_isolated_cell_processes(
                     child_root=child_root,
                 )
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             from blueprint_pipeline.policy_canary_interrupted_cell_recovery import recover_interrupted_cell_result
 
+            reason = ("policy_canary_export_deadline_reached"
+                      if _HARD_DEADLINE_ENV in os.environ and _isolated_cell_timeout_seconds() <= 0
+                      else "policy_canary_isolated_cell_process_timeout")
             try:
-                child = recover_interrupted_cell_result(
-                    runtime_root=runtime, child_root=child_root,
-                    selected_cell_index=index,
-                    reason="policy_canary_isolated_cell_process_timeout",
-                    timeout_seconds=ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
-                )
+                child_result_path = child_root / PROVIDER_RESULT_FILENAME
+                if child_was_sealed := child_result_path.is_file():
+                    # Isaac may hang while closing after sealing its final result.
+                    # Keep that verified receipt instead of trying to overwrite it.
+                    child = _read(child_result_path)
+                    _validate_isolated_cell_result(child=child, inputs=inputs, index=index)
+                else:
+                    child = recover_interrupted_cell_result(
+                        runtime_root=runtime, child_root=child_root,
+                        selected_cell_index=index,
+                        reason=reason,
+                        timeout_seconds=exc.timeout if exc.timeout > 0 else None,
+                    )
             except Exception:  # noqa: BLE001 - earlier completed children must survive recovery failure
                 _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
                     children=child_results, construction_lineage_mode=construction_lineage_mode,
                     reason="policy_canary_isolated_cell_timeout_recovery_failed", interrupted_cell_index=index)
                 raise
-            if inputs.get("run_kind") == TEAM_RUN_KIND and child_results:
+            if inputs.get("run_kind") == TEAM_RUN_KIND and (child_results or child_was_sealed):
                 _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
-                    children=child_results, construction_lineage_mode=construction_lineage_mode,
-                    reason="policy_canary_isolated_cell_process_timeout", interrupted_cell_index=index)
+                    children=[*child_results, child] if child_was_sealed else child_results, construction_lineage_mode=construction_lineage_mode,
+                    reason=reason, interrupted_cell_index=index)
                 return 1
-            result = {
-                "schema_version": "native_task_arena_policy_canary_session_result.v1",
-                "status": "blocked", "run_kind": inputs.get("run_kind") or "internal_policy_canary",
-                "claim_ceiling": "diagnostic_policy_execution",
-                "task_success_contract": inputs["task_success_contract"],
-                "task_success_contract_digest": inputs["task_success_contract_digest"],
-                "episodes": [], "artifact_inventory": [],
-                "candidate_policy_queried": child.get("candidate_policy_queried") is True,
-                "candidate_policy_query_attempted": any(
-                    row.get("candidate_policy_query_attempted") is True
-                    for row in child.get("episodes", [])
-                ),
-                "blockers": ["policy_canary_isolated_cell_process_timeout"],
-                "interrupted_cell_index": index,
-                "interrupted_child_result_digest": child["result_digest"],
-            }
-            result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-            _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+            from blueprint_pipeline.policy_canary_interrupted_cell_recovery import seal_interrupted_session_result
+            seal_interrupted_session_result(inputs=inputs, children=[*child_results, child],
+                output_root=output_root, interrupted_cell_index=index, reason=reason, seal=_seal_result)
             return 1
         except Exception:
             _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,

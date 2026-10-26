@@ -3998,6 +3998,7 @@ def _probe_env(
     provider_bundle_kind: str = "isaac",
     runtime_secret_file_values: Mapping[str, str] | None = None,
     provider_runtime_environment: Mapping[str, str] | None = None,
+    provider_hard_deadline_epoch: float | None = None,
 ) -> dict[str, str]:
     env = {
         "BLUEPRINT_VAST_PROBE": "true",
@@ -4056,6 +4057,8 @@ def _probe_env(
         env["HUGGING_FACE_HUB_TOKEN"] = hf_token
         env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     for name, value in sorted((provider_runtime_environment or {}).items()):
+        if name == "BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH":
+            raise ValueError("vast_provider_deadline_override_forbidden")
         public_identity_name = vrec.is_public_openai_identity_name(name)
         if (
             (
@@ -4074,6 +4077,12 @@ def _probe_env(
         ):
             raise ValueError("invalid_vast_provider_runtime_environment")
         env[name] = value
+    if provider_hard_deadline_epoch is not None:
+        if (type(provider_hard_deadline_epoch) not in (int, float)
+                or not math.isfinite(provider_hard_deadline_epoch)
+                or provider_hard_deadline_epoch <= 0):
+            raise ValueError("vast_provider_hard_deadline_invalid")
+        env["BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH"] = str(provider_hard_deadline_epoch)
     for name, value in sorted((runtime_secret_file_values or {}).items()):
         if (
             re.fullmatch(r"[A-Z][A-Z0-9_]{1,120}_FILE", str(name or "")) is None
@@ -8672,6 +8681,10 @@ def run_vast_provider_adapter(
                 provider_bundle_kind=provider_bundle_kind,
                 runtime_secret_file_values=runtime_secret_values,
                 provider_runtime_environment=provider_runtime_environment,
+                provider_hard_deadline_epoch=(
+                    (retention_watchdog_handoff or {}).get("watchdog_deadline_epoch")
+                    if provider_bundle_kind == "native_task_arena_policy_canary_session" else None
+                ),
             )
             private_startup_env: dict[str, str] = {}
             if provider_bundle_kind == "task_evaluation_scene_configuration":

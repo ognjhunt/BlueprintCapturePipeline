@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .adp009d_droid_observation import CANDIDATE_VIEW_SHAPES, resize_with_pad
 from .decision_evidence_contracts import canonical_digest
@@ -538,4 +538,30 @@ def recover_interrupted_cell_result(
     return result
 
 
-__all__ = ["recover_interrupted_cell_result"]
+def seal_interrupted_session_result(*, inputs: Mapping[str, Any], children: list[Mapping[str, Any]],
+        output_root: Path, interrupted_cell_index: int, reason: str, seal: Callable[..., Any]) -> dict[str, Any]:
+    """Expose a stopped child's retained evidence without promoting its outcome."""
+    from .team_evaluation_worker_retention import _prefix_episode_evidence_paths
+
+    episodes = [_prefix_episode_evidence_paths(row, prefix=f"cell_runs/{index:02d}")
+                for index, child in enumerate(children) for row in child.get("episodes", [])]
+    inventory = [{**row, "relative_path": f"cell_runs/{index:02d}/{row['relative_path']}"}
+                 for index, child in enumerate(children) for row in child.get("artifact_inventory", [])]
+    result = {
+        "schema_version": RESULT_SCHEMA_VERSION, "status": "blocked",
+        "run_kind": inputs.get("run_kind") or RUN_KIND, "claim_ceiling": CLAIM_CEILING,
+        "task_success_contract": inputs["task_success_contract"],
+        "task_success_contract_digest": inputs["task_success_contract_digest"],
+        "episodes": episodes, "artifact_inventory": inventory, "artifact_inventory_digest": _inventory_digest(inventory),
+        "candidate_policy_queried": any(child.get("candidate_policy_queried") is True for child in children),
+        "candidate_policy_query_attempted": any(row.get("candidate_policy_query_attempted") is True for row in episodes),
+        "blockers": [reason], "official_ranking_performed": False, "scene_promotion_performed": False,
+        "provider_zero_required_after_return": True, "interrupted_cell_index": interrupted_cell_index,
+        "interrupted_child_result_digest": children[-1]["result_digest"], "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    seal(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+    return result
+
+
+__all__ = ["recover_interrupted_cell_result", "seal_interrupted_session_result"]

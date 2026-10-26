@@ -18,11 +18,14 @@ def test_isolated_cell_progress_reaches_outer_log_without_child_console(
     read_fd, write_fd = os.pipe()
     try:
         monkeypatch.setattr(worker.sys, "stdout", SimpleNamespace(fileno=lambda: write_fd))
+        monkeypatch.setattr(worker.time, "time", lambda: 1000.0)
+        monkeypatch.setenv(worker._HARD_DEADLINE_ENV, "1900")
 
         def fake_run(*args, **kwargs):
             progress_fd = kwargs["pass_fds"][0]
             assert kwargs["env"][worker._CELL_PROGRESS_FD_ENV] == str(progress_fd)
             assert kwargs["stdout"].name.endswith("worker_console.log")
+            assert kwargs["timeout"] == 600  # Cold setup already consumed the rest of the lease.
             os.write(progress_fd, b"BLUEPRINT_POLICY_CANARY_PROGRESS:cell=0:stage=static_preflight_passed\n")
             return SimpleNamespace(returncode=0)
 
@@ -321,8 +324,73 @@ def test_parent_cell_deadline_seals_interruption_and_stops_before_next_cell(tmp_
     assert parent["interrupted_child_result_digest"] == child["result_digest"]
     assert child["result_digest"] == canonical_digest(child, digest_field="result_digest")
     assert len(child["episodes"]) == 2
+    assert len(parent["episodes"]) == 2
+    assert parent["artifact_inventory"]
+    assert parent["artifact_inventory_digest"] == canonical_digest({"value": parent["artifact_inventory"]})
+    assert all((output / row["relative_path"]).is_file() for row in parent["artifact_inventory"])
+    assert parent["official_ranking_performed"] is False
     assert all(row["candidate_policy_queried"] is False for row in child["episodes"])
     assert not (output / "cell_runs/01").exists()
+
+
+@pytest.mark.parametrize(("remaining", "expected"), [(4000, 2700), (900, 600), (300, 0), (-1, 0)])
+def test_cell_timeout_reserves_export_time_from_original_deadline(monkeypatch, remaining, expected):
+    monkeypatch.setattr(worker.time, "time", lambda: 1000.0)
+    monkeypatch.setenv(worker._HARD_DEADLINE_ENV, str(1000 + remaining))
+    assert worker._isolated_cell_timeout_seconds() == expected
+
+
+@pytest.mark.parametrize("deadline", ["nan", "inf", "-1", "0", "broken"])
+def test_invalid_deadline_cannot_turn_into_unbounded_work(monkeypatch, deadline):
+    monkeypatch.setenv(worker._HARD_DEADLINE_ENV, deadline)
+    with pytest.raises(ValueError, match="policy_canary_hard_deadline_invalid"):
+        worker._isolated_cell_timeout_seconds()
+
+
+def test_deadline_exhausted_before_cell_does_not_spawn_and_retains_typed_gaps(tmp_path, monkeypatch):
+    import json
+    from tests.test_policy_canary_interrupted_cell_recovery import _stage
+
+    runtime, staged_child, _inputs, _digest = _stage(tmp_path)
+    output = staged_child.parent.parent
+    staged_child.rmdir()
+    monkeypatch.setattr(worker.time, "time", lambda: 1000.0)
+    monkeypatch.setenv(worker._HARD_DEADLINE_ENV, "1250")
+    monkeypatch.setattr(worker.subprocess, "run", lambda *a, **k: pytest.fail("must not start another cell"))
+    assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output) == 1
+    result = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
+    assert result["blockers"] == ["policy_canary_export_deadline_reached"]
+    assert result["candidate_policy_queried"] is False
+    assert all(row["episode"]["score"]["status"] == "not_scored" for row in result["episodes"])
+    assert not (output / "cell_runs/01").exists()
+
+
+def test_timeout_keeps_bound_policy_requests_and_media_in_parent(tmp_path):
+    import json
+    import subprocess
+    from tests.test_policy_canary_interrupted_cell_recovery import _stage, _request
+
+    runtime, staged_child, inputs, digest = _stage(tmp_path)
+    output = staged_child.parent.parent
+    staged_child.rmdir()
+
+    def interrupted(**kwargs):
+        _request(runtime, kwargs["child_root"], inputs, digest, "pi05_droid", 0)
+        raise subprocess.TimeoutExpired("test-cell", timeout=60)
+
+    assert worker._run_isolated_cell_processes(
+        runtime_root=runtime, output_root=output, run_cell_process=interrupted,
+    ) == 1
+    result = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
+    assert result["candidate_policy_query_attempted"] is True
+    assert result["candidate_policy_queried"] is False  # A saved request does not prove a returned action.
+    assert result["episodes"][0]["retained_policy_request_count"] == 1
+    for episode in result["episodes"]:
+        for reference in episode["evidence_artifacts"].values():
+            if reference is not None:
+                assert (output / reference["relative_path"]).is_file()
+    assert any(row["role"] == "exact_policy_request" for row in result["artifact_inventory"])
+    assert any(row["role"] == "review_video" for row in result["artifact_inventory"])
 
 
 @pytest.mark.parametrize(

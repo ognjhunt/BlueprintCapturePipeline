@@ -10065,3 +10065,19 @@ def test_request_logs_recognizes_advancing_remote_tail_after_64_milestones(tmp_p
     assert any('cell=199:stage=episode_completed' in row for row in result['remote_progress_milestones'])
     assert all(len(rows) == 64 for rows in calls)
     assert sum(row['remote_progress_observed'] for row in result['log_poll_attempts']) >= 20
+
+
+def test_policy_canary_deadline_environment_uses_watchdog_value_and_forbids_override(tmp_path):
+    env = vpa._probe_env(job_dir=tmp_path, enable_isaac_smoke=False,
+                         provider_hard_deadline_epoch=1792981479.7891347)
+    assert env["BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH"] == "1792981479.7891347"
+    with pytest.raises(ValueError, match="vast_provider_deadline_override_forbidden"):
+        vpa._probe_env(job_dir=tmp_path, enable_isaac_smoke=False,
+                       provider_hard_deadline_epoch=1792981479.7891347,
+                       provider_runtime_environment={"BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH": "9999999999"})
+
+
+@pytest.mark.parametrize("deadline", [float("nan"), float("inf"), -1, 0, True, "9999999999"])
+def test_invalid_provider_deadline_refuses_before_create(tmp_path, deadline):
+    with pytest.raises(ValueError, match="vast_provider_hard_deadline_invalid"):
+        vpa._probe_env(job_dir=tmp_path, enable_isaac_smoke=False, provider_hard_deadline_epoch=deadline)
