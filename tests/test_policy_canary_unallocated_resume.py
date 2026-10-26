@@ -60,7 +60,7 @@ def test_unallocated_resume_preserves_history_and_claims_only_one_successor(tmp_
     assert receipt["new_preparation_requests_authorized"] == 0
     assert resume.prepare_unallocated_session_resume(**args, apply=True) == receipt
     assert all((parent / p).read_bytes() == raw for p, raw in before.items())
-    with pytest.raises(FileExistsError):
+    with pytest.raises(ValueError, match="already_claimed"):
         resume.prepare_unallocated_session_resume(**{**args, "successor_job_dir": tmp_path / "second"}, apply=True)
 
 

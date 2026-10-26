@@ -38,6 +38,9 @@ def prepare_unallocated_session_resume(*, parent_job_dir: str | Path, successor_
     parent, successor = Path(parent_job_dir).resolve(), Path(successor_job_dir).resolve()
     if parent == successor or parent in successor.parents or successor in parent.parents or successor.exists():
         raise ValueError("unallocated_resume_successor_invalid")
+    claim = parent / "unallocated_successor_claim.json"
+    if claim.exists() or claim.is_symlink():
+        raise ValueError("unallocated_resume_successor_already_claimed")
     records = {}
 
     def read(relative: str) -> dict[str, Any]:
@@ -95,7 +98,7 @@ def prepare_unallocated_session_resume(*, parent_job_dir: str | Path, successor_
     receipt["continuation_digest"] = canonical_digest(receipt, digest_field="continuation_digest")
     if apply:
         # Never delete the old consumption or re-use its output directory.
-        with (parent / "unallocated_successor_claim.json").open("x", encoding="utf-8") as stream:
+        with claim.open("x", encoding="utf-8") as stream:
             json.dump(receipt, stream, indent=2, sort_keys=True)
             stream.write("\n")
         successor.mkdir(parents=True, exist_ok=False)
