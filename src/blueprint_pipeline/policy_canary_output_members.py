@@ -50,14 +50,15 @@ Everything else stays in the promoted archive in B2. The version is bound into
 the member selection (``build_member_selection(..., selection_version=...)``).
 
 Budget. ``NEEDED_SET_BUDGET_BYTES`` bounds what the contract may materialize.
-It is sized from a measurement on a Quick-10-shaped fixture
+The historical 640 MiB estimate came from a Quick-10-shaped fixture
 (``tests/provider_output_fixtures.quick10_production_shape``): the lifecycle
 rehearsal's real worker output, whose contract set is 2.29 times its
 4,407,038-byte aggregate, scaled to production's measured 190,573,875-byte
 aggregate, needs 436,485,098 bytes (416 MiB); the children would add
-191,208,330. 640 MiB is 1.5 times that measurement, and with the ingestion
-metadata still fits the ``policy_canary_output`` role's 1 GiB declared
-footprint. A run whose needed set exceeds it seals blocked with its archive
+191,208,330. Dense retained observations exceeded that estimate. The budget
+now uses the existing disk role's declared footprint minus its forecast
+journal/index allowance; the role and disk floors do not grow. A run whose
+needed set exceeds that budget seals blocked with its archive
 durable. The measurement is an estimate, which is why auto streams only
 once the host has measured one retained Quick-10 and recorded that it fits
 (docs/CONTROL_PLANE_STORAGE.md).
@@ -78,6 +79,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from .control_plane_disk_ledger import ROLE_FOOTPRINT_BYTES
 
 DELIVERY_ENV = "BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY"
 DOWNLOAD = "download"
@@ -138,7 +141,6 @@ QUICK10_SHAPE = {"aggregate": True, "cell_results": QUICK10_CELL_COUNT, "startup
 OUTPUT_ROLE = "policy_canary_output"
 # A streamed output that arrived but was never ingested: the lane's and the dispatcher's media gap.
 NOT_INGESTED_GAP = "provider_output_not_ingested"
-NEEDED_SET_BUDGET_BYTES = 640 * 1024**2
 # Ingestion metadata the hold covers beside the members: a journal row and a
 # receipt row per archive member, plus a fixed allowance for the receipt, the
 # view descriptor and filesystem overhead.
@@ -150,6 +152,14 @@ FIXED_METADATA_BYTES = 16 * 1024**2
 # and an index row each (measured at 484 bytes on that shape).
 FORECAST_MEMBER_COUNT = 20_000
 FORECAST_INDEX_ROW_BYTES = 1024
+# Keep the metadata forecast inside the existing disk role, including its
+# journal/index allowance. Dense observations may exceed the historical
+# 640 MiB estimate without requiring a larger role or a growing live hold.
+NEEDED_SET_BUDGET_BYTES = (
+    ROLE_FOOTPRINT_BYTES[OUTPUT_ROLE]
+    - FORECAST_MEMBER_COUNT * (PER_MEMBER_METADATA_BYTES + FORECAST_INDEX_ROW_BYTES)
+    - FIXED_METADATA_BYTES
+)
 
 
 class PolicyCanaryOutputDeliveryError(ValueError):
@@ -275,8 +285,11 @@ class PolicyCanaryOutputContract:
         (``forecast_hold_cap_bytes``), by default the uncapped forecast. A run
         it does not admit pays and then seals blocked with its archive durable.
         """
+        from .provider_output_promotion import INDEX_LIMITS
+
         cap = self.forecast_hold_bytes() if hold_cap_bytes is None else hold_cap_bytes
-        return (needed_bytes <= self.needed_set_budget_bytes
+        return (member_count <= INDEX_LIMITS["maximum_members"]
+                and needed_bytes <= self.needed_set_budget_bytes
                 and self.hold_bytes(needed_bytes=needed_bytes, member_count=member_count,
                                     index_file_bytes=member_count * FORECAST_INDEX_ROW_BYTES) <= cap)
 

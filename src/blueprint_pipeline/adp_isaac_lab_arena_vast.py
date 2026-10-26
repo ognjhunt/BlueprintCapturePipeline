@@ -909,7 +909,10 @@ def run_arena_native_control_vast(
     local_avoidlist = _stage_machine_avoidlist(job, machine_avoidlist_path)
     if streaming:
         from . import arena_provider_output_streaming as streamed
-    output_collector = streamed.collector() if streaming else None
+    output_archive_limit = (
+        expected_provider_upload_bytes or streamed.OUTPUT_ARCHIVE_MAXIMUM_BYTES
+    ) if streaming else None
+    output_collector = streamed.collector(maximum_archive_bytes=output_archive_limit) if streaming else None
     promotion: dict[str, Any] = {}
     adapter: dict[str, Any] = {}
     watchdog_handoff: dict[str, Any] = {"status": "not_required"}
@@ -1069,7 +1072,8 @@ def run_arena_native_control_vast(
                 promotion, cleanup = streamed.promote(
                     staging_dir=staging_dir, attempt_root=attempt_root,
                     observation=output_collector.observation, local_archive=output_zip,
-                    cleanup=lambda: cleanup_staged_wam_provider_objects(staging_dir))
+                    cleanup=lambda: cleanup_staged_wam_provider_objects(staging_dir),
+                    maximum_archive_bytes=output_archive_limit)
             else:
                 cleanup = _cleanup_downloaded_provider_objects(
                     staging_dir=staging_dir, output_zip=output_zip, adapter=adapter,

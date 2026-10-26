@@ -79,8 +79,8 @@ LANE_RESULT_NAME = "adp_arena_vast_result.json"
 # bound to the session's run and runtime inputs; the first cell's stands for the run.
 IDENTITY_DOCUMENT = STARTUP_PREFLIGHT_MEMBER
 _BINDING_FIELDS = ("identity_document", "result_document", "run_id", "runtime_inputs_digest")
-# The Quick-10 session's output upload bound (native_task_arena_vast: 8 GB plus
-# the paired witness's own capacity); the output alone never exceeds it.
+# Compatibility fallback for callers without a transfer forecast. Live sessions
+# pass the finite upload forecast already bound into their spending admission.
 OUTPUT_ARCHIVE_MAXIMUM_BYTES = 8_000_000_000
 PRESIGN_EXPIRATION_SECONDS = 3600
 # Replaced by tests (Linux CI runs with fake disk usage).
@@ -92,7 +92,7 @@ def reserve_forecast_hold(*, job_dir: str | Path, environ: Mapping[str, str] | N
     """The ``policy_canary_output`` forecast hold, taken before the session authority is consumed.
 
     It holds ``forecast_hold_cap_bytes(contract)``: the contract's forecast
-    (about 695 MiB) capped at the role's declared footprint (1 GiB, or the
+    capped at the role's declared footprint (1 GiB, or the
     operator's ``BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_POLICY_CANARY_OUTPUT_BYTES``),
     the same hold auto delivery measures a recorded needed set against. It is
     only ever shrunk afterwards. Raises ``ControlPlaneDiskBudgetError``.
@@ -105,22 +105,23 @@ def reserve_forecast_hold(*, job_dir: str | Path, environ: Mapping[str, str] | N
         disk_usage=lambda path: disk_usage_provider(path), workload=WORKLOAD)
 
 
-def collector():
+def collector(*, maximum_archive_bytes: int = OUTPUT_ARCHIVE_MAXIMUM_BYTES):
     """The adapter's range collector for a Quick-10 output (which expects no inspection videos)."""
     from .provider_output_remote_collection import RemoteProviderOutputCollector
 
-    return RemoteProviderOutputCollector(maximum_archive_bytes=OUTPUT_ARCHIVE_MAXIMUM_BYTES, expected_video_count=0)
+    return RemoteProviderOutputCollector(maximum_archive_bytes=maximum_archive_bytes, expected_video_count=0)
 
 
 def promote(*, staging_dir: Path, attempt_root: Path, observation: Mapping[str, Any] | None,
-            local_archive: Path, cleanup: Callable[[], Mapping[str, Any]]) -> tuple[dict, dict]:
+            local_archive: Path, cleanup: Callable[[], Mapping[str, Any]],
+            maximum_archive_bytes: int = OUTPUT_ARCHIVE_MAXIMUM_BYTES) -> tuple[dict, dict]:
     """Promote the staged (or SSH-recovered) output, then run the gated cleanup; never raises."""
     from .provider_output_promotion import promote_then_cleanup
 
     local = local_archive if local_archive.is_file() and not local_archive.is_symlink() else None
     return promote_then_cleanup(cleanup=cleanup, staging_dir=staging_dir, attempt_root=attempt_root,
                                 observation=observation, local_archive=local,
-                                maximum_archive_bytes=OUTPUT_ARCHIVE_MAXIMUM_BYTES)
+                                maximum_archive_bytes=maximum_archive_bytes)
 
 
 def native_inventory_binding(bundle: Mapping[str, Any], result_name: str) -> dict[str, Any]:
