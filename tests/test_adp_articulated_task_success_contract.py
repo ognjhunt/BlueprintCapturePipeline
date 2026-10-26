@@ -90,6 +90,26 @@ def test_the_default_criteria_are_a_translation_of_the_frozen_spec():
     assert not {"destination_containment", "orientation", "support", "gripper_state"} & set(criteria)
 
 
+@pytest.mark.parametrize("required", [True, False])
+def test_explicit_release_rule_is_sealed_and_validated_by_both_readers(required):
+    import jsonschema
+    from blueprint_pipeline.articulated_task_success_contract_schema import articulated_task_success_contract_schema
+
+    spec = _spec(release_required=required)
+    contract = seal_articulated_task_success_contract(
+        task_spec=spec, site_id=SITE, task_id=TASK,
+        author_source="compatibility_default", author_id="blueprint:articulated_defaults.v1",
+        confirmation_status="confirmed", confirmed_by_team_id="team-1")
+    assert contract["criteria"]["release_and_retreat"] == {"mode": "required" if required else "ignored"}
+    assert "release_and_retreat" not in _sealed()["criteria"]
+    assert contract["contract_digest"] != _sealed()["contract_digest"]
+    assert validate_articulated_task_success_contract(contract) == contract
+    jsonschema.Draft202012Validator(articulated_task_success_contract_schema()).validate(contract)
+    contract["criteria"]["release_and_retreat"]["mode"] = "optional"
+    with pytest.raises(TaskNeutralScoringError, match="criteria_release_and_retreat_invalid"):
+        validate_articulated_task_success_contract(_reseal(contract))
+
+
 def test_a_sealed_contract_round_trips_and_binds_its_scope():
     contract = _sealed()
     assert contract["schema_version"] == SCHEMA_VERSION

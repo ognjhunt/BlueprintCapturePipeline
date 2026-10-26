@@ -95,6 +95,8 @@ def compatibility_articulated_success_criteria(task_spec: Mapping[str, Any]) -> 
         "motion": {"movement_epsilon": float(spec["movement_epsilon_rad"])},
         "assembly_root": {"mode": "required"},
         "safety": dict(SAFETY_PREDICATE),
+        **({"release_and_retreat": {"mode": "required" if spec["release_required"] else "ignored"}}
+           if "release_required" in spec else {}),
         "temporal_invariants": {
             "schema_version": EVENT_LEDGER_SCHEMA_VERSION,
             "rebound_below_threshold_allowed": False,
@@ -112,8 +114,14 @@ def _validate_criteria(criteria: Any, errors: list[str]) -> None:
     _fields(criteria, allowed={
         "target_joint", "opening", "hold", "locked_joints", "reset", "motion",
         "assembly_root", "safety", "temporal_invariants",
+        *({"release_and_retreat"} if "release_and_retreat" in criteria else set()),
     }, label="criteria", errors=errors)
     target = criteria.get("target_joint")
+    if "release_and_retreat" in criteria:
+        release = criteria["release_and_retreat"]
+        if (not isinstance(release, Mapping) or set(release) != {"mode"}
+                or release.get("mode") not in {"required", "ignored"}):
+            errors.append("criteria_release_and_retreat_invalid")
     if not isinstance(target, Mapping) or not str(target.get("joint_id") or "").strip():
         errors.append("criteria_target_joint_invalid")
     opening = criteria.get("opening")

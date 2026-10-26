@@ -31,8 +31,10 @@ joint's path before it reaches the success threshold, because then no successful
 episode avoids striking them. Beyond the threshold it depends on the joint. One
 that holds where it is released (every carried body gravity-free, as a
 counterbalanced door is, a vertical hinge or a level slide) only goes further if a
-policy pushes it, so contact there is reported. Any other joint is carried on by
-gravity to its hard limit, so contact anywhere on that fall blocks. On 2026-10-26
+policy pushes it, so contact there is reported. When the task requires release,
+any other joint is carried on by gravity to its hard limit, and contact on that
+fall blocks. An explicit hold-only task reports this optional fall as a risk.
+On 2026-10-26
 the dishwasher door, free-falling after release at 30 degrees, came to rest on the
 arm's shoulder at 60 degrees.
 """
@@ -699,6 +701,7 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
                             background_pose_world: Mapping[str, Sequence[float]] | None = None,
                             movable_joint_ids: Sequence[str] | None = None,
                             task_ranges: Mapping[str, Sequence[float]] | None = None,
+                            release_required: bool = True,
                             sample_spacing_m: float = DEFAULT_SAMPLE_SPACING_M,
                             rest_tolerance_m: float = DEFAULT_REST_TOLERANCE_M,
                             motion_tolerance_m: float = DEFAULT_MOTION_TOLERANCE_M,
@@ -708,11 +711,13 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
 
     ``task_ranges`` maps a joint to the span the task drives it through. With it,
     contact inside a span blocks, and so does contact beyond it where gravity
-    carries the released part on to its limit; every other contact is an
-    advisory. Without it, every contact blocks.
+    carries a part that the task requires releasing on to its limit. Every other
+    contact is an advisory. Without task ranges, every contact blocks.
     """
     from scipy.spatial import cKDTree
 
+    if not isinstance(release_required, bool):
+        raise ScenePhysicsPreflightError("scene_physics_release_required_invalid")
     model = load_asset_model(asset_usd)
     world_from_asset = _pose_matrix(asset_pose_world)
     reset = dict(reset_joint_positions or {})
@@ -803,8 +808,10 @@ def scene_physics_preflight(*, background_usd: str | Path, asset_usd: str | Path
             motion["task_range"] = [low_value, high_value]
             joint = _movable_joint(model, motion["joint_id"])
             holds = _holds_released_position(model, asset_usd, joint, asset_pose_world)
-            released = _released_span(joint, span, float(reset.get(joint.joint_id, 0.0)), holds)
+            released = _released_span(joint, span, float(reset.get(joint.joint_id, 0.0)),
+                                      holds or not release_required)
             motion["holds_released_position"], motion["released_range"] = holds, released
+            motion["release_required"] = release_required
         inside = [s for s in contacts if task_ranges is None
                   or (span is not None and low_value - 1e-6 <= s["value"] <= high_value + 1e-6)]
         falling = [s for s in contacts if s not in inside and released is not None
@@ -873,6 +880,7 @@ def robot_motion_clearance(*, asset_usd: str | Path, asset_pose_world: Mapping[s
                            reset_joint_positions: Mapping[str, float] | None, joint_id: str,
                            task_range: Sequence[float], robot_id: str,
                            robot_pose_world: Mapping[str, Sequence[float]],
+                           release_required: bool = True,
                            sample_spacing_m: float = DEFAULT_SAMPLE_SPACING_M,
                            rest_tolerance_m: float = DEFAULT_REST_TOLERANCE_M,
                            motion_tolerance_m: float = DEFAULT_MOTION_TOLERANCE_M,
@@ -881,11 +889,13 @@ def robot_motion_clearance(*, asset_usd: str | Path, asset_pose_world: Mapping[s
     """Measure the robot's fixed volumes against the placed asset at reset and along one joint.
 
     Contact at reset or inside ``task_range`` blocks. Contact beyond it blocks
-    too when gravity would carry the released joint there (see
+    too when the task requires release and gravity would carry the joint there (see
     ``joint_holds_released_position``); otherwise it is an advisory.
     """
     from scipy.spatial import cKDTree
 
+    if not isinstance(release_required, bool):
+        raise ScenePhysicsPreflightError("scene_physics_release_required_invalid")
     model = load_asset_model(asset_usd)
     joint = _movable_joint(model, joint_id)
     world_from_asset = _pose_matrix(asset_pose_world)
@@ -905,7 +915,9 @@ def robot_motion_clearance(*, asset_usd: str | Path, asset_pose_world: Mapping[s
     holds = _holds_released_position(model, asset_usd, joint, asset_pose_world)
     motion = {"joint_id": joint_id, "joint_type": joint.kind, "limits": [joint.lower, joint.upper],
               "task_range": sorted(float(v) for v in task_range), "holds_released_position": holds,
-              "released_range": _released_span(joint, task_range, float(reset.get(joint_id, 0.0)), holds),
+              "release_required": release_required,
+              "released_range": _released_span(joint, task_range, float(reset.get(joint_id, 0.0)),
+                                                holds or not release_required),
               "samples": []}
     for value in _sweep_values(joint, task_range, revolute_step_rad, prismatic_step_m):
         d, _ = penetration(points, placed_at({joint_id: float(value)}, moving), tree=tree)
@@ -1069,9 +1081,16 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
     import json
 
     from .decision_evidence_contracts import canonical_digest
+    from .adp_task_scoring import articulated_release_required
 
     root = Path(packet_dir)
     plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
+    if "release_required" in options:
+        raise ScenePhysicsPreflightError("scene_physics_task_release_override_forbidden")
+    try:
+        options["release_required"] = articulated_release_required(plan.get("task_spec") or {})
+    except ValueError as exc:
+        raise ScenePhysicsPreflightError("scene_physics_task_release_unknown") from exc
     objects = plan.get("objects", [])
     if not isinstance(objects, list):
         raise ScenePhysicsPreflightError("scene_physics_packet_plan_objects_invalid")

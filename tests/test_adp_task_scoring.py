@@ -169,6 +169,36 @@ def test_non_task_joint_motion_blocks_otherwise_successful_open() -> None:
     assert report["task_succeeded"] is False
 
 
+@pytest.mark.parametrize("required", [None, True, False])
+def test_executable_release_rule_controls_held_open_success(required):
+    spec = _articulated_spec()
+    # Historical nested metadata does not reinterpret already-frozen packets.
+    spec["configured_success_criteria"] = {"release_required": False}
+    if required is not None:
+        spec["release_required"] = required
+    samples = [_sample(i, 0.0 if i == 0 else 0.9) for i in range(5)]
+    for sample in samples:
+        sample.update(task_contact_active=True, retreat_completed=False)
+    report = score_task_episode_from_spec(task_spec=spec, samples=samples)
+    assert report["task_succeeded"] is (required is False)
+    assert report["measurements"]["released_in_settle"] is False
+    assert report["measurements"]["retreat_completed"] is False
+    if required is False:
+        assert all(report["predicates"].values())
+        assert report["thresholds"]["release_required"] is False
+    else:
+        assert report["outcome"] == OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE
+    samples[-1]["scene_collision_failure"] = True
+    assert score_task_episode_from_spec(task_spec=spec, samples=samples)["task_succeeded"] is False
+
+
+@pytest.mark.parametrize("bad", [None, "false", 0, 1])
+def test_release_rule_rejects_non_boolean_values(bad):
+    with pytest.raises(TaskNeutralScoringError, match="articulated_release_required_invalid"):
+        score_task_episode_from_spec(task_spec=_articulated_spec() | {"release_required": bad},
+                                     samples=[_sample(i, 0.0) for i in range(4)])
+
+
 def test_missing_native_velocity_fails_closed() -> None:
     sample = _sample(0, 0.0)
     del sample["joint_velocities_rad_s"]
@@ -262,6 +292,18 @@ def _graph_spec() -> dict:
         "locked_joint_motion_tolerance": 0.001,
         "movement_epsilon": 0.0001,
     }
+
+
+def test_graph_task_can_hold_open_when_release_is_explicitly_optional():
+    samples = [_graph_sample(i, 0.0 if i == 0 else 0.8) for i in range(5)]
+    for sample in samples:
+        sample.update(task_contact_active=True, retreat_completed=False)
+    spec = _graph_spec() | {"release_required": False}
+    report = score_task_episode_from_spec(task_spec=spec, samples=samples)
+    assert report["task_succeeded"] is True
+    assert report["measurements"]["released_in_settle"] is False
+    assert report["measurements"]["retreat_completed"] is False
+    assert score_task_episode_from_spec(task_spec=_graph_spec(), samples=samples)["task_succeeded"] is False
 
 
 def _graph_sample(

@@ -334,6 +334,16 @@ def test_robot_base_in_the_task_doors_swing_is_rejected(tmp_path, monkeypatch):
         index=falling_index, proposal=_proposal(floor.surface_id, (0.55, 0.0, 0.0), math.pi),
         target_position_world_m=target)
     assert "robot_base_in_task_part_fall_path" in under["blockers"] and under["task_fall_contact_point_count"] > 0
+    # Optional release does not require a fall, while whole-range ranking still
+    # prefers a base clear of it. This leaves the authored gravity unchanged.
+    falling["task_motion"]["release_required"] = False
+    held_index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                                      task_assets=[falling])
+    held = validate_robot_placement_geometry_candidate(
+        index=held_index, proposal=_proposal(floor.surface_id, (0.55, 0.0, 0.0), math.pi),
+        target_position_world_m=target)
+    assert "robot_base_in_task_part_fall_path" not in held["blockers"]
+    assert held["task_limit_contact_point_count"] > 0 and not len(held_index.task_fall_points)
     aside = validate_robot_placement_geometry_candidate(
         index=falling_index, proposal=_proposal(floor.surface_id, (0.3, 0.55, 0.0), math.atan2(-0.55, -0.25)),
         target_position_world_m=target)
