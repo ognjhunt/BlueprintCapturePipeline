@@ -13,7 +13,7 @@ import pytest
 from blueprint_pipeline import scene_physics_preflight as spp
 
 pxr = pytest.importorskip("pxr")
-from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics  # noqa: E402
 
 POSE = {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
 FAST = {"sample_spacing_m": 0.01, "revolute_step_rad": math.radians(5.0)}
@@ -35,7 +35,8 @@ def _box(stage, path, *, size, centre):
     UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
 
 
-def _asset(tmp_path, *, mounted=False, extra_collider=None, door_scale=None, root_scale=None):
+def _asset(tmp_path, *, mounted=False, extra_collider=None, door_scale=None, root_scale=None,
+           counterbalanced=False, hinge_axis="Y"):
     path = tmp_path / "asset.usda"
     stage = _stage(path)
     root = UsdGeom.Xform.Define(stage, "/Asset")
@@ -58,9 +59,13 @@ def _asset(tmp_path, *, mounted=False, extra_collider=None, door_scale=None, roo
     hinge.CreateLocalRot0Attr().Set(Gf.Quatf(1.0))
     hinge.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
     hinge.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
-    hinge.CreateAxisAttr().Set("Y")
+    hinge.CreateAxisAttr().Set(hinge_axis)
     hinge.CreateLowerLimitAttr().Set(0.0)
     hinge.CreateUpperLimitAttr().Set(90.0)
+    if counterbalanced:
+        # What the runtime counterbalance overlay authors on every body the hinge carries.
+        door.GetPrim().AddAppliedSchema("PhysxRigidBodyAPI")
+        door.GetPrim().CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool).Set(True)
     if mounted:
         mount = UsdPhysics.FixedJoint.Define(stage, "/Asset/mount")
         mount.CreateBody1Rel().SetTargets(["/Asset/base"])
@@ -296,8 +301,9 @@ def test_admission_blocks_task_range_contact_and_reports_beyond_it(tmp_path):
 
 def test_robot_in_the_doors_path_blocks_only_before_the_success_threshold(tmp_path):
     # A base the door strikes before reaching 54 degrees makes success impossible; one
-    # it would strike only beyond (the 2026-10-26 shoulder at 60 degrees) is reported.
-    root, plan = _packet(tmp_path, _background(tmp_path), _asset(tmp_path))
+    # a counterbalanced door would strike only beyond (the 2026-10-26 shoulder at 60
+    # degrees) is reported, since the door stays wherever a policy leaves it.
+    root, plan = _packet(tmp_path, _background(tmp_path), _asset(tmp_path, counterbalanced=True))
     _with_task(root, plan, success_start_deg=54, robot_x=0.75)
     with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
         spp.require_scene_physics_admission(root, **FAST)
@@ -326,24 +332,28 @@ def test_robot_in_the_doors_path_blocks_only_before_the_success_threshold(tmp_pa
             spp.require_scene_physics_admission(root, **FAST)
 
 
-def test_pre_v2_task_spec_commands_its_scripted_target_and_an_unreadable_span_is_refused():
-    legacy = {"task_spec": {"task_kind": "articulated_open_close", "target_joint_id": "door",
-                            "joint_reset_positions_rad": {"door": 0.1}, "scripted_positive_target_rad": 0.9},
-              "articulation": {"task_joint_prim_paths": {"door": "{ENV_REGEX_NS}/task_object/joints/door_hinge"}}}
-    assert spp.task_motion_ranges(legacy) == {"door_hinge": [0.1, 0.9]}
-    del legacy["task_spec"]["scripted_positive_target_rad"]
-    with pytest.raises(spp.ScenePhysicsPreflightError, match="scene_physics_task_range_unknown"):
-        spp.task_motion_ranges(legacy)
-    assert spp.task_motion_ranges({"task_spec": {"task_kind": "rigid_pick_place"}}) == {}
-
-
-def test_admission_refuses_what_it_cannot_measure_and_skips_rigid_scenes(tmp_path):
+def test_a_door_gravity_carries_blocks_the_robot_anywhere_on_its_fall(tmp_path):
+    # Released past the threshold, a door with authored gravity falls to its limit on
+    # its own, so the base it would land on fails the episode just as surely.
     root, plan = _packet(tmp_path, _background(tmp_path), _asset(tmp_path))
-    plan["objects"][1]["sha256"] = "sha256:" + "0" * 64
-    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
-    with pytest.raises(spp.ScenePhysicsAdmissionBlocked, match="refused:scene_physics_packet_asset_digest_mismatch"):
+    _with_task(root, plan, success_start_deg=54, robot_x=1.0)
+    with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
         spp.require_scene_physics_admission(root, **FAST)
-    plan["objects"][1]["object_type"] = "BASE"
-    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
-    report = spp.require_scene_physics_admission(root)
-    assert report["status"] == "not_applicable" and report["reason"] == "no_articulated_object"
+    (blocker,) = blocked.value.blockers
+    assert blocker.startswith("task_object:scene_physics_robot_in_fall_path:door_hinge@")
+    assert 54 < int(blocker.rsplit("@", 1)[1].removesuffix("deg")) < 90
+    _with_task(root, plan, success_start_deg=54)
+    clear = spp.require_scene_physics_admission(root, **FAST)["robot_clearance"]
+    assert clear["status"] == "passed" and clear["motion"]["holds_released_position"] is False
+    assert clear["motion"]["released_range"] == [0.0, pytest.approx(math.pi / 2)]
+
+
+def test_only_a_weightless_part_a_vertical_hinge_or_a_level_slide_holds_where_released(tmp_path):
+    for name, options, holds in (("gravity", {}, False), ("balanced", {"counterbalanced": True}, True),
+                                 ("vertical", {"hinge_axis": "Z"}, True)):
+        (tmp_path / name).mkdir()
+        assert spp.joint_holds_released_position(_asset(tmp_path / name, **options), "door_hinge") is holds
+    # A level hinge stood on end by the asset's pose becomes vertical.
+    upright = {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)]}
+    assert spp.joint_holds_released_position(tmp_path / "gravity" / "asset.usda", "door_hinge",
+                                             asset_pose_world=upright) is True

@@ -47,6 +47,7 @@ from .task_evaluation_supervisor.inference_reservations import (
 
 _BLOCKER_WORDS = {
     "robot_base_in_task_motion_path": "in the path of the task's moving part",
+    "robot_base_in_task_part_fall_path": "where the task's moving part falls once released",
     "robot_reset_bounds_overlap_scene_geometry": "colliding with the scene in its starting pose",
     "robot_base_support_coverage_incomplete": "not fully supported",
     "task_target_outside_analytic_reach": "out of reach",

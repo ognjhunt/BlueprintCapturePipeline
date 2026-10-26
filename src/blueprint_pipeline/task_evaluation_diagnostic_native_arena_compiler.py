@@ -14,6 +14,7 @@ import math
 import os
 import re
 import shutil
+import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -374,6 +375,30 @@ def _task_motion(task_spec: Mapping[str, Any]) -> dict[str, Any]:
     return {"joint_id": joint_id, "task_range": [reset, goal], "reset_joint_positions": {joint_id: reset}}
 
 
+def _released_task_motion(task_spec: Mapping[str, Any], *, definition: Mapping[str, Any], asset: Path,
+                          pose: Mapping[str, Any]) -> dict[str, Any]:
+    """The task motion plus whether its part holds where it is released, on the asset the simulator runs.
+
+    A part that holds (a counterbalanced door) only travels as far as a policy
+    moves it. One gravity carries on falls to its hard limit, so placement must
+    keep the robot base out of that whole fall.
+    """
+    from .scene_physics_preflight import ScenePhysicsPreflightError, joint_holds_released_position
+    from .task_evaluation_native_arena_episode_compiler import _derive_runtime_joint_overlay
+
+    motion = _task_motion(task_spec)
+    with tempfile.TemporaryDirectory(prefix="blueprint-released-motion-") as scratch:
+        runtime, _ = _derive_runtime_joint_overlay(
+            task_spec=task_spec, task_definition=definition, replacement_path=asset, output_root=Path(scratch))
+        try:
+            motion["holds_released_position"] = joint_holds_released_position(
+                runtime, motion["joint_id"], asset_pose_world=pose)
+        except ScenePhysicsPreflightError as exc:
+            raise TaskEvaluationDiagnosticNativeArenaCompilerError(
+                f"diagnostic_native_compiler_task_motion_unmeasurable:{exc}") from exc
+    return motion
+
+
 def diagnostic_robot_placement_inputs(
     *, diagnostic_controls_input: Mapping[str, Any],
     droid_profile_reference: Mapping[str, Any],
@@ -448,7 +473,9 @@ def diagnostic_robot_placement_inputs(
         "task_assets": [{"asset_id": task_spec["subject_asset_id"], "asset_usd_path": str(asset),
                          "asset_digest": rows["diagnostic_output.replacement.usdz"]["digest"],
                          "pose": definition["task_object_pose_world"],
-                         **({"task_motion": _task_motion(task_spec)} if articulated else {})}],
+                         **({"task_motion": _released_task_motion(
+                             task_spec, definition=definition, asset=asset,
+                             pose=definition["task_object_pose_world"])} if articulated else {})}],
     }
     task_binding = {
         "schema_version": "diagnostic_robot_placement_task_binding.v1",
