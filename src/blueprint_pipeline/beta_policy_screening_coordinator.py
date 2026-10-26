@@ -22,7 +22,7 @@ import re
 import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,8 @@ DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/beta-policy-scre
 LEDGER_SCHEMA = "blueprint.beta_policy_screening_ledger.v1"
 LEDGER_FILENAME = "screening_ledger.v1.json"
 SITE_LIMIT = Decimal("15")
+CAPACITY_RETRY_SECONDS = 60
+CAPACITY_WAIT_BLOCKER = "beta_screening_waiting_for_capacity"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _MONEY = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?")
 _BLOCKER = re.compile(r"[a-z][a-z0-9_:.=-]{0,199}")
@@ -121,17 +123,16 @@ def _budget(ledger: Mapping[str, Any], site_id: str, *, campaign_id: str | None 
         if campaign["site_id"] != site_id or campaign_id is not None and key != campaign_id:
             continue
         for row in campaign["candidates"].values():
-            attempt = row.get("attempt")
-            if not attempt:
-                continue
-            cap = _amount(attempt["maximum_cost_usd"])
-            state = attempt["reservation_status"]
-            if state == "reserved":
-                reserved += cap
-            elif state == "committed":
-                spent += cap
-            elif state != "released":
-                raise ScreeningCoordinatorError("beta_screening_reservation_state_invalid")
+            attempts = [*row.get("attempt_history", []), *([row["attempt"]] if row.get("attempt") else [])]
+            for attempt in attempts:
+                cap = _amount(attempt["maximum_cost_usd"])
+                state = attempt["reservation_status"]
+                if state == "reserved":
+                    reserved += cap
+                elif state == "committed":
+                    spent += cap
+                elif state != "released":
+                    raise ScreeningCoordinatorError("beta_screening_reservation_state_invalid")
     return {"currency": "USD", "limit_usd": money(SITE_LIMIT),
             "committed_upper_bound_usd": money(reserved + spent),
             "spent_upper_bound_usd": money(spent), "reserved_usd": money(reserved)}
@@ -236,6 +237,56 @@ def _quote_current(candidate: Mapping[str, Any]) -> bool:
         return False
 
 
+def _new_attempt(plan: Mapping[str, Any], candidate: Mapping[str, Any], *, generation: int = 0) -> dict[str, Any]:
+    identity = f"{plan['campaign_id']}:{candidate['candidate_id']}:{plan['plan_digest']}"
+    if generation:
+        identity += f":capacity-generation-{generation}"
+    return {"attempt_id": "screen-" + hashlib.sha256(identity.encode()).hexdigest()[:32],
+            "generation": generation, "maximum_cost_usd": money(_amount(candidate["max_cost_usd"])),
+            "reservation_status": "reserved", "provider_allocation_observed": False}
+
+
+def _retry_after_capacity() -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=CAPACITY_RETRY_SECONDS)).isoformat()
+
+
+def _capacity_retry_ready(attempt: Mapping[str, Any]) -> bool:
+    deadline = attempt.get("retry_not_before")
+    if deadline is None:
+        return True
+    try:
+        instant = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
+        return instant.tzinfo is not None and instant <= datetime.now(timezone.utc)
+    except ValueError:
+        return False
+
+
+def _capacity_refusal_proof(root: Path, attempt: Mapping[str, Any], observation: Mapping[str, Any]) -> bool:
+    """Only the retained canonical pre-create slot refusal can authorize retry."""
+    from .task_evaluation_scene_execution_authority import proves_no_provider_allocation
+
+    if (observation.get("retryable_capacity_refusal") is not True
+            or observation.get("no_policy_api_calls_proven") is not True
+            or observation.get("blockers") != ["vast_paid_launch_lock_busy"]):
+        return False
+    record = observation.get("capacity_refusal_receipt")
+    if not isinstance(record, Mapping):
+        return False
+    path = root / "attempts" / attempt["attempt_id"] / "allocator_result.json"
+    try:
+        if path.is_symlink() or record.get("path") != str(path):
+            return False
+        raw = path.read_bytes()
+        receipt = json.loads(raw)
+        return (record.get("size_bytes") == len(raw)
+                and record.get("sha256") == "sha256:" + hashlib.sha256(raw).hexdigest()
+                and isinstance(receipt, Mapping) and proves_no_provider_allocation(receipt)
+                and receipt.get("status") == "blocked"
+                and receipt.get("blockers") == ["vast_paid_launch_lock_busy"])
+    except (OSError, ValueError):
+        return False
+
+
 def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any] | None:
     campaign_id, candidate_id = plan["campaign_id"], candidate["candidate_id"]
     with _lock(root):
@@ -260,10 +311,7 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
             _changed(state)
             _save(root, ledger)
             return None
-        identity = f"{campaign_id}:{candidate_id}:{plan['plan_digest']}"
-        attempt_id = "screen-" + hashlib.sha256(identity.encode()).hexdigest()[:32]
-        attempt = {"attempt_id": attempt_id, "maximum_cost_usd": money(cap),
-                   "reservation_status": "reserved", "provider_allocation_observed": False}
+        attempt = _new_attempt(plan, candidate)
         row.update(status="preparing", blockers=[], attempt=attempt)
         _changed(state)
         _save(root, ledger)
@@ -303,6 +351,19 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                          and attempt["provider_allocation_observed"] is False)
         closed = observation.get("provider_zero_verified") is True and attempt["provider_allocation_observed"] is True
         if status in {"completed", "blocked"} and no_allocation:
+            if _capacity_refusal_proof(root, attempt, observation):
+                # This is a proven zero-GPU/zero-API pre-create refusal, not
+                # another paid attempt. Retain every old intent and proof;
+                # atomically transfer the same reservation to a fresh identity.
+                attempt.update(reservation_status="released", closed_at=_now(),
+                               terminal_reason="vast_paid_launch_lock_busy",
+                               capacity_refusal_receipt=dict(observation["capacity_refusal_receipt"]),
+                               no_policy_api_calls_proven=True)
+                row.setdefault("attempt_history", []).append(json.loads(json.dumps(attempt)))
+                row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
+                                  "retry_not_before": _retry_after_capacity()}
+                row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
+                return
             attempt["reservation_status"] = "released"
             row.update(status="blocked", blockers=_safe_blockers(observation.get("blockers"),
                                                                 "beta_screening_not_allocated"))
@@ -359,6 +420,8 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
     if row["status"] not in ACTIVE_STATUSES:
         return False
     attempt = row["attempt"]
+    if row["status"] == "preparing" and not _capacity_retry_ready(attempt):
+        return False
     attempt_dir = _attempt_root(root, attempt)
     if row["status"] != "preparing":
         try:
@@ -389,6 +452,29 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
             item.update(status="deferred", blockers=["beta_screening_cost_quote_expired"])
         _update(root, plan["campaign_id"], candidate["candidate_id"], expired)
         return False
+
+    capacity_preflight = getattr(executor, "preflight_candidate_capacity", None)
+    if callable(capacity_preflight):
+        try:
+            capacity = capacity_preflight(plan=plan, candidate=candidate, attempt_dir=attempt_dir, prepared=prepared)
+            if not isinstance(capacity, Mapping) or type(capacity.get("capacity_available")) is not bool:
+                raise ValueError("beta_screening_capacity_preflight_invalid")
+            if capacity["capacity_available"] is False:
+                if capacity.get("blockers") not in (["vast_paid_launch_lock_busy"],
+                                                    ["vast_release_deployment_in_progress"]):
+                    raise ValueError("beta_screening_capacity_preflight_invalid")
+
+                def waiting(item):
+                    item["attempt"].update(prepared=dict(prepared), retry_not_before=_retry_after_capacity())
+                    item.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
+                _update(root, plan["campaign_id"], candidate["candidate_id"], waiting)
+                return False
+        except Exception:  # noqa: BLE001 - this boundary is read-only and strictly pre-intent
+            def refused(item):
+                item["attempt"]["reservation_status"] = "released"
+                item.update(status="blocked", blockers=["beta_screening_capacity_preflight_failed"])
+            _update(root, plan["campaign_id"], candidate["candidate_id"], refused)
+            return False
 
     def launching(item):
         item["attempt"]["prepared"] = dict(prepared)

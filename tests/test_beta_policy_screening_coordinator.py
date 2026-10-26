@@ -305,6 +305,7 @@ def test_default_executor_is_the_canonical_allocator_bridge(tmp_path, monkeypatc
     backend = Backend({"status": "blocked", "no_allocation_proven": True, "provider_allocation_performed": False})
     for method in ("prepare_candidate", "launch_candidate", "reconcile_candidate"):
         monkeypatch.setattr(bridge, method, getattr(backend, method))
+    monkeypatch.setattr(bridge, "preflight_candidate_capacity", lambda **_: {"capacity_available": True, "blockers": []})
     coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
     coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path)
     assert backend.preparations == backend.launches == 1

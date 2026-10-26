@@ -134,6 +134,9 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
                             capture_output=True, text=True).stdout.strip()
     scene_plan = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
+    if scene_plan.get("plan_digest") != canonical_digest(scene_plan, digest_field="plan_digest"):
+        raise ValueError("beta_screening_native_scene_plan_digest_invalid")
+    scene["native_scene_plan"] = scene_plan
     templates = _native_templates(repo=repo, scene_plan={**scene_plan,
         "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
         contract=inputs["task_success_contract"], commit=commit)

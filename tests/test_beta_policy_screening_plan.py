@@ -24,10 +24,13 @@ OTHER = "sha256:" + "b" * 64
 
 
 def scene():
+    native = {"task_kind": "rigid_pick_place", "objects": [{"task_subject": True}]}
+    native["plan_digest"] = canonical_digest(native, digest_field="plan_digest")
     return {"site_id": "site-request1", "scene_id": "site-request1", "capture_id": "capture1", "task_id": "task1",
             "scene_intent_id": "intent1", "scene_intent_digest": SHA, "scene_revision_digest": SHA,
             "task_context_digest": OTHER, "task_success_contract_digest": SHA,
             "robot_free_probe_digest": SHA, "robot_free_probe_status": "passed", "task_kind": "rigid_pick_place",
+            "native_scene_plan": native,
             "scene_inputs": {"path": "/operator/scene.json", "sha256": SHA, "size_bytes": 128},
             "task_spec": {"task_kind": "rigid_pick_place", "start_pose_world": [0.5, 0.0, 0.8, 0, 0, 0, 1],
                           "destination_position_bounds_world_m": {"minimum": [0.5, 0.25, 0.79], "maximum": [0.6, 0.35, 0.81]},
@@ -226,6 +229,60 @@ def test_screening_draws_are_deterministic_and_do_not_reuse_finalist_ids_or_seed
     assert {cell["partition"] for cell in first["scenario_cells"]} == {"screening"}
     with pytest.raises(BetaPolicyScreeningPlanError, match="episode_count_invalid"):
         screening_cells(scene(), 11)
+
+
+def mounted_scene():
+    from tests.test_policy_canary_scene_mount_constraints import mounted_plan
+    native = mounted_plan()
+    native["plan_digest"] = canonical_digest(native, digest_field="plan_digest")
+    return {**scene(), "task_kind": native["task_kind"], "task_spec": native["task_spec"],
+            "native_scene_plan": native}
+
+
+def test_fixed_subject_screening_retains_every_omitted_draw_and_matches_candidates():
+    fixed = mounted_scene()
+    original = deepcopy(fixed)
+    portable = deepcopy(fixed)
+    portable["native_scene_plan"]["objects"][0]["articulation_adaptation"]["scene_mounting"]["mode"] = "free"
+    portable["native_scene_plan"]["plan_digest"] = canonical_digest(portable["native_scene_plan"], digest_field="plan_digest")
+    unconstrained = screening_cells(portable)
+    catalog, capabilities, quotes = inputs()
+    value = build_screening_plan(catalog, fixed, campaign_id="campaign1", capabilities=capabilities,
+                                cost_quotes=quotes, now=NOW)
+    roots = {"object_start_x_delta_m", "object_start_y_delta_m", "object_yaw_delta_degrees"}
+    gaps = 0
+    for actual, draw in zip(value["scenario_cells"], unconstrained, strict=True):
+        omitted = {key: val for key, val in draw["resolved_scenario"]["parameters"].items() if key in roots and val != 0}
+        assert actual["seed"] == draw["seed"]
+        scenario = actual["resolved_scenario"]
+        assert not roots & set(scenario["parameters"])
+        assert scenario["parameters"] == {key: val for key, val in draw["resolved_scenario"]["parameters"].items() if key not in omitted}
+        if omitted:
+            gap = scenario["runtime_coverage_gaps"][0]
+            assert gap["parameters_not_exercised"] == omitted
+            assert gap["qualified_variation_claim_permitted"] is False
+            gaps += 1
+    assert gaps > 0 and fixed == original
+    assert all(row["scenario_cells"] == value["scenario_cells"] for row in value["candidates"] if row["status"] == "selected")
+    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
+    Draft202012Validator(schema).validate(value)
+
+
+def test_resealing_an_omitted_dimension_cannot_grant_a_qualified_variation_claim():
+    value = build_screening_plan(load_default_catalog(), mounted_scene(), campaign_id="campaign1", now=NOW)
+    cell = next(row for row in value["scenario_cells"] if row["resolved_scenario"].get("runtime_coverage_gaps"))
+    cell["resolved_scenario"]["runtime_coverage_gaps"][0]["qualified_variation_claim_permitted"] = True
+    cell["cell_spec_digest"] = cell["resolved_scenario_digest"] = canonical_digest(cell["resolved_scenario"])
+    value["scenario_plan_digest"] = canonical_digest({"cells": value["scenario_cells"]})
+    with pytest.raises(BetaPolicyScreeningPlanError, match="coverage_gap_invalid"):
+        validate_screening_plan(reseal(value))
+
+
+def test_mounting_constraints_require_the_exact_sealed_native_scene():
+    value = mounted_scene()
+    value["native_scene_plan"]["objects"][0]["articulation_adaptation"]["scene_mounting"]["mode"] = "free"
+    with pytest.raises(BetaPolicyScreeningPlanError, match="native_scene_plan_invalid"):
+        build_screening_plan(load_default_catalog(), value, campaign_id="campaign1", now=NOW)
 
 
 @pytest.mark.parametrize("mutation", ["purpose", "source", "cost", "candidate_cells", "command", "task", "duplicate", "credential_file"])

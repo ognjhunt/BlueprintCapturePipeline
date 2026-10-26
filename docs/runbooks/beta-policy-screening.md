@@ -65,6 +65,14 @@ release its reservation. An allocated, closed attempt consumes its full cost
 ceiling conservatively. Different sites are visited fairly even when an older
 campaign needs reconciliation.
 
+Closing a beta attempt checks its exact allocated instance and authority's
+resource name against a fresh, complete account inventory, plus its own
+teardown and staged-object absence receipts. Unrelated running sites remain
+visible in that receipt and do not prevent closure. This proves absence for
+the individual attempt; it makes no claim that the whole provider account is
+empty. Missing or stale evidence keeps the reservation open. Proven teardown
+with lost scientific output closes as a paid failure and publishes no score.
+
 ## Candidate configuration and intentional retries
 
 The shipped catalog is `config/beta_policy_candidates.v1.json`; an

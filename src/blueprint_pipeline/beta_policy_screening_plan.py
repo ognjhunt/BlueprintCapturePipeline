@@ -39,6 +39,7 @@ _RECEIPT_KEYS = {"path", "sha256", "size_bytes"}
 _HOSTED_COST_FIELDS = {"provider_hard_cap_usd", "hosted_inference_maximum_usd", "hosted_inference_payment",
                        "hosted_max_cost_per_request_usd", "hosted_http_request_limit", "credential_origin"}
 _UNIT_PRICE = re.compile(r"^(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,12})?$")
+_ROOT_POSE_PARAMETERS = {"object_start_x_delta_m", "object_start_y_delta_m", "object_yaw_delta_degrees"}
 
 
 class BetaPolicyScreeningPlanError(ValueError):
@@ -199,9 +200,23 @@ def validate_cost_quote(value: Mapping[str, Any], *, configuration_digest: str,
     return result
 
 
+def _native_scene_plan(scene: Mapping[str, Any]) -> Mapping[str, Any]:
+    plan = scene.get("native_scene_plan")
+    if (not isinstance(plan, Mapping) or plan.get("task_kind") != scene.get("task_kind")
+            or plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
+            or not isinstance(plan.get("objects"), list)
+            or any(not isinstance(row, Mapping) for row in plan["objects"])
+            or sum(row.get("task_subject") is True for row in plan["objects"]) != 1):
+        raise BetaPolicyScreeningPlanError("beta_screening_native_scene_plan_invalid")
+    return plan
+
+
 def screening_cells(scene: Mapping[str, Any], count: int = DEFAULT_EPISODES) -> list[dict[str, Any]]:
     if type(count) is not int or not 1 <= count <= DEFAULT_EPISODES:
         raise BetaPolicyScreeningPlanError("beta_screening_episode_count_invalid")
+    from .policy_canary_scene_resolution import constrain_diagnostic_scenario
+
+    native_scene = _native_scene_plan(scene)
     # Domain separation is independent of catalog order and candidate count.
     # This public screening salt is never the private scored-200 salt.
     seed_material = "beta_policy_screening.v1:" + scene["scene_revision_digest"] + ":" + scene["task_context_digest"]
@@ -217,6 +232,10 @@ def screening_cells(scene: Mapping[str, Any], count: int = DEFAULT_EPISODES) -> 
         if row["family"] == "held_out_composition":
             row["family"] = "composed_stress"
             row["resolved_scenario"]["family"] = "composed_stress"
+        # Installed task subjects cannot be moved at their roots. Preserve the
+        # scientific draw as an explicit unexercised-dimension receipt rather
+        # than claiming that a repeated anchor tested placement robustness.
+        row["resolved_scenario"] = constrain_diagnostic_scenario(native_scene, row["resolved_scenario"])
         row["cell_spec_digest"] = canonical_digest(row["resolved_scenario"])
         row["resolved_scenario_digest"] = row["cell_spec_digest"]
         cells.append(row)
@@ -235,9 +254,30 @@ def _scene(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(scene.get("task_spec"), dict) or scene["task_spec"].get("task_kind") != scene["task_kind"]:
         raise BetaPolicyScreeningPlanError("beta_screening_task_spec_binding_invalid")
     _receipt(scene.get("scene_inputs"))
+    _native_scene_plan(scene)
     # Reference to the existing sealed scene half; the launch backend reuses
     # read_team_scene_inputs to verify its contents and constituent artifacts.
     return scene
+
+
+def _validate_coverage_gaps(scenario: Mapping[str, Any]) -> None:
+    if "runtime_coverage_gaps" not in scenario:
+        return
+    gaps = scenario["runtime_coverage_gaps"]
+    if not isinstance(gaps, list) or len(gaps) != 1:
+        raise BetaPolicyScreeningPlanError("beta_screening_coverage_gap_invalid")
+    gap = gaps[0]
+    if (not isinstance(gap, Mapping) or set(gap) != {"family", "reason", "parameters_not_exercised",
+            "fallback", "qualified_variation_claim_permitted"}
+            or gap["family"] != scenario["family"] or gap["reason"] != "task_subject_root_fixed_in_scene"
+            or gap["fallback"] != "canonical_task_root" or gap["qualified_variation_claim_permitted"] is not False):
+        raise BetaPolicyScreeningPlanError("beta_screening_coverage_gap_invalid")
+    omitted = gap["parameters_not_exercised"]
+    if (not isinstance(omitted, Mapping) or not omitted or set(omitted) - _ROOT_POSE_PARAMETERS
+            or set(omitted) & set(scenario["parameters"])
+            or any(isinstance(number, bool) or not isinstance(number, (int, float)) or number == 0
+                   for number in omitted.values())):
+        raise BetaPolicyScreeningPlanError("beta_screening_coverage_gap_invalid")
 
 
 def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
@@ -406,7 +446,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 or cell.get("resolved_scenario_digest") != cell["cell_spec_digest"]):
             raise BetaPolicyScreeningPlanError("beta_screening_cell_binding_invalid")
         scenario = cell["resolved_scenario"]
-        if (not isinstance(scenario, dict) or set(scenario) != {"family", "ordinal", "parameters"}
+        if (not isinstance(scenario, dict) or set(scenario) - {"family", "ordinal", "parameters", "runtime_coverage_gaps"}
+                or not {"family", "ordinal", "parameters"} <= set(scenario)
                 or type(scenario["ordinal"]) is not int or scenario["ordinal"] != ordinal
                 or scenario["family"] != cell["family"]
                 or cell["family"] not in {"canonical_anchor", "placement_approach", "illumination",
@@ -417,6 +458,7 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 or any(isinstance(number, bool) or not isinstance(number, (int, float))
                        for number in scenario["parameters"].values())):
             raise BetaPolicyScreeningPlanError("beta_screening_scenario_parameters_invalid")
+        _validate_coverage_gaps(scenario)
         ids.append(cell["cell_id"])
         seeds.append(cell["seed"])
     if (len(set(ids)) != len(ids) or len(set(seeds)) != len(seeds)

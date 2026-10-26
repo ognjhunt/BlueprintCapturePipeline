@@ -248,6 +248,18 @@ def _validate_prepared(plan: Mapping[str, Any], candidate: Mapping[str, Any], ro
                  "size_bytes": bundle["bundle_size_bytes"]})
 
 
+def preflight_candidate_capacity(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
+                                 attempt_dir: Path, prepared: Mapping[str, Any]) -> dict[str, Any]:
+    """Observe canonical capacity without reserving a slot or touching a provider."""
+    from .vast_launch_slots import inspect_vast_launch_admission
+    _validate_prepared(plan, candidate, Path(attempt_dir).resolve(), prepared)
+    admission = inspect_vast_launch_admission()
+    blockers = admission.get("blockers") or []
+    busy = admission.get("status") == "deferred" and blockers in (
+        ["vast_paid_launch_lock_busy"], ["vast_release_deployment_in_progress"])
+    return {"capacity_available": not busy, "blockers": blockers}
+
+
 def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,
                      prepared: Mapping[str, Any]) -> dict[str, Any]:
     """Consume a durable local launch intent exactly once before spawning."""
@@ -290,25 +302,14 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
             "no_allocation_proven": False, "blockers": []}
 
 
-def _closed_allocation(adapter: Mapping[str, Any], result_path: Path) -> bool:
-    from .policy_canary_retained_billing import adapter_instance_ids
-    from .policy_canary_staged_object_absence import closeout_staged_objects
-    identities = adapter_instance_ids(adapter, result_path=result_path,
-        read_json=lambda path, code: _read(path), error_factory=ValueError)
-    closeout = adapter.get("provider_closeout") or {}
-    return (len(identities) == 1 and closeout.get("provider_zero_confirmed") is True
-            and closeout.get("warm_session_retained") is False
-            and closeout_staged_objects(adapter)["absent"]
-            and adapter.get("continuing_spend_from_this_run") is False)
-
-
 def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,
                         prepared: Mapping[str, Any], handle: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Read retained allocator receipts; never start or restart an allocation."""
     from .task_evaluation_scene_execution_authority import proves_no_provider_allocation
-    from .team_candidate_quick10_launch import _alive, _default_provider_zero, _process_start_ticks
-    from .team_candidate_quick10_closeout import (
-        _zero_verified, join_team_session_closeout, validate_native_result_binding,
+    from .team_candidate_quick10_launch import _alive, _process_start_ticks
+    from .team_candidate_quick10_closeout import validate_native_result_binding
+    from .beta_policy_screening_closeout import (
+        collect_scoped_closeout, scoped_closeout_verified, join_scoped_session_closeout,
     )
     root = Path(attempt_dir).resolve()
     _validate_prepared(plan, candidate, root, prepared)
@@ -323,26 +324,35 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
     if result_path.is_file():
         adapter = _read(result_path)
         if proves_no_provider_allocation(adapter):
-            return {"status": "blocked", "provider_allocation_performed": False,
-                    "provider_zero_verified": True, "no_allocation_proven": True,
-                    "blockers": adapter.get("blockers") or ["beta_screening_allocator_refused"]}
-        zero = _default_provider_zero()
-        # Keep each observation: stale provider-zero evidence never closes a
-        # later allocation, and failed observations are not overwritten.
-        observed = root / "provider_zero" / (canonical_digest(zero)[7:] + ".json")
-        if not observed.exists():
-            _write(observed, zero)
-        if not _zero_verified(zero):
+            refusal = {"status": "blocked", "provider_allocation_performed": False,
+                       "provider_zero_verified": True, "no_allocation_proven": True,
+                       "blockers": adapter.get("blockers") or ["beta_screening_allocator_refused"]}
+            if adapter.get("status") == "blocked" and adapter.get("blockers") == ["vast_paid_launch_lock_busy"]:
+                # Every hosted HTTP call occurs inside the provider session.
+                # This exact canonical no-create refusal proves no policy API
+                # calls occurred; a new attempt may compete for a slot later.
+                refusal.update(retryable_capacity_refusal=True, no_policy_api_calls_proven=True,
+                               capacity_refusal_receipt=_record(result_path))
+            return refusal
+        try:
+            absence = collect_scoped_closeout(adapter=adapter, prepared=prepared, adapter_path=result_path)
+            observed = root / "provider_absence" / (canonical_digest(absence)[7:] + ".json")
+            if not observed.exists():
+                _write(observed, absence)
+            verified = scoped_closeout_verified(absence, adapter=adapter, prepared=prepared, adapter_path=result_path)
+        except (OSError, ValueError, KeyError, TypeError):
             return {"status": "reconciliation_required", "provider_zero_verified": False,
-                    "no_allocation_proven": False, "blockers": ["beta_screening_provider_zero_unproven"]}
-        if not _closed_allocation(adapter, result_path):
-            return {"status": "reconciliation_required", "provider_zero_verified": True,
-                    "no_allocation_proven": False, "blockers": ["beta_screening_own_teardown_unproven"]}
+                    "no_allocation_proven": False, "blockers": ["beta_screening_scoped_closeout_unproven"]}
+        if not verified:
+            return {"status": "reconciliation_required", "provider_zero_verified": False,
+                    "no_allocation_proven": False,
+                    "blockers": absence.get("blockers") or ["beta_screening_scoped_closeout_unproven"]}
         try:
             native_path = Path(str(adapter.get("native_control_result_path") or ""))
             native = _read(native_path)
             validate_native_result_binding(native, expected_digest=adapter.get("native_control_result_digest"))
-            joined = join_team_session_closeout(inner=native, adapter=adapter, provider_zero=zero, adapter_path=result_path)
+            joined = join_scoped_session_closeout(inner=native, adapter=adapter, prepared=prepared,
+                                                  receipt=absence, adapter_path=result_path)
             joined = validate_session_result(joined)
             if joined.get("beta_screening_admission", {}).get("plan_digest") != plan["plan_digest"]:
                 raise ValueError("beta_screening_native_result_plan_mismatch")

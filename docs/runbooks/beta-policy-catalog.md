@@ -55,3 +55,9 @@ The planner gives every selected candidate the same bounded screening cells
 are diagnostic results, not the 200-episode evidence required for a recommended
 pilot. The published catalog and plan JSON schemas live under `docs/schemas/`;
 runtime validation additionally enforces the identity bindings and budget math.
+
+For objects installed at a fixed place in the scene, screening preserves their
+root position and orientation. Each omitted position or yaw draw stays in the
+sealed cell's `runtime_coverage_gaps` and native episode evidence, explicitly
+marked as untested. Repeating that position does not establish placement or yaw
+robustness. All candidates receive the same constrained cells and seeds.
