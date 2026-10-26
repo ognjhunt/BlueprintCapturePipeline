@@ -449,6 +449,20 @@ def test_exact_geometry_gate_accepts_supported_clear_facing_pose(tmp_path) -> No
     assert all(candidate["geometry_gate_digest"].startswith("sha256:") for candidate in candidates)
 
 
+def test_floor_stays_a_mount_for_a_counter_height_target(tmp_path) -> None:
+    # The arm reaches from its shoulder, 0.333 m above its support. A 0.95 m
+    # counter target sits 0.62 m above a floor-mounted shoulder, inside the
+    # 0.855 m reach, so the floor must stay in the search. Measuring from the
+    # floor itself discarded it, and every counter pick in the 2026-10-26
+    # kitchen read as "no surface within reach".
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot)
+    floor = next(surface for surface in index.support_surfaces if surface.prim_path == "/Scene/Floor")
+    candidates = enumerate_robot_placement_geometry_candidates(
+        index=index, target_position_world_m=[0.6, 0.0, 0.95], maximum_candidates=48)
+    assert any(candidate["support_surface_id"] == floor.surface_id for candidate in candidates)
+
+
 def _shelf_scene(tmp_path):
     """A floor plus many tiny ledges sitting near the target height.
 

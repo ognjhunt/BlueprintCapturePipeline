@@ -125,7 +125,7 @@ def test_no_match_verdict_names_what_ruled_every_base_out():
     assert verdict["status"] == "not_a_match" and verdict["reason_code"] == "robot_base_in_task_motion_path"
     assert verdict["summary"] == (
         "Not a match: none of the 31 reachable, supported franka_panda base positions passed "
-        "(31 in the path of the task's moving part, 12 colliding with the scene).")
+        "(31 in the path of the task's moving part, 12 colliding with the scene in its starting pose).")
     reachable = placement_no_match_verdict(
         {"detailed_geometry_tested_count": 5, "geometry_passing_count": 2}, robot_id="franka_panda")
     assert reachable["reason_code"] == "task_path_unreachable"
