@@ -440,6 +440,42 @@ def test_verified_publication_downloads_and_inbox_complete_despite_waived_email_
     assert payload["plan_digest"] == result["plan_digest"]
 
 
+@pytest.mark.parametrize("invalid", [None, "both_sources", "wrong_capture", "wrong_context", "wrong_scene"])
+def test_capture_source_validates_without_inventing_a_configured_launch(tmp_path, monkeypatch, invalid):
+    intent, source = _fixture(tmp_path, monkeypatch)
+    setup = json.loads(Path(intent["records"]["setup"]["path"]).read_text())
+    setup.pop("configured_source_launch_id")
+    binding = {"request_id": "capture-report", "scene_id": "site-capture-report",
+               "capture_id": "walkthrough-capture-report", "task_context_digest": "sha256:" + "d" * 64}
+    setup.update(capture_source=binding, scene_id=binding["scene_id"], capture_session_id=binding["capture_id"])
+    if invalid == "both_sources":
+        setup["configured_source_launch_id"] = "invented-parent"
+    elif invalid == "wrong_capture":
+        setup["capture_session_id"] = "different-capture"
+    elif invalid == "wrong_scene":
+        setup["scene_id"] = "different-scene"
+    setup["setup_digest"] = canonical_digest(setup, digest_field="setup_digest")
+    registration = json.loads(Path(intent["records"]["registration"]["path"]).read_text())
+    registration.update(capture_source={**binding}, capture_session_id=binding["capture_id"], setup_digest=setup["setup_digest"])
+    if invalid == "wrong_context":
+        registration["capture_source"]["task_context_digest"] = "sha256:" + "e" * 64
+    registration["registration_digest"] = cross_runtime_canonical_digest(registration, digest_field="registration_digest")
+    ack = json.loads(Path(intent["records"]["registration_ack"]["path"]).read_text())
+    ack["registration_digest"] = registration["registration_digest"]
+    for name, value in (("setup", setup), ("registration", registration), ("registration_ack", ack)):
+        path = _write(Path(intent["records"][name]["path"]), value)
+        intent["records"][name] = terminal.file_record(path)
+    intent["intent_digest"] = canonical_digest(intent, digest_field="intent_digest")
+    if invalid:
+        with pytest.raises(ValueError, match="policy_canary_scene839873_setup_invalid|operator_terminal_input_identity_mismatch"):
+            terminal.validate_operator_terminal_delivery_inputs(intent)
+    else:
+        values = terminal.validate_operator_terminal_delivery_inputs(intent)
+        assert values["setup"]["capture_source"] == values["registration"]["capture_source"] == binding
+        assert "configured_source_launch_id" not in values["setup"]
+        assert values["registration"]["claim_ceiling"] == "diagnostic_policy_execution"
+
+
 @pytest.mark.parametrize("mode", ["missing_download", "prepared_inbox"])
 def test_prepared_or_incomplete_readback_stays_pending_and_resumes_without_republishing(
     tmp_path, monkeypatch, mode

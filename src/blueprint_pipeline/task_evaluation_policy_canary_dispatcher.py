@@ -223,6 +223,7 @@ def validate_policy_canary_execution_setup(
         "claim_ceiling",
         "scene_id",
         "configured_source_launch_id",
+        "capture_source",
         "scene_revision_digest",
         "activation_digest",
         "source_commit",
@@ -250,7 +251,7 @@ def validate_policy_canary_execution_setup(
         or setup.get("status") != "verified_runnable"
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", str(setup.get("scene_id") or ""))
         is None
-        or not str(setup.get("configured_source_launch_id") or "")
+        or not _policy_canary_setup_source_valid(setup)
         or not _is_digest(setup.get("scene_revision_digest"))
         or not _is_digest(setup.get("activation_digest"))
         or not re.fullmatch(r"[0-9a-f]{40}", str(setup.get("source_commit") or ""))
@@ -302,6 +303,23 @@ def validate_policy_canary_execution_setup(
         )
     validate_policy_setup_owner_fields(setup)
     return setup
+
+
+def _policy_canary_setup_source_valid(setup: Mapping[str, Any]) -> bool:
+    """Keep capture provenance distinct from a configured-scene launch identity."""
+    source = setup.get("capture_source")
+    if source is None:
+        return "capture_source" not in setup and bool(str(setup.get("configured_source_launch_id") or ""))
+    if ("configured_source_launch_id" in setup or not isinstance(source, Mapping)
+            or set(source) != {"request_id", "scene_id", "capture_id", "task_context_digest"}
+            or not isinstance(source.get("request_id"), str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,191}", str(source.get("request_id") or "")) is None
+            or not _is_digest(source.get("task_context_digest"))):
+        return False
+    return (source["scene_id"] == "site-" + source["request_id"]
+            and source["capture_id"] == "walkthrough-" + source["request_id"]
+            and setup.get("scene_id") in {source["scene_id"], "scene-" + source["scene_id"]}
+            and setup.get("capture_session_id") == source["capture_id"])
 
 
 def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
