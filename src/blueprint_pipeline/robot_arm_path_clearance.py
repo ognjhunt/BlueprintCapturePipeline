@@ -397,9 +397,9 @@ def arm_path_clearance(*, robot_id: str, base_pose_world: Mapping[str, Sequence[
     for slide, roll_deg in _grip_rows(free):
         approach_in = _about(bar, math.radians(roll_deg)) @ -approach_out
         grip = contact + slide * bar
-        row = {"slide_m": round(slide, 4), "roll_deg": roll_deg, "reached": False, "clear": False,
-               "minimum_clearance_m": None, "at_joint_value": None, "link": None}
-        for turn in (np.eye(3), flip):
+        row = {"slide_m": round(slide, 4), "roll_deg": roll_deg, "half_turn": False, "reached": False,
+               "clear": False, "minimum_clearance_m": None, "at_joint_value": None, "link": None}
+        for half_turn, turn in ((False, np.eye(3)), (True, flip)):
             rotation = np.column_stack([bar, np.cross(approach_in, bar), approach_in]) @ turn
             poses = [(grip - standoff * approach_in, rotation, start)]
             poses += [(carried[v][:3, :3] @ grip + carried[v][:3, 3], carried[v][:3, :3] @ rotation, v) for v in values]
@@ -413,10 +413,13 @@ def arm_path_clearance(*, robot_id: str, base_pose_world: Mapping[str, Sequence[
                 clear = least is None or least >= margin_m
                 if not row["reached"] or clear or (least is not None and row["minimum_clearance_m"] is not None
                                                    and least > row["minimum_clearance_m"]):
-                    row.update(reached=True, clear=clear, minimum_clearance_m=least, link=link, at_joint_value=where)
+                    row.update(reached=True, clear=clear, minimum_clearance_m=least, link=link, at_joint_value=where,
+                               half_turn=half_turn)
                 if clear:
                     break
-            if row["reached"]:
+            # The hand turned half a turn holds the same grip with the wrist elsewhere: try it whenever the
+            # first turn did not both reach and clear.
+            if row["clear"]:
                 break
         grips.append(row)
         if row["clear"]:

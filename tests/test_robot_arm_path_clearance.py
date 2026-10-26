@@ -98,6 +98,35 @@ def test_a_base_under_the_doors_arc_has_no_clean_grip(tmp_path):
     assert blocker.startswith("robot_arm_in_task_part_path:door_hinge@") and blocker.split(":")[-1].startswith("panda_link")
 
 
+def test_a_grip_that_reaches_but_strikes_is_tried_again_turned_half_a_turn(tmp_path, monkeypatch):
+    # The hand turned half a turn about the approach holds the same grip with the wrist elsewhere; a grip
+    # whose first turn reaches but strikes must still try it before the grip is given up.
+    from blueprint_pipeline import robot_arm_path_clearance as module
+
+    yaw = math.atan2(-0.45, 0.05 - 0.60)
+    world_from_base = module._pose_matrix({"position_world_m": [0.60, 0.45, 0.0],
+                                           "orientation_xyzw": [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)]})
+    inside_door = (np.linalg.inv(world_from_base) @ np.array([0.02, 0.0, 0.45, 1.0]))[:3]
+    first = {}
+
+    def solve(*, rotation_world, **_):
+        sign = 1.0 if rotation_world[1, 0] > 0 else -1.0
+        first.setdefault("sign", sign)
+        return np.array([0.0, 0.0, 0.0, -1.5, 0.0, 1.5, sign]), 0.0, 0.0
+
+    def frames(joints):
+        placed = np.repeat(np.eye(4)[None], 9, axis=0)
+        placed[:, :3, 3] = inside_door if joints[6] == first["sign"] else (5.0, 5.0, 5.0)
+        return placed
+
+    monkeypatch.setattr(module, "solve_grasp_ik", solve)
+    monkeypatch.setattr(module, "_frames", frames)
+    report = _measure(tmp_path, 0.60, 0.45)
+    assert report["status"] == "passed" and report["grips_tried"] == 1
+    best = report["best_grip"]
+    assert (best["slide_m"], best["roll_deg"], best["half_turn"], best["clear"]) == (0.0, 0.0, True, True)
+
+
 def test_link_bounds_are_measured_from_the_robot_meshes_in_each_link_frame(tmp_path):
     part = Usd.Stage.CreateNew(str(tmp_path / "part.usda"))
     part.SetDefaultPrim(UsdGeom.Xform.Define(part, "/Part").GetPrim())

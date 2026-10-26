@@ -75,10 +75,17 @@ def placement_no_match_verdict(diagnostics: Mapping[str, Any], *, robot_id: str)
             f"Not a match: no surface within {robot_id}'s reach of the task can hold its base.")
     elif clear and diagnostics.get("arm_path_tested_count") and (
             diagnostics.get("arm_path_rejected_count") == diagnostics.get("arm_path_tested_count")):
-        reason, summary = "task_part_strikes_arm", (
-            f"Not a match: {diagnostics['arm_path_tested_count']} {robot_id} base positions clear the scene and "
-            "reach the task's path, but from each the moving part would strike the arm: no grip on the handle "
-            "keeps the arm clear through the motion.")
+        tested_arm = diagnostics["arm_path_tested_count"]
+        if (diagnostics.get("arm_path_blocker_counts") or {}).get("robot_arm_in_task_part_path"):
+            reason, summary = "task_part_strikes_arm", (
+                f"Not a match: {tested_arm} {robot_id} base positions clear the scene and reach the task's path, "
+                "but from each the moving part would strike the arm: no grip on the handle keeps the arm clear "
+                "through the motion.")
+        else:
+            # Position-only reach is not a held grip; nothing struck the arm because no grip was held.
+            reason, summary = "task_grip_unreachable", (
+                f"Not a match: {tested_arm} {robot_id} base positions clear the scene and reach the task's path, "
+                "but from none can the arm hold any grip on the handle through the motion.")
     elif clear:
         reason, summary = "task_path_unreachable", (
             f"Not a match: {clear} {robot_id} base positions clear the scene, but from none of them can the arm "
