@@ -327,10 +327,26 @@ def provider_runtime_contract_blockers(
                 )
             )
         )
+        # Beta L5: the robot-free probe records in the built scene and loads no policy.
+        robot_free_probe_runner_valid = (
+            "rigid_robot_free_probe_result.v1.json" in entrypoint_text
+            and all(
+                token in runner_text
+                for token in (
+                    "rigid_robot_free_probe_result.v1.json",
+                    "record_arena_robot_free_probe",
+                    "build_native_task_arena_environment",
+                    "launch_native_task_isaaclab",
+                    "candidate_policy_queried",
+                    "provider_zero_required_after_return",
+                )
+            )
+        )
         runner_valid = (
             construction_runner_valid
             or runtime_preflight_runner_valid
             or controlled_policy_runner_valid
+            or robot_free_probe_runner_valid
         )
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
     elif provider_bundle_kind == "native_g1_development_campaign":

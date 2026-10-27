@@ -217,6 +217,28 @@ def test_blocked_completed_source_does_not_starve_next_source_and_remains_retrya
     assert recovered["request_key"] == request_key(first) and recovered["status"] == "enqueued"
     assert len(coordinator.pending_publications(queue_root=world["screening_queue"])) == 2
     assert len(world["planning_calls"]) == 2
+
+
+def test_existing_prepared_scene_queues_its_missing_probe_before_screening(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
+    from blueprint_pipeline import rigid_robot_free_probe_runner as probes
+
+    world = prepared_source_queue(tmp_path, monkeypatch)
+    queued = []
+    monkeypatch.setattr(probes, "enqueue_rigid_robot_free_probe",
+                        lambda capture: queued.append(capture) or {"status": "queued"})
+
+    def waiting(**_kwargs):
+        raise ValueError("team_evaluation_robot_free_probe_receipt_missing")
+
+    monkeypatch.setattr(capabilities, "build_planning_inputs", waiting)
+    [outcome] = worker.enqueue_prepared_scenes(queue_root=world["screening_queue"],
+        packet_queue_root=world["packet_queue"])["sources"]
+    assert outcome["status"] == "blocked"
+    assert outcome["robot_free_probe_status"] == "queued"
+    assert outcome["blockers"] == ["team_evaluation_robot_free_probe_receipt_missing"]
+    assert len(queued) == 1 and queued[0].name == "walkthrough-job1"
+    assert not list((world["screening_queue"] / "plans").iterdir())
     assert not list((world["screening_queue"] / "attempts").iterdir())
 
 

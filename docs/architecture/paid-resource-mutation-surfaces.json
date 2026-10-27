@@ -19,6 +19,7 @@
       "src/blueprint_pipeline/qualification_control_admission.py",
       "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/remote_cpu_job_allocator.py",
+      "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
       "src/blueprint_pipeline/teleport_paid_allocator.py"
@@ -44,6 +45,7 @@
       "src/blueprint_pipeline/qualification_control_admission.py",
       "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/remote_cpu_job_allocator.py",
+      "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
       "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
@@ -317,6 +319,17 @@
         "build_paid_lane_admission",
         "require_paid_resource_admission",
         "run_native_task_arena_policy_canary_session_vast"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "build_paid_lane_admission",
+        "require_paid_resource_admission",
+        "reserve_website_preparation_spend",
+        "run_arena_native_control_vast",
+        "rigid_robot_free_probe_lane_disabled"
       ]
     },
     {

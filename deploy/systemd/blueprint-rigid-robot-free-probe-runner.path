@@ -1,0 +1,15 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-rigid-robot-free-probe-runner.path.json
+Description=Run queued rigid robot-free probes (one capped GPU session per attempt)
+
+[Path]
+# PathChanged only: a pass that defers (lane switched off, grant expired, launch
+# slots busy) leaves its entry pending and must never re-trigger itself. Each
+# new hand-off from the packet worker wakes the runner.
+PathChanged=/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes/pending
+Unit=blueprint-rigid-robot-free-probe-runner.service
+
+[Install]
+WantedBy=multi-user.target
