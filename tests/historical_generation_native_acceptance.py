@@ -52,7 +52,9 @@ def _stage(root):
         seen.add(name)
         raw = (origin / (name + '.py')).read_bytes()
         size += len(raw)
-        assert len(seen) <= 256 and size <= 8 * 1024**2
+        # Bound staged bytes, not a module-count quota that changes whenever
+        # production splits a module. The seen set keeps this traversal finite.
+        assert size <= 8 * 1024**2
         _write(destination / (name + '.py'), raw, 0o644)
         for node in ast.walk(ast.parse(raw)):
             if not isinstance(node, ast.ImportFrom):

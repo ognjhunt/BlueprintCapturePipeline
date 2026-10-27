@@ -12,7 +12,9 @@ from typing import Any, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
-from .website_task_preparation import compile_website_scene_preparation
+from .website_task_preparation import (
+    compile_website_scene_preparation, native_task_preparation_gap, native_task_subject_profile,
+)
 from .website_scene_runtime_inputs import prepare_website_runtime_inputs
 
 
@@ -29,6 +31,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
     metadata = descriptor.get("metadata") or {}
     result["capture_id"] = descriptor["capture_id"]
     result["scene_id"] = descriptor["scene_id"]
+
+    def retain_gap(gap: Mapping[str, Any]) -> dict[str, Any]:
+        result.update(status="needs_input", blockers=[gap["code"]], native_task_preparation_gap=dict(gap))
+        result["digest"] = canonical_digest(result, digest_field="digest")
+        write_json(handoff_path, result)
+        return result
+
     try:
         if clean_plate.get("privacy_verified") is not True or clean_plate.get("status") not in {"noop", "objects_removed"}:
             raise ValueError("website_scene_preparation_pending")
@@ -54,6 +63,21 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         base = dict(atlas["base_scene"])
         write_json(root / "base_scene.json", base)
         result.update(base_scene_path=str(root / "base_scene.json"), visual_reconstruction_ready=True)
+        removal_path = Path(clean_plate["removal_manifest_path"])
+        if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
+            raise ValueError("website_scene_removal_manifest_outside_capture")
+        removal = json.loads(removal_path.read_text())
+        # Capture truth applies to held families too. Reading this retained
+        # manifest performs no mask, authoring or provider work.
+        if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
+            raise ValueError("website_subject_origin_conflict")
+        gap = native_task_preparation_gap(context)
+        if gap is not None:
+            # Retain the completed reconstruction and original task. Missing
+            # adapter/scoring support cannot turn a different job into pick/place.
+            result.update(geometry_backend=atlas["source_geometry"]["geometry_backend"],
+                          source_geometry_digest=atlas["source_geometry"]["digest"])
+            return retain_gap(gap)
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
         result.pop("provider_mutation_performed", None)
         if (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
@@ -73,13 +97,26 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
         write_json(root / "task_masks.geometry.json", masks)
         clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
-        removal_path = Path(clean_plate["removal_manifest_path"])
-        if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
-            raise ValueError("website_scene_removal_manifest_outside_capture")
-        removal = json.loads(removal_path.read_text())
-        # The Atlas planner and the task analysis must agree that the subject was never captured.
-        if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
-            raise ValueError("website_subject_origin_conflict")
+        targets = {row["target_id"]: row for row in masks.get("targets", [])}
+        subjects = [row for row in removal.get("entries", []) if row.get("task_effect") == "manipulated"]
+        synthetic = removal.get("synthetic_subject")
+        inferred = None
+        if synthetic is not None:
+            if (not isinstance(synthetic, Mapping) or subjects
+                    or synthetic.get("start_support_target_id") not in targets):
+                raise ValueError("website_synthetic_subject_binding_invalid")
+            _, inferred = native_task_subject_profile({}, targets[synthetic["start_support_target_id"]],
+                                                      synthetic_subject=synthetic)
+        elif len(subjects) == 1 and subjects[0].get("target_id") in targets:
+            _, inferred = native_task_subject_profile(subjects[0], targets[subjects[0]["target_id"]])
+        if inferred is not None:
+            gap = native_task_preparation_gap(context, inferred_profile_id=inferred)
+            if gap is not None:
+                # Catch a contradictory profile before coverage/spec callbacks.
+                # Earlier mask work may have called a provider, so do not reset
+                # provider_mutation_performed to false on this later path.
+                result["source_geometry_digest"] = geometry["digest"]
+                return retain_gap(gap)
         # Each articulated task target needs views of its whole assembly from
         # the full track, not only the geometry frames. Retained receipts and
         # decoded frames make a restart free.
@@ -112,6 +149,10 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         result.update(status=preparation["status"], blockers=preparation["blockers"],
                       preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
                       thumbnail=preparation["thumbnail"], base_scene_path=str(root / "base_scene.json"))
+        if isinstance(preparation.get("native_task_preparation_gap"), Mapping):
+            # Later source-bound evidence can also reveal a mismatch. A held
+            # compiler output has no native intake and must not enter runtime preparation.
+            return retain_gap(preparation["native_task_preparation_gap"])
         # A missing execution authority must not stop this CPU-only geometry
         # conversion. The object stays in its separate authoring lane.
         try:

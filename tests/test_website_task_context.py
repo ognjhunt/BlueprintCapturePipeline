@@ -37,6 +37,61 @@ def test_task_is_bound_to_exact_capture_and_confirmed_content():
         validate({**context(), "description": "Move the unrelated chair"})
 
 
+def test_task_family_is_open_and_bound_to_the_context_digest():
+    value = {**context(), "task_family": "laundry_folding"}
+    value["context_digest"] = canonical_digest(value, digest_field="context_digest")
+    assert validate(value)["task_family"] == "laundry_folding"
+    with pytest.raises(ValueError, match="digest_mismatch"):
+        validate({**value, "task_family": "rigid_pick_place"})
+
+
+@pytest.mark.parametrize("family", [None, "", "  ", [], 4])
+def test_supplied_family_requires_text_without_restricting_its_kind(family):
+    value = {**context(), "task_family": family}
+    value["context_digest"] = canonical_digest(value, digest_field="context_digest")
+    with pytest.raises(ValueError, match="family_invalid"):
+        validate(value)
+
+
+@pytest.mark.parametrize("fault", [None, "stale_context", "arbitrary_failure"])
+def test_only_the_current_native_profile_gap_completes_a_held_preparation_stage(fault):
+    from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
+    from blueprint_pipeline.website_task_preparation import native_task_preparation_gap
+
+    task = {**context(), "task_family": "laundry_folding"}
+    task["context_digest"] = canonical_digest(task, digest_field="context_digest")
+    gap = native_task_preparation_gap(task)
+    if fault == "stale_context":
+        gap["task_context_digest"] = "sha256:" + "9" * 64
+    elif fault == "arbitrary_failure":
+        gap["code"] = "unrelated_preparation_failure"
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+               **{key: task[key] for key in ("scene_id", "capture_id")},
+               "blockers": [gap["code"]], "native_task_preparation_gap": gap,
+               "simulator_ready": False, "visual_reconstruction_ready": True,
+               "provider_mutation_performed": False}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    assert holds_native_task_preparation(handoff, task) is (fault is None)
+
+
+@pytest.mark.parametrize("inferred,expected", [("rigid_pick_place", True), ("articulated_open_close", False),
+                                              ("unregistered", False), ("rigid_relocation", False), (None, False)])
+def test_mechanism_mismatch_hold_requires_distinct_canonical_profiles(inferred, expected):
+    from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
+    from blueprint_pipeline.website_task_preparation import native_task_preparation_gap
+
+    task = {**context(), "task_family": "articulated_open_close"}
+    task["context_digest"] = canonical_digest(task, digest_field="context_digest")
+    gap = native_task_preparation_gap(task, inferred_profile_id="rigid_pick_place")
+    gap["inferred_profile_id"] = inferred
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+               **{key: task[key] for key in ("scene_id", "capture_id")},
+               "blockers": [gap["code"]], "native_task_preparation_gap": gap,
+               "simulator_ready": False, "visual_reconstruction_ready": True}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    assert holds_native_task_preparation(handoff, task) is expected
+
+
 def test_consumes_actual_web_supplementary_context_and_keeps_independent_frames(monkeypatch):
     vector = json.loads((Path(__file__).parent / "fixtures/website-continuation-vector.json").read_text())
     value = vector["context"]

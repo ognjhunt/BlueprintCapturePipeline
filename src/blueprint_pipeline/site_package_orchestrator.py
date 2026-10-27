@@ -5298,13 +5298,17 @@ def run_qualification_pipeline(
                 "schema_version": "v1", "provider_name": None, "status": "not_requested",
                 "website_scene_preparation": website_scene_preparation})
             outbox = website_scene_preparation.get("website_intake_outbox") or {}
-            if outbox.get("state") != "forward_pending":
+            from .website_task_context_contracts import holds_native_task_preparation
+            native_profile_held = holds_native_task_preparation(
+                website_scene_preparation, descriptor.metadata.get("site_task_context") or {})
+            if outbox.get("state") != "forward_pending" and not native_profile_held:
                 raise StageError("website_scene_preparation", ",".join(
                     website_scene_preparation.get("blockers")
                     or (website_scene_preparation.get("runtime_inputs") or {}).get("blockers")
                     or ["website_native_intake_pending"]))
-            # The authenticated website outbox owns the next stage. Do not
-            # project a device capture job or pretend native execution finished.
+            # A source-bound native-profile gap completes this preparation
+            # stage and remains held, rather than buying retries of a missing
+            # adapter. Otherwise the authenticated outbox owns the next stage.
             return {"status": "completed", "lane": "qualification",
                     "website_scene_preparation": website_scene_preparation,
                     "native_execution_complete": False}

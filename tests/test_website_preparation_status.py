@@ -169,6 +169,82 @@ def test_completed_ledger_without_required_handoff_is_unavailable(prepared_sourc
     assert _post(prepared_source).status_code == 503
 
 
+def _complete_native_profile_gap(source, *, mismatch=False):
+    from blueprint_pipeline.website_task_preparation import native_task_preparation_gap
+
+    root, owner, context, selected, ledger, _ = source
+    context["task_family"] = "articulated_open_close" if mismatch else "laundry_folding"
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    selected["task_context_digest"] = context["context_digest"]
+    write_json(root / "pipeline/website_task_context.json", context)
+    gap = native_task_preparation_gap(context, **({"inferred_profile_id": "rigid_pick_place"} if mismatch else {}))
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+               **{key: owner[key] for key in ("scene_id", "capture_id")},
+               "blockers": [gap["code"]], "native_task_preparation_gap": gap,
+               "simulator_ready": False, "visual_reconstruction_ready": True,
+               **({} if mismatch else {"provider_mutation_performed": False})}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(root / "pipeline/website_scene_preparation/handoff.json", handoff)
+    listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
+        attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
+                                                     "website_scene_preparation": handoff})
+    _finish(source, "completed")
+    return handoff
+
+
+@pytest.mark.parametrize("schema", [status_reader.STATUS_V1, status_reader.STATUS_V2, status_reader.STATUS_V3])
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_completed_native_profile_gap_stays_held_and_never_becomes_native_handoff(prepared_source, schema, mismatch):
+    _complete_native_profile_gap(prepared_source, mismatch=mismatch)
+    result = status_reader.read_preparation_status(capture_root=prepared_source[0], selectors=prepared_source[3],
+                                                  schema_version=schema)
+    assert result["state"] == "awaiting_inputs" and result["code"] == "preparation_inputs_pending"
+    assert result.get("terminal_reason") is None
+    if schema == status_reader.STATUS_V3:
+        assert result["outcome"] is None  # A preparation hold is not a robot verdict.
+    assert listener._read_job_ledger(prepared_source[0])["status"] == "completed"
+    assert _post(prepared_source).json()["state"] == "awaiting_inputs"
+
+
+@pytest.mark.parametrize("fault", ["digest", "source", "context", "family", "description", "code",
+                                  "disposition", "simulator_ready", "runtime_inputs", "missing_output_commit"])
+def test_completed_native_gap_requires_exact_current_binding_and_output_commit(prepared_source, fault):
+    handoff = _complete_native_profile_gap(prepared_source)
+    gap = handoff["native_task_preparation_gap"]
+    if fault == "source":
+        handoff["capture_id"] = "walkthrough-other"
+    elif fault == "context":
+        gap["task_context_digest"] = "sha256:" + "9" * 64
+    elif fault in {"family", "description"}:
+        gap["task_family" if fault == "family" else "description"] = "different job"
+    elif fault == "code":
+        gap["code"] = "arbitrary_preparation_error"
+        handoff["blockers"] = [gap["code"]]
+    elif fault == "disposition":
+        gap["job_disposition"] = "refused"
+    elif fault == "simulator_ready":
+        handoff["simulator_ready"] = True
+    elif fault == "runtime_inputs":
+        handoff["runtime_inputs"] = {"status": "ready"}
+    elif fault == "missing_output_commit":
+        (prepared_source[0] / listener.JOB_OUTPUT_COMMIT_FILENAME).unlink()
+    if fault != "digest":
+        handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    else:
+        handoff["digest"] = "sha256:" + "9" * 64
+    write_json(prepared_source[0] / "pipeline/website_scene_preparation/handoff.json", handoff)
+    assert _post(prepared_source).status_code == 503
+
+
+@pytest.mark.parametrize("inferred", [None, "unregistered", "articulated_open_close", "rigid_relocation"])
+def test_completed_mechanism_mismatch_requires_a_distinct_canonical_inferred_profile(prepared_source, inferred):
+    handoff = _complete_native_profile_gap(prepared_source, mismatch=True)
+    handoff["native_task_preparation_gap"]["inferred_profile_id"] = inferred
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(prepared_source[0] / "pipeline/website_scene_preparation/handoff.json", handoff)
+    assert _post(prepared_source).status_code == 503
+
+
 def test_withdrawal_precedes_retained_failure(prepared_source):
     from blueprint_pipeline.website_capture_withdrawal import acknowledge_withdrawal
     root, owner, _, _, _, _ = prepared_source

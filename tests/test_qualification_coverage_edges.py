@@ -1265,6 +1265,53 @@ def test_website_preparation_finishes_only_at_its_native_outbox(tmp_path, monkey
             q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
 
 
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_website_native_profile_gap_finishes_preparation_without_native_execution(tmp_path, monkeypatch, stale, mismatch):
+    import blueprint_pipeline.website_scene_handoff as handoff
+    from blueprint_pipeline.website_task_preparation import native_task_preparation_gap
+
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _write_descriptor(storage_root, _descriptor(
+        capture_source="unknown", capture_modality="video_only", requested_outputs=["preview_simulation"],
+        metadata={"capture_entry_source": "browser_self_capture", "capture_rights": {"derived_scene_generation_allowed": True}}))
+    _patch_pipeline_side_effects(monkeypatch)
+
+    def current_task(**identity):
+        context = {**_confirmed_website_task(**identity),
+                   "task_family": "articulated_open_close" if mismatch else "laundry_folding"}
+        context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+        return context
+
+    def held(**kwargs):
+        context = kwargs["descriptor"]["metadata"]["site_task_context"]
+        gap = native_task_preparation_gap(context, **({"inferred_profile_id": "rigid_pick_place"} if mismatch else {}))
+        if stale:
+            gap["task_context_digest"] = "sha256:" + "9" * 64
+        value = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+                 "scene_id": context["scene_id"], "capture_id": context["capture_id"],
+                 "blockers": [gap["code"]], "native_task_preparation_gap": gap,
+                 "simulator_ready": False, "visual_reconstruction_ready": True,
+                 **({} if mismatch else {"provider_mutation_performed": False})}
+        value["digest"] = canonical_digest(value, digest_field="digest")
+        return value
+
+    monkeypatch.setattr(q, "load_current_website_task_context", current_task)
+    monkeypatch.setattr(q, "load_website_scene_sponsorship", lambda **_: {"sponsor": "blueprint"})
+    monkeypatch.setattr(q, "run_clean_plate_stage", lambda **_: {"status": "noop", "privacy_status": "no_people_detected", "privacy_verified": True})
+    monkeypatch.setattr(handoff, "prepare_website_scene_handoff", held)
+    monkeypatch.setattr(q, "sync_webapp_pipeline_attachment", lambda **_: pytest.fail("held preparation has no native outbox"))
+    if stale:
+        with pytest.raises(PipelineError, match=("website_task_profile_mechanism_mismatch" if mismatch
+                                                else "website_native_task_profile_preparation_required")):
+            q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+    else:
+        result = q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+        assert result["status"] == "completed" and result["native_execution_complete"] is False
+        assert result["website_scene_preparation"]["status"] == "needs_input"
+        assert "website_intake_outbox" not in result["website_scene_preparation"]
+
+
 def test_shared_task_constraints_survive_capture_scope_ingestion(tmp_path: Path) -> None:
     from blueprint_pipeline.evaluation_prep_stage import _build_task_anchor_manifest
 

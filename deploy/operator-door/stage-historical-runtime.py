@@ -44,7 +44,9 @@ def stage(origin, destination):
             os.close(descriptor)
         selected.add(name)
         size += len(raw)
-        if len(selected) > 256 or size > 8 * 1024**2:
+        # The byte budget bounds the staged source as modules split or merge;
+        # selected still makes traversal finite without a file-count quota.
+        if size > 8 * 1024**2:
             raise ValueError('historical_generation_stage_unproven')
         with (package / path.name).open('xb') as output:
             output.write(raw)

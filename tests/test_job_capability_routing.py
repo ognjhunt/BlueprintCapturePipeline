@@ -14,6 +14,13 @@ def _policies(value):
     return [row["policy"]["candidate_id"] for row in value["configurations"]]
 
 
+def test_routing_reexports_the_same_pure_task_profile_metadata():
+    from blueprint_pipeline import job_capability_routing, task_profile_contracts
+    assert job_capability_routing.TASK_PROFILES is task_profile_contracts.TASK_PROFILES
+    assert job_capability_routing.TaskProfile is task_profile_contracts.TaskProfile
+    assert job_capability_routing.task_profile_for is task_profile_contracts.task_profile_for
+
+
 def test_supported_profile_lists_complete_runnable_configurations():
     value = route_job_capabilities(
         "rigid_object_pick_place", provided_inputs=("metric_object_geometry", "target_region")
