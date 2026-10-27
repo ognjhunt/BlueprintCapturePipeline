@@ -766,7 +766,7 @@ def test_the_paid_resource_inventory_and_reachability_ledger_name_the_lane() -> 
     assert f"`{PROBE_KIND}` — `not_a_website_lane`, **switched off by default**" in ledger
 
 
-def test_the_runner_units_are_deployed_authority_gated_and_inert_until_enabled(monkeypatch) -> None:
+def test_the_runner_units_are_automatic_under_capture_grants_and_allow_opt_out(monkeypatch) -> None:
     root = Path(__file__).resolve().parents[1]
     service = (root / "deploy/systemd/blueprint-rigid-robot-free-probe-runner.service").read_text()
     path_unit = (root / "deploy/systemd/blueprint-rigid-robot-free-probe-runner.path").read_text()
@@ -782,8 +782,15 @@ def test_the_runner_units_are_deployed_authority_gated_and_inert_until_enabled(m
                     "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process",
                     f"BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE={runner.DEFAULT_QUEUE}"):
         assert setting in service
-    # The unit never switches the lane on itself; only the operator's env file can.
-    assert f"Environment={lane.ENABLE_ENV}" not in service and "paid_resource_allocator" not in service
+    # The service default implements the owner's automatic-check direction.
+    # Operator env files can disable it; every pass keeps the canary attempt cap.
+    assert f"Environment={lane.ENABLE_ENV}=1" in service
+    assert "EnvironmentFile=-/etc/blueprint/rigid-robot-free-probe.env" in service
+    assert "run-queue --max-attempts 1" in service
+    assert "paid_resource_allocator" not in service
+    timer = (root / "deploy/systemd/blueprint-rigid-robot-free-probe-runner.timer").read_text()
+    assert "OnUnitInactiveSec=5min" in timer
+    assert "blueprint-rigid-robot-free-probe-runner.timer.json" in timer
     import ast
 
     tree = ast.parse((root / "scripts/deploy_control_plane_commit.py").read_text())

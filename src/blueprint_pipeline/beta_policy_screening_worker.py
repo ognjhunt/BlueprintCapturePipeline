@@ -98,6 +98,13 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     profile = profile_for_capture(capture)
                     if not profile or profile.get("scene_id") != context["scene_id"]:
                         raise ValueError("beta_screening_scene_profile_unavailable")
+                    # Reconcile packets prepared before the probe lane was
+                    # installed as well as newly compiled scenes. Queueing is
+                    # unpaid and idempotent; planning still requires a pass.
+                    from .rigid_robot_free_probe_runner import enqueue_rigid_robot_free_probe
+
+                    probe = enqueue_rigid_robot_free_probe(capture)
+                    outcome["robot_free_probe_status"] = probe["status"]
                     inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
                         source=source, inputs_dir=root / "inputs" / campaign_id)
                     plan = build_screening_plan(catalog, inputs["scene"], campaign_id=campaign_id,

@@ -457,6 +457,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-team-evaluation-runner.path",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-rigid-robot-free-probe-runner.path",
+    "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-native-g1-team-campaign-dispatcher.service",
     "blueprint-native-g1-team-campaign-dispatcher.timer",
     "blueprint-native-g1-team-campaign-settlement.service",
@@ -526,8 +527,8 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
     # Runs only evaluations the agent-run dispatcher already staged under a
     # founder's free-beta admission; each shard keeps its own cap and TTL.
     "blueprint-team-evaluation-runner.path",
-    # Records a queued rigid scene's robot-free probe only while its explicit
-    # enable setting is on (the service's ExecCondition skips it otherwise), and
+    # Records a queued rigid scene's robot-free probe while its enable setting
+    # is on (the service default, with an operator opt-out), and
     # only under that capture's own website grant, $1.00 and 3600 s per attempt.
     "blueprint-rigid-robot-free-probe-runner.path",
     # Remote episode compilation dispatches only in a remote mode (set, or auto
@@ -545,6 +546,7 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: moment a no-spend canary compiles, so it carries the same progression
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-task-evaluation-launch-preparation.timer",
     # Owner-authorized beta screening has its own aggregate site allowance,
     # sealed admission and allocator. This does not release the paid agent

@@ -54,6 +54,13 @@ unknown.
 
 ## Grow or reclaim
 
+Admission alerts follow `BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS` by actual
+filesystem device, including bind mounts. A busy root disk still warns about
+utilization and growth, but it cannot refuse a launch role assigned to the
+work volume. `assigned_roles` and `refused_roles` in the capacity summary
+identify which stages the measured filesystem can actually block. These
+projections do not replace each worker's atomic disk reservation.
+
 For a configured DigitalOcean volume, check `volume_resize.status` and
 `reason`. `volume_at_maximum` needs a provider limit increase before raising
 `BLUEPRINT_CAPACITY_VOLUME_MAX_GIB`. To permit the approved automatic step, set

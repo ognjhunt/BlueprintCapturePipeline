@@ -5,8 +5,9 @@ Beta journey step: L5 team policy evaluation. Owner approval 2026-10-26
 scene and run the no-robot check automatically; make the first real run a
 capped test."
 
-The lane is switched off unless ``BLUEPRINT_RIGID_ROBOT_FREE_PROBE_ENABLED`` is
-set, and every check below runs before any provider mutation:
+The systemd service enables ``BLUEPRINT_RIGID_ROBOT_FREE_PROBE_ENABLED`` by
+default, with an operator opt-out. Direct CLI calls require that setting, and
+every check below runs before any provider mutation:
 
 - the provider is Vast; the run binds one sealed bundle
   (``rigid_robot_free_probe_bundle``) at the control plane's exact commit and

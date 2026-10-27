@@ -6,9 +6,9 @@ After=network-online.target blueprint-gpu-spend-guard.service
 
 [Service]
 Type=oneshot
-# Switched off unless BLUEPRINT_RIGID_ROBOT_FREE_PROBE_ENABLED is true in the
-# shared or the lane's env file: the ExecCondition skips the run, and the runner
-# and the allocator lane each refuse again by name. Each attempt is capped at
+# Each queued capture automatically uses its existing website grant. The
+# shared or lane env file can opt out with BLUEPRINT_RIGID_ROBOT_FREE_PROBE_ENABLED=0;
+# the ExecCondition, runner and allocator all enforce that opt-out. Each attempt is capped at
 # $1.00, $0.80/h and 3600 s under the capture's website grant; a scene gets two
 # funded attempts at most. The allocator keeps its cap, TTL and independent
 # watchdog and survives a restart of this unit (KillMode=process).
@@ -18,6 +18,7 @@ Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill
 User=blueprint
 Group=blueprint
 UMask=0077
+Environment=BLUEPRINT_RIGID_ROBOT_FREE_PROBE_ENABLED=1
 EnvironmentFile=/etc/blueprint/pipeline-control-plane.env
 EnvironmentFile=-/etc/blueprint/rigid-robot-free-probe.env
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
@@ -25,7 +26,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
 Environment=BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE=/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes
 ExecCondition=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit 1; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.rigid_robot_free_probe_runner condition'
-ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.rigid_robot_free_probe_runner run-queue'
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.rigid_robot_free_probe_runner run-queue --max-attempts 1'
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true

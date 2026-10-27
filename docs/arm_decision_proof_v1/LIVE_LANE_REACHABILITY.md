@@ -142,7 +142,7 @@ public clip rights.
 
 ### Rigid robot-free probe queue (1)
 
-- `rigid-robot-free-probe` — `not_a_website_lane`, **switched off by default**
+- `rigid-robot-free-probe` — `not_a_website_lane`, automatic under the capture's grant
   (`BLUEPRINT_RIGID_ROBOT_FREE_PROBE_ENABLED`). Owner approval 2026-10-26: under
   each capture's website grant, build the scene and run the no-robot check
   automatically; the first real run is a capped test. The packet worker calls
@@ -155,7 +155,12 @@ public clip rights.
   `gpu_render`/`vast` reservation from that capture's website preparation
   grant. The worker records `team_embodiment_runtime.record_arena_robot_free_probe`
   in the built scene with the robot idle and queries no policy; ingest retains
-  the receipt bound to the specification teams are scored with. No capped
+  the receipt bound to the specification teams are scored with. The service
+  enables the lane by default; the protected shared or lane environment can
+  disable it. Its path wakes new requests and its five-minute timer revisits
+  deferred requests. Each pass starts at most one attempt per capture.
+  Screening also queues probes for packets prepared before this lane existed.
+  No capped
   canary has run yet, so this lane is unproven in production.
 
 ## Terminal and production rules
