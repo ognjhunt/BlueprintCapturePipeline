@@ -349,3 +349,122 @@ def test_the_paid_launch_refuses_what_it_cannot_measure_and_skips_rigid_tasks(tm
     (rigid / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
     report = require_robot_arm_path_admission(rigid)
     assert (report["status"], report["reason"]) == ("not_applicable", "task_moves_no_part")
+
+
+def _box_triangles(low, high):
+    """Twelve triangles of an axis-aligned box."""
+    import itertools
+
+    import numpy as np
+
+    c = {k: np.array([high[0] if k[0] else low[0], high[1] if k[1] else low[1], high[2] if k[2] else low[2]])
+         for k in itertools.product((0, 1), repeat=3)}
+    faces = [((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)), ((0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)),
+             ((0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)), ((0, 1, 0), (1, 1, 0), (1, 1, 1), (0, 1, 1)),
+             ((0, 0, 0), (0, 1, 0), (0, 1, 1), (0, 0, 1)), ((1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1))]
+    return np.array([tri for a, b, d, e in faces for tri in ((c[a], c[b], c[d]), (c[a], c[d], c[e]))])
+
+
+RIGID_GRASP = {"robot_id": "franka_panda", "base_pose_world": {"position_world_m": [0.0, 0.0, 0.0],
+               "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}, "contact_point_m": [0.0, 0.0, 0.0],
+               "approach_unit": [0.0, 0.0, 1.0], "gripper_orientation_xyzw": [0.0, 1.0, 0.0, 0.0],
+               "pregrasp_clearance_m": 0.1}  # top-down: the gripper's +Z points down into the object
+
+
+@pytest.mark.parametrize("target, status, blocker", [
+    # Floor to floor beside the arm: one top-down carry exists.
+    ([0.5, 0.3, 0.0325], "clear", None),
+    # Floor to a 0.74 m desk from a floor mount: the task's top-down grasp cannot lift that high there.
+    ([0.55, 0.3, 0.7725], "blocked", "robot_rigid_pick_place_unreachable:lift"),
+    ([2.0, 0.0, 0.0325], "blocked", "robot_rigid_pick_place_unreachable:carry"),
+])
+def test_a_rigid_carry_is_solved_along_the_probe_path_or_refused_by_phase(target, status, blocker):
+    from blueprint_pipeline.robot_arm_path_clearance import NOMINAL_SEED_RAD, REST_SEED_RAD, rigid_pick_place_clearance
+
+    report = rigid_pick_place_clearance(start_pose_world=[0.5, 0.0, 0.0325, 0.0, 0.0, 0.0, 1.0],
+                                        target_position_world=target, **RIGID_GRASP,
+                                        seeds=[list(NOMINAL_SEED_RAD), list(REST_SEED_RAD["franka_panda"])])
+    assert report["status"] == status and report["task_kind"] == "rigid_pick_place"
+    assert report["blockers"] == ([] if blocker is None else [blocker])
+    assert (report["cleared_grip"] is not None) is (status == "clear")
+
+
+def test_a_rigid_carry_that_drives_an_arm_link_through_the_scene_is_refused():
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        NOMINAL_SEED_RAD,
+        REST_SEED_RAD,
+        rigid_pick_place_clearance,
+        sample_scene_obstacles,
+    )
+
+    seeds = [list(NOMINAL_SEED_RAD), list(REST_SEED_RAD["franka_panda"])]
+    common = {**RIGID_GRASP, "seeds": seeds, "start_pose_world": [0.5, 0.0, 0.0325, 0.0, 0.0, 0.0, 1.0],
+              "target_position_world": [0.5, 0.3, 0.0325]}
+    # A shelf over the object, 0.3 m up: every arm pose that reaches down to it passes through.
+    shelf = sample_scene_obstacles(_box_triangles([0.3, -0.4, 0.28], [0.8, 0.6, 0.30]),
+                                   centre=[0.0, 0.0, 0.0], radius=1.4)
+    report = rigid_pick_place_clearance(**common, scene_obstacles=shelf)
+    assert report["status"] == "blocked" and report["blockers"][0].startswith("robot_rigid_pick_place_scene_strike:")
+    # Out of the way behind the base, the same carry clears.
+    wall = sample_scene_obstacles(_box_triangles([-0.8, -0.8, 0.0], [-0.7, 0.8, 1.0]),
+                                  centre=[0.0, 0.0, 0.0], radius=1.4)
+    report = rigid_pick_place_clearance(**common, scene_obstacles=wall)
+    assert report["status"] == "clear" and report["scene_obstacles_measured"] is True
+
+
+def _rigid_packet(root, *, target, strategy="pick_and_place", robot_id="franka_panda"):
+    import hashlib
+    import json
+
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    root.mkdir(parents=True, exist_ok=True)
+    scene = root / "scene_collision.usda"
+    stage = Usd.Stage.CreateNew(str(scene))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    floor = UsdGeom.Mesh.Define(stage, "/Root/Floor")
+    floor.CreatePointsAttr([(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)])
+    floor.CreateFaceVertexCountsAttr([4])
+    floor.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    UsdPhysics.CollisionAPI.Apply(floor.GetPrim())
+    stage.GetRootLayer().Save()
+    reset = {f"panda_joint{i}": v for i, v in enumerate((0.0, -0.6283, 0.0, -2.5133, 0.0, 1.8850, 0.0), start=1)}
+    plan = {"plan_digest": "sha256:" + "1" * 64, "task_kind": "rigid_pick_place",
+            "robot": {"robot_id": robot_id, "joint_reset_positions_rad": reset,
+                      "base_pose_world": {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}},
+            "task_spec": {"task_kind": "rigid_pick_place", "manipulation_strategy": strategy,
+                          "start_pose_world": [0.5, 0.0, 0.0325, 0.0, 0.0, 0.0, 1.0], "target_position_world_m": target,
+                          "interaction_affordance": {"contact_point_scoring_frame_m": [0.0, 0.0, 0.0],
+                                                     "approach_unit_scoring_frame": [0.0, 0.0, 1.0],
+                                                     "gripper_orientation_scoring_frame_xyzw": [0.0, 1.0, 0.0, 0.0],
+                                                     "pregrasp_clearance_m": 0.1}},
+            "objects": [{"semantic_role": "scene_collision", "usd_path": scene.name,
+                         "sha256": "sha256:" + hashlib.sha256(scene.read_bytes()).hexdigest(),
+                         "pose_world": {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}}]}
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    return root
+
+
+@pytest.mark.parametrize("case, status, reason", [
+    ("floor", "clear", None), ("desk", "blocked", None),
+    ("push", "not_applicable", "no_articulated_object"), ("own_robot", "not_applicable", "robot_arm_unmodeled")])
+def test_a_rigid_pick_and_place_packet_is_admitted_only_when_its_carry_exists(tmp_path, case, status, reason):
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        RobotArmPathAdmissionBlocked,
+        packet_arm_path_clearance,
+        require_robot_arm_path_admission,
+    )
+
+    packet = _rigid_packet(tmp_path / case, target=[0.55, 0.3, 0.7725] if case == "desk" else [0.5, 0.3, 0.0325],
+                           strategy="planar_push" if case == "push" else "pick_and_place",
+                           robot_id="team_owned_arm" if case == "own_robot" else "franka_panda")
+    report = packet_arm_path_clearance(packet)
+    assert report["status"] == status and report.get("reason") == reason
+    assert report["report_digest"].startswith("sha256:")
+    if case == "desk":
+        assert report["blockers"] == ["robot_rigid_pick_place_unreachable:lift"]
+        with pytest.raises(RobotArmPathAdmissionBlocked, match="unreachable:lift"):
+            require_robot_arm_path_admission(packet)
+    if case == "floor":
+        assert report["scene_obstacles_measured"] is True and report["arena_scene_plan_digest"] == "sha256:" + "1" * 64

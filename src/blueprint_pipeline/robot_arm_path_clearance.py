@@ -556,6 +556,137 @@ def arm_path_clearance(*, robot_id: str, base_pose_world: Mapping[str, Sequence[
     return result
 
 
+#: A rigid object is carried along the robot-free probe's path: straight up from its start, across
+#: above the higher of its two ends by this much, and down onto its target.
+RIGID_CARRY_CLEARANCE_M = 0.08
+RIGID_PATH_STEP_M = 0.02
+RIGID_GRIP_ROLLS_DEG = (0.0, 45.0, -45.0, 90.0)
+#: A larger change in any joint between two path samples is a jump between arm configurations.
+RIGID_MAXIMUM_JOINT_STEP_RAD = 0.35
+
+
+def _segment(a: np.ndarray, b: np.ndarray) -> list[np.ndarray]:
+    count = max(1, int(math.ceil(float(np.linalg.norm(b - a)) / RIGID_PATH_STEP_M)))
+    return [a + (b - a) * (k / count) for k in range(1, count + 1)]
+
+
+def rigid_pick_place_clearance(*, robot_id: str, base_pose_world: Mapping[str, Sequence[float]],
+                               start_pose_world: Sequence[float], target_position_world: Sequence[float],
+                               contact_point_m: Sequence[float], approach_unit: Sequence[float],
+                               gripper_orientation_xyzw: Sequence[float], pregrasp_clearance_m: float,
+                               seeds: Sequence[Sequence[float]], margin_m: float = DEFAULT_MARGIN_M,
+                               scene_obstacles: SceneObstacles | None = None) -> dict[str, Any]:
+    """Whether the arm can carry a rigid object from its start to its target, clear of the static scene.
+
+    The hand holds the task's own grasp (``contact_point_m`` and ``gripper_orientation_xyzw`` in the
+    object's scoring frame, backing off along ``approach_unit``), turned about the approach by a few
+    rolls. It comes down to the object, lifts it straight up, carries it across above the higher end,
+    lowers it onto the target and backs off. The arm's pose is solved every ``RIGID_PATH_STEP_M`` from
+    the previous solution, from each seed, and every arm link keeps ``margin_m`` from the scene. A
+    pass means one such motion exists, not that a policy finds it; the object itself is not measured.
+    """
+    links, grasp_point = _arm_model(robot_id)
+    world_from_base = _pose_matrix(base_pose_world)
+    base_from_world = np.linalg.inv(world_from_base)
+    pose = [float(v) for v in start_pose_world]
+    held = _pose_matrix({"position_world_m": pose[:3], "orientation_xyzw": pose[3:7]})[:3, :3]
+    contact = held @ np.asarray(contact_point_m, dtype=float)
+    outward = _unit(held @ np.asarray(approach_unit, dtype=float), "robot_rigid_reach_approach_invalid")
+    grip = held @ _pose_matrix({"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": gripper_orientation_xyzw})[:3, :3]
+    pick = np.asarray(pose[:3], dtype=float) + contact
+    place = np.asarray(target_position_world, dtype=float) + contact
+    height = max(float(pick[2]), float(place[2])) + RIGID_CARRY_CLEARANCE_M
+    corners = [pick + pregrasp_clearance_m * outward, pick, np.array([pick[0], pick[1], height]),
+               np.array([place[0], place[1], height]), place, place + pregrasp_clearance_m * outward]
+    phases = ("approach", "lift", "carry", "lower", "retreat")
+    path = [(phases[0], corners[0])] + [(phase, point) for phase, a, b in zip(phases, corners, corners[1:])
+                                        for point in _segment(a, b)]
+    lookups = [scene_obstacles.near] if scene_obstacles is not None else []
+
+    def gap(joints: np.ndarray) -> tuple[float, str | None]:
+        frames = world_from_base @ _frames(joints)
+        least, which = math.inf, None
+        for name, index, offsets, centre, radius in links:
+            frame = frames[index]
+            middle = frame[:3, :3] @ centre + frame[:3, 3]
+            for lookup in lookups:
+                near = lookup(middle, radius + margin_m)
+                if len(near):
+                    value = float(np.min(np.max(((near - frame[:3, 3]) @ frame[:3, :3]) @ DIRECTIONS.T - offsets, axis=1)))
+                    if value < least:
+                        least, which = value, name
+        return least, which
+
+    # The attempt that got furthest names the refusal; a pose reached but struck outranks one not reached.
+    best: tuple[int, bool, str] = (-1, False, "unreachable:approach")
+    for roll in RIGID_GRIP_ROLLS_DEG:
+        rotation = _about(grip[:, 2], math.radians(roll)) @ grip
+        for seed_index, seed in enumerate(seeds):
+            q, least, which, failure = np.asarray(seed, dtype=float), math.inf, None, None
+            for index, (phase, point) in enumerate(path):
+                solved, position_error, angle_error = solve_grasp_ik(
+                    base_from_world=base_from_world, position_world=point, rotation_world=rotation, seed=q,
+                    grasp_point_flange=grasp_point)
+                if (position_error > IK_POSITION_TOLERANCE_M or angle_error > IK_ORIENTATION_TOLERANCE_RAD
+                        or (index and float(np.abs(solved - q).max()) > RIGID_MAXIMUM_JOINT_STEP_RAD)):
+                    failure = (index, False, "unreachable:" + phase)
+                    break
+                value, link = gap(solved)
+                if value < margin_m:
+                    failure = (index, True, f"scene_strike:{link}:{phase}")
+                    break
+                q = solved
+                if value < least:
+                    least, which = value, link
+            if failure is None:
+                return {"schema_version": SCHEMA_VERSION, "status": "clear", "task_kind": "rigid_pick_place",
+                        "robot_id": robot_id, "margin_m": margin_m, "blockers": [],
+                        "cleared_grip": {"roll_deg": roll, "seed_index": seed_index,
+                                         "least_scene_gap_m": None if math.isinf(least) else least,
+                                         "least_scene_gap_link": which},
+                        "path_samples": len(path), "scene_obstacles_measured": scene_obstacles is not None}
+            best = max(best, failure)
+    return {"schema_version": SCHEMA_VERSION, "status": "blocked", "task_kind": "rigid_pick_place",
+            "robot_id": robot_id, "margin_m": margin_m, "blockers": ["robot_rigid_pick_place_" + best[2]],
+            "furthest_sample": best[0], "path_samples": len(path), "cleared_grip": None,
+            "scene_obstacles_measured": scene_obstacles is not None}
+
+
+def _packet_rigid_clearance(root: Path, plan: Mapping[str, Any], spec: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The rigid gate on a packet; ``None`` for a robot this module has no arm model of (a team's own)."""
+    robot = plan.get("robot") or {}
+    robot_id = str(robot.get("robot_id"))
+    if robot_id not in ARM_LINK_BOUNDS:
+        return None
+    try:
+        affordance = spec["interaction_affordance"]
+        reset = robot["joint_reset_positions_rad"]
+        seeds = [[float(reset[f"panda_joint{i}"]) for i in range(1, 8)], list(NOMINAL_SEED_RAD),
+                 list(REST_SEED_RAD.get(robot_id, NOMINAL_SEED_RAD))]
+        inputs = {"start_pose_world": spec["start_pose_world"], "target_position_world": spec["target_position_world_m"],
+                  "contact_point_m": affordance["contact_point_scoring_frame_m"],
+                  "approach_unit": affordance["approach_unit_scoring_frame"],
+                  "gripper_orientation_xyzw": affordance["gripper_orientation_scoring_frame_xyzw"],
+                  "pregrasp_clearance_m": float(affordance["pregrasp_clearance_m"])}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RobotArmPathClearanceError("robot_rigid_reach_task_affordance_invalid") from exc
+    scenes = [o for o in plan.get("objects") or [] if isinstance(o, Mapping) and o.get("semantic_role") == "scene_collision"]
+    scene_usd = (root / str(scenes[0].get("usd_path") or "")).resolve() if len(scenes) == 1 else None
+    if (scene_usd is None or root.resolve() not in scene_usd.parents or not scene_usd.is_file()
+            or _file_sha256(scene_usd) != scenes[0].get("sha256")):
+        raise RobotArmPathClearanceError("robot_arm_path_scene_collision_unbound")
+    centre = _pose_matrix(robot["base_pose_world"])[:3, 3]
+    radius = scene_radius_m(robot_id)
+    try:
+        triangles = load_background_triangles(scene_usd, centre=centre, radius=radius,
+                                              world_from_stage=_pose_matrix(scenes[0]["pose_world"]))
+    except (ScenePhysicsPreflightError, KeyError, TypeError, ValueError) as exc:
+        raise RobotArmPathClearanceError(f"robot_arm_path_scene_unmeasurable:{exc}") from exc
+    return rigid_pick_place_clearance(robot_id=robot_id, base_pose_world=robot["base_pose_world"], seeds=seeds,
+                                      scene_obstacles=sample_scene_obstacles(triangles, centre=centre, radius=radius),
+                                      **inputs)
+
+
 def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
     """The gate on a compiled native packet, read from its scene plan alone.
 
@@ -581,7 +712,15 @@ def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
 
     articulated = [o for o in plan.get("objects") or [] if isinstance(o, Mapping) and o.get("object_type") == "ARTICULATION"]
     if not articulated:
-        return not_applicable("no_articulated_object")
+        spec = plan.get("task_spec") or {}
+        if spec.get("manipulation_strategy") != "pick_and_place":
+            return not_applicable("no_articulated_object")
+        report = _packet_rigid_clearance(root, plan, spec)
+        if report is None:
+            return not_applicable("robot_arm_unmodeled")
+        report = {**report, "arena_scene_plan_digest": plan.get("plan_digest"), "report_digest": ""}
+        report["report_digest"] = digest(report, digest_field="report_digest")
+        return report
     try:
         ranges = task_motion_ranges(plan)
     except ScenePhysicsPreflightError as exc:
