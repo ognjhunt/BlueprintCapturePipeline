@@ -382,14 +382,52 @@ def test_supplied_invoker_without_budget_refuses_before_spend(tmp_path, monkeypa
     assert calls["reserved"] == [] and not list((tmp_path / "plans").glob("*.json"))
 
 
-def test_invalid_review_that_was_not_cut_off_still_needs_reconciliation(tmp_path, monkeypatch):
-    from agents.exceptions import ModelBehaviorError
+def test_invalid_review_that_was_not_cut_off_is_settled_and_repaired_once(tmp_path, monkeypatch):
     options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=1, output_tokens=900)
-    with pytest.raises(ModelBehaviorError):
-        planner.review_survey(**options)
-    with pytest.raises(ValueError, match="requires_reconciliation"):
-        planner.review_survey(**options)
-    assert calls["allowances"] == [4000] and calls["settled"] == []
+    result = planner.review_survey(**options)
+    assert result["status"] == "completed" and result["binding"]["validation_repair"]["attempt"] == 1
+    assert "was refused (ModelBehaviorError" in result["binding"]["instructions"]
+    assert calls["allowances"] == [4000, 4000] and len(set(calls["reserved"])) == 2
+    # The refused call is charged what it used plus its hosted-search allowance.
+    assert [row["provider_charge_amount_usd"] for row in calls["settled"]] == [pytest.approx(.04), .03]
+    refused = json.loads((tmp_path / "plans" / (calls["reserved"][0][7:] + ".json")).read_text())
+    assert refused["status"] == "invalid_output" and refused["error"]["type"] == "ModelBehaviorError"
+    assert planner.review_survey(**options) == result and len(calls["settled"]) == 2
+
+
+def test_invalid_review_is_refused_by_name_after_its_one_repair(tmp_path, monkeypatch):
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=2, output_tokens=900)
+    for _ in range(2):
+        with pytest.raises(ValueError, match="atlas_scene_planner_output_invalid"):
+            planner.review_survey(**options)
+    assert calls["allowances"] == [4000, 4000] and len(calls["settled"]) == 2
+
+
+def test_a_call_that_ended_without_a_recorded_outcome_is_held_at_its_reservation_and_repaired(tmp_path, monkeypatch):
+    # Production, 2026-10-27: the SDK raised before recording any completion, and the
+    # submitting receipt it left refused every later tick (requires_reconciliation).
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    proposal_invoker = options["invoker"]
+
+    class Stranding:
+        def configure_reservation_audit(self, **_):
+            pass
+
+        def invoke(self, spec, inputs):
+            calls["allowances"].append(spec.max_output_tokens)
+            raise RuntimeError("worker stopped mid-call")
+    with pytest.raises(RuntimeError):
+        planner.review_survey(**{**options, "invoker": Stranding()})
+    stranded = tmp_path / "plans" / (calls["reserved"][0][7:] + ".json")
+    assert json.loads(stranded.read_text())["status"] == "submitting"
+
+    # The next tick holds the stranded call at its reservation, then repairs it once.
+    result = planner.review_survey(**{**options, "invoker": proposal_invoker})
+    held = json.loads(stranded.read_text())
+    assert held["status"] == "invalid_output" and held["error"]["type"] == "submission_outcome_unknown"
+    assert held["usage"]["cost_is_actual"] is False and 0 < held["cost_usd"] <= 1
+    assert result["status"] == "completed" and result["binding"]["validation_repair"]["attempt"] == 1
+    assert [row["provider_charge_amount_usd"] for row in calls["settled"]] == [held["cost_usd"], .03]
 
 
 def test_completion_output_compiles_in_the_actual_strict_agents_sdk():

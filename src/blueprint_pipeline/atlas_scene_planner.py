@@ -540,6 +540,9 @@ def _export_image_token_ceiling(survey, previews, layout=None):
 
 
 MAX_TRUNCATION_RETRIES = 2
+#: A proposal the SDK cannot validate, or a call whose outcome was never recorded, is settled
+#: at its known charge (or its reserved maximum) and repaired this many times, then refused.
+MAX_VALIDATION_REPAIRS = 1
 SDK_MAX_OUTPUT_TOKENS = 32_000  # OpenAIAgentsSDKConfig's accepted ceiling.
 
 
@@ -618,13 +621,19 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     and retried, at most twice, with a larger allowance that still fits the
     review cap. A restart follows the retained receipts and buys nothing again.
     """
-    retry, carried = None, 0.0
+    retry, repair, carried = None, None, 0.0
     while True:
         receipt = _review_attempt(survey_path=survey_path, task_context=task_context, configuration=configuration,
                                   output_root=output_root, invoker=invoker, release_blockers=release_blockers,
                                   feedback=feedback, completion=completion, scaling=scaling, recovery=recovery,
-                                  truncation_retry=retry,
+                                  truncation_retry=retry, validation_repair=repair,
                                   carried_reserved_usd=carried if invoker is not None else 0.0)
+        if receipt["status"] == "invalid_output":
+            # An answer the schema refused gets one repair turn that sees the refusal, never a stranded call.
+            if receipt["validation_repair"] is None:
+                raise ValueError("atlas_scene_planner_output_invalid")
+            repair, carried = receipt["validation_repair"], carried + receipt["cost_usd"]
+            continue
         if receipt["status"] != "truncated":
             return receipt
         if receipt["truncation_retry"] is None:
@@ -633,9 +642,15 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
         retry, carried = receipt["truncation_retry"], carried + receipt["cost_usd"]
 
 
+def _repair_plan(previous, error_type: str, message: str):
+    attempt = (previous or {}).get("attempt", 0) + 1
+    return ({"attempt": attempt, "error_type": error_type, "error_message": message[:1000]}
+            if attempt <= MAX_VALIDATION_REPAIRS else None)
+
+
 def _review_attempt(*, survey_path: Path, task_context, configuration, output_root: Path, invoker,
                     release_blockers, feedback, completion, scaling, recovery, truncation_retry,
-                    carried_reserved_usd=0.0):
+                    validation_repair=None, carried_reserved_usd=0.0):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
@@ -726,6 +741,12 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
                "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": output_tokens,
                "maximum_cost_usd": maximum, "web_search": {"maximum_calls": search_calls, "per_call_usd": search_fee, "context": "low"}}
+    if validation_repair is not None:
+        instructions += ("\nThe previous answer to this exact request was refused ("
+                         f"{validation_repair['error_type']}: {validation_repair['error_message']}). "
+                         "Return one answer that satisfies the output schema exactly.\n")
+        binding["instructions"] = instructions
+        binding["validation_repair"] = dict(validation_repair)
     binding['output_schema_digest'] = canonical_digest(schema.model_json_schema())
     if feedback is not None:
         binding["feedback_digest"] = feedback["digest"]
@@ -749,7 +770,21 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if path.exists():
             receipt = json.loads(path.read_text())
-            if receipt.get("status") not in ("completed", "truncated"):
+            if receipt.get("status") == "submitting" and receipt.get("binding_digest") == digest:
+                # This lock is held for the whole call, so no attempt is still in flight: the
+                # stranded call ended without a recorded outcome. Hold its reserved maximum.
+                receipt = {"status": "invalid_output", "binding_digest": digest, "binding": binding,
+                           "error": {"type": "submission_outcome_unknown",
+                                     "message": "the call ended without a recorded completion"},
+                           "usage": {"cost_basis": "reserved_upper_bound", "cost_is_actual": False},
+                           "cost_usd": min(maximum, ceiling + search_calls * search_fee),
+                           "validation_repair": _repair_plan(validation_repair, "submission_outcome_unknown",
+                                                             "the call ended without a recorded completion"),
+                           "admission": receipt.get("admission"), "claim_ceiling": "development_only"}
+                temporary = path.with_suffix(".tmp")
+                write_json(temporary, receipt)
+                os.replace(temporary, path)
+            if receipt.get("status") not in ("completed", "truncated", "invalid_output"):
                 raise ValueError("atlas_scene_planner_requires_reconciliation")
             if receipt.get("binding_digest") != digest or (receipt["status"] == "completed"
                     and receipt.get("proposal_digest") != canonical_digest(receipt["proposal"])):
@@ -792,7 +827,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
             from agents import WebSearchTool
             from agents.exceptions import ModelBehaviorError
             from pydantic import ValidationError
-            truncated = None
+            truncated = invalid = None
             try:
                 result = selected.invoke(AgentsSDKAgentSpec(run_id=digest[7:23], capability="atlas_scene_planner",
                     name="Blueprint Atlas Scene Planner", instructions=instructions, model=policy["model"], max_turns=1,
@@ -801,12 +836,12 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                                   if search_calls else ()),
                     max_hosted_tool_calls_per_turn=search_calls, hosted_tool_call_usd=search_fee,
                     output_type=schema), input_value)
-            except (ModelBehaviorError, ValidationError):
+            except (ModelBehaviorError, ValidationError) as exc:
                 # Live reviews twice outgrew a hand-set allowance; each cut-off
                 # response left a submitting receipt for an operator to clear.
                 truncated = _truncated_attempt(recorded, output_tokens)
                 if truncated is None:
-                    raise
+                    invalid = exc
             finally:
                 audit.write_manifest()
             if truncated is not None:
@@ -823,6 +858,18 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                 cost = min(maximum, truncated["reconciled_actual_cost_usd"] + search_calls * search_fee)
                 receipt = {"status": "truncated", "binding_digest": digest, "binding": binding,
                     "usage": truncated["usage"], "cost_usd": cost, "truncation_retry": retry,
+                    "source_commit": commit, "admission": admission, "claim_ceiling": "development_only"}
+            elif invalid is not None:
+                # Settled at the recorded charge, or at the reservation when none was recorded.
+                charge = recorded[0].get("reconciled_actual_cost_usd") if len(recorded) == 1 else None
+                held = type(charge) in (int, float) and math.isfinite(charge) and charge >= 0
+                message = str(invalid)
+                receipt = {"status": "invalid_output", "binding_digest": digest, "binding": binding,
+                    "error": {"type": type(invalid).__name__, "message": message[:1000]},
+                    "usage": recorded[0].get("usage") if held else {"cost_basis": "reserved_upper_bound",
+                                                                    "cost_is_actual": False},
+                    "cost_usd": min(maximum, (charge if held else ceiling) + search_calls * search_fee),
+                    "validation_repair": _repair_plan(validation_repair, type(invalid).__name__, message),
                     "source_commit": commit, "admission": admission, "claim_ceiling": "development_only"}
             else:
                 proposal = schema.model_validate(result.output).model_dump(mode="json", exclude_none=True)
