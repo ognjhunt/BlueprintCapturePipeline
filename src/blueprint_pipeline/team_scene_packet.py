@@ -34,8 +34,11 @@ compiled here straight into the scene half a team run reads:
 No robot placement inference, no GPU and no prior run. The packet is never
 construction evidence: its receipt says no native application happened, the
 first shard of every team run checks the scene before any team episode (the
-robot-free probe), and void episodes past the cap refuse the run. Passive
-destination bodies and every other task kind are refused by name.
+robot-free probe), and void episodes past the cap refuse the run. A passive
+destination uses the native compiler's exact fitted geometry and qualified
+asset. Policy packets require its independent full-scene placement receipt
+and the expected execution binding in the operator's sealed DROID profile;
+missing placement evidence remains a precise preparation task.
 """
 
 from __future__ import annotations
@@ -255,6 +258,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            configured_scene_bundle_path: str | Path, droid_profile_path: str | Path,
                            droid_profile_digest: str, runtime_source_receipt_path: str | Path,
                            output_root: str | Path,
+                           destination_placement_qualification_path: str | Path | None = None,
                            native_appearance_materializer: Callable[..., Mapping[str, Any]] | None = None
                            ) -> dict[str, Any]:
     """Compile the revision's scene half under ``output_root`` and seal its team scene inputs."""
@@ -279,8 +283,10 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     root = Path(output_root).resolve()
     if root.exists():
         raise TeamScenePacketError("team_scene_output_exists")
-    if revision["task_template"].get("destination") is not None:
-        raise TeamScenePacketError("team_scene_destination_body_unsupported")
+    destination_declaration = revision["task_template"].get("destination")
+    if (destination_declaration is not None and destination_placement_qualification_path is None
+            and "placement_qualification" not in destination_declaration):
+        raise TeamScenePacketError("team_scene_destination_placement_qualification_required")
     strategy = _read(documents[DEFINITION_CONTRACT_PATH], "team_scene_task_invalid").get("strategy")
     articulated = strategy == ARTICULATED_STRATEGY
     destination_support = None
@@ -298,7 +304,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     references = deferred._materialized_references(revision=revision, documents=documents)
     scene_id, task_id = str(revision["scene_identity"]["id"]), str(revision["task_template"]["identity"]["id"])
     assets = compiler._extract_configured_assets(bundle, output_root=root)
-    owner, motion = None, None
+    owner, motion, destination_asset = None, None, None
     if articulated:
         try:
             task = _articulated_task(revision=revision, references=references, replacement=assets["replacement"],
@@ -315,6 +321,21 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         definition = adapter["native_task_definition"]
         task_spec = compiler._runtime_subject_task_spec(definition["task_spec"])
         task_spec["success_criteria"] = adapter["native_success_criteria"].get("criteria")
+        if destination_declaration is not None:
+            from .rigid_destination_task_binding import bind_destination_task_spec, stage_revision_destination
+            from .task_evaluation_rigid_relocation_native_adapter import SUPPORT_PLANE_CONTRACT_PATH
+            try:
+                destination_asset = stage_revision_destination(revision=revision, documents=documents,
+                    task_spec=task_spec, collision_path=assets["collision"], output_root=root, require_placement=True,
+                    placement_qualification_path=(Path(destination_placement_qualification_path)
+                        if destination_placement_qualification_path is not None else None),
+                    expected_execution_binding=profile.get("destination_execution_binding"))
+                assert destination_asset is not None
+                task_spec = bind_destination_task_spec(task_spec, destination_asset,
+                    source_support=adapter["source_documents"]["documents"]["support_plane"],
+                    support_plane_digest=_sha256(Path(documents[SUPPORT_PLANE_CONTRACT_PATH])))
+            except (ValueError, KeyError, TypeError) as exc:
+                raise TeamScenePacketError("team_scene_destination_qualification_invalid:" + str(exc)) from exc
         try:
             owner = _derive_configured_owner_success_contract(task_spec, site_id=scene_id, task_id=task_id,
                                                              team_namespace=revision.get("team_namespace"))
@@ -350,6 +371,11 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         source_path=assets["appearance"], output_root=root / "native-appearance"))
     rows = [compiler.evidence_asset_row(Path(appearance["path"]), root=root, semantic_role="scene_appearance"),
             compiler.evidence_asset_row(assets["collision"], root=root, semantic_role="scene_collision"), task_row]
+    if destination_asset is not None:
+        rows.append({**compiler.evidence_asset_row(destination_asset["path"], root=root, semantic_role="task_support"),
+            "asset_id": destination_asset["asset_id"], "source_asset_id": destination_asset["source_asset_id"],
+            "object_type": "RIGID", "pose_world": destination_asset["pose_world"],
+            "reset_state": {"root_pose_world": destination_asset["pose_world"], "joint_positions": {}}})
 
     # The station: a mount level with the task's support, on the closest clear floor facing the task,
     # out of a moving part's way. A rigid pick and place takes the first such stance the arm can carry
@@ -486,7 +512,12 @@ def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenar
         "task_id": compiled["task_id"], "scenario_id": scenario_id,
         "robot_free_probe_root": str(Path(run_root).resolve()),
         "scene_revision_digest": revision["revision_digest"], "team_scene_inputs_path": compiled["path"]})
-    return {**compiled, "registry": written}
+    probe = {"status": "profile_not_written", "queued": False}
+    if written.get("status") == "written":
+        from .rigid_robot_free_probe_runner import enqueue_rigid_robot_free_probe
+
+        probe = enqueue_rigid_robot_free_probe(capture_root)
+    return {**compiled, "registry": written, "robot_free_probe": probe}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -494,12 +525,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name in ("run-root", "capture-root", "scenario-id", "output-root", "configured-scene-bundle",
                  "droid-profile", "droid-profile-digest", "runtime-source-receipt"):
         parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--destination-placement-qualification")
     args = parser.parse_args(argv)
     result = prepare_team_scene(
         run_root=args.run_root, capture_root=args.capture_root, scenario_id=args.scenario_id,
         output_root=args.output_root, configured_scene_bundle_path=args.configured_scene_bundle,
         droid_profile_path=args.droid_profile, droid_profile_digest=args.droid_profile_digest,
-        runtime_source_receipt_path=args.runtime_source_receipt)
+        runtime_source_receipt_path=args.runtime_source_receipt,
+        destination_placement_qualification_path=args.destination_placement_qualification)
     if result["registry"].get("status") == "written":
         # The job lists the evaluation once its offer is republished with the scene half.
         from .agent_execution_offer import publish_agent_execution_offer

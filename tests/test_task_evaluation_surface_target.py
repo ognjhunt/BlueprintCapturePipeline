@@ -10,6 +10,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_surface_target import (
     bind_native_surface_target, derive_surface_target, marker_for_surface_target,
     score_surface_target, validate_surface_target, surface_target_for_web,
+    minimum_container_carry_height,
 )
 
 
@@ -57,6 +58,38 @@ def score(rows, **kwargs):
 def test_real_lift_and_one_second_stable_release_passes():
     result = score(episode())
     assert result["satisfied"] and result["readback_complete"]
+
+
+def test_container_target_keeps_inside_relation_and_checks_whole_object_height():
+    target = target_fixture(relation="inside", interior_bounds_world_m={
+        "minimum": [.25, -.15, .75], "maximum": [.55, .15, .95]})
+    assert target["placement_relation"] == "inside"
+    assert surface_target_for_web(target)["interior_bounds_world_m"] == target["interior_bounds_world_m"]
+    result = score_surface_target(target=target, bounds=BOUNDS, samples=episode(),
+                                  frequency_hz=15, minimum_lift_m=.05)
+    assert result["satisfied"] and result["whole_volume_contained"]
+    # A centre and whole footprint inside the bin cannot make a tall object fit.
+    tall = {"minimum": BOUNDS["minimum"], "maximum": [.04, .03, .2]}
+    result = score_surface_target(target=target, bounds=tall, samples=episode(),
+                                  frequency_hz=15, minimum_lift_m=.05)
+    assert result["whole_footprint_contained"] and not result["whole_volume_contained"]
+    assert not result["satisfied"]
+
+
+def test_container_target_cannot_be_derived_from_a_mask_without_interior_geometry():
+    with pytest.raises(ValueError, match="surface_target_interior_invalid"):
+        target_fixture(relation="inside")
+
+
+def test_carry_height_bounds_oriented_rim_and_subject_rotations():
+    spec = {"destination_relation": "inside", "destination_pose_world": [0., 0., .3, 0., 0., 0., 1.],
+            "destination_interior_bounds_body_frame_m": {"minimum": [-.1, -.1, 0.], "maximum": [.1, .1, .4]},
+            "subject_collision_bounds_scoring_frame_m": BOUNDS,
+            "start_pose_world": [0., 0., .1, 0., 0., 0., 1.], "destination_orientation_xyzw": [0., 0., 0., 1.]}
+    assert minimum_container_carry_height(spec, clearance_m=.02) == pytest.approx(.79)
+    spec["destination_orientation_xyzw"] = [1., 0., 0., 0.]
+    expected = .7 + math.sqrt(.04**2 + .03**2 + .07**2) + .02
+    assert minimum_container_carry_height(spec, clearance_m=.02) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("defect", ["never_lift", "pushed", "outside_edge", "tilted", "moving",

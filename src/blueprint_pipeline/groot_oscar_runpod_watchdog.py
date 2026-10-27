@@ -84,6 +84,9 @@ CANARY_NAME_PREFIXES = (
     "blueprint-task-evaluation-scene-config-",
     "blueprint-task-evaluation-native-arena-preflight-",
     "blueprint-task-evaluation-native-arena-construction-",
+    # Beta L5's rigid robot-free probe: one capped session per attempt, labelled
+    # with its exact per-attempt name under this prefix (rigid_robot_free_probe_lane).
+    "blueprint-rigid-robot-free-probe-",
     # Exact SimReady Isaac probes are independently watched under the same
     # collision-free prefix passed to their Vast adapter.
     "blueprint-adp009b-simready-",

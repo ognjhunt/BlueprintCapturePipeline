@@ -113,6 +113,10 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
     except TeamEmbodimentError as exc:
         return settle("abstained", ["robot_station_" + item for item in exc.errors], station=None, reach=None,
                       embodiments=[])
+    carry = {}
+    if destination.get("relation") == "inside":
+        carry["carry_height_world_m"] = (float(destination["interior_bounds_world_m"]["maximum"][2])
+                                         + float(half[2]) + 0.08)
     results = []
     for arm in arms:
         cleared, reach, attempts = first_carrying_stance(stations, collision_path=collision, robot_id=arm,
@@ -120,7 +124,7 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
             start_pose_world=[*start.tolist(), 0.0, 0.0, 0.0, 1.0], target_position_world=target.tolist(),
             contact_point_m=[0.0, 0.0, 0.0],
             pregrasp_clearance_m=float((task.get("success") or {}).get("pregrasp_clearance_m")
-                                       or DEFAULT_PREGRASP_CLEARANCE_M))
+                                       or DEFAULT_PREGRASP_CLEARANCE_M), **carry)
         station = cleared or next(s for s, r in attempts if r is reach)
         results.append((arm, station, reach, attempts))
         if reach["status"] == "clear":

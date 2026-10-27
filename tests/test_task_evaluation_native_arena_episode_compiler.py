@@ -297,7 +297,8 @@ def _destination_case(
             "maximum": center_upper,
         },
         "subject_orientation_destination_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
-        "support_height_interval_m": [0.80, 0.84],
+        "support_height_interval_m": [pose["position_world_m"][2] - subject_lower[2] - .002,
+                                      pose["position_world_m"][2] - subject_lower[2] + .002],
         "intended_support_prim_paths": ["/Tray"],
         "insertion_withdrawal_unit_destination_frame": [0.0, 0.0, 1.0],
         "whole_subject_containment_encoded_by_shrunk_bounds": True,
@@ -443,7 +444,7 @@ def test_destination_asset_is_qualified_staged_and_compiler_ready(
     assert result["relation"] == "inside"
     assert result["intended_support_prim_paths"] == ["/Tray"]
     assert result["target_position_world_m"] == pytest.approx(
-        [3.2, -6.76, 0.9425]
+        [3.2, -6.76, 0.83]
     )
     assert Path(result["path"]).is_file()
     assert Path(result["path"]).suffix == ".usda"

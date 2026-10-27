@@ -671,7 +671,7 @@ def usage_alerts(survey: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 _SUMMARY_MOUNT_KEYS = (
     "mount", "status", "total_bytes", "free_bytes", "used_fraction", "floor_bytes",
-    "reserved_bytes", "available_bytes", "refused_roles", "forecast", "level",
+    "reserved_bytes", "available_bytes", "assigned_roles", "refused_roles", "forecast", "level",
 )
 _SUMMARY_ALERT_KEYS = (
     "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",

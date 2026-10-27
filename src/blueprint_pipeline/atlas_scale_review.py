@@ -12,9 +12,22 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 
 
+def rests_on_height_priors(measurements: dict) -> bool:
+    """An estimate no reference stands behind: a guesstimate on height priors alone."""
+    from .atlas_scene_measurements import PRIOR_ONLY_BASES
+
+    return measurements.get("status") == "estimated" and (
+        measurements.get("reference_agreement") or {}).get("basis") in PRIOR_ONLY_BASES
+
+
 def needs_scale_review(measurements: dict) -> bool:
+    """A review runs unless named references set the scale.
+
+    A guesstimate on height priors alone still asks for references first, as it
+    did before those priors existed; if the review finds none, the guesstimate stands.
+    """
     return measurements.get("status") != "estimated" or not (
-        measurements.get("binding") or {}).get("reference_masks_digest")
+        measurements.get("binding") or {}).get("reference_masks_digest") or rests_on_height_priors(measurements)
 
 
 def revised_plan(*, automation: dict, proposal: dict, frame_ids: set[str], reference_sources: list) -> dict:
@@ -48,7 +61,7 @@ This function neither invokes a model nor fabricates a provider receipt.
     path = output_root / (identity[7:] + ".json")
     output_root.mkdir(parents=True, exist_ok=True)
     result = estimate_sizes(frames=frames, automation=plan, pose_digest=pose_digest,
-                            output=path, reference_masks=reference_masks)
+                            output=path, reference_masks=reference_masks, camera_height=True)
     return result, path
 
 

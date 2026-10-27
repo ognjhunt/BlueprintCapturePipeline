@@ -35,9 +35,11 @@ current default build target, not a ban on other forms, and its `non_goals`
 bound this track's build-out. Where older freeze or sequencing wording, including in the shared
 blocks of `PLATFORM_CONTEXT.md`, `WORLD_MODEL_STRATEGY_CONTEXT.md`, and
 `VISION.md`, names a robot form or task family, it limits build-out, not
-discovery. Building evaluation support for another form or task family needs a
-new recorded owner focus decision based on demand evidence; it does not wait
-for a completed proof. `AGENTS.md` holds the rule text.
+discovery. Building evaluation support for another form or task family does
+not wait for a completed proof. The explicit 2026-10-27 owner request
+authorizes beta task-coverage implementation, including deformables and
+humanoids; do not reapply an older focus-decision or program-freeze requirement
+to that work. `AGENTS.md` holds the current rule text. ADP's proof scope remains.
 
 Other documents remain useful as stable dependency contracts, compatibility
 instructions, or historical evidence. Their existence does not make their lane

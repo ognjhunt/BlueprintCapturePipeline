@@ -174,7 +174,7 @@ def test_a_scene_is_refused_by_name_before_any_packet(tmp_path) -> None:
         _compile(tmp_path, {**scene, "droid_profile_digest": "sha256:" + "0" * 64})
     destination = {**scene["revision"], "task_template": {**scene["revision"]["task_template"],
                                                           "destination": {"geometry": {}}}}
-    with pytest.raises(TeamScenePacketError, match="destination_body_unsupported"):
+    with pytest.raises(TeamScenePacketError, match="destination_placement_qualification_required"):
         _compile(tmp_path, {**scene, "revision": destination})
     assert not (tmp_path / "team-scene").exists()
 
@@ -207,6 +207,7 @@ def test_a_completed_source_launch_is_compiled_and_recorded_where_the_team_regis
     (operator / "registry.json").write_text(json.dumps(registry))
     (operator / "registry.json").chmod(0o644)
     monkeypatch.setenv(REGISTRY_ENV, str(operator / "registry.json"))
+    monkeypatch.setenv("BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE", str(tmp_path / "probe-queue"))
     monkeypatch.setattr(source, "_validate_source", lambda root: ({
         "configured_scene_revision_reference": scene["revision_reference"],
         "configured_scene_revision_digest": scene["revision"]["revision_digest"]}, {}, {}))
@@ -217,6 +218,12 @@ def test_a_completed_source_launch_is_compiled_and_recorded_where_the_team_regis
         **{key: scene[key] for key in ("configured_scene_bundle_path", "droid_profile_path", "droid_profile_digest",
                                        "runtime_source_receipt_path")})
     assert prepared["registry"]["status"] == "written"
+    assert prepared["robot_free_probe"]["status"] == "queued"
+    assert prepared["robot_free_probe"]["queued"] is True
+    assert prepared["robot_free_probe"]["lane_enabled"] is False
+    pending = json.loads(Path(prepared["robot_free_probe"]["path"]).read_text())
+    assert pending["capture_root"] == str(capture)
+    assert pending["probe_request_digest"] == prepared["robot_free_probe"]["probe_request_digest"]
     profile = profile_for_capture(capture)
     assert profile["team_scene_inputs_path"] == prepared["path"] and profile["robot_free_probe_root"] == str(run)
     # The compiled scene is readable, but a paid team offer waits for its actual passed probe.

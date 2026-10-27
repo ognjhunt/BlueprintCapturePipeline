@@ -196,7 +196,7 @@ from .native_task_arena_runtime_preflight_bundle import (
     build_native_task_arena_runtime_preflight_bundle,
 )
 from .native_task_arena_allocator_dispatch import (
-    native_task_arena_probe_mode,
+    RIGID_ROBOT_FREE_PROBE_KIND, isolated_native_task_arena_lane, native_task_arena_probe_mode,
     native_task_arena_verified_bundle_loader,
 )
 from .native_task_arena_vast import (
@@ -1672,7 +1672,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
             NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
             NATIVE_G1_TEAM_POLICY_PROBE_KIND,
-            policy_canary_lane.PROBE_KIND,
+            policy_canary_lane.PROBE_KIND, RIGID_ROBOT_FREE_PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -3431,8 +3431,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.probe_kind == policy_canary_lane.PROBE_KIND:
-            return policy_canary_lane.run_policy_canary_allocator_lane(args, _control_plane_checkout_blockers())
+        if args.probe_kind in {policy_canary_lane.PROBE_KIND, RIGID_ROBOT_FREE_PROBE_KIND}:
+            return isolated_native_task_arena_lane(args.probe_kind)(args, _control_plane_checkout_blockers())
         if args.probe_kind in {
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,

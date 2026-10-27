@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, is_dataclass, replace
 from importlib import metadata
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Literal, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -545,6 +546,7 @@ class OpenAIAgentsSDKInvoker:
                 FunctionTool,
                 ModelSettings,
                 RunConfig,
+                RunHooks,
                 Runner,
                 set_default_openai_key,
             )
@@ -649,12 +651,30 @@ class OpenAIAgentsSDKInvoker:
         )
         from agents.exceptions import ModelBehaviorError
 
+        class ResponseCapture(RunHooks):
+            # The SDK calls this hook before parsing structured output. Its
+            # error.run_data can omit the response whose parse just failed.
+            started_calls = 0
+            context_wrapper: Any = None
+
+            def __init__(self) -> None:
+                self.raw_responses: list[Any] = []
+
+            async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
+                self.started_calls += 1
+
+            async def on_llm_end(self, context, agent, response) -> None:
+                self.context_wrapper = context
+                self.raw_responses.append(response)
+
+        capture = ResponseCapture()
         result = None
         try:
             result = (self._run_agent or Runner.run_sync)(
                 agent,
                 rendered_input,
                 max_turns=spec.max_turns,
+                hooks=capture,
                 run_config=RunConfig(
                     **({"model_provider": self._model_provider} if self._model_provider is not None else {}),
                     workflow_name="Blueprint Task Evaluation Supervisor",
@@ -672,6 +692,12 @@ class OpenAIAgentsSDKInvoker:
             output = spec.output_type.model_validate(result.final_output)
         except (ModelBehaviorError, ValidationError) as exc:
             completed_run = result if result is not None else getattr(exc, "run_data", None)
+            if capture.started_calls:
+                # An unanswered later call cannot be settled from earlier
+                # completed turns, even when error.run_data contains those.
+                completed_run = (SimpleNamespace(raw_responses=capture.raw_responses,
+                    context_wrapper=capture.context_wrapper)
+                    if len(capture.raw_responses) == capture.started_calls else None)
             completion = _invalid_output_completion(completed_run, exc, reservation)
             if completion is not None:
                 self._reserved_cost_usd = reserved_before_call + completion["reconciled_actual_cost_usd"]

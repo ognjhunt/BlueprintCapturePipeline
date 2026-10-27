@@ -48,8 +48,14 @@ def _reading(scene: RigidProbeScene, *, step_index: int, phase: str) -> dict[str
     support = value.get("support_contact_active")
     if len(pose) != 7 or not all(math.isfinite(v) for v in [*pose, force]) or not isinstance(support, bool):
         raise RuntimeError("rigid_robot_free_probe_readback_invalid")
+    destination = value.get("destination_pose_world")
+    if destination is not None:
+        destination = [round(float(v), 7) for v in destination]
+        if len(destination) != 7 or not all(math.isfinite(v) for v in destination):
+            raise RuntimeError("rigid_robot_free_probe_destination_readback_invalid")
     return {"step_index": step_index, "phase": phase, "pose": pose, "support_contact_active": support,
-            "scene_collision_force_n": round(force, 7)}
+            "scene_collision_force_n": round(force, 7),
+            **({"destination_pose_world": destination} if destination is not None else {})}
 
 
 def record_rigid_robot_free_probe(*, scene: RigidProbeScene, plan: Mapping[str, Any],

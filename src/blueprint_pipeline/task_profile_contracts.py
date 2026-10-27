@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .task_family_scoring import FAMILY_ALIASES
+
 
 @dataclass(frozen=True)
 class TaskProfile:
@@ -40,6 +42,16 @@ TASK_PROFILES: tuple[TaskProfile, ...] = (
         aliases=("articulated_open_close",),
         required_inputs=("qualified_articulation_graph",),
     ),
+    *(TaskProfile(
+        profile_id=family,
+        native_task_kind=family,
+        catalog_task_family_id=family,
+        runtime_adapter="task_evaluation_task_family_native_adapter",
+        success_predicate="independent_native_state_stage_predicates",
+        aliases=aliases,
+        required_inputs=("task_success_contract", "native_scene_assets", "native_metric_bindings",
+                         "reset_contract", "native_runtime_contract"),
+    ) for family, aliases in FAMILY_ALIASES.items()),
 )
 
 

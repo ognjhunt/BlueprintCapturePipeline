@@ -155,7 +155,7 @@ def test_existing_native_profiles_and_legacy_contexts_do_not_gain_a_new_hold(fam
 def test_a_novel_task_is_retained_without_compiling_it_as_pick_place(tmp_path, monkeypatch):
     arguments = _arguments(tmp_path)
     context = arguments["task_context"]
-    context.update(task_family="laundry_folding", description="Fold the towels.")
+    context.update(task_family="unimplemented_task_family", description="Fold the towels.")
     context["context_digest"] = canonical_digest(context, digest_field="context_digest")
     masks = arguments["task_masks"]
     masks["deferred_target_ids"] = ["towels"]
@@ -179,7 +179,7 @@ def test_a_novel_task_is_retained_without_compiling_it_as_pick_place(tmp_path, m
 
 def test_a_novel_task_still_requires_unchanged_source_bound_inputs(tmp_path):
     arguments = _arguments(tmp_path)
-    arguments["task_context"]["task_family"] = "laundry_folding"
+    arguments["task_context"]["task_family"] = "unimplemented_task_family"
     with pytest.raises(ValueError, match="input_digest_mismatch"):
         preparation.compile_website_scene_preparation(**arguments)
 
@@ -606,6 +606,38 @@ def test_container_destination_is_not_silently_changed_to_top_surface(tmp_path):
     assert "mode" not in result["destination"]
     assert result["status"] == "needs_input"
     assert "task_destination_interior_geometry_required" in result["blockers"]
+
+
+def container_arguments(args):
+    """A captured open bin on the existing table in the same registered frame."""
+    walls = []
+    for size, center in [([.02, .4, .44], [.28, .3, 1.5]),
+                         ([.02, .4, .44], [.72, .3, 1.5]),
+                         ([.46, .4, .02], [.5, .3, 1.28]),
+                         ([.46, .4, .02], [.5, .3, 1.72])]:
+        wall = trimesh.creation.box(size)
+        wall.apply_translation(center)
+        wall.vertices = np.asarray(wall.vertices) @ RUNTIME_ROTATION.T * RUNTIME_SCALE + RUNTIME_TRANSLATION
+        walls.append(wall)
+    path = Path(args["base_scene"]["collision_mesh_path"])
+    mesh = trimesh.load(path, force="mesh", process=False)
+    trimesh.util.concatenate([mesh, *walls]).export(path)
+    args["base_scene"]["collision_mesh_digest"] = _sha256_file(path)
+    row = args["task_masks"]["targets"][1]
+    row.update(placement_relation="inside", estimated_visible_bounds=_bounds([.27, .1, 1.27], [.73, .5, 1.73]))
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    return args
+
+
+def test_captured_open_container_reaches_intake_with_real_floor_and_inside_bounds(tmp_path):
+    result = preparation.compile_website_scene_preparation(**container_arguments(_arguments(tmp_path)))
+    assert result["status"] == "intake_ready", result["blockers"]
+    destination = result["destination"]
+    assert destination["relation"] == "inside"
+    assert destination["mode"] == "existing_support_surface"
+    assert destination["interior_wall_face_indices"]
+    assert destination["interior_bounds_world_m"]["minimum"][2] == pytest.approx(destination["position_world_m"][2])
+    assert result["destination_support"]["face_indices"]
 
 
 def test_destination_outside_reconstructed_surface_cannot_reach_intake(tmp_path):

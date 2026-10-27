@@ -246,6 +246,12 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                 else "website_atlas_scale_estimate_unavailable"}
     scale = {"meters_per_unit": float(mpu), "basis": "reference_estimate", "evidence_digest": measurements["digest"],
              "evidence_reference": str(measurements_path.relative_to(capture_root.resolve()))}
+    # How the cues judged it travels with the geometry: a guesstimate on height
+    # priors alone has a wide range, and its basis says so.
+    if measurements.get("meters_per_unit_range") is not None:
+        scale["meters_per_unit_range"] = measurements["meters_per_unit_range"]
+    if (measurements.get("reference_agreement") or {}).get("basis"):
+        scale["agreement_basis"] = measurements["reference_agreement"]["basis"]
     inputs = _read(_inside(pose_root / GEOMETRY_INPUTS_FILE, job_dir))
     geometry = atlas_posed_view_geometry(pose_root=pose_root, rotation=_survey_rotation(job_dir, inputs),
                                          scale=scale, output_root=output_root / "source_geometry")
