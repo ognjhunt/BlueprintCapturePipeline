@@ -213,6 +213,8 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
         "task_context_sha256": plan.get("task_context_sha256"),
         "removed_target_count": len(entries),
         "entries": entries,
+        # A task that adds a new object removes nothing; its design rides here.
+        **({"synthetic_subject": dict(plan["synthetic_subject"])} if plan.get("synthetic_subject") else {}),
     }
 
 
