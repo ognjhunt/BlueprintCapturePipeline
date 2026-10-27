@@ -27,6 +27,7 @@ def _credentials(paths: list[Path]) -> dict:
 
 
 @pytest.mark.parametrize("case", ["success", "self-test-failure", "swap-failure",
+                                 "staging-preflight-failure",
                                  "unsafe-new", "unsafe-previous", "unsafe-previous-units", "unsafe-failed"])
 @pytest.mark.parametrize("existing_fence", [False, True])
 def test_restricted_installer_preserves_credentials_and_recovers_old_door(
@@ -73,18 +74,42 @@ def test_restricted_installer_preserves_credentials_and_recovers_old_door(
     binary.mkdir()
     _stub(binary / "id", "import sys\nprint('0') if sys.argv[1:] == ['-u'] else None\n")
     _stub(binary / "getent", "pass\n")
-    # Preserve the actual interpreter/version/import checks, rather than
-    # accidentally selecting the Mac's unsupported /usr/bin/python3 (3.9).
-    _stub(binary / 'python3', 'import os, sys\nos.execv(' + repr(sys.executable)
-          + ', [' + repr(sys.executable) + ', *sys.argv[1:]])\n')
     calls = tmp_path / "calls"
+    # Execute the REAL fixed-path helper against this synthetic host boundary.
+    # Only root ownership and mounted-device identities are virtualized, like
+    # the existing id/chown/systemctl adapters; no guard or install step is skipped.
+    host = tmp_path / "host"
+    for path in (host, host / "mnt", host / "mnt/blueprint-work"):
+        path.mkdir(mode=0o755)
+        path.chmod(0o755)
+    if case == "staging-preflight-failure":
+        (host / "mnt/blueprint-work").chmod(0o777)
+    _stub(binary / 'python3', """import importlib.util, os, sys
+from pathlib import Path
+if (len(sys.argv) > 3 and sys.argv[1:3] == ['-I', '-S']
+        and sys.argv[3].endswith('/operator_door/deploy_staging.py')):
+    helper = sys.argv[3]
+    assert sys.argv[4:] == ['--install']
+    spec = importlib.util.spec_from_file_location('real_staging_guard', helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.ROOT = Path(""" + repr(str(host)) + """)
+    module.ROOT_UID = os.geteuid()
+    module._service_groups = lambda: {os.getgid() + 1}
+    root_inode = module.ROOT.stat().st_ino
+    module._device = lambda fd: 1 if os.fstat(fd).st_ino == root_inode else 2
+    with Path(""" + repr(str(calls)) + """).open('a') as stream:
+        stream.write('staging-preflight\\n')
+    sys.argv = [helper, '--install']
+    sys.exit(module.main())
+os.execv(""" + repr(sys.executable) + ", [" + repr(sys.executable) + ", *sys.argv[1:]])\n")
     log = ("import sys\nfrom pathlib import Path\np=Path(" + repr(str(calls)) + ")\n"
            "with p.open('a') as f: f.write(' '.join(sys.argv)+'\\n')\n")
     _stub(binary / "chown", log)
     _stub(binary / "systemctl", log)
     # Any GitHub/meta or Caddy call fails; only the local listener health probe is permitted.
     _stub(binary / "curl", "import sys\nassert sys.argv[-1].startswith('http://127.0.0.1:8767/')\n")
-    _stub(binary / "runuser", "import sys\nsys.exit(" +
+    _stub(binary / "runuser", log + "sys.exit(" +
           ("1" if case == "self-test-failure" else "0") + ")\n")
     _stub(binary / "git", "print('b' * 40)\n")
     _stub(binary / "install", """import pathlib, shutil, sys
@@ -107,7 +132,7 @@ else:
     shutil.copyfile(paths[0], paths[1])
 """)
     if case == "swap-failure":
-        _stub(binary / "mv", "import subprocess, sys\na=sys.argv[1:]\n"
+        _stub(binary / "mv", log + "import subprocess\na=sys.argv[1:]\n"
               "if a == " + repr([str(door) + ".new", str(door)]) + ": sys.exit(1)\n"
               "sys.exit(subprocess.run(['/bin/mv', *a]).returncode)\n")
     # Do not inherit credentials, provider settings, or remote endpoints from the session.
@@ -139,6 +164,21 @@ else:
             assert (Path(str(door) + "." + suffix) / name).read_bytes() == content
         assert not list(tmp_path.glob("door.preserved.*"))
         return
+    assert "staging-preflight\n" in mutation_log
+    if case == "staging-preflight-failure":
+        assert result.returncode == 2 and "deploy_staging_parent_unsafe" in result.stderr
+        assert not (host / "mnt/blueprint-work/control-plane-deploy-staging").exists()
+        assert "systemctl" not in mutation_log and "runuser" not in mutation_log
+        assert (door / "INSTALLED_COMMIT").read_text() == original_commit + "\n"
+        assert {path.name: path.read_bytes() for path in units.iterdir()} == original_units
+    else:
+        assert (host / "mnt/blueprint-work/control-plane-deploy-staging").stat().st_mode & 0o777 == 0o755
+    if case == "self-test-failure":
+        assert "self-test --allow-no-tokens" in mutation_log
+        assert "operator door install failed; rolling back" in result.stderr
+    if case == "swap-failure":
+        assert f"{door}.new {door}" in mutation_log
+        assert "operator door install failed; rolling back" in result.stderr
     for name, content in recovery_bytes.items():
         retained = list(tmp_path.glob("door*/**/" + name))
         assert len(retained) == 1 and retained[0].read_bytes() == content, name
