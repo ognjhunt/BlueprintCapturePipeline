@@ -192,7 +192,7 @@ def _complete_native_profile_gap(source, *, mismatch=False):
     return handoff
 
 
-@pytest.mark.parametrize("schema", [status_reader.STATUS_V1, status_reader.STATUS_V2])
+@pytest.mark.parametrize("schema", [status_reader.STATUS_V1, status_reader.STATUS_V2, status_reader.STATUS_V3])
 @pytest.mark.parametrize("mismatch", [False, True])
 def test_completed_native_profile_gap_stays_held_and_never_becomes_native_handoff(prepared_source, schema, mismatch):
     _complete_native_profile_gap(prepared_source, mismatch=mismatch)
@@ -200,6 +200,8 @@ def test_completed_native_profile_gap_stays_held_and_never_becomes_native_handof
                                                   schema_version=schema)
     assert result["state"] == "awaiting_inputs" and result["code"] == "preparation_inputs_pending"
     assert result.get("terminal_reason") is None
+    if schema == status_reader.STATUS_V3:
+        assert result["outcome"] is None  # A preparation hold is not a robot verdict.
     assert listener._read_job_ledger(prepared_source[0])["status"] == "completed"
     assert _post(prepared_source).json()["state"] == "awaiting_inputs"
 

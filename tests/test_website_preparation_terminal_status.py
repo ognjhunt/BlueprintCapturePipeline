@@ -154,7 +154,8 @@ def test_v1_receipt_is_unchanged_and_v2_separates_capacity(website_capture, upda
 
 @pytest.mark.parametrize("header, expected", [(None, "website_preparation_status.v1"),
     ("1", "website_preparation_status.v1"), ("2", "website_preparation_status.v2"),
-    ("3", "website_preparation_status.v2"), ("two", "website_preparation_status.v1"),
+    ("3", "website_preparation_status.v3"), ("4", "website_preparation_status.v3"),
+    ("two", "website_preparation_status.v1"),
     ("02", "website_preparation_status.v1"), ("9" * 40, "website_preparation_status.v1")])
 def test_status_version_is_opt_in_and_capped_at_newest_known(header, expected):
     assert status_reader.requested_status_version(header) == expected
