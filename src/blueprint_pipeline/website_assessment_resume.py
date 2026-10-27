@@ -133,7 +133,24 @@ def admit_browser_preparation(listener, *, payload, handoff, capture_root, obser
     if path.is_file():
         retained = context_reader.validate_website_task_context(_read(path), request_id=observation["request_id"],
             scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
-        _require(retained["context_digest"] == context["context_digest"])
+        if retained["context_digest"] != context["context_digest"]:
+            # WebApp added this routing field to the same v1 projection. It
+            # changes the digest without changing any owner/source fact. Only
+            # that additive transition may upgrade a retained context; a brief,
+            # rights, confirmation or existing-family change still refuses.
+            _require("task_family" not in retained and isinstance(context.get("task_family"), str)
+                and bool(context["task_family"].strip())
+                and {key: value for key, value in retained.items() if key != "context_digest"}
+                == {key: value for key, value in context.items() if key not in {"context_digest", "task_family"}})
+            context_reader.validate_website_task_context(context, request_id=observation["request_id"],
+                scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
+            from .launch_immutable_input_writer import write_exclusive_private_bytes
+            raw = path.read_bytes()
+            _require(json.loads(raw) == retained)
+            history = path.parent / "website_task_context_history" / (retained["context_digest"][7:] + ".json")
+            write_exclusive_private_bytes(history, raw)
+            _require(path.read_bytes() == raw)
+            write_json(path, context)
     else:
         write_json(path, context)
     try:
