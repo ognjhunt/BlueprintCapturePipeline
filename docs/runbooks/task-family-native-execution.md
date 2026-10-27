@@ -1,5 +1,10 @@
 # Native family execution
 
+Retained family packets can be replayed locally with
+`scripts/materialize_completed_scene_inputs.py website-family-packet --help`.
+The command requires the saved preparation, context, runtime inputs and
+intent/attempt/release references. It never queues a run or grants paid authority.
+
 The beta path accepts pouring, wiping, insertion, stacking, button presses,
 cloth folding and ordered combinations. A task family is not a robot capability
 finding. Missing engine, asset, policy or authority evidence remains an explicit
@@ -28,6 +33,12 @@ The SDK must implement `apply_native_task_contract`, `reset`, `native_state`,
 requires `set_robot_enabled`, `step_without_robot_action`,
 `scripted_control_action` and `native_scene_readiness`. This release does not
 install an unspecified simulator or manufacture its qualification.
+
+No non-fixture family environment, qualified family runtime catalog, task
+assets or family policy endpoint is bundled. The default candidate catalog
+still contains the rigid/articulated DROID candidates. A stock Gymnasium or
+Isaac environment must gain the native driver methods above before admission;
+passing the integration tests does not supply that implementation or evidence.
 
 Static readiness authorizes no physics claim. Within the existing canonical
 allocation, every scenario first constructs fresh native robot-free,

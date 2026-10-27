@@ -69,16 +69,23 @@ def _run_family_canary_episode(
     episode = execute_family_policy_episode(scene_plan=scene_plan, spec=policy["spec"],
         policy_client=tracker, packet_root=packet_root, output_dir=output_root / "episodes",
         episode_id=episode_id, progress=progress)
+    if site_qualification is not None:
+        from .task_evaluation_task_family_native_adapter import native_runtime_provenance
+        expected_provenance = native_runtime_provenance(scene_plan["native_runtime_contract"])
+        if (site_qualification.get("status") != "passed"
+                or site_qualification.get("native_provenance") != expected_provenance
+                or site_qualification.get("task_success_contract_digest") != scene_plan["task_spec"]["task_success_contract"]["contract_digest"]):
+            raise ValueError("task_family_episode_site_qualification_mismatch")
+        episode["native_site_qualification"] = dict(site_qualification)
+        progress["native_site_qualification"] = dict(site_qualification)
     if episode["status"] != "completed":
         _write_episode_json_artifact(output_root, episode_id=episode_id,
             role="native_family_failure_receipt", value=episode)
+        from .task_family_policy_https_client import TaskFamilyPolicyFailure
+        policy_failure = progress.get("_native_policy_failure")
+        if isinstance(policy_failure, TaskFamilyPolicyFailure):
+            raise policy_failure
         raise RuntimeError("task_family_native_episode_invalid:" + str(episode.get("failure")))
-    if site_qualification is not None:
-        if (site_qualification.get("status") != "passed"
-                or site_qualification.get("native_provenance") != episode["native_family_receipt"]["native_provenance"]
-                or site_qualification.get("task_success_contract_digest") != episode["score"].get("contract_digest")):
-            raise ValueError("task_family_episode_site_qualification_mismatch")
-        episode["native_site_qualification"] = dict(site_qualification)
     media_root = output_root / "episodes"
     artifacts = episode["media_artifacts"]
     media = {role: _bound_media_artifact(output_root, media_root=media_root, artifacts=artifacts,

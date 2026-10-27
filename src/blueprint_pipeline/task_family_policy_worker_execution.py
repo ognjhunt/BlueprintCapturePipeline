@@ -13,7 +13,7 @@ import numpy as np
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_task_family_native_adapter import execute_task_family_episode
 from .task_family_native_contracts import validate_task_family_native_runtime_contract
-from .task_family_policy_https_client import INTERFACE_ID, TaskFamilyPolicySpec
+from .task_family_policy_https_client import INTERFACE_ID, TaskFamilyPolicyFailure, TaskFamilyPolicySpec
 
 
 def is_task_family_scene_plan(plan: Mapping[str, Any]) -> bool:
@@ -60,6 +60,17 @@ class _NativePolicy:
         self.pending: list[list[float]] = []
 
     def act(self, observation: Mapping[str, Any]) -> list[float]:
+        try:
+            return self._act(observation)
+        except TaskFamilyPolicyFailure as exc:
+            self.progress["_native_policy_failure"] = exc
+            self.progress["native_policy_failure"] = {"code": exc.policy_failure_code,
+                "origin": exc.policy_failure_origin, "source_failure_type": exc.source_failure_type}
+            if exc.policy_failure_origin != "returned_action_validation":
+                self.progress["policy_inference_failed"] = True
+            raise
+
+    def _act(self, observation: Mapping[str, Any]) -> list[float]:
         if not self.pending:
             self.progress["candidate_policy_query_attempted"] = True
             response = self.client.infer(observation)
@@ -71,23 +82,27 @@ class _NativePolicy:
                 query["policy_inference_evidence"] = evidence()
             self.queries.append(query)
             self.progress["candidate_policy_action_queries"] = self.queries
-            raw_values = np.asarray(response)
+            try:
+                raw_values = np.asarray(response)
+            except (TypeError, ValueError) as exc:
+                raise TaskFamilyPolicyFailure("task_family_policy_action_shape_invalid",
+                    origin="returned_action_validation", source_failure_type=type(exc).__name__) from exc
             if raw_values.dtype.kind not in "iuf":
-                raise ValueError("task_family_policy_action_type_invalid")
+                raise TaskFamilyPolicyFailure("task_family_policy_action_type_invalid", origin="returned_action_validation")
             values = raw_values.astype(float)
             bounds = np.asarray(self.spec.action_bounds)
             if (values.ndim != 2 or values.shape[1] != len(bounds)
                     or not self.spec.open_loop_horizon <= len(values) <= self.spec.action_chunk_rows):
-                raise ValueError("task_family_policy_action_shape_invalid")
+                raise TaskFamilyPolicyFailure("task_family_policy_action_shape_invalid", origin="returned_action_validation")
             self.progress["candidate_action_shape_validated"] = True
             if not np.isfinite(values).all():
-                raise ValueError("task_family_policy_action_nonfinite")
+                raise TaskFamilyPolicyFailure("task_family_policy_action_nonfinite", origin="returned_action_validation")
             self.progress["candidate_action_finite_validated"] = True
+            query["actions"] = values.tolist()
             if np.any(values < bounds[:, 0]) or np.any(values > bounds[:, 1]):
-                raise ValueError("task_family_policy_action_bounds_invalid")
+                raise TaskFamilyPolicyFailure("task_family_policy_action_bounds_invalid", origin="returned_action_validation")
             self.progress["candidate_action_bounds_validated"] = True
             self.progress["candidate_action_validated"] = True
-            query["actions"] = values.tolist()
             self.pending = values[:self.spec.open_loop_horizon].tolist()
         action = self.pending.pop(0)
         self.actions.append(action)
@@ -196,7 +211,10 @@ def execute_family_policy_episode(
         seed=native_contract["seed"], native_runtime_contract=native_contract)
     visual = receipt["visual_evidence"]
     first_frame_retained = (visual.get("status") == "complete"
-                            or visual.get("retained_policy_input_frame_count", 0) > 0)
+                            or visual.get("retained_policy_input_frame_count", 0) > 0
+                            or visual.get("candidate_exact_policy_input_frame_count", 0) > 0)
+    if (receipt.get("failure") or {}).get("origin") in {"policy_input_media_retention", "episode_media_finalization"}:
+        progress["media_integrity_failure"] = "task_family_policy_media_retention_failed:" + receipt["failure"]["type"]
     progressed = (len(tracked_runtime.states) > 1 and tracked_runtime.steps > 0
                   and all(state.get("robot_action_applied") is True for state in tracked_runtime.states[1:]))
     motion = {"actions_reached_robot": progressed,
@@ -224,6 +242,7 @@ def execute_family_policy_episode(
     progress["_failure_media_finalizer"] = lambda **_kwargs: (receipt["visual_evidence"], receipt["artifacts"])
     return {"schema_version": "native_task_family_policy_episode.v1", "status": receipt["status"],
             "native_family_receipt": receipt, "score": score, "lifecycle": lifecycle,
+            "native_policy_failure": progress.get("native_policy_failure"),
             "visual_evidence": visual, "media_artifacts": receipt["artifacts"],
             "motion_evidence": motion, "commanded_actions": policy.actions, "queries": policy.queries,
             "candidate_policy_action_queries": policy.queries, "policy_queries": len(policy.queries),

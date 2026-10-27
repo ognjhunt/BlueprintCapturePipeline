@@ -13,13 +13,14 @@ import re
 from .decision_evidence_contracts import canonical_digest
 
 
-def _profiles(max_sources):
-    from .team_candidate_quick10_registry import load_registry, profile_for_capture
+def _profile_captures():
+    from .team_candidate_quick10_registry import load_registry
     registry = load_registry()
     if registry is None:
         return []
-    captures = {str(row.get('capture_root')) for row in registry['profiles']
-                if isinstance(row, dict) and row.get('family_scene_inputs_path')}
+    captures = {row['capture_root'] for row in registry['profiles']
+                if isinstance(row, dict) and row.get('family_scene_inputs_path')
+                and isinstance(row.get('capture_root'), str) and row['capture_root']}
     settings = registry.get('derived_profiles') or {}
     root = Path(str(settings.get('root') or ''))
     if root.is_absolute() and root.is_dir() and not root.is_symlink():
@@ -30,16 +31,10 @@ def _profiles(max_sources):
                 row = json.loads(path.read_text())
             except (OSError, ValueError):
                 continue
-            if isinstance(row, dict) and row.get('family_scene_inputs_path') and row.get('capture_root'):
+            if (isinstance(row, dict) and row.get('family_scene_inputs_path')
+                    and isinstance(row.get('capture_root'), str) and row['capture_root']):
                 captures.add(row['capture_root'])
-    profiles = []
-    for capture in sorted(captures):
-        profile = profile_for_capture(capture)
-        if profile and profile.get('family_scene_inputs_path'):
-            profiles.append(profile)
-        if len(profiles) >= max_sources:
-            break
-    return profiles
+    return sorted(captures)
 
 
 def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
@@ -52,17 +47,29 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
     from .task_evaluation_scene_owner_authority import reopen_scene_intent
     from .task_evaluation_scene_configuration_submission_inputs import read
     from .website_task_family_scene_inputs import read_family_scene_inputs
+    from .team_candidate_quick10_registry import profile_for_capture
 
+    if type(max_sources) is not int or not 1 <= max_sources <= 100:
+        raise ValueError('beta_screening_family_source_limit_invalid')
     root = _root(queue_root)
     catalog = load_default_catalog()
     outcomes = []
     with _lock(root, '.family-source.lock'):
         states = root / 'sources'
         states.mkdir(exist_ok=True, mode=0o700)
-        for profile in _profiles(max_sources):
-            key = 'family-' + canonical_digest({'capture_root': profile['capture_root']})[7:39]
+        cursor_path = root / 'family_source_cursor.json'
+        last = _read(cursor_path).get('last', '') if cursor_path.exists() else ''
+        if not isinstance(last, str):
+            raise ValueError('beta_screening_family_source_cursor_invalid')
+        captures = _profile_captures()
+        captures = [capture for capture in captures if capture > last] + [capture for capture in captures if capture <= last]
+        for capture in captures[:max_sources]:
+            key = 'family-' + canonical_digest({'capture_root': capture})[7:39]
             outcome = {'request_key': key, 'status': 'blocked'}
             try:
+                profile = profile_for_capture(capture)
+                if not profile or not profile.get('family_scene_inputs_path'):
+                    raise ValueError('beta_screening_family_profile_unavailable')
                 retained = read(profile['family_scene_inputs_path'], digest_field='inputs_digest')
                 intent = reopen_scene_intent(retained['references']['scene_intent'])
                 inputs = read_family_scene_inputs(profile['family_scene_inputs_path'])
@@ -93,5 +100,8 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                 outcome['blockers'] = [code if re.fullmatch(r'[a-z][a-z0-9_:,-]{0,199}', code)
                                        else 'beta_screening_family_source_unavailable']
             _write(states / (key + '.json'), outcome)
+            # Advance after every retained outcome, including authority holds.
+            # A crash before this write only replays idempotent queue adoption.
+            _write(cursor_path, {'last': capture})
             outcomes.append(outcome)
     return {'sources': outcomes}

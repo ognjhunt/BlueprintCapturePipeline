@@ -18,6 +18,24 @@ import numpy as np
 from .droid_https_policy_client import DroidHttpsTeamPolicyClient
 
 INTERFACE_ID = "task_family_policy_https.v1"
+POLICY_FAILURE_CODES = frozenset({"task_family_policy_service_failed", "task_family_policy_response_invalid",
+    "task_family_policy_identity_mismatch", "task_family_policy_action_type_invalid",
+    "task_family_policy_action_shape_invalid", "task_family_policy_action_nonfinite",
+    "task_family_policy_action_bounds_invalid"})
+
+
+class TaskFamilyPolicyFailure(ValueError):
+    """A failure observed at the authenticated client or returned-action boundary."""
+
+    def __init__(self, code: str, *, origin: str, source_failure_type: str | None = None) -> None:
+        if code not in POLICY_FAILURE_CODES or origin not in {
+                "https_metadata_request", "https_inference_request", "https_response_validation",
+                "returned_action_validation"}:
+            raise ValueError("task_family_policy_failure_provenance_invalid")
+        self.policy_failure_code = code
+        self.policy_failure_origin = origin
+        self.source_failure_type = source_failure_type
+        super().__init__(code)
 
 
 @dataclass(frozen=True)
@@ -94,6 +112,34 @@ class TaskFamilyPolicyHttpsClient(DroidHttpsTeamPolicyClient):
         self.prompt = prompt
         super().__init__(**kwargs)
 
+    def _call(self, url: str, method: str, body: bytes | None) -> Any:
+        try:
+            return super()._call(url, method, body)
+        except Exception as exc:
+            raise TaskFamilyPolicyFailure("task_family_policy_service_failed",
+                origin="https_inference_request" if method == "POST" else "https_metadata_request",
+                source_failure_type=type(exc).__name__) from exc
+
+    def _verified_metadata(self) -> dict[str, Any]:
+        try:
+            return super()._verified_metadata()
+        except ValueError as exc:
+            if str(exc) != "droid_https_policy_identity_mismatch":
+                raise
+            raise TaskFamilyPolicyFailure("task_family_policy_identity_mismatch",
+                origin="https_response_validation", source_failure_type=type(exc).__name__) from exc
+
+    def infer(self, observation: Mapping[str, Any]) -> Any:
+        try:
+            return super().infer(observation)
+        except TaskFamilyPolicyFailure:
+            raise
+        except Exception as exc:
+            if (self._last_inference_evidence or {}).get("server_response_received") is not True:
+                raise
+            raise TaskFamilyPolicyFailure("task_family_policy_response_invalid",
+                origin="https_response_validation", source_failure_type=type(exc).__name__) from exc
+
     def _encode(self, observation: Mapping[str, Any]) -> dict[str, Any]:
         from PIL import Image
 
@@ -114,4 +160,4 @@ class TaskFamilyPolicyHttpsClient(DroidHttpsTeamPolicyClient):
                 "proprioception": proprio.tolist(), "prompt": self.prompt}
 
 
-__all__ = ["INTERFACE_ID", "TaskFamilyPolicySpec", "TaskFamilyPolicyHttpsClient"]
+__all__ = ["INTERFACE_ID", "TaskFamilyPolicySpec", "TaskFamilyPolicyHttpsClient", "TaskFamilyPolicyFailure"]

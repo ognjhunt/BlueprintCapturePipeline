@@ -27,7 +27,7 @@ def _script(name="materialize_completed_scene_inputs"):
 @pytest.mark.parametrize("name", [
     "legacy-placement-alias", "astra-phase-adoption", "astra-automatic-phase-adoption", "packaged-blender-runtime",
     "astra-native-adoption", "completed-scene-attempt", "completed-mesh-inputs",
-    "completed-scene-submission", "repair-support",
+    "completed-scene-submission", "repair-support", "website-family-packet",
 ])
 def test_every_completed_scene_command_supplies_required_inputs(name, tmp_path, monkeypatch, capsys):
     cli = _script()
@@ -134,3 +134,31 @@ def test_missing_adoption_inputs_fail_before_any_output(tmp_path, capsys):
                      "--phase", "source_analysis", "--output", str(output)]) == 2
     assert "astra_phase_adoption_descriptor_invalid" in capsys.readouterr().out
     assert not output.exists()
+
+
+def test_family_packet_cli_replays_retained_bytes_and_rejects_changed_source(tmp_path, capsys):
+    from blueprint_pipeline.native_task_arena_bundle import verify_native_task_arena_packet
+    from blueprint_pipeline.task_evaluation_scene_attempt_evidence import record
+    from tests.test_website_task_family_packet import family_preparation
+
+    cli = _script()
+    args, preparation, runtime_path = family_preparation(tmp_path)
+    documents = {"preparation": preparation, "task-context": args["task_context"],
+                 **{f"{role}-reference": record(runtime_path) for role in ("intent", "attempt", "release")}}
+    argv = ["website-family-packet", "--runtime-inputs", str(runtime_path)]
+    for name, value in documents.items():
+        path = tmp_path / f"cli-{name}.json"
+        path.write_text(json.dumps(value))
+        argv.extend([f"--{name}", str(path)])
+    output = tmp_path / "cli-packet"
+    assert cli.main([*argv, "--output-root", str(output)]) == 0
+    _, receipt, _ = verify_native_task_arena_packet(output)
+    assert receipt["native_application_claimed"] is False
+    assert receipt["policy_episode_claimed"] is False
+    assert json.loads(capsys.readouterr().out)["provider_mutation_performed"] is False
+
+    Path(args["base_scene"]["splat_path"]).write_bytes(b"changed retained source")
+    refused = tmp_path / "changed-source-packet"
+    assert cli.main([*argv, "--output-root", str(refused)]) == 2
+    assert "bytes_mismatch" in capsys.readouterr().out
+    assert not refused.exists()

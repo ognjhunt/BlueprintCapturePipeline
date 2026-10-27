@@ -38,14 +38,22 @@ def _inputs(sdk):
     return scene, _spec(scene)
 
 
-def _policy(spec, *, actions=None):
+def _policy(spec, *, actions=None, fault=None):
     policy_spec = TaskFamilyPolicySpec(**spec["policy_spec"])
     requests = []
 
     def transport(**request):
         requests.append(request)
         if request["method"] == "GET":
+            if fault == "preflight":
+                raise PermissionError("hermetic readiness authentication failed")
+            if fault == "identity" and len(requests) > 1:
+                return json.dumps({**policy_spec.expected_metadata(), "policy_id": "wrong-policy"}).encode()
             return json.dumps(policy_spec.expected_metadata()).encode()
+        if fault == "inference":
+            raise TimeoutError("hermetic endpoint did not answer")
+        if fault == "response":
+            return json.dumps({"reward": 1}).encode()
         return json.dumps({"actions": [[1]] if actions is None else actions}).encode()
 
     return TaskFamilyPolicyHttpsClient(spec=policy_spec, prompt=spec["prompt"],
@@ -231,3 +239,87 @@ def test_actual_selected_cell_worker_runs_registered_factory_after_native_contro
         assert status == 1 and result["status"] == "blocked"
         assert result["policy_loads"] == [] and not sdk.calls and not requests
         assert result["session_failure_type"] == "ValueError"
+
+
+@pytest.mark.parametrize("fault,outcome", [("bounds", "failure"), ("wrong_output", "failure"),
+    ("response", "failure"), ("inference", "failure"), ("identity", "failure"),
+    ("runtime", "void"), ("media", "void"), ("local_request", "void"), ("sdk_spoof", "void"), ("preflight", "void")])
+def test_selected_cell_preserves_native_policy_failure_cause_and_retained_evidence(
+    installed_sdk, tmp_path, monkeypatch, fault, outcome,
+):
+    import blueprint_pipeline.native_task_arena_policy_canary_worker as worker
+    from blueprint_pipeline.native_task_arena_policy_canary_session import _episode_evidence_valid
+    from blueprint_pipeline.beta_policy_screening_result import candidate_result_summary
+    from blueprint_pipeline.task_family_policy_https_client import TaskFamilyPolicyFailure
+    from blueprint_pipeline.team_policy_episode_outcome import episode_outcome
+
+    sdk = installed_sdk
+    runtime, _spec_value = _stage_family_worker(sdk, tmp_path, monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_control_stage_policy.CONTROLS_PAUSED", False)
+    requests = []
+
+    def create_client(spec):
+        assert len(sdk.calls) == 3
+        client, wire = _policy(spec, fault=fault, actions=[[2]] if fault == "bounds" else
+            [["not-an-action"]] if fault == "wrong_output" else None)
+        requests.extend([wire])
+        if fault in {"runtime", "sdk_spoof"}:
+            def failed_step(self, *args, **kwargs):
+                if fault == "sdk_spoof":
+                    raise TaskFamilyPolicyFailure("task_family_policy_action_bounds_invalid", origin="returned_action_validation")
+                raise RuntimeError("hermetic native actuator failed")
+            monkeypatch.setattr(sdk.module().Environment, "step_native_action", failed_step)
+        if fault == "media":
+            def failed_write(*args, **kwargs):
+                raise OSError("hermetic media disk full")
+            monkeypatch.setattr("blueprint_pipeline.task_evaluation_task_family_native_adapter.persist_observation_frame", failed_write)
+        if fault == "local_request":
+            def failed_local_sink(*args, **kwargs):
+                raise OSError("hermetic local request evidence disk full")
+            client.bind_request_evidence_sink(failed_local_sink)
+        return client
+
+    monkeypatch.setattr("blueprint_pipeline.team_candidate_policy_client.canary_policy_client", create_client)
+    output = tmp_path / "failure-output"
+    worker._run_selected_cell(0, runtime_root=runtime, output_root=output)
+    result = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
+    row = result["episodes"][0]
+    assert episode_outcome(row)[0] == outcome
+    assert row["episode_failure_cause"] == ("policy" if outcome == "failure" else "media" if fault == "media" else "infrastructure")
+    assert _episode_evidence_valid(row), row
+    # Closeout is a hermetic receipt fixture; retain the actual worker episode
+    # unchanged through the production session validator and beta denominator.
+    result.update(status="blocked", provider_allocations_observed=1,
+        session_closeout={"provider_allocations_observed": 1, "teardown_completed": True, "provider_zero_confirmed": True})
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    binding = result["beta_screening_admission"]
+    staged_inputs = json.loads((runtime / "runtime_inputs/policy_canary_runtime_inputs.json").read_text())
+    summary = candidate_result_summary(result, plan={"plan_digest": binding["plan_digest"],
+        "scene_revision_digest": binding["scene_revision_digest"], "scene_inputs": {},
+        "pre_policy_site_qualification_required": True,
+        "family_static_readiness_digest": result["family_static_readiness_digest"]},
+        candidate={"candidate_id": row["candidate_id"], "configuration_digest": binding["configuration_digest"],
+            "admission_digest": binding["admission_digest"], "episode_count": 1,
+            "scenario_cells": staged_inputs["cells"], "execution_spec": {"backend": "task_family_native.v1",
+                "runtime_digest": row["runtime_identity_digest"],
+                "task_success_contract_digest": result["task_success_contract_digest"]}})
+    assert summary["episodes_failed"] == (outcome == "failure")
+    assert summary["episodes_void"] == (outcome == "void")
+    assert summary["episodes_succeeded"] == 0
+    assert row["actions_reached_robot"] is False
+    assert len(sdk.calls) == 4 and all(engine.close_count == 1 for engine in sdk.module().instances)
+    assert "_native_policy_failure" not in json.dumps(result)
+    if fault in {"media", "preflight"}:
+        assert not row["first_observation_retained"] and not any(request["method"] == "POST" for request in requests[0])
+        assert row["visual_evidence"]["media_gap"]["type"] == "before_first_observation"
+    else:
+        assert row["first_observation_retained"] and row["visual_evidence"]["status"] == "complete"
+        assert row["visual_evidence"]["terminal_observation_invented"] is False
+        assert row["evidence_artifacts"]["frame_manifest"] and row["evidence_artifacts"]["review_video"]
+        assert row["episode"]["native_site_qualification"]["status"] == "passed"
+    if outcome == "failure":
+        assert row["policy_failure_code"].startswith("task_family_policy_")
+    if fault == "bounds":
+        assert row["candidate_action_shape_validated"] and row["candidate_action_finite_validated"]
+        assert not row["candidate_action_bounds_validated"]
+        assert row["candidate_policy_action_queries"][0]["actions"] == [[2.0]]

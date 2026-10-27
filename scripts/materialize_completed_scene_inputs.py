@@ -35,6 +35,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_repair_support impor
 )
 from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError
 from blueprint_pipeline.task_object_astra_native_adoption import materialize_astra_native_adoption
+from blueprint_pipeline.website_task_family_packet import materialize_website_task_family_packet
 
 
 def _retain_phase_adoption(*, prior_runtime: Path, phases: Sequence[str] | None,
@@ -66,6 +67,15 @@ def _json(flag: str) -> Param:
 
 
 STEPS: dict[str, Step] = {
+    "website-family-packet": Step(
+        "Replay a retained family preparation into a native packet without queueing or executing it.",
+        materialize_website_task_family_packet,
+        {"preparation": _json("--preparation"), "runtime_inputs_path": _path("--runtime-inputs"),
+         "output_root": _path("--output-root"), "task_context": _json("--task-context"),
+         "intent_reference": _json("--intent-reference"),
+         "attempt_reference": _json("--attempt-reference"),
+         "release_reference": _json("--release-reference")},
+    ),
     "legacy-placement-alias": Step(
         "Retain the byte-identical legacy alias for an existing placement checkpoint.",
         materialize_legacy_checkpoint_alias,

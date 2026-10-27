@@ -175,7 +175,8 @@ def test_video_failure_keeps_frames_and_failed_manifest_and_invalidates_episode(
     receipt = _run(tmp_path)
     assert receipt["status"] == "invalid" and not receipt["task_succeeded"]
     manifest = json.loads((tmp_path / "media/episode1/failed_frame_manifest.json").read_text())
-    assert len(manifest["policy_input_frames"]) == 2
+    assert len(manifest["candidate_exact_policy_input_frames"]) == 2
+    assert manifest["terminal_observation_invented"] is False
     assert receipt["scoring"]["task_succeeded"]  # Native task success alone cannot hide missing media.
 
 
