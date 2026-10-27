@@ -124,6 +124,16 @@ root and outside every hidden path.
 
 Request kinds:
 
+Deploys bind fallback `TMPDIR` to `/mnt/blueprint-work/control-plane-deploy-staging`.
+The installer creates only an absent root-owned0755 leaf and then runs the
+launcher's same guard before swapping code. Every path component must be a real
+root-owned directory, nonwritable by group/others and readable/traversable by
+the service account's actual group or others. The parent must share the work
+volume's device rather than root's. Unsafe paths refuse without repair.
+The original full-copy disk reservation remains unchanged. Verified vendor
+hardlink reuse retains its existing staging override and discount. The launch
+guard creates or removes no files and exposes no caller-selected path.
+
 The existing `selected-handoff` operation also supports `atlas-status` and
 `atlas-retry` for one retained original website browser capture. Both keep the
 immutable GCS generation/hash/size selectors, current original-owner and source

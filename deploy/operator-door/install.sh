@@ -109,6 +109,9 @@ find "$stage" -name '__pycache__' -prune -exec rm -rf {} +
 chown -R root:root "$stage"
 chmod -R u=rwX,go=rX "$stage"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$stage" python3 -c 'import operator_door.server, operator_door.spool_runner'
+# Observe the exact launcher's host ownership/device/traversal guard before
+# swapping installed code, rather than discovering a bad parent at deployment.
+python3 -I -S "$stage/operator_door/deploy_staging.py" --install
 
 had_previous=0
 [ -d "$install_root" ] && had_previous=1

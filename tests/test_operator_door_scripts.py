@@ -19,6 +19,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,7 @@ exit 3
 
 PYTHON_STUB = r"""#!/bin/bash
 echo "venv-python $*" >> "$STUB_LOG"
+echo "staging-tmp $TMPDIR" >> "$STUB_LOG"
 while [ $# -gt 0 ]; do
   case "$1" in
     --receipt-out) mkdir -p "$(dirname "$2")"; echo '{"status": "deployed"}' > "$2"; shift ;;
@@ -82,6 +84,12 @@ def env(tmp_path: Path) -> dict[str, str]:
     _write_stub(stubs / "git", GIT_STUB)
     _write_stub(stubs / "systemctl", SYSTEMCTL_STUB)
     _write_stub(tmp_path / "venv-python", PYTHON_STUB)
+    _write_stub(stubs / "python3", '#!/bin/bash\n'
+                'if [[ "$*" == *"/operator_door/deploy_staging.py"* ]]; then\n'
+                '  echo staging-helper >> "$STUB_LOG"\n'
+                '  [ "${FAKE_STAGING_REFUSED:-0}" = 0 ] || exit 2\n'
+                '  echo "$STUB_DIR/work-staging"; exit 0\nfi\n'
+                f'exec "{sys.executable}" "$@"\n')
     results = tmp_path / "results"
     results.mkdir()
     key_dir = tmp_path / "deploy-key"
@@ -156,6 +164,21 @@ def test_main_deploy_runs_the_target_commits_deploy_tool(env: dict[str, str]) ->
     assert any("worktree remove --force" in call for call in calls)
     assert outcome["receipt"].endswith(f"iteration_{SHA[:12]}_door.json")
     assert (Path(env["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").exists()
+
+
+def test_deploy_binds_temp_admission_and_child_builders_to_fixed_parent(env: dict[str, str]) -> None:
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID,
+                              TMPDIR="/untrusted/caller/override")
+    assert rc == 0 and outcome["status"] == "deployed"
+    assert "staging-helper" in calls
+    assert f"staging-tmp {env['STUB_DIR']}/work-staging" in calls
+
+
+def test_deploy_refuses_bad_staging_parent_before_source_or_deploy_tool(env: dict[str, str]) -> None:
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID,
+                              FAKE_STAGING_REFUSED="1")
+    assert rc == 2 and outcome["code"] == "deploy_staging_parent_unsafe"
+    assert calls == ["staging-helper"]
 
 
 @pytest.fixture()

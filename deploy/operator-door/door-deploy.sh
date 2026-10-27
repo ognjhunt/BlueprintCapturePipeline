@@ -50,6 +50,13 @@ PY
   deploy_options=(--release-provenance "$expected")
 fi
 
+# Bind full-copy admission and child builders to the trusted work volume.
+# Verified vendor reuse retains its existing override and discount.
+if ! deploy_tmp="$(python3 -I -S "$(dirname "$0")/operator_door/deploy_staging.py")"; then
+  door_fail deploy_staging_parent_unsafe
+fi
+export TMPDIR="$deploy_tmp"
+
 door_prepare_source
 door_require_on_main
 door_add_tool
