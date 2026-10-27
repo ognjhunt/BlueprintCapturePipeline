@@ -22,16 +22,22 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def test_git_runs_as_the_checkout_owner_only_when_root_runs_it(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    # Whoever runs pytest: the checkout belongs to a service account, and only root drops to it.
     repo = _repo(tmp_path)
+    monkeypatch.setattr(ownership, "_checkout_metadata", lambda root: SimpleNamespace(st_uid=995, st_gid=986))
+    monkeypatch.setattr(ownership.os, "geteuid", lambda: 1000)
     assert ownership.checkout_owner(repo) is None and ownership.git_run_options(repo) == {}
     monkeypatch.setattr(ownership.os, "geteuid", lambda: 0)
-    metadata = (repo / ".git").stat()
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_name="blueprint", pw_dir="/home/blueprint"))
+    monkeypatch.setattr(ownership.os, "getgrouplist", lambda name, gid: [gid])
     options = ownership.git_run_options(repo)
-    account = pwd.getpwuid(metadata.st_uid)
-    assert (options["user"], options["group"]) == (metadata.st_uid, metadata.st_gid)
-    assert options["env"]["HOME"] == account.pw_dir and options["env"]["USER"] == account.pw_name
+    assert (options["user"], options["group"], options["extra_groups"]) == (995, 986, [986])
+    assert options["env"]["HOME"] == "/home/blueprint" and options["env"]["USER"] == "blueprint"
     # A checkout root owns stays root's.
-    assert ownership.checkout_owner("/") is None
+    monkeypatch.setattr(ownership, "_checkout_metadata", lambda root: SimpleNamespace(st_uid=0, st_gid=0))
+    assert ownership.checkout_owner(repo) is None
 
 
 def test_repair_gives_back_git_data_and_tracked_files_but_not_untracked_paths(tmp_path):
