@@ -232,7 +232,8 @@ def test_retained_clean_plate_tracks_cast_the_task_surface_vote(tmp_path):
 
 @pytest.mark.parametrize("change, reason", [
     ("video", "clean_plate_source_video_differs"), ("missing", "clean_plate_task_masks_unavailable"),
-    ("ambiguous", "task_target_track_ambiguous"), ("response", "provider_receipts_invalid")])
+    ("ambiguous", "task_target_track_ambiguous"), ("response", "provider_receipts_invalid"),
+    ("gone", "clean_plate_retained_static_evidence_unreadable")])
 def test_a_missing_or_unproved_retained_track_casts_no_surface_vote(tmp_path, change, reason):
     from blueprint_pipeline.website_task_masks import retained_task_surfaces
 
@@ -244,6 +245,9 @@ def test_a_missing_or_unproved_retained_track_casts_no_surface_vote(tmp_path, ch
         (pipeline / "clean_plate" / "clean_plate_stage_manifest.json").unlink()
     elif change == "response":
         (paid_root / "response-1.json").write_text('{"changed":true}')
+    elif change == "gone":
+        # The manifest still names a retained provider response that is no longer on disk.
+        (paid_root / "parsed-response-1.json").unlink()
     else:
         # A second desk track over the same region: the retained response cannot say which one is the desk.
         result_path = paid_root / "tracks.json"

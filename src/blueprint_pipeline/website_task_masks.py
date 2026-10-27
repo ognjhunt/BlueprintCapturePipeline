@@ -880,6 +880,10 @@ def retained_task_surfaces(*, pipeline_root: Path, source_video_digest: str | No
         elif (task_masks.get("status") != "completed"
               or task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")):
             raise ValueError("website_retained_static_masks_binding_invalid")
+    except OSError:
+        # A retained clip, binding or response that is gone or unreadable casts no vote; it never
+        # stops a source pose that can still scale from its references or the camera height.
+        return {"status": "unavailable", "reason": "clean_plate_retained_static_evidence_unreadable"}
     except (KeyError, TypeError, ValueError) as exc:
         return {"status": "unavailable", "reason": str(exc)}
     targets = [row for row in task_masks.get("targets", [])
