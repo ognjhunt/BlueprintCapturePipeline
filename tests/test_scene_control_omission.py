@@ -214,3 +214,52 @@ def test_platform_pause_does_not_bypass_owner_authority(tmp_path, monkeypatch, f
         profile_path.write_text(json.dumps(profile))
     with pytest.raises(ValueError):
         omission.load_for_run(launch_state_root=launches, source_launch_id=launch, now=now)
+
+
+def test_the_start_measures_the_external_camera_the_runtime_renders_through_the_scene(tmp_path):
+    import math
+
+    import numpy as np
+
+    pytest.importorskip("pxr")
+    from blueprint_pipeline.native_task_camera_start_configuration import (
+        EXTERNAL_POSITION, EXTERNAL_QUATERNION_XYZW, pose_matrix)
+    from tests.test_scene_camera_visibility import AWAY, FACING, _packet
+
+    # A base that puts Arena's external camera 1.2 m from the reset handle contact along its axis.
+    forward = -pose_matrix([0., 0., 0.], EXTERNAL_QUATERNION_XYZW)[:3, 2]
+    yaw = math.pi - math.atan2(forward[1], forward[0])
+    rotation = pose_matrix([0., 0., 0.], [0., 0., math.sin(yaw / 2), math.cos(yaw / 2)])[:3, :3]
+    base = np.array([0.34, 0.0, 0.7]) - rotation @ (np.asarray(EXTERNAL_POSITION) + 1.2 * forward)
+    profile = {"preserve_official_policy_camera_calibration": True, "preserve_official_policy_camera_intrinsics": True,
+               "policy_camera_roles": ["external", "wrist"]}
+
+    def packet(name, **kwargs):
+        root, plan = _packet(tmp_path / name, **kwargs)
+        plan["task_object_observability"] = {"task_object_extent_m": [0.6, 0.6, 0.9],
+                                             "object_positions_world": [[0.0, 0.0, 0.45]]}
+        (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+        cells = [{**plan, "policy_canary_embodiment_profile": profile, "scenario": {"parameters": {}},
+                  "robot": {"base_pose_world": {"position_world_m": base.tolist(),
+                                                "orientation_xyzw": [0., 0., math.sin(yaw / 2), math.cos(yaw / 2)]}}}]
+        return root, plan, cells
+
+    # The plan's world row faces away, yet the camera the runtime renders sees the handle: the start passes.
+    root, _, cells = packet("plan-row-away", external=AWAY)
+    assert omission._require_rendered_external_view(root, cells) is None
+    # The plan's world row is clear, yet Gaussians hang between the rendered camera and the handle.
+    root, _, cells = packet("rendered-hidden", external=FACING, sheet_x=0.45)
+    with pytest.raises(ValueError, match="policy_camera_external_scene_view_blocked:"
+                                         "scene_camera_contact_occluded_by_scene:external"):
+        omission._require_rendered_external_view(root, cells)
+    # A packet without a splat has nothing for the CPU to look through; an unbound one is refused.
+    root, plan, cells = packet("mesh")
+    plan["appearance_frame_alignment"] = {"representation": "mesh"}
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    assert omission._require_rendered_external_view(root, cells) is None
+    plan["appearance_frame_alignment"] = {"representation": "particlefield_3d_gaussian_splat",
+                                          "appearance_prim_path": "/World/Gaussians"}
+    plan["objects"][0]["sha256"] = "sha256:" + "0" * 64
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="camera_external_view_unmeasurable:scene_camera_packet_asset_unbound"):
+        omission._require_rendered_external_view(root, cells)

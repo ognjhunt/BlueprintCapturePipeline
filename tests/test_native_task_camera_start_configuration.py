@@ -251,3 +251,56 @@ def test_preregistered_camera_shift_reaches_the_official_parent_frame():
     # The base faces 180 degrees, so a world-positive shift is parent-negative.
     assert external_camera_offset_position(plan)[0] == pytest.approx(0.03)
     assert validate_camera_start_configuration(plan, binding) == binding
+
+
+def test_the_rendered_external_camera_is_arenas_at_the_binding_offset_not_the_plan_row():
+    import numpy as np
+
+    from blueprint_pipeline.native_task_camera_start_configuration import runtime_external_camera_row
+
+    plan = fixture()
+    binding = plan["policy_canary_camera_start_configuration"]
+    binding["external_camera_position_parent_m"] = task_external_camera_position(plan)
+    binding["configuration_digest"] = canonical_digest(binding, digest_field="configuration_digest")
+    resolved = apply_droid_policy_canary_profile(plan)
+    row = runtime_external_camera_row(resolved)
+    frame, k = resolved_camera_matrices(resolved, binding["source_joint_chain"],
+                                        binding["joint_reset_positions_rad"])["external"]
+    opencv = np.asarray(row["frame_from_camera_matrix"]).reshape(4, 4)
+    np.testing.assert_allclose(opencv[:3, 3], frame[:3, 3])
+    # Every task point lands on the same pixel through the OpenCV row as through Arena's OpenGL frame.
+    intrinsics = row["intrinsics"]
+    for point in task_framing_points(resolved).values():
+        gl = frame[:3, :3].T @ (np.asarray(point) - frame[:3, 3])
+        cv = opencv[:3, :3].T @ (np.asarray(point) - opencv[:3, 3])
+        assert cv[2] == pytest.approx(-gl[2])
+        assert [intrinsics["cx"] + intrinsics["fx"] * cv[0] / cv[2],
+                intrinsics["cy"] + intrinsics["fy"] * cv[1] / cv[2]] == pytest.approx(
+            [k[0][2] + k[0][0] * gl[0] / -gl[2], k[1][2] - k[1][1] * gl[1] / -gl[2]])
+    plan_row = next(camera for camera in resolved["cameras"] if camera["role"] == "external")
+    assert not np.allclose(opencv, np.asarray(plan_row["frame_from_camera_matrix"]).reshape(4, 4))
+    # Without the DROID profile the runtime renders the plan's own row.
+    assert runtime_external_camera_row(fixture()) == plan_row
+
+
+def test_start_refuses_a_hidden_external_camera_measuring_each_camera_once():
+    from blueprint_pipeline.native_task_camera_start_configuration import require_external_camera_scene_view
+
+    nominal = apply_droid_policy_canary_profile(fixture())
+    shifted = deepcopy(nominal)
+    shifted["scenario"] = {"parameters": {"external_camera_x_delta_m": 0.02}}
+    seen = []
+
+    def clear(row):
+        seen.append(row["frame_from_camera_matrix"])
+        return []
+
+    # Ten cells with two camera positions cost two measurements.
+    assert require_external_camera_scene_view([nominal] * 5 + [shifted] * 5, clear) == 2
+    assert len(seen) == 2
+    hidden = seen[1]
+    with pytest.raises(ValueError, match="policy_camera_external_scene_view_blocked:"
+                                         "scene_camera_contact_occluded_by_scene:external:40%"):
+        require_external_camera_scene_view([nominal, shifted], lambda row: (
+            ["scene_camera_contact_occluded_by_scene:external:40%"]
+            if row["frame_from_camera_matrix"] == hidden else []))
