@@ -72,7 +72,8 @@ if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
     # The API and privileged spool reader share this exact request allowlist.
     # Production provenance uses the existing deploy operation. The owner also
-    # approved receipt-bound single-handoff dispatch; inspection stays refused.
+    # approved receipt-bound single-handoff dispatch and bounded existing Atlas
+    # job status/requeue; the legacy inspect mode stays refused.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -329,14 +330,20 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             normalized["bucket"] = bucket
         return normalized
     if kind == "selected-handoff":
-        if DISPATCHER_HOLD_ONLY and body.get("mode") != "dispatch":
+        if DISPATCHER_HOLD_ONLY and body.get("mode") not in ("dispatch", "atlas-status", "atlas-retry"):
             raise RequestRefused("selected_handoff_dispatch_only")
         fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation",
                   "handoff_generation", "handoff_sha256", "handoff_size_bytes", "receipt_generation",
                   "receipt_sha256", "receipt_size_bytes"}
-        if (set(body) not in (fields, fields | {"resume_request_id"})
-                or type(body["mode"]) is not str or body["mode"] not in {"inspect", "dispatch"}):
+        mode = body.get("mode")
+        allowed = (fields | {"atlas_status_digest"},) if mode == "atlas-retry" else (
+            (fields, fields | {"resume_request_id"}) if mode == "dispatch" else (fields,))
+        if (set(body) not in allowed or type(mode) is not str
+                or mode not in {"inspect", "dispatch", "atlas-status", "atlas-retry"}):
             raise RequestRefused("selected_handoff_fields_invalid")
+        if mode == "atlas-retry" and (type(body["atlas_status_digest"]) is not str
+                or not _LEASE_DIGEST.fullmatch(body["atlas_status_digest"])):
+            raise RequestRefused("selected_handoff_atlas_status_digest_invalid")
         if "resume_request_id" in body:
             if (body["mode"] != "dispatch" or type(body["resume_request_id"]) is not str
                     or not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-selected-handoff-[0-9a-f]{8}", body["resume_request_id"])):

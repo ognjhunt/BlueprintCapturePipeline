@@ -30,14 +30,21 @@ FIELDS = {
 
 
 def validate_selection(value):
-    if type(value) is not dict or set(value) != FIELDS:
+    if type(value) is not dict or set(value) != (
+        FIELDS | ({"atlas_status_digest"} if value.get("mode") == "atlas-retry" else set())
+    ):
         raise ValueError("selected_handoff_fields_invalid")
     if (
         value["kind"] != "selected-handoff"
         or type(value["mode"]) is not str
-        or value["mode"] not in {"inspect", "dispatch"}
+        or value["mode"] not in {"inspect", "dispatch", "atlas-status", "atlas-retry"}
     ):
         raise ValueError("selected_handoff_mode_invalid")
+    if value["mode"] == "atlas-retry" and (
+        type(value["atlas_status_digest"]) is not str
+        or not re.fullmatch(r"sha256:[a-f0-9]{64}", value["atlas_status_digest"])
+    ):
+        raise ValueError("selected_handoff_atlas_status_digest_invalid")
     if not isinstance(value["bucket"], str) or not re.fullmatch(
         r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]", value["bucket"]
     ):
@@ -207,7 +214,7 @@ def recover_selected_handoff(
             raise ValueError("selected_handoff_original_browser_delivery_required")
         # Same finite read-only source preflight as native staging: membership
         # bytes and member metadata only, never raw video download or staging.
-        membership_reader(storage_client=client, handoff=parsed, observation=observation)
+        membership = membership_reader(storage_client=client, handoff=parsed, observation=observation)
         result["source_membership_verified"] = True
         retired = retirement_reader(
             storage_root=Path(storage_root),
@@ -218,6 +225,13 @@ def recover_selected_handoff(
         if retired is not None:
             raise ValueError("selected_handoff_retirement_requires_reconciliation")
         capture_root = listener._handoff_capture_root(parsed, storage_root=Path(storage_root))
+        if selection["mode"] in {"atlas-status", "atlas-retry"}:
+            from .selected_atlas_preview_recovery import recover_selected_atlas_preview
+
+            return {**result, **recover_selected_atlas_preview(
+                selection, observation=observation, membership=membership,
+                capture_root=capture_root, storage_root=Path(storage_root),
+            )}
         # Missing local history is not proof of absent provider effects. Current
         # sponsorship controls must separately authorize the bounded operation.
         if capture_root.exists() and any(capture_root.iterdir()):
@@ -270,6 +284,12 @@ def recover_selected_handoff(
     except Exception as exc:
         # Do not return raw provider/source/owner text or private identifiers.
         code = str(exc)
+        code = {
+            "atlas_preview_job_busy": "selected_handoff_atlas_job_busy",
+            "atlas_preview_expired": "selected_handoff_atlas_job_expired",
+            "website_capture_withdrawn": "selected_handoff_atlas_capture_withdrawn",
+            "atlas_preview_retry_requires_recoverable_failure": "selected_handoff_atlas_retry_requires_recoverable_failure",
+        }.get(code, code)
         safe_code = (
             code
             if re.fullmatch(r"selected_handoff_[a-z_]+", code)

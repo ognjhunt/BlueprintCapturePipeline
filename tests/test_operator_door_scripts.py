@@ -631,6 +631,30 @@ exit "$FAKE_HELPER_RC"
     else:
         assert not (tmp_path / "helper-private").exists()
     assert all(line == "umask 0077" for line in calls if line.startswith("umask "))
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry"])
+def test_selected_atlas_shell_runs_only_service_helper_without_runtime_reconciliation(env, tmp_path, mode):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_stub(tmp_path / "stubs/setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "stubs/chgrp", "#!/bin/bash\nexit 0\n")
+    python = tmp_path / "selected-python"
+    _write_stub(python, '''#!/bin/bash
+printf '%s\\n' "$*" >> "$STUB_LOG"
+if [[ "$*" == *production_runtime_env_guard* ]]; then exit 19; fi
+printf '%s\\n' '{"status":"atlas_status_returned"}'
+''')
+    arguments = dict(DOOR_REQUEST_ID="20261009T154718Z-selected-handoff-0000abcd",
+        DOOR_VENV_PYTHON=str(python), DOOR_CONTROL_PLANE_REPO=str(repository), DOOR_SERVICE_USER="blueprint",
+        DOOR_SELECTED_HANDOFF_REQUEST=json.dumps({"mode": mode}))
+    rc, outcome, calls = _run("door-selected-handoff.sh", env, **arguments)
+    assert rc == 0 and outcome["status"] == "completed"
+    assert any("--reuid=blueprint --regid=blueprint" in call for call in calls)
+    assert any("blueprint_pipeline.selected_handoff_recovery" in call for call in calls)
+    assert not any("production_runtime_env_guard" in call for call in calls)
+    rc, outcome, _ = _run("door-selected-handoff.sh", env, **{**arguments, "DOOR_SERVICE_USER": "root"})
+    assert rc == 2 and outcome["code"] == "selected_handoff_user_invalid"
+
+
 RESUME_PYTHON_STUB = r"""#!/bin/bash
 { echo "resume $*"; echo "cwd $PWD"; echo "pythonpath ${PYTHONPATH:-}"
   echo "artifact-bucket ${BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET:-unset}"

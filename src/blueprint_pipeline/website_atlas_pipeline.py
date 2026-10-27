@@ -24,15 +24,19 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 
-def load_configuration(context, source_digest):
+def load_configuration(context, source_digest, *, create=True):
     from .website_task_context import website_webapp_request
+    if type(create) is not bool:
+        raise ValueError("atlas_runtime_configuration_create_invalid")
     value = website_webapp_request(capture_id=context["capture_id"], operation="atlas-configuration", payload={
         "request_id": context["request_id"], "scene_id": context["scene_id"],
-        "task_context_digest": context["context_digest"], "source_video_digest": source_digest})
+        "task_context_digest": context["context_digest"], "source_video_digest": source_digest,
+        **({"create": False} if not create else {})})
     if (value.get("schema_version") != "website_atlas_configuration.v1"
             or value.get("source_video_digest") != source_digest
             or value.get("task_context_digest") != context["context_digest"]
-            or value.get("dispatch_authorized") is not False):
+            or value.get("dispatch_authorized") is not False
+            or not create and value.get("grant_creation_allowed") is not False):
         raise ValueError("atlas_runtime_configuration_invalid")
     return value
 

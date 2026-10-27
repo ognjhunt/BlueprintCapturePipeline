@@ -124,6 +124,31 @@ root and outside every hidden path.
 
 Request kinds:
 
+The existing `selected-handoff` operation also supports `atlas-status` and
+`atlas-retry` for one retained original website browser capture. Both keep the
+immutable GCS generation/hash/size selectors, current original-owner and source
+membership checks, and retirement admission. Status reads the existing job and
+the signed WebApp `atlas-configuration` operation with `create:false`; an older
+server or an absent/expired grant refuses without creating or extending one.
+It returns source identities, job state, grant cap/expiry and separate Atlas and
+native preparation ledger summaries. Settlements are retained ledger debits,
+not independently verified provider billing. Capture assessment costs outside
+that ledger remain explicitly unknown; the two lane caps are never a combined
+allowance or the remaining authorization for an entire run.
+
+Use `selected-handoff --selector-file SELECTOR --atlas-status --wait` first.
+After reviewing that result against the run's authorized cumulative ceiling,
+use `--atlas-retry --atlas-status-digest sha256:... --wait` with the same selector.
+The existing preview job lock protects a fresh source/rights/grant/accounting
+check and refuses any snapshot drift. Only `website_atlas_preview.retry_failed_job`
+may requeue that failed job. It preserves its original seven-day expiry, source,
+grant and bought receipts; the later timer can make paid calls through existing
+admission. Status/retry never advance the job or alter timer holds. Native resume
+options, paths, commands, profiles and spending overrides are refused. Both run
+as `blueprint`; retry can write only the selected capture's `pipeline/atlas`
+directory and the door's result directory. This recovery supports the beta scene
+journey and the ADP-009D development rehearsal without raising evidence claims.
+
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | refuses while any `blueprint-*deploy*` unit is active; otherwise `door-deploy.sh` |

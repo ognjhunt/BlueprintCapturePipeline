@@ -540,3 +540,54 @@ def test_selected_staging_recovery_refuses_partial_local_state_before_native_cal
     assert result["status"] == "blocked" and not calls
     assert result["blockers"] == ["selected_handoff_existing_state_requires_reconciliation"]
     assert retained.read_bytes() == before
+
+
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry"])
+def test_selected_atlas_reuses_original_validators_before_existing_job_surface(tmp_path, monkeypatch, mode):
+    from blueprint_pipeline import selected_atlas_preview_recovery as atlas
+    selection, objects, client, listener, owner, retirement, _, pins, native_calls = fixture(tmp_path)
+    selection["mode"] = mode
+    if mode == "atlas-retry":
+        selection["atlas_status_digest"] = "sha256:" + "c" * 64
+    root = tmp_path / "capture"
+    root.mkdir()
+    (root / "existing").write_text("Retained state must be allowed only for the existing Atlas job surface")
+    membership = (b"original membership", {"raw": []}, [])
+    seen = []
+    monkeypatch.setattr(atlas, "recover_selected_atlas_preview", lambda s, **kw: (
+        seen.append((s, kw)) or {"status": "atlas_status_returned", "atlas_retry_performed": False}))
+
+    def admission(*args):
+        raise AssertionError("Atlas must not create or inherit native scene sponsorship")
+
+    result = recover_selected_handoff(selection, storage_root=tmp_path, client=client, listener=listener,
+        owner_reader=owner, retirement_reader=retirement, admission_reader=admission,
+        membership_reader=lambda **kw: membership)
+    assert result["status"] == "atlas_status_returned" and result["source_membership_verified"]
+    assert not native_calls and len(pins) == 4 and len(seen) == 1
+    assert seen[0][1]["membership"] is membership
+    assert seen[0][1]["capture_root"] == root
+    # Corrupt the exact immutable delivery selector: the Atlas helper is never reached.
+    selection["handoff_sha256"] = "sha256:" + "0" * 64
+    result = recover_selected_handoff(selection, storage_root=tmp_path, client=client, listener=listener,
+        owner_reader=owner, retirement_reader=retirement, admission_reader=admission,
+        membership_reader=lambda **kw: membership)
+    assert result["status"] == "blocked" and len(seen) == 1
+
+
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry"])
+def test_selected_atlas_inherits_current_owner_membership_and_retirement_refusals(tmp_path, monkeypatch, mode):
+    from blueprint_pipeline import selected_atlas_preview_recovery as atlas
+    selection, _, client, listener, owner, retirement, admission, _, _ = fixture(tmp_path)
+    selection["mode"] = mode
+    if mode == "atlas-retry":
+        selection["atlas_status_digest"] = "sha256:" + "c" * 64
+    monkeypatch.setattr(atlas, "recover_selected_atlas_preview", lambda *a, **kw: pytest.fail("Atlas reached"))
+    for changed in ({"owner_reader": lambda **kw: {"producer_delivery": {"kind": "other"}}},
+                    {"membership_reader": lambda **kw: (_ for _ in ()).throw(ValueError("private secret"))},
+                    {"retirement_reader": lambda **kw: {"status": "retired"}}):
+        arguments = dict(owner_reader=owner, retirement_reader=retirement, admission_reader=admission,
+                         membership_reader=lambda **kw: None)
+        result = recover_selected_handoff(selection, storage_root=tmp_path, client=client, listener=listener,
+                                          **{**arguments, **changed})
+        assert result["status"] == "blocked" and "private" not in json.dumps(result)

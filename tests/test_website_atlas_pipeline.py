@@ -8,6 +8,24 @@ import pytest
 from blueprint_pipeline.website_atlas_pipeline import generation_request
 
 
+def test_configuration_read_requires_explicit_server_no_creation_evidence(monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, website_task_context as transport
+    context = {"request_id": "request", "scene_id": "site-request", "capture_id": "walkthrough-request",
+               "context_digest": "sha256:" + "c" * 64}
+    source = "sha256:" + "a" * 64
+    response = {"schema_version": "website_atlas_configuration.v1", "source_video_digest": source,
+                "task_context_digest": context["context_digest"], "dispatch_authorized": False}
+    calls = []
+    monkeypatch.setattr(transport, "website_webapp_request", lambda **kw: calls.append(kw) or response)
+    with pytest.raises(ValueError, match="atlas_runtime_configuration_invalid"):
+        pipeline.load_configuration(context, source, create=False)
+    assert calls[-1]["payload"]["create"] is False
+    response["grant_creation_allowed"] = False
+    assert pipeline.load_configuration(context, source, create=False) == response
+    assert pipeline.load_configuration(context, source) == response
+    assert "create" not in calls[-1]["payload"]
+
+
 def _reviewed_today():
     # The pipeline checks the review's age against the real date, so fixtures
     # must not carry a fixed day that expires a month later.
