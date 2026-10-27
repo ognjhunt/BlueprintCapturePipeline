@@ -430,6 +430,45 @@ def test_a_call_that_ended_without_a_recorded_outcome_is_held_at_its_reservation
     assert [row["provider_charge_amount_usd"] for row in calls["settled"]] == [held["cost_usd"], .03]
 
 
+def test_a_source_fix_retries_only_a_failed_review_and_reuses_its_new_result(tmp_path, monkeypatch):
+    from agents.exceptions import ModelBehaviorError
+
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    repaired_invoker = options["invoker"]
+
+    class MissingCompletion:
+        def configure_reservation_audit(self, **_):
+            pass
+
+        def invoke(self, spec, inputs):
+            calls["allowances"].append(spec.max_output_tokens)
+            raise ModelBehaviorError("Invalid JSON without SDK run data")
+
+    failed_options = {**options, "invoker": MissingCompletion()}
+    with pytest.raises(ValueError, match="atlas_scene_planner_output_invalid"):
+        planner.review_survey(**failed_options)
+    originals = {path: path.read_bytes() for path in (tmp_path / "plans").glob("*.json")}
+    assert len(calls["allowances"]) == 2
+    # An unchanged release cannot buy the same refused answers again.
+    with pytest.raises(ValueError, match="atlas_scene_planner_output_invalid"):
+        planner.review_survey(**options)
+    assert len(calls["allowances"]) == 2
+
+    fixed_options = {**options, "invoker": repaired_invoker, "release_blockers": lambda: ("d" * 40, [])}
+    result = planner.review_survey(**fixed_options)
+    assert result["status"] == "completed"
+    assert result["binding"]["failed_output_recovery"]["failed_source_commit"] == "c" * 40
+    assert result["source_commit"] == "d" * 40
+    assert len(calls["allowances"]) == 3
+    assert all(path.read_bytes() == payload for path, payload in originals.items())
+    assert planner.review_survey(**fixed_options) == result
+    assert len(calls["allowances"]) == 3
+    # A successful review is reused across releases too.
+    another_release = {**fixed_options, "release_blockers": lambda: ("e" * 40, [])}
+    assert planner.review_survey(**another_release) == result
+    assert len(calls["allowances"]) == 3
+
+
 def test_completion_output_compiles_in_the_actual_strict_agents_sdk():
     from agents import AgentOutputSchema
 
