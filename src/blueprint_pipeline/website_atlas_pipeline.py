@@ -198,6 +198,91 @@ def _job_edit_scope(output_root: Path, requested: str | None) -> str:
     return scope
 
 
+def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
+                     source_digest, configuration, check, experimental, max_polls, model):
+    """Reconstruct an additive task from full-view observations, without editing.
+
+    Selection and scale still use the production agents and validators. Missing
+    surfaces remain gaps: novel views require a later source-first gap review,
+    rather than being bought unconditionally at the photographed camera poses.
+    """
+    from .atlas_source_pose_inputs import prepare_source_pose
+    from .atlas_depth_splat import build_depth_splat, load_posed_rgbd, splats2mesh_attempt
+    from .atlas_mesh_registration import register_atlas_mesh
+    from .atlas_result_bundle import export_pose_bundle
+    from .paid_resource_allocator import run_sponsored_website_atlas_task
+
+    if (review.get("subject_origin") != "synthetic_design"
+            or not review.get("automation")
+            or any(row.get("disposition") != "keep" for row in review["automation"]["objects"])
+            or review["automation"].get("removal_instruction", "").strip()
+            or review.get("transient_frame_ids")):
+        raise ValueError("atlas_synthetic_subject_requires_preserved_capture")
+    source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
+        task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
+        configuration=configuration)
+    if source_pose["status"] == "processing":
+        return source_pose
+    source_root, _ = prepare_source_pose(pose_root)
+    if not (source_root / "atlas_posed_rgbd_result.json").is_file():
+        return {"status": "needs_input", "stage": "source_pose", "source_pose": source_pose,
+                "reason": source_pose.get("reason", "atlas_source_pose_unavailable"),
+                "blockers": [source_pose.get("reason", "atlas_source_pose_unavailable")]}
+    pose, frames = load_posed_rgbd(source_root)
+    splat_root = output_root / "splat"
+    manifest = splat_root / "atlas_depth_splat_manifest.json"
+    splat = (json.loads(manifest.read_text()) if manifest.is_file()
+             else build_depth_splat(source_root, splat_root))
+    blockers = ["metric_scene_registration_unproven"]
+    mesh_root = None
+    # A scale/authority refusal may still leave useful retained observations.
+    # Export those locally, but never continue purchasing after that refusal.
+    if source_pose["status"] != "completed":
+        blockers.append(source_pose.get("reason", "atlas_source_pose_unavailable"))
+    elif "mesh_export_cost_usd" not in policy:
+        blockers.append("atlas_mesh_export_price_unreviewed")
+    else:
+        spec, mesh_root = splats2mesh_attempt(splat_root, output_root / "mesh")
+        quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "splats2Mesh",
+            "request_digest": canonical_digest(spec["request"]), "maximum_cost_usd": policy["mesh_export_cost_usd"],
+            **{key: policy[key] for key in _REVIEW_RECORD}}
+        check("mesh")
+        mesh = run_sponsored_website_atlas_task(task="splats2Mesh", request=spec["request"], uploads=spec["uploads"],
+            source_video_digest=source_digest, output_root=mesh_root, task_context=task_context,
+            price_review=quote, experimental=experimental, max_polls=max_polls)
+        if mesh["status"] != "completed":
+            return {"status": "processing", "stage": "mesh", "operation_id": mesh.get("operation_id")}
+        if not (mesh_root / "registered/atlas_mesh_registration.json").is_file():
+            outputs = json.loads((mesh_root / "result.json").read_text())["outputs"]
+            register_atlas_mesh(glb=mesh_root / next(row["path"] for row in outputs if row["role"] == "mesh"),
+                splat_root=splat_root, output_root=mesh_root / "registered", reference_frames=frames,
+                reference_pose_digest=pose["digest"])
+    analysis = [output_root / "atlas_scene_review.json"]
+    measurement_path = source_root / source_pose.get("measurements_relative_path", "scene_measurements.json")
+    if not measurement_path.resolve().is_relative_to(source_root.resolve()) or measurement_path.is_symlink():
+        raise ValueError("atlas_preserved_scene_measurement_path_invalid")
+    if measurement_path.is_file():
+        analysis.append(measurement_path)
+    bundle = export_pose_bundle(pose_root=source_root, output_root=output_root / "downloads",
+        splat_root=splat_root, mesh_root=mesh_root, analysis_paths=analysis)
+    result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
+        "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
+        "subject_origin": "synthetic_design", "captured_scene_preserved": True,
+        "object_removal_performed": False, "image_inpainting_performed": False,
+        "generated_completion_performed": False, "uncaptured_regions": review["uncaptured_regions"],
+        "geometry_authority": "captured_rgb_derived_depth_and_reconstructed_mesh_estimates",
+        "source_pose": source_pose, "download": bundle, "model": model,
+        "task_and_surrounding_scene_covered": True, "blockers": blockers,
+        "splat_available": True, "splat_kind": splat["splat_kind"], "splat_manifest_digest": splat["digest"],
+        "mesh_available": mesh_root is not None, "simulation_qualified": False,
+        "claim_ceiling": "development_only", "physical_evidence": False,
+        "scale_status": source_pose.get("scale_status", "unscaled_provider_world_units"),
+        "billing_status": "provider_usage_unreported"}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    write_json(output_root / "result.json", result)
+    return result
+
+
 def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, experimental=False,
                        invoker=None, max_polls=2, refinement_feedback: Path | None = None, checkpoint=None,
                        edit_scope: str | None = None):
@@ -299,6 +384,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             configuration=config, output_root=reviews, invoker=invoker, experimental=experimental, **plan_options)
         review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, feedback=feedback, reference_sources=receipt.get("reference_sources", []))
         if feedback is None:
+            subject_origin = review.get("subject_origin")
             # Every frame of the reviewed still interval becomes a candidate; the
             # denser survey is reviewed again before anything is selected or sent.
             survey_path = accuracy_survey(source_video=source_video, base_root=base_root, base_survey=survey_path,
@@ -309,6 +395,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
                 configuration=config, output_root=reviews, invoker=invoker, experimental=experimental)
             review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, reference_sources=receipt.get("reference_sources", []))
+            if subject_origin is not None and review.get("subject_origin") != subject_origin:
+                raise ValueError("atlas_scene_subject_origin_changed")
     if review.get("action") == "keep":
         result = {"schema_version": "atlas_refinement_decision.v1", "status": "needs_input",
             "action": "keep", "gap_assessment": review["gap_assessment"],
@@ -323,6 +411,11 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})
     write_json(output_root / "atlas_scene_review.json", review)
+    if review.get("subject_origin") == "synthetic_design":
+        return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,
+            policy=policy, task_context=task_context, source_digest=source_digest,
+            configuration=load_configuration(task_context, source_digest), check=check,
+            experimental=experimental, max_polls=max_polls, model=receipt["model"])
     if takes_reviewed_background(review):
         # The editor/reviewer works from source pixels. Atlas receives no RGB
         # until the complete cleaned set passes; do not buy a raw-scene pose or

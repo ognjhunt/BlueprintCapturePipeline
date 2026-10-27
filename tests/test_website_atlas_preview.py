@@ -203,6 +203,15 @@ def test_rejected_background_without_download_waits_without_publishing_a_bundle(
     assert world.published == [] and world.pushed[-1]["bundle"] is None
 
 
+def test_source_reconstruction_refusal_keeps_its_own_stage_and_reason(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "needs_input", "stage": "source_pose",
+        "reason": "atlas_scale_review_unresolved", "download": None}])
+    assert world.advance() == "needs_input"
+    assert _job(site)["stage"] == "source_pose" and _job(site)["reason"] == "atlas_scale_review_unresolved"
+    assert world.published == []
+
+
 def test_a_withdrawal_stops_the_job_before_the_next_paid_stage_and_cleans_world_labs(monkeypatch, site):
     _enqueue(site)
 
@@ -256,6 +265,10 @@ def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypa
     (ValueError("atlas_runtime_budget_insufficient"), "failed", "atlas_runtime_budget_insufficient"),
     (ValueError("atlas_scene_planner_abstained:people move through every frame"), "needs_input",
      "atlas_scene_planner_abstained"),
+    (ValueError("atlas_scene_subject_origin_uncertain"), "needs_input", "atlas_scene_subject_origin_uncertain"),
+    (ValueError("atlas_scene_subject_origin_changed"), "needs_input", "atlas_scene_subject_origin_changed"),
+    (ValueError("atlas_synthetic_subject_requires_preserved_capture"), "needs_input",
+     "atlas_synthetic_subject_requires_preserved_capture"),
     (ValueError("website_control_task-context_http_409:source_revoked"), "withdrawn", "website_capture_withdrawn"),
     (type("AtlasHttpError", (RuntimeError,), {"status": 403})("website_atlas_api_403:forbidden"), "failed",
      "website_atlas_api_403"),

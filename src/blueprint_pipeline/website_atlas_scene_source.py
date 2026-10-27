@@ -209,10 +209,21 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         # Read a completed background revision without changing the capture's
         # controller state, original observations, scale evidence or publication.
         result = retained
-    background = (result.get("automation") or {}).get("background") or {}
-    if (result.get("automation") or {}).get("status") != "completed" or background.get("status") != "completed":
-        return {"status": "needs_input", "reason": "website_atlas_background_unavailable",
-                "job_reason": background.get("reason")}
+    preserved = result.get("subject_origin") == "synthetic_design"
+    if preserved:
+        if (result.get("captured_scene_preserved") is not True
+                or result.get("object_removal_performed") is not False
+                or result.get("image_inpainting_performed") is not False
+                or result.get("generated_completion_performed") is not False):
+            raise ValueError("website_atlas_preserved_scene_contract_invalid")
+        # This is the captured environment itself. Do not fabricate a removal
+        # manifest or call it an object-absent background to reuse the handoff.
+        background = result
+    else:
+        background = (result.get("automation") or {}).get("background") or {}
+        if (result.get("automation") or {}).get("status") != "completed" or background.get("status") != "completed":
+            return {"status": "needs_input", "reason": "website_atlas_background_unavailable",
+                    "job_reason": background.get("reason")}
     if not background.get("mesh_available"):
         return {"status": "needs_input", "reason": "website_atlas_background_mesh_unavailable"}
     source_pose = result.get("source_pose") or {}
@@ -255,6 +266,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         # generated completion uses different working directories from baseline.
         bundle_root = bundle_path.parent
         splat_root, registered_root = bundle_root / "splat", bundle_root / "mesh/registered"
+    elif preserved:
+        splat_root, registered_root = job_dir / "splat", job_dir / "mesh/registered"
     else:
         splat_root, registered_root = automation_root / "background_splat", automation_root / "background_mesh/registered"
     splat_manifest = _read(_inside(splat_root / "atlas_depth_splat_manifest.json", job_dir))
@@ -273,6 +286,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     # The background was fused on whichever pose posed its views: the original
     # views' own, or a fresh pose of the reviewed edited views.
     source = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
+    if preserved and splat_manifest["pose_result_digest"] != source["digest"]:
+        raise ValueError("website_atlas_preserved_scene_pose_mismatch")
     background_root = pose_root
     if splat_manifest["pose_result_digest"] == source["digest"]:
         background_pose = source
@@ -338,4 +353,5 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     }
     return {"status": "ready", "base_scene": base, "source_geometry": geometry,
             "source_pose_digest": source["digest"], "background_pose_digest": background_pose["digest"],
+            **({"subject_origin": "synthetic_design", "scene_content": "captured_scene_preserved"} if preserved else {}),
             "alignment": "anchored" if anchor else "registration_search"}

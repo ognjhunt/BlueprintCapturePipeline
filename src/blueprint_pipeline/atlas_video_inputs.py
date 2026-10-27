@@ -176,7 +176,8 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
     from collections import deque
     if (not isinstance(requirements, list) or not requirements
             or not all(isinstance(r, Mapping) for r in requirements)
-            or not {"task_object", "surrounding_scene"}.issubset({r.get("role") for r in requirements})):
+            or "surrounding_scene" not in {r.get("role") for r in requirements}
+            or not {"task_object", "task_region"} & {r.get("role") for r in requirements}):
         raise ValueError("atlas_task_and_scene_coverage_review_required")
     if type(maximum_frames) is not int or maximum_frames < 2:
         raise ValueError("atlas_selection_limit_invalid")
