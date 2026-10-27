@@ -114,3 +114,54 @@ def test_a_pending_designed_subject_preparation_passes_the_preparation_contract(
     assert request["task"]["subject"]["geometry_origin"] == "synthetic_design"
     validate_preparation_request(request=request, task_context=args["task_context"],
                                  authority=prepared["website_preparation_authority"], now=args["now"])
+
+
+def test_the_supplied_mesh_stage_has_no_provider_request_to_preflight(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_configuration_source_preflight import (
+        TaskEvaluationSceneConfigurationSourcePreflightError,
+    )
+    from blueprint_pipeline.website_native_background import PREFIX
+    from blueprint_pipeline.website_native_inputs import preflight_website_authoring_request
+    from blueprint_pipeline.website_synthetic_subject import AUTHORING_ADAPTER, AUTHORING_METHOD
+
+    candidate = tmp_path / "source_object_candidate.usda"
+    write_candidate(BALL, center_xyz_m=[0.0, 0.0, 0.0325], path=candidate)
+    data = candidate.read_bytes()
+    row = {"contract_path": PREFIX + ".candidate", "materialized_path": str(candidate), "size_bytes": len(data),
+           "digest": "sha256:" + hashlib.sha256(data).hexdigest(), "full_byte_service_account_readback_passed": True}
+    third = {"stage_id": "stage-3", "adapter": {"id": AUTHORING_ADAPTER, "version": "v1"}, "execution_class": "no_spend"}
+    envelope = {"recipe": {"stage_sequence": [{}, {}, third]}, "materialized_references": [row]}
+    designed = {"authoring_method": AUTHORING_METHOD, "source_observation_kind": "synthetic_design"}
+    assert preflight_website_authoring_request(envelope=envelope, configurations={"stage-3": designed}) is None
+    # The designed form is exact: a backend, a captured observation kind or a paid stage is refused.
+    for change in ({"authoring_backend": "artisan_v1"}, {"source_observation_kind": "website_capture_frames"}):
+        with pytest.raises(ValueError, match="designed_subject_authoring_invalid"):
+            preflight_website_authoring_request(envelope=envelope, configurations={"stage-3": {**designed, **change}})
+    with pytest.raises(ValueError, match="designed_subject_authoring_invalid"):
+        preflight_website_authoring_request(envelope={**envelope, "recipe": {"stage_sequence": [
+            {}, {}, {**third, "execution_class": "paid"}]}}, configurations={"stage-3": designed})
+    with pytest.raises(TaskEvaluationSceneConfigurationSourcePreflightError):
+        preflight_website_authoring_request(envelope={**envelope, "materialized_references": []},
+                                            configurations={"stage-3": designed})
+
+
+def test_a_designed_subject_render_input_is_coherent_only_when_frameless():
+    from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
+        WEBSITE_INPUT_STATUS,
+        render_inputs_disclosure_is_coherent,
+    )
+
+    base = {"status": WEBSITE_INPUT_STATUS, "input_kind": "website_capture_derivatives",
+            "raw_interiorgs_bytes_in_provider_packet": False, "raw_capture_video_in_provider_packet": False,
+            "prepared_background_in_provider_packet": True, "derived_frames": [], "derived_frame_count": 0,
+            "renderer_qualified": False, "physical_truth_claimed": False, "provider_render_required": False}
+    designed = {**base, "captured_frame_derivatives_in_provider_packet": False,
+                "website_binding": {"captured_frame_count": 0, "subject_origin": "synthetic_design"}}
+    captured = {**base, "captured_frame_derivatives_in_provider_packet": True,
+                "website_binding": {"captured_frame_count": 3}}
+    assert render_inputs_disclosure_is_coherent(designed) and render_inputs_disclosure_is_coherent(captured)
+    # A captured subject still needs its frames; a designed one may not claim any.
+    assert not render_inputs_disclosure_is_coherent({**captured, "website_binding": {"captured_frame_count": 0}})
+    assert not render_inputs_disclosure_is_coherent({**designed, "captured_frame_derivatives_in_provider_packet": True})
+    assert not render_inputs_disclosure_is_coherent(
+        {**designed, "website_binding": {"captured_frame_count": 2, "subject_origin": "synthetic_design"}})

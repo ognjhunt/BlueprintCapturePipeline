@@ -190,16 +190,18 @@ def render_inputs_disclosure_is_coherent(render_inputs: Mapping[str, Any]) -> bo
     crossed = render_inputs.get("raw_interiorgs_bytes_in_provider_packet")
     if status == WEBSITE_INPUT_STATUS:
         binding = render_inputs.get("website_binding", {})
+        # A designed subject (website_synthetic_subject) is bound by name and has no captured frames.
+        designed = isinstance(binding, Mapping) and binding.get("subject_origin") == "synthetic_design"
         return (crossed is False and render_inputs.get("input_kind") == "website_capture_derivatives"
                 and render_inputs.get("raw_capture_video_in_provider_packet") is False
-                and render_inputs.get("captured_frame_derivatives_in_provider_packet") is True
+                and render_inputs.get("captured_frame_derivatives_in_provider_packet") is (not designed)
                 and render_inputs.get("prepared_background_in_provider_packet") is True
                 and render_inputs.get("derived_frames") == [] and render_inputs.get("derived_frame_count") == 0
                 and render_inputs.get("renderer_qualified") is False
                 and render_inputs.get("physical_truth_claimed") is False
                 and render_inputs.get("provider_render_required") is False
                 and isinstance(binding, Mapping) and type(binding.get("captured_frame_count")) is int
-                and binding["captured_frame_count"] > 0)
+                and (binding["captured_frame_count"] == 0 if designed else binding["captured_frame_count"] > 0))
     if status == MESH_INPUT_STATUS:
         geometry = render_inputs.get("derived_visual_geometry")
         return (crossed is False and render_inputs.get("input_kind") == "provided_mesh"
