@@ -227,6 +227,12 @@ def fake_transport(world: dict[str, Any]):
 def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options: Any) -> dict[str, Any]:
     (tmp_path / "case").mkdir(parents=True)
     _configured, _references, _docs, spec = rigid_case(tmp_path / "case")
+    # The shared revision helper now returns its scored spec. This fixture
+    # starts with the revision's raw spec, then independently seals the job's
+    # owner contract below. A contract from the helper's original site cannot
+    # follow the fixture's reassigned site/task identity.
+    spec = {key: value for key, value in spec.items()
+            if key not in {"task_success_contract", "task_success_contract_digest"}}
     spec = dict(spec, site_id="site-1", task_id="task-1")
     contract = _sealed_contract(spec)
     packet, runtime_receipt, pair_inputs, _activation = _real_canary_pair_inputs(tmp_path / "scene")
