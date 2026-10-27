@@ -140,6 +140,77 @@ def _accounting(value, *, native=False):
     return {**value, "reservations": sorted(value["reservations"], key=lambda row: row["allocation_binding_digest"])}
 
 
+def _capture_inference_accounting(value, *, request_id, capture_id, source_video_digest):
+    """Retained usage and unknowns outside preparation; never a run allowance.
+
+    The optional signed getter owns exact capture/linked-run evidence acquisition.
+    A linked assessment total may overlap the calls and is never added to them.
+    """
+    if value is None:
+        return None  # An older getter provides no inference cost evidence.
+
+    def sha(item):
+        return type(item) is str and _SHA.fullmatch(item) is not None
+
+    def nullable_sha(item):
+        return item is None or sha(item)
+
+    keys = {"schema_version", "request_id", "capture_id", "budget_digest", "source_video_digest",
+            "ledger_status", "known_usage_cost_usd", "bounded_unknown_cost_usd", "unbounded_unknown_call_count",
+            "calls", "linked_assessment", "privacy", "preparation_ledger_overlap"}
+    _require(type(value) is dict and set(value) == keys
+             and value["schema_version"] == "website_capture_inference_accounting.v1"
+             and value["request_id"] == request_id and value["capture_id"] == capture_id
+             and value["source_video_digest"] == source_video_digest and sha(value["budget_digest"])
+             and type(value["ledger_status"]) is str
+             and value["ledger_status"] in {"complete", "missing", "incomplete", "invalid", "unavailable"}
+             and _number(value["known_usage_cost_usd"]) and _number(value["bounded_unknown_cost_usd"])
+             and _number(value["unbounded_unknown_call_count"], integer=True)
+             and value["preparation_ledger_overlap"] == "not_established"
+             and type(value["calls"]) is list and len(value["calls"]) <= 64, "inference_accounting_invalid")
+    row_keys = {"call_digest", "provider", "model", "state", "source_digest", "context_digest", "run_digest",
+                "recorded_cost_usd", "bounded_unknown_cost_usd", "usage_digest"}
+    for row in value["calls"]:
+        _require(type(row) is dict and set(row) == row_keys
+                 and all(type(row[key]) is str for key in ("provider", "model", "state"))
+                 and (row["provider"], row["model"]) in {("openai", "gpt-6.1-sol"), ("gemini", "gemini-3.8-flash")}
+                 and row["state"] in {"recorded", "admitted", "unknown"}
+                 and all(sha(row[key]) for key in ("call_digest", "source_digest", "context_digest"))
+                 and all(nullable_sha(row[key]) for key in ("run_digest", "usage_digest"))
+                 and all(row[key] is None or _number(row[key])
+                         for key in ("recorded_cost_usd", "bounded_unknown_cost_usd")), "inference_accounting_invalid")
+        known = row["recorded_cost_usd"] is not None
+        _require((not known or row["state"] == "recorded" and row["bounded_unknown_cost_usd"] is None)
+                 and known == (row["usage_digest"] is not None), "inference_accounting_invalid")
+    calls = value["calls"]
+    unknown = sum(row["recorded_cost_usd"] is None and row["bounded_unknown_cost_usd"] is None for row in calls)
+    _require(len({row["call_digest"] for row in calls}) == len(calls)
+             and _equal_cost(value["known_usage_cost_usd"], sum(row["recorded_cost_usd"] or 0 for row in calls))
+             and _equal_cost(value["bounded_unknown_cost_usd"], sum(row["bounded_unknown_cost_usd"] or 0 for row in calls))
+             and value["unbounded_unknown_call_count"] >= unknown
+             and (value["ledger_status"] != "complete" or value["unbounded_unknown_call_count"] == unknown)
+             and (value["ledger_status"] not in {"missing", "invalid", "unavailable"}
+                  or value["unbounded_unknown_call_count"] > 0), "inference_accounting_invalid")
+    linked = value["linked_assessment"]
+    _require(type(linked) is dict and set(linked) == {
+        "status", "job_digest", "run_digest", "known_usage_cost_usd", "ledger_overlap"}
+        and type(linked["status"]) is str and type(linked["ledger_overlap"]) is str
+        and linked["status"] in {"verified", "not_linked", "missing", "mismatch", "unavailable"}
+        and all(nullable_sha(linked[key]) for key in ("job_digest", "run_digest"))
+        and (linked["known_usage_cost_usd"] is None or _number(linked["known_usage_cost_usd"]))
+        and linked["ledger_overlap"] in {"matched_call_ids", "unknown", "not_available"}
+        and (linked["status"] == "verified" or linked["known_usage_cost_usd"] is None)
+        and (linked["status"] != "verified" or sha(linked["job_digest"]) and sha(linked["run_digest"]))
+        and (linked["ledger_overlap"] != "matched_call_ids" or linked["status"] == "verified"
+             and any(row["run_digest"] == linked["run_digest"] for row in calls)), "inference_accounting_invalid")
+    privacy = value["privacy"]
+    _require(type(privacy) is dict and set(privacy) == {"status", "historical_cost_status"}
+             and type(privacy["status"]) is str
+             and privacy["status"] in {"source_bound_not_reviewed", "source_bound_reviewed", "unknown"}
+             and privacy["historical_cost_status"] == "unknown", "inference_accounting_invalid")
+    return {**value, "calls": sorted(calls, key=lambda row: row["call_digest"])}
+
+
 def _snapshot(selection, observation, membership, capture_root, storage_root, job):
     from .capture_original_owner_observer import validate_observation
     from .website_atlas_pipeline import _require_current_price_review
@@ -167,7 +238,8 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
              "job": {"state": job["state"], "revision": job["revision"],
                      "enqueued_at_epoch": job["enqueued_at_epoch"],
                      "expires_at_epoch": job["enqueued_at_epoch"] + MAXIMUM_JOB_SECONDS,
-                     "retry_count": len(job.get("retries", []))}, "preflight_blockers": []}
+                     "retry_count": len(job.get("retries", []))}, "preflight_blockers": [],
+             "capture_inference_accounting": None}
     if type(job.get("reason")) is str and _CODE.fullmatch(job["reason"]):
         value["job"]["reason"] = job["reason"]
     if type(job.get("stage")) is str and _CODE.fullmatch(job["stage"]):
@@ -200,6 +272,9 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
         # Reservation summaries come only from the bounded read-only WebApp getter.
         value["allowance_accounting"] = _accounting(config.get("allowance_accounting"))
         value["native_preparation_accounting"] = _accounting(config.get("native_preparation_accounting"), native=True)
+        value["capture_inference_accounting"] = _capture_inference_accounting(
+            config.get("capture_inference_accounting"), request_id=observation["request_id"],
+            capture_id=selection["capture_id"], source_video_digest=source["video_sha256"])
         _require(len(value["allowance_accounting"]["reservations"])
                  + len(value["native_preparation_accounting"]["reservations"]) <= 128, "accounting_invalid")
         atlas_rows = value["allowance_accounting"]["reservations"]

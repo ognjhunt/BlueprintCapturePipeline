@@ -132,9 +132,15 @@ the signed WebApp `atlas-configuration` operation with `create:false`; an older
 server or an absent/expired grant refuses without creating or extending one.
 It returns source identities, job state, grant cap/expiry and separate Atlas and
 native preparation ledger summaries. Settlements are retained ledger debits,
-not independently verified provider billing. Capture assessment costs outside
-that ledger remain explicitly unknown; the two lane caps are never a combined
-allowance or the remaining authorization for an entire run.
+not independently verified provider billing. The optional
+`capture_inference_accounting` projection supplies retained usage pricing and
+explicit unknowns outside preparation from the exact capture's call ledger and
+verified linked assessment. Its linked assessment cost can overlap its call
+rows and is never added to them. Privacy's historical cost remains unknown;
+an absent projection is `null`, not zero cost. These facts enter the reviewed
+snapshot digest without creating a new spending grant or unknown-cost gate.
+The two lane caps are never a combined allowance or the remaining authorization
+for an entire run.
 
 Use `selected-handoff --selector-file SELECTOR --atlas-status --wait` first.
 After reviewing that result against the run's authorized cumulative ceiling,
