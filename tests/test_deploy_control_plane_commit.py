@@ -5105,3 +5105,26 @@ def test_release_provisioning_has_room_for_the_artisan_runtime(tmp_path, monkeyp
     # Room for the runtime, and still inside the door's whole-deploy limit with the
     # remaining steps' share left over.
     assert 2 * 3600 <= seen["timeout"] <= door_hours * 3600 - 30 * 60
+
+
+def test_the_source_checkout_is_given_back_before_git_runs_as_its_owner(tmp_path, monkeypatch):
+    steps = []
+    monkeypatch.setattr(deploy, "checkout_owner", lambda repo: (995, 986))
+    monkeypatch.setattr(deploy, "repair_checkout_ownership",
+                        lambda repo, owner_uid, owner_gid: steps.append(("repair", owner_uid, owner_gid)))
+    monkeypatch.setattr(deploy, "_git", lambda repo, *arguments: steps.append(arguments[0]) or (0, ""))
+    deploy._move_source_checkout(tmp_path, "a" * 40)
+    assert steps == [("repair", 995, 986), "status", "fetch", "checkout"]
+    steps.clear()
+    monkeypatch.setattr(deploy, "checkout_owner", lambda repo: None)
+    deploy._move_source_checkout(tmp_path, "a" * 40)
+    assert steps == ["status", "fetch", "checkout"]
+
+
+def test_deploy_git_runs_with_the_checkout_owners_identity(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(deploy, "git_run_options", lambda repo: {"user": 995, "group": 986})
+    monkeypatch.setattr(deploy.subprocess, "run", lambda argv, **kwargs: seen.update(kwargs) or
+                        subprocess.CompletedProcess(argv, 0, stdout="head\n", stderr=""))
+    assert deploy._git(tmp_path, "rev-parse", "HEAD") == (0, "head")
+    assert (seen["user"], seen["group"]) == (995, 986)
