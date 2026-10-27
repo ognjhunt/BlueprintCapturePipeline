@@ -51,7 +51,7 @@ TASK_PROFILES: tuple[TaskProfile, ...] = (
         catalog_task_family_id="rigid_relocation",
         runtime_adapter="task_evaluation_rigid_relocation_native_adapter",
         success_predicate="object_pose_within_target_region",
-        aliases=("rigid_pick_place", "rigid_object_pick_place", "rigid_object_relocation",
+        aliases=("rigid_pick_place", "rigid_pick_and_place", "rigid_object_pick_place", "rigid_object_relocation",
                  "rigid_relocation"),
         required_inputs=("metric_object_geometry", "target_region"),
     ),

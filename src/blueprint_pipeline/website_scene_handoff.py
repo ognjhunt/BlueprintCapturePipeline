@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
-from .website_task_preparation import compile_website_scene_preparation
+from .website_task_preparation import compile_website_scene_preparation, native_task_preparation_gap
 from .website_scene_runtime_inputs import prepare_website_runtime_inputs
 
 
@@ -54,6 +54,17 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         base = dict(atlas["base_scene"])
         write_json(root / "base_scene.json", base)
         result.update(base_scene_path=str(root / "base_scene.json"), visual_reconstruction_ready=True)
+        gap = native_task_preparation_gap(context)
+        if gap is not None:
+            # Retain the completed reconstruction and original task. Missing
+            # adapter/scoring support cannot turn a different job into pick/place.
+            result.update(status="needs_input", blockers=[gap["code"]],
+                          native_task_preparation_gap=gap,
+                          geometry_backend=atlas["source_geometry"]["geometry_backend"],
+                          source_geometry_digest=atlas["source_geometry"]["digest"])
+            result["digest"] = canonical_digest(result, digest_field="digest")
+            write_json(handoff_path, result)
+            return result
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
         result.pop("provider_mutation_performed", None)
         if (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):

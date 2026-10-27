@@ -43,6 +43,30 @@ are not independent roadmap authority.
 
 ## Product Boundary
 
+Beta task admission is open across task families and robot forms (owner
+direction, 2026-10-27). Video and task analysis assess applicable current robot
+capability evidence. A keyword, an absent runtime adapter, or one incompatible
+robot configuration cannot establish that no robot team can do the job.
+Missing capability evidence remains unresolved; missing simulator support keeps
+the accepted job in evaluation preparation and demand discovery. Exact runtime
+compatibility, independent scoring, rights and spending controls still apply
+before execution. This serves the beta job-to-evidence journey and ADP-010's
+day-7 demand discovery; it does not widen ADP's frozen proof protocol.
+
+This uses the existing WebApp Site assessment agent, which combines video
+observations with Firestore `robotTeams` capability/provenance records and
+authorized company-history research. Its `read_robot_registry` tool and
+evidence bindings are documented in the WebApp's
+[task-assessment audit](https://github.com/ognjhunt/Blueprint-WebApp/blob/main/docs/research/task-assessment-audit-2026-10-07.md).
+Pipeline's runnable-policy registry is a separate execution inventory.
+
+Website task contexts may now retain an optional, digest-bound `task_family`.
+It is an open string, not an intake allowlist. Native preparation uses the
+existing task profiles and retains an explicit preparation gap for other
+families, preserving the reconstructed scene and original task instead of
+converting it to pick-and-place. Older contexts keep their compatibility path;
+their missing family is not new evidence of task capability.
+
 A job assessment can use existing evidence without creating a capture,
 testbed or run. WebApp owns briefs, proposals, customer choice, pilot agreement
 records and permitted customer-reported outcomes. Pipeline owns scientific

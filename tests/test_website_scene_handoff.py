@@ -53,6 +53,35 @@ def ready_atlas(tmp_path, monkeypatch):
     return ready
 
 
+def test_novel_family_retains_the_scene_without_masks_authoring_or_a_substitute_task(
+        tmp_path, monkeypatch, ready_atlas):
+    kwargs = inputs(tmp_path)
+    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+    context.update(task_family="laundry_folding", description="Fold the towels", context_digest="sha256:" + "a" * 64)
+    kwargs["clean_plate"]["task_masks"] = {"deferred_target_ids": ["towel"]}
+
+    def unexpected(**_):
+        pytest.fail("Native masks, authoring and runtime preparation must wait for an appropriate adapter")
+
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.complete_retained_static_task_masks", unexpected)
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", unexpected)
+    monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs", unexpected)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", unexpected)
+    monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", unexpected)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "needs_input"
+    assert result["blockers"] == ["website_native_task_profile_preparation_required"]
+    gap = result["native_task_preparation_gap"]
+    assert gap["job_disposition"] == "held_for_preparation"
+    assert gap["task_family"] == "laundry_folding" and gap["description"] == "Fold the towels"
+    assert gap["task_context_digest"] == context["context_digest"]
+    assert result["visual_reconstruction_ready"] is True and result["simulator_ready"] is False
+    assert result["provider_mutation_performed"] is False
+    assert "runtime_inputs" not in result and "website_intake_outbox" not in result
+    assert json.loads((tmp_path / "pipeline/website_scene_preparation/base_scene.json").read_text()) == ready_atlas["base_scene"]
+    assert json.loads((tmp_path / "pipeline/website_scene_preparation/handoff.json").read_text()) == result
+
+
 def test_a_ready_atlas_scene_drives_preparation_but_never_invents_execution(tmp_path, monkeypatch, ready_atlas):
     kwargs = inputs(tmp_path)
     calls = []

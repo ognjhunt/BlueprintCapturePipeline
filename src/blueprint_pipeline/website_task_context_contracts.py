@@ -31,6 +31,46 @@ def sponsors_scene_preparation(metadata: Mapping[str, Any] | None) -> bool:
     return ((metadata or {}).get("website_scene_execution_authority") or {}).get("purpose") == "scene_preparation"
 
 
+def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
+    """A completed scene-preparation stage may retain an exact native-profile gap.
+
+    This does not admit native execution or turn an arbitrary failed preparation
+    into a completed stage. Current owner/source checks and the output commit
+    remain the callers' responsibility.
+    """
+    if not isinstance(handoff, Mapping) or not isinstance(task_context, Mapping):
+        return False
+    gap = handoff.get("native_task_preparation_gap")
+    family, description, digest = (task_context.get(key) for key in
+                                   ("task_family", "description", "context_digest"))
+    if (not isinstance(gap, Mapping) or not isinstance(family, str) or not family.strip()
+            or not isinstance(description, str) or not description.strip()
+            or not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+            or any(not isinstance(task_context.get(key), str) or not task_context[key]
+                   for key in ("scene_id", "capture_id"))):
+        return False
+    code = "website_native_task_profile_preparation_required"
+    return (
+        task_context.get("schema_version") == "website_site_task_context.v1"
+        and digest == canonical_digest(task_context, digest_field="context_digest")
+        and handoff.get("schema_version") == "website_scene_handoff.v1"
+        and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+        and all(handoff.get(key) == task_context[key] for key in ("scene_id", "capture_id"))
+        and handoff.get("status") == "needs_input"
+        and handoff.get("blockers") == [code]
+        and handoff.get("simulator_ready") is False
+        and handoff.get("visual_reconstruction_ready") is True
+        and handoff.get("provider_mutation_performed") is False
+        and not handoff.get("website_intake_outbox")
+        and "runtime_inputs" not in handoff
+        and gap.get("code") == code
+        and gap.get("task_context_digest") == digest
+        and gap.get("task_family") == family
+        and gap.get("description") == description
+        and gap.get("job_disposition") == "held_for_preparation"
+    )
+
+
 def validate_website_task_context(
     value: Mapping[str, Any], *, request_id: str, scene_id: str, capture_id: str,
     purpose: str | None = None,
@@ -56,6 +96,11 @@ def validate_website_task_context(
         raise ValueError("website_task_context_not_confirmed")
     if not isinstance(value.get("description"), str) or not value["description"].strip():
         raise ValueError("website_task_context_description_missing")
+    # A source-bound analysis may name any family. The runnable inventory is
+    # an execution concern, never an intake allowlist.
+    if "task_family" in value and (not isinstance(value["task_family"], str)
+                                   or not value["task_family"].strip()):
+        raise ValueError("website_task_context_family_invalid")
     details = value.get("operator_task_details")
     if details is not None and (not isinstance(details, Mapping) or any(key not in {"item_weight", "item_make_model"}
             or not isinstance(item, str) for key, item in details.items())):

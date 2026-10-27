@@ -64,6 +64,44 @@ PHYSICS_PRIORS = {"density_kg_m3": [50.0, 2500.0], "envelope_fill": [0.2, 1.0],
 DIMENSION_RELATIVE_ERROR = 0.25
 
 
+def native_task_preparation_gap(task_context: Mapping[str, Any], *,
+                                inferred_profile_id: str | None = None) -> dict[str, Any] | None:
+    """Keep a novel job without pretending an existing adapter evaluates it.
+
+    Older contexts omit the analysis family and retain their compatibility
+    path. An explicit family is never inferred from object movability or a
+    missing articulation hint. This reports Blueprint's implementation gap,
+    not the physical capability of any robot team.
+    """
+    if "task_family" not in task_context:
+        return None
+    family = task_context["task_family"]
+    if not isinstance(family, str) or not family.strip():
+        raise ValueError("website_task_context_family_invalid")
+    from .job_capability_routing import task_profile_for
+
+    profile = task_profile_for(family)
+    mismatch = profile is not None and inferred_profile_id is not None and profile.profile_id != inferred_profile_id
+    if profile is not None and not mismatch:
+        return None
+    return {
+        "code": ("website_task_profile_mechanism_mismatch" if mismatch
+                 else "website_native_task_profile_preparation_required"),
+        "task_family": family,
+        "task_context_digest": task_context.get("context_digest"),
+        "job_disposition": "held_for_preparation",
+        "description": task_context.get("description"),
+        "reason": ("The declared task profile and observed mechanism hints disagree; the original job remains held "
+                   "while its evaluation is prepared. The task is not changed to fit another adapter." if mismatch else
+                   "The job remains held while its evaluation is being prepared. Blueprint has no native task "
+                   "profile for this family yet; this is not a finding that robot teams cannot perform the job."),
+        "missing": (["task_profile_mechanism_binding"] if mismatch else
+                    ["native_task_runtime_adapter", "independent_task_scorer", "reset_contract"]),
+        **({"inferred_profile_id": inferred_profile_id} if mismatch else {}),
+        "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",
+    }
+
+
 def _owner_targets_require_translation(owner_targets: Mapping[str, Any], request: Mapping[str, Any]) -> bool:
     from .task_evaluation_scene_execution_scope import scene_preparation_only
     return owner_targets["status"] != "not_supplied" and not scene_preparation_only(request)
@@ -610,11 +648,27 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       now: float) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
-    if task_masks.get("deferred_target_ids"):
-        raise ValueError("website_static_task_masks_pending")
+
+    def retain_gap(gap: Mapping[str, Any]) -> dict[str, Any]:
+        value = {
+            "schema_version": SCHEMA_VERSION, "status": "needs_input", "blockers": [gap["code"]],
+            "claim_ceiling": CLAIM_CEILING, "native_task_preparation_gap": gap,
+            "binding": {"task_context_digest": task_context["context_digest"],
+                        "task_masks_digest": task_masks["digest"], "source_geometry_digest": source_geometry["digest"]},
+            "intake_request": None, "thumbnail": None, "provider_mutation_performed": False,
+        }
+        value["digest"] = canonical_digest(value, digest_field="digest")
+        write_json(output_root / "preparation.json", value)
+        return value
+
     for value, field in ((task_context, "context_digest"), (task_masks, "digest"), (source_geometry, "digest")):
         if value.get(field) != canonical_digest(value, digest_field=field):
             raise ValueError("website_preparation_input_digest_mismatch")
+    gap = native_task_preparation_gap(task_context)
+    if gap is not None:
+        return retain_gap(gap)
+    if task_masks.get("deferred_target_ids"):
+        raise ValueError("website_static_task_masks_pending")
     if task_context.get("confirmed") is not True:
         from .website_preparation_contracts import validate_preparation_authority
         validate_preparation_authority(task_context=task_context, authority=spend, now=now)
@@ -633,6 +687,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     if len(removed) != 1 or removed[0]["target_id"] not in targets:
         raise ValueError("website_single_manipulated_subject_required")
     subject_entry, subject_target = removed[0], targets[removed[0]["target_id"]]
+    articulation_kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
+    articulated = articulation_kind in {"prismatic", "revolute"}
+    gap = native_task_preparation_gap(task_context,
+        inferred_profile_id="articulated_open_close" if articulated else "rigid_pick_place")
+    if gap is not None:
+        return retain_gap(gap)
     declared_mpu = base_scene.get("meters_per_unit")
     if isinstance(declared_mpu, bool) or (declared_mpu is not None and (
             not isinstance(declared_mpu, (int, float)) or not math.isfinite(declared_mpu) or declared_mpu <= 0)):
@@ -677,8 +737,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     write_json(registration_path, registration)
     matrix = np.asarray(registration["source_to_runtime"])
     frames_by_id = {frame["frame_id"]: frame for frame in source_geometry["frames"]}
-    articulation_kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
-    articulated = articulation_kind in {"prismatic", "revolute"}
     coverage = subject_target.get("authoring_coverage") if articulated else None
     coverage_bound = coverage is not None and coverage_matches(coverage, target=subject_target,
                                                                source_geometry=source_geometry,

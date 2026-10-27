@@ -145,6 +145,69 @@ def _compile(tmp_path, overrides=None, **keyword_overrides):
     return preparation.compile_website_scene_preparation(**_arguments(tmp_path, overrides, **keyword_overrides))
 
 
+@pytest.mark.parametrize("family", [None, "rigid_pick_place", "rigid_pick_and_place", "rigid_object_pick_place",
+                                     "rigid_relocation", "articulated_open_close"])
+def test_existing_native_profiles_and_legacy_contexts_do_not_gain_a_new_hold(family):
+    context = {} if family is None else {"task_family": family}
+    assert preparation.native_task_preparation_gap(context) is None
+
+
+def test_a_novel_task_is_retained_without_compiling_it_as_pick_place(tmp_path, monkeypatch):
+    arguments = _arguments(tmp_path)
+    context = arguments["task_context"]
+    context.update(task_family="laundry_folding", description="Fold the towels.")
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    masks = arguments["task_masks"]
+    masks["deferred_target_ids"] = ["towels"]
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+
+    def unexpected(**_):
+        pytest.fail("A different task must not enter rigid-object placement or authoring")
+
+    monkeypatch.setattr(preparation, "register_source_to_runtime", unexpected)
+    result = preparation.compile_website_scene_preparation(**arguments)
+    assert result["status"] == "needs_input"
+    assert result["blockers"] == ["website_native_task_profile_preparation_required"]
+    assert result["intake_request"] is None and result["provider_mutation_performed"] is False
+    assert result["native_task_preparation_gap"]["description"] == "Fold the towels."
+    assert result["native_task_preparation_gap"]["job_disposition"] == "held_for_preparation"
+    assert result["binding"]["task_context_digest"] == context["context_digest"]
+    assert result["digest"] == canonical_digest(result, digest_field="digest")
+    assert not (tmp_path / "out/removal_manifest.composed.json").exists()
+    assert json.loads((tmp_path / "out/preparation.json").read_text()) == result
+
+
+def test_a_novel_task_still_requires_unchanged_source_bound_inputs(tmp_path):
+    arguments = _arguments(tmp_path)
+    arguments["task_context"]["task_family"] = "laundry_folding"
+    with pytest.raises(ValueError, match="input_digest_mismatch"):
+        preparation.compile_website_scene_preparation(**arguments)
+
+
+@pytest.mark.parametrize("family,mechanism,inferred", [
+    ("articulated_open_close", "", "rigid_pick_place"),
+    ("rigid_pick_and_place", "prismatic", "articulated_open_close"),
+])
+def test_explicit_task_semantics_cannot_be_changed_by_a_mechanism_hint(
+        tmp_path, monkeypatch, family, mechanism, inferred):
+    arguments = _arguments(tmp_path)
+    context, masks = arguments["task_context"], arguments["task_masks"]
+    context["task_family"] = family
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    next(row for row in masks["targets"] if row["target_id"] == "cup-1")["articulation_kind"] = mechanism
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+
+    def unexpected(**_):
+        pytest.fail("A semantic mismatch must hold before registration or authoring")
+
+    monkeypatch.setattr(preparation, "register_source_to_runtime", unexpected)
+    result = preparation.compile_website_scene_preparation(**arguments)
+    assert result["blockers"] == ["website_task_profile_mechanism_mismatch"]
+    assert result["intake_request"] is None
+    assert result["native_task_preparation_gap"]["task_family"] == family
+    assert result["native_task_preparation_gap"]["inferred_profile_id"] == inferred
+
+
 def test_owner_targets_and_weight_statements_reach_compiler_without_becoming_scorer_claims(tmp_path):
     context = _task_context()
     context["success_criteria"] = {"successDefinition": "Arrives intact", "successRate": 95, "cycleTimeSeconds": None, "unknown": False}
