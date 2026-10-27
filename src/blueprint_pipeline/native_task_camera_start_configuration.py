@@ -221,6 +221,11 @@ def runtime_external_camera_row(plan) -> dict[str, Any]:
                 and "external" in (profile.get("policy_camera_roles") or []))
     if not official:
         return deepcopy(next(c for c in plan["cameras"] if c["role"] == "external"))
+    return official_external_camera_row(plan)
+
+
+def official_external_camera_row(plan) -> dict[str, Any]:
+    """Arena's external camera at the plan's sealed offset, as a world scene-plan row."""
     width, height = EXTERNAL_RESOLUTION
     return {"role": "external", "policy_input": True, "scoring_input": False, "pose_frame": "world",
             "parent_prim_path": "{ENV_REGEX_NS}", "optical_convention": "opencv",
@@ -464,8 +469,15 @@ def materialize_camera_start_from_construction(*, plan, construction, source_bin
 def materialize_camera_start_from_plan(*, plan, source_binding, native_reference_gate,
         robot_asset_sha256, runtime_digest, calibration_digest,
         scene_collision_asset_path: Path | None = None,
-        task_asset_path: Path | None = None):
-    """Bind the selected reset without claiming a native rehearsal has occurred."""
+        task_asset_path: Path | None = None,
+        external_view_problems=None):
+    """Bind the selected reset without claiming a native rehearsal has occurred.
+
+    ``external_view_problems`` returns why a world camera row cannot see the task through
+    the captured scene (``scene_camera_visibility.packet_view_evaluator``). Arena's external
+    mount moves to the task-framing position when it frames the task out of view, and also
+    when the scene hides the task from it.
+    """
     reference = _verified_camera_reference(source_binding=source_binding,
         native_reference_gate=native_reference_gate, robot_asset_sha256=robot_asset_sha256)
     if plan.get('plan_digest') != canonical_digest(plan, digest_field='plan_digest'):
@@ -482,9 +494,15 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
         'source_calibration_digest': calibration_digest, 'historical_scene_visibility_adopted': False,
         'reset_authority': 'configured_robot_plan_requires_native_readback'}
     initial_framing = camera_framing_report(plan, value['source_joint_chain'], value['joint_reset_positions_rad'])
-    if any(not row['passed'] for row in initial_framing['views'] if row['camera_role'] == 'external'):
+    out_of_view = any(not row['passed'] for row in initial_framing['views'] if row['camera_role'] == 'external')
+    hidden = [] if out_of_view or external_view_problems is None else sorted(str(problem) for problem in
+        external_view_problems(official_external_camera_row(
+            {key: item for key, item in plan.items() if key != 'policy_canary_camera_start_configuration'})))
+    if out_of_view or hidden:
         value['external_camera_position_parent_m'] = task_external_camera_position(plan)
         value['external_camera_placement_source'] = 'sealed_task_motion_path'
+        if hidden:
+            value['external_camera_arena_mount_hidden_by_scene'] = hidden
     fixture = (plan.get('task_kind') == 'articulated_open_close'
                and str(plan.get('scene_id', '')).endswith('-development'))
     if fixture and (scene_collision_asset_path is None or task_asset_path is None):
