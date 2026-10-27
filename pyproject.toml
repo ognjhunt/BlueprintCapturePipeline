@@ -60,7 +60,7 @@ dependencies = [
     # around MessagePack.  Reading and writing them is on the appearance
     # path, not an optional extra, and it was already imported in a
     # scratch analysis before being declared here.
-    "msgpack>=1.0.0",
+    "msgpack>=1.2.3",
     "tomli>=2.0.0; python_version < '3.11'",
     "google-auth>=2.0.0",
     # The always-on systemd handoff listener imports pubsub_v1. Keep this in
