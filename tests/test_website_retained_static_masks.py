@@ -28,7 +28,7 @@ def _target(target_id: str, label: str, box: list[float], effect: str, dispositi
                                   "box_xywh_normalized": box}]}
 
 
-def _fixture(tmp_path, *, continuous=False):
+def _fixture(tmp_path, *, continuous=False, roles=None):
     video_path = tmp_path / "mask_view_plan" / "1" / "clip.mp4"
     video_path.parent.mkdir(parents=True)
     video_path.write_bytes(b"retained scene-specific selected original views")
@@ -41,6 +41,9 @@ def _fixture(tmp_path, *, continuous=False):
         _target("cabinet", "under-desk cabinet", [0, 0, .5, .5], "manipulated", "remove"),
         _target("backpack", "teal backpack", [.5, 0, .5, .5], "static_obstacle", "keep"),
         _target("desk", "desk", [0, .5, .5, .5], "static_obstacle", "keep")]}
+    for target in plan["targets"]:
+        if target["target_id"] in (roles or {}):
+            target["target_role"] = roles[target["target_id"]]
     sparse = [{"source_frame_id": frame, "model_frame_index": index, "decoded_pts_seconds": index / 30,
                "width": 4, "height": 4, "retained_video_digest": "sha256:scene-video"}
               for index, frame in enumerate(("frame-0", "frame-1"))]
@@ -163,3 +166,113 @@ def test_retained_reuse_fails_closed_for_cross_scene_or_unproved_tracks(tmp_path
         write_json(parsed_path, parsed)
     with pytest.raises(ValueError, match=error):
         complete_retained_static_task_masks(**kwargs)
+
+
+def _retained_capture(tmp_path, **options):
+    """A capture whose clean plate retained its first SAM response, the desk marked as the task's support."""
+    clean_plate = tmp_path / "capture" / "pipeline" / "clean_plate"
+    kwargs, paid_root = _fixture(clean_plate, roles={"desk": "support"}, **options)
+    write_json(clean_plate / "clean_plate_stage_manifest.json",
+               {"status": "noop", "source_frames": kwargs["source_geometry"], "task_masks": kwargs["task_masks"]})
+    write_json(clean_plate / "removal_plan.json", kwargs["plan"])
+    return clean_plate.parent, paid_root
+
+
+def _snapshot(root):
+    return {path: path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+def _posed_desk_views(tmp_path):
+    """Views of a floor, and the two retained frames looking down on the desk from 1.4 units up."""
+    import numpy as np
+    from tests.test_atlas_scene_automation import DOWN, view, walkthrough
+
+    frames = walkthrough(tmp_path, [1.4] * 9)
+    for index, frame_id in enumerate(("frame-0", "frame-1")):
+        frame = view(tmp_path, frame_id, width=40, height=40, centre=(0.3 * index, 1.4, 2.0), quaternion=DOWN,
+                     depth=1.4)
+        frame["depth"][20:, :20] = 1.4 - 0.74  # the desk top fills the quadrant its retained track covers
+        frame["pixel_alignment"] = {"matrix": np.diag([10.0, 10.0, 1.0]).tolist(), "source_grid": [4, 4],
+                                    "method": "pixel_checked_resize"}
+        frames.append(frame)
+    inputs = {"binding": {"source_video_digest": "sha256:scene-video"},
+              "frames": [{"frame_id": "frame-0", "timestamp_seconds": 0.0},
+                         {"frame_id": "frame-1", "timestamp_seconds": 1 / 30}]}
+    return frames, inputs
+
+
+def test_retained_clean_plate_tracks_cast_the_task_surface_vote(tmp_path):
+    from blueprint_pipeline.atlas_scene_measurements import estimate_sizes, surfaces_on_posed_views
+    from blueprint_pipeline.website_task_masks import retained_task_surfaces
+    from tests.test_atlas_scene_automation import plan as automation_plan
+
+    pipeline, _ = _retained_capture(tmp_path)
+    before = _snapshot(pipeline / "clean_plate")
+    selection = retained_task_surfaces(pipeline_root=pipeline, source_video_digest="sha256:scene-video")
+    # Read only: the retained selection checks every receipt and writes nothing.
+    assert _snapshot(pipeline / "clean_plate") == before
+    assert selection["status"] == "selected" and [row["target_id"] for row in selection["targets"]] == ["desk"]
+    frames, inputs = _posed_desk_views(tmp_path)
+    surfaces = surfaces_on_posed_views(frames, inputs, selection)
+    observed = surfaces[0]["track"]["observations"]
+    assert [row["source_frame_id"] for row in observed] == ["frame-0", "frame-1"]
+    assert all((row["width"], row["height"]) == (40, 40) for row in observed)
+    source = {key: value for key, value in selection.items() if key not in ("targets", "source_frame_registry")}
+    result = estimate_sizes(frames=frames, automation={**automation_plan(), "scale_references": []},
+                            pose_digest="pose", output=tmp_path / "measured.json", surfaces=surfaces,
+                            surface_source=source)
+    # The desk top stands 0.74 units up: the 0.74 m desk prior says 1.0 m per unit.
+    assert result["status"] == "estimated"
+    assert result["reference_agreement"]["basis"] == "surface_height_prior_only"
+    assert result["meters_per_unit_estimate"] == pytest.approx(1.0, rel=1e-3)
+    desk = result["height_priors"]["surfaces"][0]
+    assert desk["label"] == "task surface height: desk" and desk["observed_frame_ids"] == ["frame-0", "frame-1"]
+    assert result["height_priors"]["surface_source"] == source
+
+
+@pytest.mark.parametrize("change, reason", [
+    ("video", "clean_plate_source_video_differs"), ("missing", "clean_plate_task_masks_unavailable"),
+    ("ambiguous", "task_target_track_ambiguous"), ("response", "provider_receipts_invalid"),
+    ("gone", "clean_plate_retained_static_evidence_unreadable")])
+def test_a_missing_or_unproved_retained_track_casts_no_surface_vote(tmp_path, change, reason):
+    from blueprint_pipeline.website_task_masks import retained_task_surfaces
+
+    pipeline, paid_root = _retained_capture(tmp_path)
+    video = "sha256:scene-video"
+    if change == "video":
+        video = "sha256:another-capture"
+    elif change == "missing":
+        (pipeline / "clean_plate" / "clean_plate_stage_manifest.json").unlink()
+    elif change == "response":
+        (paid_root / "response-1.json").write_text('{"changed":true}')
+    elif change == "gone":
+        # The manifest still names a retained provider response that is no longer on disk.
+        (paid_root / "parsed-response-1.json").unlink()
+    else:
+        # A second desk track over the same region: the retained response cannot say which one is the desk.
+        result_path = paid_root / "tracks.json"
+        result = json.loads(result_path.read_text())
+        result["tracks"][3] = {**copy.deepcopy(result["tracks"][2]), "track_id": "desk-2"}
+        write_json(result_path, result)
+        parsed_path = paid_root / "parsed-response-2.json"
+        parsed = json.loads(parsed_path.read_text())
+        parsed["tracks"][1] = result["tracks"][3]
+        parsed["digest"] = canonical_digest(parsed, digest_field="digest")
+        write_json(parsed_path, parsed)
+    selection = retained_task_surfaces(pipeline_root=pipeline, source_video_digest=video)
+    assert selection["status"] == "unavailable" and reason in selection["reason"]
+    assert "targets" not in selection
+
+
+def test_a_view_the_clean_plate_registry_does_not_name_is_not_observed(tmp_path):
+    from blueprint_pipeline.atlas_scene_measurements import surfaces_on_posed_views
+    from blueprint_pipeline.website_task_masks import retained_task_surfaces
+
+    pipeline, _ = _retained_capture(tmp_path)
+    selection = retained_task_surfaces(pipeline_root=pipeline, source_video_digest="sha256:scene-video")
+    frames, inputs = _posed_desk_views(tmp_path)
+    inputs["frames"][0]["timestamp_seconds"] = 0.5  # another decoded frame under the same name
+    frames[-1]["pixel_alignment"] = {"matrix": [[10.0, 0, 0], [0, 10.0, 0], [0, 0, 1]], "source_grid": [8, 4]}
+    surfaces = surfaces_on_posed_views(frames, inputs, selection)
+    assert surfaces[0]["track"]["observations"] == []
+    assert surfaces_on_posed_views(frames, inputs, {"status": "unavailable", "reason": "x"}) == []
