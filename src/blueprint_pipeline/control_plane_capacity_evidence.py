@@ -118,23 +118,36 @@ def measure_mount(
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: float | None = None,
     pid_alive: Callable[[int], bool] = disk_budget._pid_alive,
+    role_targets: Mapping[str, str | Path] | None = None,
+    device_of: Callable[[Path], int] | None = None,
 ) -> dict[str, Any]:
     """One mount's admission projection, computed with the ledger's own functions.
 
     The floor, the live reservations on this mount's device and each chain
     role's measured footprint are the values a reservation on this mount would
-    see, so a projected refusal is a refusal intake and the workers will make.
+    see. Configured role targets are resolved by device, including bind mounts;
+    a crowded filesystem cannot refuse a role whose writes use another one.
     """
 
     observed = time.time() if now is None else float(now)
     path = Path(mount)
+    device_of = device_of or disk_budget.target_device
     try:
         usage = disk_usage(path)
-        device = disk_budget.target_device(path)
+        device = device_of(path)
     except OSError as exc:
         status = "absent" if isinstance(exc, FileNotFoundError) and not path.exists() else "unreadable"
         return {"mount": str(path), "status": status, "errno": exc.errno}
     try:
+        configured = (disk_budget.parse_role_targets(os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS"))
+                      if role_targets is None else {role: Path(target) for role, target in role_targets.items()})
+        if any(role not in disk_budget.ROLE_FOOTPRINT_BYTES or not target.is_absolute()
+               for role, target in configured.items()):
+            raise disk_budget.ControlPlaneDiskBudgetError("control_plane_disk_budget_role_targets_invalid")
+        role_devices = {
+            role: device_of(disk_budget._existing_ancestor(target))
+            for role, target in configured.items()
+        }
         floor = disk_budget.floor_bytes(int(usage.total))
         footprints = chain_footprints(reservation_root)
         critical_floor = disk_budget.floor_bytes(int(usage.total), role="control_plane_deploy")
@@ -144,6 +157,8 @@ def measure_mount(
     except disk_budget.ControlPlaneDiskBudgetError as exc:
         # The ledger refuses every reservation under this configuration too.
         return {"mount": str(path), "status": "configuration_invalid", "blocker": str(exc)}
+    except OSError as exc:
+        return {"mount": str(path), "status": "unreadable", "errno": exc.errno}
     try:
         reserved, live = disk_budget.live_reservations(
             reservation_root, device=device, now=observed, pid_alive=pid_alive
@@ -153,9 +168,11 @@ def measure_mount(
         return {"mount": str(path), "status": "unreadable", "blocker": str(exc)}
     available = max(0, int(usage.free) - floor - reserved)
     critical_available = max(0, int(usage.free) - critical_floor - reserved)
-    refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
+    assigned_roles = sorted(role for role in footprints if role_devices.get(role, device) == device)
+    refused = sorted(role for role in assigned_roles if footprints[role]["bytes"] > available)
     critical_refused = sorted(
-        role for role, row in critical_footprints.items() if row["bytes"] > critical_available
+        role for role, row in critical_footprints.items()
+        if role_devices.get(role, device) == device and row["bytes"] > critical_available
     )
     used_fraction = 0.0 if not usage.total else (usage.total - usage.free) / usage.total
     if used_fraction >= CRITICAL_FRACTION or refused or critical_refused:
@@ -177,6 +194,7 @@ def measure_mount(
         "available_bytes": available,
         "critical_available_bytes": critical_available,
         "refused_roles": refused,
+        "assigned_roles": assigned_roles,
         "critical_roles_refused": critical_refused,
         "footprints": footprints,
         "free_needed_for_one_role_bytes": floor + footprints["launch_preparation"]["bytes"],
@@ -202,7 +220,8 @@ def whole_chain_admission(
     reservations remain authoritative during execution. This earlier gate
     prevents starting a chain that already exceeds available headroom.
     """
-    measured = measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=now)
+    measured = measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=now,
+                             role_targets=role_targets, device_of=device_of)
     if not Path(mount).is_dir():
         measured = {"mount": str(mount), "status": "absent"}
     footprints = measured.get("footprints")
