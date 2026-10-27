@@ -169,6 +169,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     from .task_evaluation_surface_target import derive_surface_target, surface_execution_limits
     strategy = owner_task["strategy"]
     articulated = strategy == "articulated_open_close"
+    target_support, start_support = support_record, None
     task_identity = {"id": owner_task["task_id"], "version": "v1"}
     if articulated:
         require("destination" not in owner_task and isinstance(owner_task.get("articulation"), dict),
@@ -194,16 +195,29 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     else:
         destination = owner_task["destination"]
         require(destination.get("mode") == "existing_support_surface", "website_destination_asset_required")
+        if destination.get("support") is not None:
+            # The object ends on another surface (floor to desk): the region and its
+            # native binding use that surface; the workspace spans both.
+            surface, bound = destination["support"], preparation.get("destination_support")
+            require(isinstance(bound, dict) and bool(bound.get("face_indices")), "website_destination_support_unbound")
+            target_support = records.support_plane_input(scene_id=scene_id,
+                instance_id="website-destination-support", semantic_label=surface["description"],
+                sage_prim_path="/Root", bounds_min=surface["aabb_min_xyz"], bounds_max=surface["aabb_max_xyz"])
+            target_support.update(authority=support_record["authority"], physical_scale_measured=False,
+                                  source_face_indices=bound["face_indices"])
+            start_support = support_record
         target = derive_surface_target(destination={**destination, "kind": "green_region",
             "radius_m": math.hypot(*[(upper[i] - lower[i]) / 2 for i in (0, 1)]) + 0.01},
-            support=support_record, source_min=lower, source_max=upper, support_instance_id="website-support")
+            support=target_support, source_min=lower, source_max=upper,
+            support_instance_id=target_support["publisher_instance_id"], start_support=start_support)
         position = destination["position_world_m"]
         template, success, execution = records.pick_and_place_task_records(
             task_identity=task_identity, object_identity=construction["subject_identity"],
             start_center=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)],
             target_center=[position[0], position[1], position[2] + (upper[2] - lower[2]) / 2],
             source_min=lower, source_max=upper, grasp_axis=2, grasp_sign=1.0,
-            success=surface_execution_limits(success=owner_task["success"], support=support_record),
+            success=surface_execution_limits(success=owner_task["success"], support=target_support,
+                                             start_support=start_support),
             resolved_seed=1, jaw_axis=min(range(2), key=lambda i: upper[i] - lower[i]))
     # The estimated property ranges, the grasp-hold sensitivity verdict and the
     # registration's task-region residual travel with the task, so a result can
@@ -212,6 +226,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     template.update(instruction=(development["label"] + " " if development else "") + context["description"], instruction_subject_label=subject["description"],
                     visible_target_label=(owner_task["articulation"]["part_label"] if articulated else destination["visible_label"]),
                     **({} if articulated else {"surface_target": target}),
+                    **({"destination_support_plane": target_support} if start_support is not None else {}),
                     dimension_authority="estimated", physical_world_truth_claimed=False,
                     physical_property_screen={
                         "basis": physics["basis"], "dimensions_m": physics["dimensions_m"],

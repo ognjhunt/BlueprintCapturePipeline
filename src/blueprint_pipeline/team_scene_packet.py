@@ -121,7 +121,7 @@ def _runtime_source(path: Path) -> dict[str, Any]:
 
 
 def _cameras(profile: Mapping[str, Any], *, base: list[float], start: list[float],
-             target: list[float]) -> list[dict[str, Any]]:
+             target: list[float], whole_region: bool = False) -> list[dict[str, Any]]:
     from .task_evaluation_diagnostic_native_arena_compiler import _world_camera
 
     roles = {str(row["role"]): dict(row) for row in profile["cameras"]}
@@ -134,7 +134,8 @@ def _cameras(profile: Mapping[str, Any], *, base: list[float], start: list[float
                                                    max(base[2], start[2]) + 1.45], target=midpoint,
                              intrinsics=intrinsics)
     overview["policy_input"] = False
-    return [_world_camera("external", position=[base[0], base[1], base[2] + 1.35], target=start,
+    return [_world_camera("external", position=[base[0], base[1], base[2] + 1.35],
+                          target=midpoint if whole_region else start,
                           intrinsics=intrinsics), json.loads(json.dumps(roles["wrist"])), overview]
 
 
@@ -254,6 +255,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         raise TeamScenePacketError("team_scene_destination_body_unsupported")
     strategy = _read(documents[DEFINITION_CONTRACT_PATH], "team_scene_task_invalid").get("strategy")
     articulated = strategy == ARTICULATED_STRATEGY
+    destination_support = None
     if not articulated and strategy not in RIGID_STRATEGIES:
         raise TeamScenePacketError("team_scene_task_kind_unsupported")
     bundle = Path(configured_scene_bundle_path)
@@ -303,6 +305,18 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         support_top = float(adapter["source_documents"]["documents"]["support_plane"]["top_z_m"])
         subject = _read(documents[SOURCE_OBJECT_CONTRACT_PATH], "team_scene_subject_bounds_invalid")
         subject_bounds = (subject.get("aabb_min_xyz_m"), subject.get("aabb_max_xyz_m"))
+        destination_support = adapter["source_documents"]["documents"]["definition"].get("destination_support_plane")
+        if destination_support is not None:
+            # The object ends on another surface (floor to desk): the mount is level with the
+            # lower surface and the station faces the whole region from the start to the target.
+            try:
+                support_top = min(support_top, float(destination_support["top_z_m"]))
+                half = [(float(b) - float(a)) / 2.0 for a, b in zip(*subject_bounds, strict=True)]
+                subject_bounds = ([min(float(subject_bounds[0][i]), target[i] - half[i]) for i in range(3)],
+                                  [max(float(subject_bounds[1][i]), target[i] + half[i]) for i in range(3)])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise TeamScenePacketError("team_scene_destination_support_invalid") from exc
+            stance_center = [(a + b) / 2.0 for a, b in zip(*subject_bounds, strict=True)]
 
     appearance = dict((native_appearance_materializer or compiler._materialize_native_particlefield_appearance)(
         source_path=assets["appearance"], output_root=root / "native-appearance"))
@@ -311,10 +325,12 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
 
     # The station: a mount level with the task's support, on the closest clear floor facing the task,
     # out of a moving part's way.
+    whole_region = not articulated and destination_support is not None
     try:
         station = ground_stance(
             collision_path=assets["collision"], collision_sha256=_sha256(assets["collision"]), offset=[0.0, 0.0, 0.0],
-            subject_center=start, subject_minimum=[float(v) for v in subject_bounds[0]],
+            subject_center=stance_center if whole_region else start,
+            subject_minimum=[float(v) for v in subject_bounds[0]],
             subject_maximum=[float(v) for v in subject_bounds[1]],
             footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
             task_motion=motion)
@@ -330,7 +346,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         **({"articulated_kinematic_path_receipt": task["kinematic_path"]} if articulated else {}),
         "assets": rows, "robot_base_pose_world": base,
         "robot_joint_reset_positions_rad": dict(profile["robot_joint_reset_positions_rad"]),
-        "cameras": _cameras(profile, base=station["position_world_m"], start=start, target=target),
+        "cameras": _cameras(profile, base=station["position_world_m"], start=start, target=target,
+                            whole_region=whole_region),
         "scenario": adapter["native_episode_execution"].get("scenario"),
         "physics_frequency_hz": adapter["native_episode_execution"].get("physics_frequency_hz"),
         "configured_task_template_adapter": adapter,

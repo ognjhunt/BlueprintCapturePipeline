@@ -34,6 +34,8 @@ from .rigid_robot_free_probe_recorder import record_rigid_robot_free_probe
 
 SCENE_CONTEXT = "registered_support_box_and_replacement_only"
 _SUPPORT_PATH = "/World/RegisteredSupport"
+#: A task that ends on another surface (floor to desk) models that one too.
+_DESTINATION_SUPPORT_PATH = "/World/RegisteredDestinationSupport"
 _ROOT_PATH = "/World/Placement/Replacement"
 
 
@@ -60,7 +62,10 @@ def prepare_isaac_probe(*, revision: Mapping[str, Any], replacement_asset: str |
                         fetcher: Callable[[Mapping[str, Any]], bytes] | None = None) -> dict[str, Any]:
     """Everything the GPU run needs, bound to the revision before any simulator starts."""
 
-    from .task_evaluation_rigid_relocation_native_adapter import SUPPORT_PLANE_CONTRACT_PATH
+    from .task_evaluation_rigid_relocation_native_adapter import (
+        DEFINITION_CONTRACT_PATH,
+        SUPPORT_PLANE_CONTRACT_PATH,
+    )
     from .task_evaluation_scene_rigid_robot_free_readiness import fetch_revision_documents, rigid_task_for_revision
 
     documents = fetch_revision_documents(revision=revision, output_root=output_root, fetcher=fetcher)
@@ -76,13 +81,18 @@ def prepare_isaac_probe(*, revision: Mapping[str, Any], replacement_asset: str |
     if [float(v) for v in transform["orientation_xyzw"]] != [0.0, 0.0, 0.0, 1.0]:
         raise RigidRobotFreeProbeIsaacError("rigid_probe_scoring_frame_rotation_unsupported")
     support = json.loads(documents[SUPPORT_PLANE_CONTRACT_PATH].read_text())
-    lower, upper = [float(v) for v in support["bounds_min_xyz_m"]], [float(v) for v in support["bounds_max_xyz_m"]]
-    if any(a >= b for a, b in zip(lower, upper, strict=True)):
-        raise RigidRobotFreeProbeIsaacError("rigid_probe_support_bounds_invalid")
+    destination = json.loads(documents[DEFINITION_CONTRACT_PATH].read_text()).get("destination_support_plane")
+    bounds = []
+    for surface in [support] + ([destination] if destination is not None else []):
+        lower, upper = [float(v) for v in surface["bounds_min_xyz_m"]], [float(v) for v in surface["bounds_max_xyz_m"]]
+        if any(a >= b for a, b in zip(lower, upper, strict=True)):
+            raise RigidRobotFreeProbeIsaacError("rigid_probe_support_bounds_invalid")
+        bounds.append({"minimum": lower, "maximum": upper})
     pose = task["task_object_pose_world"]
     return {
         "plan": physics_plan(probe_context(spec)), "asset_path": str(asset),
-        "support_bounds_world_m": {"minimum": lower, "maximum": upper},
+        "support_bounds_world_m": bounds[0],
+        **({"destination_support_bounds_world_m": bounds[1]} if destination is not None else {}),
         "root_pose_world": [*map(float, pose["position_world_m"]), *map(float, pose["orientation_xyzw"])],
         "scoring_offset_m": [float(v) for v in transform["position_m"]],
         "binding": {"configured_scene_revision_digest": revision["revision_digest"],
@@ -149,13 +159,17 @@ def _build_stage(prepared: Mapping[str, Any]) -> dict[str, Any]:
     scene_api.CreateEnableEnhancedDeterminismAttr().Set(True)
     scene_api.CreateEnableGPUDynamicsAttr().Set(False)
     scene_api.CreateBroadphaseTypeAttr().Set("SAP")
-    lower, upper = prepared["support_bounds_world_m"]["minimum"], prepared["support_bounds_world_m"]["maximum"]
-    support = UsdGeom.Cube.Define(stage, Sdf.Path(_SUPPORT_PATH))
-    support.CreateSizeAttr(1.0)
-    support_xform = UsdGeom.Xformable(support.GetPrim())
-    support_xform.AddTranslateOp().Set(Gf.Vec3d(*[(a + b) / 2.0 for a, b in zip(lower, upper, strict=True)]))
-    support_xform.AddScaleOp().Set(Gf.Vec3f(*[b - a for a, b in zip(lower, upper, strict=True)]))
-    UsdPhysics.CollisionAPI.Apply(support.GetPrim())
+    supports = {_SUPPORT_PATH: prepared["support_bounds_world_m"],
+                **({_DESTINATION_SUPPORT_PATH: prepared["destination_support_bounds_world_m"]}
+                   if "destination_support_bounds_world_m" in prepared else {})}
+    for path, bounds in supports.items():
+        lower, upper = bounds["minimum"], bounds["maximum"]
+        support = UsdGeom.Cube.Define(stage, Sdf.Path(path))
+        support.CreateSizeAttr(1.0)
+        support_xform = UsdGeom.Xformable(support.GetPrim())
+        support_xform.AddTranslateOp().Set(Gf.Vec3d(*[(a + b) / 2.0 for a, b in zip(lower, upper, strict=True)]))
+        support_xform.AddScaleOp().Set(Gf.Vec3f(*[b - a for a, b in zip(lower, upper, strict=True)]))
+        UsdPhysics.CollisionAPI.Apply(support.GetPrim())
     root = prepared["root_pose_world"]
     placement = UsdGeom.Xform.Define(stage, Sdf.Path("/World/Placement"))
     placement.AddTranslateOp().Set(Gf.Vec3d(*root[:3]))
@@ -176,7 +190,7 @@ def _build_stage(prepared: Mapping[str, Any]) -> dict[str, Any]:
         for header in headers:
             paths = {str(PhysicsSchemaTools.intToSdfPath(int(getattr(header, name, 0))))
                      for name in ("actor0", "actor1", "collider0", "collider1")}
-            if any(p == bodies[0] or p.startswith(bodies[0] + "/") for p in paths) and _SUPPORT_PATH in paths:
+            if any(p == bodies[0] or p.startswith(bodies[0] + "/") for p in paths) and not paths.isdisjoint(supports):
                 # ContactEventType: FOUND and PERSIST mean touching, LOST means apart.
                 contact["lost" if str(getattr(header, "type", "")).endswith("LOST") else "found"] = True
 

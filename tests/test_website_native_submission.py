@@ -483,3 +483,32 @@ def test_a_ready_atlas_scene_registers_the_source_for_progression(tmp_path, monk
     assert registration["execution_authority_granted"] is False
     assert Path(registration["references"]["runtime_inputs"]["path"]).is_file()
     assert result["simulator_ready"] is False
+
+
+def test_a_destination_on_another_surface_reaches_the_frozen_template_by_name(tmp_path, monkeypatch):
+    # Floor to desk: the preparation binds the destination's own surface; the
+    # submission derives the region on it, spans both surfaces, and freezes it.
+    import blueprint_pipeline.website_task_preparation as preparation_module
+    real, calls = preparation_module.support_under, []
+
+    def another_surface(*args, **kwargs):
+        found = real(*args, **kwargs)
+        calls.append(found)
+        # Each preparation looks up the subject's support, then the destination's.
+        if len(calls) % 2 == 0 and found is not None:
+            found = {**found, "face_indices": [index + 10 ** 6 for index in found["face_indices"]]}
+        return found
+    monkeypatch.setattr(preparation_module, "support_under", another_surface)
+    monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
+    kwargs, _ = setup(tmp_path, monkeypatch)
+    preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
+    assert preparation["destination"]["support"]["description"] and "destination_support" in preparation
+    materialize_website_submission(**kwargs)
+    task = json.loads((kwargs["staging_root"] / "configuration/task.json").read_text())
+    plane = task["destination_support_plane"]
+    assert plane["publisher_instance_id"] == "website-destination-support"
+    assert plane["source_face_indices"] == preparation["destination_support"]["face_indices"]
+    assert task["surface_target"]["support_source_instance_id"] == "website-destination-support"
+    assert task["surface_target"]["surface_position_world_m"][2] == pytest.approx(plane["top_z_m"], abs=.005)
+    support = json.loads((kwargs["staging_root"] / "configuration/support.json").read_text())
+    assert support["publisher_instance_id"] == "website-support"

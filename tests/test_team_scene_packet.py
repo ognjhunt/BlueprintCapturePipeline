@@ -345,3 +345,27 @@ def test_a_right_exterior_is_compiled_in_only_where_the_scene_leaves_it_a_clear_
     # The station and the scene's own task are the same either way; the team registry reads it the same.
     assert three["robot_station"] == compiled["robot_station"]
     assert read_team_scene_inputs(three["path"])["base_native_packet"] == record["base_native_packet"]
+
+
+@pytest.mark.parametrize("rise", [-SUPPORT_TOP_Z, 0.3])
+def test_a_task_ending_on_another_surface_faces_the_whole_region_from_the_lower_surface(
+        tmp_path, monkeypatch, rise) -> None:
+    # Floor to desk (or table to shelf): the mount is level with the lower surface and the
+    # station faces the region from the start to the target, not the start alone.
+    from blueprint_pipeline import task_evaluation_rigid_relocation_native_adapter as adapter_module
+    real = adapter_module.adapt_rigid_relocation_task_template
+
+    def with_destination_surface(**kwargs):
+        adapter = real(**kwargs)
+        documents = adapter["source_documents"]["documents"]
+        documents["definition"]["destination_support_plane"] = {**documents["support_plane"],
+                                                                "top_z_m": SUPPORT_TOP_Z + rise}
+        return adapter
+    monkeypatch.setattr(adapter_module, "adapt_rigid_relocation_task_template", with_destination_surface)
+    compiled, request = _compile(tmp_path, _scene(tmp_path))
+    station = compiled["robot_station"]
+    x, y, z = request["robot_base_pose_world"]["position_world_m"]
+    assert z == pytest.approx(min(SUPPORT_TOP_Z, SUPPORT_TOP_Z + rise), abs=0.03)
+    start, target = request["task_spec"]["start_pose_world"], request["task_spec"]["target_position_world_m"]
+    middle = [(start[i] + target[i]) / 2.0 for i in (0, 1)]
+    assert station["yaw_rad"] == pytest.approx(math.atan2(middle[1] - y, middle[0] - x), abs=1e-6)
