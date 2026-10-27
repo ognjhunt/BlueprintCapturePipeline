@@ -57,7 +57,31 @@ def test_staged_runtime_uses_actual_bounded_production_import_closure(tmp_path):
     assert (package / 'control_plane_lane_historical_restore_worker.py').is_file()
     assert (package / 'control_plane_lane_historical_gc.py').is_file()
     assert not (package / 'live_pipeline_intake_service.py').exists()
-    assert len(list(package.iterdir())) <= 256
+    assert sum(path.stat().st_size for path in package.iterdir()) <= 8 * 1024**2
+
+
+def test_staged_runtime_rejects_aggregate_bytes_before_writing_overbudget_module(tmp_path):
+    path = Path(__file__).parents[1] / 'deploy/operator-door/stage-historical-runtime.py'
+    spec = importlib.util.spec_from_file_location('historical_stage_budget_fixture', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    origin = tmp_path / 'source'
+    origin.mkdir()
+    for name in ('__init__', 'control_plane_lane_historical_action'):
+        (origin / (name + '.py')).write_text('pass\n')
+    names = ['control_plane_lane_historical_gc', *(f'part_{index}' for index in range(8))]
+    for index, name in enumerate(names):
+        following = f'from . import {names[index + 1]}\n' if index + 1 < len(names) else 'pass\n'
+        raw = b'#' + b'x' * 950_000 + b'\n' + following.encode()
+        assert len(raw) < 1024**2  # Every source independently meets its per-file bound.
+        (origin / (name + '.py')).write_bytes(raw)
+    staged = tmp_path / 'historical-python'
+    with pytest.raises(ValueError, match='historical_generation_stage_unproven'):
+        module.stage(origin, staged)
+    package = staged / 'blueprint_pipeline'
+    assert (package / (names[-2] + '.py')).is_file()
+    assert not (package / (names[-1] + '.py')).exists()
+    assert sum(path.stat().st_size for path in package.iterdir()) <= 8 * 1024**2
 
 
 @pytest.mark.parametrize('archive', [False, True])
