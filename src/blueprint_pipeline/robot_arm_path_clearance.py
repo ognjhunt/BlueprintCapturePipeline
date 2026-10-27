@@ -652,6 +652,36 @@ def rigid_pick_place_clearance(*, robot_id: str, base_pose_world: Mapping[str, S
             "scene_obstacles_measured": scene_obstacles is not None}
 
 
+#: A carry verdict is the robot's, not one station's: this many of the closest clear stances are tried.
+CARRY_STATIONS = 8
+
+
+def first_carrying_stance(stances: Sequence[Mapping[str, Any]], *, collision_path: str | Path, robot_id: str,
+                          seeds: Sequence[Sequence[float]], **task: Any
+                          ) -> tuple[Mapping[str, Any] | None, dict[str, Any], list[tuple[Mapping[str, Any], dict]]]:
+    """The first of ``stances`` (best first) from which ``rigid_pick_place_clearance`` clears.
+
+    ``task`` holds that function's start, target and grasp arguments; the static scene is
+    ``collision_path``. Returns the stance (``None`` when none clears), the deciding report
+    and every attempt. With no clearing stance the report is the attempt that got
+    furthest; a pose reached but struck outranks one not reached.
+    """
+    attempts = []
+    for stance in stances:
+        centre = stance["position_world_m"]
+        radius = scene_radius_m(robot_id)
+        triangles = load_background_triangles(collision_path, centre=centre, radius=radius,
+                                              world_from_stage=np.eye(4))
+        report = rigid_pick_place_clearance(robot_id=robot_id, seeds=seeds,
+            base_pose_world={"position_world_m": centre, "orientation_xyzw": stance["orientation_xyzw"]},
+            scene_obstacles=sample_scene_obstacles(triangles, centre=centre, radius=radius), **task)
+        attempts.append((stance, report))
+        if report["status"] == "clear":
+            return stance, report, attempts
+    furthest = max(attempts, key=lambda a: (a[1]["furthest_sample"], "scene_strike" in a[1]["blockers"][0]))
+    return None, furthest[1], attempts
+
+
 def _packet_rigid_clearance(root: Path, plan: Mapping[str, Any], spec: Mapping[str, Any]) -> dict[str, Any] | None:
     """The rigid gate on a packet; ``None`` for a robot this module has no arm model of (a team's own)."""
     robot = plan.get("robot") or {}
