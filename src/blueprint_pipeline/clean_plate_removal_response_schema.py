@@ -22,10 +22,21 @@ _properties = {
         }, "required": ["timestamp_seconds", "box_xywh_normalized"],
     }},
 }
+#: A task that adds a new object absent from the video (a synthetic ball) names
+#: its design and the observed support it starts on; nothing visible stands in.
+SYNTHETIC_SHAPES = ("sphere", "box", "cylinder")
+_synthetic = {
+    **{name: {"type": "string"} for name in (
+        "semantic_label", "task_basis_quote", "start_support_target_id", "decision_reason")},
+    "shape": {"type": "string", "enum": list(SYNTHETIC_SHAPES)},
+    "dimensions_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number", "minimum": 0}},
+    "mass_kg": {"type": "number", "minimum": 0},
+}
 RESPONSE_SCHEMA = {
     "type": "object", "required": ["targets"], "properties": {
         "targets": {"type": "array", "items": {
             "type": "object", "properties": _properties, "required": list(_properties),
         }},
+        "synthetic_subject": {"type": "object", "properties": _synthetic, "required": list(_synthetic)},
     },
 }

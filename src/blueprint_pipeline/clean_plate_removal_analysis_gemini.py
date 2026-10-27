@@ -43,7 +43,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from .capture_audio_minimization import AudioRemovalError, audio_free_upload_copy
 from .common import sha256_file, utc_now_iso
-from .clean_plate_removal_response_schema import RESPONSE_SCHEMA
+from .clean_plate_removal_response_schema import RESPONSE_SCHEMA, SYNTHETIC_SHAPES
 from .website_task_context_contracts import admits_scene_preparation
 
 GATE_ENV = "BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS"
@@ -72,7 +72,18 @@ _REPAIR_RULES = {
         'Only a target whose task_effect is "manipulated" may carry a mechanism hint: its articulation_kind '
         'must be "prismatic" or "revolute" and its articulated_part must name the moving part. For every other '
         "target set articulation_kind and articulated_part to empty strings."),
+    "removal_analysis_synthetic_subject_start_support_invalid": (
+        "start_support_target_id must be the target_id of a reported target with target_role support and "
+        "task_effect static_contact: the observed surface the new object starts on."),
+    "removal_analysis_synthetic_subject_conflicts_with_captured_subject": (
+        "A task that adds a new object has no captured manipulated target: report the visible objects as "
+        "support, destination, obstacle or background, never as a stand-in for the new object."),
+    "removal_analysis_synthetic_subject_task_basis_missing": (
+        "synthetic_subject.task_basis_quote must copy, verbatim, the task words that name the new object."),
 }
+#: A designed object's every dimension (metres) and its mass (kilograms) lie in these ranges.
+SYNTHETIC_DIMENSION_RANGE_M = (0.02, 0.5)
+SYNTHETIC_MASS_RANGE_KG = (0.005, 5.0)
 
 _API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY", "GOOGLE_AI_API_KEY")
 _API_KEY_FILE_ENVS = (
@@ -126,8 +137,15 @@ PROMPT_INSTRUCTION = (
     "revolute (hinged). The surface the assembly stands on is its support. For every "
     "other target set articulated_part to '' and articulation_kind to ''. "
     "People are flagged for the privacy stage; this analysis does not clear them. "
+    "When the confirmed task explicitly adds a NEW object that does not appear in the video (for example "
+    "'add a synthetic ball', 'a new box placed on the floor'), never report a visible object as a stand-in and "
+    "report no manipulated target. Report the observed surface it starts on as a support target with "
+    "static_contact, and the destination as usual. Also return the key 'synthetic_subject' with "
+    "semantic_label, shape (sphere, box or cylinder), dimensions_m [x, y, z] in metres for a typical such "
+    "object, mass_kg, task_basis_quote copied verbatim from the task words naming the new object, "
+    "start_support_target_id (that support's target_id) and decision_reason. Omit synthetic_subject otherwise. "
     "Return compact JSON only, "
-    "an object with a single key 'targets' whose value is a list. Enumerate the "
+    "an object with the key 'targets' whose value is a list. Enumerate the "
     "DISTINCT targets across the whole video (do not repeat one object per frame). "
     "For each target provide: 'target_id' (stable short slug), 'semantic_label' "
     "(short phrase), 'segmentation_prompt' (a minimal concrete visual concept for SAM, typically "
@@ -379,6 +397,71 @@ def parse_removal_plan_response(
     return targets
 
 
+def _response_json(text: Any) -> Any:
+    cleaned = _string(text)
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", cleaned, re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1).strip()
+    try:
+        return json.loads(cleaned) if cleaned else None
+    except json.JSONDecodeError:
+        return None
+
+
+def validate_synthetic_subject(value: Any) -> list[str]:
+    """Form errors of a designed subject; empty means well-formed."""
+    if not isinstance(value, Mapping) or value.get("shape") not in SYNTHETIC_SHAPES:
+        return ["synthetic_subject_shape_invalid"]
+    dims, mass = value.get("dimensions_m"), value.get("mass_kg")
+    low, high = SYNTHETIC_DIMENSION_RANGE_M
+    if (not isinstance(dims, list) or len(dims) != 3
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not low <= v <= high for v in dims)
+            or isinstance(mass, bool) or not isinstance(mass, (int, float))
+            or not SYNTHETIC_MASS_RANGE_KG[0] <= mass <= SYNTHETIC_MASS_RANGE_KG[1]):
+        return ["synthetic_subject_design_out_of_range"]
+    if ((value["shape"] == "sphere" and max(dims) - min(dims) > 1e-3)
+            or (value["shape"] == "cylinder" and abs(dims[0] - dims[1]) > 1e-3)):
+        return ["synthetic_subject_shape_dimensions_invalid"]
+    if not _string(value.get("start_support_target_id")) or not _string(value.get("task_basis_quote")):
+        return ["synthetic_subject_binding_missing"]
+    return []
+
+
+def parse_synthetic_subject(text: str, *, targets: Sequence[Mapping[str, Any]],
+                            task_description: str) -> Optional[dict[str, Any]]:
+    """The new object a task adds, absent from the video; ``None`` when the task adds none.
+
+    The design is a proposal for a synthetic object, never a measurement. It must
+    quote the task, start on a reported static support, and stand alone: a task
+    that adds an object has no captured manipulated subject.
+    """
+    data = _response_json(text)
+    raw = data.get("synthetic_subject") if isinstance(data, Mapping) else None
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("removal_analysis_synthetic_subject_invalid")
+    quote = _string(raw.get("task_basis_quote"))
+    if not quote or quote not in task_description:
+        raise ValueError("removal_analysis_synthetic_subject_task_basis_missing")
+    support = next((row for row in targets if row["target_id"] == _string(raw.get("start_support_target_id"))), None)
+    if support is None or support["target_role"] != "support" or support["task_effect"] != "static_contact":
+        raise ValueError("removal_analysis_synthetic_subject_start_support_invalid")
+    if any(row["task_effect"] == "manipulated" for row in targets):
+        raise ValueError("removal_analysis_synthetic_subject_conflicts_with_captured_subject")
+    if not _string(raw.get("decision_reason")):
+        raise ValueError("removal_analysis_task_reason_required")
+    value = {"semantic_label": _string(raw.get("semantic_label"))[:160] or raw.get("shape"),
+             "shape": raw.get("shape"), "dimensions_m": raw.get("dimensions_m"), "mass_kg": raw.get("mass_kg"),
+             "task_basis_quote": quote, "start_support_target_id": support["target_id"],
+             "decision_reason": _string(raw.get("decision_reason")),
+             "design_basis": "synthetic_design_choice", "physical_measurement": False}
+    errors = validate_synthetic_subject(value)
+    if errors:
+        raise ValueError("removal_analysis_" + errors[0])
+    return {**value, "dimensions_m": [float(v) for v in value["dimensions_m"]], "mass_kg": float(value["mass_kg"])}
+
+
 def build_removal_plan(
     *,
     targets: Sequence[Mapping[str, Any]],
@@ -388,6 +471,7 @@ def build_removal_plan(
     video_path: Optional[Path] = None,
     video_digest: Optional[str] = None,
     blockers: Optional[Sequence[str]] = None,
+    synthetic_subject: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Assemble a ``clean_plate_removal_plan.v1`` record."""
 
@@ -417,6 +501,7 @@ def build_removal_plan(
         "movable_removal_count": len(movable_removals),
         "person_target_count": len(people),
         "targets": normalized_targets,
+        **({"synthetic_subject": dict(synthetic_subject)} if synthetic_subject is not None else {}),
         # People removal is never authorized here; the privacy pipeline owns it.
         "authority_boundary": {
             "authorizes_person_pixel_removal": False,
@@ -483,6 +568,10 @@ def validate_removal_plan(plan: Mapping[str, Any]) -> list[str]:
             errors.append("removal_plan_target_id_duplicate")
         else:
             seen_ids.add(target_id)
+    if "synthetic_subject" in plan:
+        errors.extend(validate_synthetic_subject(plan["synthetic_subject"]))
+        if plan["synthetic_subject"].get("start_support_target_id") not in seen_ids:
+            errors.append("synthetic_subject_start_support_missing")
     return errors
 
 
@@ -739,6 +828,7 @@ def _analyze_removal_targets(
     repair: Optional[dict[str, Any]] = None
     try:
         targets = parse_removal_plan_response(analysis["text"], strict=True, task_description=description)
+        synthetic = parse_synthetic_subject(analysis["text"], targets=targets, task_description=description)
     except ValueError as exc:
         repair = {"turns": VALIDATION_REPAIR_TURNS, "failed_check": str(exc)}
         try:
@@ -747,6 +837,7 @@ def _analyze_removal_targets(
                 prompt=_video_prompt(processing_mode, task_context or {}),
                 previous_text=analysis["text"], error=str(exc))
             targets = parse_removal_plan_response(repaired["text"], strict=True, task_description=description)
+            synthetic = parse_synthetic_subject(repaired["text"], targets=targets, task_description=description)
         except ValueError as again:
             return empty_removal_plan(status="blocked", model=model_name, processing=processing_mode,
                                       blockers=[str(exc), f"validation_repair_failed:{again}"],
@@ -764,6 +855,7 @@ def _analyze_removal_targets(
         decision_blockers.append("task_relevant_target_not_observed")
     plan = build_removal_plan(
         targets=targets,
+        synthetic_subject=synthetic,
         status="blocked" if decision_blockers else "completed",
         blockers=decision_blockers,
         model=model_name,
