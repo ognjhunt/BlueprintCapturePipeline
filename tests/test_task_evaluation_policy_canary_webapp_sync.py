@@ -244,6 +244,66 @@ def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
     assert "sync-secret" not in json.dumps(synced)
 
 
+@pytest.mark.parametrize(('operator', 'changes', 'accepted'), [
+    (True, {}, True),
+    (False, {}, False),
+    ('empty', {}, False),
+    (True, {'provider': 'resend'}, False),
+    (True, {'attempts': 1}, False),
+    (True, {'attempts': False}, False),
+    (True, {'message_id': 'unexpected-message'}, False),
+    (True, {'run_result_digest': 'sha256:' + 'f' * 64}, False),
+])
+def test_canary_sync_accepts_bound_operator_notification_omission(monkeypatch, operator, changes, accepted):
+    delivery, result = _projection()
+    notification = {'terminal_state': 'blocked', 'status': 'not_requested', 'attempts': 0,
+                    'provider': 'none', 'message_id': None, 'accepted_at': None,
+                    'delivered_at': None, 'run_result_digest': result['projection_digest'], **changes}
+    receipt = {'schema_version': 'capture_task_evaluation_policy_canary_publication_receipt.v1',
+               'status': 'blocked', 'already_exists': True, 'capture_session_id': 'capture-839873',
+               'intake_id': 'intake-839873', 'run_id': result['run_id'],
+               'request_digest': result['request_digest'], 'configuration_digest': result['configuration_digest'],
+               'result_delivery_digest': delivery['delivery_digest'],
+               'policy_canary_projection_digest': result['projection_digest'], 'notification_delivery': notification}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return json.dumps(receipt).encode()
+
+    monkeypatch.setattr('blueprint_pipeline.task_evaluation_run_webapp_sync.urllib_request.urlopen',
+                        lambda *_args, **_kwargs: Response())
+    operator_binding = {'plan_digest': 'sha256:' + 'd' * 64,
+                        'operator_registration_digest': 'sha256:' + 'e' * 64} if operator else {}
+    if operator == 'empty':
+        operator_binding = {'operator_registration_digest': ''}
+    def synchronize():
+        return sync_task_evaluation_policy_canary_to_webapp(
+            capture_session_id='capture-839873', intake_id='intake-839873', run_id=result['run_id'],
+            request_digest=result['request_digest'], configuration_digest=result['configuration_digest'],
+            result_status='blocked', result_delivery=delivery, policy_canary_result=result,
+            endpoint_url='https://webapp.example/api/internal/pipeline/task-evaluation-runs',
+            token='sync-secret', max_attempts=1, **operator_binding)
+
+    if operator == 'empty':
+        with pytest.raises(ValueError, match='policy_canary_operator_publication_binding_missing'):
+            synchronize()
+        return
+    synced = synchronize()
+    assert (synced['status'] == 'succeeded') is accepted
+    if accepted:
+        assert synced['notification_delivery'] == notification
+        assert synced['response']['already_exists'] is True
+    else:
+        assert synced['reason'] == 'response_binding_mismatch'
+    assert 'sync-secret' not in json.dumps(synced)
+
+
 @pytest.mark.parametrize("operator", [False, True])
 def test_canary_sync_preserves_report_when_website_notification_fails(monkeypatch, operator) -> None:
     delivery, result = _projection()

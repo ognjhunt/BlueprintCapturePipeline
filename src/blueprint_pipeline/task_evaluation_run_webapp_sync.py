@@ -386,7 +386,7 @@ def sync_task_evaluation_policy_canary_to_webapp(
     retry_delay_seconds: float = 0.0,
     timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
-    """Publish a canary once and require Website-owned email delivery readback."""
+    """Publish a canary and verify the Website-owned notification disposition."""
 
     payload = build_task_evaluation_policy_canary_webapp_publication(
         capture_session_id=capture_session_id,
@@ -481,11 +481,18 @@ def sync_task_evaluation_policy_canary_to_webapp(
                         )
                     )
                     and notification.get("terminal_state") == expected_terminal
-                    and notification.get("status")
-                    in {"accepted", "delivered", "failed"}
                     and isinstance(notification.get("attempts"), int)
                     and not isinstance(notification.get("attempts"), bool)
-                    and notification["attempts"] >= 1
+                    and (
+                        (notification.get("status") in {"accepted", "delivered", "failed"}
+                         and notification["attempts"] >= 1)
+                        or ("operator_registration_digest" in payload
+                            and notification.get("status") == "not_requested"
+                            and notification.get("provider") == "none"
+                            and notification["attempts"] == 0
+                            and all(notification.get(key) is None for key in
+                                    ("message_id", "accepted_at", "delivered_at", "failure_reason")))
+                    )
                     and notification.get("run_result_digest")
                     == common["policy_canary_projection_digest"]
                 )
