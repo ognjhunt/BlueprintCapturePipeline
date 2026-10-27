@@ -129,7 +129,7 @@ def validate_preparation_request(*, request, task_context, authority, now):
         or not isinstance(source.get("content_digest"), str)
         or source.get("binding_id") != "website-splat-" + source["content_digest"][7:39]
         or request.get("task", {}).get("subject", {}).get("geometry_origin")
-        != "removed_before_reconstruction"
+        not in {"removed_before_reconstruction", "synthetic_design"}
         or request.get("task", {}).get("task_id")
         != "website-" + task_context["context_digest"][7:27]
         or any(

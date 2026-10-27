@@ -40,10 +40,13 @@ def test_capture_mounting_and_shared_instance_pose_reach_the_frozen_template():
 
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
           max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False,
-          authoring_backend=None):
+          authoring_backend=None, synthetic=False):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
+    if synthetic:
+        from tests.test_website_task_preparation import synthetic_arguments
+        args = synthetic_arguments(args)
     if articulated:
         from tests.test_website_task_preparation import _assembly_inputs
         args.update(_assembly_inputs(capture))
@@ -512,3 +515,19 @@ def test_a_destination_on_another_surface_reaches_the_frozen_template_by_name(tm
     assert task["surface_target"]["surface_position_world_m"][2] == pytest.approx(plane["top_z_m"], abs=.005)
     support = json.loads((kwargs["staging_root"] / "configuration/support.json").read_text())
     assert support["publisher_instance_id"] == "website-support"
+
+
+def test_a_designed_subject_reaches_construction_as_supplied_geometry_with_no_provider(tmp_path, monkeypatch):
+    # The ball the task adds: its candidate is the design, stage 3 authors it as
+    # supplied geometry with no spend, and no generative backend is requested.
+    monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
+    kwargs, _ = setup(tmp_path, monkeypatch, synthetic=True)
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"]
+    recipe = json.loads((root / "configuration/recipe.json").read_text())
+    third = recipe["stage_sequence"][2]
+    assert third["adapter"]["id"] == "provided_mesh_rigid_authoring" and third["execution_class"] == "no_spend"
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    assert "replacement_authoring_backend" not in request
+    assert request["scene"]["website_native_inputs"]["frames"] == []
+

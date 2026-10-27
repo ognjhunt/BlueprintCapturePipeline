@@ -110,9 +110,9 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     authoring = construction["configurations"][2]
     articulated = owner_task["strategy"] == "articulated_open_close"
     try:
-        spend = records.spend_block(authoring["authoring_backend"],
+        spend = records.spend_block(authoring.get("authoring_backend", "content_agents"),
             authoring_max_cost_usd=(frozen_authoring_cap(authoring)
-                if authoring["authoring_backend"] == ARTISAN_BACKEND
+                if authoring.get("authoring_backend") == ARTISAN_BACKEND
                 else None if not articulated else 7.0
                 if authoring.get("authoring_model_provider") == "anthropic"
                 else MAX_ASTRA_AUTHORING_SPEND_USD),
@@ -259,9 +259,11 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         "status": "frozen_before_scene_configuration_run",
         "center_xyz_m": template["start_center_xyz_m"],
         "source_object_id": construction["configurations"][2]["source_object_identity"],
-        "review_label": subject["description"], "geometry_origin": "removed_before_reconstruction",
+        "review_label": subject["description"],
+        "geometry_origin": subject.get("geometry_origin", "removed_before_reconstruction"),
         "aabb_min_xyz_m": lower, "aabb_max_xyz_m": upper,
-        "complete_object_geometry": False, "source_object_is_physics_authority": False})
+        "complete_object_geometry": subject.get("geometry_origin") == "synthetic_design",
+        "source_object_is_physics_authority": False})
     def plan(name, **fields):
         return stage.json(f"configuration/{name}.json", {"schema_version": f"website_{name}.v1",
             "status": "execute_during_scene_configuration_run", "scene_id": scene_id,
@@ -339,7 +341,9 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         # An ARTISAN stage quotes exactly the cap its configuration froze; the
         # stage preflight refuses any other quote.
         "spend": spend}
-    request["replacement_authoring_backend"] = construction["configurations"][2]["authoring_backend"]
+    if "authoring_backend" in construction["configurations"][2]:
+        # A supplied (designed) mesh is authored without a generative backend.
+        request["replacement_authoring_backend"] = construction["configurations"][2]["authoring_backend"]
     if construction["configurations"][2].get("authoring_model_provider") == "anthropic":
         request["replacement_authoring_model_provider"] = "anthropic"
     if construction["configurations"][2].get("authoring_agent_runtime") == "openai_agents_api":

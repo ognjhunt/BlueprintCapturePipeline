@@ -282,7 +282,8 @@ def _runtime(path: Path) -> dict[str, Any]:
             or value.get("claim_ceiling") != "development_only"
             or value.get("collision_excision_required") is not False
             or value.get("appearance_removal_required") is not False
-            or value.get("subject", {}).get("geometry_origin") != "removed_before_reconstruction"
+            or value.get("subject", {}).get("geometry_origin") not in {"removed_before_reconstruction",
+                                                                       "synthetic_design"}
             or value.get("coordinate_frame") != {"up_axis": "Z", "unit": "estimated_meters",
                                                  "physical_scale_measured": False}):
         raise ValueError("website_native_background_inputs_invalid")
@@ -374,6 +375,10 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
     stages = records.stage_sequence()
     for old, new in zip(stages[:2], (first["stage"], second["stage"]), strict=True):
         old.update(new)
+    from .website_synthetic_subject import AUTHORING_ADAPTER, AUTHORING_METHOD
+    if third.get("authoring_method") == AUTHORING_METHOD:
+        # A designed subject's mesh is supplied: authored as given, no provider called.
+        stages[2].update(adapter={"id": AUTHORING_ADAPTER, "version": "v1"}, execution_class="no_spend")
     references = {row["contract_path"]: row for row in first["references"] + second["references"]}
     return {"schema_version": "website_native_construction_inputs.v1", "scene_identity": scene_identity,
             "subject_identity": identity, "stage_sequence": stages, "configurations": configurations,

@@ -850,3 +850,52 @@ def test_an_alignment_that_is_not_a_proper_rigid_motion_is_refused(tmp_path, tra
     with pytest.raises(ValueError, match="website_registration_anchor_frame_invalid"):
         preparation.register_source_to_runtime(source_geometry=geometry,
             collision_mesh_path=Path(base["collision_mesh_path"]), anchor=anchor)
+
+
+SYNTHETIC_BALL = {"semantic_label": "ball", "shape": "sphere", "dimensions_m": [0.065, 0.065, 0.065], "mass_kg": 0.06,
+                  "task_basis_quote": "a synthetic ball", "start_support_target_id": "table-1",
+                  "decision_reason": "The task adds a ball the video does not show.",
+                  "design_basis": "synthetic_design_choice", "physical_measurement": False}
+
+
+def synthetic_arguments(args):
+    """The fixture task, with its cup replaced by a designed ball starting on the observed table."""
+    masks = args["task_masks"]
+    masks["targets"][0] = {**masks["targets"][0], "target_id": "table-1", "semantic_label": "table",
+                           "task_effect": "static_contact", "disposition": "keep", "target_role": "support",
+                           "estimated_visible_bounds": _bounds([-0.25, 0.48, 1.3], [0.25, 0.5, 1.7])}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    args["removal_manifest"] = {"schema_version": REMOVAL["schema_version"], "entries": [],
+                                "synthetic_subject": dict(SYNTHETIC_BALL)}
+    context = {**args["task_context"], "description": "Place a synthetic ball onto the tray."}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    args["task_context"] = context
+    return args
+
+
+def test_a_designed_ball_starts_on_the_named_support_and_is_authored_as_supplied_geometry(tmp_path):
+    from blueprint_pipeline.website_synthetic_subject import AUTHORING_METHOD
+
+    result = preparation.compile_website_scene_preparation(**synthetic_arguments(_arguments(tmp_path)))
+    assert result["status"] == "intake_ready", result["blockers"]
+    subject = result["subject"]
+    assert subject["geometry_origin"] == "synthetic_design" and subject["complete_object_dimensions"] is True
+    dims = [b - a for a, b in zip(subject["aabb_min_xyz"], subject["aabb_max_xyz"])]
+    assert dims == pytest.approx([0.065] * 3, abs=1e-6)
+    authoring = result["authoring_inputs"]
+    assert authoring["adapter"] == "provided_mesh_rigid_authoring" and authoring["source_frames"] == []
+    assert authoring["configuration"]["authoring_method"] == AUTHORING_METHOD
+    assert "authoring_backend" not in authoring["configuration"]
+    assert authoring["configuration"]["required_output"]["mass_kg_bounds"] == pytest.approx([0.054, 0.066])
+    assert result["recipe_plan"]["rigid_replacement_authoring"] == "provided_mesh_rigid_authoring"
+    start = result["synthetic_subject"]["start"]
+    assert start["rule"] == "closest_clear_spot_on_named_support_to_destination" and start["support_lookups"] >= 1
+    # The ball rests on the table it was given, not wherever its region box ends.
+    assert result["support"]["face_indices"]
+
+
+def test_a_designed_subject_cannot_stand_beside_a_removed_captured_one(tmp_path):
+    args = synthetic_arguments(_arguments(tmp_path))
+    args["removal_manifest"]["entries"] = list(REMOVAL["entries"])
+    with pytest.raises(ValueError, match="website_synthetic_subject_binding_invalid"):
+        preparation.compile_website_scene_preparation(**args)
