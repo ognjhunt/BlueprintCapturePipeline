@@ -1278,8 +1278,10 @@ def test_website_native_profile_gap_finishes_preparation_without_native_executio
     _patch_pipeline_side_effects(monkeypatch)
 
     def current_task(**identity):
+        # Folding has a task-family preparation path; this fixture exercises
+        # the separate hold for a family with no implemented profile.
         context = {**_confirmed_website_task(**identity),
-                   "task_family": "articulated_open_close" if mismatch else "laundry_folding"}
+                   "task_family": "articulated_open_close" if mismatch else "unimplemented_task_family"}
         context["context_digest"] = canonical_digest(context, digest_field="context_digest")
         return context
 
