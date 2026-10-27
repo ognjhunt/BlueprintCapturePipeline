@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -222,17 +222,110 @@ def camera_coverage(*, colliders: Sequence[tuple[Any, np.ndarray]], centres: np.
     return row
 
 
-def scene_camera_visibility(packet_dir: str | Path) -> dict[str, Any]:
-    """Measure contact-patch visibility for every world-fixed camera of a packet's plan."""
-    from .decision_evidence_contracts import canonical_digest
-    from .native_task_asset_composition_gate import articulated_reset_contact_region
+def _bound(root: Path, row: Mapping[str, Any]) -> Path:
+    path = (root / str(row.get("usd_path") or "")).resolve()
+    if root.resolve() not in path.parents or not path.is_file() or _file_sha256(path) != row.get("sha256"):
+        raise SceneCameraVisibilityError("scene_camera_packet_asset_unbound:" + str(row.get("semantic_role")))
+    return path
 
-    root = Path(packet_dir)
-    plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
+
+def _plan_parts(plan: Mapping[str, Any]) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]], Mapping[str, Any]]:
     objects = [o for o in plan.get("objects", []) if isinstance(o, Mapping)]
     subjects = [o for o in objects if o.get("task_subject") is True or o.get("semantic_role") == "task_object"]
     appearance = [o for o in objects if o.get("semantic_role") == "scene_appearance"]
-    alignment = plan.get("appearance_frame_alignment") or {}
+    return subjects, appearance, plan.get("appearance_frame_alignment") or {}
+
+
+def _scene_geometry(root: Path, plan: Mapping[str, Any], subject: Mapping[str, Any], appearance: Mapping[str, Any],
+                    alignment: Mapping[str, Any]) -> tuple[list[tuple[Any, np.ndarray]], np.ndarray, np.ndarray,
+                                                          Mapping[str, Any] | None]:
+    """The task asset's placed colliders, the opaque splat Gaussians and the contact region (or None)."""
+    from .native_task_asset_composition_gate import articulated_reset_contact_region
+
+    try:
+        region = articulated_reset_contact_region(plan)
+    except ValueError as exc:
+        raise SceneCameraVisibilityError(str(exc)) from exc
+    reset = subject.get("reset_state") or {}
+    try:
+        model = load_asset_model(_bound(root, subject))
+    except ScenePhysicsPreflightError as exc:
+        raise SceneCameraVisibilityError("scene_camera_asset_unreadable:" + str(exc)) from exc
+    world_from_asset = _pose_matrix(reset.get("root_pose_world") or subject["pose_world"])
+    poses = {b: world_from_asset @ p for b, p in body_poses(model, reset.get("joint_positions")).items()}
+    colliders = list(_placed(model.colliders, poses))
+    if not colliders:
+        raise SceneCameraVisibilityError("scene_camera_asset_colliders_missing")
+    centres, radii, opacity = load_splat(_bound(root, appearance), str(alignment.get("appearance_prim_path") or ""),
+                                         _pose_matrix(appearance["pose_world"]))
+    keep = opacity >= MINIMUM_OPACITY
+    return colliders, centres[keep], radii[keep], region
+
+
+def coverage_problems(row: Mapping[str, Any]) -> list[str]:
+    """Why one camera's measured coverage keeps it from seeing the task; empty when it sees it."""
+    role = row.get("role")
+    if row.get("asset_in_view") is False or row.get("patch_in_view") is False:
+        return [f"scene_camera_contact_outside_view:{role}"]
+    problems = []
+    patch, on_asset, occluded = row["patch_pixels"], row["patch_asset_pixels"], row["patch_occluded_pixels"]
+    if on_asset < max(1.0, MINIMUM_ASSET_SHARE * patch):
+        problems.append(f"scene_camera_contact_not_on_asset:{role}:{on_asset}/{patch}px")
+    if occluded > max(MINIMUM_OCCLUDED_PIXELS, OCCLUDED_SHARE_LIMIT * max(1, on_asset)):
+        problems.append(f"scene_camera_contact_occluded_by_scene:{role}:{100 * occluded / max(1, on_asset):.0f}%")
+    return problems
+
+
+def packet_view_evaluator(packet_dir: str | Path) -> Callable[[Mapping[str, Any]], list[str]]:
+    """The problems that keep a proposed world camera from seeing this packet's task through its scene.
+
+    The coverage rule of ``scene_camera_visibility`` plus the plan's sealed framing floor, for a
+    camera the plan does not carry yet (``droid_exterior_cameras``). A rigid task is held to
+    whole-asset coverage. Raises ``SceneCameraVisibilityError`` when the packet cannot be measured.
+    """
+    from .native_task_camera_framing_expectation import (
+        FRAMING_MINIMUM_EXPECTED_BBOX_AREA_PX,
+        NativeTaskCameraFramingExpectationError,
+        camera_framing_expectation,
+    )
+
+    root = Path(packet_dir)
+    try:
+        plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SceneCameraVisibilityError("scene_camera_packet_plan_unreadable") from exc
+    subjects, appearance, alignment = _plan_parts(plan)
+    if len(subjects) != 1 or subjects[0].get("object_type") not in ("ARTICULATION", "RIGID"):
+        raise SceneCameraVisibilityError("scene_camera_task_subject_unresolved")
+    if len(appearance) != 1 or alignment.get("representation") != SPLAT_REPRESENTATION:
+        raise SceneCameraVisibilityError("scene_camera_appearance_not_a_gaussian_splat")
+    colliders, centres, radii, region = _scene_geometry(root, plan, subjects[0], appearance[0], alignment)
+    observability = plan.get("task_object_observability") or {}
+
+    def evaluate(camera: Mapping[str, Any]) -> list[str]:
+        role = camera.get("role")
+        problems = coverage_problems(camera_coverage(colliders=colliders, centres=centres, radii=radii,
+                                                     camera=camera, region=region))
+        try:
+            expectation = camera_framing_expectation(
+                camera=camera, object_extent_m=observability.get("task_object_extent_m") or [],
+                object_positions_world=observability.get("object_positions_world") or [])
+        except NativeTaskCameraFramingExpectationError as exc:
+            return [*problems, *(f"{value}:{role}" for value in exc.errors)]
+        if expectation is None or expectation["expected_bbox_area_px"] < FRAMING_MINIMUM_EXPECTED_BBOX_AREA_PX:
+            problems.append(f"native_task_arena_camera_framing_infeasible:{role}")
+        return problems
+
+    return evaluate
+
+
+def scene_camera_visibility(packet_dir: str | Path) -> dict[str, Any]:
+    """Measure contact-patch visibility for every world-fixed camera of a packet's plan."""
+    from .decision_evidence_contracts import canonical_digest
+
+    root = Path(packet_dir)
+    plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
+    subjects, appearance, alignment = _plan_parts(plan)
     reason = None
     if plan.get("task_kind") != "articulated_open_close" or len(subjects) != 1 \
             or subjects[0].get("object_type") != "ARTICULATION":
@@ -247,31 +340,7 @@ def scene_camera_visibility(packet_dir: str | Path) -> dict[str, Any]:
         result["report_digest"] = canonical_digest(result, digest_field="report_digest")
         return result
 
-    def bound(row: Mapping[str, Any]) -> Path:
-        path = (root / str(row.get("usd_path") or "")).resolve()
-        if root.resolve() not in path.parents or not path.is_file() or _file_sha256(path) != row.get("sha256"):
-            raise SceneCameraVisibilityError("scene_camera_packet_asset_unbound:" + str(row.get("semantic_role")))
-        return path
-
-    try:
-        region = articulated_reset_contact_region(plan)
-    except ValueError as exc:
-        raise SceneCameraVisibilityError(str(exc)) from exc
-    subject = subjects[0]
-    reset = subject.get("reset_state") or {}
-    try:
-        model = load_asset_model(bound(subject))
-    except ScenePhysicsPreflightError as exc:
-        raise SceneCameraVisibilityError("scene_camera_asset_unreadable:" + str(exc)) from exc
-    world_from_asset = _pose_matrix(reset.get("root_pose_world") or subject["pose_world"])
-    poses = {b: world_from_asset @ p for b, p in body_poses(model, reset.get("joint_positions")).items()}
-    colliders = list(_placed(model.colliders, poses))
-    if not colliders:
-        raise SceneCameraVisibilityError("scene_camera_asset_colliders_missing")
-    centres, radii, opacity = load_splat(bound(appearance[0]), str(alignment.get("appearance_prim_path") or ""),
-                                         _pose_matrix(appearance[0]["pose_world"]))
-    keep = opacity >= MINIMUM_OPACITY
-    centres, radii = centres[keep], radii[keep]
+    colliders, centres, radii, region = _scene_geometry(root, plan, subjects[0], appearance[0], alignment)
     cameras, blockers, advisories, notices = [], [], [], []
     for camera in plan.get("cameras") or []:
         role = str(camera.get("role"))
@@ -282,17 +351,10 @@ def scene_camera_visibility(packet_dir: str | Path) -> dict[str, Any]:
         row = camera_coverage(colliders=colliders, centres=centres, radii=radii, camera=camera, region=region)
         row["required"] = required
         cameras.append(row)
-        problems = []
-        if row.get("asset_in_view") is False or row.get("patch_in_view") is False:
-            problems.append(f"scene_camera_contact_outside_view:{role}")
-        else:
-            patch, on_asset, occluded = row["patch_pixels"], row["patch_asset_pixels"], row["patch_occluded_pixels"]
-            if on_asset < max(1.0, MINIMUM_ASSET_SHARE * patch):
-                problems.append(f"scene_camera_contact_not_on_asset:{role}:{on_asset}/{patch}px")
-            if occluded > max(MINIMUM_OCCLUDED_PIXELS, OCCLUDED_SHARE_LIMIT * max(1, on_asset)):
-                problems.append(f"scene_camera_contact_occluded_by_scene:{role}:{100 * occluded / max(1, on_asset):.0f}%")
-            if row["asset_share_occluded"] > 0:
-                advisories.append(f"scene_camera_asset_partly_behind_scene:{role}:{100 * row['asset_share_occluded']:.0f}%")
+        problems = coverage_problems(row)
+        in_view = row.get("asset_in_view") is not False and row.get("patch_in_view") is not False
+        if in_view and row["asset_share_occluded"] > 0:
+            advisories.append(f"scene_camera_asset_partly_behind_scene:{role}:{100 * row['asset_share_occluded']:.0f}%")
         (blockers if required else advisories).extend(problems)
     if not any(row["required"] for row in cameras):
         blockers.append("scene_camera_policy_camera_missing")

@@ -22,6 +22,10 @@ compiled here straight into the scene half a team run reads:
   through, preferring a spot the part never reaches. A team's own fixed arm
   takes the same station and must reach the task from it; a free base finds
   its own stance; a team on the DROID interface runs this Franka;
+- the right exterior camera, for DROID policies that read both exteriors,
+  where a pose beside the station sees the task clear of the captured scene
+  (``droid_exterior_cameras``); the packet is then compiled once more with it,
+  and without it the record says why;
 - the sealed success contract: the scene owner's when the task requires one,
   else the strategy's compatibility default (as every canary setup seals it);
 - ``team_scene_inputs.v1.json``, which the team registry reads
@@ -50,6 +54,8 @@ SCHEMA = "blueprint.team_scene_inputs.v1"
 CLAIM_CEILING = "diagnostic_policy_execution"
 RECORD_FILENAME = "team_scene_inputs.v1.json"
 PACKET_DIRECTORY = "native-task-packet"
+# The same scene compiled with the right exterior camera, when one is placed.
+THREE_VIEW_PACKET_DIRECTORY = "native-task-packet-three-view"
 # A pedestal for an arm's base: its half extent on the floor, metres.
 STATION_FOOTPRINT_HALF_EXTENT_M = (0.15, 0.15)
 EXECUTION_AUTHORITY = {"maximum_provider_allocations": 1, "retry_cap": 0,
@@ -130,6 +136,22 @@ def _cameras(profile: Mapping[str, Any], *, base: list[float], start: list[float
     overview["policy_input"] = False
     return [_world_camera("external", position=[base[0], base[1], base[2] + 1.35], target=start,
                           intrinsics=intrinsics), json.loads(json.dumps(roles["wrist"])), overview]
+
+
+def _exterior_right(packet: Path, *, base: Mapping[str, Any],
+                    aim: Sequence[float]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """The right exterior camera row the compiled packet's scene leaves a clear view for, and its receipt."""
+    from .droid_exterior_cameras import ARENA_EXTERIOR_INTRINSICS, place_exterior_right, unmeasured_receipt
+    from .scene_camera_visibility import SceneCameraVisibilityError, packet_view_evaluator
+    from .scene_physics_preflight import ScenePhysicsPreflightError
+
+    try:
+        return place_exterior_right(base_pose_world=base, aim_world=aim, intrinsics=ARENA_EXTERIOR_INTRINSICS,
+                                    evaluate=packet_view_evaluator(packet))
+    except (SceneCameraVisibilityError, ScenePhysicsPreflightError, ImportError, KeyError, TypeError,
+            ValueError) as exc:
+        # An unmeasurable scene gets no right exterior; the two-view packet is unchanged.
+        return None, unmeasured_receipt(str(exc)[:160] or type(exc).__name__)
 
 
 def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, Any],
@@ -317,6 +339,15 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     packet = root / PACKET_DIRECTORY
     materialize_native_task_arena_packet(request=request, evidence_root=root, output_dir=packet,
                                          link_sources_within=root)
+    exterior_right, placement = _exterior_right(packet, base=base, aim=start)
+    camera_layout: dict[str, Any] = {"exterior_right": placement}
+    if exterior_right is not None:
+        camera_layout["measured_on_packet"] = _record(packet / "native_task_arena_packet_receipt.v1.json")
+        request = {**request, "cameras": [*request["cameras"], exterior_right], "request_digest": ""}
+        request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+        packet = root / THREE_VIEW_PACKET_DIRECTORY
+        materialize_native_task_arena_packet(request=request, evidence_root=root, output_dir=packet,
+                                             link_sources_within=root)
     plan = _read(packet / "native_task_arena_scene_plan.v1.json", "team_scene_packet_invalid")
     receipt = packet / "native_task_arena_packet_receipt.v1.json"
     task_kind = "articulated_open_close" if articulated else "rigid_pick_place"
@@ -349,7 +380,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         "task_success_contract_digest": contract["contract_digest"],
         "base_native_packet": packet_record, "runtime_source": runtime_source, "construction_result": packet_record,
         "execution_authority": dict(EXECUTION_AUTHORITY), "control_diagnostic": dict(PENDING_CONTROLS),
-        "robot_station": station, "droid_profile_digest": droid_profile_digest, "inputs_digest": ""}
+        "robot_station": station, "camera_layout": camera_layout, "droid_profile_digest": droid_profile_digest,
+        "inputs_digest": ""}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
     path = root / RECORD_FILENAME
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")

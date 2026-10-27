@@ -71,6 +71,7 @@ try:  # flat provider-bundle layout
         DROID_EXTERIOR_VIEW_1,
         DROID_OBSERVATION_SCHEMA_VERSION,
         DROID_WRIST_VIEW,
+        VIEW_CAMERA_ROLES,
         DroidObservationError,
         build_droid_observation_from_inputs as _build_observation,
         describe_observation_conversion,
@@ -81,6 +82,7 @@ except ModuleNotFoundError:  # repository package
         DROID_EXTERIOR_VIEW_1,
         DROID_OBSERVATION_SCHEMA_VERSION,
         DROID_WRIST_VIEW,
+        VIEW_CAMERA_ROLES,
         DroidObservationError,
         build_droid_observation_from_inputs as _build_observation,
         describe_observation_conversion,
@@ -646,6 +648,16 @@ def _prestart_episode_readiness(
         }
     )
     return readiness
+
+
+def _policy_views_fresh(freshness: Mapping[str, Any], interface: str) -> bool:
+    """Every camera whose view this interface reads was observed for this query."""
+
+    roles = {VIEW_CAMERA_ROLES[view] for view in CANDIDATE_REQUIRED_VIEWS[interface]}
+    return roles <= set(freshness) and all(
+        isinstance(freshness[role], Mapping) and freshness[role].get("status") == "observed"
+        for role in roles
+    )
 
 
 def _evidence(build: Callable[..., Any], **kwargs: Any) -> Any:
@@ -1288,8 +1300,7 @@ def _policy_episode_events(
             raise
         sensor_freshness.append({"query_index": query_index,
             "cameras": dict(inputs.get("sensor_freshness") or {}),
-            "verified": set(inputs.get("sensor_freshness") or {}) == {"external", "wrist"}
-                and all(row.get("status") == "observed" for row in (inputs.get("sensor_freshness") or {}).values())})
+            "verified": _policy_views_fresh(inputs.get("sensor_freshness") or {}, interface)})
         timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[interface] if view in inputs

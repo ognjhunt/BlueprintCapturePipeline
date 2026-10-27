@@ -131,3 +131,28 @@ def test_unmeasurable_packet_is_refused_and_rigid_task_is_not_applicable(tmp_pat
     (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
     report = scv.require_scene_camera_admission(root)
     assert report["status"] == "not_applicable" and report["reason"] == "no_articulated_task_subject"
+
+
+def test_a_proposed_camera_is_measured_by_the_same_rule_plus_the_plans_framing_floor(tmp_path):
+    root, plan = _packet(tmp_path, sheet_x=0.6)
+    plan["task_object_observability"] = {"task_object_extent_m": [0.6, 0.6, 0.9],
+                                         "object_positions_world": [[0.0, 0.0, 0.45]]}
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    evaluate = scv.packet_view_evaluator(root)
+    proposed = {"role": "exterior_right", "pose_frame": "world", "policy_input": True,
+                "optical_convention": "opencv", "intrinsics": INTRINSICS}
+    # Behind the sheet of Gaussians the contact is hidden; from the far side it is in no view at all.
+    assert evaluate({**proposed, "frame_from_camera_matrix": sum(FACING, [])}) == [
+        "scene_camera_contact_occluded_by_scene:exterior_right:100%"]
+    assert evaluate({**proposed, "frame_from_camera_matrix": sum(AWAY, [])}) == [
+        "scene_camera_contact_outside_view:exterior_right",
+        "native_task_camera_framing_object_behind_camera:exterior_right"]
+    clear_root, clear_plan = _packet(tmp_path / "clear")
+    clear_plan["task_object_observability"] = plan["task_object_observability"]
+    (clear_root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(clear_plan))
+    assert scv.packet_view_evaluator(clear_root)({**proposed, "frame_from_camera_matrix": sum(FACING, [])}) == []
+    # A packet with no splat to look through cannot be measured.
+    clear_plan["appearance_frame_alignment"] = {"representation": "mesh"}
+    (clear_root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(clear_plan))
+    with pytest.raises(scv.SceneCameraVisibilityError, match="appearance_not_a_gaussian_splat"):
+        scv.packet_view_evaluator(clear_root)

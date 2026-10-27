@@ -33,11 +33,13 @@ from typing import Any
 try:  # flat provider-bundle layout
     from adp009d_droid_observation import (
         DROID_EXTERIOR_VIEW_1,
+        DROID_EXTERIOR_VIEW_2,
         DROID_WRIST_VIEW,
     )
 except ModuleNotFoundError:  # repository package
     from .adp009d_droid_observation import (
         DROID_EXTERIOR_VIEW_1,
+        DROID_EXTERIOR_VIEW_2,
         DROID_WRIST_VIEW,
     )
 try:  # flat provider-bundle layout
@@ -97,6 +99,8 @@ DEFAULT_CAMERA_SCENE_NAMES = {
     "wrist": "wrist_camera",
     "overview": "external_camera_2",
 }
+# A scene's optional extra policy views and the DROID observation each fills.
+POLICY_VIEW_ROLES = {"exterior_right": DROID_EXTERIOR_VIEW_2}
 # The two bodies whose separation is the gripper width, matching the
 # convention probe so both read the same physical quantity.
 FINGER_BODIES = ("left_inner_finger", "right_inner_finger")
@@ -608,6 +612,7 @@ class IsaacEpisodeAdapter:
         grasp_frame_pose_callback: Callable[[], Sequence[float]] | None = None,
         grasp_frame_fk_callback: Callable[..., Sequence[float] | None] | None = None,
         camera_scene_names: Mapping[str, str] | None = None,
+        policy_view_scene_names: Mapping[str, str] | None = None,
         contact_sensor: Any | None = None,
         joint_wrench_sensor: Any | None = None,
         contact_envelope: Mapping[str, Any] | None = None,
@@ -650,6 +655,8 @@ class IsaacEpisodeAdapter:
             if camera_scene_names is None
             else camera_scene_names
         )
+        # Extra policy views, read for the policy only: never evidence cameras.
+        self._policy_view_scene_names = dict(policy_view_scene_names or {})
         self._contact_sensor = contact_sensor
         self._joint_wrench_sensor = joint_wrench_sensor
         if contact_envelope is None:
@@ -751,6 +758,18 @@ class IsaacEpisodeAdapter:
         ):
             raise IsaacEpisodeAdapterError(
                 ["isaac_episode_camera_scene_names_invalid"]
+            )
+        if (
+            set(self._policy_view_scene_names) - set(POLICY_VIEW_ROLES)
+            or any(
+                not isinstance(scene_name, str) or not scene_name.strip()
+                for scene_name in self._policy_view_scene_names.values()
+            )
+            or set(self._policy_view_scene_names.values())
+            & set(self._camera_scene_names.values())
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_policy_view_scene_names_invalid"]
             )
 
         body_names = list(robot.data.body_names)
@@ -919,11 +938,12 @@ class IsaacEpisodeAdapter:
         self._render_for_frame_read()
         inputs: dict[str, Any] = {}
         freshness = {}
-        for role, view in (
-            ("external", DROID_EXTERIOR_VIEW_1),
-            ("wrist", DROID_WRIST_VIEW),
-        ):
-            camera_name = self._camera_scene_names[role]
+        views = [("external", DROID_EXTERIOR_VIEW_1), ("wrist", DROID_WRIST_VIEW)]
+        views += [(role, POLICY_VIEW_ROLES[role]) for role in sorted(self._policy_view_scene_names)]
+        for role, view in views:
+            camera_name = (
+                self._policy_view_scene_names.get(role) or self._camera_scene_names[role]
+            )
             camera = self._env.unwrapped.scene[camera_name]
             output = camera.data.output
             if "rgb" not in output:

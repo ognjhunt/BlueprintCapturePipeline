@@ -8,6 +8,7 @@ import pytest
 
 from blueprint_pipeline.adp009d_droid_observation import (
     DROID_EXTERIOR_VIEW_1,
+    DROID_EXTERIOR_VIEW_2,
     DROID_WRIST_VIEW,
 )
 from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelope
@@ -1483,6 +1484,37 @@ def test_camera_role_binding_fails_closed_before_scene_access(
             gripper_open_width_m=0.06,
             camera_scene_names=camera_scene_names,
         )
+
+
+def test_a_scene_right_exterior_feeds_the_policy_but_never_the_evidence_cameras() -> None:
+    names = dict(DEFAULT_CAMERA_SCENE_NAMES)
+
+    def adapter(policy_views):
+        return IsaacEpisodeAdapter(
+            env=_Env(camera_scene_names={**names, "exterior_right": "exterior_right_camera"}),
+            robot=_Robot(),
+            rigid_task_object=_Can(),
+            action_dim=8,
+            reset_seed=20260806,
+            to_torch=_to_torch,
+            gripper_closed_width_m=0.0,
+            gripper_open_width_m=0.06,
+            camera_scene_names=names,
+            policy_view_scene_names=policy_views,
+            simulation_step_seconds=1.0 / 15.0,
+        )
+
+    three = adapter({"exterior_right": "exterior_right_camera"})
+    inputs = three.read_policy_inputs()
+    assert {DROID_EXTERIOR_VIEW_1, DROID_EXTERIOR_VIEW_2, DROID_WRIST_VIEW} <= set(inputs)
+    assert set(inputs["sensor_freshness"]) == {"external", "wrist", "exterior_right"}
+    assert set(three.read_evaluation_camera_inputs()) == {"external", "wrist", "overview"}
+    # A scene without it reads the two views exactly as before.
+    two = adapter(None).read_policy_inputs()
+    assert DROID_EXTERIOR_VIEW_2 not in two and set(two["sensor_freshness"]) == {"external", "wrist"}
+    for invalid in ({"left_exterior": "x"}, {"exterior_right": ""}, {"exterior_right": names["overview"]}):
+        with pytest.raises(IsaacEpisodeAdapterError, match="isaac_episode_policy_view_scene_names_invalid"):
+            adapter(invalid)
 
 
 def test_articulated_fixture_reads_native_task_state_without_a_canned_object() -> None:
