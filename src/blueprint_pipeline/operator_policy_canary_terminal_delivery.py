@@ -435,13 +435,63 @@ def _native_source(intent, adapter):
     return raw, source
 
 
+def _contained_native_evidence(source: Path, root: Path) -> Path:
+    """Keep downloadable evidence in run custody without fetching remote media."""
+    evidence = source.parent
+    if evidence.is_relative_to(root):
+        return evidence
+    from .task_evaluation_result_archive_members import open_evidence_view
+
+    view = open_evidence_view(evidence, error_factory=OperatorTerminalDeliveryError)
+    sidecars = []
+    if view is not None:
+        if view.evidence_root != evidence.resolve():
+            raise OperatorTerminalDeliveryError('operator_terminal_native_member_view_root_mismatch')
+        sidecars = [evidence.name + '.member_view.v1.json',
+                    view.descriptor['member_index']['path'], view.descriptor['ingestion_receipt_path']]
+    bindings = {'source_native_result': file_record(source),
+                'streamed_metadata': {name: file_record(evidence.parent/name) for name in sidecars}}
+    destination = root/'operator_terminal_delivery'/'native_evidence'
+    if destination.is_symlink():
+        raise OperatorTerminalDeliveryError('operator_terminal_native_custody_symlink')
+    if not destination.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix='.native-evidence-', dir=destination.parent))
+        try:
+            if any(path.is_symlink() for path in evidence.rglob('*')):
+                raise OperatorTerminalDeliveryError('operator_terminal_native_evidence_symlink')
+            shutil.copytree(evidence, staging/evidence.name)
+            for name in sidecars:
+                target = staging/name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(evidence.parent/name, target)
+            _seal(staging/'custody.json', bindings)
+            staging.rename(destination)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+    if _read(destination/'custody.json') != bindings:
+        raise OperatorTerminalDeliveryError('operator_terminal_native_custody_binding_mismatch')
+    copied = destination/evidence.name/source.name
+    copied_record = file_record(copied)
+    if any(copied_record[key] != bindings['source_native_result'][key] for key in ('sha256', 'size_bytes')):
+        raise OperatorTerminalDeliveryError('operator_terminal_native_custody_digest_mismatch')
+    for name, record in bindings['streamed_metadata'].items():
+        actual = file_record(destination/name)
+        if any(actual[key] != record[key] for key in ('sha256', 'size_bytes')):
+            raise OperatorTerminalDeliveryError('operator_terminal_native_custody_metadata_mismatch')
+    contained = destination/evidence.name
+    open_evidence_view(contained, error_factory=OperatorTerminalDeliveryError)
+    return contained
+
+
 def _native_result(intent, values, adapter, root, observed=None):
     observed = observed or _native_source(intent, adapter)
     if observed is None:
         return None
     raw, source = observed
     if raw.get('status') == 'runtime_completed_unqualified_pending_closeout' and len(raw.get('episodes', [])) == 20:
-        return raw, source.parent, file_record(source)
+        return raw, _contained_native_evidence(source, root), file_record(source)
     # Helpers may write derived aggregate/gap files. Work on copies of JSON,
     # hardlink only bulk immutable evidence, and never edit the producer tree.
     work = root/'operator_terminal_delivery'/'recovery_attempt'
