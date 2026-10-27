@@ -55,6 +55,17 @@ SUPPORT_ROUGHNESS_MINIMUM_TRIANGLES = 30
 # MINIMUM_STRICT_SUPPORT_CANDIDATES bases: the wider rule sends several times more poses to the full gate.
 SCANNED_SUPPORT_ROUGHNESS_M = 0.005
 MINIMUM_STRICT_SUPPORT_CANDIDATES = 3
+# DROID policies learned from an arm on a height-adjustable desk: its gripper works a median 0.28 m
+# above the base (1,000 random frames of lerobot/droid_1.0.1; p95 0.51 m, max 0.64 m). On the floor a
+# Franka reaches 0.85 m up to a dishwasher handle, beyond every sampled frame. The opt-in
+# droid_working_band mount raises the base on a post so the target sits at DROID's median height.
+ROBOT_MOUNT_RULE_DROID_WORKING_BAND = "droid_working_band"
+DROID_TARGET_ABOVE_BASE_M = 0.28
+MINIMUM_ROBOT_MOUNT_M = 0.10
+MAXIMUM_ROBOT_MOUNT_M = 0.80
+# A cylindrical post no wider than the Franka base plate. On the 2026-10-27 replay the dishwasher door
+# swung to within 0.145 m of the base axis. The room check uses the post's bounding box.
+ROBOT_MOUNT_POST_RADIUS_M = 0.10
 
 
 class RobotPlacementGeometryError(ValueError):
@@ -445,18 +456,23 @@ def _task_motion_points(bindings: Sequence[Mapping[str, Any]], *, whole_range: b
 
 def _task_motion_contact_count(
     index: RobotPlacementGeometryIndex, robot_id: str, position: np.ndarray, yaw: float,
-    points: np.ndarray | None = None, margin_m: float = TASK_MOTION_CLEARANCE_M,
+    points: np.ndarray | None = None, margin_m: float = TASK_MOTION_CLEARANCE_M, mount_m: float = 0.0,
 ) -> int:
     """Swept task-part samples inside the robot's fixed volumes, grown by ``margin_m``, at this base pose."""
     try:
-        reach = robot_fixed_volume_extent(robot_id) + margin_m
+        reach = max(robot_fixed_volume_extent(robot_id), ROBOT_MOUNT_POST_RADIUS_M if mount_m else 0.0) + margin_m
         points = index.task_motion_points if points is None else points
         near = points[(np.abs(points[:, 0] - position[0]) <= reach) & (np.abs(points[:, 1] - position[1]) <= reach)]
         relative = near - position
         cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
         local = np.c_[cos_yaw * relative[:, 0] + sin_yaw * relative[:, 1],
                       cos_yaw * relative[:, 1] - sin_yaw * relative[:, 0], relative[:, 2]]
-        return int(robot_fixed_volume_mask(robot_id, local, margin_m).sum())
+        inside = robot_fixed_volume_mask(robot_id, local, margin_m)
+        if mount_m:
+            # The post under a raised base stands in a door's way as the base does.
+            inside |= ((np.hypot(local[:, 0], local[:, 1]) <= ROBOT_MOUNT_POST_RADIUS_M + margin_m)
+                       & (local[:, 2] >= -mount_m - margin_m) & (local[:, 2] <= margin_m))
+        return int(inside.sum())
     except ScenePhysicsPreflightError as exc:
         raise RobotPlacementGeometryError(f"robot_placement_task_motion_unmeasurable:{exc}") from exc
 
@@ -626,6 +642,40 @@ def _yaw_from_quaternion(quaternion: Sequence[float]) -> tuple[float, bool]:
     return yaw, upright
 
 
+def robot_mount_height_m(rule: str | None, *, target_height_m: float, support_height_m: float) -> float:
+    """The post height that puts the target DROID's working height above the base; 0 for no mount."""
+    if rule is None:
+        return 0.0
+    if rule != ROBOT_MOUNT_RULE_DROID_WORKING_BAND:
+        raise RobotPlacementGeometryError("robot_placement_mount_rule_unknown")
+    height = min(MAXIMUM_ROBOT_MOUNT_M, float(target_height_m) - float(support_height_m) - DROID_TARGET_ABOVE_BASE_M)
+    return round(height, 3) if height >= MINIMUM_ROBOT_MOUNT_M else 0.0
+
+
+def _proposal_mount_height(proposal: Mapping[str, Any]) -> float:
+    """A proposal's post height, 0 without a mount; refuses a mount this module did not describe."""
+    mount = proposal.get("robot_mount")
+    if mount is None:
+        return 0.0
+    try:
+        height = float(mount["height_m"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RobotPlacementGeometryError("robot_placement_mount_invalid") from exc
+    if (mount.get("rule") != ROBOT_MOUNT_RULE_DROID_WORKING_BAND
+            or mount.get("post_radius_m") != ROBOT_MOUNT_POST_RADIUS_M
+            or not MINIMUM_ROBOT_MOUNT_M <= height <= MAXIMUM_ROBOT_MOUNT_M):
+        raise RobotPlacementGeometryError("robot_placement_mount_invalid")
+    return height
+
+
+def _mount_post_triangles(height_m: float) -> np.ndarray:
+    """The post's bounding box as 12 triangles in the robot's root frame, from the support up to the root."""
+    r = ROBOT_MOUNT_POST_RADIUS_M
+    corners = np.asarray([[x, y, z] for x in (-r, r) for y in (-r, r) for z in (-height_m, 0.0)])
+    faces = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
+    return np.asarray([corners[[a, b, c]] for a, b, c, d in faces] + [corners[[a, c, d]] for a, b, c, d in faces])
+
+
 def _rotated_bounds(
     minimum: Sequence[float], maximum: Sequence[float], position: np.ndarray, yaw: float
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -778,16 +828,17 @@ def _candidate_support_and_reach_can_pass(
     surface_id = str(proposal.get("support_surface_id") or "")
     surface = next((s for s in index.support_surfaces if s.surface_id == surface_id), None)
     tolerance, missing, facet = _support_tolerance(index, scanned=proposal.get("support_rule") == "scanned")
-    if surface is None or abs(float(position[2]) - surface.height_m) > tolerance:
+    support_height = float(position[2]) - _proposal_mount_height(proposal)
+    if surface is None or abs(support_height - surface.height_m) > tolerance:
         return False
     rotation = np.asarray([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
     samples = np.asarray(
         [[0.0, 0.0], [-half_x, -half_y], [-half_x, half_y], [half_x, -half_y], [half_x, half_y]]
     ) @ rotation.T + position[:2]
-    key = (surface_id, float(position[2]))
+    key = (surface_id, support_height)
     if key not in support_triangles:
         support_triangles[key] = _support_triangles_within_height_tolerance(
-            index=index, surface=surface, root_height_m=float(position[2]), tolerance_m=tolerance,
+            index=index, surface=surface, root_height_m=support_height, tolerance_m=tolerance,
             minimum_normal_abs_z=facet,
         )
     return _supported_sample_count(samples, support_triangles[key]) >= len(samples) - missing
@@ -819,6 +870,9 @@ def validate_robot_placement_geometry_candidate(
         raise RobotPlacementGeometryError("robot_placement_candidate_pose_invalid") from exc
     if position.shape != (3,) or target.shape != (3,) or len(quaternion) != 4:
         raise RobotPlacementGeometryError("robot_placement_candidate_pose_invalid")
+    # A mounted base stands on its post: the support carries the post's foot, not the root.
+    mount = _proposal_mount_height(proposal)
+    support_height = float(position[2]) - mount
     surface_id = str(proposal.get("support_surface_id") or "")
     surface = next(
         (surface for surface in index.support_surfaces if surface.surface_id == surface_id),
@@ -845,22 +899,28 @@ def validate_robot_placement_geometry_candidate(
         blockers.append("declared_support_surface_missing")
     else:
         selected = _support_triangles_within_height_tolerance(
-            index=index, surface=surface, root_height_m=float(position[2]),
+            index=index, surface=surface, root_height_m=support_height,
             tolerance_m=support_height_tolerance_m, minimum_normal_abs_z=facet_normal,
         )
-        support_height_error_m = abs(float(position[2]) - surface.height_m)
+        support_height_error_m = abs(support_height - surface.height_m)
         supported_count = _supported_sample_count(samples, selected)
         if support_height_error_m > support_height_tolerance_m:
             blockers.append("robot_root_not_on_declared_support_height")
         if supported_count < len(samples) - missing_allowed:
             blockers.append("robot_base_support_coverage_incomplete")
 
-    robot_minimum, robot_maximum = _rotated_bounds(
-        index.robot_local_bounds_minimum_m,
-        index.robot_local_bounds_maximum_m,
-        position,
-        yaw,
-    )
+    local_minimum = np.asarray(index.robot_local_bounds_minimum_m, dtype=np.float64)
+    local_maximum = np.asarray(index.robot_local_bounds_maximum_m, dtype=np.float64)
+    robot_triangles = index.robot_triangles
+    robot_parts = index.robot_triangle_parts
+    if mount:
+        post = _mount_post_triangles(mount)
+        local_minimum = np.minimum(local_minimum, post.reshape(-1, 3).min(axis=0))
+        local_maximum = np.maximum(local_maximum, post.reshape(-1, 3).max(axis=0))
+        robot_triangles = np.concatenate([robot_triangles, post])
+        if len(robot_parts) == len(index.robot_triangles):
+            robot_parts = np.concatenate([robot_parts, np.full(len(post), int(robot_parts.max(initial=-1)) + 1)])
+    robot_minimum, robot_maximum = _rotated_bounds(local_minimum, local_maximum, position, yaw)
     overlap = (
         (index.triangle_maximum[:, 0] >= robot_minimum[0])
         & (index.triangle_minimum[:, 0] <= robot_maximum[0])
@@ -872,7 +932,7 @@ def validate_robot_placement_geometry_candidate(
     # Contact with the declared horizontal support at the root plane is allowed;
     # all scene geometry above that plane remains a collision blocker.
     allowed_support_contact = index.triangle_maximum[:, 2] <= (
-        position[2] + support_height_tolerance_m
+        support_height + support_height_tolerance_m
     )
     broad_collision_indices = np.flatnonzero(overlap & ~allowed_support_contact)
     # A whole-arm AABB falsely rejects an arm beside a thin desktop: empty
@@ -885,7 +945,7 @@ def validate_robot_placement_geometry_candidate(
              [math.sin(yaw), math.cos(yaw), 0.0], [0.0, 0.0, 1.0]],
             dtype=np.float64,
         )
-        robot_triangles_world = index.robot_triangles @ rotation_3d.T + position
+        robot_triangles_world = robot_triangles @ rotation_3d.T + position
         robot_triangle_minimum = robot_triangles_world.min(axis=1)
         robot_triangle_maximum = robot_triangles_world.max(axis=1)
         collision_indices = _overlapping_scene_triangle_indices(
@@ -894,7 +954,7 @@ def validate_robot_placement_geometry_candidate(
             scene_indices=broad_collision_indices,
             robot_minimum=robot_triangle_minimum,
             robot_maximum=robot_triangle_maximum,
-            robot_parts=index.robot_triangle_parts,
+            robot_parts=robot_parts,
         )
     robot_center = 0.5 * (robot_minimum + robot_maximum)
     containing_prim_paths = []
@@ -911,14 +971,16 @@ def validate_robot_placement_geometry_candidate(
     # The base and shoulder cannot move out of a door's way, so a pose where the
     # task's moving part would strike them fails every episode it opens.
     motion_contacts = (
-        _task_motion_contact_count(index, robot_id, position, yaw) if len(index.task_motion_points) else 0
+        _task_motion_contact_count(index, robot_id, position, yaw, mount_m=mount)
+        if len(index.task_motion_points) else 0
     )
     if motion_contacts:
         blockers.append("robot_base_in_task_motion_path")
     # A part that falls once released strikes whatever stands anywhere on its way
     # down. Measured as actual overlap; the paid preflight confirms it finely.
     fall_contacts = (
-        _task_motion_contact_count(index, robot_id, position, yaw, index.task_fall_points, margin_m=0.0)
+        _task_motion_contact_count(index, robot_id, position, yaw, index.task_fall_points, margin_m=0.0,
+                                   mount_m=mount)
         if len(index.task_fall_points) else 0
     )
     if fall_contacts:
@@ -1014,9 +1076,12 @@ def validate_robot_placement_geometry_candidate(
         # Counted here, as actual overlap without the blocking margin, so the
         # search can prefer a base the part never reaches.
         result["task_limit_contact_point_count"] = _task_motion_contact_count(
-            index, robot_id, position, yaw, index.task_limit_points, margin_m=0.0)
+            index, robot_id, position, yaw, index.task_limit_points, margin_m=0.0, mount_m=mount)
     if len(index.task_fall_points):
         result["task_fall_contact_point_count"] = fall_contacts
+    if mount:
+        result["robot_mount"] = dict(proposal["robot_mount"])
+        result["support_height_m"] = support_height
     result["geometry_gate_digest"] = canonical_digest(
         result, digest_field="geometry_gate_digest"
     )
@@ -1328,11 +1393,18 @@ def enumerate_robot_placement_geometry_candidates(
     geometry_worker_count: int = 1,
     trajectory_worker_count: int = 1,
     diagnostics: dict[str, Any] | None = None,
+    robot_mount_rule: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return ranked, deterministic, geometry-passing candidates for agent context."""
+    """Return ranked, deterministic, geometry-passing candidates for agent context.
+
+    ``robot_mount_rule`` (opt-in, ``droid_working_band``) stands each base on a post whose height puts
+    the target DROID's working height above it; supports already that close carry no post.
+    """
 
     if not 1 <= int(maximum_candidates) <= 256:
         raise RobotPlacementGeometryError("robot_placement_candidate_cap_invalid")
+    if robot_mount_rule not in (None, ROBOT_MOUNT_RULE_DROID_WORKING_BAND):
+        raise RobotPlacementGeometryError("robot_placement_mount_rule_unknown")
     target = np.asarray(target_position_world_m, dtype=np.float64)
     if target.shape != (3,) or not np.all(np.isfinite(target)):
         raise RobotPlacementGeometryError("robot_placement_target_invalid")
@@ -1412,13 +1484,15 @@ def enumerate_robot_placement_geometry_candidates(
     def evaluate(batch: Sequence[SupportSurface], first: int, support_rule: str):
         geometry_work = []
         for surface_index, surface in enumerate(batch, start=first):
+            mount = robot_mount_height_m(robot_mount_rule, target_height_m=float(target[2]),
+                                         support_height_m=surface.height_m)
             for radius_index, radius in enumerate(radii):
                 for angle_index in range(72):
                     angle = 2.0 * math.pi * angle_index / 72.0
                     position = [
                         float(target[0] - radius * math.cos(angle)),
                         float(target[1] - radius * math.sin(angle)),
-                        float(surface.height_m),
+                        float(surface.height_m + mount),
                     ]
                     proposal = {
                         "candidate_id": (
@@ -1426,6 +1500,7 @@ def enumerate_robot_placement_geometry_candidates(
                             f"{surface_index:02d}_{radius_index:02d}_"
                             f"{surface.height_m:.3f}_"
                             f"{float(radius):.3f}_{angle_index:02d}"
+                            + (f"_mount{mount:.3f}" if mount else "")
                         ),
                         "support_surface_id": surface.surface_id,
                         "pose": {
@@ -1438,6 +1513,8 @@ def enumerate_robot_placement_geometry_candidates(
                             ],
                         },
                         **({"support_rule": "scanned"} if support_rule == "scanned" else {}),
+                        **({"robot_mount": {"rule": robot_mount_rule, "height_m": mount,
+                                            "post_radius_m": ROBOT_MOUNT_POST_RADIUS_M}} if mount else {}),
                     }
                     geometry_work.append(
                         (proposal, surface, float(radius), angle_index)
@@ -1491,7 +1568,7 @@ def enumerate_robot_placement_geometry_candidates(
                     gate["trajectory_position_ik_gate"]["minimum_manipulability"]
                     or 0.0
                 ),
-                abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
+                abs(float(proposal["pose"]["position_world_m"][2]) + profile.shoulder_above_root_m - target[2]),
                 abs(radius - 0.45),
                 gate["shoulder_to_target_distance_m"],
                 float(angle_index),
@@ -1577,6 +1654,7 @@ def enumerate_robot_placement_geometry_candidates(
             "support_roughness_m": index.support_roughness_m,
             "scanned_support_pass": scanned_pass,
             "scanned_support_level_count": len(scanned_levels),
+            **({"robot_mount_rule": robot_mount_rule} if robot_mount_rule else {}),
         })
     return [
         {

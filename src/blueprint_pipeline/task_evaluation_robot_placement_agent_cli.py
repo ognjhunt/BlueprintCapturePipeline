@@ -198,9 +198,14 @@ def run_robot_placement_cli(
     visual_review_continuation: Mapping[str, Any] | None = None,
     placement_scene_owner: Mapping[str, Any] | None = None,
     render_geometry_previews: bool = True,
+    robot_mount_rule: str | None = None,
 ) -> dict[str, Any]:
     if not render_geometry_previews and not deterministic_selection:
         raise ValueError('robot_placement_visual_previews_required')
+    # A raised mount is an opt-in experiment: a fresh deterministic search, never a resumed inventory.
+    if robot_mount_rule is not None and (not deterministic_selection or candidate_inventory_checkpoint is not None
+                                         or visual_review_continuation is not None):
+        raise ValueError("robot_placement_mount_requires_fresh_deterministic_search")
     task_assets = scene_binding.get("task_assets", ())
     if not isinstance(task_assets, (list, tuple)) or not all(
         isinstance(row, Mapping) for row in task_assets
@@ -250,6 +255,7 @@ def run_robot_placement_cli(
             geometry_worker_count=placement_worker_count,
             trajectory_worker_count=placement_worker_count,
             diagnostics=search_diagnostics,
+            robot_mount_rule=robot_mount_rule,
         )
     else:
         candidates = validate_candidate_inventory_checkpoint(
@@ -357,6 +363,8 @@ def run_robot_placement_cli(
             "candidate_id": candidate["candidate_id"],
             "pose": candidate["pose"],
             "support_surface_id": candidate["support_surface_id"],
+            # The gate measured the candidate under its own support rule and mount; re-check it the same way.
+            **{key: candidate[key] for key in ("support_rule", "robot_mount") if key in candidate},
             "rationale": "Top-ranked exact member of the digest-bound CPU inventory.",
             "addressed_blockers": [],
             "uncertainty": "Native orientation, collision/contact, camera, and execution gates remain unresolved.",
@@ -423,6 +431,7 @@ def run_robot_placement_cli(
             "prior_native_attempt_count": 0,
             "rounds": [round_record],
             "accepted_pose": proposal["pose"],
+            **({"accepted_robot_mount": proposal["robot_mount"]} if "robot_mount" in proposal else {}),
             "accepted_candidate_id": proposal["candidate_id"],
             "accepted_support_surface_id": proposal["support_surface_id"],
             "accepted_geometry_gate_digest": gate["geometry_gate_digest"],
@@ -618,6 +627,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Canonical allocator result paired with --prior-native-construction-result."
         ),
     )
+    parser.add_argument("--deterministic-selection", action="store_true",
+                        help="Accept the top-ranked CPU inventory member without a model.")
+    parser.add_argument(
+        "--robot-mount-rule",
+        choices=["droid_working_band"],
+        help=(
+            "Opt-in: stand the base on a post that puts the target at DROID's working height "
+            "above it. Needs --deterministic-selection and a fresh search."
+        ),
+    )
     parser.add_argument(
         "--candidate-inventory-checkpoint",
         type=Path,
@@ -709,6 +728,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             expected_proposal_reuse_count=args.expected_proposal_reuse_count,
             expected_visual_review_reuse_count=args.expected_visual_review_reuse_count,
+            deterministic_selection=args.deterministic_selection,
+            robot_mount_rule=args.robot_mount_rule,
         )
     except RobotPlacementNoMatch as no_match:
         # A verdict about this robot, site and task, distinct from a crash (1) or a rejection (2).
