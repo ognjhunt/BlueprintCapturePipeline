@@ -2,6 +2,9 @@
 
 Scale priors stay named assumptions. Original cameras, meshes and depths are never
 rescaled in place. The existing scene analyzer supplies robust room coverage.
+Height priors are more such assumptions: the capture camera's height above the
+floor its views observed, and the standard height of a task surface the task
+names. They vote only when the references alone cannot settle the scale.
 """
 
 from __future__ import annotations
@@ -143,17 +146,26 @@ def frame_points(frame: dict, mask=None) -> np.ndarray:
     return unproject(frame, np.column_stack([x[::step], y[::step]]), depth[y[::step], x[::step]])
 
 
-def reference_agreement(references: list[dict]) -> tuple[list[dict], list[dict], dict]:
+def _object_key(label: str) -> str:
+    return " ".join(label.lower().split())
+
+
+def reference_agreement(references: list[dict], *, unique_majority: bool = False
+                        ) -> tuple[list[dict], list[dict], dict]:
     """The references that agree on one scale, the ones set aside, and how they were judged.
 
     Several views of one labelled object count once. An object agrees when its
     plausible range contains the consensus of the largest agreeing set; a
     disagreeing minority is set aside, and without a strict majority of objects
     none is kept: two priors that disagree say the scale is unknown.
+
+    With ``unique_majority`` (a wide prior joining the vote), every largest
+    agreeing set must settle on the same majority: a prior that agrees with two
+    references that disagree with each other picks neither.
     """
     groups: dict[str, list[dict]] = {}
     for reference in references:
-        groups.setdefault(" ".join(reference["label"].lower().split()), []).append(reference)
+        groups.setdefault(_object_key(reference["label"]), []).append(reference)
     objects = [
         (
             float(np.median([r["meters_per_unit"] for r in rows])),
@@ -169,8 +181,20 @@ def reference_agreement(references: list[dict]) -> tuple[list[dict], list[dict],
     def agreeing_with(value):
         return [row for row in objects if row[1] <= value <= row[2]]
 
-    largest = max((agreeing_with(row[0]) for row in objects), key=len)
-    agreeing = agreeing_with(float(np.median([row[0] for row in largest])))
+    def settled(seed):
+        return agreeing_with(float(np.median([row[0] for row in seed])))
+
+    seeds = [agreeing_with(row[0]) for row in objects]
+    largest = max(seeds, key=len)
+    agreeing = settled(largest)
+    if unique_majority:
+        majorities = {tuple(map(id, found)): found
+                      for found in (settled(seed) for seed in seeds if len(seed) == len(largest))
+                      if 2 * len(found) > len(objects)}
+        if len(majorities) > 1:
+            return [], list(references), {"object_count": len(objects), "agreeing_object_count": len(agreeing),
+                                          "basis": "no_majority", "competing_majorities": len(majorities)}
+        agreeing = next(iter(majorities.values()), agreeing)
     record = {"object_count": len(objects), "agreeing_object_count": len(agreeing)}
     if len(objects) > 1 and 2 * len(agreeing) <= len(objects):
         return [], list(references), {**record, "basis": "no_majority"}
@@ -183,6 +207,254 @@ def reference_agreement(references: list[dict]) -> tuple[list[dict], list[dict],
         else "majority_after_outliers"
     )
     return kept, [r for r in references if r not in kept], {**record, "basis": basis}
+
+
+#: Height priors: named, ranged assumptions about how high something stands above
+#: the floor the views observed. They vote only when the references alone do not
+#: agree across several objects, and they can only add support.
+HEIGHT_PRIOR_BASES = ("camera_height_prior_only", "surface_height_prior_only", "height_priors_only",
+                      "single_object_with_height_priors", "majority_with_height_priors")
+#: The bases of a scale no reference stands behind: a guesstimate on the priors alone.
+PRIOR_ONLY_BASES = HEIGHT_PRIOR_BASES[:3]
+#: References that already agree across several objects never consult the priors.
+REFERENCE_MAJORITY_BASES = ("agreeing_objects", "majority_after_outliers")
+
+#: The capture camera's height above the floor: a prior every handheld walkthrough
+#: carries. A phone held to film while walking sits in front of the chest or face,
+#: below the eyes. Standing eye height of US adults runs from 1.42 m (5th-percentile
+#: woman) to 1.75 m (95th-percentile man); chest to eye height for most adults is
+#: the wide band below.
+CAMERA_HEIGHT_LABEL = "capture camera height above floor"
+CAMERA_HEIGHT_ASSUMED_M = 1.4
+CAMERA_HEIGHT_RANGE_M = (1.2, 1.6)
+CAMERA_HEIGHT_ASSUMPTION = "a phone held while walking, between chest and eye height"
+CAMERA_HEIGHT_SOURCE = (
+    "Standing eye height, US adults: 1.42 m (5th-percentile woman) to 1.75 m (95th-percentile man), "
+    "medians 1.52 m and 1.64 m; 2012 ANSUR II survey, tabulated in NC State Ergonomics Center, "
+    "Anthropometric Summary Data Tables. A phone held to film sits below the eyes.")
+CAMERA_HEIGHT_MIN_VIEWS = 3
+FLOOR_MIN_POINTS = 500
+#: Observed points farther from the cameras than this many median distances are depth outliers.
+FLOOR_MAX_REACH = 20.0
+#: The floor rules are metric; each pass refits at the scale the last one implied.
+FLOOR_FIT_PASSES = 4
+FLOOR_FIT_SETTLED = 0.01
+
+#: Standard heights of named task support and destination surfaces, top above the
+#: floor in metres: (kind, phrases that name it, assumed, plausible range, source).
+#: Matching is by whole words and conservative; a label naming none, or more than
+#: one, casts no vote.
+SURFACE_HEIGHTS = (
+    ("coffee table", ("coffee table", "coffee tables"), 0.43, (0.36, 0.50),
+     "Coffee tables 14-18 in (0.36-0.46 m), most 16-18 in: furniture sizing guides."),
+    ("nightstand", ("nightstand", "nightstands", "night stand", "night table", "bedside table"), 0.66,
+     (0.56, 0.71), "Nightstands 22-28 in (0.56-0.71 m), most often 26 in: furniture sizing guides."),
+    ("bar counter", ("bar counter", "bar counters", "bar top", "bar table"), 1.06, (1.00, 1.10),
+     "Bar height 40-42 in (1.02-1.07 m), 42 in standard: furniture sizing guides."),
+    ("kitchen counter", ("kitchen counter", "kitchen counters", "countertop", "countertops", "counter top",
+                         "worktop", "worktops", "work top"), 0.91, (0.85, 0.95),
+     "EN 1116:2018 kitchen worktop heights 850, 900 and 950 mm; US kitchen counters 36 in (0.914 m)."),
+    ("workbench", ("workbench", "workbenches", "work bench"), 0.91, (0.86, 1.00),
+     "Standing workbenches 34-38 in (0.86-0.97 m), industrial benches 36-37 in: ergonomics guidance."),
+    ("dining table", ("dining table", "dining tables", "kitchen table", "kitchen tables", "dinner table"), 0.75,
+     (0.71, 0.78), "Dining tables 28-30 in (0.71-0.76 m), 30 in typical: furniture sizing guides."),
+    ("desk", ("desk", "desks"), 0.74, (0.70, 0.77),
+     "Fixed-height office desks 720-760 mm (EN 527-1 products); US desks 29-30 in (0.74-0.76 m)."),
+)
+#: A label with any of these words names no standard top: floors, shelves, the
+#: inside or underside of something, seating, or a desk or counter of no fixed height.
+SURFACE_EXCLUDED_WORDS = frozenset({
+    "floor", "floors", "ground", "shelf", "shelves", "shelving", "rack", "racks", "drawer", "drawers",
+    "cabinet", "cabinets", "cupboard", "under", "below", "beneath", "underneath", "inside", "stool", "chair",
+    "seat", "step", "ladder", "standing", "adjustable", "reception", "kids", "child", "children", "toy",
+    "miniature", "model"})
+SURFACE_ROLES = ("support", "destination")
+SURFACE_MIN_POINTS = 200
+
+
+def observed_floor(frames: list[dict], points: np.ndarray) -> dict:
+    """The floor under the capture cameras, fitted on the views' observed depth, in provider units.
+
+    The levelling rules (``atlas_world_levelling``) find it: the dominant level
+    direction, then its lowest dense layer, wider than a counter with almost
+    nothing below it. Those rules are in metres, so they run on the provider-unit
+    points at the scale the camera-height prior implies, refitted until that
+    scale settles. Every camera must stand above it. A table or counter seen
+    alone, with nothing visible below it, still passes for a floor: priors on it
+    are votes, never measurements. Cameras and depths are only read.
+    """
+    from .atlas_world_levelling import SAMPLE_CAP, _floor, _level_direction
+
+    def unavailable(reason: str, **details) -> dict:
+        return {"status": "unavailable", "reason": reason, **details}
+
+    centres = np.array([np.asarray(f["position"], dtype=np.float64) for f in frames]).reshape(-1, 3)
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    points = points[np.isfinite(points).all(axis=1)]
+    rng = np.random.default_rng(607)
+    sample = points[rng.choice(len(points), SAMPLE_CAP, replace=False)] if len(points) > SAMPLE_CAP else points
+    if len(sample) and len(centres):
+        # Depth far beyond everything else (a window, a stray pixel) is not floor evidence.
+        reach = np.linalg.norm(sample - np.median(centres, axis=0), axis=1)
+        sample = sample[reach <= FLOOR_MAX_REACH * np.median(reach)]
+    if not len(centres) or len(sample) < FLOOR_MIN_POINTS:
+        return unavailable("floor_points_too_few", sampled_point_count=len(sample))
+    # Atlas +Y is roughly up: the height over the lowest observed points sets the first pass.
+    first = float(np.median(centres[:, 1]) - np.percentile(sample[:, 1], 2))
+    if not first > 0:
+        return unavailable("camera_not_above_floor")
+    scale = CAMERA_HEIGHT_ASSUMED_M / first
+    for _ in range(FLOOR_FIT_PASSES):
+        metres = sample * scale
+        normal = _level_direction(metres, np.random.default_rng(607))
+        floor = None if normal is None else _floor(metres, normal)
+        if floor is None:
+            return unavailable("floor_unobserved")
+        heights = (centres * scale @ floor["normal"] - floor["height_m"]) / scale
+        if heights.min() <= 0:
+            return unavailable("camera_not_above_floor")
+        implied = CAMERA_HEIGHT_ASSUMED_M / float(np.median(heights))
+        settled = abs(implied / scale - 1.0) <= FLOOR_FIT_SETTLED
+        floor_scale, scale = scale, implied
+        if settled:
+            break
+    else:
+        return unavailable("floor_fit_unsettled")
+    floor_points = round(floor["inlier_share"] * len(sample))
+    if floor_points < FLOOR_MIN_POINTS:
+        return unavailable("floor_points_too_few", floor_point_count=floor_points)
+    return {"status": "observed", "normal": [float(v) for v in floor["normal"]],
+            "offset_provider_units": float(floor["height_m"] / floor_scale),
+            "point_count": floor_points, "sampled_point_count": len(sample),
+            "inlier_share": float(floor["inlier_share"]), "below_share": float(floor["below_share"]),
+            "rms_provider_units": float(floor["rms_m"] / floor_scale),
+            "extent_provider_units": [float(v / floor_scale) for v in floor["extent_m"]],
+            "camera_heights_provider_units": [float(h) for h in heights]}
+
+
+def _prior_row(*, label: str, basis: str, assumed: float, plausible: tuple, span: float, **fields) -> dict:
+    low, high = plausible
+    return {"status": "measured", "label": label, "basis": basis, "assumed_distance_m": assumed,
+            "plausible_distance_range_m": [low, high], **fields, "span_provider_units": span,
+            "meters_per_unit": assumed / span, "meters_per_unit_range": [low / span, high / span]}
+
+
+def camera_height_reference(frames: list[dict], floor: dict) -> dict:
+    """The capture cameras' median height above ``floor`` (``observed_floor``), as a named prior.
+
+    ``unavailable`` names why the prior does not apply: no floor, too few views,
+    or heights one chest-to-eye hold cannot explain (stairs, a drone, a phone held
+    up for part of the walk).
+    """
+    if floor["status"] != "observed":
+        return {"status": "unavailable", "reason": floor["reason"]}
+    heights = np.asarray(floor["camera_heights_provider_units"])
+    if len(heights) < CAMERA_HEIGHT_MIN_VIEWS:
+        return {"status": "unavailable", "reason": "camera_height_too_few_views", "camera_count": len(heights)}
+    span = float(np.median(heights))
+    low, high = CAMERA_HEIGHT_RANGE_M
+    # A strict majority of the views must fit one chest-to-eye hold around their median.
+    band = (span * low / CAMERA_HEIGHT_ASSUMED_M, span * high / CAMERA_HEIGHT_ASSUMED_M)
+    supporting = int(np.count_nonzero((heights >= band[0]) & (heights <= band[1])))
+    if 2 * supporting <= len(heights):
+        return {"status": "unavailable", "reason": "camera_height_spread_implausible",
+                "camera_count": len(heights), "supporting_camera_count": supporting}
+    return _prior_row(label=CAMERA_HEIGHT_LABEL, basis="camera_height_prior", assumed=CAMERA_HEIGHT_ASSUMED_M,
+                      plausible=CAMERA_HEIGHT_RANGE_M, span=span, assumption=CAMERA_HEIGHT_ASSUMPTION,
+                      source=CAMERA_HEIGHT_SOURCE, camera_count=len(heights), supporting_camera_count=supporting)
+
+
+def _words(text: str) -> str:
+    return " " + " ".join("".join(c if c.isalnum() else " " for c in text.lower()).split()) + " "
+
+
+def standard_surface(*texts: str | None) -> tuple | None:
+    """The one ``SURFACE_HEIGHTS`` row these labels name, or None (no match, several, or excluded)."""
+    words = [_words(text) for text in texts if text]
+    if any(word in text.split() for text in words for word in SURFACE_EXCLUDED_WORDS):
+        return None
+    kinds = {row for row in SURFACE_HEIGHTS for text in words if any(f" {p} " in text for p in row[1])}
+    return next(iter(kinds)) if len(kinds) == 1 else None
+
+
+def surface_height_references(frames: list[dict], surfaces, floor: dict) -> list[dict]:
+    """Each task support or destination surface's observed top above ``floor``, as a named prior.
+
+    A surface votes when its label or segmentation prompt names one standard
+    height (``SURFACE_HEIGHTS``) and its own track is observed on these views.
+    Its top is measured from its observed points the way object bounds are: the
+    99th percentile of their heights above the floor. Anything else casts no
+    vote and says why; an observation is never assumed.
+    """
+    from .website_task_masks import decode_track_mask
+
+    by_id = {f["frame_id"]: f for f in frames}
+    rows = []
+    for target in surfaces:
+        if target.get("target_role") not in SURFACE_ROLES:
+            continue
+        identity = {"target_id": target.get("target_id"), "target_role": target.get("target_role"),
+                    "semantic_label": target.get("semantic_label"),
+                    "segmentation_prompt": target.get("segmentation_prompt")}
+        surface = standard_surface(target.get("semantic_label"), target.get("segmentation_prompt"))
+        if surface is None:
+            rows.append({**identity, "status": "unmatched"})
+            continue
+        if floor["status"] != "observed":
+            rows.append({**identity, "status": "unavailable", "reason": floor["reason"]})
+            continue
+        observed = [o for o in ((target.get("track") or {}).get("observations") or [])
+                    if o.get("source_frame_id") in by_id]
+        try:
+            parts = [frame_points(by_id[o["source_frame_id"]], decode_track_mask(o)) for o in observed]
+        except ValueError as exc:
+            rows.append({**identity, "status": "unavailable", "reason": str(exc)})
+            continue
+        points = np.concatenate(parts) if parts else np.empty((0, 3))
+        if len(points) < SURFACE_MIN_POINTS:
+            rows.append({**identity, "status": "unavailable", "reason": "surface_unobserved",
+                         "point_count": len(points)})
+            continue
+        top = float(np.percentile(points @ np.asarray(floor["normal"]) - floor["offset_provider_units"], 99))
+        if not top > 0:
+            rows.append({**identity, "status": "unavailable", "reason": "surface_not_above_floor"})
+            continue
+        kind, _, assumed, plausible, source = surface
+        rows.append(_prior_row(label=f"task surface height: {kind}", basis="standard_surface_height_prior",
+                               assumed=assumed, plausible=plausible, span=top, **identity, kind=kind,
+                               assumption=f"a standard {kind} top", source=source, point_count=len(points),
+                               observed_frame_ids=sorted({o["source_frame_id"] for o in observed})))
+    return rows
+
+
+def _vote_with_height_priors(references: list[dict], priors: list[dict], alone: dict
+                             ) -> tuple[list[dict], list[dict], list[dict], dict]:
+    """The references' vote again, with each height prior as one more object.
+
+    The priors can only add support: a scale stands when one of them is in the
+    one strict majority. The references they side with set the scale; with no
+    reference, the agreeing priors set it, with their own wide ranges.
+    """
+    kept, _, record = reference_agreement([*references, *priors], unique_majority=True)
+    prior_ids = {id(row) for row in priors}
+    agreeing_priors = [row for row in kept if id(row) in prior_ids]
+    kept = [row for row in kept if id(row) not in prior_ids] if agreeing_priors else []
+    kinds = {row["basis"] for row in agreeing_priors}
+    if not agreeing_priors:
+        basis = "no_majority"
+    elif kept:
+        basis = "single_object_with_height_priors" if alone["basis"] == "single_object" else \
+            "majority_with_height_priors"
+    else:
+        basis = ("camera_height_prior_only" if kinds == {"camera_height_prior"} else
+                 "surface_height_prior_only" if kinds == {"standard_surface_height_prior"} else
+                 "height_priors_only")
+    cues: dict[str, str] = {}
+    for row in [*kept, *agreeing_priors]:
+        cues.setdefault(_object_key(row["label"]), row["label"])
+    kept_ids = {id(row) for row in kept}
+    return kept, [row for row in references if id(row) not in kept_ids], agreeing_priors, {
+        **record, "basis": basis, "agreeing_cues": list(cues.values()), "references_alone": alone}
 
 
 #: A reference endpoint marks its object's edge; SAM's mask edge may sit a few
@@ -221,13 +493,24 @@ def _on_named_object(row: dict | None, pixels: np.ndarray, frame: dict) -> None:
 
 def estimate_sizes(
     *, frames: list[dict], automation: dict, pose_digest: str, output: Path, tracks: list[dict] = (),
-    reference_masks: list[dict] | None = None,
+    reference_masks: list[dict] | None = None, camera_height: bool = False,
+    surfaces: list[dict] | tuple = (),
 ) -> dict:
     """Metres per unit from the agreeing references, and the sizes they give.
 
     With ``reference_masks`` (``atlas_reference_masks``), a reference counts only
     when its endpoints lie on the object it names; without, references are taken
     as placed (retained plans that predate naming them).
+
+    Height priors join the vote whenever the references alone do not agree across
+    several objects, for frames that are the capture's own original views (never
+    edited or generated ones): with ``camera_height``, the camera's height above
+    the observed floor, and each task support or destination in ``surfaces``
+    (``website_task_masks`` targets tracked on these views) whose label names a
+    standard height. Each breaks a tie, confirms or contradicts a single
+    reference, or, with no reference, gives a guesstimate with its own wide
+    range; disagreeing votes give no scale. ``height_priors`` records what each
+    found. A retained result is read back as it was written.
     """
     binding = {
         "pose_digest": pose_digest,
@@ -236,6 +519,8 @@ def estimate_sizes(
     }
     if reference_masks is not None:
         binding["reference_masks_digest"] = canonical_digest({"reference_masks": reference_masks})
+    if surfaces:
+        binding["surfaces_digest"] = canonical_digest({"surfaces": list(surfaces)})
     if output.is_file():
         value = json.loads(output.read_text())
         if value.get("binding") != binding or value.get("digest") != canonical_digest(
@@ -280,7 +565,25 @@ def estimate_sizes(
             )
         except (KeyError, ValueError) as exc:
             gaps.append({"reference": reference, "reason": str(exc)})
-    accepted, disagreeing, agreement = reference_agreement(accepted)
+    clouds = [frame_points(f) for f in frames]
+    nonempty = [p for p in clouds if len(p)]
+    points = np.concatenate(nonempty) if nonempty else np.empty((0, 3))
+    measured = accepted
+    accepted, disagreeing, agreement = reference_agreement(measured)
+    priors, agreeing_priors = None, []
+    if (camera_height or surfaces) and agreement["basis"] not in REFERENCE_MAJORITY_BASES:
+        floor = observed_floor(frames, points)
+        priors = {"floor": floor,
+                  **({"camera": camera_height_reference(frames, floor)} if camera_height else {}),
+                  **({"surfaces": surface_height_references(frames, surfaces, floor)} if surfaces else {})}
+        votes = [row for row in [priors.get("camera"), *priors.get("surfaces", [])]
+                 if row is not None and row["status"] == "measured"]
+        if votes:
+            accepted, disagreeing, agreeing_priors, agreement = _vote_with_height_priors(
+                measured, votes, agreement)
+            agreeing_ids = {id(row) for row in agreeing_priors}
+            for row in votes:
+                row["agrees_with_consensus"] = id(row) in agreeing_ids
     gaps.extend(
         {"reference": r, "reason": "atlas_reference_disagrees_with_consensus"} for r in disagreeing
     )
@@ -293,9 +596,11 @@ def estimate_sizes(
         if accepted
         else None
     )
-    clouds = [frame_points(f) for f in frames]
-    nonempty = [p for p in clouds if len(p)]
-    points = np.concatenate(nonempty) if nonempty else np.empty((0, 3))
+    if scale is None and agreeing_priors:
+        # No reference stands: the agreeing priors' guesstimate, with their own wide ranges.
+        scale = float(np.median([r["meters_per_unit"] for r in agreeing_priors]))
+        scale_range = [min(r["meters_per_unit_range"][0] for r in agreeing_priors),
+                       max(r["meters_per_unit_range"][1] for r in agreeing_priors)]
 
     def bounds(points):
         if not len(points):
@@ -338,6 +643,7 @@ def estimate_sizes(
         "scale_references": accepted,
         "reference_agreement": agreement,
         "reference_gaps": gaps,
+        **({"height_priors": priors} if priors is not None else {}),
         "scene": bounds(points),
         "objects": objects,
         "scale_status": "estimated_from_named_assumptions"

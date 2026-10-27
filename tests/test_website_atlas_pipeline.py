@@ -339,6 +339,59 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
     assert len(poses) == 3 and stages.count("source_pose") == 2
 
 
+@pytest.mark.parametrize("basis, outcome", [
+    ("camera_height_prior_only", "completed"), ("surface_height_prior_only", "completed"),
+    ("height_priors_only", "completed"),
+    # A reference never checked against its object's mask is no guesstimate to fall back on.
+    ("single_object", "atlas_scale_review_abstained"), (None, "atlas_scale_review_abstained")])
+def test_a_height_prior_guesstimate_continues_when_the_scale_review_finds_no_reference(
+        tmp_path, monkeypatch, basis, outcome):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, website_atlas_pose as pose_api
+    from blueprint_pipeline import paid_resource_allocator as allocator, atlas_scale_review as review
+    from blueprint_pipeline import atlas_scene_measurements as measurements, atlas_scene_automation as automation
+    from blueprint_pipeline import atlas_source_pose_inputs, atlas_context_fov, atlas_reference_masks
+
+    pose_root = tmp_path / "job" / "pose"
+    pose_root.mkdir(parents=True)
+    (pose_root / "atlas_posed_rgbd_result.json").write_text("{}")
+    monkeypatch.setenv(pose_api.ATLAS_PRICE_REVIEW_ENV, "")
+    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda root: (
+        root, {"frames": [{"frame_id": "a"}], "binding": {"source_video_digest": "video"}, "digest": "inputs"}))
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", lambda **_: {"status": "completed"})
+    monkeypatch.setattr(measurements, "load_views", lambda *_: ({"digest": "sha256:pose", "operation": {"id": "op"}},
+                                                                ["views"]))
+    monkeypatch.setattr(atlas_context_fov, "verify_pose_context_fov", lambda **_: None)
+    monkeypatch.setattr(automation, "measurement_plan", lambda _: {"scale_references": []})
+    monkeypatch.setattr(atlas_reference_masks, "segment_scale_references", lambda **_: None)
+    # No reference named: the first measurement rests on a height prior alone, or has no scale.
+    first = {"digest": "sha256:first", "binding": {}, "scale_status": "estimated_from_named_assumptions",
+             "status": "relative_sizes_only" if basis is None else "estimated",
+             "meters_per_unit_estimate": None if basis is None else 0.9,
+             "reference_agreement": {"basis": basis or "no_reference"}}
+    measured = []
+    monkeypatch.setattr(measurements, "estimate_sizes", lambda **kw: measured.append(kw) or first)
+    reviews = []
+
+    def abstain(**kw):
+        reviews.append(kw)
+        raise ValueError("atlas_scale_review_abstained")
+    monkeypatch.setattr(review, "repair_source_scale", abstain)
+    policy = {"pose_input_cost_usd": .01, "rate_card_reference": "https://example.test/rates",
+              "reviewed_by": "test", "reviewed_on": _reviewed_today()}
+    result = pipeline._source_pose(pose_root=pose_root, inputs={}, review={}, policy=policy,
+        task_context={"capture_id": "c"}, check=lambda _: None, experimental=False, max_polls=1,
+        configuration={"policy": policy})
+    assert measured[0]["camera_height"] is True
+    # Every scale that rests on no named, mask-checked reference asks for one first.
+    assert len(reviews) == 1
+    if outcome == "completed":
+        assert result["status"] == "completed" and result["scene_measurements_digest"] == "sha256:first"
+        assert result["measurements_relative_path"] == "scene_measurements.json"
+        assert result["meters_per_unit_estimate"] == 0.9
+    else:
+        assert result == {"status": "needs_input", "reason": outcome}
+
+
 def test_a_checkpoint_refusal_stops_the_run_before_the_first_paid_review(tmp_path, monkeypatch):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
