@@ -20,6 +20,9 @@ CP=/opt/blueprint/BlueprintCapturePipeline
 PY=$CP/.venv/bin/python
 SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd $CP
+# Earlier root-run deploys fetched and checked out this clone as root, leaving it unwritable to
+# the service account; give back what root left before the service account fetches.
+PYTHONPATH="$SCRIPT_REPO/src" "$PY" -m blueprint_pipeline.git_checkout_ownership repair --repo "$CP"
 # Fetch main specifically. A bare `git fetch origin` tries to create a ref lock
 # for every remote branch, and the service account cannot write new ones under
 # .git/refs/remotes -- it fails with "Permission denied" on branches that have

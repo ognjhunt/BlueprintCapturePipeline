@@ -19,11 +19,15 @@ set -euo pipefail
 : "${SHA:?set SHA=<40-char pushed commit>}"
 CP=/opt/blueprint/BlueprintCapturePipeline
 PY=$CP/.venv/bin/python
+SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd $CP
 # Fetch all refs so freshly pushed canary branches resolve. Branch creation
 # under .git/refs/remotes can hit service-account permissions on unrelated
 # refs; tolerate partial failures and let the deploy tool's own reachability
 # check decide.
+# Earlier root-run deploys fetched and checked out this clone as root, leaving it unwritable to
+# the service account; give back what root left before the service account fetches.
+PYTHONPATH="$SCRIPT_REPO/src" "$PY" -m blueprint_pipeline.git_checkout_ownership repair --repo "$CP"
 sudo -u blueprint git fetch -q origin || true
 $PY scripts/deploy_control_plane_commit.py \
   --source-repo $CP \

@@ -378,3 +378,14 @@ def test_canary_requires_iteration_mode(tmp_path: Path) -> None:
             **roots,
         )
     assert "deploy_canary_requires_iteration" in str(excinfo.value)
+
+
+def test_the_wrappers_give_root_left_entries_back_before_the_service_account_fetches() -> None:
+    # 2026-10-27: root-run deploys left 1,665 of 1,887 .git entries root's, and `sudo -u blueprint
+    # git fetch` failed before the deploy changed anything.
+    repair = 'PYTHONPATH="$SCRIPT_REPO/src" "$PY" -m blueprint_pipeline.git_checkout_ownership repair --repo "$CP"'
+    for wrapper in ("deploy_control_plane_iteration.sh", "deploy_control_plane_canary.sh"):
+        text = (REPO / "scripts" / wrapper).read_text()
+        assert text.count(repair) == 1, wrapper
+        assert text.index(repair) < text.index("sudo -u blueprint git fetch"), wrapper
+        assert text.index('SCRIPT_REPO="$(cd') < text.index(repair), wrapper

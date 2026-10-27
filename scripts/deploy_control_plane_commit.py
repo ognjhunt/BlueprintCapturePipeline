@@ -355,6 +355,11 @@ from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
     reserve_control_plane_disk,
 )
 from blueprint_pipeline.control_plane_disk_usage import TreeUsage, tree_usage  # noqa: E402
+from blueprint_pipeline.git_checkout_ownership import (  # noqa: E402
+    checkout_owner,
+    git_run_options,
+    repair_checkout_ownership,
+)
 from blueprint_pipeline.provision_staging_sweep import sweep_stale_staging  # noqa: E402
 from blueprint_pipeline.control_plane_storage_pins import (  # noqa: E402
     DEFAULT_PINS_ROOT,
@@ -2573,11 +2578,13 @@ def _holder_summary(holder: str) -> str:
 
 
 def _git(repo: Path, *arguments: str) -> tuple[int, str]:
+    # As the checkout's owner: Git run as root here left the service clone unwritable to its account.
     result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
         ["git", "-C", str(repo), *arguments],
         capture_output=True,
         text=True,
         check=False,
+        **git_run_options(repo),
     )
     return result.returncode, result.stdout.strip()
 
@@ -2792,6 +2799,10 @@ def _surface_commit(path: Path, *, name: str) -> str:
 
 
 def _move_source_checkout(repo: Path, commit: str) -> None:
+    owner = checkout_owner(repo)
+    if owner is not None:
+        # Give back what earlier root-run deploys left, so Git can run as the owner below.
+        repair_checkout_ownership(repo, owner_uid=owner[0], owner_gid=owner[1])
     if _git(repo, "status", "--porcelain")[1]:
         # Never carry a local edit across a deploy: it would be running code
         # that is on no commit at all.
