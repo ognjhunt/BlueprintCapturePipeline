@@ -38,9 +38,7 @@ def family_render_backend(plan: Mapping[str, Any]) -> dict[str, Any]:
 def qualify_family_policy_scene(*, plan: Mapping[str, Any], specs: Mapping[str, Mapping[str, Any]],
                                 packet_root: Path, output_root: Path) -> dict[str, Any]:
     from .task_family_native_controls import qualify_task_family_site
-    from .task_evaluation_control_stage_policy import require_controls_enabled
 
-    require_controls_enabled()
     bounds = {(spec["maximum_action_steps"], spec["control_frequency_hz"]) for spec in specs.values()}
     if len(bounds) != 1:
         raise ValueError("task_family_site_controls_candidate_bounds_mismatch")
@@ -52,7 +50,10 @@ def qualify_family_policy_scene(*, plan: Mapping[str, Any], specs: Mapping[str, 
         maximum_steps=steps, control_frequency_hz=hz)
     return {"status": qualification["status"],
             "policy_observation_integrity_passed": qualification["status"] == "passed",
-            "authority": "native_robot_free_and_independent_controls", "site_qualification": qualification}
+            "authority": ("native_robot_free_probe_with_control_omission" if qualification.get("control_omission_authority")
+                          else "native_robot_free_and_independent_controls"),
+            "controls_qualified": qualification["controls_qualified"],
+            "qualified_comparison_permitted": False, "site_qualification": qualification}
 
 
 def _run_family_canary_episode(

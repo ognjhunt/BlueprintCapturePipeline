@@ -30,8 +30,9 @@ and a qualification receipt. Source and entrypoint bytes, qualification identity
 robot/controller/observation/action interfaces and staged assets are checked.
 The SDK must implement `apply_native_task_contract`, `reset`, `native_state`,
 `policy_observation`, `step_native_action` and `close`. Site qualification also
-requires `set_robot_enabled`, `step_without_robot_action`,
-`scripted_control_action` and `native_scene_readiness`. This release does not
+requires `set_robot_enabled`, `step_without_robot_action` and
+`native_scene_readiness`; enabled scripted trials also need
+`scripted_control_action`. This release does not
 install an unspecified simulator or manufacture its qualification.
 
 No non-fixture family environment, qualified family runtime catalog, task
@@ -41,12 +42,16 @@ Isaac environment must gain the native driver methods above before admission;
 passing the integration tests does not supply that implementation or evidence.
 
 Static readiness authorizes no physics claim. Within the existing canonical
-allocation, every scenario first constructs fresh native robot-free,
-zero-action and scripted-positive controls. Their native clocks, robot presence,
-source assets, calibrated rendered cameras, reset invariants and independently
-scored measurements must pass before loading or querying a candidate. Each
-fresh candidate runtime rechecks its own native scene and cameras after reset.
-Failures retain their receipts, media and cleanup evidence.
+allocation, every scenario first runs a genuine robot-free native physics
+probe. Native clocks, robot absence, source assets, calibrated rendered cameras,
+reset invariants and independent measurements must pass before candidate queries.
+The standing platform-owner pause omits only robot-present zero-action and
+scripted-positive trials under sealed diagnostic omission authority. It does
+not stop diagnostic policy execution. Omitted trials produce no success
+receipts, and results prohibit controls-qualified comparisons. When controls
+are enabled, all three trials must pass. Each fresh candidate runtime rechecks
+its own native scene and cameras after reset. Failures retain their receipts,
+media and cleanup evidence.
 
 Family policies use the admitted native HTTPS observation/action interface.
 Only the instruction, native RGB and proprioception enter inference. Model and

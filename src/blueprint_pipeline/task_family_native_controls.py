@@ -63,12 +63,14 @@ class _ControlRuntime:
         self.native = native
         self.readiness: dict[str, Any] = {}
         self.states: list[dict[str, Any]] = []
+        self.steps = 0
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.runtime, name)
 
     def reset(self, *, seed: int) -> Any:
         result = self.runtime.reset(seed=seed)
+        self.steps = 0
         self.runtime.set_robot_enabled(enabled=self.control != "robot_free_probe")
         self.readiness = validate_task_family_native_scene_readiness(
             self.runtime, self.native, robot_present=self.control != "robot_free_probe")
@@ -80,12 +82,16 @@ class _ControlRuntime:
                  "robot_presence_readback_mismatch")
         if self.control != "deterministic_scripted_positive":
             _require(row.get("robot_action_applied") is False, "unactuated_control_readback_mismatch")
+        elif self.steps:
+            _require(row.get("robot_action_applied") is True, "scripted_control_action_readback_missing")
         self.states.append(json.loads(json.dumps(row, default=lambda value: value.tolist(), allow_nan=False)))
         return row
 
     def step(self, action: list[float], *, duration_seconds: float) -> Any:
         if self.control == "deterministic_scripted_positive":
-            return self.runtime.step(action, duration_seconds=duration_seconds)
+            result = self.runtime.step(action, duration_seconds=duration_seconds)
+            self.steps += 1
+            return result
         return self.runtime.step_without_robot_action(duration_seconds=duration_seconds)
 
 
@@ -107,9 +113,13 @@ def qualify_task_family_site(native_contract: Mapping[str, Any], *,
                              runtime_catalog_path: str | Path, asset_root: str | Path,
                              output_dir: str | Path, maximum_steps: int | None = None,
                              control_frequency_hz: float | None = None) -> dict[str, Any]:
-    """Retain native site controls before any candidate policy is constructed."""
+    """Retain mandatory native physics, plus any owner-enabled control trials."""
+    from .task_family_control_omission import make_family_control_omission
+
     native = validate_task_family_native_runtime_contract(native_contract)
     task = native["task_spec"]["task_success_contract"]
+    omission = make_family_control_omission(task["contract_digest"])
+    required = ("robot_free_probe",) if omission is not None else CONTROLS
     native_steps = native["task_spec"].get("maximum_action_steps")
     native_hz = native["task_spec"].get("control_frequency_hz")
     _require((maximum_steps is None or native_steps is None or maximum_steps == native_steps)
@@ -125,7 +135,7 @@ def qualify_task_family_site(native_contract: Mapping[str, Any], *,
     output.mkdir(parents=True, exist_ok=True)
     rows: dict[str, Any] = {}
     failure = None
-    for control in CONTROLS:
+    for control in required:
         runtime = None
         execution_owns_runtime = False
         try:
@@ -158,9 +168,13 @@ def qualify_task_family_site(native_contract: Mapping[str, Any], *,
                     runtime.close()
                 except Exception as exc:
                     failure = {"type": type(exc).__name__, "reason": "runtime_close_failed:" + str(exc)}
-    result = {"schema_version": SCHEMA, "status": "passed" if failure is None and len(rows) == len(CONTROLS) else "failed",
+    passed = failure is None and len(rows) == len(required)
+    result = {"schema_version": SCHEMA, "status": "passed" if passed else "failed",
         "native_provenance": native_runtime_provenance(native), "task_success_contract_digest": task["contract_digest"],
         "controls": rows, "failure": failure, "candidate_policy_queried": False,
+        "controls_qualified": passed and omission is None, "qualified_comparison_permitted": False,
+        **({"control_omission_authority": omission, "omitted_controls": list(omission["omitted_controls"])}
+           if omission is not None else {}),
         "scoring_source": "deterministic_native_state", "physical_validation": False,
         "claim_ceiling": task["claim_ceiling"]}
     result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")

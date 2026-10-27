@@ -228,8 +228,9 @@ def test_actual_family_source_controls_refuse_before_native_factory_policy_or_al
 
 @pytest.mark.slow
 @pytest.mark.parametrize("policy_action,expected_success", [(1.0, True), (0.0, False)])
+@pytest.mark.parametrize("controls_paused", [False, True])
 def test_actual_family_capture_to_native_screening_publication(
-    installed_sdk, tmp_path, monkeypatch, policy_action, expected_success,
+    installed_sdk, tmp_path, monkeypatch, policy_action, expected_success, controls_paused,
 ):
     from blueprint_pipeline import beta_policy_screening_launch as launch
     from blueprint_pipeline.beta_policy_screening_family_sources import enqueue_registered_family_scenes
@@ -237,7 +238,19 @@ def test_actual_family_capture_to_native_screening_publication(
     from blueprint_pipeline import task_evaluation_control_stage_policy
 
     sdk = installed_sdk
-    monkeypatch.setattr(task_evaluation_control_stage_policy, "CONTROLS_PAUSED", False)
+    if controls_paused:
+        assert task_evaluation_control_stage_policy.CONTROLS_PAUSED is True
+        engine = sdk.module().Environment
+        monkeypatch.delattr(engine, "scripted_control_action")
+        unactuated_step = engine.step_without_robot_action
+
+        def robot_free_only(self, **kwargs):
+            assert self.robot_present is False, "paused zero-action control ran"
+            return unactuated_step(self, **kwargs)
+
+        monkeypatch.setattr(engine, "step_without_robot_action", robot_free_only)
+    else:
+        monkeypatch.setattr(task_evaluation_control_stage_policy, "CONTROLS_PAUSED", False)
     world = production_source(tmp_path, monkeypatch, sdk)
     prepared_source = world.advance()
     assert prepared_source["status"] == "completed" and prepared_source["phase"] == "family_native_prepared", prepared_source
@@ -299,7 +312,8 @@ def test_actual_family_capture_to_native_screening_publication(
     assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output,
         run_cell_process=run_cpu_cell) == 0
     inner = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
-    assert len(inner["episodes"]) == 10 and len(sdk.calls) == 40
+    runtimes_per_cell = 2 if controls_paused else 4
+    assert len(inner["episodes"]) == 10 and len(sdk.calls) == 10 * runtimes_per_cell
     assert len([request for request in requests if request["method"] == "POST"]) == 20
     assert all(engine.close_count == 1 for engine in sdk.module().instances)
     source_native = json.loads((runtime / "native_task_packet/native_task_runtime_contract.v1.json").read_text())
@@ -326,8 +340,18 @@ def test_actual_family_capture_to_native_screening_publication(
         assert receipt["visual_evidence"]["status"] == "complete"
         assert row["arm_moved"] is False and row["actions_reached_robot"] is True
         assert row["episode"]["motion_evidence"]["policy_state_changed"] is expected_success
-    assert all(sdk.module().instances[index].actions == [[policy_action], [policy_action]] for index in range(3, 40, 4))
-    assert all(sdk.module().instances[index].actions == [] for index in range(0, 40, 4))
+        qualification = row["episode"]["native_site_qualification"]
+        assert qualification["controls_qualified"] is not controls_paused
+        assert qualification["qualified_comparison_permitted"] is False
+        assert set(qualification["controls"]) == ({"robot_free_probe"} if controls_paused else
+            {"robot_free_probe", "zero_action_negative", "deterministic_scripted_positive"})
+        if controls_paused:
+            assert qualification["control_omission_authority"]["qualified_comparison_permitted"] is False
+            assert qualification["control_omission_authority"]["source_task_success_contract_digest"] == plan["task_success_contract_digest"]
+    assert all(sdk.module().instances[index].actions == [[policy_action], [policy_action]]
+               for index in range(runtimes_per_cell - 1, 10 * runtimes_per_cell, runtimes_per_cell))
+    assert all(sdk.module().instances[index].actions == []
+               for index in range(0, 10 * runtimes_per_cell, runtimes_per_cell))
 
     # The provider transport is also hermetic. Exercise the actual scoped
     # closeout join against that double, without inventing a closed native

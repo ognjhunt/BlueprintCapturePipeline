@@ -205,6 +205,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "task_family_native_contracts.py",
     "task_family_native_runtime.py",
     "task_family_native_controls.py",
+    "task_family_control_omission.py",
     "task_family_policy_execution.py",
     "task_family_policy_worker_execution.py",
     "task_family_policy_canary_execution.py",

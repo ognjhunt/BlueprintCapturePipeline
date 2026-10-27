@@ -216,9 +216,7 @@ def test_actual_selected_cell_worker_runs_registered_factory_after_native_contro
     requests = []
 
     def create_client(loaded_spec):
-        # Site qualification must construct and close all three native controls
-        # before the candidate transport is loaded or queried.
-        assert len(sdk.calls) == 3
+        assert len(sdk.calls) == (3 if controls_enabled else 1)
         assert all(engine.close_count == 1 for engine in sdk.module().instances)
         client, wire = _policy(loaded_spec)
         requests.append(wire)
@@ -228,17 +226,15 @@ def test_actual_selected_cell_worker_runs_registered_factory_after_native_contro
     output = tmp_path / "selected-cell-output"
     status = worker._run_selected_cell(0, runtime_root=runtime, output_root=output)
     result = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
-    if controls_enabled:
-        assert status == 0, result
-        assert len(sdk.calls) == 4 and len(result["episodes"]) == 1
-        assert all(engine.close_count == 1 for engine in sdk.module().instances)
-        assert result["episodes"][0]["episode"]["score"]["task_succeeded"]
-        assert result["preload_observation_gate"]["site_qualification"]["status"] == "passed"
-        assert len([row for row in requests[0] if row["method"] == "POST"]) == spec["max_policy_queries"]
-    else:
-        assert status == 1 and result["status"] == "blocked"
-        assert result["policy_loads"] == [] and not sdk.calls and not requests
-        assert result["session_failure_type"] == "ValueError"
+    assert status == 0, result
+    assert len(sdk.calls) == (4 if controls_enabled else 2) and len(result["episodes"]) == 1
+    assert all(engine.close_count == 1 for engine in sdk.module().instances)
+    assert result["episodes"][0]["episode"]["score"]["task_succeeded"]
+    qualification = result["preload_observation_gate"]["site_qualification"]
+    assert qualification["status"] == "passed" and qualification["controls_qualified"] is controls_enabled
+    assert set(qualification["controls"]) == ({"robot_free_probe", "zero_action_negative", "deterministic_scripted_positive"}
+                                              if controls_enabled else {"robot_free_probe"})
+    assert len([row for row in requests[0] if row["method"] == "POST"]) == spec["max_policy_queries"]
 
 
 @pytest.mark.parametrize("fault,outcome", [("bounds", "failure"), ("wrong_output", "failure"),

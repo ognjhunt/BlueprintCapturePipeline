@@ -160,6 +160,7 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             required.update("provider_runtime/blueprint_pipeline/" + name for name in (
                 "task_family_native_runtime.py", "task_family_native_contracts.py", "task_family_native_controls.py",
+                "task_family_control_omission.py",
                 "task_family_policy_execution.py", "task_family_policy_worker_execution.py", "task_family_policy_canary_execution.py",
                 "task_family_policy_https_client.py", "task_family_result_admission.py",
                 "task_evaluation_task_family_native_adapter.py", "task_family_scoring.py", "core/common.py"))

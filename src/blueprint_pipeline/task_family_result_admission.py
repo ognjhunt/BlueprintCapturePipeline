@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .task_family_control_omission import OMITTED_CONTROLS, validate_family_control_omission
 from .task_family_scoring import score_task_family_episode, validate_task_family_contract
 
 
@@ -49,10 +50,21 @@ def _episode(task: Mapping[str, Any], value: Any) -> bool:
 
 
 def family_site_qualification_valid(task: Mapping[str, Any], value: Any) -> bool:
-    """Require retained native robot-free, negative and positive controls."""
+    """Require robot-free evidence and either trials or their typed omission."""
     site = _mapping(value)
     controls = _mapping(site.get("controls"))
-    names = {"robot_free_probe", "zero_action_negative", "deterministic_scripted_positive"}
+    omission = site.get("control_omission_authority")
+    names = {"robot_free_probe", *OMITTED_CONTROLS}
+    if omission is not None:
+        if (not validate_family_control_omission(omission, task.get("contract_digest"))
+                or site.get("controls_qualified") is not False
+                or site.get("qualified_comparison_permitted") is not False
+                or site.get("omitted_controls", list(OMITTED_CONTROLS)) != list(OMITTED_CONTROLS)):
+            return False
+        names = {"robot_free_probe"}
+    elif (site.get("controls_qualified", True) is not True
+            or site.get("omitted_controls", []) != []):
+        return False
     if (site.get("schema_version") != "task_family_native_site_qualification.v1"
             or site.get("status") != "passed" or site.get("failure") is not None
             or site.get("candidate_policy_queried") is not False

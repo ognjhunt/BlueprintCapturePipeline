@@ -126,9 +126,6 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     identity = _identity(plan, candidate)
     _check_quote(plan, candidate)
     family = candidate["execution_spec"].get("backend") == FAMILY_BACKEND
-    if family:
-        from .task_evaluation_control_stage_policy import require_controls_enabled
-        require_controls_enabled()
     previous = root / "prepared.json"
     if previous.exists():
         prepared = _read(previous)
@@ -300,8 +297,6 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         execution = candidate.get("execution_spec") or {}
         if execution.get("backend") == "task_family_native.v1":
             from .beta_policy_screening_family import reopen_family_planning_inputs, validate_family_candidate_catalog
-            from .task_evaluation_control_stage_policy import require_controls_enabled
-            require_controls_enabled()
             static = reopen_family_planning_inputs(_read(_bound_path(plan["scene_inputs"])))
             validate_family_candidate_catalog(plan, candidate,
                 _read(_bound_path(execution["policy_execution_spec"])), static)

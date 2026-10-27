@@ -322,10 +322,16 @@ def test_mid_episode_identity_change_is_invalid_and_closes_sdk(installed_sdk, mo
     assert engine.close_count == 1
 
 
-def test_site_qualification_constructs_fresh_native_probe_and_controls(installed_sdk, tmp_path):
+@pytest.fixture
+def full_control_trials(monkeypatch):
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_control_stage_policy.CONTROLS_PAUSED", False)
+
+
+def test_site_qualification_constructs_fresh_native_probe_and_controls(installed_sdk, tmp_path, full_control_trials):
     sdk = installed_sdk
     receipt = qualify_task_family_site(**sdk.args, output_dir=tmp_path / "site-qualification")
     assert receipt["status"] == "passed" and receipt["candidate_policy_queried"] is False
+    assert receipt["controls_qualified"] is True and receipt["qualified_comparison_permitted"] is False
     assert set(receipt["controls"]) == {"robot_free_probe", "zero_action_negative", "deterministic_scripted_positive"}
     assert len(sdk.calls) == 3 and all(engine.close_count == 1 for engine in sdk.module().instances)
     probe = receipt["controls"]["robot_free_probe"]
@@ -337,7 +343,7 @@ def test_site_qualification_constructs_fresh_native_probe_and_controls(installed
     assert json.loads((tmp_path / "site-qualification" / "task_family_native_site_qualification.v1.json").read_text()) == receipt
 
 
-def test_site_qualification_consumes_sealed_execution_bounds_without_mutating_native_contract(installed_sdk, tmp_path):
+def test_site_qualification_consumes_sealed_execution_bounds_without_mutating_native_contract(installed_sdk, tmp_path, full_control_trials):
     sdk = installed_sdk
     native = sdk.args["native_contract"]
     native["task_spec"].pop("maximum_action_steps")
@@ -358,7 +364,7 @@ def test_site_qualification_refuses_conflicting_execution_bounds(installed_sdk, 
     assert sdk.calls == []
 
 
-def test_site_qualification_preserves_previous_retained_evidence(installed_sdk, tmp_path):
+def test_site_qualification_preserves_previous_retained_evidence(installed_sdk, tmp_path, full_control_trials):
     sdk = installed_sdk
     output = tmp_path / "site-qualification"
     receipt = qualify_task_family_site(**sdk.args, output_dir=output)
@@ -369,8 +375,8 @@ def test_site_qualification_preserves_previous_retained_evidence(installed_sdk, 
     assert (output / "task_family_native_site_qualification.v1.json").read_bytes() == retained
 
 
-@pytest.mark.parametrize("change", ["robot_not_removed", "unactuated_step_applies_action", "camera", "safety", "positive"])
-def test_site_qualification_fails_native_probe_controls_or_readiness(installed_sdk, monkeypatch, tmp_path, change):
+@pytest.mark.parametrize("change", ["robot_not_removed", "unactuated_step_applies_action", "camera", "safety", "positive", "positive_readback"])
+def test_site_qualification_fails_native_probe_controls_or_readiness(installed_sdk, monkeypatch, tmp_path, change, full_control_trials):
     sdk = installed_sdk
     engine_type = sdk.module().Environment
     if change == "robot_not_removed":
@@ -398,7 +404,57 @@ def test_site_qualification_fails_native_probe_controls_or_readiness(installed_s
         monkeypatch.setattr(engine_type, "native_state", unsafe)
     elif change == "positive":
         monkeypatch.setattr(engine_type, "scripted_control_action", lambda self, *_, **__: [0])
+    elif change == "positive_readback":
+        original_step = engine_type.step_native_action
+
+        def missing_action_readback(self, *args, **kwargs):
+            result = original_step(self, *args, **kwargs)
+            self.robot_action_applied = False
+            return result
+
+        monkeypatch.setattr(engine_type, "step_native_action", missing_action_readback)
     receipt = qualify_task_family_site(**sdk.args, output_dir=tmp_path / "site-qualification")
     assert receipt["status"] == "failed" and receipt["failure"]
     assert receipt["candidate_policy_queried"] is False
     assert all(engine.close_count == 1 for engine in sdk.module().instances)
+
+
+@pytest.mark.parametrize("scripted_api_present", [True, False])
+def test_default_control_pause_runs_only_native_robot_free_probe(installed_sdk, tmp_path, monkeypatch, scripted_api_present):
+    from blueprint_pipeline.task_family_control_omission import validate_family_control_omission
+    from blueprint_pipeline.task_evaluation_control_stage_policy import CONTROLS_PAUSED
+
+    assert CONTROLS_PAUSED is True
+    sdk = installed_sdk
+    engine = sdk.module().Environment
+    if scripted_api_present:
+        monkeypatch.setattr(engine, "scripted_control_action", lambda *args, **kwargs: pytest.fail("paused scripted control ran"))
+    else:
+        monkeypatch.delattr(engine, "scripted_control_action")
+    original_step = engine.step_without_robot_action
+
+    def only_robot_free_step(self, **kwargs):
+        assert self.robot_present is False, "paused zero-action trial ran"
+        return original_step(self, **kwargs)
+
+    monkeypatch.setattr(engine, "step_without_robot_action", only_robot_free_step)
+    receipt = qualify_task_family_site(**sdk.args, output_dir=tmp_path / "robot-free-only")
+    assert receipt["status"] == "passed" and len(sdk.calls) == 1
+    assert set(receipt["controls"]) == {"robot_free_probe"}
+    assert receipt["controls_qualified"] is False and receipt["qualified_comparison_permitted"] is False
+    assert validate_family_control_omission(receipt["control_omission_authority"],
+        sdk.args["native_contract"]["task_spec"]["task_success_contract"]["contract_digest"])
+    assert receipt["omitted_controls"] == ["zero_action_negative", "deterministic_scripted_positive"]
+    assert sdk.module().instances[0].close_count == 1 and sdk.module().instances[0].actions == []
+
+
+def test_enabled_control_trials_require_scripted_sdk_support(installed_sdk, tmp_path, monkeypatch, full_control_trials):
+    sdk = installed_sdk
+    monkeypatch.delattr(sdk.module().Environment, "scripted_control_action")
+    receipt = qualify_task_family_site(**sdk.args, output_dir=tmp_path / "enabled-controls")
+    assert receipt["status"] == "failed" and receipt["controls_qualified"] is False
+    assert "control_omission_authority" not in receipt
+    assert receipt["controls"]["robot_free_probe"]["passed"]
+    assert receipt["controls"]["zero_action_negative"]["passed"]
+    assert "native_scripted_control_required" in receipt["controls"]["deterministic_scripted_positive"]["episode"]["failure"]["reason"]
+    assert len(sdk.calls) == 3 and all(engine.close_count == 1 for engine in sdk.module().instances)

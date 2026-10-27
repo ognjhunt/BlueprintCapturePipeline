@@ -85,11 +85,15 @@ def reopen_family_planning_inputs(scene: Mapping[str, Any]) -> dict[str, Any]:
     """Reopen original compilation bytes and the current operator qualification."""
     from .beta_policy_screening_launch import _bound_path
     from .website_task_family_scene_inputs import read_family_scene_inputs
+    from .task_evaluation_scene_owner_authority import reopen_scene_intent
 
     reference = scene.get("family_source_inputs")
     if not isinstance(reference, Mapping):
         raise ValueError("beta_screening_family_source_reference_required")
     inputs = read_family_scene_inputs(_bound_path(reference))
+    # Static source bytes do not extend the original grant. Reopen its current
+    # expiry/revocation and cumulative budget before preparing or launching.
+    reopen_scene_intent(inputs["references"]["scene_intent"])
     facts = {"inputs": inputs, "packet_dir": Path(inputs["base_native_packet"]["path"]).parent}
     static = static_family_readiness(facts)
     if (scene.get("schema_version") != "blueprint.beta_family_screening_scene_inputs.v1"

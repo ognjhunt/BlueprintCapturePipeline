@@ -45,6 +45,7 @@ def source_fixture(tmp_path, monkeypatch, *, supplied_runtime=False, policy_sele
     registry_path.chmod(0o600)
     monkeypatch.setenv(REGISTRY_ENV, str(registry_path))
     intent_root = tmp_path / 'intents'
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT', str(intent_root))
     accepted = stage_scene_intent(value=preparation['intake_request'], queue_root=intent_root,
         authenticated_client='blueprint-webapp', trusted_clients={'blueprint-webapp'}, now=args['now'])
     intent_reference = record(intent_root / accepted['intent_id'] / 'intent.json')

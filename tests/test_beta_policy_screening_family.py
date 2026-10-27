@@ -116,24 +116,22 @@ def test_source_backed_family_capability_uses_native_interface_and_bounded_quote
     assert all(cell["resolved_scenario"]["parameters"] == {} for cell in plan["scenario_cells"])
 
 
-def test_family_controls_hold_stops_before_bundle_or_allocator(tmp_path, monkeypatch):
+@pytest.mark.parametrize("controls_paused", [True, False])
+def test_family_prepare_builds_real_sealed_provider_bundle(tmp_path, monkeypatch, controls_paused):
     planning, catalog, _profile, _facts, _spec_value, _written = family_planning_fixture(tmp_path, monkeypatch)
     plan = build_screening_plan(catalog, planning["scene"], campaign_id="family-screening",
         capabilities=planning["capabilities"], cost_quotes=planning["cost_quotes"])
-    monkeypatch.setattr("blueprint_pipeline.task_evaluation_control_stage_policy.CONTROLS_PAUSED", True)
-    with pytest.raises(ValueError, match="controls_paused_by_owner"):
-        launch.prepare_candidate(plan=plan, candidate=plan["candidates"][0], attempt_dir=tmp_path / "attempt")
-    assert not (tmp_path / "attempt").exists()
-
-
-def test_family_prepare_builds_real_sealed_provider_bundle(tmp_path, monkeypatch):
-    planning, catalog, _profile, _facts, _spec_value, _written = family_planning_fixture(tmp_path, monkeypatch)
-    plan = build_screening_plan(catalog, planning["scene"], campaign_id="family-screening",
-        capabilities=planning["capabilities"], cost_quotes=planning["cost_quotes"])
-    monkeypatch.setattr("blueprint_pipeline.task_evaluation_control_stage_policy.CONTROLS_PAUSED", False)
+    from blueprint_pipeline import task_evaluation_control_stage_policy
+    assert task_evaluation_control_stage_policy.CONTROLS_PAUSED is True
+    monkeypatch.setattr(task_evaluation_control_stage_policy, "CONTROLS_PAUSED", controls_paused)
     prepared = launch.prepare_candidate(plan=plan, candidate=plan["candidates"][0], attempt_dir=tmp_path / "attempt")
     authority = json.loads(Path(prepared["authority"]["path"]).read_text())
     assert authority["hard_cap_usd"] == 4 and authority["pre_policy_site_qualification_required"] is True
+    runtime_inputs = launch._read(tmp_path / "attempt/runtime_inputs/policy_canary_runtime_inputs.json")
+    assert all(cell["control_diagnostic"] == {
+        "mode": "native_family_prepolicy_required", "typed_gap": "native_site_qualification_pending",
+        "policy_execution_blocked": True} for cell in runtime_inputs["cells"])
+    assert "qualified_family_control_plane_unavailable" not in sys.modules
     assert prepared["argv"][0] == "gpu-canary" and prepared["argv"][-1] != "--execute"
     assert "--beta-screening-credential-file" in prepared["argv"]
     assert not (tmp_path / "attempt/allocator_launch_intent.json").exists()
@@ -186,3 +184,117 @@ def test_explicit_source_policy_selection_limits_the_plan_to_current_catalog_con
     with pytest.raises(ValueError, match="policy_selection_changed"):
         build_planning_inputs(catalog=changed, profile=selected_profile, capture_root=capture,
             source=selected_facts["inputs"]["source"], inputs_dir=tmp_path / "changed-planning")
+
+
+@pytest.mark.parametrize("source_state", ["current", "revoked", "expired"])
+def test_paused_family_launch_keeps_source_gate_before_allocator(tmp_path, monkeypatch, source_state):
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline import task_evaluation_control_stage_policy as control_policy
+    from blueprint_pipeline import team_candidate_quick10_launch as native
+
+    assert control_policy.CONTROLS_PAUSED is True
+    planning, catalog, _profile, _facts, _spec_value, _written = family_planning_fixture(tmp_path, monkeypatch)
+    plan = build_screening_plan(catalog, planning["scene"], campaign_id="family-screening",
+        capabilities=planning["capabilities"], cost_quotes=planning["cost_quotes"])
+    candidate = plan["candidates"][0]
+    attempt = tmp_path / "attempt"
+    prepared = launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=attempt)
+    calls = []
+
+    def current_source(source, *, site_id):
+        calls.append("current_source")
+        assert source == plan["source"] and site_id == plan["site_id"]
+        if source_state != "current":
+            # The current-source service can refuse either ended authority.
+            # This checks propagation through the real prelaunch sequence.
+            raise ValueError("source_authority_" + source_state)
+        return {}
+
+    def start_allocator(argv, **_):
+        assert calls == ["current_source"]
+        assert argv == prepared["argv"]
+        calls.append("allocator_transport")
+        return 12345
+
+    monkeypatch.setattr(worker, "require_current_source", current_source)
+    monkeypatch.setattr(native, "_start_allocator", start_allocator)
+    monkeypatch.setattr(native, "_process_start_ticks", lambda _pid: "1")
+    result = launch.launch_candidate(plan=plan, candidate=candidate, attempt_dir=attempt, prepared=prepared)
+    assert "qualified_family_control_plane_unavailable" not in sys.modules
+    if source_state == "current":
+        assert result["status"] == "running"
+        assert calls == ["current_source", "allocator_transport"]
+    else:
+        assert result["status"] == "blocked" and result["no_allocation_proven"] is True
+        assert result["provider_allocation_performed"] is False
+        assert calls == ["current_source"]
+        assert launch.launch_candidate(plan=plan, candidate=candidate, attempt_dir=attempt, prepared=prepared) == result
+        assert calls == ["current_source"]
+
+
+def test_paused_family_launch_keeps_expired_quote_before_allocator(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+    from blueprint_pipeline import task_evaluation_control_stage_policy as control_policy
+    from blueprint_pipeline import team_candidate_quick10_launch as native
+
+    assert control_policy.CONTROLS_PAUSED is True
+    planning, catalog, _profile, _facts, _spec_value, _written = family_planning_fixture(tmp_path, monkeypatch)
+    plan = build_screening_plan(catalog, planning["scene"], campaign_id="family-screening",
+        capabilities=planning["capabilities"], cost_quotes=planning["cost_quotes"])
+    candidate = plan["candidates"][0]
+    attempt = tmp_path / "attempt"
+    prepared = launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=attempt)
+    expires = datetime.fromisoformat(candidate["cost_quote"]["valid_until"].replace("Z", "+00:00"))
+    monkeypatch.setattr(launch, "datetime", SimpleNamespace(fromisoformat=datetime.fromisoformat,
+        now=lambda _timezone: expires + timedelta(seconds=1)))
+    monkeypatch.setattr(native, "_start_allocator", lambda *_, **__: pytest.fail("expired quote reached allocator"))
+    result = launch.launch_candidate(plan=plan, candidate=candidate, attempt_dir=attempt, prepared=prepared)
+    assert result["status"] == "blocked" and result["no_allocation_proven"] is True
+    assert result["provider_allocation_performed"] is False
+
+
+@pytest.mark.parametrize("ended_authority", ["revoked", "expired"])
+@pytest.mark.parametrize("when", ["after_plan", "after_prepared"])
+def test_paused_family_reopens_late_original_intent_before_preparation_or_launch(
+    tmp_path, monkeypatch, ended_authority, when,
+):
+    from types import SimpleNamespace
+    from blueprint_pipeline import task_evaluation_scene_owner_authority as authority
+    from blueprint_pipeline import task_evaluation_control_stage_policy as control_policy
+    from blueprint_pipeline import task_family_native_runtime as runtime
+    from blueprint_pipeline import team_candidate_quick10_launch as native
+    from blueprint_pipeline.task_family_policy_https_client import TaskFamilyPolicyHttpsClient
+
+    assert control_policy.CONTROLS_PAUSED is True
+    planning, catalog, _profile, facts, _spec_value, _written = family_planning_fixture(tmp_path, monkeypatch)
+    plan = build_screening_plan(catalog, planning["scene"], campaign_id="family-screening",
+        capabilities=planning["capabilities"], cost_quotes=planning["cost_quotes"])
+    candidate = plan["candidates"][0]
+    attempt = tmp_path / "attempt"
+    prepared = (launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=attempt)
+                if when == "after_prepared" else None)
+    reference = facts["inputs"]["references"]["scene_intent"]
+    intent_path = Path(reference["path"])
+    if ended_authority == "revoked":
+        write_json(intent_path.parent / "revoked.json", {"revoked": True})
+    else:
+        original = json.loads(intent_path.read_text())
+        expired_now = original["request"]["execution"]["expires_at_epoch"] + 1
+        monkeypatch.setattr(authority, "time", SimpleNamespace(time=lambda: expired_now))
+    monkeypatch.setattr(native, "_start_allocator", lambda *_, **__: pytest.fail("ended authority reached allocator"))
+    monkeypatch.setattr(runtime, "build_task_family_native_runtime",
+        lambda *_, **__: pytest.fail("ended authority constructed native runtime"))
+    monkeypatch.setattr(TaskFamilyPolicyHttpsClient, "__init__",
+        lambda *_, **__: pytest.fail("ended authority constructed policy client"))
+    if when == "after_plan":
+        with pytest.raises(ValueError, match="scene_owner_authority_" + ended_authority):
+            launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=attempt)
+        assert not attempt.exists()
+    else:
+        result = launch.launch_candidate(plan=plan, candidate=candidate, attempt_dir=attempt, prepared=prepared)
+        assert result["status"] == "blocked" and result["no_allocation_proven"] is True
+        assert result["provider_allocation_performed"] is False
+        assert not (attempt / "allocator_process.json").exists()
+        assert launch.launch_candidate(plan=plan, candidate=candidate, attempt_dir=attempt, prepared=prepared) == result
+    assert "qualified_family_control_plane_unavailable" not in sys.modules
