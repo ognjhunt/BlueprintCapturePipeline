@@ -60,7 +60,14 @@ def _rotate(vector: Sequence[float], q: Sequence[float]) -> list[float]:
 
 def prepare_isaac_probe(*, revision: Mapping[str, Any], replacement_asset: str | Path, output_root: str | Path,
                         fetcher: Callable[[Mapping[str, Any]], bytes] | None = None) -> dict[str, Any]:
-    """Everything the GPU run needs, bound to the revision before any simulator starts."""
+    """Everything the GPU run needs, bound to the revision before any simulator starts.
+
+    Deprecated for team scenes: this binds the configured revision's task
+    specification, so its receipt would refuse every team evaluation with
+    ``task_spec_mismatch``. Teams' scenes are probed by the capped lane
+    (``rigid_robot_free_probe_runner``), bound to the specification they are
+    scored with (``team_robot_free_probe.probe_request``).
+    """
 
     from .task_evaluation_rigid_relocation_native_adapter import (
         DEFINITION_CONTRACT_PATH,

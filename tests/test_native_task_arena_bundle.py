@@ -111,6 +111,7 @@ def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
         "policy",
         "policy_diagnostic",
         "controlled_policy",
+        "rigid_robot_free_probe",
     }
 
 

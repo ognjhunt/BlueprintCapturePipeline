@@ -1,0 +1,14 @@
+[Unit]
+Description=Retry deferred rigid robot-free probes under their existing capture grants
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-rigid-robot-free-probe-runner.timer.json
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=15s
+Unit=blueprint-rigid-robot-free-probe-runner.service
+
+[Install]
+WantedBy=timers.target

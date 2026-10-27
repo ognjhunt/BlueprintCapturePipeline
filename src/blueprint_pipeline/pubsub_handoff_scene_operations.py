@@ -340,6 +340,8 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
 
 
 def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider, max_messages, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, ack_deadline_seconds, max_delivery_attempts):
+    if type(max_delivery_attempts) is not int or max_delivery_attempts < 1:
+        raise ValueError('pubsub_handoff_max_delivery_attempts_invalid')
     # This existing scheduled drain is also the durable delivery retry owner.
     # It reads committed ledgers; no provider processing is reopened by delivery.
     from .website_preparation_status import reconcile_preparation_wakeups
@@ -391,6 +393,17 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
             continue
         digest = _listener.payload_sha256(message.data)
         heartbeat = _listener._AckDeadlineHeartbeat(subscriber=subscriber, subscription=subscription_resource, ack_id=received.ack_id, ack_deadline_seconds=ack_deadline_seconds)
+        # Pub/Sub's dead-letter count is approximate and may deliver beyond its
+        # configured cap. Such a delivery may not reopen provider processing.
+        # Keep the message unacknowledged for the broker's dead-letter route;
+        # this diagnostic is not a substitute for retaining its payload there.
+        delivery_attempt = getattr(received, 'delivery_attempt', None)
+        if type(delivery_attempt) is int and delivery_attempt > max_delivery_attempts:
+            _listener._write_delivery_evidence(storage_root=storage_root, message=message, received=received, disposition='retry_exhausted_pending_pubsub_dlq', blockers=['handoff_delivery_attempt_limit_reached'])
+            heartbeat.defer_retry()
+            record_deferral(storage_root=storage_root, subscription=subscription_resource, received=received, payload_digest=digest, lease_seconds=_listener.RETRY_DEFER_SECONDS)
+            _listener.logger.warning('pubsub_handoff.delivery_limit_reached', extra={'message_id': message.message_id, 'delivery_attempt': delivery_attempt, 'max_delivery_attempts': max_delivery_attempts})
+            continue
         try:
             with heartbeat:
                 result = _listener.process_handoff_payload(message.data, storage_root=storage_root, provider=provider, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, payload_digest=digest)

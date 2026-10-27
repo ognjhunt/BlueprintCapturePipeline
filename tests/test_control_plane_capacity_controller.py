@@ -1264,7 +1264,7 @@ def test_summary_is_door_readable_and_secret_free(tmp_path, monkeypatch):
     assert summary["usage"]["unclassified_roots"] == [{"root": "/var/lib/blueprint/x", "allocated_bytes": 2 * GIB}]
     assert summary["usage"]["age_seconds"] == 0.0
     assert set(summary["mounts"][0]) <= {"mount", "status", "total_bytes", "free_bytes", "used_fraction",
-                                         "floor_bytes", "reserved_bytes", "available_bytes", "refused_roles",
+                                         "floor_bytes", "reserved_bytes", "available_bytes", "assigned_roles", "refused_roles",
                                          "forecast", "level"}
     assert summary["report_digest"] == report["report_digest"]
     latest = json.loads((tmp_path / "capacity" / "latest.json").read_text())
