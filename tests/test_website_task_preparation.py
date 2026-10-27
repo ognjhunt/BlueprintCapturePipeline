@@ -555,9 +555,10 @@ def test_destination_outside_reconstructed_surface_cannot_reach_intake(tmp_path)
     assert result["destination"]["basis"] == "registered_estimated_visible_bounds"
 
 
-@pytest.mark.parametrize("shift, bound", [(5, True), (50, False)])
-def test_a_destination_on_the_same_bumpy_fitted_surface_is_bound(tmp_path, monkeypatch, shift, bound):
-    # Two fits of one bumpy counter converge on nearly the same faces; another surface does not.
+@pytest.mark.parametrize("shift, distinct", [(5, False), (50, True)])
+def test_a_destination_on_the_same_or_another_fitted_surface_is_bound(tmp_path, monkeypatch, shift, distinct):
+    # Two fits of one bumpy counter converge on nearly the same faces. Another surface
+    # (floor to desk) is bound by name with its own bounds, never refused by kind.
     args = _arguments(tmp_path)
     calls = []
 
@@ -570,8 +571,15 @@ def test_a_destination_on_the_same_bumpy_fitted_surface_is_bound(tmp_path, monke
     monkeypatch.setattr(preparation, "support_under", fitted)
     result = preparation.compile_website_scene_preparation(**args)
     assert len(calls) == 2
-    assert ("task_distinct_destination_surface_binding_required" not in result["blockers"]) is bound
-    assert (result["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact") is bound
+    assert "task_distinct_destination_surface_binding_required" not in result["blockers"]
+    assert result["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact"
+    assert ("support" in result["destination"]) is distinct and ("destination_support" in result) is distinct
+    if distinct:
+        support = result["destination"]["support"]
+        assert set(support) == {"description", "aabb_min_xyz", "aabb_max_xyz"}
+        assert all(a <= b for a, b in zip(support["aabb_min_xyz"], support["aabb_max_xyz"]))
+        assert result["destination_support"]["face_indices"] == list(range(50, 150))
+        assert result["intake_request"]["task"]["destination"]["support"] == support
 
 
 def test_source_far_above_support_is_not_snapped_down_to_floor(tmp_path):

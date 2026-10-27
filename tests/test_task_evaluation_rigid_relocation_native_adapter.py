@@ -530,6 +530,65 @@ def test_surface_region_reaches_native_adapter_and_sealed_owner_contract(tmp_pat
     assert spec["settle_window_samples"] == 21
 
 
+@pytest.mark.parametrize("named", [True, False])
+def test_a_region_on_another_surface_binds_to_that_surface(tmp_path: Path, named: bool) -> None:
+    # Floor to desk: the region, its height window and its support prim follow the
+    # destination surface the template names; without it the binding refuses.
+    from blueprint_pipeline.task_evaluation_surface_target import derive_surface_target, surface_execution_limits
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import pick_and_place_task_records
+    launch, configured, references, docs = _case(tmp_path)
+    start = docs[DEFINITION]["start_center_xyz_m"]
+    source, support = docs[SOURCE_OBJECT], docs[SUPPORT]
+    rise = 0.4
+    desk = copy.deepcopy(support)
+    desk.update(publisher_instance_id="desk", sage_prim_path="/World/Desk", top_z_m=support["top_z_m"] + rise,
+                bounds_min_xyz_m=[*support["bounds_min_xyz_m"][:2], support["top_z_m"] + rise - .02],
+                bounds_max_xyz_m=[*support["bounds_max_xyz_m"][:2], support["top_z_m"] + rise])
+    # Over the subject's own footprint: on another surface that is not an initial overlap.
+    target = derive_surface_target(destination={"kind": "green_region", "relation": "on", "visible_label": "desk",
+        "position_world_m": [start[0] + .05, start[1], desk["top_z_m"]], "orientation_xyzw": [0, 0, 0, 1],
+        "radius_m": .15}, support=desk, source_min=source["aabb_min_xyz_m"], source_max=source["aabb_max_xyz_m"],
+        support_instance_id="desk", start_support=support)
+    success = surface_execution_limits(success={"control_frequency_hz": 20, "maximum_episode_seconds": 12,
+        "minimum_lift_m": .05, "pregrasp_clearance_m": .1, "minimum_planar_displacement_m": .02,
+        "maximum_final_planar_target_error_m": .02, "maximum_retries": 0, "maximum_regrasps": 0},
+        support=desk, start_support=support)
+    assert success["robot_workspace_position_bounds_world_m"]["maximum"][2] == pytest.approx(desk["top_z_m"] + 1.5)
+    definition, criteria, execution = pick_and_place_task_records(task_identity=launch["task"]["identity"],
+        object_identity=configured["replacement"]["identity"], start_center=start,
+        target_center=[start[0] + .05, start[1], start[2] + rise], source_min=source["aabb_min_xyz_m"],
+        source_max=source["aabb_max_xyz_m"], grasp_axis=2, grasp_sign=1., jaw_axis=1,
+        success=success, resolved_seed=839873104)
+    definition["surface_target"] = target
+    definition["success"]["surface_target"] = target
+    criteria["surface_target"] = target
+    if named:
+        definition["destination_support_plane"] = desk
+    static = copy.deepcopy(docs[STATIC])
+    center = static["observed_structure"]["center_of_mass_m"]
+    static["observed_structure"]["collision_bounds_body_frame_m"] = {
+        "minimum": [source["aabb_min_xyz_m"][i] - start[i] + center[i] for i in range(3)],
+        "maximum": [source["aabb_max_xyz_m"][i] - start[i] + center[i] for i in range(3)]}
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    for key, doc in ((DEFINITION, definition), (SUCCESS, criteria), (EXECUTION, execution), (STATIC, static)):
+        _rewrite(tmp_path=tmp_path, configured=configured, references=references, contract_path=key, document=doc)
+    configured["task_template"]["surface_target"] = target
+    configured["revision_digest"] = canonical_digest(configured, digest_field="revision_digest")
+    launch["task"].update(strategy="pick_and_place", surface_target=target,
+                         configured_scene_revision_digest=configured["revision_digest"])
+    if not named:
+        with pytest.raises(ValueError, match="surface_target_native_support_mismatch"):
+            adapt_rigid_relocation_task_template(request=launch, configured_revision=configured,
+                                                 materialized_references=references)
+        return
+    spec = adapt_rigid_relocation_task_template(request=launch, configured_revision=configured,
+        materialized_references=references)["native_task_definition"]["task_spec"]
+    assert spec["interaction_affordance"]["intended_support_prim_paths"] == ["/World/Desk"]
+    low, high = spec["destination_position_bounds_world_m"]["minimum"], spec["destination_position_bounds_world_m"]["maximum"]
+    assert low[2] > support["top_z_m"] + rise - .1 and high[2] < support["top_z_m"] + rise + .1
+    assert spec["support_height_interval_m"][0] > support["top_z_m"] + rise - .1
+
+
 def test_rigid_root_cannot_begin_below_registered_support(tmp_path: Path) -> None:
     launch, configured, references, docs = _case(tmp_path)
     source = copy.deepcopy(docs[SOURCE_OBJECT])

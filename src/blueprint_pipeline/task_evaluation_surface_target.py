@@ -12,6 +12,9 @@ from itertools import product
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 SCHEMA = "task_evaluation_surface_target.v1"
+#: A subject resting on a surface this far from the region's height (the floor
+#: under a desk) is not in the region, whatever its plan position.
+INITIAL_REGION_HEIGHT_TOLERANCE_M = 0.05
 
 
 def require(condition, code):
@@ -76,7 +79,9 @@ def surface_target_for_web(value):
     return result
 
 
-def derive_surface_target(*, destination, support, source_min, source_max, support_instance_id):
+def derive_surface_target(*, destination, support, source_min, source_max, support_instance_id,
+                          start_support=None):
+    """The region on ``support``; ``start_support`` is the subject's own surface when it differs."""
     require(destination.get("kind") == "green_region" and destination.get("relation") == "on"
             and destination.get("orientation_xyzw") == [0, 0, 0, 1],
             "surface_target_destination_invalid")
@@ -101,7 +106,9 @@ def derive_surface_target(*, destination, support, source_min, source_max, suppo
                 and p[i] + radius <= support["bounds_max_xyz_m"][i] for i in (0, 1)),
             "surface_target_outside_support")
     nearest = [max(source_min[i], min(source_max[i], p[i])) for i in (0, 1)]
-    require(math.dist(nearest, p[:2]) > radius, "surface_target_initial_overlap")
+    level = (start_support is None or abs(start_support["bounds_max_xyz_m"][2] - p[2])
+             <= INITIAL_REGION_HEIGHT_TOLERANCE_M)
+    require(not level or math.dist(nearest, p[:2]) > radius, "surface_target_initial_overlap")
     require(math.hypot(*[(source_max[i] - source_min[i]) / 2 for i in (0, 1)]) < radius,
             "surface_target_subject_does_not_fit")
     return value
@@ -114,22 +121,23 @@ def marker_for_surface_target(value):
                                            "surface_position_world_m")}}
 
 
-def surface_execution_limits(*, success, support):
+def surface_execution_limits(*, success, support, start_support=None):
     """Freeze a bounded fixed-arm safety profile; values remain proposals.
 
     These defaults are runtime constraints, not measured physics or reachability.
     Tasks may supply tighter or alternative explicit limits before execution;
     native qualification still has to establish an executable trajectory.
+    The workspace spans both surfaces when the subject starts on another one.
     """
+    supports = [support] if start_support is None else [support, start_support]
     limits = {
         "retreat_clearance_m": 0.05, "drop_minimum_fall_m": 0.02,
         "maximum_task_contact_force_n": 100.0, "collision_failure_minimum_force_n": 1.0,
         "forbidden_contact_classes": ["robot_background", "robot_object", "object_background"],
         "robot_workspace_position_bounds_world_m": {
-            "minimum": [support["bounds_min_xyz_m"][0] - 1.0, support["bounds_min_xyz_m"][1] - 1.0,
-                        support["bounds_min_xyz_m"][2] - 1.0],
-            "maximum": [support["bounds_max_xyz_m"][0] + 1.0, support["bounds_max_xyz_m"][1] + 1.0,
-                        support["top_z_m"] + 1.5]},
+            "minimum": [min(s["bounds_min_xyz_m"][i] for s in supports) - 1.0 for i in range(3)],
+            "maximum": [*(max(s["bounds_max_xyz_m"][i] for s in supports) + 1.0 for i in (0, 1)),
+                        max(s["top_z_m"] for s in supports) + 1.5]},
     }
     limits.update(success)
     return limits
@@ -224,7 +232,8 @@ def score_surface_target(*, target, bounds, samples, frequency_hz, minimum_lift_
     # containment cannot be manufactured by a center-point-only test.
     initial = poses[0][2]
     nearest = [max(min(p[i] for p in initial), min(max(p[i] for p in initial), center[i])) for i in (0, 1)]
-    result["initially_outside"] = math.dist(nearest, center[:2]) > radius
+    level = abs(min(p[2] for p in initial) - center[2]) <= INITIAL_REGION_HEIGHT_TOLERANCE_M
+    result["initially_outside"] = not level or math.dist(nearest, center[:2]) > radius
     result["lifted_clear"] = any(min(p[2] for p in world) >= center[2] + minimum_lift_m
                                   and row.get("task_contact_active") is True for row, _, world in poses)
     window = poses[-count:]

@@ -1066,8 +1066,13 @@ def adapt_rigid_relocation_task_template(
             matches = False
         if not matches:
             raise TaskEvaluationRigidRelocationNativeAdapterError("rigid_relocation_surface_target_binding_mismatch")
+        # A destination on another surface than the subject's binds to that surface.
+        support = template.get("destination_support_plane") or documents[SUPPORT_PLANE_CONTRACT_PATH]
+        if (not isinstance(support, Mapping) or not str(support.get("sage_prim_path") or "").startswith("/")
+                or type(support.get("top_z_m")) not in (int, float) or not math.isfinite(support["top_z_m"])):
+            raise TaskEvaluationRigidRelocationNativeAdapterError("rigid_relocation_destination_support_invalid")
         native_task_spec = bind_native_surface_target(task_spec=native_task_spec, target=surface,
-            static=documents[STATIC_QUALIFICATION_CONTRACT_PATH], support=documents[SUPPORT_PLANE_CONTRACT_PATH])
+            static=documents[STATIC_QUALIFICATION_CONTRACT_PATH], support=support)
     native_definition = {
         "schema_version": "task_evaluation_native_task_definition.v1",
         "identity": dict(task["identity"]),

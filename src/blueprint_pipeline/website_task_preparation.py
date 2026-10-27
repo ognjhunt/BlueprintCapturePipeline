@@ -740,7 +740,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     sim_support = (_runtime_bounds({"minimum": support["aabb_min"], "maximum": support["aabb_max"]}, runtime_to_sim)
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
-    destination = None
+    destination = distinct_support = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
         # The whole assembly is removed, rebuilt with one task joint, and
@@ -787,13 +787,18 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                 meters_per_unit=mpu, up_sign=up_sign)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
-            elif not same_support_surface(destination_support, support):
-                blockers.append("task_distinct_destination_surface_binding_required")
             else:
                 position[up] = destination_support["top_runtime_units"]
                 contact_bound = True
-        destination = {"relation": relation, "visible_label": destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"],
+                if not same_support_surface(destination_support, support):
+                    # The object ends on another surface (floor to desk): bind that one by name.
+                    distinct_support = destination_support
+        label = destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"]
+        destination = {"relation": relation, "visible_label": label,
                        **({"mode": "existing_support_surface"} if relation == "on" else {}),
+                       **({"support": dict(zip(("aabb_min_xyz", "aabb_max_xyz"), _runtime_bounds(
+                           {"minimum": distinct_support["aabb_min"], "maximum": distinct_support["aabb_max"]},
+                           runtime_to_sim)), description=label)} if distinct_support is not None else {}),
                        "position_world_m": (runtime_to_sim @ [*position, 1.0])[:3].tolist(),
                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
                        "basis": "registered_estimated_visible_bounds_and_collider_contact" if contact_bound
@@ -1126,6 +1131,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination,
+        **({"destination_support": distinct_support} if distinct_support is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated else "content_agents_rigid_replacement",
                              "source_frames": authoring_frames,
                              "configuration": authoring_configuration,

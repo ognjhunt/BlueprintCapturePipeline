@@ -57,6 +57,29 @@ def _bound_case(tmp_path: Path, asset: Path, *, support_max_x: float | None = No
             "fetcher": lambda reference: store[reference["uri"]], "asset_digest": native["asset_digest"]}
 
 
+def test_preparation_models_the_destination_surface_a_task_ends_on(tmp_path: Path) -> None:
+    # Floor to desk: without the desk the released object would fall through it.
+    from tests.test_task_evaluation_rigid_relocation_native_adapter import DEFINITION
+
+    asset = tmp_path / "replacement.usda"
+    asset.write_text("#usda 1.0\n")
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    configured, references, docs, _spec = rigid_case(sources)
+    native = copy.deepcopy(docs[NATIVE_IMPORT])
+    native["asset_digest"] = "sha256:" + hashlib.sha256(asset.read_bytes()).hexdigest()
+    native["result_digest"] = canonical_digest(native, digest_field="result_digest")
+    desk = {**docs[SUPPORT], "bounds_min_xyz_m": [2.5, -1.3, 1.1], "bounds_max_xyz_m": [3.5, -0.5, 1.12]}
+    definition = {**docs[DEFINITION], "destination_support_plane": desk}
+    for key, document in ((NATIVE_IMPORT, native), (DEFINITION, definition)):
+        _rewrite(tmp_path=sources, configured=configured, references=references, contract_path=key, document=document)
+    store = {row["uri"]: Path(row["materialized_path"]).read_bytes() for row in references.values()}
+    prepared = prepare_isaac_probe(revision=configured, replacement_asset=asset, output_root=tmp_path / "probe",
+                                   fetcher=lambda reference: store[reference["uri"]])
+    assert prepared["support_bounds_world_m"] == {"minimum": [2.5, -9.5, 0.0], "maximum": [4.5, -1.4, 0.7545]}
+    assert prepared["destination_support_bounds_world_m"] == {"minimum": [2.5, -1.3, 1.1], "maximum": [3.5, -0.5, 1.12]}
+
+
 def test_preparation_binds_the_exact_qualified_asset_task_and_support(tmp_path: Path) -> None:
     asset = tmp_path / "replacement.usda"
     asset.write_text("#usda 1.0\n")
