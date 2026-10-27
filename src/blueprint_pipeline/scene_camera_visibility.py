@@ -319,8 +319,14 @@ def packet_view_evaluator(packet_dir: str | Path) -> Callable[[Mapping[str, Any]
     return evaluate
 
 
-def scene_camera_visibility(packet_dir: str | Path) -> dict[str, Any]:
-    """Measure contact-patch visibility for every world-fixed camera of a packet's plan."""
+def scene_camera_visibility(packet_dir: str | Path,
+                            rendered_external_rows: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """Measure contact-patch visibility for every world-fixed camera of a packet's plan.
+
+    ``rendered_external_rows`` are the external cameras a policy runtime renders in place of the plan's
+    world ``external`` row (``native_task_camera_start_configuration.runtime_external_camera_row``). They
+    are required; the plan's row is then measured and reported without blocking.
+    """
     from .decision_evidence_contracts import canonical_digest
 
     root = Path(packet_dir)
@@ -342,14 +348,21 @@ def scene_camera_visibility(packet_dir: str | Path) -> dict[str, Any]:
 
     colliders, centres, radii, region = _scene_geometry(root, plan, subjects[0], appearance[0], alignment)
     cameras, blockers, advisories, notices = [], [], [], []
-    for camera in plan.get("cameras") or []:
+    rendered = [dict(row) for row in rendered_external_rows or ()]
+    for camera in [*(plan.get("cameras") or []), *rendered]:
         role = str(camera.get("role"))
         if camera.get("pose_frame") != "world":
             notices.append(f"scene_camera_not_world_fixed:{role}")
             continue
         required = camera.get("policy_input") is True and camera.get("review_only") is not True
+        by_runtime = any(camera is row for row in rendered)
+        if rendered and role == "external" and not by_runtime:
+            required = False
+            notices.append("scene_camera_plan_row_not_rendered:external")
         row = camera_coverage(colliders=colliders, centres=centres, radii=radii, camera=camera, region=region)
         row["required"] = required
+        if by_runtime:
+            row["rendered_by_policy_runtime"] = True
         cameras.append(row)
         problems = coverage_problems(row)
         in_view = row.get("asset_in_view") is not False and row.get("patch_in_view") is not False
@@ -370,10 +383,11 @@ def scene_camera_visibility(packet_dir: str | Path) -> dict[str, Any]:
     return result
 
 
-def require_scene_camera_admission(packet_dir: str | Path) -> dict[str, Any]:
+def require_scene_camera_admission(packet_dir: str | Path,
+                                   rendered_external_rows: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """Refuse a paid native run whose policy camera cannot see the contact, or that this cannot measure."""
     try:
-        report = scene_camera_visibility(packet_dir)
+        report = scene_camera_visibility(packet_dir, rendered_external_rows)
     except (SceneCameraVisibilityError, ScenePhysicsPreflightError, OSError, KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, SceneCameraVisibilityBlocked):
             raise

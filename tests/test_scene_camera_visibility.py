@@ -156,3 +156,21 @@ def test_a_proposed_camera_is_measured_by_the_same_rule_plus_the_plans_framing_f
     (clear_root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(clear_plan))
     with pytest.raises(scv.SceneCameraVisibilityError, match="appearance_not_a_gaussian_splat"):
         scv.packet_view_evaluator(clear_root)
+
+
+def test_the_external_camera_the_runtime_renders_replaces_the_plans_row(tmp_path):
+    rendered = {"role": "external", "pose_frame": "world", "policy_input": True, "review_only": False,
+                "optical_convention": "opencv", "frame_from_camera_matrix": sum(FACING, []), "intrinsics": INTRINSICS}
+    # The plan's row faces away and would block; the camera the runtime renders sees the handle.
+    root, _ = _packet(tmp_path, external=AWAY)
+    report = scv.require_scene_camera_admission(root, rendered_external_rows=[rendered])
+    assert report["status"] == "passed"
+    assert "scene_camera_plan_row_not_rendered:external" in report["notices"]
+    assert "scene_camera_contact_outside_view:external" in report["advisories"]
+    assert [row.get("rendered_by_policy_runtime", False) for row in report["cameras"]
+            if row["role"] == "external"] == [False, True]
+    # Gaussians in front of the rendered camera block, whatever the plan's row sees.
+    root, _ = _packet(tmp_path / "hidden", sheet_x=0.6, external=AWAY)
+    with pytest.raises(scv.SceneCameraVisibilityBlocked) as blocked:
+        scv.require_scene_camera_admission(root, rendered_external_rows=[rendered])
+    assert blocked.value.blockers == ["scene_camera_contact_occluded_by_scene:external:100%"]

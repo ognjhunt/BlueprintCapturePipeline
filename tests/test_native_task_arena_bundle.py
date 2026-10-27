@@ -4327,3 +4327,52 @@ def test_destination_collision_binding_preserves_configured_source_identity():
     assert _collision_binding_matches(binding, original)
     adaptation["derived_from_sha256"] = "sha256:" + "c" * 64
     assert not _collision_binding_matches(binding, original)
+
+
+def test_the_bundle_measures_the_external_camera_each_policy_cell_renders(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_task_arena_bundle as bundle
+    from blueprint_pipeline import native_task_camera_start_configuration as cameras
+    from blueprint_pipeline import policy_canary_scene_resolution as resolution
+    from blueprint_pipeline import scene_camera_visibility as camera
+
+    packet = _packet(tmp_path, scene_id="840313")
+    inputs = tmp_path / "policy_canary_runtime_inputs.json"
+    inputs.write_text(json.dumps({"task_success_contract": {"contract_digest": "sha256:c"},
+                                  "cells": [{"shift": 0.0}, {"shift": 0.0}, {"shift": 0.02}]}))
+    calls = []
+    monkeypatch.setattr(resolution, "resolved_scene_plan", lambda plan, cell, task_success_contract: (
+        calls.append((plan["plan_digest"], task_success_contract)) or {"shift": cell["shift"]}))
+    monkeypatch.setattr(cameras, "runtime_external_camera_row", lambda plan: {
+        "role": "external", "frame_from_camera_matrix": [plan["shift"]], "intrinsics": {}})
+    rows = bundle._rendered_external_rows(packet, {"policy_canary_runtime_inputs.json": inputs})
+    # Ten cells with two camera positions cost two measurements; each cell is resolved as the runtime does.
+    assert [row["frame_from_camera_matrix"] for row in rows] == [[0.0], [0.02]]
+    assert calls == [("sha256:" + "p" * 64, {"contract_digest": "sha256:c"})] * 3
+    assert bundle._rendered_external_rows(packet, {}) == []
+
+    seen = {}
+
+    def measured(packet_dir, **options):
+        seen.update(options)
+        raise camera.SceneCameraVisibilityBlocked(["scene_camera_contact_occluded_by_scene:external:37%"])
+
+    monkeypatch.setattr(camera, "require_scene_camera_admission", measured)
+    worker, module = tmp_path / "worker.py", tmp_path / "runtime_helper.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+    module.write_text("HELPER = 1\n", encoding="utf-8")
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        build_native_task_arena_bundle(job_dir=tmp_path / "job", packet_dir=packet, worker_source=worker,
+                                       runtime_module_sources=[module], implementation_commit="a" * 40,
+                                       generated_at="fixed",
+                                       bound_runtime_inputs={"policy_canary_runtime_inputs.json": inputs})
+    assert error.value.errors == (
+        "native_task_arena_bundle_scene_camera_blocked:scene_camera_contact_occluded_by_scene:external:37%",)
+    assert seen["rendered_external_rows"] == rows
+
+    def unresolvable(*_args, **_kwargs):
+        raise ValueError("policy_canary_cell_scenario_invalid")
+
+    monkeypatch.setattr(resolution, "resolved_scene_plan", unresolvable)
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        bundle._rendered_external_rows(packet, {"policy_canary_runtime_inputs.json": inputs})
+    assert error.value.errors == ("native_task_arena_bundle_policy_cell_unresolved:policy_canary_cell_scenario_invalid",)
