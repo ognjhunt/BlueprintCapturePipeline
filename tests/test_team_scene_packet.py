@@ -87,12 +87,12 @@ def _bundle(tmp_path: Path) -> Path:
     return path
 
 
-def _scene(tmp_path: Path) -> dict[str, Any]:
+def _scene(tmp_path: Path, *, strategy: str = "planar_push") -> dict[str, Any]:
     """The rigid fixture revision, published with a configured bundle whose collision is a real room."""
 
     sources = tmp_path / "sources"
     sources.mkdir()
-    configured, references, _docs, _spec = rigid_case(sources)
+    configured, references, _docs, _spec = rigid_case(sources, strategy=strategy)
     bundle = _bundle(tmp_path)
     configured["configured_scene_bundle"] = {"uri": "s3://scenes/configured-scene.zip",
                                              "digest": _sha(bundle.read_bytes()), "size_bytes": bundle.stat().st_size}
@@ -369,3 +369,18 @@ def test_a_task_ending_on_another_surface_faces_the_whole_region_from_the_lower_
     start, target = request["task_spec"]["start_pose_world"], request["task_spec"]["target_position_world_m"]
     middle = [(start[i] + target[i]) / 2.0 for i in (0, 1)]
     assert station["yaw_rad"] == pytest.approx(math.atan2(middle[1] - y, middle[0] - x), abs=1e-6)
+
+
+def test_a_pick_and_place_packet_stands_where_the_bundle_gate_finds_a_carry(tmp_path) -> None:
+    # The packet's station search and the bundle's own gate measure the same carry: they agree.
+    from blueprint_pipeline.robot_arm_path_clearance import packet_arm_path_clearance
+
+    compiled, request = _compile(tmp_path, _scene(tmp_path, strategy="pick_and_place"))
+    record = json.loads(Path(compiled["path"]).read_text())
+    search = record["robot_station_search"]
+    assert search["rule"] == "first_ranked_stance_that_carries" and search["results"]
+    assert record["robot_station"]["stance_digest"] == search["results"][search["chosen_rank"]]["stance_digest"]
+    gate = packet_arm_path_clearance(Path(compiled["path"]).parent / "native-task-packet")
+    assert gate["status"] == ("clear" if search["cleared"] else "blocked")
+    assert request["robot_base_pose_world"]["position_world_m"] == record["robot_station"]["position_world_m"]
+

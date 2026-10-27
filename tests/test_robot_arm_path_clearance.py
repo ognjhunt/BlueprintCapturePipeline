@@ -468,3 +468,22 @@ def test_a_rigid_pick_and_place_packet_is_admitted_only_when_its_carry_exists(tm
             require_robot_arm_path_admission(packet)
     if case == "floor":
         assert report["scene_obstacles_measured"] is True and report["arena_scene_plan_digest"] == "sha256:" + "1" * 64
+
+
+def test_the_first_stance_that_carries_is_taken_and_every_attempt_is_kept(tmp_path):
+    from blueprint_pipeline.robot_arm_path_clearance import NOMINAL_SEED_RAD, REST_SEED_RAD, first_carrying_stance
+    from tests.test_website_rigid_feasibility import _room
+
+    task = {"start_pose_world": [0.3, 0.0, 0.0325, 0.0, 0.0, 0.0, 1.0], "target_position_world": [0.3, 0.35, 0.0325],
+            "contact_point_m": [0.0, 0.0, 0.0], "approach_unit": [0.0, 0.0, 1.0],
+            "gripper_orientation_xyzw": [0.0, 1.0, 0.0, 0.0], "pregrasp_clearance_m": 0.1}
+    far = {"position_world_m": [-1.9, -1.9, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    near = {"position_world_m": [-0.2, 0.15, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    seeds = [list(NOMINAL_SEED_RAD), list(REST_SEED_RAD["franka_panda"])]
+    stance, report, attempts = first_carrying_stance([far, near], collision_path=_room(tmp_path),
+                                                     robot_id="franka_panda", seeds=seeds, **task)
+    assert stance is near and report["status"] == "clear" and [r["status"] for _, r in attempts] == ["blocked", "clear"]
+    stance, report, attempts = first_carrying_stance([far], collision_path=_room(tmp_path / "again"),
+                                                     robot_id="franka_panda", seeds=seeds, **task)
+    assert stance is None and report["status"] == "blocked" and len(attempts) == 1
+

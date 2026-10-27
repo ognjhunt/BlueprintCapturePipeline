@@ -120,6 +120,34 @@ def _runtime_source(path: Path) -> dict[str, Any]:
     return _record(path)
 
 
+def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, Any], collision: Path,
+                      profile: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The first ranked stance the Franka can carry the object from (``robot_arm_path_clearance``).
+
+    With none, the closest stance stands and the bundle's gate refuses the packet by name before any GPU run.
+    """
+    from .robot_arm_path_clearance import NOMINAL_SEED_RAD, REST_SEED_RAD, first_carrying_stance
+
+    try:
+        affordance = task_spec["interaction_affordance"]
+        reset = profile["robot_joint_reset_positions_rad"]
+        cleared, _, attempts = first_carrying_stance(stances, collision_path=collision, robot_id="franka_panda",
+            seeds=[[float(reset[f"panda_joint{i}"]) for i in range(1, 8)], list(NOMINAL_SEED_RAD),
+                   list(REST_SEED_RAD["franka_panda"])],
+            start_pose_world=task_spec["start_pose_world"], target_position_world=task_spec["target_position_world_m"],
+            contact_point_m=affordance["contact_point_scoring_frame_m"],
+            approach_unit=affordance["approach_unit_scoring_frame"],
+            gripper_orientation_xyzw=affordance["gripper_orientation_scoring_frame_xyzw"],
+            pregrasp_clearance_m=float(affordance["pregrasp_clearance_m"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TeamScenePacketError("team_scene_carry_inputs_invalid") from exc
+    station = cleared or stances[0]
+    return station, {"rule": "first_ranked_stance_that_carries", "cleared": cleared is not None,
+                     "chosen_rank": next(i for i, row in enumerate(stances) if row is station),
+                     "results": [{"stance_digest": row["stance_digest"], "status": report["status"],
+                                  "blockers": report["blockers"]} for row, report in attempts]}
+
+
 def _cameras(profile: Mapping[str, Any], *, base: list[float], start: list[float],
              target: list[float], whole_region: bool = False) -> list[dict[str, Any]]:
     from .task_evaluation_diagnostic_native_arena_compiler import _world_camera
@@ -324,8 +352,11 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             compiler.evidence_asset_row(assets["collision"], root=root, semantic_role="scene_collision"), task_row]
 
     # The station: a mount level with the task's support, on the closest clear floor facing the task,
-    # out of a moving part's way.
+    # out of a moving part's way. A rigid pick and place takes the first such stance the arm can carry
+    # the object from, measured as the bundle's gate will measure it.
     whole_region = not articulated and destination_support is not None
+    carry = not articulated and task_spec.get("manipulation_strategy") == "pick_and_place"
+    from .robot_arm_path_clearance import CARRY_STATIONS
     try:
         station = ground_stance(
             collision_path=assets["collision"], collision_sha256=_sha256(assets["collision"]), offset=[0.0, 0.0, 0.0],
@@ -333,11 +364,13 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             subject_minimum=[float(v) for v in subject_bounds[0]],
             subject_maximum=[float(v) for v in subject_bounds[1]],
             footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
-            task_motion=motion)
+            task_motion=motion, ranked=CARRY_STATIONS if carry else 0)
     except (KeyError, TypeError, ValueError) as exc:
         raise TeamScenePacketError("team_scene_station_inputs_invalid") from exc
     except TeamEmbodimentError as exc:
         raise TeamScenePacketError(",".join(exc.errors)) from exc
+    station, station_search = (_carrying_station(station, task_spec=task_spec, collision=assets["collision"],
+                                                 profile=profile) if carry else (station, None))
     base = {"position_world_m": station["position_world_m"], "orientation_xyzw": station["orientation_xyzw"]}
     request: dict[str, Any] = {
         "schema_version": "native_task_arena_packet_request.v1", "scene_id": scene_id, "task_id": task_id,
@@ -398,6 +431,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         "base_native_packet": packet_record, "runtime_source": runtime_source, "construction_result": packet_record,
         "execution_authority": dict(EXECUTION_AUTHORITY), "control_diagnostic": dict(PENDING_CONTROLS),
         "robot_station": station, "camera_layout": camera_layout, "droid_profile_digest": droid_profile_digest,
+        **({"robot_station_search": station_search} if station_search is not None else {}),
         "inputs_digest": ""}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
     path = root / RECORD_FILENAME
