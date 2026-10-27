@@ -77,6 +77,9 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
             raise ValueError("website_scene_removal_manifest_outside_capture")
         removal = json.loads(removal_path.read_text())
+        # The Atlas planner and the task analysis must agree that the subject was never captured.
+        if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
+            raise ValueError("website_subject_origin_conflict")
         # Each articulated task target needs views of its whole assembly from
         # the full track, not only the geometry frames. Retained receipts and
         # decoded frames make a restart free.
@@ -148,7 +151,17 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
                 write_json(native_root / "construction_inputs.json", construction)
                 result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
-                if preparation["status"] == "intake_ready":
+                if (preparation["status"] == "intake_ready"
+                        and preparation["intake_request"]["task"]["strategy"] == "pick_and_place"):
+                    # Abstain before the owner is asked to pay when the arm cannot carry the task.
+                    from .website_rigid_feasibility import rigid_task_verdict
+                    verdict = rigid_task_verdict(preparation=preparation, collision_path=Path(runtime_inputs["collision"]["path"]))
+                    write_json(native_root / "capability_verdict.json", verdict)
+                    result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
+                        "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
+                    if verdict["status"] != "clear":
+                        result.update(status="needs_input", blockers=list(verdict["blockers"]))
+                if preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained":
                     from .website_scene_dispatch import binding_root, register_website_preparation
                     context_path = root / "task_context.json"
                     write_json(context_path, context)
