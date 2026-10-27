@@ -879,6 +879,7 @@ def build_native_task_episode_environment(
             else None
         ),
         camera_scene_names=camera_scene_names,
+        policy_view_scene_names=getattr(built, "policy_view_scene_names", None),
         camera_pose_callback=live_camera_pose,
         joint_wrench_sensor=joint_wrench_sensor,
         rigid_task_scoring_frame_offset=rigid_task_scoring_frame_offset,

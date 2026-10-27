@@ -6,9 +6,9 @@ existing task runner. This registry selects only the robot implementation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import importlib
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,8 @@ class NativeRobotAdapter:
 
 
 _ADAPTERS: dict[str, NativeRobotAdapter] = {}
+# The Arena camera slot a DROID scene's right exterior renders through.
+EXTERIOR_RIGHT_RUNTIME_NAME = "exterior_right_camera"
 
 
 def register_native_robot_adapter(adapter: NativeRobotAdapter) -> None:
@@ -72,6 +74,34 @@ def build_native_robot_embodiment(
     return factory(robot, enable_cameras=enable_cameras, pose_class=pose_class)
 
 
+def add_droid_exterior_right_slot(embodiment: Any, cameras: Sequence[Mapping[str, Any]]) -> None:
+    """Give a DROID embodiment's camera rig the right exterior slot when its scene plan carries one.
+
+    Arena declares a rig's cameras as configclass fields and spawns, tiles and
+    observes every ``CameraCfg`` field (``ArenaCameraCfg.camera_names``), so the
+    slot is a field of a subclass. It starts as a copy of Arena's own second
+    exterior; the runtime then poses and sizes it from the plan like the scene's
+    other world cameras.
+    """
+    if not any(str(row.get("role")) == "exterior_right" for row in cameras):
+        return
+    from copy import deepcopy
+
+    from isaaclab.sensors.camera.camera_cfg import CameraCfg
+    from isaaclab.utils import configclass
+
+    rig = embodiment.camera_config
+    slot = deepcopy(rig.external_camera_2)
+    slot.prim_path = "{ENV_REGEX_NS}/" + EXTERIOR_RIGHT_RUNTIME_NAME
+    extended_type = configclass(type(f"{type(rig).__name__}WithExteriorRight", (type(rig),),
+                                     {"__annotations__": {EXTERIOR_RIGHT_RUNTIME_NAME: CameraCfg},
+                                      EXTERIOR_RIGHT_RUNTIME_NAME: slot}))
+    extended = extended_type(**{field.name: getattr(rig, field.name) for field in fields(rig)},
+                             **{EXTERIOR_RIGHT_RUNTIME_NAME: slot})
+    extended.set_use_tiled_camera(rig.use_tiled_camera)
+    embodiment.camera_config = extended
+
+
 def build_droid_embodiment(
     robot: Mapping[str, Any], *, enable_cameras: bool, pose_class: Any
 ) -> Any:
@@ -105,9 +135,12 @@ register_native_robot_adapter(
             ("external", "external_camera", "world"),
             ("wrist", "wrist_camera", "robot_body"),
             ("overview", "external_camera_2", "world"),
+            # DROID's right exterior, only where the scene leaves it a clear view
+            # (``droid_exterior_cameras``); the runtime adds its Arena slot.
+            ("exterior_right", EXTERIOR_RIGHT_RUNTIME_NAME, "world"),
         ),
         required_camera_roles=("external", "wrist", "overview"),
-        policy_camera_roles=("external", "wrist"),
+        policy_camera_roles=("external", "wrist", "exterior_right"),
     )
 )
 register_native_robot_adapter(

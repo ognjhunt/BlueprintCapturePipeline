@@ -43,9 +43,10 @@ DROID_EXTERIOR_VIEW_2 = "observation/exterior_image_2_left"
 
 # The ADP-009D scene deliberately drops the second exterior camera: the runtime
 # sets ``embodiment.camera_config.external_camera_2 = None`` because it is
-# outside the frozen two-camera policy contract.  A three-view candidate
-# therefore cannot be served without changing that contract, which is a
-# programme decision rather than something this module may quietly work around.
+# outside the frozen two-camera policy contract.  A beta site scene carries it
+# as the optional ``exterior_right`` camera only where the scene leaves it a
+# clear view (``droid_exterior_cameras``); without it a three-view candidate
+# is refused here rather than handed a substitute view.
 CANDIDATE_REQUIRED_VIEWS: dict[str, tuple[str, ...]] = {
     "pi05_droid": (DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW),
     "groot_n17_droid": (DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW),
@@ -54,6 +55,13 @@ CANDIDATE_REQUIRED_VIEWS: dict[str, tuple[str, ...]] = {
         DROID_EXTERIOR_VIEW_1,
         DROID_EXTERIOR_VIEW_2,
     ),
+}
+
+# The scene camera role that renders each DROID view.
+VIEW_CAMERA_ROLES: dict[str, str] = {
+    DROID_EXTERIOR_VIEW_1: "external",
+    DROID_WRIST_VIEW: "wrist",
+    DROID_EXTERIOR_VIEW_2: "exterior_right",
 }
 
 BLOCKER_UNKNOWN_CANDIDATE = "droid_observation_unknown_candidate"
@@ -236,6 +244,7 @@ def describe_observation_conversion(
 
 __all__ = [
     "CANDIDATE_REQUIRED_VIEWS",
+    "VIEW_CAMERA_ROLES",
     "CANDIDATE_VIEW_SHAPES",
     "DROID_EXTERIOR_VIEW_1",
     "DROID_EXTERIOR_VIEW_2",

@@ -291,6 +291,7 @@ class NativeTaskArenaEnvironment:
     camera_scene_names: Mapping[str, str]
     preconstruction_device_binding: Mapping[str, Any] | None = None
     native_configuration_readback: Mapping[str, Any] | None = None
+    policy_view_scene_names: Mapping[str, str] | None = None  # policy-only views, never evidence cameras
 
 
 def _validated_plan(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -1585,6 +1586,8 @@ def build_native_task_arena_environment(
     )
     camera_names: dict[str, str] = {}
     camera_configuration_readback: dict[str, dict[str, Any]] = {}
+    from .native_task_robot_registry import add_droid_exterior_right_slot
+    add_droid_exterior_right_slot(embodiment, plan["cameras"] if enable_cameras else ())
     for camera in plan["cameras"] if enable_cameras else ():
         parameters = camera_runtime_parameters(camera, robot_id=str(robot["robot_id"]))
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
@@ -1607,9 +1610,7 @@ def build_native_task_arena_environment(
             camera_cfg.width = parameters["width"]
             camera_cfg.height = parameters["height"]
             camera_cfg.spawn.focal_length = parameters["focal_length_mm"]
-            camera_cfg.spawn.horizontal_aperture = parameters[
-                "horizontal_aperture_mm"
-            ]
+            camera_cfg.spawn.horizontal_aperture = parameters["horizontal_aperture_mm"]
             camera_cfg.spawn.vertical_aperture = parameters["vertical_aperture_mm"]
         camera_cfg.data_types = list(parameters["data_types"])
         camera_cfg.colorize_semantic_segmentation = False
@@ -1962,7 +1963,8 @@ def build_native_task_arena_environment(
         plan=plan,
         scene_asset_names=scene_asset_names,
         contact_sensor_names=contact_sensor_names,
-        camera_scene_names=camera_names,
+        camera_scene_names={role: name for role, name in camera_names.items() if role != "exterior_right"},
+        policy_view_scene_names={role: name for role, name in camera_names.items() if role == "exterior_right"},
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
             "cameras": camera_configuration_readback,
