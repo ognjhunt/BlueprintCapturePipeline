@@ -219,6 +219,7 @@ def test_sync_reexports_keep_exact_offering_acknowledgement(tmp_path):
     "task_evaluation_configured_controls_source_evidence",
     "task_evaluation_launch_evidence_contracts",
     "task_evaluation_team_run_context",
+    "task_family_preparation",
 ])
 def test_read_only_closures_cannot_reach_active_workers(seed):
     from tests.test_live_pipeline_import_isolation import (

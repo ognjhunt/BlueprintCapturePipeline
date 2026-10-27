@@ -14,9 +14,8 @@ from typing import Any
 
 import numpy as np
 
-from .common import write_json
+from .common import sha256_file, write_json
 from .decision_evidence_contracts import canonical_digest
-from .local_reconstruction_adapters import _sha256_file
 from .task_family_scoring import (
     FAMILY_CRITERIA,
     FAMILY_OBSERVABLES,
@@ -75,7 +74,7 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
     if task_masks.get("source_geometry_digest") != source_geometry.get("digest"):
         raise ValueError("website_preparation_geometry_binding_mismatch")
     for path_key, digest_key in (("splat_path", "splat_digest"), ("collision_mesh_path", "collision_mesh_digest")):
-        if _sha256_file(Path(base_scene[path_key])) != base_scene[digest_key]:
+        if "sha256:" + sha256_file(Path(base_scene[path_key])) != base_scene[digest_key]:
             raise ValueError("website_base_scene_changed")
     inputs = dict(evaluation_inputs or {})
     blockers: list[str] = []
