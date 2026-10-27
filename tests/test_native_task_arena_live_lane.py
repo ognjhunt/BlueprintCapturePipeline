@@ -33,6 +33,7 @@ import blueprint_pipeline.native_task_arena_paid_authority as paid
 import blueprint_pipeline.native_task_arena_warm_authority as warm_authority
 from blueprint_pipeline.native_task_arena_bundle import (
     POLICY_RUNTIME_ROOT_MODULE_NAMES,
+    POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES,
 )
 from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from blueprint_pipeline.native_task_arena_policy_bundle import (
@@ -230,7 +231,10 @@ def _provider_bundle(
                     "size_bytes": 1,
                     "sha256": "sha256:" + "8" * 64,
                 }
-                for name in POLICY_RUNTIME_ROOT_MODULE_NAMES
+                for name in (
+                    *POLICY_RUNTIME_ROOT_MODULE_NAMES,
+                    *("blueprint_pipeline/" + item for item in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES),
+                )
             ]
             if link in {"policy", "policy-diagnostic"}
             else []

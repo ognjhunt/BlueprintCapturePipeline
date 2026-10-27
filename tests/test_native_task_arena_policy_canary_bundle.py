@@ -96,6 +96,7 @@ def test_bundle_cli_exposes_every_immutable_input(monkeypatch, capsys) -> None:
     assert observed["implementation_commit"] == "a" * 40
     assert observed["generated_at"] is None
     assert observed["runtime_input_manifest_path"] == "inputs.json"
+    assert observed["family_control_result_path"] is None
     assert '"status": "ready"' in capsys.readouterr().out
 
 
@@ -113,6 +114,50 @@ def test_bundle_cli_rebuilds_a_hosted_candidate_without_legacy_pair_inputs(monke
     assert observed["execution_spec_paths"] == {"hosted_alpha": "/sealed/policy=a.json"}
     assert observed["checkpoint_inventory_paths"] is None
     assert observed["pi05_execution_spec_path"] is None and observed["groot_execution_spec_path"] is None
+
+
+def test_bundle_cli_forwards_retained_family_control_result(monkeypatch) -> None:
+    observed = {}
+    monkeypatch.setattr(bundle, "build_policy_canary_session_bundle",
+                        lambda **kwargs: observed.update(kwargs) or {"status": "ready"})
+    path = "/sealed/retained family controls.json"
+    assert bundle.main([*_generic_cli_args(), "--execution-spec-path", "hosted_alpha=policy.json",
+                        "--family-control-result", path]) == 0
+    assert observed["family_control_result_path"] == path
+
+
+def test_family_bundle_cli_rebuilds_and_rejects_unverified_control_result(tmp_path, monkeypatch, capsys) -> None:
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan
+    from tests.test_beta_policy_screening_family import family_planning_fixture
+
+    planning, catalog, _profile, facts, _spec_value, _written = family_planning_fixture(tmp_path, monkeypatch)
+    plan = build_screening_plan(catalog, planning["scene"], campaign_id="family-cli",
+        capabilities=planning["capabilities"], cost_quotes=planning["cost_quotes"])
+    candidate = plan["candidates"][0]
+    attempt = tmp_path / "attempt"
+    launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=attempt)
+    args = ["--packet-dir", str(facts["packet_dir"]),
+        "--runtime-source-packet-receipt", facts["inputs"]["runtime_source"]["path"],
+        "--runtime-input-manifest-path", str(attempt / "runtime_inputs/policy_canary_runtime_inputs.json"),
+        "--session-authority-path", str(attempt / "runtime_inputs/session_authority.json"),
+        "--execution-spec-path", candidate["candidate_id"] + "=" + str(
+            attempt / "runtime_inputs" / (candidate["candidate_id"] + ".policy_execution_spec.json")),
+        "--implementation-commit", candidate["execution_spec"]["implementation_commit"]]
+    assert bundle.main([*args, "--job-dir", str(tmp_path / "rebuilt")]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["pre_policy_site_qualification_required"] is True
+    assert bundle.preflight_sealed_policy_canary_bundle(receipt)["status"] == "passed"
+    refused = tmp_path / "refused"
+    with pytest.raises(ValueError, match="task_family_qualified_site_controls_receipt_required"):
+        bundle.main([*args, "--job-dir", str(refused),
+                     "--family-control-result", str(tmp_path / "missing-control-result.json")])
+    assert not refused.exists()
+    unsealed = tmp_path / "self-claimed-control-result.json"
+    unsealed.write_text(json.dumps({"status": "passed", "controls_qualified": True}))
+    with pytest.raises(ValueError, match="native_task_policy_controls_not_qualified"):
+        bundle.main([*args, "--job-dir", str(refused), "--family-control-result", str(unsealed)])
+    assert not refused.exists()
 
 
 def test_bundle_cli_passes_repeatable_specs_and_checkpoint_inventory_mapping(monkeypatch) -> None:

@@ -675,6 +675,8 @@ def main(argv: list[str] | None = None) -> int:
                         metavar="CANDIDATE=PATH", help="Repeat for each admitted candidate; replaces the legacy pair flags.")
     parser.add_argument("--checkpoint-inventory-path", action="append", dest="checkpoint_inventory_paths",
                         metavar="CANDIDATE=PATH", help="Repeat for each candidate needing a local checkpoint inventory.")
+    parser.add_argument("--family-control-result", dest="family_control_result_path",
+                        help="Optional retained native-family control result; existing receipt validation applies.")
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--hotfix-overlay")
     parser.add_argument("--generated-at")
@@ -713,6 +715,7 @@ def main(argv: list[str] | None = None) -> int:
         pi05_checkpoint_inventory_path=args.pi05_checkpoint_inventory_path,
         execution_spec_paths=args.execution_spec_paths,
         checkpoint_inventory_paths=args.checkpoint_inventory_paths,
+        family_control_result_path=args.family_control_result_path,
         implementation_commit=args.implementation_commit,
         hotfix_overlay_path=args.hotfix_overlay,
         generated_at=args.generated_at,

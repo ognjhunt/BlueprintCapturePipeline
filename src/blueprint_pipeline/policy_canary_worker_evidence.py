@@ -134,8 +134,8 @@ def _write_episode_failure_gap(
         action_rejection["rejection_digest"] = canonical_digest(
             action_rejection, digest_field="rejection_digest"
         )
-    if (progress.get("media_integrity_failure") and first_observation_retained
-            and visual_evidence.get("status") != "complete"):
+    # Artifact verification overrides a stale producer's "complete" label.
+    if progress.get("media_integrity_failure") and first_observation_retained:
         visual_evidence = {
             **visual_evidence,
             "status": "incomplete_after_first_observation",
