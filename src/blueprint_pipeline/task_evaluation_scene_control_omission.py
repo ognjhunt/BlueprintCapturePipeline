@@ -222,6 +222,10 @@ def bind_camera_start(*, directive, plan, contract, cells, construction=None,
         task_path = Path(scene_plan_path).parent / subject['usd_path']
         _safe(task_path)
         direct_kwargs['task_asset_path'] = task_path
+    _require(scene_plan_path is not None, 'camera_scene_plan_path_missing')
+    view = _scene_view_evaluator(Path(scene_plan_path).parent)
+    if construction is None:
+        direct_kwargs['external_view_problems'] = view
     binding = materialize(plan=current, **(direct_kwargs if construction is None else {'construction': construction}),
         source_binding=values[0], native_reference_gate=values[1], robot_asset_sha256=robot_sha,
         runtime_digest=robot['runtime_digest'], calibration_digest=calibration['calibration_digest'])
@@ -232,8 +236,7 @@ def bind_camera_start(*, directive, plan, contract, cells, construction=None,
         resolved = _resolved_scene_plan(current, cell, task_success_contract=contract)
         validate_camera_start_configuration(resolved, binding)
         resolved_cells.append(resolved)
-    _require(scene_plan_path is not None, 'camera_scene_plan_path_missing')
-    _require_rendered_external_view(Path(scene_plan_path).parent, resolved_cells)
+    _require_rendered_external_view(Path(scene_plan_path).parent, resolved_cells, view=view)
     return binding
 
 
@@ -241,22 +244,34 @@ def bind_camera_start(*, directive, plan, contract, cells, construction=None,
 _CAMERA_VIEW_NOT_MEASURED = ('scene_camera_appearance_not_a_gaussian_splat', 'scene_camera_task_subject_unresolved')
 
 
-def _require_rendered_external_view(packet_dir: Path, resolved_cells) -> None:
-    """Measure the external camera each cell renders through the captured scene, before any spend.
-
-    The packet's camera check measured the plan's world ``external`` row; the policy runtime
-    renders Arena's external camera at this binding's offset instead.
-    """
-    from .native_task_camera_start_configuration import require_external_camera_scene_view
+def _scene_view_evaluator(packet_dir: Path):
+    """The packet's world-camera view check, or None when the CPU has nothing to measure."""
     from .scene_camera_visibility import SceneCameraVisibilityError, packet_view_evaluator
 
     try:
         evaluate = packet_view_evaluator(packet_dir)
     except SceneCameraVisibilityError as exc:
         if str(exc) in _CAMERA_VIEW_NOT_MEASURED:
-            return
+            return None
         raise ValueError('scene_control_omission_camera_external_view_unmeasurable:' + str(exc)) from exc
-    try:
-        require_external_camera_scene_view(resolved_cells, evaluate)
-    except SceneCameraVisibilityError as exc:
-        raise ValueError('scene_control_omission_camera_external_view_unmeasurable:' + str(exc)) from exc
+
+    def problems(row):
+        try:
+            return evaluate(row)
+        except SceneCameraVisibilityError as exc:
+            raise ValueError('scene_control_omission_camera_external_view_unmeasurable:' + str(exc)) from exc
+
+    return problems
+
+
+def _require_rendered_external_view(packet_dir: Path, resolved_cells, view=None) -> None:
+    """Measure the external camera each cell renders through the captured scene, before any spend.
+
+    The packet's camera check measured the plan's world ``external`` row; the policy runtime
+    renders Arena's external camera at this binding's offset instead.
+    """
+    from .native_task_camera_start_configuration import require_external_camera_scene_view
+
+    view = view or _scene_view_evaluator(packet_dir)
+    if view is not None:
+        require_external_camera_scene_view(resolved_cells, view)

@@ -143,3 +143,29 @@ def test_fixture_task_asset_intersection_blocks_a_desk_clear_reset(tmp_path):
     plan['objects'][1]['sha256'] = 'sha256:' + '0' * 64
     with pytest.raises(ValueError, match='policy_camera_fixture_task_binding_invalid'):
         camera.fixture_reset_clearance(plan, chain, joints, desk_path, task_path)
+
+
+def test_a_scene_hiding_arenas_external_mount_moves_the_camera_to_the_task_framing_position():
+    import numpy as np
+
+    value = plan_inputs()
+    measured = []
+
+    def hidden(row):
+        measured.append(row)
+        return ['scene_camera_contact_occluded_by_scene:external:100%']
+
+    binding = camera.materialize_camera_start_from_plan(**value, external_view_problems=hidden)
+    assert binding['external_camera_position_parent_m'] == camera.task_external_camera_position(value['plan'])
+    assert binding['external_camera_placement_source'] == 'sealed_task_motion_path'
+    assert binding['external_camera_arena_mount_hidden_by_scene'] == [
+        'scene_camera_contact_occluded_by_scene:external:100%']
+    assert camera.validate_camera_start_configuration(value['plan'], binding) == binding
+    # What was measured is Arena's own mount on the selected base.
+    base = value['plan']['robot']['base_pose_world']
+    mount = (camera.pose_matrix(base['position_world_m'], base['orientation_xyzw'])
+             @ camera.pose_matrix(camera.EXTERNAL_POSITION, camera.EXTERNAL_QUATERNION_XYZW))
+    np.testing.assert_allclose(np.asarray(measured[0]['frame_from_camera_matrix']).reshape(4, 4)[:3, 3], mount[:3, 3])
+    # A clear view keeps Arena's mount, exactly as without the check.
+    assert (camera.materialize_camera_start_from_plan(**plan_inputs(), external_view_problems=lambda row: [])
+            == camera.materialize_camera_start_from_plan(**plan_inputs()))
