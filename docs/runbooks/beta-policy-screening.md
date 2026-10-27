@@ -33,6 +33,14 @@ as a diagnostic failure and cannot become a successful evaluation.
 
 ## Automatic path
 
+Rigid pick-and-place construction records its robot-free carry/release probe
+inside the existing native-import GPU session. The raw trace travels in the
+native-import receipt; completion verifies its construction document hashes,
+asset and physics plan before retaining it against the final scene revision.
+The probe and screening use the same normalized success contract. A missing or
+failed probe still prevents policy execution; construction no longer relies
+on an operator launching the probe or copying its trace separately.
+
 1. Existing scene preparation completes and retains its robot-free receipt.
 2. The existing scene-packet worker compiles the reusable scene half.
 3. `blueprint-beta-policy-screening.timer` scans completed packet requests.

@@ -13,6 +13,8 @@ from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
 from blueprint_pipeline.task_evaluation_rigid_destination_geometry import (
     RigidDestinationGeometryError,
     derive_rigid_destination_geometry,
+    destination_trajectory_geometry,
+    bind_destination_trajectory,
 )
 
 
@@ -151,6 +153,22 @@ def test_geometry_shrinks_the_tolerant_interior_by_the_whole_oriented_subject() 
 def test_geometry_refuses_a_destination_too_shallow_for_the_whole_subject() -> None:
     with pytest.raises(RigidDestinationGeometryError, match="rigid_destination_geometry_subject_does_not_fit:z"):
         derive_rigid_destination_geometry(**_inputs(wall_height=0.02))
+
+
+def test_deep_container_trajectory_rests_on_floor_and_replaces_old_world_target():
+    geometry = derive_rigid_destination_geometry(**_inputs(wall_height=.4))
+    destination = {"identity": DESTINATION_IDENTITY, "relation": "inside", "pose_world": POSE,
+                   "visible_label": "deep bin"}
+    trajectory = destination_trajectory_geometry(destination, geometry)
+    expected_z = POSE["position_world_m"][2] + .005 + BOOK_HALF[2]
+    assert trajectory["target_position_world_m"][2] == pytest.approx(expected_z)
+    original = {"interaction_affordance": {}, "destination_position_bounds_world_m": {
+        "minimum": [-1., -1., -1.], "maximum": [0., 0., 0.]}}
+    bound = bind_destination_trajectory(original, trajectory)
+    bounds = bound["destination_position_bounds_world_m"]
+    midpoint = [(a+b)/2 for a,b in zip(bounds["minimum"],bounds["maximum"],strict=True)]
+    assert midpoint == pytest.approx(trajectory["target_position_world_m"])
+    assert bound["destination_relation"] == "inside"
 
 
 def test_geometry_uses_the_task_scoring_transform_not_the_asset_root() -> None:

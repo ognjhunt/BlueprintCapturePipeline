@@ -206,7 +206,7 @@ def test_explicit_declared_families_remain_authoritative(declared):
     assert semantics.resolved_task_profile(artifact, task_context=context, source_video_digest=source) is None
     gap = native_task_preparation_gap(context, inferred_profile_id="rigid_pick_place",
         task_semantics=artifact, source_video_digest=source)
-    if declared == "rigid_pick_place":
+    if declared in {"rigid_pick_place", "laundry_folding"}:
         assert gap is None
     else:
         assert gap["code"] == ("website_task_profile_mechanism_mismatch" if declared == "articulated_open_close"

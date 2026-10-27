@@ -3704,7 +3704,20 @@
         "target_digest": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "placement_relation": {"const": "inside"},
+        "interior_bounds_world_m": {
+          "type": "object", "additionalProperties": false,
+          "required": ["minimum", "maximum"],
+          "properties": {
+            "minimum": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+            "maximum": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}}
+          }
         }
+      },
+      "dependentRequired": {
+        "placement_relation": ["interior_bounds_world_m"],
+        "interior_bounds_world_m": ["placement_relation"]
       }
     }
   }

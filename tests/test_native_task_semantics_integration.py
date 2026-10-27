@@ -192,3 +192,43 @@ def test_resolved_general_task_mechanism_gap_remains_a_verified_hold(tmp_path):
     gap["source_video_digest"] = "sha256:" + "f" * 64
     handoff["digest"] = canonical_digest(handoff, digest_field="digest")
     assert not holds_native_task_preparation(handoff, context)
+
+
+@pytest.mark.parametrize("family", ["cloth_folding", "multi_step"])
+def test_derived_registered_family_crosses_handoff_and_compiler_to_specific_preparation(tmp_path, monkeypatch, family):
+    from blueprint_pipeline import website_scene_handoff as handoff
+    from blueprint_pipeline.website_task_context_contracts import retains_task_family_preparation
+    from tests.test_task_semantics_catalog_composition import _family_arguments
+    args = _family_arguments(tmp_path, family)
+    context = args["task_context"]
+    context.update(confirmed=True, confirmed_at="2026-10-27T00:00:00Z")
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    receipt = args["task_semantics"]["planner_receipt"]
+    receipt["binding"]["task_context_digest"] = context["context_digest"]
+    receipt["binding_digest"] = canonical_digest(receipt["binding"])
+    geometry = args["source_geometry"]
+    geometry["geometry_backend"] = "world_labs_atlas"
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    args["task_masks"]["source_geometry_digest"] = geometry["digest"]
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    job = tmp_path / "pipeline/atlas"
+    write_json(job / "selection_binding.json", {"planner_receipt": receipt})
+    semantics.retain_task_semantics(job_dir=job, receipt=receipt, task_context=context,
+                                    source_video_digest=geometry["binding"]["source_video_digest"])
+    removal = tmp_path / "pipeline/removal.json"
+    write_json(removal, args["removal_manifest"])
+    monkeypatch.setattr("blueprint_pipeline.website_atlas_scene_source.atlas_scene_source", lambda **_: {
+        "status": "ready", "base_scene": args["base_scene"], "source_geometry": geometry,
+        "source_pose_digest": "source", "background_pose_digest": "background", "alignment": "anchored"})
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **kw: kw["task_masks"])
+    original = deepcopy(context)
+    result = handoff.prepare_website_scene_handoff(descriptor={"scene_id": context["scene_id"],
+        "capture_id": context["capture_id"], "metadata": {"site_task_context": context}},
+        clean_plate={"privacy_verified": True, "status": "noop", "task_masks": args["task_masks"],
+                     "removal_manifest_path": str(removal)}, capture_root=tmp_path, now=1800000000)
+    assert result["status"] == "needs_input"
+    assert result["blockers"] == ["website_task_family_success_contract_required",
+                                  "website_task_family_native_runtime_inputs_required"]
+    assert result["task_evaluation_inputs"]["task_family"] == family
+    assert retains_task_family_preparation(result, context)
+    assert context == original and context["task_family"] == "general_task"

@@ -238,6 +238,8 @@ def test_read_only_closures_cannot_reach_active_workers(seed):
         "paid_resource_allocator",
         "native_task_arena_direct_execution_closeout",
         "paid_attempt_authority",
+        "task_family_preparation",
+        "task_evaluation_task_family_native_adapter",
     }
     assert (PKG_DIR / f"{seed}.py").is_file()
     assert not _transitive_local_modules((seed,)) & (HOT_LANE_MODULES | active)

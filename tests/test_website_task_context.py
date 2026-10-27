@@ -58,7 +58,7 @@ def test_only_the_current_native_profile_gap_completes_a_held_preparation_stage(
     from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
     from blueprint_pipeline.website_task_preparation import native_task_preparation_gap
 
-    task = {**context(), "task_family": "laundry_folding"}
+    task = {**context(), "task_family": "unimplemented_task_family"}
     task["context_digest"] = canonical_digest(task, digest_field="context_digest")
     gap = native_task_preparation_gap(task)
     if fault == "stale_context":

@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .common import write_json
+from .rigid_destination_geometry_math import _rotate_xyzw, _multiply_xyzw as _multiply_xyzw
 from .native_articulated_construction_inputs import materialize_articulated_construction_inputs
 from .task_evaluation_articulated_open_close_native_adapter import (
     adapt_articulated_open_close_task_template,
@@ -115,47 +116,8 @@ def _appearance_render_backend(
 
 def _runtime_subject_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
     """Derive a native-safe asset ID while retaining product identity."""
-
-    task_spec = json.loads(json.dumps(dict(value)))
-    # An adapter that already bound both spellings has nothing to derive; doing
-    # it again would overwrite the product identity with the runtime name.
-    declared_source = task_spec.get("source_subject_identity")
-    if isinstance(declared_source, str) and declared_source.strip():
-        source_subject_id = declared_source
-        runtime_subject_id = re.sub(r"[^A-Za-z0-9_]", "_", source_subject_id)
-        affordance = task_spec.get("interaction_affordance")
-        if (
-            task_spec.get("subject_asset_id") != runtime_subject_id
-            or not isinstance(affordance, Mapping)
-            or affordance.get("subject_asset_id") != runtime_subject_id
-        ):
-            raise TaskEvaluationNativeArenaEpisodeCompilerError(
-                "episode_compiler_interaction_affordance_invalid"
-            )
-        return task_spec
-    source_subject_id = str(task_spec.get("subject_asset_id") or "")
-    runtime_subject_id = re.sub(r"[^A-Za-z0-9_]", "_", source_subject_id)
-    if not runtime_subject_id or not runtime_subject_id.replace("_", "a").isalnum():
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_subject_runtime_id_invalid"
-        )
-    interaction_affordance = task_spec.get("interaction_affordance")
-    if (
-        not isinstance(interaction_affordance, Mapping)
-        or interaction_affordance.get("subject_asset_id") != source_subject_id
-    ):
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_interaction_affordance_invalid"
-        )
-    task_spec["subject_asset_id"] = runtime_subject_id
-    task_spec["source_subject_identity"] = source_subject_id
-    interaction_affordance = dict(interaction_affordance)
-    interaction_affordance["subject_asset_id"] = runtime_subject_id
-    interaction_affordance["affordance_digest"] = canonical_digest(
-        interaction_affordance, digest_field="affordance_digest"
-    )
-    task_spec["interaction_affordance"] = interaction_affordance
-    return task_spec
+    from .native_task_subject_identity import runtime_subject_task_spec
+    return runtime_subject_task_spec(value, error_type=TaskEvaluationNativeArenaEpisodeCompilerError)
 
 
 def _sha256_and_size(path: Path) -> tuple[str, int]:
@@ -342,88 +304,19 @@ def _runtime_asset_id(value: Any, *, label: str) -> str:
 
 
 def _numeric_bounds(value: Any) -> tuple[list[float], list[float]]:
+    from .rigid_destination_geometry_math import DestinationGeometryMathError, _numeric_bounds as numeric_bounds
     try:
-        lower = [float(item) for item in value["minimum"]]
-        upper = [float(item) for item in value["maximum"]]
-    except (KeyError, TypeError, ValueError) as exc:
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_destination_geometry_invalid"
-        ) from exc
-    if (
-        len(lower) != 3
-        or len(upper) != 3
-        or any(low >= high for low, high in zip(lower, upper, strict=True))
-        or not all(math.isfinite(item) for item in (*lower, *upper))
-    ):
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_destination_geometry_invalid"
-        )
-    return lower, upper
+        return numeric_bounds(value)
+    except DestinationGeometryMathError as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(str(exc)) from exc
 
 
-def _rotate_xyzw(vector: list[float], quaternion: list[float]) -> list[float]:
-    x, y, z, w = quaternion
-    vx, vy, vz = vector
-    tx = 2.0 * (y * vz - z * vy)
-    ty = 2.0 * (z * vx - x * vz)
-    tz = 2.0 * (x * vy - y * vx)
-    return [
-        vx + w * tx + (y * tz - z * ty),
-        vy + w * ty + (z * tx - x * tz),
-        vz + w * tz + (x * ty - y * tx),
-    ]
-
-
-def _multiply_xyzw(left: list[float], right: list[float]) -> list[float]:
-    lx, ly, lz, lw = left
-    rx, ry, rz, rw = right
-    result = [
-        lw * rx + lx * rw + ly * rz - lz * ry,
-        lw * ry - lx * rz + ly * rw + lz * rx,
-        lw * rz + lx * ry - ly * rx + lz * rw,
-        lw * rw - lx * rx - ly * ry - lz * rz,
-    ]
-    norm = math.sqrt(sum(value * value for value in result))
-    return [value / norm for value in result]
-
-
-def _subject_bounds_in_scoring_frame(
-    *, bounds: Any, transform: Any
-) -> tuple[list[float], list[float]]:
-    lower, upper = _numeric_bounds(bounds)
+def _subject_bounds_in_scoring_frame(*, bounds: Any, transform: Any) -> tuple[list[float], list[float]]:
+    from .rigid_destination_geometry_math import DestinationGeometryMathError, _subject_bounds_in_scoring_frame as subject_bounds
     try:
-        offset = [float(item) for item in transform["position_m"]]
-        orientation = [float(item) for item in transform["orientation_xyzw"]]
-    except (KeyError, TypeError, ValueError) as exc:
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_destination_subject_geometry_invalid"
-        ) from exc
-    if (
-        len(offset) != 3
-        or len(orientation) != 4
-        or not math.isclose(
-            sum(item * item for item in orientation),
-            1.0,
-            rel_tol=0.0,
-            abs_tol=1e-6,
-        )
-    ):
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_destination_subject_geometry_invalid"
-        )
-    inverse = [-orientation[0], -orientation[1], -orientation[2], orientation[3]]
-    corners = [
-        _rotate_xyzw(
-            [x - offset[0], y - offset[1], z - offset[2]], inverse
-        )
-        for x in (lower[0], upper[0])
-        for y in (lower[1], upper[1])
-        for z in (lower[2], upper[2])
-    ]
-    return (
-        [min(point[axis] for point in corners) for axis in range(3)],
-        [max(point[axis] for point in corners) for axis in range(3)],
-    )
+        return subject_bounds(bounds=bounds, transform=transform)
+    except DestinationGeometryMathError as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(str(exc)) from exc
 
 
 def _stage_destination_asset(
@@ -1338,38 +1231,13 @@ def compile_native_arena_episode(
         qualification_only=qualification_only,
     )
     if destination_asset is not None:
-        from .task_evaluation_rigid_destination_geometry import bind_destination_trajectory
+        from .rigid_destination_task_binding import bind_destination_task_spec
         source_support = task_adapter["source_documents"]["documents"]["support_plane"]
-        task_spec["initial_source_support"] = {
-            "scene_prim_paths": [source_support["sage_prim_path"]],
-            "support_plane_digest": _sha256_and_size(_reference_path(
+        task_spec = bind_destination_task_spec(task_spec, destination_asset, source_support=source_support,
+            support_plane_digest=_sha256_and_size(_reference_path(
                 materialized_references,
                 "scene.configured_revision.registration.support_plane",
-            ))[0],
-            "contact_permission": "initial_pickup_until_first_separation_or_lift",
-        }
-        task_spec = bind_destination_trajectory(task_spec, destination_asset)
-        task_spec.update(
-            destination_relation=destination_asset["relation"],
-            destination_support_asset_id=destination_asset["asset_id"],
-            destination_placement_support_prim_paths=destination_asset["placement_support_scene_prim_paths"],
-            destination_position_bounds_destination_frame_m=destination_asset[
-                "destination_position_bounds_destination_frame_m"
-            ],
-            subject_collision_bounds_scoring_frame_m=destination_asset[
-                "subject_collision_bounds_scoring_frame_m"
-            ],
-            destination_interior_bounds_body_frame_m=destination_asset[
-                "destination_interior_bounds_body_frame_m"
-            ],
-            destination_pose_world=destination_asset["destination_pose_world"],
-            destination_reset_translation_tolerance_m=destination_asset[
-                "destination_reset_translation_tolerance_m"
-            ],
-            destination_reset_rotation_tolerance_rad=destination_asset[
-                "destination_reset_rotation_tolerance_rad"
-            ],
-        )
+            ))[0])
         if qualification_only:
             task_spec.update(
                 destination_qualification_probe=True,

@@ -40,10 +40,13 @@ def test_capture_mounting_and_shared_instance_pose_reach_the_frozen_template():
 
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
           max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False,
-          authoring_backend=None, synthetic=False):
+          authoring_backend=None, synthetic=False, inside=False):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
+    if inside:
+        from tests.test_website_task_preparation import container_arguments
+        args = container_arguments(args)
     if synthetic:
         from tests.test_website_task_preparation import synthetic_arguments
         args = synthetic_arguments(args)
@@ -113,6 +116,27 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
               "runtime_publication_root": fixture["runtime_publication_root"],
               **{key + "_path": fixture[key] for key in ("deploy_receipt", "release_provenance", "release_environment")}}
     return kwargs, accepted
+
+
+def test_captured_container_preserves_inside_bounds_through_the_native_submission(tmp_path, monkeypatch):
+    import jsonschema
+
+    kwargs, _accepted = setup(tmp_path, monkeypatch, inside=True)
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"]
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    template = json.loads((root / "configuration/task.json").read_text())
+    target = template["surface_target"]
+    assert target["placement_relation"] == "inside"
+    assert target == request["task"]["surface_target"]
+    assert template["destination_support_plane"]["source_face_indices"]
+    schemas = Path(__file__).parents[1] / "docs/schemas"
+    for name in ("task_evaluation_launch_preparation_request.v1", "task_evaluation_configured_scene_revision.v1",
+                 "task_evaluation_retained_source_scene_preparation.v1", "task_evaluation_retained_source_astra_scene_preparation.v1",
+                 "rigid_task_success_contract.v1"):
+        schema = json.loads((schemas / (name + ".schema.json")).read_text())
+        errors = list(jsonschema.Draft202012Validator({"$ref": "#/$defs/surface_target", "$defs": schema["$defs"]}).iter_errors(target))
+        assert not errors, [(list(error.path), error.message) for error in errors]
 
 
 @pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])

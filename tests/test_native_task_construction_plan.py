@@ -285,6 +285,36 @@ def test_840313_rigid_fixture_has_complete_construction_gate_sequence() -> None:
     )
 
 
+@pytest.mark.parametrize("destination_mode", ["captured", "supplemental"])
+def test_container_transfer_lifts_the_entire_subject_above_the_rim(destination_mode) -> None:
+    from blueprint_pipeline.task_evaluation_surface_target import derive_surface_target
+
+    scene = _rigid_fixture(asset_id="container_subject")
+    spec = scene["task_spec"]
+    spec["subject_collision_bounds_scoring_frame_m"] = {"minimum": [-.03, -.03, -.06],
+                                                       "maximum": [.03, .03, .06]}
+    affordance = spec["interaction_affordance"]
+    affordance["insertion_withdrawal_unit_world"] = [0., 0., 1.]
+    affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+    spec["surface_target"] = derive_surface_target(destination={"kind": "green_region", "relation": "inside",
+        "visible_label": "open bin", "position_world_m": [3.75, -3.4, .465],
+        "orientation_xyzw": [0, 0, 0, 1], "radius_m": .08,
+        "interior_bounds_world_m": {"minimum": [3.6, -3.55, .465], "maximum": [3.9, -3.25, .75]}},
+        support={"sage_prim_path": "/Scene/support", "bounds_min_xyz_m": [3.4, -3.7, .4],
+                 "bounds_max_xyz_m": [4, -3.2, .465]}, source_min=[3.438, -3.34, .466],
+        source_max=[3.498, -3.28, .586], support_instance_id="bin_floor")
+    if destination_mode == "supplemental":
+        spec.pop("surface_target")
+        spec.update(destination_relation="inside", destination_pose_world=[3.75, -3.4, .465, 0., 0., 0., 1.],
+                    destination_interior_bounds_body_frame_m={"minimum": [-.15, -.15, 0.],
+                                                              "maximum": [.15, .15, .285]})
+    plan = materialize_native_task_construction_phase_plan(scene, rigid_waypoint_count=3)
+    carried = [phase for phase in plan["phases"] if phase["phase_id"].startswith("relocate_")]
+    assert all(phase["expected_scoring_position_world_m"][2] - .06 >= .77 - 1e-9 for phase in carried)
+    retreat = next(phase for phase in plan["phases"] if phase["phase_id"] == "retreat")
+    assert retreat["position_world_m"][2] >= .77
+
+
 def test_pick_place_withdraws_along_destination_qualified_clearance_axis() -> None:
     scene = _rigid_fixture(asset_id="book_replacement")
     affordance = scene["task_spec"]["interaction_affordance"]

@@ -51,6 +51,28 @@ def test_repair_cannot_accept_foreground_endpoint_or_missing_object_masks(tmp_pa
         repair.measure_review(**options, reference_masks=None)
 
 
+@pytest.mark.parametrize("basis, reviewed", [
+    ("camera_height_prior_only", True), ("surface_height_prior_only", True), ("height_priors_only", True),
+    ("single_object_with_height_priors", False), ("majority_with_height_priors", False), ("single_object", False)])
+def test_a_guesstimate_on_height_priors_alone_still_asks_for_references(basis, reviewed):
+    measured = {"status": "estimated", "binding": {"reference_masks_digest": "masks"},
+                "reference_agreement": {"basis": basis}}
+    assert repair.rests_on_height_priors(measured) is reviewed
+    assert repair.needs_scale_review(measured) is reviewed
+    assert not repair.rests_on_height_priors({**measured, "status": "relative_sizes_only"})
+
+
+def test_the_review_consults_the_camera_height_when_its_references_fail(tmp_path):
+    # The only reference fails its mask check, so the cameras' height is asked; one wall view shows no floor.
+    frames = [view(tmp_path, "a")]
+    p = proposal(plan())
+    p["scale_references"][0]["endpoints_normalized"][0][0] = .05
+    masks = [{"reference_index": 0, "frame_id": "a", "instances": track(frames)["track"]["observations"]}]
+    result, _ = repair.measure_review(frames=frames, pose_digest="pose", automation=plan(), proposal=p,
+                                      reference_sources=[], reference_masks=masks, output_root=tmp_path / "revised")
+    assert result["height_priors"]["camera"]["status"] == "unavailable"
+
+
 @pytest.mark.parametrize("change", ["unknown_frame", "unnamed", "abstained"])
 def test_invalid_reference_proposals_cannot_be_measured(change):
     p = proposal(plan())

@@ -1,25 +1,25 @@
 """Derived operation routing for beta scene preparation, never owner task truth.
 
 The already required Atlas review reads the entire job, separating scene setup
-and operating notes from robot work. Only a complete single supported operation
-can resolve an ambiguous text-screen hint. No provider or runtime imports here.
+and operating notes from robot work. Complete operations resolve through the
+current registered profiles. No provider or runtime imports here.
 """
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .decision_evidence_contracts import canonical_digest
-from .task_profile_contracts import task_profile_for
+from .task_profile_contracts import TASK_PROFILES, task_profile_for
 
 
 class OperativeStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    operation: Literal["rigid_pick_place", "articulated_open_close", "unsupported", "unknown"]
+    operation: str = Field(min_length=1)
     description: str = Field(min_length=1)
     task_quote: str = Field(min_length=1)
 
@@ -44,17 +44,23 @@ synthetic object), preservation, budget, source-file and execution notes from
 robot operations; retain these under preparation_notes. For each operative step
 give operation, description and a verbatim task_quote from the supplied task.
 Pick-up plus placement is one rigid_pick_place operation; a different subsequent
-operation is another step. Report every operative step, including unsupported
-ones. Supported operations are rigid_pick_place (one rigid object lifted and
-placed ON a supported destination surface) and articulated_open_close (opening
-one door, drawer or lid). Washing, folding, closing, pushing, inside-container
-placement and other jobs are unsupported; never collapse them into pick/place.
-Use unsupported or unknown for such steps and an honest task_family. Object
+operation is another step. Report every operative step, including unknown ones.
+Use the registered profile IDs below when their complete operation matches the
+job. rigid_pick_place lifts one rigid object and places it on its qualified
+destination; articulated_open_close opens one door, drawer or lid, not closing.
+The other registered families have their own independent state predicates.
+For several operations propose multi_step and retain ALL ordered steps; never
+collapse them into one atomic pick/place, folding or other operation. Use an
+honest unregistered task_family and unknown operations when no profile matches.
+Registration is routing metadata, not a finding that required native physics,
+assets, reset, thresholds or runtime inputs exist. Object
 movability, a synthetic primitive, and an available adapter do not establish
 operation semantics. covers_entire_job is false whenever any requested work or
 success requirement is unresolved. This is derived routing evidence, not owner
 confirmation, robot capability, measured physics or execution qualification.
-"""
+""" + "\nRegistered native profiles: " + json.dumps([
+    {"profile_id": profile.profile_id, "runtime_adapter": profile.runtime_adapter,
+     "required_inputs": list(profile.required_inputs)} for profile in TASK_PROFILES], sort_keys=True) + "\n"
 
 _SHA = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -121,10 +127,44 @@ def resolved_task_profile(value: Mapping[str, Any] | None, *, task_context: Mapp
     semantics = verified["semantics"]
     profile = task_profile_for(semantics["task_family"])
     steps = semantics["steps"]
-    if (not semantics["covers_entire_job"] or semantics["unresolved_aspects"] or len(steps) != 1
-            or profile is None or steps[0]["operation"] != profile.profile_id):
+    if not semantics["covers_entire_job"] or semantics["unresolved_aspects"] or profile is None:
+        return None
+    operations = [task_profile_for(step["operation"]) for step in steps]
+    if profile.profile_id == "multi_step":
+        # Existing multi-step contracts score their registered family stages;
+        # this does not add legacy atomic scorers to that runtime adapter.
+        if len(steps) < 2 or any(operation is None or operation.profile_id == "multi_step"
+                or operation.runtime_adapter != profile.runtime_adapter for operation in operations):
+            return None
+        # Family order alone cannot distinguish "wipe desk, then wipe counter"
+        # from the reversed target order. Keep that sequence held until a
+        # source-bound semantic step→native stage identity is available.
+        if len({operation.profile_id for operation in operations}) != len(operations):
+            return None
+    elif len(steps) != 1 or operations[0] is None or operations[0].profile_id != profile.profile_id:
         return None
     return profile.profile_id
+
+
+def effective_task_profile(*, task_context: Mapping[str, Any], task_semantics: Mapping[str, Any] | None = None,
+                           source_video_digest: str | None = None) -> str | None:
+    """Canonical derived routing selection, separate from unchanged owner facts."""
+    declared = task_profile_for(task_context.get("task_family"))
+    return (declared.profile_id if declared is not None else
+            resolved_task_profile(task_semantics, task_context=task_context, source_video_digest=source_video_digest))
+
+
+def require_semantic_stage_order(*, task_context: Mapping[str, Any], task_semantics: Mapping[str, Any] | None,
+                                 source_video_digest: str | None, contract: Mapping[str, Any]) -> None:
+    """An ordered derived job cannot inherit another multi-step contract."""
+    if task_context.get("task_family") != "general_task" or contract.get("task_family") != "multi_step":
+        return
+    if resolved_task_profile(task_semantics, task_context=task_context,
+                             source_video_digest=source_video_digest) != "multi_step":
+        raise ValueError("website_task_family_semantic_stages_mismatch")
+    proposed = [task_profile_for(step["operation"]).profile_id for step in task_semantics["semantics"]["steps"]]
+    if proposed != [stage["task_family"] for stage in contract["stages"]]:
+        raise ValueError("website_task_family_semantic_stages_mismatch")
 
 
 def retain_task_semantics(*, job_dir: Path, receipt: Mapping[str, Any], task_context: Mapping[str, Any],

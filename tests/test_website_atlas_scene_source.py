@@ -597,6 +597,67 @@ def test_world_alignment_needs_agreeing_shared_cameras():
     assert found["scale"] == pytest.approx(1.0) and np.allclose(found["rotation"], np.eye(3))
 
 
+def measured_by(job_dir: Path, **fields):
+    """Rewrite the job's source measurements with ``fields`` and bind the job's result to them."""
+    measurements = write(job_dir / "pose" / "scene_measurements.json", digest({
+        "schema_version": "atlas_scene_measurements.v1", "status": "estimated", "meters_per_unit_estimate": MPU,
+        "scale_status": "estimated_from_named_assumptions", "metric_measurement_proven": False, **fields}))
+    result = json.loads((job_dir / "result.json").read_text())
+    result["source_pose"]["scene_measurements_digest"] = measurements["digest"]
+    write(job_dir / "result.json", digest(result))
+    job = json.loads((job_dir / "preview_job.json").read_text())
+    write(job_dir / "preview_job.json", {**job, "result_digest": result["digest"]})
+
+
+CAMERA_ONLY = {"meters_per_unit_range": [MPU * 1.2 / 1.4, MPU * 1.6 / 1.4],
+               "reference_agreement": {"basis": "camera_height_prior_only", "object_count": 1,
+                                       "agreeing_object_count": 1}}
+
+
+def prepared(tmp_path):
+    value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    assert value["status"] == "ready"
+    return value
+
+
+def test_the_scale_record_carries_its_range_and_how_the_cues_agreed(tmp_path):
+    measured_by(job_fixture(tmp_path), **CAMERA_ONLY)
+    value = prepared(tmp_path)
+    scale = value["source_geometry"]["binding"]["scale"]
+    assert scale["meters_per_unit_range"] == pytest.approx(CAMERA_ONLY["meters_per_unit_range"])
+    assert scale["agreement_basis"] == "camera_height_prior_only"
+    assert scale["meters_per_unit"] == MPU and scale["basis"] == "reference_estimate"
+    # Nothing else moves: the same metres per unit reach the scene.
+    assert value["base_scene"]["meters_per_unit"] == pytest.approx(MPU / BACKGROUND_SCALE)
+
+
+def test_geometry_made_before_its_scale_carried_a_range_is_kept(tmp_path):
+    measured_by(job_fixture(tmp_path), **CAMERA_ONLY)
+    first = prepared(tmp_path)["source_geometry"]
+    # The geometry as retained before the record carried its range and basis.
+    manifest = Path(first["manifest_path"])
+    retained = json.loads(manifest.read_text())
+    retained["binding"]["scale"] = {key: value for key, value in retained["binding"]["scale"].items()
+                                    if key not in ("meters_per_unit_range", "agreement_basis")}
+    manifest.write_text(json.dumps(digest(retained)))
+    before = manifest.read_bytes()
+    kept = prepared(tmp_path)["source_geometry"]
+    assert manifest.read_bytes() == before and kept["binding"] == retained["binding"]
+    assert set(kept["binding"]["scale"]) == {"meters_per_unit", "basis", "evidence_digest", "evidence_reference"}
+
+
+@pytest.mark.parametrize("change", [{"meters_per_unit_range": [MPU * 1.1, MPU * 1.2]},
+                                    {"meters_per_unit_range": [MPU, float("nan")]},
+                                    {"agreement_basis": " "}, {"meters_per_unit_unknown": 1.0}])
+def test_a_scale_record_with_an_inconsistent_range_or_unknown_field_is_refused(tmp_path, change):
+    job_fixture(tmp_path)
+    scale = {"meters_per_unit": MPU, "basis": "reference_estimate", "evidence_digest": "sha256:" + "0" * 64,
+             "evidence_reference": "pipeline/atlas/pose/scene_measurements.json", **change}
+    with pytest.raises(ValueError, match="atlas_source_geometry_scale_invalid"):
+        atlas_posed_view_geometry(pose_root=tmp_path / "pipeline/atlas/pose", rotation=ROTATION, scale=scale,
+                                  output_root=tmp_path / "out")
+
+
 def test_posed_view_geometry_requires_a_scale(tmp_path):
     job_fixture(tmp_path)
     with pytest.raises(ValueError, match="atlas_source_geometry_scale_invalid"):

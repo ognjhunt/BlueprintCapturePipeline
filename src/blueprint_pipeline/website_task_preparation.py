@@ -109,7 +109,12 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
                                         source_video_digest=source_video_digest)
         # Shape alone never resolves the operation and explicit families win.
         profile = task_profile_for(resolved)
-    mismatch = profile is not None and inferred_profile_id is not None and profile.profile_id != inferred_profile_id
+    # Geometry movability is not a task classification. Pouring, wiping,
+    # insertion, stacking and cloth work have their own state predicates, even
+    # when their containers or tools also happen to be rigid/articulated.
+    legacy = {"rigid_pick_place", "articulated_open_close"}
+    mismatch = (profile is not None and profile.profile_id in legacy
+                and inferred_profile_id is not None and profile.profile_id != inferred_profile_id)
     if profile is not None and not mismatch:
         return None
     return {
@@ -675,13 +680,17 @@ def _unplaceable_part_estimate(code: str, configuration: Mapping[str, Any]) -> s
 def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                                       removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                       base_scene: Mapping[str, Any], output_root: Path, spend: Mapping[str, Any],
-                                      now: float, task_semantics: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                                      now: float, task_semantics: Mapping[str, Any] | None = None,
+                                      evaluation_inputs: Mapping[str, Any] | None = None) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
     semantics_options = {"task_semantics": task_semantics,
                          "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest")}
     gap = native_task_preparation_gap(task_context, **semantics_options)
-    if gap is None and task_masks.get("deferred_target_ids"):
+    from .task_family_scoring import canonical_task_family
+    from .website_task_semantics import effective_task_profile
+    family = canonical_task_family(effective_task_profile(task_context=task_context, **semantics_options))
+    if gap is None and family is None and task_masks.get("deferred_target_ids"):
         raise ValueError("website_static_task_masks_pending")
 
     def retain_gap(gap: Mapping[str, Any]) -> dict[str, Any]:
@@ -704,6 +713,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     if task_context.get("confirmed") is not True:
         from .website_preparation_contracts import validate_preparation_authority
         validate_preparation_authority(task_context=task_context, authority=spend, now=now)
+    if family is not None:
+        from .task_family_preparation import prepare_task_family
+        return prepare_task_family(task_context=task_context, task_masks=task_masks,
+            removal_manifest=removal_manifest, source_geometry=source_geometry, base_scene=base_scene,
+            output_root=output_root, evaluation_inputs=evaluation_inputs,
+            **({"task_semantics": task_semantics} if task_semantics is not None else {}))
     if task_masks.get("source_geometry_digest") != source_geometry["digest"]:
         raise ValueError("website_preparation_geometry_binding_mismatch")
     request_id, capture_id = str(task_context["request_id"]), str(task_context["capture_id"])
@@ -855,6 +870,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
     destination = distinct_support = None
+    interior = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
         # The whole assembly is removed, rebuilt with one task joint, and
@@ -885,7 +901,18 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         if relation not in {"on", "inside"}:
             blockers.append("task_destination_relation_required")
         elif relation == "inside":
-            blockers.append("task_destination_interior_geometry_required")
+            from .website_container_geometry import container_interior
+            interior = container_interior(collider, low, high,
+                subject_dimensions=np.asarray(subject_max) - np.asarray(subject_min), up=up,
+                meters_per_unit=mpu, up_sign=up_sign)
+            if interior is None:
+                blockers.append("task_destination_interior_geometry_required")
+            else:
+                cavity = interior["interior_bounds"]
+                position = [(cavity["minimum"][i] + cavity["maximum"][i]) / 2 for i in range(3)]
+                position[up] = interior["floor"]["top_runtime_units"]
+                distinct_support = interior["floor"]
+                contact_bound = True
         elif support is not None:
             # Test the subject's footprint at the destination against real
             # triangles, not the destination mask's enclosing box.
@@ -909,13 +936,19 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     distinct_support = destination_support
         label = destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"]
         destination = {"relation": relation, "visible_label": label,
-                       **({"mode": "existing_support_surface"} if relation == "on" else {}),
+                       **({"mode": "existing_support_surface"} if relation == "on" or interior is not None else {}),
+                       **({"interior_bounds_world_m": dict(zip(("minimum", "maximum"), _runtime_bounds(
+                           interior["interior_bounds"], runtime_to_sim))),
+                           "interior_geometry_basis": interior["basis"],
+                           "interior_wall_face_indices": interior["wall_face_indices"]}
+                          if interior is not None else {}),
                        **({"support": dict(zip(("aabb_min_xyz", "aabb_max_xyz"), _runtime_bounds(
                            {"minimum": distinct_support["aabb_min"], "maximum": distinct_support["aabb_max"]},
                            runtime_to_sim)), description=label)} if distinct_support is not None else {}),
                        "position_world_m": (runtime_to_sim @ [*position, 1.0])[:3].tolist(),
                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
-                       "basis": "registered_estimated_visible_bounds_and_collider_contact" if contact_bound
+                       "basis": "registered_reconstructed_container_interior" if interior is not None
+                       else "registered_estimated_visible_bounds_and_collider_contact" if contact_bound
                        else "registered_estimated_visible_bounds"}
     else:
         blockers.append("task_destination_pose_required")

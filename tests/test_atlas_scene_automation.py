@@ -1,6 +1,7 @@
 """Automatic estimates/editing preserve raw geometry, source caps and quality rejection."""
 
 from copy import deepcopy
+import math
 from pathlib import Path
 
 import numpy as np
@@ -112,7 +113,8 @@ def test_retained_finalization_exports_bundle_without_any_provider(tmp_path, mon
     assert exported[0]['mesh_root'] == mesh_root
 
 
-def view(tmp_path, key="a", position=0, width=80, height=60):
+def view(tmp_path, key="a", position=0, width=80, height=60, centre=None, quaternion=(0.0, 0.0, 0.0, 1.0),
+         depth=2.0):
     camera = {
         "intrinsics": {
             "width": width,
@@ -123,15 +125,15 @@ def view(tmp_path, key="a", position=0, width=80, height=60):
             "cy": height / 2,
         },
         "extrinsics": {
-            "position": [position, 0.0, 0.0],
-            "quaternion": [0.0, 0.0, 0.0, 1.0],
+            "position": [position, 0.0, 0.0] if centre is None else list(centre),
+            "quaternion": list(quaternion),
             "coordinateSystem": "rub",
         },
     }
     f = posed_frame(
         frame_id=key,
         rgb=np.full((height, width, 3), 90, np.uint8),
-        depth=np.full((height, width), 2, np.float32),
+        depth=np.full((height, width), depth, np.float32),
         confidence=np.full((height, width), 255, np.uint8),
         camera=camera,
     )
@@ -286,6 +288,270 @@ def test_several_views_of_one_object_never_outvote_another_object(tmp_path):
                     reference("range width", 0.8))
     assert result["reference_agreement"] == {"basis": "no_majority", "object_count": 2, "agreeing_object_count": 1}
     assert result["meters_per_unit_estimate"] is None
+
+
+#: xyzw: a camera turned to look straight down.
+DOWN = (-math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5))
+CAMERA = sizes.CAMERA_HEIGHT_LABEL
+DESK = "task surface height: desk"
+
+
+def walkthrough(tmp_path, heights, *, desk_top=None):
+    """View ``a`` (its references span 0.8 units on a wall 2 units away) and views down at a floor at y = 0.
+
+    Each camera stands ``heights[i]`` provider units above the floor; a camera
+    looking straight down sees the floor at exactly that depth. With ``desk_top``
+    the first floor view looks down on a desk top that high instead.
+    """
+    frames = [view(tmp_path, centre=(0.0, heights[0], 0.0))]
+    spots = [(x, z) for z in (-0.8, 0.8) for x in (-1.5, -0.5, 0.5, 1.5)]
+    for index, (rise, (x, z)) in enumerate(zip(heights[1:], spots, strict=False)):
+        frames.append(view(tmp_path, f"floor{index}", width=40, height=30, centre=(x, rise, z), quaternion=DOWN,
+                           depth=rise))
+    if desk_top is not None:
+        # The desk fills the middle of that view; the floor shows around it.
+        desk = frames[1]
+        desk["depth"][8:22, 10:30] = heights[1] - desk_top
+    return frames
+
+
+def surface(label, *, role="support", frame_id="floor0", prompt=None):
+    """A ``website_task_masks`` target tracked over the desk region of ``walkthrough``'s first floor view."""
+    observation = {"source_frame_id": frame_id, "width": 40, "height": 30,
+                   "runs": [{"start": y * 40 + 10, "length": 20} for y in range(8, 22)]}
+    return {"target_id": label.replace(" ", "_"), "target_role": role, "semantic_label": label,
+            "segmentation_prompt": prompt or label, "disposition": "keep", "task_effect": "static_contact",
+            "track": {"observations": [observation]}}
+
+
+def walked(tmp_path, frames, *references, camera_height=True, surfaces=(), name="walk"):
+    return sizes.estimate_sizes(frames=frames, automation={**plan(), "scale_references": list(references)},
+                                pose_digest="pose", output=tmp_path / f"{name}.json", camera_height=camera_height,
+                                surfaces=list(surfaces))
+
+
+def reasons(result):
+    return [(gap["reference"]["label"], gap["reason"]) for gap in result["reference_gaps"]]
+
+
+def test_the_camera_height_breaks_a_tie_between_references_that_disagree(tmp_path):
+    # Cameras 1.4 units above the floor: the 1.4 m prior says 1.0 m per unit, as the range does.
+    frames = walkthrough(tmp_path, [1.4] * 9)
+    tie = (reference("range width", 0.8), reference("dishwasher opening", 1.2))
+    # Two disagreeing references and no third cue: unknown, exactly as before.
+    assert walked(tmp_path, frames, *tie, camera_height=False, name="none")["reference_agreement"]["basis"] == \
+        "no_majority"
+    result = walked(tmp_path, frames, *tie)
+    assert result["status"] == "estimated" and result["scale_status"] == "estimated_from_named_assumptions"
+    # The range sets the scale and its range; the wide prior only voted.
+    assert result["meters_per_unit_estimate"] == pytest.approx(1.0)
+    assert result["meters_per_unit_range"] == pytest.approx([0.95, 1.05])
+    assert [row["label"] for row in result["scale_references"]] == ["range width"]
+    assert reasons(result) == [("dishwasher opening", "atlas_reference_disagrees_with_consensus")]
+    agreement = result["reference_agreement"]
+    assert agreement["basis"] == "majority_with_height_priors"
+    assert agreement["object_count"] == 3 and agreement["agreeing_object_count"] == 2
+    assert agreement["agreeing_cues"] == ["range width", CAMERA]
+    assert agreement["references_alone"]["basis"] == "no_majority"
+    camera = result["height_priors"]["camera"]
+    assert camera["status"] == "measured" and camera["agrees_with_consensus"] is True
+    assert camera["basis"] == "camera_height_prior" and camera["span_provider_units"] == pytest.approx(1.4)
+    assert camera["plausible_distance_range_m"] == [1.2, 1.6] and camera["source"]
+    assert result["height_priors"]["floor"]["status"] == "observed"
+    # A camera between them agrees with both and so picks neither.
+    between = walkthrough(tmp_path, [1.4 / 1.06] * 9)
+    torn = walked(tmp_path, between, reference("range width", 0.8), reference("dishwasher opening", 0.896),
+                  name="torn")
+    assert torn["status"] == "relative_sizes_only" and torn["meters_per_unit_estimate"] is None
+    assert torn["reference_agreement"]["basis"] == "no_majority"
+    assert torn["reference_agreement"]["competing_majorities"] == 2
+    assert torn["height_priors"]["camera"]["agrees_with_consensus"] is False
+
+
+def test_the_camera_height_confirms_a_single_reference_and_a_contradiction_unscales_it(tmp_path):
+    frames = walkthrough(tmp_path, [1.4] * 9)
+    alone = walked(tmp_path, frames, reference("range width", 0.8), camera_height=False, name="alone")
+    confirmed = walked(tmp_path, frames, reference("range width", 0.8), name="confirmed")
+    assert confirmed["reference_agreement"]["basis"] == "single_object_with_height_priors"
+    assert confirmed["reference_agreement"]["agreeing_cues"] == ["range width", CAMERA]
+    # Confirmation leaves the reference's own scale and range as they were.
+    for key in ("status", "meters_per_unit_estimate", "meters_per_unit_range", "scale_references", "scene"):
+        assert confirmed[key] == alone[key]
+    # Cameras 0.93 units up say 1.5 m per unit: two independent priors disagree, so the scale is unknown.
+    low = walkthrough(tmp_path, [1.4 / 1.5] * 9)
+    contradicted = walked(tmp_path, low, reference("range width", 0.8), name="contradicted")
+    assert contradicted["status"] == "relative_sizes_only" and contradicted["meters_per_unit_estimate"] is None
+    assert contradicted["reference_agreement"]["basis"] == "no_majority"
+    assert reasons(contradicted) == [("range width", "atlas_reference_disagrees_with_consensus")]
+    assert contradicted["height_priors"]["camera"]["meters_per_unit"] == pytest.approx(1.5)
+
+
+def test_with_no_usable_reference_the_camera_height_alone_gives_a_wide_scale(tmp_path):
+    frames = walkthrough(tmp_path, [1.75] * 9)
+    before = [deepcopy(frame["depth"]) for frame in frames]
+    assert walked(tmp_path, frames, camera_height=False, name="none")["status"] == "relative_sizes_only"
+    result = walked(tmp_path, frames)
+    assert result["status"] == "estimated" and result["scale_references"] == [] and not result["reference_gaps"]
+    assert result["reference_agreement"]["basis"] == "camera_height_prior_only"
+    assert result["reference_agreement"]["agreeing_cues"] == [CAMERA]
+    assert result["meters_per_unit_estimate"] == pytest.approx(1.4 / 1.75)
+    assert result["meters_per_unit_range"] == pytest.approx([1.2 / 1.75, 1.6 / 1.75])
+    assert result["scene"]["extent_xyz_m_estimate"] is not None
+    assert result["metric_measurement_proven"] is False and result["raw_geometry_rescaled"] is False
+    assert all(np.array_equal(frame["depth"], depth) for frame, depth in zip(frames, before, strict=True))
+
+
+@pytest.mark.parametrize("references", [
+    (), (("range width", 0.8),), (("range width", 0.8), ("dishwasher opening", 1.2))])
+def test_without_a_floor_the_height_priors_change_nothing(tmp_path, references):
+    # Three views of one wall: no level surface, so no floor to stand cameras or a desk on.
+    frames = [view(tmp_path, "a"), view(tmp_path, "b", 0.1), view(tmp_path, "c", 0.2)]
+    rows = [reference(label, metres) for label, metres in references]
+    before = walked(tmp_path, frames, *rows, camera_height=False, name="before")
+    after = walked(tmp_path, frames, *rows, surfaces=[surface("desk", frame_id="a")], name="after")
+    priors = after.pop("height_priors")
+    assert priors["floor"] == {"status": "unavailable", "reason": "floor_unobserved"}
+    assert priors["camera"] == {"status": "unavailable", "reason": "floor_unobserved"}
+    assert [row["status"] for row in priors["surfaces"]] == ["unavailable"]
+    assert {**after, "digest": None, "binding": None} == {**before, "digest": None, "binding": None}
+
+
+def test_camera_heights_no_single_hold_explains_are_no_cue(tmp_path):
+    tie = (reference("range width", 0.8), reference("dishwasher opening", 1.2))
+    # Stairs, a drone or a phone held up: most views sit far from their median height.
+    spread = walked(tmp_path, walkthrough(tmp_path, [1.4, 0.6, 3.0, 4.2, 1.0, 2.6, 5.0, 0.8, 3.6]), *tie,
+                    name="spread")
+    assert spread["height_priors"]["camera"]["reason"] == "camera_height_spread_implausible"
+    assert spread["reference_agreement"]["basis"] == "no_majority" and spread["meters_per_unit_estimate"] is None
+    # A camera below the floor means the plane is not the floor it stood on.
+    frames = walkthrough(tmp_path, [1.4] * 8) + [view(tmp_path, "below", centre=(0.0, -0.5, 2.0),
+                                                      depth=float("nan"))]
+    below = walked(tmp_path, frames, *tie, name="below")
+    assert below["height_priors"]["floor"]["reason"] == "camera_not_above_floor"
+    assert below["meters_per_unit_estimate"] is None
+    floor = {"status": "observed", "camera_heights_provider_units": [1.4, 1.4]}
+    assert sizes.camera_height_reference([], floor) == {
+        "status": "unavailable", "reason": "camera_height_too_few_views", "camera_count": 2}
+
+
+@pytest.mark.parametrize("references, basis", [
+    ((("range width", 0.8), ("countertop height", 0.82)), "agreeing_objects"),
+    ((("range width", 0.8), ("countertop height", 0.82), ("dishwasher opening", 1.2)), "majority_after_outliers"),
+])
+def test_references_that_already_agree_are_byte_identical_with_the_height_priors(tmp_path, references, basis):
+    # These cameras say 1.5 m per unit, siding with the outlier: consulted, the prior would split the vote.
+    frames = walkthrough(tmp_path, [1.4 / 1.5] * 9)
+    points = np.concatenate([sizes.frame_points(frame) for frame in frames])
+    floor = sizes.observed_floor(frames, points)
+    assert sizes.camera_height_reference(frames, floor)["meters_per_unit"] == pytest.approx(1.5)
+    rows = [reference(label, metres) for label, metres in references]
+    before = walked(tmp_path, frames, *rows, camera_height=False, name="before")
+    walked(tmp_path, frames, *rows, name="after")
+    assert before["reference_agreement"]["basis"] == basis and "height_priors" not in before
+    assert (tmp_path / "after.json").read_bytes() == (tmp_path / "before.json").read_bytes()
+    # A retained result keeps its binding and bytes when the priors are switched on.
+    retained = (tmp_path / "before.json").read_bytes()
+    assert walked(tmp_path, frames, *rows, name="before") == before
+    assert (tmp_path / "before.json").read_bytes() == retained
+
+
+def test_the_floor_under_the_cameras_is_found_in_a_tilted_world_at_any_unit(tmp_path):
+    from tests.atlas_level_room_fixture import provider_units, room_parts, tilt
+
+    rotation, offset, mpu = tilt(18.0), (0.3, -1.3, 0.2), 0.9
+    cameras = [{"position": centre} for centre in provider_units(
+        [(0.0, 1.2, 0.0), (0.5, 1.35, 0.3), (-0.5, 1.5, -0.2)], rotation=rotation, offset_m=offset,
+        meters_per_unit=mpu)]
+
+    def observed(**surfaces):
+        world = np.concatenate([points for points, _ in room_parts(**surfaces).values()])
+        world = world + np.random.default_rng(0).normal(0.0, 0.003, world.shape)
+        return provider_units(world, rotation=rotation, offset_m=offset, meters_per_unit=mpu)
+
+    floor = sizes.observed_floor(cameras, observed())
+    # 1.2, 1.35 and 1.5 m over a floor at 0.9 m per unit, measured in the provider's own units.
+    assert floor["camera_heights_provider_units"] == pytest.approx([1.2 / mpu, 1.35 / mpu, 1.5 / mpu], abs=0.01)
+    assert np.dot(floor["normal"], rotation @ [0.0, 1.0, 0.0]) > math.cos(math.radians(0.5))
+    found = sizes.camera_height_reference(cameras, floor)
+    assert found["meters_per_unit"] == pytest.approx(1.4 / (1.35 / mpu), rel=0.01)
+    # A counter seen without its floor has walls running on below it.
+    assert sizes.observed_floor(cameras, observed(floor=False))["reason"] == "floor_unobserved"
+
+
+def test_a_desk_alone_scales_the_scene_from_its_standard_height(tmp_path):
+    # The cameras say nothing here (the prior is off); the desk top stands 0.8 units up: 0.74 m / 0.8.
+    frames = walkthrough(tmp_path, [1.4] * 9, desk_top=0.8)
+    result = walked(tmp_path, frames, camera_height=False, surfaces=[surface("desk")])
+    assert result["status"] == "estimated" and result["scale_references"] == []
+    assert result["reference_agreement"]["basis"] == "surface_height_prior_only"
+    assert result["reference_agreement"]["agreeing_cues"] == [DESK]
+    assert result["meters_per_unit_estimate"] == pytest.approx(0.74 / 0.8, rel=1e-3)
+    assert result["meters_per_unit_range"] == pytest.approx([0.70 / 0.8, 0.77 / 0.8], rel=1e-3)
+    desk = result["height_priors"]["surfaces"][0]
+    assert desk["status"] == "measured" and desk["basis"] == "standard_surface_height_prior"
+    assert desk["label"] == DESK and desk["target_role"] == "support" and desk["source"]
+    assert desk["span_provider_units"] == pytest.approx(0.8, abs=1e-3)
+    assert desk["observed_frame_ids"] == ["floor0"] and desk["agrees_with_consensus"] is True
+    assert "surfaces_digest" in result["binding"] and "camera" not in result["height_priors"]
+
+
+def test_the_camera_height_and_a_desk_agree_or_disagree(tmp_path):
+    # Cameras 1.4 units up say 1.0 m per unit; a desk top 0.74 units up says the same.
+    frames = walkthrough(tmp_path, [1.4] * 9, desk_top=0.74)
+    both = walked(tmp_path, frames, surfaces=[surface("standing height desk", prompt="desk"), surface(
+        "office desk", role="destination")], name="both")
+    # The standing desk names no standard height; the office desk is one vote.
+    assert [row["status"] for row in both["height_priors"]["surfaces"]] == ["unmatched", "measured"]
+    assert both["reference_agreement"]["basis"] == "height_priors_only"
+    assert both["reference_agreement"]["agreeing_cues"] == [CAMERA, DESK]
+    assert both["meters_per_unit_estimate"] == pytest.approx(1.0, rel=1e-3)
+    # Both guesstimates set the range: the union of the two plausible ranges.
+    assert both["meters_per_unit_range"] == pytest.approx([1.2 / 1.4, 1.6 / 1.4], rel=1e-3)
+    # A desk top 0.5 units up says 1.48 m per unit: the two guesstimates disagree, so no scale.
+    low = walkthrough(tmp_path, [1.4] * 9, desk_top=0.5)
+    torn = walked(tmp_path, low, surfaces=[surface("desk")], name="torn")
+    assert torn["status"] == "relative_sizes_only" and torn["meters_per_unit_estimate"] is None
+    assert torn["reference_agreement"]["basis"] == "no_majority"
+    assert torn["height_priors"]["camera"]["agrees_with_consensus"] is False
+    assert torn["height_priors"]["surfaces"][0]["agrees_with_consensus"] is False
+
+
+@pytest.mark.parametrize("label, prompt", [
+    ("table", None), ("shelf above the desk", None), ("floor", None), ("bench", None),
+    ("desk", "kitchen counter"), ("coffee table", "coffee table drawer")])
+def test_a_surface_whose_label_names_no_one_standard_height_casts_no_vote(tmp_path, label, prompt):
+    frames = walkthrough(tmp_path, [1.4] * 9, desk_top=0.8)
+    result = walked(tmp_path, frames, camera_height=False, surfaces=[surface(label, prompt=prompt)])
+    assert result["status"] == "relative_sizes_only" and result["meters_per_unit_estimate"] is None
+    assert result["height_priors"]["surfaces"][0]["status"] == "unmatched"
+    assert result["reference_agreement"]["basis"] == "no_reference"
+
+
+def test_a_surface_votes_only_from_its_own_observations(tmp_path):
+    frames = walkthrough(tmp_path, [1.4] * 9, desk_top=0.8)
+    # A task object is no surface prior, and a surface tracked only on views not measured here is unobserved.
+    obstacle, elsewhere = surface("desk", role="task_object"), surface("desk", frame_id="not-posed")
+    result = walked(tmp_path, frames, camera_height=False, surfaces=[obstacle, elsewhere])
+    assert result["height_priors"]["surfaces"] == [{
+        "target_id": "desk", "target_role": "support", "semantic_label": "desk", "segmentation_prompt": "desk",
+        "status": "unavailable", "reason": "surface_unobserved", "point_count": 0}]
+    assert result["status"] == "relative_sizes_only"
+    off_grid = surface("desk")
+    off_grid["track"]["observations"] = [{"source_frame_id": "floor0", "width": 80, "height": 60,
+                                          "runs": [{"start": 0, "length": 10}]}]
+    assert walked(tmp_path, frames, camera_height=False, surfaces=[off_grid], name="grid")["height_priors"][
+        "surfaces"][0]["reason"] == "atlas_measurement_mask_grid_mismatch"
+
+
+def test_standard_surface_heights_are_named_ranged_and_sourced():
+    for kind, phrases, assumed, (low, high), source in sizes.SURFACE_HEIGHTS:
+        assert phrases and low <= assumed <= high and source
+        assert sizes.standard_surface(kind)[0] == kind
+    assert sizes.standard_surface("Kitchen countertop")[0] == "kitchen counter"
+    assert sizes.standard_surface("bar counter")[0] == "bar counter"
+    assert sizes.standard_surface("kitchen table")[0] == "dining table"
+    for label in ("table", "counter", "bench", "kitchen island", "reception desk", "desk drawer", "bookshelf"):
+        assert sizes.standard_surface(label) is None
 
 
 @pytest.mark.parametrize(

@@ -84,7 +84,9 @@ def rigid_case(tmp_path: Path, *, strategy: str = "planar_push") -> tuple[dict, 
                      document=document)
             docs[path] = document
     adapted = adapt_rigid_relocation_task_template(configured_revision=configured, materialized_references=references)
-    return configured, references, docs, adapted["native_task_definition"]["task_spec"]
+    spec = rigid.scored_rigid_task_spec(adapted=adapted, site_id=configured["scene_identity"]["id"],
+        task_id=configured["task_template"]["identity"]["id"], team_namespace=configured["team_namespace"])
+    return configured, references, docs, spec
 
 
 def binding(spec: dict, revision_digest: str, asset: str | None = None) -> dict[str, Any]:
@@ -184,6 +186,8 @@ def test_a_scene_that_moves_the_object_into_the_goal_by_itself_fails(tmp_path: P
 
 def test_contracts_that_cannot_tell_success_from_failure_fail(tmp_path: Path) -> None:
     configured, _references, _docs, spec = rigid_case(tmp_path)
+    # Exercise compatibility derivation after deliberately changing its inputs.
+    spec.pop("task_success_contract", None)
     trace = recorded_trace(spec, configured["revision_digest"])
 
     def checks(value: dict) -> dict[str, bool]:

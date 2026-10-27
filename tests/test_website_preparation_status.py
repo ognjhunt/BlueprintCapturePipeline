@@ -173,7 +173,7 @@ def _complete_native_profile_gap(source, *, mismatch=False):
     from blueprint_pipeline.website_task_preparation import native_task_preparation_gap
 
     root, owner, context, selected, ledger, _ = source
-    context["task_family"] = "articulated_open_close" if mismatch else "laundry_folding"
+    context["task_family"] = "articulated_open_close" if mismatch else "unimplemented_task_family"
     context["context_digest"] = canonical_digest(context, digest_field="context_digest")
     selected["task_context_digest"] = context["context_digest"]
     write_json(root / "pipeline/website_task_context.json", context)

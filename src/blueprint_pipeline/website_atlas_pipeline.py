@@ -151,17 +151,25 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
         reference_masks = segment_scale_references(frames=frames, references=plan.get("scale_references", []),
             root=pose_root / "reference_masks", task_context=task_context,
             source_digest=(inputs.get("binding") or {}).get("source_video_digest"), checkpoint=check)
+        # The selected original views: their camera height is a scale cue too.
         measurements = estimate_sizes(frames=frames, automation=plan, pose_digest=pose["digest"],
-                                      output=measurement_path, reference_masks=reference_masks)
+                                      output=measurement_path, reference_masks=reference_masks,
+                                      camera_height=True)
         if configuration is not None:
-            from .atlas_scale_review import needs_scale_review, repair_source_scale
+            from .atlas_scale_review import needs_scale_review, repair_source_scale, rests_on_height_priors
             from .paid_resource_allocator import run_sponsored_website_atlas_plan
             if needs_scale_review(measurements):
-                measurements, measurement_path = repair_source_scale(pose_root=pose_root,
-                    pose=pose, inputs=inputs, automation=plan, previous=measurements,
-                    task_context=task_context, configuration=configuration, check=check,
-                    planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw))
-                measurement_input_digest = inputs['digest']
+                try:
+                    reviewed = repair_source_scale(pose_root=pose_root,
+                        pose=pose, inputs=inputs, automation=plan, previous=measurements,
+                        task_context=task_context, configuration=configuration, check=check,
+                        planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw))
+                except ValueError as exc:
+                    # The review found no reference to add: the height priors' guesstimate stands.
+                    if str(exc) != "atlas_scale_review_abstained" or not rests_on_height_priors(measurements):
+                        raise
+                else:
+                    (measurements, measurement_path), measurement_input_digest = reviewed, inputs['digest']
                 if measurements.get("status") != "estimated":
                     return {"status": "needs_input", "reason": "atlas_scale_review_unresolved",
                             "scene_measurements_digest": measurements["digest"]}
