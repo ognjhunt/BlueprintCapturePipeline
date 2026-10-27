@@ -26,9 +26,13 @@ from .task_family_scoring import (
 def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                         removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                         base_scene: Mapping[str, Any], output_root: Path,
-                        evaluation_inputs: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                        evaluation_inputs: Mapping[str, Any] | None = None,
+                        task_semantics: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Retain the whole job, including multiple subjects and deformable state."""
-    family = canonical_task_family(task_context.get("task_family"))
+    from .website_task_semantics import effective_task_profile
+    source_video_digest = (source_geometry.get("binding") or {}).get("source_video_digest")
+    family = canonical_task_family(effective_task_profile(task_context=task_context,
+        task_semantics=task_semantics, source_video_digest=source_video_digest))
     if family is None:
         raise ValueError("website_task_family_unknown")
     if task_masks.get("source_geometry_digest") != source_geometry.get("digest"):
@@ -50,6 +54,9 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         contract = validate_task_family_contract(contract)
         if contract["scope"] != scope or contract["task_family"] != family:
             raise ValueError("website_task_family_contract_scope_mismatch")
+        from .website_task_semantics import require_semantic_stage_order
+        require_semantic_stage_order(task_context=task_context, task_semantics=task_semantics,
+                                    source_video_digest=source_video_digest, contract=contract)
     # Runtime inputs are data from the configured native scene, not model
     # executable code. The existing native contract entrypoint validates them.
     native = None
@@ -84,6 +91,8 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
             "source_geometry_digest": source_geometry["digest"], "removal_manifest_digest": canonical_digest(removal_manifest),
             "splat_digest": base_scene["splat_digest"], "collision_mesh_digest": base_scene["collision_mesh_digest"]},
         "task_evaluation_inputs": {"task_family": family, "scope": scope,
+            **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
+               if task_semantics is not None else {}),
             "runtime_adapter": "task_evaluation_task_family_native_adapter",
             "task_success_contract": contract, "native_runtime_contract": native,
             "source_bindings": source_bindings,

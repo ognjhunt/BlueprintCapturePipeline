@@ -37,16 +37,23 @@ SPHERE_SUBDIVISIONS = 4
 CYLINDER_SECTIONS = 48
 
 
-def design_physics(design: Mapping[str, Any]) -> dict[str, Any]:
+def design_physics(design: Mapping[str, Any], *, authoring: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The bounded simulation priors of the design, in ``screen_physics``'s shape."""
     dimensions = [float(v) for v in design["dimensions_m"]]
     mass = float(design["mass_kg"])
-    return {"basis": ORIGIN, "dimensions_m": dimensions, "envelope_volume_m3": float(np.prod(dimensions)),
+    result = {"basis": ORIGIN, "dimensions_m": dimensions, "envelope_volume_m3": float(np.prod(dimensions)),
             "bounds": {"mass_kg": [mass * (1 - MASS_RELATIVE_RANGE), mass * (1 + MASS_RELATIVE_RANGE)],
                        "static_friction": list(STATIC_FRICTION), "dynamic_friction": list(DYNAMIC_FRICTION),
                        "restitution": list(RESTITUTION)},
             "priors": {"design_basis": "synthetic_design_choice", "physical_measurement": False},
             "sensitivity": "awaiting_robot_team_selection", "measurement_escalation": None}
+    if authoring is not None:
+        from .website_synthetic_cad import CAD_BACKEND, resolved_selection
+        chosen = resolved_selection(authoring, design)
+        if chosen["backend"] == CAD_BACKEND:
+            result["bounds"] = chosen["physics_bounds"]
+            result["priors"]["physics_profile"] = chosen["physics_profile"]
+    return result
 
 
 def primitive_mesh(design: Mapping[str, Any]) -> Any:
@@ -62,11 +69,21 @@ def primitive_mesh(design: Mapping[str, Any]) -> Any:
     return trimesh.creation.box(extents=dimensions)
 
 
-def write_candidate(design: Mapping[str, Any], *, center_xyz_m: Sequence[float], path: Path) -> dict[str, Any]:
+def write_candidate(design: Mapping[str, Any], *, center_xyz_m: Sequence[float], path: Path,
+                    authoring: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The design as construction's source candidate, where it starts (Z up, metres)."""
     from pxr import Usd, UsdGeom
 
-    mesh = primitive_mesh(design)
+    cad = None
+    if authoring is not None:
+        from .website_synthetic_cad import CAD_BACKEND, author_candidate, resolved_selection
+        chosen = resolved_selection(authoring, design)
+        if chosen["backend"] == CAD_BACKEND:
+            mesh, cad = author_candidate(design, path=path, authoring=chosen)
+        else:
+            mesh = primitive_mesh(design)
+    else:
+        mesh = primitive_mesh(design)  # Saved configurations retain their original geometry.
     stage = Usd.Stage.CreateNew(str(path))
     stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Root").GetPrim())
     UsdGeom.Xform.Define(stage, "/Root/SourceObjectCandidate")
@@ -78,8 +95,12 @@ def write_candidate(design: Mapping[str, Any], *, center_xyz_m: Sequence[float],
     prim.CreateFaceVertexIndicesAttr(np.asarray(mesh.faces).ravel().tolist())
     prim.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
     stage.GetRootLayer().Save()
-    return {"shape": design["shape"], "face_count": int(len(mesh.faces)), "watertight": bool(mesh.is_watertight),
-            "sphere_subdivisions": SPHERE_SUBDIVISIONS, "cylinder_sections": CYLINDER_SECTIONS}
+    result = {"shape": design["shape"], "face_count": int(len(mesh.faces)), "watertight": bool(mesh.is_watertight)}
+    if cad is not None:
+        result["cad_authoring"] = cad
+    else:
+        result.update(sphere_subdivisions=SPHERE_SUBDIVISIONS, cylinder_sections=CYLINDER_SECTIONS)
+    return result
 
 
 def choose_start(*, collider: Any, region: Sequence[Sequence[float]], attractor: Sequence[float],

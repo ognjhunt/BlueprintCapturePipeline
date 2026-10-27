@@ -40,7 +40,7 @@ def test_capture_mounting_and_shared_instance_pose_reach_the_frozen_template():
 
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
           max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False,
-          authoring_backend=None, synthetic=False, inside=False):
+          authoring_backend=None, synthetic=False, inside=False, synthetic_cad=False):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
@@ -50,6 +50,9 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     if synthetic:
         from tests.test_website_task_preparation import synthetic_arguments
         args = synthetic_arguments(args)
+        if not synthetic_cad:
+            # Exercise compatibility packets separately from the pinned CAD transport tests.
+            args["synthetic_authoring_backend"] = "legacy_primitive_mesh_v1"
     if articulated:
         from tests.test_website_task_preparation import _assembly_inputs
         args.update(_assembly_inputs(capture))
@@ -128,7 +131,10 @@ def test_captured_container_preserves_inside_bounds_through_the_native_submissio
     template = json.loads((root / "configuration/task.json").read_text())
     target = template["surface_target"]
     assert target["placement_relation"] == "inside"
-    assert target == request["task"]["surface_target"]
+    from blueprint_pipeline.task_evaluation_surface_target import surface_target_for_web
+    assert surface_target_for_web(target) == request["task"]["surface_target"]
+    assert target["target_digest"] == canonical_digest(target, digest_field="target_digest")
+    assert json.loads((root / "configuration/success.json").read_text())["surface_target"] == target
     assert template["destination_support_plane"]["source_face_indices"]
     schemas = Path(__file__).parents[1] / "docs/schemas"
     for name in ("task_evaluation_launch_preparation_request.v1", "task_evaluation_configured_scene_revision.v1",

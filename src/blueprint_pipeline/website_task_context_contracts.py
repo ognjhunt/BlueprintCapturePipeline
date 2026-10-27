@@ -57,6 +57,14 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
         if declared is not None or handoff.get("provider_mutation_performed") is not False:
             return False
     elif code == "website_task_profile_mechanism_mismatch":
+        if declared is None and family == "general_task" and isinstance(gap.get("task_semantics"), Mapping):
+            from .website_task_semantics import resolved_task_profile
+            try:
+                resolved = resolved_task_profile(gap["task_semantics"], task_context=task_context,
+                    source_video_digest=gap.get("source_video_digest"))
+                declared = task_profile_for(resolved)
+            except (ValueError, TypeError, KeyError):
+                return False
         inferred_id = gap.get("inferred_profile_id")
         inferred = task_profile_for(inferred_id) if isinstance(inferred_id, str) else None
         if (declared is None or inferred is None or inferred.profile_id != inferred_id
@@ -91,9 +99,13 @@ def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Ma
     if not isinstance(handoff, Mapping) or not isinstance(task_context, Mapping):
         return False
     from .task_family_scoring import canonical_task_family, validate_task_family_contract
-    family = canonical_task_family(task_context.get("task_family"))
     inputs = handoff.get("task_evaluation_inputs")
     try:
+        if not isinstance(inputs, Mapping):
+            return False
+        from .website_task_semantics import effective_task_profile
+        family = canonical_task_family(effective_task_profile(task_context=task_context,
+            task_semantics=inputs.get("task_semantics"), source_video_digest=inputs.get("source_video_digest")))
         if (family is None or not isinstance(inputs, Mapping)
                 or task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
                 or handoff.get("schema_version") != "website_scene_handoff.v1"
@@ -104,6 +116,10 @@ def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Ma
                 or handoff.get("job_disposition") != "accepted"
                 or inputs.get("task_family") != family
                 or (inputs.get("scope") or {}).get("task_context_digest") != task_context["context_digest"]
+                or (task_context.get("task_family") == "general_task" and (
+                    (inputs.get("source_bindings") or {}).get("task_context_digest") != task_context["context_digest"]
+                    or (handoff.get("source_geometry_digest") is not None and
+                        (inputs.get("source_bindings") or {}).get("source_geometry_digest") != handoff["source_geometry_digest"])))
                 or inputs.get("runtime_adapter") != "task_evaluation_task_family_native_adapter"
                 or inputs.get("automatic_paid_execution_authorized") is not False
                 or handoff.get("website_intake_outbox") or "runtime_inputs" in handoff
@@ -114,6 +130,9 @@ def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Ma
             contract = validate_task_family_contract(contract)
             if contract["scope"] != inputs["scope"] or contract["task_family"] != family:
                 return False
+            from .website_task_semantics import require_semantic_stage_order
+            require_semantic_stage_order(task_context=task_context, task_semantics=inputs.get("task_semantics"),
+                source_video_digest=inputs.get("source_video_digest"), contract=contract)
         blockers = handoff.get("blockers")
         if handoff["status"] == "needs_input":
             return (isinstance(blockers, list) and bool(blockers)

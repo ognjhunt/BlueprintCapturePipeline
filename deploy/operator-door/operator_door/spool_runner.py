@@ -216,6 +216,10 @@ def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) ->
     writable = str(Path(config.spool_root) / "results")
     if request["mode"] == "dispatch":
         writable += " /var/lib/blueprint"
+    elif request["mode"] == "atlas-retry":
+        # Only the existing selected capture's Atlas job may be requeued.
+        writable += (f" /var/lib/blueprint/pubsub-handoffs/{request['bucket']}/scenes/"
+                     f"{request['scene_id']}/captures/{request['capture_id']}/pipeline/atlas")
     return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
             "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes",
             "UMask=0077", f"ReadWritePaths={writable}")

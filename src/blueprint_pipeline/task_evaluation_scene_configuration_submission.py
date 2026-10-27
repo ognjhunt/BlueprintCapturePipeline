@@ -18,6 +18,7 @@ from typing import Any
 
 from . import task_evaluation_scene_configuration_submission_records as records
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_surface_target import surface_target_for_web
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .task_evaluation_launch_preparation_contract import (
     launch_preparation_request_digest,
@@ -474,7 +475,7 @@ def materialize_scene_configuration_submission(
                  "definition": stage.json("configuration/task_template.v1.json", template),
                  "success_criteria": stage.json("configuration/task_success_criteria.v1.json", success),
                  "execution": stage.json("configuration/task_execution_spec.v1.json", execution),
-                 **({"surface_target": surface_target} if surface_target else {"destination": {
+                 **({"surface_target": surface_target_for_web(surface_target)} if surface_target else {"destination": {
                      "schema_version": "task_evaluation_rigid_destination_asset.v1",
                      "identity": destination["destination_identity"], "relation": "inside",
                      "visible_label": task["destination"]["visible_label"],

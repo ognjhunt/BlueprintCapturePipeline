@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import stat
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -451,7 +452,8 @@ def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: 
 _NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video_unavailable"})
 
 
-def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time) -> dict[str, Any]:
+def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
+                     preflight: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """Resume one failed or stopped job once its cause is fixed in the deployed release.
 
     An operator action, never automatic. The next tick resumes at the first
@@ -460,7 +462,10 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time) -> dic
     review) resumes the same way. A withdrawn capture, a job that only a new
     capture can help, or one that cannot recover, is refused.
     """
-    with (path.parent / LOCK_FILE).open("a") as lock:
+    lock_fd = os.open(path.parent / LOCK_FILE, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(lock_fd, "r+") as lock:
+        if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+            raise ValueError("atlas_preview_lock_unsafe")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -472,6 +477,17 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time) -> dic
         if _withdrawn(path.parents[2]):
             raise ValueError("website_capture_withdrawn")
         current = int(now())
+        if current - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
+            raise ValueError("atlas_preview_expired")
+        # The selected-delivery operator rechecks source, current rights and the
+        # reviewed budget snapshot beneath the worker's own lock, before writing.
+        if preflight is not None:
+            preflight(job)
+            current = int(now())
+            if current - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
+                raise ValueError("atlas_preview_expired")
+            if _withdrawn(path.parents[2]):
+                raise ValueError("website_capture_withdrawn")
         retries = [*job.get("retries", []), {"reason": job["reason"], "at_epoch": current}]
         # The failure's own cleanup completed; the resumed run makes new assets,
         # so cleanup is armed again, keeping what was already deleted.

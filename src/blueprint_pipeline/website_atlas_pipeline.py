@@ -24,15 +24,19 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 
-def load_configuration(context, source_digest):
+def load_configuration(context, source_digest, *, create=True):
     from .website_task_context import website_webapp_request
+    if type(create) is not bool:
+        raise ValueError("atlas_runtime_configuration_create_invalid")
     value = website_webapp_request(capture_id=context["capture_id"], operation="atlas-configuration", payload={
         "request_id": context["request_id"], "scene_id": context["scene_id"],
-        "task_context_digest": context["context_digest"], "source_video_digest": source_digest})
+        "task_context_digest": context["context_digest"], "source_video_digest": source_digest,
+        **({"create": False} if not create else {})})
     if (value.get("schema_version") != "website_atlas_configuration.v1"
             or value.get("source_video_digest") != source_digest
             or value.get("task_context_digest") != context["context_digest"]
-            or value.get("dispatch_authorized") is not False):
+            or value.get("dispatch_authorized") is not False
+            or not create and value.get("grant_creation_allowed") is not False):
         raise ValueError("atlas_runtime_configuration_invalid")
     return value
 
@@ -434,6 +438,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     if not selection_path.exists():
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})
+    from .website_task_semantics import retain_task_semantics
+    retain_task_semantics(job_dir=output_root, receipt=receipt, task_context=task_context,
+                          source_video_digest=source_digest)
     write_json(output_root / "atlas_scene_review.json", review)
     if review.get("subject_origin") == "synthetic_design":
         return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,

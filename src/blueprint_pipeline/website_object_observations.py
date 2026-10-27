@@ -56,7 +56,7 @@ def _designed_candidate(*, preparation, source_geometry, task_masks, config, des
     candidate = root / "source_object_candidate.usda"
     lower, upper = preparation["subject"]["aabb_min_xyz"], preparation["subject"]["aabb_max_xyz"]
     geometry = write_candidate(design, center_xyz_m=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)],
-                               path=candidate)
+                               path=candidate, authoring=config.get("synthetic_authoring"))
     value = {"schema_version": SCHEMA, "preparation_digest": preparation["digest"],
              "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
              "target_id": config["source_object_identity"], "frames": [],
@@ -90,6 +90,15 @@ def validate_observation_handoff(path: Path, *, configuration: Mapping[str, Any]
         raise ValueError("website_object_observation_frames_invalid")
     frames = [_checked(row["image"], root=path.parent) for row in rows]
     _checked(value["candidate"], root=path.parent)
+    cad = (value.get("candidate_geometry") or {}).get("cad_authoring")
+    from .website_synthetic_cad import CAD_BACKEND, selection, verify_evidence
+    authoring = configuration.get("synthetic_authoring")
+    expects_cad = authoring is not None and selection(authoring)["backend"] == CAD_BACKEND
+    if bool(cad) != expects_cad:
+        raise ValueError("website_synthetic_cad_binding_invalid")
+    if cad:
+        verify_evidence(_checked(cad["evidence"], root=path.parent), design=configuration["synthetic_design"],
+                        expected_manifest_digest=cad["manifest_digest"], authoring=authoring)
     return value, frames
 
 

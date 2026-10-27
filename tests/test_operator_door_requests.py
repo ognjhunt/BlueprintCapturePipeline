@@ -524,3 +524,43 @@ def test_selected_handoff_resume_is_dispatch_only():
     with pytest.raises(RequestRefused):
         validate_request(body)
     assert validate_request({**body, "mode": "dispatch"}) == {**body, "mode": "dispatch"}
+
+
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry"])
+def test_selected_atlas_modes_are_bounded_and_never_native_resume(mode):
+    body = {**_selected_request(), "mode": mode}
+    if mode == "atlas-retry":
+        body["atlas_status_digest"] = "sha256:" + "c" * 64
+    assert validate_request(body) == body
+    for extra in ({"resume_request_id": "20261009T154718Z-selected-handoff-9ef60661"},
+                  {"job": "/tmp/other.json"}, {"maximum_cost_usd": 100}, {"native_lease": {}},
+                  {"provider": "openai"}, {"command": "retry"}):
+        with pytest.raises(RequestRefused):
+            validate_request({**body, **extra})
+    if mode == "atlas-retry":
+        for digest in (None, "", "sha256:" + "x" * 64, True):
+            with pytest.raises(RequestRefused):
+                validate_request({**body, "atlas_status_digest": digest})
+        body.pop("atlas_status_digest")
+        with pytest.raises(RequestRefused):
+            validate_request(body)
+    else:
+        with pytest.raises(RequestRefused):
+            validate_request({**body, "atlas_status_digest": "sha256:" + "c" * 64})
+
+
+def test_selected_handoff_selector_discovery_is_readonly_identity_only():
+    fields = {"kind", "bucket", "scene_id", "capture_id", "marker_generation"}
+    body = {key: value for key, value in _selected_request().items() if key in fields}
+    body["mode"] = "discover-selector"
+    assert validate_request(body) == body
+    for change in ({"marker_generation": "0"}, {"bucket": "../other"},
+                   {"scene_id": "site-other"}, {"handoff_generation": "1"},
+                   {"path": "/arbitrary"}, {"maximum_cost_usd": 100},
+                   {"atlas_status_digest": "sha256:" + "c" * 64},
+                   {"resume_request_id": "20261009T154718Z-selected-handoff-9ef60661"}):
+        with pytest.raises(RequestRefused):
+            validate_request({**body, **change})
+    for mode in ("inspect", "dispatch", "atlas-status", "atlas-retry"):
+        with pytest.raises(RequestRefused):
+            validate_request({**body, "mode": mode})

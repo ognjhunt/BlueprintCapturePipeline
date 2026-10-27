@@ -52,12 +52,16 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
     origin = f"{parsed.scheme}://{parsed.netloc}"
     token = load_pipeline_sync_token()
     body = json.dumps(payload, separators=(",", ":")).encode()
+    # The noncreating Atlas read can include 128 preparation reservations and
+    # 64 capture inference calls. Keep that response finite without widening
+    # ordinary configuration, authority or other control responses.
+    response_limit = 200_000 if operation == "atlas-configuration" and payload.get("create") is False else 100_000
     try:
         response = safe_request(
             f"{origin}/api/internal/pipeline/creator-captures/{quote(capture_id, safe='')}/{operation}",
             method="POST", data=body, headers=_pipeline_sync_headers(token, body),
-            timeout_seconds=10, policy=pinned_api_policy(origin, max_response_bytes=100_000),
-            max_response_bytes=100_000,
+            timeout_seconds=10, policy=pinned_api_policy(origin, max_response_bytes=response_limit),
+            max_response_bytes=response_limit,
         )
     except HTTPError as exc:
         # Preserve the owning service's typed refusal, never its raw body or

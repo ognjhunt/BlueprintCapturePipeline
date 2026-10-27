@@ -80,6 +80,16 @@ def execute_provided_mesh_authoring(*, envelope, stage, configuration, configura
             or stage.get("execution_class") != "no_spend"):
         raise ValueError("provided_mesh_authoring_configuration_invalid")
     source_record, source = _dependency_artifact(dependency_results, role="source_object_candidate_mesh")
+    cad_evidence = None
+    if configuration.get("synthetic_authoring") is not None:
+        from .website_synthetic_cad import CAD_BACKEND, selection
+        if selection(configuration["synthetic_authoring"])["backend"] == CAD_BACKEND:
+            from .website_object_observations import REFERENCE_ROLE, validate_observation_handoff
+            _, observed_path = _dependency_artifact(dependency_results, role=REFERENCE_ROLE)
+            observed, _ = validate_observation_handoff(observed_path, configuration=configuration)
+            cad_evidence = observed["candidate_geometry"]["cad_authoring"]
+            if observed["candidate"]["digest"] != source_record["digest"]:
+                raise ValueError("provided_mesh_cad_candidate_mismatch")
     usd = output_root / "provided_mesh_candidate.usda"
     normalization = _normalize_candidate(source, usd)
     authored = Usd.Stage.Open(str(usd))
@@ -107,7 +117,11 @@ def execute_provided_mesh_authoring(*, envelope, stage, configuration, configura
         "physics_bounds": bounds, "physics_authority_granted": False}
     receipt = {"schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
         "status": "authored_candidate_pending_qualification", "replacement_identity": identity,
-        "source_candidate_digest": source_record["digest"], "source_candidate_claim": "owner_provided_geometry_candidate",
+        "source_candidate_digest": source_record["digest"],
+        "source_candidate_claim": ("synthetic_design_candidate_geometry" if configuration.get("source_observation_kind")
+                                   == "synthetic_design" else "owner_provided_geometry_candidate"),
+        **({"cad_authoring_manifest_digest": cad_evidence["manifest_digest"],
+            "cad_authoring_evidence": cad_evidence["evidence"]} if cad_evidence else {}),
         "source_normalization": normalization, "authoring_method": configuration["authoring_method"],
         "model_called": False, "physics_authority_granted": False,
         "output_usd": {"sha256": _sha256_and_size(asset)[0], "size_bytes": asset.stat().st_size},
