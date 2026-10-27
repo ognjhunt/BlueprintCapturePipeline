@@ -792,6 +792,33 @@ def test_systemd_spend_guard_enforces_5000_admission_lock_and_page_path():
         ) in unit
 
 
+def test_spend_guard_refresh_leaves_a_bounded_idle_window_after_slow_runs():
+    # systemd's documented monotonic clocks use activation or deactivation as
+    # their base. The initial boot trigger has already fired in these cases.
+    settings = dict(
+        line.split("=", 1)
+        for line in _read("blueprint-gpu-spend-guard.timer").splitlines()
+        if line and not line.startswith(("#", "["))
+    )
+
+    def seconds(value):
+        match = re.fullmatch(r"(\d+)(s|min)", value)
+        assert match is not None, "refresh interval must have a bounded time span"
+        return int(match[1]) * {"s": 1, "min": 60}[match[2]]
+
+    for runtime in (30, 208, 600):
+        activated = 10_000
+        completed = activated + runtime
+        bases = {"OnUnitActiveSec": activated, "OnUnitInactiveSec": completed}
+        deadlines = [base + seconds(settings[key]) for key, base in bases.items() if key in settings]
+        assert deadlines, "the spend guard must retain its periodic refresh"
+        idle_window = min(deadlines) - completed
+        assert 0 < idle_window <= 120, (
+            "a slow guard refresh must leave waiting workers an idle window, "
+            "then refresh again within two minutes"
+        )
+
+
 def test_main_deploy_image_includes_ffmpeg_for_clip_and_keyframe_lanes():
     text = ROOT_DOCKERFILE.read_text(encoding="utf-8")
 
