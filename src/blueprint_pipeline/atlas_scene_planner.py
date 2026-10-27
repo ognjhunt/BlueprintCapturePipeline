@@ -47,10 +47,24 @@ Quality/overlap thresholds may adapt to the scene, never below 8 overlap inliers
 Keep a sharp view of the overall room as well as task close-ups. No pricing or
 provider actions are available to you. Return only the structured proposal."""
 
+SUBJECT_ORIGIN_INSTRUCTIONS = """
+Classify subject_origin from the owner's task and the observed frames. Use
+synthetic_design only when the task explicitly adds a new authored object that
+is absent from the capture. Do not choose a captured surrogate for that object.
+For synthetic_design, every captured object, support and obstacle must be kept;
+automation objects must all have disposition keep and removal_instruction must
+be empty. Cover the intended source/destination interaction areas with role
+task_region instead of pretending the synthetic object was photographed.
+Select transient-free observations: this mode does not erase people or objects.
+Use captured for a task involving an observed manipulated object. Use uncertain
+and abstain if the task's subject origin cannot be established. This describes
+the requested construction operation, not physical truth or new authority.
+"""
+
 
 class Coverage(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    role: str = Field(pattern="^(task_object|surrounding_scene|support_surface|approach_space)$")
+    role: str = Field(pattern="^(task_object|task_region|surrounding_scene|support_surface|approach_space)$")
     label: str = Field(min_length=1)
     required_frame_ids: list[str] = Field(min_length=1)
 
@@ -82,12 +96,23 @@ class SceneProposal(BaseModel):
     selection_policy: SelectionPolicy
     summary: str
     automation: AutomationPlan | None = None
+    # None preserves retained pre-origin planner receipts. New scene reviews
+    # explicitly classify origin; no synthetic geometry enters capture truth.
+    subject_origin: Literal["captured", "synthetic_design", "uncertain"] | None = None
 
 
 class RefinementProposal(SceneProposal):
     action: str = Field(pattern="^(keep|refine)$")
     gap_assessment: list[str] = Field(min_length=1)
     additional_input_frame_ids: list[str]
+
+
+class CurrentSceneProposal(SceneProposal):
+    subject_origin: Literal["captured", "synthetic_design", "uncertain"]
+
+
+class CurrentRefinementProposal(RefinementProposal):
+    subject_origin: Literal["captured", "synthetic_design", "uncertain"]
 
 
 class CompletionViewReason(BaseModel):
@@ -286,6 +311,9 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
     value = schema.model_validate(proposal).model_dump(mode="json", exclude_none=True)
     if value["status"] != "proposed":
         raise ValueError("atlas_scene_planner_abstained:" + value["summary"])
+    origin = value.get("subject_origin")
+    if origin == "uncertain":
+        raise ValueError("atlas_scene_subject_origin_uncertain")
     intervals = value["static_intervals_seconds"]
     if not intervals or any(len(row) != 2 or not all(math.isfinite(v) for v in row)
                             or not 0 <= row[0] < row[1] for row in intervals):
@@ -304,10 +332,11 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                         if row.get("sharpness", float("inf")) < thresholds["minimum_sharpness"]
                         or row.get("clipped_fraction", 0) > thresholds["maximum_clipped_fraction"]}
     excluded = (unsafe & selected) - quality_rejected
+    roles = {r["role"] for r in value["coverage_requirements"]}
+    task_role = "task_region" if origin == "synthetic_design" else "task_object"
     if (not unsafe <= frames.keys() or not required <= selected
             or not additional <= selected or (required | additional) & unsafe
-            or value["anchor_frame_id"] not in required or not {"task_object", "surrounding_scene"}
-            <= {r["role"] for r in value["coverage_requirements"]}):
+            or value["anchor_frame_id"] not in required or not {task_role, "surrounding_scene"} <= roles):
         raise ValueError("atlas_scene_planner_coverage_or_privacy_invalid")
     transient = set(value["transient_frame_ids"])
     if not transient <= frames.keys():
@@ -326,13 +355,18 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                 kinds.append({"target_id": f"transient-{len(kinds)}", **row})
     if feedback is not None:
         prior = feedback["prior_review"]
-        if (intervals != prior["static_intervals_seconds"]
+        if ((prior.get("subject_origin") is not None and origin != prior["subject_origin"])
+                or intervals != prior["static_intervals_seconds"]
                 or value["selection_policy"] != prior["selection_policy"]
                 or not set(feedback["prior_selected_frame_ids"]) <= required | additional
                 or (value["action"] == "keep" and additional)
                 or (value["action"] == "refine" and not (additional - set(feedback["prior_selected_frame_ids"])))):
             raise ValueError("atlas_refinement_state_or_selection_invalid")
     automation = value.get("automation")
+    if origin == "synthetic_design" and (
+            not automation or any(o["disposition"] != "keep" for o in automation["objects"])
+            or automation["removal_instruction"].strip() or transient or "task_object" in roles):
+        raise ValueError("atlas_synthetic_subject_requires_preserved_capture")
     if {k["target_id"] for k in kinds} & {o["target_id"] for o in (automation or {}).get("objects", [])}:
         raise ValueError("atlas_scene_planner_transients_invalid")
     if automation:
@@ -342,7 +376,8 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
             raise ValueError("atlas_automation_frames_not_selected")
     # Hold the required RGBD coverage aside before selecting pose inputs.
     # Buying posing alone must not consume the rest of the shared allowance.
-    pose_budget = round(pose_budget - len(required) * policy["rgbd_view_cost_usd"], 6)
+    if origin != "synthetic_design":
+        pose_budget = round(pose_budget - len(required) * policy["rgbd_view_cost_usd"], 6)
     if pose_budget < 2 * policy["pose_input_cost_usd"]:
         raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
     refinement = ({k: value[k] for k in ("action", "gap_assessment", "additional_input_frame_ids")}
@@ -355,6 +390,7 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
         quality.update(transient_frame_ids=sorted(transient), transients=kinds,
                        transient_policy="erased_before_reconstruction")
     return {"schema_version": "atlas_scene_state_review.v1", "survey_digest": survey["digest"], **refinement, **quality,
+            **({"subject_origin": origin} if origin is not None else {}),
             **({"automation": automation, "scale_reference_sources": list(reference_sources)} if automation else {}),
             **{k: value[k] for k in ("scene_state", "static_intervals_seconds", "anchor_frame_id",
                 "coverage_requirements", "uncaptured_regions", "selection_policy")},
@@ -651,8 +687,10 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
     if fit_needed and not post_export:
         raise ValueError("atlas_scene_planner_token_budget_exceeded")
     instructions = (SCALE_INSTRUCTIONS if scaling is not None else COMPLETION_INSTRUCTIONS if completion is not None else
-                    INSTRUCTIONS + AUTOMATION_INSTRUCTIONS + (REFINEMENT_INSTRUCTIONS if feedback is not None else ""))
-    schema = ScaleProposal if scaling is not None else CompletionProposal if completion is not None else RefinementProposal if feedback is not None else SceneProposal
+                    INSTRUCTIONS + AUTOMATION_INSTRUCTIONS + SUBJECT_ORIGIN_INSTRUCTIONS
+                    + (REFINEMENT_INSTRUCTIONS if feedback is not None else ""))
+    schema = (ScaleProposal if scaling is not None else CompletionProposal if completion is not None
+              else CurrentRefinementProposal if feedback is not None else CurrentSceneProposal)
     if completion is not None and 'post_export_coverage' in completion:
         instructions += POST_EXPORT_COMPLETION_INSTRUCTIONS
         schema = CoverageCompletionProposal

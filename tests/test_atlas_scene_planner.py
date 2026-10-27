@@ -21,7 +21,7 @@ def fixture(tmp_path):
     survey["digest"] = canonical_digest(survey, digest_field="digest")
     path = tmp_path / "survey.json"
     path.write_text(json.dumps(survey))
-    proposal = {"status": "proposed", "scene_state": "same open appliance", "static_intervals_seconds": [[0, 1.5]],
+    proposal = {"status": "proposed", "subject_origin": "captured", "scene_state": "same open appliance", "static_intervals_seconds": [[0, 1.5]],
         "anchor_frame_id": "1", "coverage_requirements": [
             {"role": "task_object", "label": "object", "required_frame_ids": ["1"]},
             {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["0"]}],
@@ -53,6 +53,37 @@ def test_review_cannot_include_unsafe_frames_or_omit_room(tmp_path):
     proposal["coverage_requirements"] = proposal["coverage_requirements"][:1]
     with pytest.raises(ValueError, match="privacy_invalid"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+
+
+@pytest.mark.parametrize("violation", [None, "remove", "instruction", "transient", "captured_surrogate", "uncertain"])
+def test_synthetic_addition_requires_task_regions_and_preserves_every_captured_object(tmp_path, violation):
+    _, survey, proposal, policy = fixture(tmp_path)
+    proposal["subject_origin"] = "synthetic_design"
+    proposal["coverage_requirements"][0]["role"] = "task_region"
+    proposal["automation"] = {"scale_references": [], "objects": [
+        {"target_id": "support", "label": "observed support", "segmentation_prompt": "support",
+         "disposition": "keep", "regions": [{"frame_id": "1", "box_xywh_normalized": [0, 0, 1, 1]}]}],
+        "removal_instruction": "", "mask_margin_fraction": .01}
+    if violation == "remove":
+        proposal["automation"]["objects"][0]["disposition"] = "remove"
+        proposal["automation"]["removal_instruction"] = "Erase support"
+    elif violation == "instruction":
+        proposal["automation"]["removal_instruction"] = "Erase something"
+    elif violation == "transient":
+        proposal["transient_frame_ids"] = ["1"]
+    elif violation == "captured_surrogate":
+        proposal["coverage_requirements"].append(
+            {"role": "task_object", "label": "surrogate", "required_frame_ids": ["1"]})
+    elif violation == "uncertain":
+        proposal["subject_origin"] = "uncertain"
+    if violation:
+        with pytest.raises(ValueError, match="preserved_capture|subject_origin_uncertain"):
+            planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    else:
+        result = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+        assert result["subject_origin"] == "synthetic_design"
+        assert result["automation"]["objects"][0]["disposition"] == "keep"
+        assert result["selection_budget"]["maximum_pose_cost_usd"] == 4
 
 
 def test_selection_budget_preserves_generated_coverage_before_buying_pose(tmp_path):

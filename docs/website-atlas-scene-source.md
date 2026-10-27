@@ -8,7 +8,21 @@ Each routed website capture has one Atlas job (`website_atlas_preview`, under
 preparation (`website_scene_handoff`) reads what the job retained and buys
 nothing.
 
+For an owner task that explicitly adds an absent synthetic subject, the current
+production planner returns `subject_origin: synthetic_design` and covers the
+planned interaction areas as `task_region`. Its validated plan must keep every
+captured object and contain no removal instruction or selected transient to
+erase. The controller then reconstructs the selected full-field source views
+through the existing padded pose, scale, depth-fusion and mesh stages. It does
+not buy unconditional novel views. Uncaptured surfaces remain explicit gaps.
+The same scene-source handoff reads this preserved environment directly; no
+object-removal manifest is manufactured. Scale remains an estimate, and the
+handoff does not qualify the task, robot, synthetic asset or native physics.
+An uncertain origin or a conflicting edit plan refuses before reconstruction.
+
 ## What the job buys, in order
+
+For captured manipulated subjects, the existing replacement route is unchanged:
 
 1. Review the survey, select views and prepare their pose inputs. The exact
    input document the pose binds is kept as `pose/atlas_geometry_inputs.json`.

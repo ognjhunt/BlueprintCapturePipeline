@@ -57,6 +57,8 @@ _AWAITING_AUTHORITY = frozenset({
 _NEEDS_NEW_CAPTURE = frozenset({"atlas_scene_planner_abstained", "atlas_task_and_scene_coverage_gap",
                                 "atlas_insufficient_overlapping_distinct_views",
                                 "atlas_coverage_anchor_quality_insufficient"})
+_NEEDS_TASK_INPUT = frozenset({"atlas_scene_subject_origin_uncertain", "atlas_scene_subject_origin_changed",
+                              "atlas_synthetic_subject_requires_preserved_capture"})
 _WITHDRAWN = frozenset({"source_revoked", "website_capture_withdrawn", "consent_revoked"})
 
 
@@ -175,7 +177,7 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
         return _transition(job, current, "withdrawn", "website_capture_withdrawn")
     if code in _AWAITING_AUTHORITY:
         return _transition(job, current, "needs_input", code, retry_at_epoch=current + AUTHORITY_RECHECK_SECONDS)
-    if code in _NEEDS_NEW_CAPTURE:
+    if code in _NEEDS_NEW_CAPTURE or code in _NEEDS_TASK_INPUT:
         return _transition(job, current, "needs_input", code)
     if _transient(error):
         failures = job["transient_failures"] + 1
@@ -230,8 +232,11 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
             return _transition(job, current, "processing", None, stage=result["stage"], transient_failures=0,
                                next_attempt_at_epoch=current)
         if not result.get("download"):
-            return _transition(job, current, "needs_input", "atlas_background_review_required",
-                               stage="background_review", result_digest=result.get("digest"))
+            reason = (_reason(ValueError(result["reason"]))
+                      if result.get("stage") == "source_pose" and result.get("reason")
+                      else "atlas_background_review_required")
+            return _transition(job, current, "needs_input", reason,
+                               stage=result.get("stage", "background_review"), result_digest=result.get("digest"))
         # The last paid-stage checkpoint is behind the final provider call, fusion and export.
         checkpoint("archive")
         archive = _archive(job, result)
