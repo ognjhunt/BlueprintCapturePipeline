@@ -733,8 +733,8 @@ def test_ephemeral_download_urls_are_used_in_memory_but_never_persisted(tmp_path
 
 def test_finalizer_retains_exact_relocated_registration_for_live_artifact_routing_and_completed_resume(tmp_path, monkeypatch):
     from blueprint_pipeline.live_pipeline_result_artifact_resolution import resolve_live_pipeline_result_artifact
-    # Mirror CP custody: provider evidence is physically inside the run root.
-    intent, source = _fixture(tmp_path / 'scene-839873-canary-1', monkeypatch)
+    # Mirror CP custody: allocator inputs and receipts start outside the result run.
+    intent, source = _fixture(tmp_path, monkeypatch)
     registration_path = Path(intent['records']['registration']['path'])
     raw = b'\n\n' + registration_path.read_bytes() + b'\n'
     relocated = tmp_path / 'immutable-inputs/registration.raw.json'
@@ -755,10 +755,11 @@ def test_finalizer_retains_exact_relocated_registration_for_live_artifact_routin
     registry_path = root / 'artifacts/result_delivery/artifact_registry.json'
     original_registry = registry_path.read_bytes()
     registry = json.loads(original_registry)
-    requested = registry['artifacts'][0]
-    path, row = resolve_live_pipeline_result_artifact(legacy_state_root=tmp_path/'legacy',
-        policy_canary_result_root=root.parent, run_id=intent['run_id'], artifact_id=requested['artifact_id'])
-    assert path.is_file() and row['sha256'] == requested['sha256']
+    for requested in registry['artifacts']:
+        path, row = resolve_live_pipeline_result_artifact(legacy_state_root=tmp_path/'legacy',
+            policy_canary_result_root=root.parent, run_id=intent['run_id'], artifact_id=requested['artifact_id'])
+        assert path.is_file() and row['sha256'] == requested['sha256']
+        assert Path(row['evidence_root']).resolve().is_relative_to(root)
     # Recover the historical missing-alias state even after terminal receipts
     # exist; registry and producer input bytes remain unchanged.
     alias.unlink()
