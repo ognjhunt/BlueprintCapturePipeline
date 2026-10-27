@@ -124,9 +124,8 @@ def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Ma
                     "website_task_family_scene_collision_asset_required"} for code in blockers))
         if blockers != [] or contract is None:
             return False
-        from .task_evaluation_task_family_native_adapter import validate_task_family_native_runtime_contract
+        from .task_family_native_contracts import family_source_blockers, validate_task_family_native_runtime_contract
         native = validate_task_family_native_runtime_contract(inputs["native_runtime_contract"])
-        from .task_family_preparation import family_source_blockers
         source = inputs["source_bindings"]
         return (native["task_spec"]["task_success_contract"] == contract
             and source.get("task_context_digest") == task_context["context_digest"]

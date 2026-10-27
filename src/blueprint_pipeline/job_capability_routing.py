@@ -96,7 +96,7 @@ def route_job_capabilities(
         family = canonical_task_family(task_family)
         family_runtimes = {}
         if family is not None:
-            from .task_evaluation_task_family_native_adapter import validate_task_family_native_runtime_contract
+            from .task_family_native_contracts import validate_task_family_native_runtime_contract
             for embodiment_id, raw in (native_runtime_contracts or {}).items():
                 runtime = validate_task_family_native_runtime_contract(raw)
                 if runtime["task_spec"]["task_kind"] != family:

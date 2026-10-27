@@ -7,61 +7,20 @@ does not establish native physics application or authorize paid execution.
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+from .task_family_native_contracts import family_source_blockers
 from .task_family_scoring import (
     FAMILY_CRITERIA,
     FAMILY_OBSERVABLES,
     canonical_task_family,
     validate_task_family_contract,
 )
-
-
-def family_source_blockers(*, native: Mapping[str, Any], source_bindings: Mapping[str, Any],
-                           source_scene: Mapping[str, Any]) -> list[str]:
-    """Apply the same source/frame requirements at compile and retained read."""
-    blockers: list[str] = []
-    unit = source_scene.get("meters_per_unit")
-    if (isinstance(unit, bool) or not isinstance(unit, (int, float)) or not math.isfinite(unit) or unit <= 0
-            or source_scene.get("up_axis") not in {"Y", "-Y", "Z"}):
-        raise ValueError("website_task_family_source_frame_invalid")
-    binding = native["task_state_binding"].get("source_scene_binding")
-    if not isinstance(binding, Mapping):
-        blockers.append("website_task_family_source_scene_binding_required")
-    elif any(binding.get(key) != source_bindings.get(key) for key in (
-            "task_context_digest", "source_geometry_digest", "task_masks_digest", "splat_digest", "collision_mesh_digest")):
-        raise ValueError("website_task_family_source_scene_binding_mismatch")
-    else:
-        frame = binding.get("frame_registration")
-        if not isinstance(frame, Mapping):
-            blockers.append("website_task_family_frame_registration_required")
-        else:
-            transform = np.asarray(frame.get("source_to_runtime"), dtype=float)
-            linear = transform[:3, :3] if transform.shape == (4, 4) else np.zeros((3, 3))
-            gram = linear.T @ linear
-            if (frame.get("source_geometry_digest") != source_bindings.get("source_geometry_digest")
-                    or frame.get("collision_mesh_digest") != source_scene["collision_mesh_digest"]
-                    or frame.get("runtime_up_axis") != source_scene["up_axis"]
-                    or frame.get("runtime_meters_per_unit") != source_scene.get("meters_per_unit")
-                    or frame.get("registration_digest") != canonical_digest(frame, digest_field="registration_digest")
-                    or transform.shape != (4, 4) or not np.all(np.isfinite(transform))
-                    or not np.allclose(transform[3], [0, 0, 0, 1])
-                    or np.linalg.det(linear) <= 1e-12
-                    or not np.allclose(gram, np.eye(3) * np.trace(gram) / 3, rtol=1e-8, atol=1e-10)):
-                raise ValueError("website_task_family_frame_registration_invalid")
-    for role, digest in (("scene_appearance", source_scene["splat_digest"]),
-                         ("scene_collision", source_scene["collision_mesh_digest"])):
-        if not any(row.get("semantic_role") == role and row.get("content_digest") == digest for row in native["assets"]):
-            blockers.append("website_task_family_" + role + "_asset_required")
-    return blockers
 
 
 def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],

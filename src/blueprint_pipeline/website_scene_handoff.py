@@ -39,7 +39,7 @@ def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy
             execute_task_family_episode, validate_task_family_native_runtime_contract,
         )
         native = validate_task_family_native_runtime_contract(inputs["native_runtime_contract"])
-        from .task_family_preparation import family_source_blockers
+        from .task_family_native_contracts import family_source_blockers
         if family_source_blockers(native=native, source_bindings=inputs["source_bindings"], source_scene=inputs["source_scene"]):
             raise ValueError("website_task_family_source_binding_incomplete")
         if (getattr(runtime, "native_runtime_contract_digest", None) != native["contract_digest"]

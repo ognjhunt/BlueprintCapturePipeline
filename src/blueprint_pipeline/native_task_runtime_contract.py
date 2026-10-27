@@ -1146,7 +1146,7 @@ def load_native_task_runtime_contract(path: str | Path) -> dict[str, Any]:
             ["native_task_runtime_contract_unreadable"]
         ) from exc
     if isinstance(document, dict) and document.get("schema_version") == "task_family_native_runtime_contract.v1":
-        from .task_evaluation_task_family_native_adapter import validate_task_family_native_runtime_contract
+        from .task_family_native_contracts import validate_task_family_native_runtime_contract
         return validate_task_family_native_runtime_contract(document)
     if not isinstance(document, dict) or document.get("schema_version") != SCHEMA_VERSION:
         raise NativeTaskRuntimeContractError(["native_task_runtime_contract_schema_invalid"])
