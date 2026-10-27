@@ -622,15 +622,36 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     review cap. A restart follows the retained receipts and buys nothing again.
     """
     retry, repair, carried = None, None, 0.0
+    failed_output_recovery, seen_failures = None, set()
     while True:
         receipt = _review_attempt(survey_path=survey_path, task_context=task_context, configuration=configuration,
                                   output_root=output_root, invoker=invoker, release_blockers=release_blockers,
                                   feedback=feedback, completion=completion, scaling=scaling, recovery=recovery,
                                   truncation_retry=retry, validation_repair=repair,
+                                  failed_output_recovery=failed_output_recovery,
                                   carried_reserved_usd=carried if invoker is not None else 0.0)
         if receipt["status"] == "invalid_output":
             # An answer the schema refused gets one repair turn that sees the refusal, never a stranded call.
             if receipt["validation_repair"] is None:
+                # An operator may resume this job after its cause is fixed in
+                # another admitted release. Keep the failed receipts and their
+                # charges; only the failed request gets a new attempt identity.
+                # Key it by its predecessor so a successful recovery is reused
+                # by subsequent releases too.
+                if release_blockers is not None and receipt.get("source_commit"):
+                    commit, blockers = release_blockers()
+                    if blockers:
+                        raise ValueError("atlas_scene_planner_release_not_admitted:" + ",".join(blockers))
+                    failed_digest = receipt["binding_digest"]
+                    if (commit != receipt["source_commit"] and failed_digest not in seen_failures
+                            and isinstance(commit, str) and len(commit) == 40
+                            and set(commit) <= set("0123456789abcdef")):
+                        seen_failures.add(failed_digest)
+                        failed_output_recovery = {"failed_binding_digest": failed_digest,
+                                                  "failed_source_commit": receipt["source_commit"]}
+                        retry, repair = None, None
+                        carried += receipt["cost_usd"]
+                        continue
                 raise ValueError("atlas_scene_planner_output_invalid")
             repair, carried = receipt["validation_repair"], carried + receipt["cost_usd"]
             continue
@@ -650,7 +671,7 @@ def _repair_plan(previous, error_type: str, message: str):
 
 def _review_attempt(*, survey_path: Path, task_context, configuration, output_root: Path, invoker,
                     release_blockers, feedback, completion, scaling, recovery, truncation_retry,
-                    validation_repair=None, carried_reserved_usd=0.0):
+                    validation_repair=None, failed_output_recovery=None, carried_reserved_usd=0.0):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
@@ -747,6 +768,8 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                          "Return one answer that satisfies the output schema exactly.\n")
         binding["instructions"] = instructions
         binding["validation_repair"] = dict(validation_repair)
+    if failed_output_recovery is not None:
+        binding["failed_output_recovery"] = dict(failed_output_recovery)
     binding['output_schema_digest'] = canonical_digest(schema.model_json_schema())
     if feedback is not None:
         binding["feedback_digest"] = feedback["digest"]
@@ -798,6 +821,8 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
             commit, blockers = release_blockers()
             if blockers:
                 raise ValueError("atlas_scene_planner_release_not_admitted:" + ",".join(blockers))
+            if failed_output_recovery is not None and commit == failed_output_recovery["failed_source_commit"]:
+                raise ValueError("atlas_scene_planner_recovery_requires_changed_release")
             selected = invoker or OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(model=policy["model"], max_turns=1,
                 max_output_tokens=output_tokens, max_input_tokens=tokens, allow_live_invocation=True,
                 tracing_disabled=True, max_inference_cost_usd=maximum))

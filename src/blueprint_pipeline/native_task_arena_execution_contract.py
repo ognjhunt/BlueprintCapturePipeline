@@ -262,6 +262,42 @@ POLICY_RUNTIME_MODULE_NAMES = tuple(
 )
 
 
+# Beta L5: the rigid robot-free probe records in the team scene with the robot
+# idle and queries no policy. Exactly the static import closure of its worker
+# (``rigid_robot_free_probe_worker``), the runtime-source provisioner and the
+# dependency downloader the entrypoint runs, plus the modules every native
+# bundle carries; tests/test_rigid_robot_free_probe_lane.py pins the closure.
+RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES = (
+    "adp_articulated_task_success_contract.py",
+    "adp009d_contact_envelope.py", "adp009d_droid_action_execution.py", "adp009d_droid_observation.py", "adp009d_groot_worker_identity.py",
+    "adp009d_isaac_episode_adapter.py", "adp009d_newton_gripper_drive.py",
+    "adp009d_physics_backend_comparison.py", "adp009d_task_scoring.py", "adp_rigid_retreat_scoring.py",
+    "adp_rigid_task_scoring.py", "adp_task_scoring.py", "articulation_graph_contract.py",
+    "adp009d_policy_episode.py", "adp009d_policy_episode_evidence.py", "adp009d_policy_episode_native_validation.py",
+    "beta_robolab_runtime.py", "droid_policy_bridge.py",
+    "decision_evidence_contracts.py", "droid_policy_canary_embodiment.py", "episode_visual_evidence.py", "franka_kinematics.py",
+    "groot_n17_droid_policy_runtime.py", "groot_n17_wire_client.py", "native_articulated_motion_geometry.py",
+    "native_articulated_task_state.py", "native_articulation_root_frame.py", "native_franka_action_math.py",
+    "native_franka_global_seed_search.py", "native_franka_grasp_geometry.py", "native_franka_pose_servo.py",
+    "native_g1_navigation_goal.py", "native_g1_usd_dependency_closure.py", "native_pose_transforms.py",
+    "native_rigid_episode_telemetry.py", "native_rigid_friction_scenario.py",
+    "native_task_arena_device_readback.py", "native_task_arena_import_scope.py",
+    "native_task_arena_preconstruction.py", "native_task_arena_readback.py", "native_task_arena_runtime.py",
+    "native_task_camera_framing_expectation.py", "native_task_camera_observability.py",
+    "native_task_camera_start_configuration.py", "native_task_direct_camera_aim.py",
+    "native_task_episode_environment.py", "native_task_g1_runtime_lock.py", "native_task_isaaclab_launch.py",
+    "native_task_nurec_render_setup.py", "native_task_robot_contact_topology.py",
+    "native_task_robot_registry.py", "native_task_runtime_dependency_download.py",
+    "native_task_runtime_source_packet.py", "native_task_runtime_source_provision.py",
+    "native_task_torch_runtime_lock.py", "policy_episode_events.py", "policy_episode_trace_evidence.py", "policy_request_evidence.py",
+    "policy_episode_lifecycle.py", "policy_interface_binding.py",
+    "policy_scientific_reset.py", "provider_output_range_transport.py", "rigid_frame_transforms.py",
+    "rigid_robot_free_probe_plan.py", "rigid_robot_free_probe_recorder.py",
+    "rigid_robot_free_probe_worker.py", "rigid_robot_free_readiness_score.py", "safe_outbound_http.py",
+    "task_evaluation_surface_target.py", "task_object_required_motions.py", "team_arm_kinematics.py",
+    "team_embodiment.py", "team_embodiment_runtime.py",
+)
+
 CONTROLLED_POLICY_RUNTIME_MODULE_NAMES = tuple(sorted({*CONTROLS_RUNTIME_MODULE_NAMES,
     "native_task_arena_construction_worker.py", "controlled_native_isaac.py", "controlled_policy_dispatch.py",
     "controlled_policy_session.py", "controlled_policy_observations.py", "controlled_policy_actions.py",
@@ -311,6 +347,10 @@ EXECUTION_MODE_CONTRACTS = {
         ),
         runtime_module_names=POLICY_RUNTIME_MODULE_NAMES,
         policy_candidate_required=True,
+    ),
+    "rigid_robot_free_probe": NativeTaskArenaExecutionContract(
+        expected_output_filename="rigid_robot_free_probe_result.v1.json",
+        runtime_module_names=RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES,
     ),
 }
 
@@ -505,6 +545,7 @@ __all__ = [
     "NativeTaskArenaExecutionContract",
     "POLICY_EXTRA_RUNTIME_MODULE_NAMES",
     "POLICY_RUNTIME_MODULE_NAMES",
+    "RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES",
     "RUNTIME_PREFLIGHT_MODULE_NAMES",
     "native_task_arena_execution_transport_completed",
     "required_archive_entries",

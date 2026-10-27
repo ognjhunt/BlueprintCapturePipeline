@@ -14,7 +14,9 @@ keeps the receipt where the gate reads it (a decided receipt is never replaced),
 and republishes the job's offer. New team evaluations require the passed receipt
 before listing or paid allocation. The worker's ability to record a trace in an
 existing scene remains a compatibility primitive; an undecided scene no longer
-authorizes a paid team session to obtain its own prerequisite.
+authorizes a paid team session to obtain its own prerequisite. A prepared
+scene's probe is recorded by its own capped GPU lane instead
+(``rigid_robot_free_probe_runner``), under the capture's website grant.
 """
 
 from __future__ import annotations

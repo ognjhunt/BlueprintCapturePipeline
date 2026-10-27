@@ -56,6 +56,7 @@ from blueprint_pipeline.task_evaluation_release_reference_lock import (
 from blueprint_pipeline.control_plane_release_leases import (
     DEFAULT_LEASE_ROOT,
     RunStateResolver,
+    _unrecognized_binding_commits,
     evaluate_binding_leases,
 )
 
@@ -690,9 +691,25 @@ def _evidence_binding_leases(
             or commit is None
             or not reason
         ):
-            raise ReleaseRetentionError(
-                f"release_retention_evidence_binding_invalid:{path.name}"
+            # A hand-written or older-shape binding still names the releases it
+            # needs: keep exactly those, as the deploy-time collector does, and
+            # let the rest retire. A misplaced plan names every commit and must
+            # be reconciled first; a binding that names nothing still blocks.
+            named = (
+                set()
+                if value.get("schema_version") == SCHEMA_VERSION
+                else _unrecognized_binding_commits(value)
             )
+            if not named:
+                raise ReleaseRetentionError(
+                    f"release_retention_evidence_binding_invalid:{path.name}"
+                )
+            for kept in named:
+                protected.setdefault(kept, set()).add(
+                    f"unrecognized_binding_kept:{path.name}"
+                )
+            documents.append(evidence)
+            continue
         validated.append((path, value, evidence))
     # Evaluated together so a binding a protected descendant builds on is kept.
     outcomes = evaluate_binding_leases(

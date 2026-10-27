@@ -1494,6 +1494,46 @@ def test_two_step_tool_protects_every_commit_a_binding_keeps(tmp_path: Path) -> 
     assert plan["protected_commits"][retained] == ["required_evidence:pinned.json"]
 
 
+def test_two_step_tool_keeps_the_release_an_older_shape_binding_names(tmp_path: Path) -> None:
+    active, guarded, idle = "a" * 40, "c" * 40, "e" * 40
+    state = _base_state(tmp_path, commits=[active, guarded, idle], active_commit=active)
+    evidence_root = state["evidence_binding_root"]
+    assert isinstance(evidence_root, Path)
+    # Production's r22-spend-guard-client.json (2026-09-08) predates the binding schema.
+    legacy = {
+        "status": "required",
+        "source_commit": guarded,
+        "runtime_root": f"/var/lib/blueprint/task-evaluation-inputs/system-runtimes/gpu-spend-guard/{guarded}",
+        "installation_receipt": "/var/lib/blueprint/task-evaluation-inputs/r22-guard-client-installation.json",
+    }
+    _write_json(evidence_root / "r22-spend-guard-client.json", legacy)
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+
+    assert [row["source_commit"] for row in plan["eligible_commits"]] == [idle]
+    assert plan["protected_commits"][guarded] == ["unrecognized_binding_kept:r22-spend-guard-client.json"]
+    # Its bytes are bound into the plan, so an apply after it changes refuses.
+    assert str(evidence_root / "r22-spend-guard-client.json") in {
+        row["path"] for row in plan["reference_documents"]}
+    assert json.loads((evidence_root / "r22-spend-guard-client.json").read_text()) == legacy
+
+
+def test_two_step_tool_still_refuses_a_binding_that_names_no_release(tmp_path: Path) -> None:
+    active = "a" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    evidence_root = state["evidence_binding_root"]
+    assert isinstance(evidence_root, Path)
+    for name, value in (("nameless.json", {"status": "required", "note": "keep the renderer"}),
+                        ("misplaced-plan.json", {"schema_version": retention.SCHEMA_VERSION,
+                                                 "source_commit": active})):
+        _write_json(evidence_root / name, value)
+        with pytest.raises(ReleaseRetentionError, match=f"release_retention_evidence_binding_invalid:{name}"):
+            build_release_retention_plan(**state, current_deploy_commit=active)  # type: ignore[arg-type]
+        (evidence_root / name).unlink()
+
+
 def test_two_step_tool_keeps_a_lapsed_ancestor_a_live_descendant_needs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

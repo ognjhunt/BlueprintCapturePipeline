@@ -50,7 +50,10 @@ RESULT_SCHEMA_BY_MODE = {
     "policy": "native_task_arena_policy_result.v1",
     "policy_diagnostic": "native_task_arena_policy_diagnostic_result.v1",
     "controlled_policy": "controlled_native_policy_result.v1",
+    "rigid_robot_free_probe": "rigid_robot_free_probe_result.v1",
 }
+# Beta L5's robot-free probe belongs to the free beta, not to Arm Decision Proof.
+PROGRAM_ID_BY_MODE = {"rigid_robot_free_probe": "blueprint-free-beta-evaluated-pilot"}
 POLICY_EXECUTION_AUTHORITY_BY_MODE = {
     "policy": "qualified_controls_evaluation",
     "policy_diagnostic": (
@@ -552,6 +555,7 @@ def build_native_task_arena_bundle(
         "policy",
         "policy_diagnostic",
         "controlled_policy",
+        "rigid_robot_free_probe",
     }:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_execution_mode_invalid"]
@@ -865,7 +869,7 @@ def build_native_task_arena_bundle(
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at or utc_now_iso(),
         "status": "ready",
-        "program_id": "arm-decision-proof-v1",
+        "program_id": PROGRAM_ID_BY_MODE.get(execution_mode, "arm-decision-proof-v1"),
         "execution_mode": execution_mode,
         "implementation_commit": implementation_commit,
         "container_image": image,

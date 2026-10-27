@@ -512,7 +512,12 @@ def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenar
         "task_id": compiled["task_id"], "scenario_id": scenario_id,
         "robot_free_probe_root": str(Path(run_root).resolve()),
         "scene_revision_digest": revision["revision_digest"], "team_scene_inputs_path": compiled["path"]})
-    return {**compiled, "registry": written}
+    probe = {"status": "profile_not_written", "queued": False}
+    if written.get("status") == "written":
+        from .rigid_robot_free_probe_runner import enqueue_rigid_robot_free_probe
+
+        probe = enqueue_rigid_robot_free_probe(capture_root)
+    return {**compiled, "registry": written, "robot_free_probe": probe}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
