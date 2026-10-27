@@ -113,17 +113,20 @@ Before editing, answer:
 If any answer is missing, stop. Historical docs and code do not authorize their
 former lanes.
 
-## Frozen Areas
+## Program Scope
 
-Humanoid/G1, locomotion, deformables, cables, cloth, granular tasks, tight
-insertion, force-sensitive assembly, five-policy/general-ranking campaigns,
-world-model/evaluator expansion, reconstruction/provider bakeoffs, universal
-runtime support, dynamic-scene research, post-training products, multi-site
-generalization, and unrelated buyer/growth polish are frozen.
+The 2026-10-27 owner direction authorizes beta evaluation support across task
+families and robot forms, including humanoids, deformables, cloth, pouring,
+wiping, insertion, stacking, button operations and multi-step jobs. Missing
+assets, reset contracts, state measurements or a compatible runtime must be
+reported specifically. A task-family label alone cannot impose a hold or
+establish that no robot can do the job. Reuse existing runtime and independent
+scoring seams; simulator support still needs executable, source-bound inputs.
 
-Touch a frozen component only after recording an observed beta or ADP blocker,
-or an explicit bounded owner exception, and demonstrating that the component is the smallest path. Preserve
-compatibility readers and safety gates, but do not extend the old lane.
+ADP's physical proof retains its fixed-arm, rigid-object scope and exactly two
+frozen candidates. General-ranking campaigns, world-model research, provider
+bakeoffs, post-training products, multi-site generalization and unrelated
+buyer/growth work still need their own active-program blocker and authority.
 
 ## Authority
 

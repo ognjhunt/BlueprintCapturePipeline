@@ -1451,6 +1451,13 @@ def materialize_rigid_construction_phase_plan(
         error="native_rigid_construction_lift_invalid",
         allow_zero=manipulation_strategy == "planar_push",
     )
+    from .task_evaluation_surface_target import minimum_container_carry_height
+    try:
+        container_carry_height = minimum_container_carry_height(task_spec, clearance_m=0.02)
+        if container_carry_height is not None:
+            lift = max(lift, container_carry_height - min(start_pose[2], destination[2]))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise NativeTaskConstructionPlanError(["native_rigid_construction_container_geometry_invalid"]) from exc
     minimum_translation = _positive(
         task_spec.get("minimum_translation_m"),
         error="native_rigid_construction_translation_invalid",
@@ -1779,6 +1786,14 @@ def materialize_rigid_construction_phase_plan(
                 task_spec=task_spec, subject_position=destination, subject_orientation=destination_orientation,
                 grasp_position=contact_destination, withdrawal_direction=destination_withdrawal_world,
                 minimum_displacement_m=pregrasp_clearance, arrival_tolerance_m=arrival_tolerance)
+            if container_carry_height is not None:
+                safe_grasp_z = container_carry_height + contact_destination_offset[2]
+                if destination_retreat[2] < safe_grasp_z:
+                    if destination_withdrawal_world[2] <= 1e-6:
+                        raise ValueError("native_rigid_construction_container_withdrawal_axis_not_upward")
+                    extra = (safe_grasp_z - destination_retreat[2]) / destination_withdrawal_world[2]
+                    destination_retreat = [position + extra * direction for position, direction in zip(
+                        destination_retreat, destination_withdrawal_world, strict=True)]
         except ValueError as exc:
             raise NativeTaskConstructionPlanError([str(exc)]) from exc
         phases = [

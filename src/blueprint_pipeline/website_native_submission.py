@@ -195,6 +195,11 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     else:
         destination = owner_task["destination"]
         require(destination.get("mode") == "existing_support_surface", "website_destination_asset_required")
+        if destination.get("relation") == "inside":
+            require(destination.get("interior_geometry_basis") == "reconstructed_open_cavity_floor_and_surrounding_walls"
+                    and bool(destination.get("interior_wall_face_indices"))
+                    and isinstance(destination.get("interior_bounds_world_m"), dict),
+                    "website_destination_interior_geometry_required")
         if destination.get("support") is not None:
             # The object ends on another surface (floor to desk): the region and its
             # native binding use that surface; the workspace spans both.

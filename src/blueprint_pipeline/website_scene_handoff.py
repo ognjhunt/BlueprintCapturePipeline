@@ -18,6 +18,49 @@ from .website_task_preparation import (
 from .website_scene_runtime_inputs import prepare_website_runtime_inputs
 
 
+def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy: Any,
+                                output_dir: Path, episode_id: str,
+                                maximum_steps: int, control_frequency_hz: float) -> dict[str, Any]:
+    """Consume the compiled family route using an already admitted native runtime.
+
+    The operator transfers runtime ownership through its existing execution
+    lane. Every preflight refusal closes it; the episode executor owns closure
+    once called. This function buys nothing and cannot admit a provider.
+    Runtime readback must bind the exact compiled scene, not only its engine.
+    """
+    executor_owns_runtime = False
+    try:
+        preparation = json.loads(preparation_path.read_text())
+        if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
+                or preparation.get("status") != "task_evaluation_ready" or preparation.get("blockers") != []):
+            raise ValueError("website_task_family_preparation_not_ready")
+        inputs = preparation["task_evaluation_inputs"]
+        from .task_evaluation_task_family_native_adapter import (
+            execute_task_family_episode, validate_task_family_native_runtime_contract,
+        )
+        native = validate_task_family_native_runtime_contract(inputs["native_runtime_contract"])
+        from .task_family_preparation import family_source_blockers
+        if family_source_blockers(native=native, source_bindings=inputs["source_bindings"], source_scene=inputs["source_scene"]):
+            raise ValueError("website_task_family_source_binding_incomplete")
+        if (getattr(runtime, "native_runtime_contract_digest", None) != native["contract_digest"]
+                or native["task_spec"]["task_success_contract"] != inputs["task_success_contract"]
+                or inputs["scope"]["task_context_digest"] != preparation["binding"]["task_context_digest"]):
+            raise ValueError("website_task_family_runtime_scene_mismatch")
+        from .local_reconstruction_adapters import _sha256_file
+        source = inputs["source_scene"]
+        for key in ("splat", "collision_mesh"):
+            if _sha256_file(Path(source[key + "_path"])) != source[key + "_digest"]:
+                raise ValueError("website_task_family_source_scene_changed")
+        executor_owns_runtime = True
+        return execute_task_family_episode(runtime=runtime, policy=policy, contract=inputs["task_success_contract"],
+            native_runtime_contract=native,
+            maximum_steps=maximum_steps, control_frequency_hz=control_frequency_hz,
+            output_dir=output_dir, episode_id=episode_id, seed=native["seed"])
+    finally:
+        if not executor_owns_runtime:
+            runtime.close()
+
+
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
                                  capture_root: Path, now: float) -> dict[str, Any]:
     root = capture_root / "pipeline" / "website_scene_preparation"
@@ -79,8 +122,10 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                           source_geometry_digest=atlas["source_geometry"]["digest"])
             return retain_gap(gap)
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
+        from .task_family_scoring import canonical_task_family
+        family = canonical_task_family(context.get("task_family"))
         result.pop("provider_mutation_performed", None)
-        if (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
+        if family is None and (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
             result["deferred_masks_controller_invoked"] = True
             plan_path = Path(clean_plate["removal_plan_path"])
             if not plan_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
@@ -97,6 +142,21 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
         write_json(root / "task_masks.geometry.json", masks)
         clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
+        if family is not None:
+            # Family tasks compile all retained targets and their native
+            # measurements. The single rigid-subject authoring path cannot
+            # represent fluid, residue, cloth or an ordered set of operations.
+            preparation = compile_website_scene_preparation(task_context=context, task_masks=masks,
+                removal_manifest=removal, source_geometry=geometry, base_scene=base, output_root=root,
+                spend=metadata.get("website_scene_execution_authority") or {}, now=now,
+                evaluation_inputs=metadata.get("native_task_evaluation"))
+            result.update(status=preparation["status"], blockers=preparation["blockers"],
+                job_disposition="accepted", task_evaluation_inputs=preparation["task_evaluation_inputs"],
+                preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
+                source_geometry_digest=geometry["digest"], provider_mutation_performed=False)
+            result["digest"] = canonical_digest(result, digest_field="digest")
+            write_json(handoff_path, result)
+            return result
         targets = {row["target_id"]: row for row in masks.get("targets", [])}
         subjects = [row for row in removal.get("entries", []) if row.get("task_effect") == "manipulated"]
         synthetic = removal.get("synthetic_subject")

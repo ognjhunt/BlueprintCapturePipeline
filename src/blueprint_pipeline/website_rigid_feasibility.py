@@ -62,13 +62,17 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path) 
         value["verdict_digest"] = canonical_digest(value, digest_field="verdict_digest")
         return value
     jaw = [1.0, 0.0, 0.0] if upper[0] - lower[0] <= upper[1] - lower[1] else [0.0, 1.0, 0.0]
+    carry = {}
+    if destination.get("relation") == "inside":
+        carry["carry_height_world_m"] = (float(destination["interior_bounds_world_m"]["maximum"][2])
+                                         + float(half[2]) + 0.08)
     cleared, reach, attempts = first_carrying_stance(stations, collision_path=collision, robot_id=ROBOT_ID,
         seeds=[list(NOMINAL_SEED_RAD), list(REST_SEED_RAD[ROBOT_ID])],
         start_pose_world=[*start.tolist(), 0.0, 0.0, 0.0, 1.0], target_position_world=target.tolist(),
         contact_point_m=[0.0, 0.0, 0.0], approach_unit=[0.0, 0.0, 1.0],
         gripper_orientation_xyzw=grasp_orientation_contact_xyzw(approach_axis=[0.0, 0.0, -1.0], jaw_axis=jaw),
         pregrasp_clearance_m=float((task.get("success") or {}).get("pregrasp_clearance_m")
-                                   or DEFAULT_PREGRASP_CLEARANCE_M))
+                                   or DEFAULT_PREGRASP_CLEARANCE_M), **carry)
     station = cleared or next(s for s, r in attempts if r is reach)
     value.update(status="clear" if reach["status"] == "clear" else "abstained", blockers=list(reach["blockers"]),
                  station=station, reach=reach, stations_tried=len(attempts),
