@@ -71,7 +71,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # manifest performs no mask, authoring or provider work.
         if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
             raise ValueError("website_subject_origin_conflict")
-        gap = native_task_preparation_gap(context)
+        from .website_task_semantics import load_task_semantics
+        source_video_digest = (atlas["source_geometry"].get("binding") or {}).get("source_video_digest")
+        semantics = (load_task_semantics(job_dir=capture_root / "pipeline" / "atlas", task_context=context,
+                                        source_video_digest=source_video_digest)
+                     if context.get("task_family") == "general_task" and source_video_digest else None)
+        semantics_options = {"task_semantics": semantics, "source_video_digest": source_video_digest}
+        gap = native_task_preparation_gap(context, **semantics_options)
         if gap is not None:
             # Retain the completed reconstruction and original task. Missing
             # adapter/scoring support cannot turn a different job into pick/place.
@@ -110,7 +116,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         elif len(subjects) == 1 and subjects[0].get("target_id") in targets:
             _, inferred = native_task_subject_profile(subjects[0], targets[subjects[0]["target_id"]])
         if inferred is not None:
-            gap = native_task_preparation_gap(context, inferred_profile_id=inferred)
+            gap = native_task_preparation_gap(context, inferred_profile_id=inferred, **semantics_options)
             if gap is not None:
                 # Catch a contradictory profile before coverage/spec callbacks.
                 # Earlier mask work may have called a provider, so do not reset
@@ -145,6 +151,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             task_context=context, task_masks=clean_plate["task_masks"],
             removal_manifest=removal, source_geometry=clean_plate["source_geometry"],
             base_scene=base, output_root=root, spend=authority, now=now,
+            **({"task_semantics": semantics} if semantics is not None else {}),
         )
         result.update(status=preparation["status"], blockers=preparation["blockers"],
                       preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],

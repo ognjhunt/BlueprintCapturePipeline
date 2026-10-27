@@ -84,7 +84,9 @@ def native_task_subject_profile(subject_entry: Mapping[str, Any],
 
 
 def native_task_preparation_gap(task_context: Mapping[str, Any], *,
-                                inferred_profile_id: str | None = None) -> dict[str, Any] | None:
+                                inferred_profile_id: str | None = None,
+                                task_semantics: Mapping[str, Any] | None = None,
+                                source_video_digest: str | None = None) -> dict[str, Any] | None:
     """Keep a novel job without pretending an existing adapter evaluates it.
 
     Older contexts omit the analysis family and retain their compatibility
@@ -100,6 +102,13 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
     from .task_profile_contracts import task_profile_for
 
     profile = task_profile_for(family)
+    resolved = None
+    if family == "general_task" and task_semantics is not None:
+        from .website_task_semantics import resolved_task_profile
+        resolved = resolved_task_profile(task_semantics, task_context=task_context,
+                                        source_video_digest=source_video_digest)
+        # Shape alone never resolves the operation and explicit families win.
+        profile = task_profile_for(resolved)
     mismatch = profile is not None and inferred_profile_id is not None and profile.profile_id != inferred_profile_id
     if profile is not None and not mismatch:
         return None
@@ -117,6 +126,8 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
         "missing": (["task_profile_mechanism_binding"] if mismatch else
                     ["native_task_runtime_adapter", "independent_task_scorer", "reset_contract"]),
         **({"inferred_profile_id": inferred_profile_id} if mismatch else {}),
+        **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
+           if resolved is not None and mismatch else {}),
         "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",
     }
 
@@ -664,10 +675,12 @@ def _unplaceable_part_estimate(code: str, configuration: Mapping[str, Any]) -> s
 def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                                       removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                       base_scene: Mapping[str, Any], output_root: Path, spend: Mapping[str, Any],
-                                      now: float) -> dict[str, Any]:
+                                      now: float, task_semantics: Mapping[str, Any] | None = None) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
-    gap = native_task_preparation_gap(task_context)
+    semantics_options = {"task_semantics": task_semantics,
+                         "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest")}
+    gap = native_task_preparation_gap(task_context, **semantics_options)
     if gap is None and task_masks.get("deferred_target_ids"):
         raise ValueError("website_static_task_masks_pending")
 
@@ -719,7 +732,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     articulation_kind, inferred_profile_id = native_task_subject_profile(
         subject_entry, subject_target, synthetic_subject=synthetic)
     articulated = inferred_profile_id == "articulated_open_close"
-    gap = native_task_preparation_gap(task_context, inferred_profile_id=inferred_profile_id)
+    gap = native_task_preparation_gap(task_context, inferred_profile_id=inferred_profile_id, **semantics_options)
     if gap is not None:
         return retain_gap(gap)
     declared_mpu = base_scene.get("meters_per_unit")
@@ -1227,6 +1240,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     value = {
         "schema_version": SCHEMA_VERSION, "status": "needs_input" if blockers else "intake_ready",
         "blockers": blockers, "claim_ceiling": CLAIM_CEILING,
+        **({"task_semantics": dict(task_semantics)} if task_semantics is not None else {}),
         "owner_success_criteria": owner_targets,
         **({"website_preparation_authority": dict(spend)} if task_context.get("confirmed") is False else {}),
         **({"authoring_provider_terms_reference": terms} if authoring_provider == "anthropic" and

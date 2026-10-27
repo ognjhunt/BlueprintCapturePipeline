@@ -57,6 +57,14 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
         if declared is not None or handoff.get("provider_mutation_performed") is not False:
             return False
     elif code == "website_task_profile_mechanism_mismatch":
+        if declared is None and family == "general_task" and isinstance(gap.get("task_semantics"), Mapping):
+            from .website_task_semantics import resolved_task_profile
+            try:
+                resolved = resolved_task_profile(gap["task_semantics"], task_context=task_context,
+                    source_video_digest=gap.get("source_video_digest"))
+                declared = task_profile_for(resolved)
+            except (ValueError, TypeError, KeyError):
+                return False
         inferred_id = gap.get("inferred_profile_id")
         inferred = task_profile_for(inferred_id) if isinstance(inferred_id, str) else None
         if (declared is None or inferred is None or inferred.profile_id != inferred_id

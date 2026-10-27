@@ -410,6 +410,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     if not selection_path.exists():
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})
+    from .website_task_semantics import retain_task_semantics
+    retain_task_semantics(job_dir=output_root, receipt=receipt, task_context=task_context,
+                          source_video_digest=source_digest)
     write_json(output_root / "atlas_scene_review.json", review)
     if review.get("subject_origin") == "synthetic_design":
         return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,
