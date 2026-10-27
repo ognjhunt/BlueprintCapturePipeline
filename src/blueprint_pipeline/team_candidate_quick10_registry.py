@@ -58,12 +58,13 @@ DERIVED_SCHEMA = "blueprint.team_candidate_derived_profile.v1"
 # the scene's own compiled packet, or a frozen internal Quick-10 pair).
 DERIVED_FIELDS = ("capture_root", "scene_id", "task_id", "scenario_id", "robot_free_probe_root",
                   "scene_revision_digest", "team_scene_inputs_path", "pair_runtime_inputs_path",
-                  "pair_activation_path", "nominal_dynamic_friction")
+                  "pair_activation_path", "nominal_dynamic_friction", "family_scene_inputs_path")
 REQUIRED_DERIVED_FIELDS = DERIVED_FIELDS[:6]
 # What only the operator decides: who may fund a run, at what rate, and each team's rights.
 OPERATOR_FIELDS = ("allowed_founder_approvers", "max_hourly_rate_usd", "open_loop_horizon", "team_rights",
                    "machine_avoidlist_path", "private_robot_models", "prepared_robot_models",
-                   "screening_candidates", "screening_hard_ttl_seconds", "screening_candidate_cap_usd")
+                   "screening_candidates", "screening_hard_ttl_seconds", "screening_candidate_cap_usd",
+                   "native_runtime_source_receipt")
 # The scene's nominal cell: what the prompt and query budget are read from.
 NOMINAL_CELL = {"cell_id": "scene.nominal", "seed": 0, "family": "canonical_anchor",
                 "resolved_scenario": {"family": "canonical_anchor", "ordinal": 0, "parameters": {}}}
@@ -201,7 +202,9 @@ def write_derived_profile(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _one_scene_half(profile: Mapping[str, Any]) -> bool:
     pair = [bool(profile.get(key)) for key in ("pair_runtime_inputs_path", "pair_activation_path")]
-    return bool(profile.get("team_scene_inputs_path")) != (pair == [True, True]) and pair in ([True, True], [False, False])
+    return (pair in ([True, True], [False, False])
+            and sum((bool(profile.get('team_scene_inputs_path')), bool(profile.get('family_scene_inputs_path')),
+                     pair == [True, True])) == 1)
 
 
 def profile_for_request(request: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -225,6 +228,12 @@ def rights_record(profile: Mapping[str, Any], *, team_id: str, checkpoint_id: st
 def _scene_inputs(profile: Mapping[str, Any]) -> dict[str, Any]:
     if not _one_scene_half(profile):
         raise TeamCandidateRegistryError("team_candidate_scene_half_ambiguous")
+    if profile.get('family_scene_inputs_path'):
+        from .website_task_family_scene_inputs import read_family_scene_inputs
+        try:
+            return read_family_scene_inputs(Path(profile['family_scene_inputs_path']))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise TeamCandidateRegistryError(str(exc) or 'family_scene_inputs_unavailable') from exc
     if profile.get("team_scene_inputs_path"):
         from .team_scene_packet import TeamScenePacketError, read_team_scene_inputs
 
@@ -248,6 +257,21 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
     inputs = _scene_inputs(profile)
     packet_dir = Path(inputs["base_native_packet"]["path"]).parent
     plan = _read(packet_dir / "native_task_arena_scene_plan.v1.json")
+    if inputs.get('schema_version') == 'blueprint.task_family_scene_inputs.v1':
+        from .task_family_policy_execution import family_policy_execution_binding
+        family_policy_execution_binding(plan)
+        horizon = profile.get('open_loop_horizon')
+        if type(horizon) is not int or horizon <= 0:
+            raise TeamCandidateRegistryError('team_candidate_open_loop_horizon_invalid')
+        context_ref = inputs['references']['task_context']
+        context = _read(Path(context_ref['path']))
+        return {'inputs': inputs, 'packet_dir': packet_dir,
+            'runtime_source_packet_receipt': Path(inputs['runtime_source']['path']),
+            'scene': {**plan, 'scene_revision_digest': inputs['scene_revision_digest'], 'task_spec': plan['task_spec'],
+                'task_success_contract': inputs['task_success_contract'],
+                'embodiment_preset_id': plan['native_runtime_contract']['robot_configuration']['embodiment_id']},
+            'prompt': context.get('description'), 'max_policy_queries': None, 'open_loop_horizon': horizon,
+            'episode_specs_sha256': canonical_digest(inputs)}
     try:
         nominal = _resolved_scene_plan(plan, {**NOMINAL_CELL, "control_diagnostic": inputs["control_diagnostic"]},
                                        task_success_contract=inputs["task_success_contract"])

@@ -40,6 +40,12 @@ def candidate_result_summary(
         "task_success_contract_digest"
     )
     binding = result.get("beta_screening_admission") or {}
+    family = execution.get("backend") == "task_family_native.v1"
+    readiness_bound = (binding.get("backend") == "task_family_native.v1"
+        and binding.get("pre_policy_site_qualification_required") is True
+        and plan.get("pre_policy_site_qualification_required") is True
+        and binding.get("family_static_readiness_digest") == plan.get("family_static_readiness_digest")) if family else (
+            binding.get("robot_free_probe_receipt_digest") == plan["robot_free_probe_digest"])
     if (result["run_kind"] != BETA_RUN_KIND
             or result["candidate_ids"] != [candidate["candidate_id"]]
             or not success_digest
@@ -47,7 +53,7 @@ def candidate_result_summary(
             or binding.get("plan_digest") != plan["plan_digest"]
             or binding.get("configuration_digest") != candidate["configuration_digest"]
             or binding.get("admission_digest") != candidate["admission_digest"]
-            or binding.get("robot_free_probe_receipt_digest") != plan["robot_free_probe_digest"]
+            or not readiness_bound
             or binding.get("scene_revision_digest") != plan["scene_revision_digest"]):
         raise ValueError("beta_screening_result_binding_mismatch")
     expected = {(cell["cell_id"], cell["seed"]) for cell in candidate["scenario_cells"]}

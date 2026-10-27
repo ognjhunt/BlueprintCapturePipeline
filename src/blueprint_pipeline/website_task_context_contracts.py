@@ -122,8 +122,8 @@ def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Ma
                         (inputs.get("source_bindings") or {}).get("source_geometry_digest") != handoff["source_geometry_digest"])))
                 or inputs.get("runtime_adapter") != "task_evaluation_task_family_native_adapter"
                 or inputs.get("automatic_paid_execution_authorized") is not False
-                or handoff.get("website_intake_outbox") or "runtime_inputs" in handoff
-                or handoff.get("status") not in {"needs_input", "task_evaluation_ready"}):
+                or "runtime_inputs" in handoff
+                or handoff.get("status") not in {"needs_input", "task_evaluation_ready", "intake_ready"}):
             return False
         contract = inputs.get("task_success_contract")
         if contract is not None:

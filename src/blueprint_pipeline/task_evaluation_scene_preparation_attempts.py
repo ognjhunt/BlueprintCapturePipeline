@@ -51,7 +51,7 @@ def settle_preparation_storage(reservation, factory):
     shape admission.  A factory that raised is recorded as failed on exit.
     """
     if reservation is not None and (
-            not isinstance(factory, dict) or factory.get("status") != "publication_ready"):
+            not isinstance(factory, dict) or factory.get("status") not in {"publication_ready", "native_packet_ready"}):
         reservation.release(outcome="blocked")
 
 

@@ -222,7 +222,10 @@
       },
       "properties": {
         "backend": {
-          "const": "robolab.v1"
+          "enum": [
+            "robolab.v1",
+            "task_family_native.v1"
+          ]
         },
         "candidate_id": {
           "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
@@ -404,6 +407,83 @@
   "$id": "beta_policy_screening_plan.v1",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "evaluation_backend"
+              ]
+            },
+            {
+              "required": [
+                "pre_policy_site_qualification_required"
+              ]
+            },
+            {
+              "required": [
+                "family_static_readiness_digest"
+              ]
+            },
+            {
+              "required": [
+                "scenario_scope"
+              ]
+            }
+          ]
+        },
+        "required": [
+          "robot_free_probe_digest"
+        ]
+      },
+      "if": {
+        "properties": {
+          "evaluation_backend": {
+            "const": "task_family_native.v1"
+          }
+        },
+        "required": [
+          "evaluation_backend"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "robot_free_probe_digest"
+          ]
+        },
+        "properties": {
+          "scenario_cells": {
+            "items": {
+              "properties": {
+                "family": {
+                  "const": "canonical_anchor"
+                },
+                "resolved_scenario": {
+                  "properties": {
+                    "family": {
+                      "const": "canonical_anchor"
+                    },
+                    "parameters": {
+                      "maxProperties": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "evaluation_backend",
+          "pre_policy_site_qualification_required",
+          "family_static_readiness_digest",
+          "scenario_scope"
+        ]
+      }
+    }
+  ],
   "description": "Immutable matched diagnostic screening plan. Canonical digests, source/candidate binding, cost arithmetic and shared-cell equality are additionally enforced by validate_screening_plan. Quotes are checked for expiry before reserve/launch, not when reading history.",
   "properties": {
     "budget_usd": {
@@ -544,6 +624,13 @@
     "claim_ceiling": {
       "const": "diagnostic_policy_execution"
     },
+    "evaluation_backend": {
+      "const": "task_family_native.v1"
+    },
+    "family_static_readiness_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
     "maximum_planned_cost_usd": {
       "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
       "type": "string"
@@ -551,6 +638,9 @@
     "plan_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "type": "string"
+    },
+    "pre_policy_site_qualification_required": {
+      "const": true
     },
     "purpose": {
       "const": "screening"
@@ -573,6 +663,9 @@
     "scenario_plan_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "type": "string"
+    },
+    "scenario_scope": {
+      "const": "native_frozen_reset_seeds"
     },
     "scene_id": {
       "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
@@ -648,7 +741,6 @@
     "task_id",
     "scene_revision_digest",
     "task_success_contract_digest",
-    "robot_free_probe_digest",
     "catalog_digest",
     "scenario_plan_digest",
     "plan_digest",

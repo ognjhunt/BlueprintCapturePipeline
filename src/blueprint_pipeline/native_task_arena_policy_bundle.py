@@ -15,6 +15,7 @@ from .adp009d_policy_episode import maximum_policy_queries_for_task_spec
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import (
     POLICY_RUNTIME_ROOT_MODULE_NAMES,
+    POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES,
     build_native_task_arena_bundle,
 )
 from .native_task_arena_controls_bundle import controls_runtime_sources
@@ -24,6 +25,11 @@ from .native_task_arena_controls_admission import (
 )
 from .native_task_runtime_contract import FROZEN_CANDIDATES
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .task_family_policy_execution import (
+    FAMILY_BACKEND,
+    task_family_policy_execution_binding,
+    validate_task_family_policy_execution_spec,
+)
 from .task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
     resolve_immutable_input,
@@ -162,6 +168,23 @@ def validate_native_task_policy_execution_spec(
     value: Mapping[str, Any],
 ) -> dict[str, Any]:
     payload = json.loads(json.dumps(value))
+    if payload.get("evaluation_backend") == FAMILY_BACKEND:
+        payload = validate_task_family_policy_execution_spec(payload)
+        errors = []
+        if payload.get("execution_authority") != QUALIFIED_EXECUTION_AUTHORITY:
+            errors.append("native_task_policy_execution_authority_invalid")
+        for field in ("scene_plan_digest", "construction_result_digest",
+                      "control_result_digest", "control_pair_digest"):
+            digest = str(payload.get(field) or "")
+            if len(digest) != 71 or not digest.startswith("sha256:"):
+                errors.append(f"native_task_policy_{field}_invalid")
+        if payload.get("policy_may_grade_itself") is not False:
+            errors.append("native_task_policy_self_grading_invalid")
+        if payload.get("overview_camera_policy_input") is not False:
+            errors.append("native_task_policy_overview_input_invalid")
+        if errors:
+            raise ValueError(";".join(sorted(set(errors))))
+        return payload
     errors: list[str] = []
     candidate = str(payload.get("candidate_id") or "")
     if payload.get("execution_authority") not in (
@@ -382,6 +405,12 @@ def build_native_task_policy_execution_spec(
         "policy_may_grade_itself": False,
         "execution_authority": QUALIFIED_EXECUTION_AUTHORITY,
     }
+    if scene.get("native_runtime_contract") is not None:
+        # The historical builder derives the frozen DROID clients. Their
+        # observation/action contract does not implement the family interface.
+        # Retain the exact cause instead of silently constructing a rigid run.
+        task_family_policy_execution_binding(scene)
+        raise ValueError("task_family_policy_candidate_interface_not_qualified:" + candidate_id)
     return materialize_native_task_policy_execution_spec(
         request=request, output_path=output_path
     )
@@ -485,6 +514,8 @@ def build_native_task_arena_policy_bundle(
         scenario_suite_path=scenario_suite_path,
     )
     errors: list[str] = []
+    if scene_plan.get("native_runtime_contract") is not None:
+        validate_task_family_policy_execution_spec(spec, scene_plan=scene_plan)
     task_spec = scene_plan.get("task_spec") or {}
     try:
         expected_policy_queries = maximum_policy_queries_for_task_spec(
@@ -652,7 +683,8 @@ def load_verified_native_task_arena_policy_bundle(
         or (receipt.get("policy_provisioning") or {}).get("relative_path")
         != f"adp009d_policy_provisioning.{candidate_id}.sh"
         or runtime_root_names
-        != set(POLICY_RUNTIME_ROOT_MODULE_NAMES)
+        != set(POLICY_RUNTIME_ROOT_MODULE_NAMES) | {
+            "blueprint_pipeline/" + name for name in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES}
     ):
         errors.append("native_task_policy_bundle_contract_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:

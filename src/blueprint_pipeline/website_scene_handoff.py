@@ -32,7 +32,7 @@ def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy
     try:
         preparation = json.loads(preparation_path.read_text())
         if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
-                or preparation.get("status") != "task_evaluation_ready" or preparation.get("blockers") != []):
+                or preparation.get("status") not in {"task_evaluation_ready", "intake_ready"} or preparation.get("blockers") != []):
             raise ValueError("website_task_family_preparation_not_ready")
         inputs = preparation["task_evaluation_inputs"]
         from .task_evaluation_task_family_native_adapter import (
@@ -161,7 +161,21 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result.update(status=preparation["status"], blockers=preparation["blockers"],
                 job_disposition="accepted", task_evaluation_inputs=preparation["task_evaluation_inputs"],
                 preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
-                source_geometry_digest=geometry["digest"], provider_mutation_performed=False)
+                source_geometry_digest=geometry["digest"], provider_mutation_performed=False,
+                dispatch_blockers=preparation.get("dispatch_blockers", []))
+            if preparation["status"] == "intake_ready":
+                from .website_scene_dispatch import binding_root, register_website_preparation
+                native_path = root / "native_runtime_contract.json"
+                write_json(native_path, preparation["task_evaluation_inputs"]["native_runtime_contract"])
+                context_path = root / "task_context.json"
+                write_json(context_path, context)
+                result["source_registration"] = register_website_preparation(
+                    preparation_path=root / "preparation.json", runtime_inputs_path=native_path,
+                    task_context_path=context_path, root=binding_root(), now=now)
+                if (metadata.get("website_scene_execution_authority") or {}).get("schema_version") == "website_scene_sponsorship.v1":
+                    from .website_task_context import enqueue_website_prepared_scene
+                    result["website_intake_outbox"] = enqueue_website_prepared_scene(
+                        task_context=context, request=preparation["intake_request"])
             result["digest"] = canonical_digest(result, digest_field="digest")
             write_json(handoff_path, result)
             return result

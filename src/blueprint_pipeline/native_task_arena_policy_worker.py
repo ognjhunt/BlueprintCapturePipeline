@@ -651,6 +651,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         ]
         result["phase_reached"] = "inputs_verified"
 
+        from blueprint_pipeline.task_family_policy_worker_execution import (
+            execute_family_policy_episode, is_task_family_scene_plan,
+        )
+
+        if is_task_family_scene_plan(scene_plan):
+            if diagnostic:
+                raise RuntimeError("task_family_diagnostic_scoring_authority_not_supported")
+            # Family engines construct their own admitted embodiment and native
+            # physics. They must never fall through the Franka/DROID adapter.
+            policy_client = _policy_client(spec)
+            policy_query_tracker = _PolicyQueryTracker(policy_client)
+            episode = execute_family_policy_episode(
+                scene_plan=scene_plan, spec=spec, policy_client=policy_query_tracker,
+                packet_root=packet, output_dir=output_root / "episodes",
+                episode_id=f"{scene_plan['task_id']}--{spec['cell_id']}--{spec['candidate_id']}",
+                progress=episode_progress,
+            )
+            _apply_episode_progress(result, episode_progress)
+            result["episode"] = episode
+            result["visual_evidence"] = episode["visual_evidence"]
+            result["media_artifacts"] = episode["media_artifacts"]
+            result["episode_environment"] = episode["episode_environment"]
+            result["episode_lifecycle_status"] = "terminal_result_retained"
+            result["episode_terminal_class"] = episode["lifecycle"]["terminal_class"]
+            result["policy_outcome_interpretable"] = episode["motion_evidence"]["policy_outcome_interpretable"]
+            result["scientific_outcome_admitted"] = bool(
+                episode["status"] == "completed" and episode["score"].get("status") == "scored"
+            )
+            result["ranking_eligible"] = result["scientific_outcome_admitted"]
+            result["status"] = "completed" if episode["status"] == "completed" else "blocked"
+            result["phase_reached"] = "episode_complete"
+            if result["status"] != "completed":
+                result["blockers"].append("task_family_native_episode_invalid:" + str(episode.get("failure")))
+            return 0 if result["status"] == "completed" else 1
+
         from blueprint_pipeline.native_task_isaaclab_launch import (
             NATIVE_TASK_ARENA_DEVICE,
             launch_native_task_isaaclab,

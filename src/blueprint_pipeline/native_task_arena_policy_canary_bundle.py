@@ -7,6 +7,7 @@ import hashlib
 from collections.abc import Mapping
 from importlib.metadata import distribution
 import json
+import os
 import shlex
 import re
 from pathlib import Path
@@ -51,10 +52,11 @@ from .task_evaluation_canary_hotfix_overlay import (
 )
 
 # The bounded HTTPS boundary the team candidate's client uses (stdlib only).
-CANARY_SHIPPED_PACKAGE_FILES = ("core/__init__.py", "core/security_controls.py")
+CANARY_SHIPPED_PACKAGE_FILES = ("core/__init__.py", "core/common.py", "core/security_controls.py")
 # The team path the shared worker imports: the team's HTTPS clients and its own robot.
 TEAM_RUNTIME_MODULE_NAMES = (
     "team_candidate_policy_client.py", "droid_https_policy_client.py", "team_policy_https_client.py",
+    "task_family_policy_https_client.py",
     "dreamlabs_policy_client.py", "team_arm_kinematics.py",
     "team_policy_episode_outcome.py", "team_evaluation_worker_retention.py",
     "native_task_arena_execution_contract.py",
@@ -187,8 +189,54 @@ def _validate_spec(value: Mapping[str, Any], *, candidate: str) -> dict[str, Any
     return spec
 
 
+def _family_operator_inputs(
+    specs: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Path], dict[str, Any] | None]:
+    """Stage only the operator-configured catalog and its sealed qualifications."""
+    from .task_family_policy_execution import FAMILY_BACKEND
+
+    family_specs = [spec for spec in specs.values() if spec.get("evaluation_backend") == FAMILY_BACKEND]
+    if not family_specs:
+        return {}, None
+    configured = os.environ.get("BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH")
+    catalog_path = Path(configured) if configured else None
+    if (catalog_path is None or not catalog_path.is_absolute() or not catalog_path.is_file()
+            or catalog_path.is_symlink() or any(parent.is_symlink() for parent in catalog_path.parents)):
+        raise ValueError("task_family_qualified_runtime_catalog_not_configured")
+    catalog = _read(catalog_path)
+    if (catalog.get("schema_version") != "task_family_native_runtime_catalog.v1"
+            or catalog.get("catalog_digest") != canonical_digest(catalog, digest_field="catalog_digest")):
+        raise ValueError("task_family_operator_runtime_catalog_invalid")
+    files = {"runtime_operator_inputs/catalog.json": catalog_path}
+    for spec in family_specs:
+        selection = spec["task_family_runtime_selection"]
+        rows = [row for row in catalog.get("runtimes", []) if isinstance(row, Mapping)
+                and row.get("runtime_id") == selection["runtime_id"]]
+        if selection["runtime_catalog_digest"] != catalog["catalog_digest"] or len(rows) != 1:
+            raise ValueError("task_family_operator_runtime_catalog_binding_mismatch")
+        reference = rows[0].get("qualification")
+        if not isinstance(reference, Mapping) or set(reference) != {"path", "sha256"}:
+            raise ValueError("task_family_operator_runtime_qualification_required")
+        relative = Path(str(reference["path"]))
+        source = catalog_path.parent / relative
+        if (relative.is_absolute() or ".." in relative.parts or not source.is_file()
+                or source.is_symlink() or any(parent.is_symlink() for parent in source.parents)
+                or not source.resolve().is_relative_to(catalog_path.parent.resolve())
+                or _sha256(source) != reference["sha256"]):
+            raise ValueError("task_family_operator_runtime_qualification_changed")
+        destination = "runtime_operator_inputs/" + relative.as_posix()
+        if destination in files and files[destination] != source:
+            raise ValueError("task_family_operator_runtime_qualification_path_collision")
+        files[destination] = source
+    records = [{"relative_path": relative, "sha256": _sha256(source), "size_bytes": source.stat().st_size}
+               for relative, source in sorted(files.items())]
+    return files, {"catalog_relative_path": "runtime_operator_inputs/catalog.json",
+                   "runtime_catalog_digest": catalog["catalog_digest"], "files": records}
+
+
 def _entrypoint(*, local_candidates: tuple[str, ...] = ("pi05_droid", "groot_n17_droid"),
-                run_kind: str = RUN_KIND, credential_env: str | None = None) -> str:
+                run_kind: str = RUN_KIND, credential_env: str | None = None,
+                family_runtime_catalog_staged: bool = False) -> str:
     if credential_env is not None and re.fullmatch(r"[A-Z][A-Z0-9_]{2,58}_FILE", credential_env) is None:
         raise ValueError("beta_robolab_https_credential_binding_invalid")
     credential_check = "" if credential_env is None else f'''/isaac-sim/python.sh - {shlex.quote(credential_env)} <<'PYCREDENTIAL'
@@ -219,11 +267,14 @@ fi
         f'>"$OUT_DIR/policy_provisioning.{candidate}.log" 2>&1 || exit $?'
         for candidate in local_candidates
     )
+    catalog_config = ('export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"'
+                      if family_runtime_catalog_staged else "")
     return f'''#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${{BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}}"
 export RUNTIME_DIR OUT_DIR
+{catalog_config}
 mkdir -p "$OUT_DIR"
 SOURCE_RECEIPT="$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_source_packet.v1.json"
 SOURCE_PACKET="$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_sources.zip"
@@ -334,6 +385,7 @@ def build_policy_canary_session_bundle(
     pi05_checkpoint_inventory_path: str | Path | None = None,
     execution_spec_paths: Mapping[str, str | Path] | None = None,
     checkpoint_inventory_paths: Mapping[str, str | Path] | None = None,
+    family_control_result_path: str | Path | None = None,
     implementation_commit: str,
     hotfix_overlay_path: str | Path | None = None,
     generated_at: str | None = None,
@@ -374,12 +426,17 @@ def build_policy_canary_session_bundle(
     )
     if runtime_source_path != Path(runtime_source_packet_receipt).expanduser().resolve():
         raise ValueError("policy_canary_runtime_source_record_mismatch")
-    construction_result_path = _bound_record_path(
-        inputs["construction_result"],
-        code="policy_canary_construction_result_record_invalid",
+    family_pending = ((inputs.get("beta_screening_admission") or {}).get("backend") == "task_family_native.v1"
+                      and inputs.get("pre_policy_site_qualification_required") is True)
+    construction_result_path = (
+        _bound_record_path(inputs["construction_result"], code="policy_canary_construction_result_record_invalid")
+        if inputs.get("construction_result") is not None else None
     )
+    if construction_result_path is None and not family_pending:
+        raise ValueError("policy_canary_construction_result_record_invalid")
     from .policy_interface_binding import TEAM_HTTPS_INTERFACES, resolve_policy_interface
     from .beta_robolab_runtime import stage_robolab_source, validate_robolab_policy_execution_spec
+    from .task_family_policy_execution import FAMILY_BACKEND, validate_task_family_policy_execution_spec
 
     spec_paths = dict(execution_spec_paths or {})
     if not spec_paths:
@@ -387,6 +444,24 @@ def build_policy_canary_session_bundle(
             raise ValueError("policy_canary_execution_specs_missing")
         spec_paths = {"pi05_droid": pi05_execution_spec_path, "groot_n17_droid": groot_execution_spec_path}
     specs = {candidate: _validate_spec(_read(path), candidate=candidate) for candidate, path in spec_paths.items()}
+    family_scene = any(spec.get("evaluation_backend") == FAMILY_BACKEND for spec in specs.values())
+    family_controls_path = None
+    if family_scene:
+        if family_control_result_path is not None:
+            family_controls_path = Path(family_control_result_path).expanduser().resolve()
+        elif isinstance(inputs.get("control_result"), Mapping):
+            family_controls_path = _bound_record_path(
+                inputs["control_result"], code="task_family_qualified_site_controls_receipt_required")
+        if family_controls_path is not None:
+            if not family_controls_path.is_file() or family_controls_path.is_symlink():
+                raise ValueError("task_family_qualified_site_controls_receipt_required")
+            from .native_task_arena_controls_admission import validate_native_task_controls_admission
+
+            validate_native_task_controls_admission(
+                scene_plan=_read(packet_receipt_path.parent / "native_task_arena_scene_plan.v1.json"),
+                construction_result=_read(construction_result_path) if construction_result_path is not None else {},
+                control_result=_read(family_controls_path),
+            )
     local_candidates = []
     for candidate, spec in specs.items():
         interface = resolve_policy_interface(spec)
@@ -395,7 +470,13 @@ def build_policy_canary_session_bundle(
                 raise ValueError("policy_canary_local_provisioning_identity_not_admitted")
             local_candidates.append(candidate)
         if inputs.get("run_kind") == "blueprint_beta_screening":
-            validate_robolab_policy_execution_spec(spec, candidate_id=candidate)
+            if spec.get("evaluation_backend") == FAMILY_BACKEND:
+                validate_task_family_policy_execution_spec(
+                    spec, candidate_id=candidate,
+                    scene_plan=_read(packet_receipt_path.parent / "native_task_arena_scene_plan.v1.json"),
+                )
+            else:
+                validate_robolab_policy_execution_spec(spec, candidate_id=candidate)
     remote_specs = [spec for spec in specs.values() if resolve_policy_interface(spec) in TEAM_HTTPS_INTERFACES]
     credential_env = None
     if remote_specs:
@@ -420,13 +501,14 @@ def build_policy_canary_session_bundle(
     static_preflight = preflight_policy_canary_static_inputs(
         inputs=inputs, authority=authority,
         base_scene_plan=_read(packet_receipt_path.parent / "native_task_arena_scene_plan.v1.json"),
-        construction=_read(construction_result_path),
+        construction=_read(construction_result_path) if construction_result_path is not None else {},
         packet_request=_read(packet_receipt_path.parent / "native_task_arena_packet_request.v1.json"),
         specs=specs,
     )
     write_json(Path(job_dir) / "policy_canary_static_startup_preflight.v1.json", static_preflight)
     if static_preflight["status"] != "passed":
         raise ValueError("policy_canary_static_startup_preflight_failed:" + ",".join(static_preflight["blockers"]))
+    operator_files, operator_inputs = _family_operator_inputs(specs)
     package = Path(__file__).resolve().parent
     runtime_modules = [package / name for name in POLICY_RUNTIME_MODULE_NAMES]
     runtime_modules.extend(
@@ -466,12 +548,16 @@ def build_policy_canary_session_bundle(
         expected_output_filename=PROVIDER_RESULT_FILENAME,
         container_image=NATIVE_TASK_ARENA_IMAGE,
         runtime_source_packet_receipt=runtime_source_packet_receipt,
-        runtime_extra_files={f"blueprint_pipeline/{name}": package / name for name in CANARY_SHIPPED_PACKAGE_FILES},
+        runtime_extra_files={**{f"blueprint_pipeline/{name}": package / name for name in CANARY_SHIPPED_PACKAGE_FILES},
+                             **operator_files},
         bound_runtime_inputs={
             "policy_canary_runtime_inputs.json": runtime_input_manifest_path,
             "policy_canary_session_authority.json": session_authority_path,
             **{f"policy_execution_spec.{candidate}.json": path for candidate, path in spec_paths.items()},
-            "native_task_arena_construction_result.v1.json": construction_result_path,
+            **({"native_task_arena_construction_result.v1.json": construction_result_path}
+               if construction_result_path is not None else {}),
+            **({"native_task_arena_control_result.v1.json": family_controls_path}
+               if family_controls_path is not None else {}),
         },
         generated_at=generated_at,
     )
@@ -500,7 +586,9 @@ def build_policy_canary_session_bundle(
         if "pi05_droid" in local_candidates:
             shutil.copy2(inventory_paths["pi05_droid"], runtime / CHECKPOINT_INVENTORY_STAGED_NAME)
         entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
-        entrypoint.write_text(_entrypoint(local_candidates=tuple(local_candidates), run_kind=inputs["run_kind"], credential_env=credential_env), encoding="utf-8")
+        entrypoint.write_text(_entrypoint(local_candidates=tuple(local_candidates), run_kind=inputs["run_kind"],
+                                         credential_env=credential_env,
+                                         family_runtime_catalog_staged=operator_inputs is not None), encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         manifest_path = runtime / "adp_arena_provider_manifest.json"
         manifest = _read(manifest_path)
@@ -509,6 +597,8 @@ def build_policy_canary_session_bundle(
                 "schema_version": PROVIDER_BUNDLE_SCHEMA_VERSION,
                 "execution_mode": EXECUTION_MODES[inputs["run_kind"]],
                 "run_kind": inputs["run_kind"],
+                **({"program_id": "blueprint-free-beta-evaluated-pilot"}
+                   if family_scene and inputs.get("run_kind") == "blueprint_beta_screening" else {}),
                 "claim_ceiling": CLAIM_CEILING,
                 "candidate_ids": list(inputs["candidate_ids"]),
                 "episodes_per_policy": len(inputs["cells"]),
@@ -531,7 +621,12 @@ def build_policy_canary_session_bundle(
                     for candidate, spec in specs.items()
                 },
                 "contract_python_dependencies": [contract_dependency] + ([robolab_dependency] if robolab_dependency else []),
-                **({"beta_screening_admission": inputs["beta_screening_admission"], "evaluation_backend": "robolab.v1"}
+                **({"task_family_operator_inputs": operator_inputs} if operator_inputs is not None else {}),
+                **({"pre_policy_site_qualification_required": True,
+                    "family_static_readiness_digest": inputs["family_static_readiness_digest"]}
+                   if family_pending else {}),
+                **({"beta_screening_admission": inputs["beta_screening_admission"],
+                    "evaluation_backend": next(iter(specs.values())).get("evaluation_backend")}
                    if inputs.get("run_kind") == "blueprint_beta_screening" else {}),
                 **({"team_credential_env": credential_env,
                     "team_policy_interface_id": resolve_policy_interface(remote_specs[0]),
@@ -580,6 +675,8 @@ def main(argv: list[str] | None = None) -> int:
                         metavar="CANDIDATE=PATH", help="Repeat for each admitted candidate; replaces the legacy pair flags.")
     parser.add_argument("--checkpoint-inventory-path", action="append", dest="checkpoint_inventory_paths",
                         metavar="CANDIDATE=PATH", help="Repeat for each candidate needing a local checkpoint inventory.")
+    parser.add_argument("--family-control-result", dest="family_control_result_path",
+                        help="Optional retained native-family control result; existing receipt validation applies.")
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--hotfix-overlay")
     parser.add_argument("--generated-at")
@@ -618,6 +715,7 @@ def main(argv: list[str] | None = None) -> int:
         pi05_checkpoint_inventory_path=args.pi05_checkpoint_inventory_path,
         execution_spec_paths=args.execution_spec_paths,
         checkpoint_inventory_paths=args.checkpoint_inventory_paths,
+        family_control_result_path=args.family_control_result_path,
         implementation_commit=args.implementation_commit,
         hotfix_overlay_path=args.hotfix_overlay,
         generated_at=args.generated_at,

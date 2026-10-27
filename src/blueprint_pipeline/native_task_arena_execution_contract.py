@@ -200,6 +200,23 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
+    # Family execution has its own native-state scorer and qualified factory;
+    # none of these modules substitutes the Franka rigid episode adapter.
+    "task_family_native_contracts.py",
+    "task_family_native_runtime.py",
+    "task_family_native_controls.py",
+    "task_family_control_omission.py",
+    "task_family_policy_execution.py",
+    "task_family_policy_worker_execution.py",
+    "task_family_policy_canary_execution.py",
+    "task_family_result_admission.py",
+    "task_family_policy_https_client.py",
+    "droid_https_policy_client.py",
+    "task_family_scoring.py",
+    "task_evaluation_task_family_native_adapter.py",
+    "common.py",
+    "native_task_arena_controls_admission.py",
+    "native_task_construction_result_validation.py",
     "native_g1_humanoidarena_interface.py",
     "native_g1_humanoidarena_policy_client.py",
     "native_g1_joint_episode_environment.py",

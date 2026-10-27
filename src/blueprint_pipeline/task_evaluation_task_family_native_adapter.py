@@ -19,7 +19,7 @@ import numpy as np
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
-from .episode_visual_evidence import finalize_visual_evidence, persist_observation_frame
+from .episode_visual_evidence import finalize_failed_policy_visual_evidence, finalize_visual_evidence, persist_observation_frame
 from .task_family_native_contracts import (
     RUNTIME_SCHEMA as RUNTIME_SCHEMA,
     _ASSET_ROLES as _ASSET_ROLES,
@@ -280,6 +280,7 @@ def execute_task_family_episode(
     artifacts: list[dict[str, Any]] = []
     visual: dict[str, Any] = {"status": "missing", "media_gap": {"type": "before_first_observation"}}
     task, runtime_contract = None, None
+    phase = "native_runtime_validation"
     try:
         task = validate_task_family_contract(contract)
         runtime_contract = validate_task_family_native_runtime_contract(
@@ -297,8 +298,10 @@ def execute_task_family_episode(
                  "episode_bounds_invalid")
         _require(type(seed) is int and seed >= 0 and isinstance(episode_id, str) and bool(_ID.fullmatch(episode_id)),
                  "episode_identity_invalid")
+        phase = "native_reset"
         runtime.reset(seed=seed)
         for index in range(maximum_steps + 1):
+            phase = "native_state_readback"
             _require(getattr(runtime, "native_runtime_contract_digest", None) == runtime_contract["contract_digest"],
                      "applied_runtime_contract_mismatch")
             state = runtime.native_state()
@@ -317,40 +320,50 @@ def execute_task_family_episode(
                                "source": "native_simulator_state", "samples": samples}
                 reset_trace["telemetry_digest"] = canonical_digest(reset_trace, digest_field="telemetry_digest")
                 score_task_family_episode(contract=task, telemetry=reset_trace)
+            phase = "policy_observation_readback"
             observation = runtime.policy_observation()
             _require(isinstance(observation, Mapping) and set(observation) == {"rgb", "proprioception"},
                      "policy_observation_fields_invalid")
             proprio = _array(observation["proprioception"])
             _require(proprio.ndim == 1, "policy_proprioception_invalid")
             kind = "terminal-observation" if index == maximum_steps else "policy-input"
+            phase = "policy_input_media_retention"
             frame = persist_observation_frame(observation["rgb"], output_dir=Path(output_dir),
                 episode_id=episode_id, frame_index=index, kind=kind)
             frame["proprioception"] = proprio.tolist()
             frame["simulation_time_seconds"] = index / control_frequency_hz
             if index == maximum_steps:
+                phase = "episode_media_finalization"
                 visual, artifacts = finalize_visual_evidence(output_dir=Path(output_dir), episode_id=episode_id,
                     identity={"scope": task["scope"], "contract_digest": task["contract_digest"], "seed": seed,
                               "native_provenance": native_runtime_provenance(runtime_contract)},
                     policy_input_frames=frames, terminal_observation=frame, frames_per_second=control_frequency_hz)
                 break
             frames.append(frame)
+            phase = "policy_inference"
             action = policy.act(copy.deepcopy(observation))
             action_array = _array(action)
             _require(action_array.ndim == 1, "policy_action_invalid")
+            phase = "native_action_step"
             runtime.step(action_array.tolist(), duration_seconds=1 / control_frequency_hz)
     except Exception as exc:
-        failure = {"type": type(exc).__name__, "reason": str(exc)}
+        failure = {"type": type(exc).__name__, "reason": str(exc), "origin": phase}
         visual = {"status": "incomplete", "media_gap": {"type": "after_first_observation" if frames else
                   "before_first_observation", "reason": str(exc)}, "retained_policy_input_frame_count": len(frames)}
         if frames:
-            manifest = {"schema_version": "task_family_failed_observation_manifest.v1", "episode_id": episode_id,
-                        "native_provenance": native_runtime_provenance(runtime_contract),
-                        "policy_input_frames": frames, "failure": failure}
-            manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
-            manifest_path = Path(output_dir) / "media" / episode_id / "failed_frame_manifest.json"
-            write_json(manifest_path, manifest)
-            visual["frame_manifest_digest"] = manifest["manifest_digest"]
-            visual["frame_manifest_path"] = str(manifest_path)
+            exact = []
+            for frame in frames:
+                retained = {**frame, "candidate_exact_policy_input": True}
+                retained["frame_manifest_digest"] = canonical_digest(retained, digest_field="frame_manifest_digest")
+                exact.append(retained)
+            try:
+                visual, artifacts = finalize_failed_policy_visual_evidence(output_dir=Path(output_dir),
+                    episode_id=episode_id, identity={"scope": task["scope"], "contract_digest": task["contract_digest"],
+                        "seed": seed, "native_provenance": native_runtime_provenance(runtime_contract)},
+                    exact_policy_input_frames=exact, failure_reason=str(exc), frames_per_second=control_frequency_hz)
+                visual["retained_policy_input_frame_count"] = len(frames)
+            except (OSError, RuntimeError, ValueError) as media_exc:
+                visual["media_gap"]["finalization_failure"] = type(media_exc).__name__
     finally:
         try:
             runtime.close()

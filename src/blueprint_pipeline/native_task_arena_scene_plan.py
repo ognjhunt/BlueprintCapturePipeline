@@ -186,7 +186,7 @@ def _validate_contract(value: Mapping[str, Any]) -> dict[str, Any]:
         ) from exc
     if (
         not isinstance(contract, dict)
-        or contract.get("schema_version") != RUNTIME_CONTRACT_SCHEMA
+        or contract.get("schema_version") not in {RUNTIME_CONTRACT_SCHEMA, "task_family_native_runtime_contract.v1"}
     ):
         raise NativeTaskArenaScenePlanError(
             ["native_task_arena_runtime_contract_invalid"]
@@ -196,7 +196,74 @@ def _validate_contract(value: Mapping[str, Any]) -> dict[str, Any]:
         raise NativeTaskArenaScenePlanError(
             ["native_task_arena_runtime_contract_digest_invalid"]
         )
+    if contract["schema_version"] == "task_family_native_runtime_contract.v1":
+        from .task_family_native_contracts import validate_task_family_native_runtime_contract
+        try:
+            return validate_task_family_native_runtime_contract(contract)
+        except ValueError as exc:
+            raise NativeTaskArenaScenePlanError([str(exc)]) from exc
     return contract
+
+
+def _family_scene_plan(*, contract, asset_directory, physics_frequency_hz,
+                       published_asset_directory, runtime_selection, policy_selection):
+    """Preserve family physics/state requests and verify every staged asset byte."""
+    from .task_family_dispatch_contracts import validate_runtime_selection, validate_policy_selection
+    try:
+        selection = validate_runtime_selection(runtime_selection)
+        if policy_selection is not None:
+            policy_selection = validate_policy_selection(policy_selection)
+    except ValueError as exc:
+        raise NativeTaskArenaScenePlanError([str(exc)]) from exc
+    if (not asset_directory.is_dir() or asset_directory.is_symlink()
+            or isinstance(physics_frequency_hz, bool)
+            or not isinstance(physics_frequency_hz, (int, float))
+            or not math.isfinite(physics_frequency_hz) or physics_frequency_hz <= 0):
+        raise NativeTaskArenaScenePlanError(["native_task_family_scene_plan_inputs_invalid"])
+    staged = []
+    errors = []
+    for row in contract["assets"]:
+        relative = row.get("bundle_relative_path") or row.get("path")
+        if not isinstance(relative, str) or not relative:
+            errors.append("native_task_family_asset_path_required:" + row["asset_id"])
+            continue
+        pure = PurePosixPath(relative)
+        path = asset_directory / relative
+        if (pure.is_absolute() or ".." in pure.parts or path.is_symlink()
+                or not path.resolve().is_relative_to(asset_directory)
+                or any(parent.is_symlink() for parent in path.parents if parent != asset_directory.parent)
+                or not path.is_file() or path.stat().st_size <= 0):
+            errors.append("native_task_family_asset_path_invalid:" + row["asset_id"])
+            continue
+        if _sha256(path) != row["content_digest"]:
+            errors.append("native_task_family_asset_digest_mismatch:" + row["asset_id"])
+            continue
+        staged.append({**row, "bundle_relative_path": relative, "size_bytes": path.stat().st_size})
+    if errors:
+        raise NativeTaskArenaScenePlanError(errors)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "runtime_contract_digest": contract["contract_digest"],
+        "scene_id": contract["scene_id"], "task_id": contract["task_id"],
+        "task_kind": contract["task_kind"], "task_family": contract["task_family"],
+        "native_runtime_contract": contract, "task_spec": contract["task_spec"],
+        "task_state_binding": contract["task_state_binding"],
+        "task_family_runtime_selection": selection,
+        **({"policy_selection": policy_selection} if policy_selection is not None else {}),
+        "asset_directory": published_asset_directory or str(asset_directory), "assets": staged,
+        "robot": contract["robot_configuration"], "cameras": contract["cameras"],
+        "scenario": {"cell_id": contract["scenario_cell_id"],
+            "scenario_instance_digest": contract["scenario_instance_digest"],
+            "context_kind": contract["scenario_context_kind"], "seed": contract["seed"]},
+        "cadence": {"physics_frequency_hz": physics_frequency_hz},
+        "reset": {"robot_base_pose_world": contract["robot_base_pose_world"],
+            "robot_joint_positions_rad": contract["robot_joint_reset_positions_rad"],
+            "task_reset": contract["task_spec"]["task_success_contract"]["reset"],
+            "native_readback_required_after_reset": True},
+        "application_readback_required": True,
+        "claim_boundary": {"plan_is_not_native_application_proof": True,
+            "plan_is_not_policy_episode_evidence": True, "simulator_execution_is_not_physical_truth": True},
+    }
 
 
 def _stage_assets(
@@ -1482,6 +1549,8 @@ def materialize_native_task_arena_scene_plan(
     physics_frequency_hz: float,
     published_asset_directory: str | None = None,
     destination: str | Path | None = None,
+    task_family_runtime_selection: Mapping[str, Any] | None = None,
+    policy_selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Verify staged bytes and freeze one deterministic native scene plan."""
 
@@ -1504,6 +1573,14 @@ def materialize_native_task_arena_scene_plan(
                 ["native_task_arena_published_asset_directory_invalid"]
             )
         published_asset_directory = pure.as_posix().rstrip("/")
+    if contract["schema_version"] == "task_family_native_runtime_contract.v1":
+        plan = _family_scene_plan(contract=contract, asset_directory=asset_directory,
+            physics_frequency_hz=physics_frequency_hz, published_asset_directory=published_asset_directory,
+            runtime_selection=task_family_runtime_selection, policy_selection=policy_selection)
+        plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+        if destination is not None:
+            write_json(Path(destination), plan)
+        return json.loads(json.dumps(plan))
     objects = _stage_assets(
         list(contract["objects"]),
         provider_asset_directory=asset_directory,

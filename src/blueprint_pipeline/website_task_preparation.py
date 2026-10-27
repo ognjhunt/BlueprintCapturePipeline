@@ -718,7 +718,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         from .task_family_preparation import prepare_task_family
         return prepare_task_family(task_context=task_context, task_masks=task_masks,
             removal_manifest=removal_manifest, source_geometry=source_geometry, base_scene=base_scene,
-            output_root=output_root, evaluation_inputs=evaluation_inputs,
+            output_root=output_root, evaluation_inputs=evaluation_inputs, spend=spend, now=now,
             **({"task_semantics": task_semantics} if task_semantics is not None else {}))
     if task_masks.get("source_geometry_digest") != source_geometry["digest"]:
         raise ValueError("website_preparation_geometry_binding_mismatch")

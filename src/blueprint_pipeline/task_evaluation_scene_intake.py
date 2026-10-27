@@ -340,7 +340,19 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         result_reference = progress.get("result_reference")
         result_run_id = (progress.get("state") or {}).get("result_run_id")
         _require(result_run_id is None or _identifier(result_run_id), "result_run_id_invalid")
-        if result_reference is not None:
+        if phase == "family_native_prepared":
+            _require(isinstance(result_reference, Mapping)
+                     and result_reference.get("schema_version") == "website_task_family_preparation_result.v1",
+                     "result_reference_invalid")
+        if (isinstance(result_reference, Mapping)
+                and result_reference.get("schema_version") == "website_task_family_preparation_result.v1"):
+            from .task_family_dispatch_contracts import validate_family_preparation_result_reference
+            try:
+                validate_family_preparation_result_reference(result_reference, request=intent["request"],
+                    status=status, phase=phase)
+            except (ValueError, KeyError, TypeError):
+                raise SceneIntakeError("scene_intake_result_reference_invalid") from None
+        elif result_reference is not None:
             _require(isinstance(result_reference, Mapping)
                      and set(result_reference) == {"uri", "digest", "size_bytes"}
                      and isinstance(result_reference["digest"], str)

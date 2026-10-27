@@ -23,6 +23,7 @@ from .adp009d_policy_episode import maximum_policy_queries_for_task_spec
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import (
     POLICY_RUNTIME_ROOT_MODULE_NAMES,
+    POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES,
     build_native_task_arena_bundle,
 )
 from .native_task_arena_controls_bundle import controls_runtime_sources
@@ -388,7 +389,8 @@ def load_verified_native_task_arena_policy_diagnostic_bundle(
         or receipt.get("implementation_commit") != expected_implementation_commit
         or receipt.get("container_image") != NATIVE_TASK_ARENA_IMAGE
         or input_names != expected_inputs
-        or runtime_root_names != set(POLICY_RUNTIME_ROOT_MODULE_NAMES)
+        or runtime_root_names != set(POLICY_RUNTIME_ROOT_MODULE_NAMES) | {
+            "blueprint_pipeline/" + name for name in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES}
         or receipt.get("policy_provisioning_script")
         != f"adp009d_policy_provisioning.{candidate_id}.sh"
         or (receipt.get("policy_provisioning") or {}).get("relative_path")

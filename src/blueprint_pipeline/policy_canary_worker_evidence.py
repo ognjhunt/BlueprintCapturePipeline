@@ -134,7 +134,8 @@ def _write_episode_failure_gap(
         action_rejection["rejection_digest"] = canonical_digest(
             action_rejection, digest_field="rejection_digest"
         )
-    if progress.get("media_integrity_failure"):
+    # Artifact verification overrides a stale producer's "complete" label.
+    if progress.get("media_integrity_failure") and first_observation_retained:
         visual_evidence = {
             **visual_evidence,
             "status": "incomplete_after_first_observation",
@@ -145,8 +146,11 @@ def _write_episode_failure_gap(
         }
     # Cause and execution stage are independent: a broken media finalizer
     # must not turn a policy timeout or rejected action into an excluded void.
+    from .task_family_policy_https_client import TaskFamilyPolicyFailure
+    native_policy_failure = (isinstance(failure, TaskFamilyPolicyFailure) and query_attempted
+                             and progress.get("_native_policy_failure") is failure)
     policy_failure = (
-        action_rejected
+        native_policy_failure or action_rejected
         or (query_attempted and progress.get("policy_inference_failed") is True
             and progress.get("policy_request_retention_failed") is not True
             and not raw_message.startswith(("droid_https_policy_observation_", "team_policy_https_observation_")))
@@ -158,6 +162,9 @@ def _write_episode_failure_gap(
     )
     failure_cause = "policy" if policy_failure else "media" if progress.get("media_integrity_failure") else "infrastructure"
     evidence_artifacts: dict[str, Any] = {}
+    if isinstance(progress.get("native_site_qualification"), Mapping):
+        evidence_artifacts["native_site_qualification"] = _write_episode_json_artifact(output_root,
+            episode_id=episode_id, role="native_site_qualification", value=progress["native_site_qualification"])
     media_root = output_root / "episodes"
     if media_artifacts:
         evidence_artifacts["frame_manifest"] = _bound_media_artifact(
@@ -211,6 +218,9 @@ def _write_episode_failure_gap(
         "seed": context.get("seed"),
         "episode_failure_stage": failure_stage,
         "episode_failure_cause": failure_cause,
+        **({"policy_failure_code": failure.policy_failure_code,
+            "policy_failure_origin": failure.policy_failure_origin,
+            "policy_failure_source_type": failure.source_failure_type} if native_policy_failure else {}),
         "media_failure_observed": bool(visual_evidence.get("media_gap")),
         "scientific_reset": progress.get("scientific_reset"),
         "prestart_readiness": progress.get("prestart_readiness"),
@@ -264,6 +274,8 @@ def _write_episode_failure_gap(
         ),
         "evidence_artifacts": evidence_artifacts,
         "episode": {
+            **({"native_site_qualification": dict(progress["native_site_qualification"])}
+               if isinstance(progress.get("native_site_qualification"), Mapping) else {}),
             **query_attempt,
             "episode_id": episode_id,
             "policy_request_artifacts": progress.get("policy_request_artifacts") or [],

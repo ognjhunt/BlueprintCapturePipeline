@@ -301,6 +301,7 @@ def _activation(*, intent, link, config, output, now, provisioner):
 # recovery) starts with none of them; lineage keys (binding_digest, source_binding,
 # source_analysis, release_predecessors, recovery_predecessors) survive.
 ATTEMPT_STATE_KEYS = ("attempt_id", "attempt_commit", "attempt", "factory", "publication", "submission",
+                      "native_task_family_packet",
                       "preparation_state", "preparation_link", "preparation_result", "activation_link",
                       "activation", "failure", "preparation_failure", "configuration_failure", "capacity_recovery_admission")
 
@@ -712,7 +713,7 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             settle_preparation_storage(storage, factory)
             if factory.get("status") in {"needs_input", "awaiting_source", "blocked"}:
                 return emit(factory["status"], "factory", factory.get("blockers", []))
-            require(factory.get("status") == "publication_ready"
+            require(factory.get("status") in {"publication_ready", "native_packet_ready"}
                     and factory.get("source_commit") == attempt["source_commit"]
                     and factory.get("intent_digest") == intent["intent_digest"]
                     and factory.get("attempt_digest") == attempt["attempt_digest"]
@@ -720,6 +721,39 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                     and factory.get("provider_mutation_performed") is False, "factory_receipt_invalid")
         _put(factory_path, factory)
         state["factory"] = record(factory_path)
+    if factory.get('status') == 'native_packet_ready':
+        # Supplied family scenes are already compiled. They retain the same
+        # owner/source/release/preparation identity and hold gates above, but
+        # have no rigid six-stage construction recipe to submit or pay for.
+        from .native_task_arena_bundle import verify_native_task_arena_packet
+        packet_root, receipt, _ = verify_native_task_arena_packet(factory['packet_root'])
+        for key in ('packet_receipt', 'scene_plan', 'native_runtime_contract', 'family_scene_inputs'):
+            _reference(factory[key])
+        plan = read(factory['scene_plan']['path'], digest_field='plan_digest')
+        require(factory.get('execution_authority_granted') is False
+                and receipt.get('arena_scene_plan_digest') == plan['plan_digest']
+                and receipt.get('runtime_contract_digest') == plan.get('runtime_contract_digest')
+                and plan.get('task_kind') == intent['request']['task']['strategy']
+                and plan.get('task_id') == intent['request']['task']['task_id']
+                and plan.get('runtime_contract_digest') == intent['request']['task'].get('native_runtime_contract_digest')
+                and plan.get('task_family_runtime_selection') == intent['request']['task'].get('task_family_runtime_selection')
+                and plan.get('policy_selection') == intent['request']['task'].get('policy_selection'),
+                'native_task_family_packet_binding_changed')
+        state['native_task_family_packet'] = {key: factory[key] for key in (
+            'packet_root', 'packet_receipt', 'scene_plan', 'native_runtime_contract',
+            'task_family', 'task_family_runtime_selection', 'policy_selection', 'family_scene_inputs', 'family_profile')}
+        state['native_task_family_packet']['next_action'] = 'admitted_native_controls_then_registered_policy_execution'
+        state['native_task_family_packet']['execution_authority_granted'] = False
+        require(str(packet_root) == factory['packet_root'], 'native_task_family_packet_root_changed')
+        from .website_task_family_preparation_completion import complete_family_preparation
+        result_reference = complete_family_preparation(factory=factory, plan=plan, intent=intent,
+            attempt=attempt, output_root=output)
+        state['native_task_family_packet']['pre_policy_site_qualification_required'] = True
+        state['family_preparation_completion'] = result_reference
+        # This terminal state closes only the CPU scene-preparation request.
+        # The beta screening consumer separately reopens current consent and
+        # policy authority and runs native prepolicy qualification before queries.
+        return emit('completed', 'family_native_prepared', [], result_reference)
     request_path = _reference(factory["submission_request"])
     preparation = read(request_path)
     require(preparation.get("scene_intent_digest") == intent["intent_digest"]

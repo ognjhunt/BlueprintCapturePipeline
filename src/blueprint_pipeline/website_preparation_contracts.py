@@ -117,6 +117,17 @@ def validate_preparation_request(*, request, task_context, authority, now):
     validate_preparation_authority(task_context=task_context, authority=authority, now=now)
     execution = request.get("execution") or {}
     source = request.get("source") or {}
+    task = request.get('task') or {}
+    from .task_family_scoring import canonical_task_family
+    family = canonical_task_family(task.get('strategy'))
+    if family is not None:
+        from .task_family_dispatch_contracts import validate_family_intake_task
+        try:
+            if family != task['strategy']:
+                raise ValueError('noncanonical family')
+            validate_family_intake_task(task)
+        except (ValueError, TypeError, KeyError):
+            raise ValueError('website_preparation_request_authority_invalid') from None
     expected_providers = ["vast", "openai"]
     if authority.get("authoring_provider") == "anthropic":
         expected_providers.append("anthropic")
@@ -128,9 +139,9 @@ def validate_preparation_request(*, request, task_context, authority, now):
         or source.get("kind") != "gaussian_splat"
         or not isinstance(source.get("content_digest"), str)
         or source.get("binding_id") != "website-splat-" + source["content_digest"][7:39]
-        or request.get("task", {}).get("subject", {}).get("geometry_origin")
-        not in {"removed_before_reconstruction", "synthetic_design"}
-        or request.get("task", {}).get("task_id")
+        or (family is None and task.get("subject", {}).get("geometry_origin")
+            not in {"removed_before_reconstruction", "synthetic_design"})
+        or task.get("task_id")
         != "website-" + task_context["context_digest"][7:27]
         or any(
             execution.get(k) != authority[k]

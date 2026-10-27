@@ -31,6 +31,12 @@ from blueprint_pipeline.team_evaluation_worker_retention import (
 )
 from blueprint_pipeline.team_embodiment import apply_team_embodiment, is_team_plan
 from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan as _resolved_scene_plan
+from blueprint_pipeline.task_family_policy_canary_execution import (
+    _run_family_canary_episode, _construction_lineage_mode, family_render_backend, qualify_family_policy_scene, beta_result_binding,
+)
+from blueprint_pipeline.task_family_policy_worker_execution import (
+    is_task_family_scene_plan, verify_family_operator_inputs,
+)
 from blueprint_pipeline.policy_canary_worker_evidence import (
     _prepolicy_refusal_result,
     _write_episode_failure_gap, _write_episode_json_artifact,
@@ -302,6 +308,9 @@ def appearance_render_backend_from_plan(
     ``conversion_identity`` is accepted when no packet request is present.
     """
 
+    if is_task_family_scene_plan(plan):
+        return family_render_backend(plan)
+
     from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
     from blueprint_pipeline.native_task_nurec_render_setup import (
         AppearanceRenderPathError,
@@ -475,8 +484,12 @@ def preflight_policy_canary_static_inputs(
                 or spec.get("task_success_contract_digest") != inputs.get("task_success_contract_digest")):
                 raise RuntimeError("policy_canary_frozen_execution_spec_mismatch")
             if inputs.get("run_kind") == BETA_RUN_KIND:
-                from blueprint_pipeline.beta_robolab_runtime import validate_robolab_policy_execution_spec
-                validate_robolab_policy_execution_spec(spec, candidate_id=candidate)
+                if is_task_family_scene_plan(base_scene_plan):
+                    from blueprint_pipeline.task_family_policy_execution import validate_task_family_policy_execution_spec
+                    validate_task_family_policy_execution_spec(spec, candidate_id=candidate, scene_plan=base_scene_plan)
+                else:
+                    from blueprint_pipeline.beta_robolab_runtime import validate_robolab_policy_execution_spec
+                    validate_robolab_policy_execution_spec(spec, candidate_id=candidate)
         check(f"execution_spec.{candidate}", validate_spec)
     cells: list[dict[str, Any]] = []
     team_binding = check("team_embodiment_binding", lambda: _team_embodiment_binding(specs))
@@ -488,6 +501,11 @@ def preflight_policy_canary_static_inputs(
     for index, cell in enumerate(inputs.get("cells") or []):
         plan = check(f"cell.{index}.resolved_plan", lambda cell=cell: resolve(cell))
         if plan is None:
+            continue
+        if is_task_family_scene_plan(plan):
+            from blueprint_pipeline.task_family_policy_execution import family_policy_execution_binding
+            check(f"cell.{index}.native_family_binding", lambda plan=plan: family_policy_execution_binding(plan))
+            cells.append({"cell_id": cell.get("cell_id"), "observation_gate_mode": "qualified_native_family"})
             continue
         def validate_native_camera_parameters(plan=plan):
             from blueprint_pipeline.native_task_arena_runtime import camera_runtime_parameters
@@ -546,11 +564,14 @@ def preflight_policy_canary_runtime_directory(runtime_root: Path) -> dict[str, A
     authority = read("runtime_inputs/policy_canary_session_authority.json")
     manifest = read("adp_arena_provider_manifest.json")
     observation_path = runtime_root / "runtime_inputs" / OBSERVATION_INTEGRITY_AUTHORITY_FILENAME
+    base_scene = read("native_task_packet/native_task_arena_scene_plan.v1.json")
+    construction_path = runtime_root / "runtime_inputs/native_task_arena_construction_result.v1.json"
     receipt = preflight_policy_canary_static_inputs(
         inputs=inputs, authority=authority,
-        base_scene_plan=read("native_task_packet/native_task_arena_scene_plan.v1.json"),
+        base_scene_plan=base_scene,
         packet_request=read("native_task_packet/native_task_arena_packet_request.v1.json"),
-        construction=read("runtime_inputs/native_task_arena_construction_result.v1.json"),
+        construction=(read("runtime_inputs/native_task_arena_construction_result.v1.json")
+                      if construction_path.is_file() or not is_task_family_scene_plan(base_scene) else {}),
         specs={candidate: read(f"runtime_inputs/policy_execution_spec.{candidate}.json")
                for candidate in inputs.get("candidate_ids") or ()},
         observation_integrity_authority=read(str(observation_path.relative_to(runtime_root))) if observation_path.is_file() else None,
@@ -978,15 +999,6 @@ def isaac_cell_runtime() -> CellRuntime:
     )
 
 
-def _construction_lineage_mode(*, inputs: Mapping[str, Any], base_scene_plan: Mapping[str, Any],
-                               construction: Mapping[str, Any]) -> str:
-    from blueprint_pipeline.policy_canary_scene_resolution import construction_lineage_mode
-
-    return construction_lineage_mode(
-        inputs=inputs, base_scene_plan=base_scene_plan, construction=construction,
-        admitted_run_kinds=("internal_policy_canary", TEAM_RUN_KIND, BETA_RUN_KIND),
-    )
-
 def _validate_provider_manifest(
     value: Mapping[str, Any],
     *,
@@ -1096,12 +1108,6 @@ def _seal_result_before_simulation_close(
 
 
 
-
-
-
-
-
-
 def _aggregate_isolated_cell_results(
     *,
     authority: Mapping[str, Any],
@@ -1180,8 +1186,7 @@ def _aggregate_isolated_cell_results(
         "result_digest": "",
     }
     if inputs.get("run_kind") == BETA_RUN_KIND:
-        result.update({key: inputs[key] for key in ("beta_screening_admission", "scene_revision_digest",
-                                                   "plan_digest", "configuration_digest")})
+        result.update(beta_result_binding(inputs))
     if failed_cells:
         result["planned_episodes_per_policy"] = len(inputs["cells"])
         result["isolated_cell_failures"] = failed_cells
@@ -1262,8 +1267,6 @@ def _emit_cell_progress(stage: str, index: int, *, progress_path: Path | None = 
         return
 
 
-
-
 def _team_checkpoint(*, output_root: Path, inputs: Mapping[str, Any],
                      authority: Mapping[str, Any], children: list[Mapping[str, Any]]) -> None:
     _retention_checkpoint(output_root=output_root, inputs=inputs, authority=authority,
@@ -1319,9 +1322,8 @@ def _run_isolated_cell_processes(
     base_scene_plan = _read(
         runtime / "native_task_packet" / "native_task_arena_scene_plan.v1.json"
     )
-    construction = _read(
-        runtime / "runtime_inputs" / "native_task_arena_construction_result.v1.json"
-    )
+    construction_path = runtime / "runtime_inputs" / "native_task_arena_construction_result.v1.json"
+    construction = _read(construction_path) if construction_path.is_file() or not is_task_family_scene_plan(base_scene_plan) else {}
     construction_lineage_mode = _construction_lineage_mode(
         inputs=inputs,
         base_scene_plan=base_scene_plan,
@@ -1414,8 +1416,7 @@ def _run_isolated_cell_processes(
                        "blockers": ["team_scene_robot_free_probe_not_passed"],
                        **{key: child_results[0][key] for key in ("robot_free_probe_trace", "robot_free_probe_status")}}
             if inputs.get("run_kind") == BETA_RUN_KIND:
-                blocked.update({key: inputs[key] for key in ("beta_screening_admission", "scene_revision_digest",
-                                                            "plan_digest", "configuration_digest")})
+                blocked.update(beta_result_binding(inputs))
             blocked["result_digest"] = canonical_digest(blocked, digest_field="result_digest")
             _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=blocked)
             return 1
@@ -1507,7 +1508,7 @@ def _run_selected_cell(
         or os.environ.get("BLUEPRINT_ADP_ARENA_PARENT_OUTPUT_DIR")
         or output_root
     ).resolve()
-    bound_runtime = cell_runtime if cell_runtime is not None else isaac_cell_runtime()
+    bound_runtime = cell_runtime
     output_root.mkdir(parents=True, exist_ok=True)
     result_path = output_root / PROVIDER_RESULT_FILENAME
     def report_progress(stage: str) -> None:
@@ -1526,11 +1527,13 @@ def _run_selected_cell(
     base_scene_plan = _read(
         runtime / "native_task_packet" / "native_task_arena_scene_plan.v1.json"
     )
-    construction = _read(
-        runtime
-        / "runtime_inputs"
-        / "native_task_arena_construction_result.v1.json"
-    )
+    family_scene = is_task_family_scene_plan(base_scene_plan)
+    if family_scene:
+        os.environ["BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH"] = str(verify_family_operator_inputs(runtime, provider_manifest))
+    if bound_runtime is None and not family_scene:
+        bound_runtime = isaac_cell_runtime()
+    construction_path = runtime / "runtime_inputs" / "native_task_arena_construction_result.v1.json"
+    construction = _read(construction_path) if construction_path.is_file() or not family_scene else {}
     construction_lineage_mode = _construction_lineage_mode(
         inputs=inputs,
         base_scene_plan=base_scene_plan,
@@ -1585,6 +1588,9 @@ def _run_selected_cell(
     report_progress("static_preflight_passed")
 
     def open_session(_inputs: Mapping[str, Any]) -> dict[str, Any]:
+        if family_scene:
+            current_session["native_family"] = True
+            return {"native_family": True, "provider_session_identity": authority["authority_digest"]}
         report_progress("isaac_launch_started")
         simulation_app, launch = bound_runtime.launch_isaac(
             provider_output_root / "native_task_runtime_source_provisioning.v1.json",
@@ -1617,9 +1623,13 @@ def _run_selected_cell(
             groot_identity, runtime_identity = bound_runtime.groot_worker_identity(
                 output_root=provider_output_root, spec=spec
             )
-        client = bound_runtime.policy_client(
-            spec, groot_worker_identity_receipt=groot_identity
-        )
+        if family_scene:
+            from blueprint_pipeline.team_candidate_policy_client import canary_policy_client
+            client = canary_policy_client(spec)
+        else:
+            client = bound_runtime.policy_client(
+                spec, groot_worker_identity_receipt=groot_identity
+            )
         report_progress("policy_loaded")
         return {
             "candidate_id": candidate,
@@ -1642,6 +1652,13 @@ def _run_selected_cell(
         from blueprint_pipeline.policy_interface_binding import observation_interface
 
         scene_plan = team_plan(_resolved_scene_plan(base_scene_plan, context))
+        if family_scene:
+            return _run_family_canary_episode(
+                scene_plan=scene_plan, policy=policy, context=context,
+                authority=authority, inputs=inputs, packet_root=runtime / "native_task_packet",
+                output_root=output_root, progress=episode_progress,
+                site_qualification=current_session["native_family_gate"]["site_qualification"],
+            )
         dependencies = bound_runtime.preflight_dependency_matrix(
             robot_id=str(scene_plan["robot"]["robot_id"])
         )
@@ -2066,6 +2083,9 @@ def _run_selected_cell(
             close()
 
     def close_session(session: Mapping[str, Any]) -> dict[str, Any]:
+        if family_scene:
+            return {"status": "native_family_runtime_closed", "runtime_closed": True,
+                    "provider_closeout_pending": True}
         close = getattr(session.get("simulation_app"), "close", None)
         if not callable(close) or session.get("simulation_app") is not current_session.get(
             "simulation_app"
@@ -2079,6 +2099,12 @@ def _run_selected_cell(
         }
 
     def prepolicy_observation_gate(session: Mapping[str, Any]) -> dict[str, Any]:
+        if family_scene:
+            plan = _resolved_scene_plan(base_scene_plan, inputs["cells"][selected_cell_index],
+                task_success_contract=inputs["task_success_contract"])
+            current_session["native_family_gate"] = qualify_family_policy_scene(plan=plan, specs=specs,
+                packet_root=runtime / "native_task_packet", output_root=output_root)
+            return current_session["native_family_gate"]
         cell = inputs["cells"][selected_cell_index]
         scene_plan = team_plan(_resolved_scene_plan(
             base_scene_plan, cell, task_success_contract=inputs["task_success_contract"],
@@ -2238,11 +2264,14 @@ def _run_selected_cell(
     result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
     result["matrix_digest"] = inputs.get("matrix_digest") or _digest(inputs["cells"])
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    _seal_result_before_simulation_close(
-        result_path=result_path,
-        result=result,
-        simulation_app=current_session.get("simulation_app"),
-    )
+    if family_scene:
+        _seal_result(result_path=result_path, result=result)
+    else:
+        _seal_result_before_simulation_close(
+            result_path=result_path,
+            result=result,
+            simulation_app=current_session.get("simulation_app"),
+        )
     return (
         0
         if result["status"]

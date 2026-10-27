@@ -106,27 +106,42 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     from .beta_robolab_runtime import validate_robolab_policy_execution_spec
     from .robot_free_probe_gate import require_robot_free_probe, retained_probe_receipt, task_success_contract_binding
     from .team_candidate_quick10_registry import scene_facts
+    from .task_family_policy_execution import FAMILY_BACKEND, validate_task_family_policy_execution_spec
 
     catalog = validate_catalog(catalog)
     facts = scene_facts(profile)
     inputs = facts["inputs"]
     task = facts["scene"]["task_spec"]
-    receipt = retained_probe_receipt(Path(profile["robot_free_probe_root"]))
-    probe = require_robot_free_probe(receipt, scene_revision_digest=inputs["scene_revision_digest"],
-        task_kind=task["task_kind"], task_spec_digest=canonical_digest(task),
-        task_success_contract_digest=task_success_contract_binding(task["task_kind"], inputs["task_success_contract"]))
+    family = inputs.get("schema_version") == "blueprint.task_family_scene_inputs.v1"
+    if family:
+        from .beta_policy_screening_family import static_family_readiness
+        static = static_family_readiness(facts)
+        family_fields = {"evaluation_backend": FAMILY_BACKEND, "pre_policy_site_qualification_required": True,
+                         "family_static_readiness_digest": static["readiness"]["readiness_digest"],
+                         "family_static_readiness": static["readiness"], "scenario_scope": "native_frozen_reset_seeds",
+                         "family_source_inputs": _record(Path(profile["family_scene_inputs_path"]))}
+    else:
+        receipt = retained_probe_receipt(Path(profile["robot_free_probe_root"]))
+        probe = require_robot_free_probe(receipt, scene_revision_digest=inputs["scene_revision_digest"],
+            task_kind=task["task_kind"], task_spec_digest=canonical_digest(task),
+            task_success_contract_digest=task_success_contract_binding(task["task_kind"], inputs["task_success_contract"]))
     if (source.get("scene_revision_digest") != inputs["scene_revision_digest"]
             or source.get("task_id") != profile["task_id"]
             or Path(capture_root).resolve() != Path(profile["capture_root"]).resolve()):
         raise ValueError("beta_screening_source_scene_mismatch")
     root = Path(inputs_dir).resolve()
-    normalized_inputs = {**inputs, "beta_robot_free_probe_receipt": receipt,
-                         "beta_probe_task_spec_digest": canonical_digest(task), "beta_task_kind": task["task_kind"]}
+    normalized_inputs = ({**inputs, **family_fields} if family else
+        {**inputs, "beta_robot_free_probe_receipt": receipt,
+         "beta_probe_task_spec_digest": canonical_digest(task), "beta_task_kind": task["task_kind"]})
+    if family:
+        normalized_inputs.update(schema_version="blueprint.beta_family_screening_scene_inputs.v1",
+                                 source_family_inputs_digest=inputs["inputs_digest"])
+        normalized_inputs["inputs_digest"] = canonical_digest(normalized_inputs, digest_field="inputs_digest")
     normalized = _retain(root / (canonical_digest(normalized_inputs)[7:] + ".scene_inputs.json"), normalized_inputs)
     scene = {**dict(source), "site_id": str(profile["scene_id"]), "scene_id": str(profile["scene_id"]),
              "task_kind": task["task_kind"], "task_spec": task,
              "task_success_contract_digest": inputs["task_success_contract_digest"],
-             "robot_free_probe_status": "passed", "robot_free_probe_digest": probe["receipt_digest"],
+             **(family_fields if family else {"robot_free_probe_status": "passed", "robot_free_probe_digest": probe["receipt_digest"]}),
              "scene_inputs": _record(normalized)}
     if profile.get("nominal_dynamic_friction") is not None:
         scene["nominal_dynamic_friction"] = profile["nominal_dynamic_friction"]
@@ -137,15 +152,26 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     if scene_plan.get("plan_digest") != canonical_digest(scene_plan, digest_field="plan_digest"):
         raise ValueError("beta_screening_native_scene_plan_digest_invalid")
     scene["native_scene_plan"] = scene_plan
-    templates = _native_templates(repo=repo, scene_plan={**scene_plan,
+    templates = {} if family else _native_templates(repo=repo, scene_plan={**scene_plan,
         "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
         contract=inputs["task_success_contract"], commit=commit)
     bindings, quotes = {}, {}
+    selection = scene_plan.get("policy_selection") if family else None
+    if selection is not None:
+        from .task_family_dispatch_contracts import validate_policy_selection
+        selection = validate_policy_selection(selection)
+        matches = [row for row in catalog["candidates"] if row["candidate_id"] == selection["candidate_id"]]
+        if (selection["catalog_digest"] != catalog["catalog_digest"] or len(matches) != 1
+                or matches[0]["configuration_digest"] != selection["configuration_digest"]):
+            raise ValueError("beta_screening_family_policy_selection_changed")
+        scene["policy_selection"] = selection
     credentials = []
     # Credential presence is intentionally not guessed from a public endpoint.
     # Hosted policies need a separately configured private delivery lane.
     for configured in catalog["candidates"]:
         key = configured["candidate_id"]
+        if selection is not None and key != selection["candidate_id"]:
+            continue
         override = (profile.get("screening_candidates") or {}).get(key)
         if override:
             spec = _read(_bound_path(override["policy_execution_spec"]))
@@ -154,15 +180,21 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             spec, inventory = templates[key]
         else:
             continue
-        spec = validate_robolab_policy_execution_spec(spec, candidate_id=key)
+        spec = (validate_task_family_policy_execution_spec(spec, candidate_id=key, scene_plan=scene_plan) if family
+                else validate_robolab_policy_execution_spec(spec, candidate_id=key))
         if (key in templates and not override
                 and configured["policy"] != next(row["policy"] for row in
                     load_catalog(repo / "config" / "beta_policy_candidates.v1.json")["candidates"]
                     if row["candidate_id"] == key)):
             continue
+        if family:
+            from .beta_policy_screening_family import family_interface_matches
+            interface_matches = family_interface_matches(configured, spec, static)
+        else:
+            interface_matches = _interface_matches(configured, spec)
         if (spec["checkpoint_digest"] != configured["policy"]["digest"]
                 or spec["task_success_contract_digest"] != inputs["task_success_contract_digest"]
-                or not _interface_matches(configured, spec)):
+                or not interface_matches):
             continue
         # These values come from the registry, never the customer or policy.
         if profile.get("max_hourly_rate_usd") is None:
@@ -170,7 +202,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         rate = Decimal(str(profile["max_hourly_rate_usd"]))
         ttl = profile.get("screening_hard_ttl_seconds", DEFAULT_HARD_TTL_SECONDS)
         cap = Decimal(str(profile.get("screening_candidate_cap_usd", DEFAULT_CANDIDATE_CAP_USD)))
-        hosted = spec["policy_interface_id"] == "openpi_droid_https.v1"
+        hosted = spec["policy_interface_id"] in {"openpi_droid_https.v1", "task_family_policy_https.v1"}
         hosted_settings = {}
         if hosted:
             from .beta_policy_screening_hosted import HOSTED_FIELDS, request_limit, validate_hosted_delivery
@@ -191,7 +223,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         descriptor = {"schema_version": EXECUTION_SCHEMA, "candidate_id": key,
                       "policy_execution_spec": _record(path), "checkpoint_inventory": _record(inventory) if inventory else None,
                       "configuration_digest": configured["configuration_digest"],
-                      "runtime_digest": spec["runtime_identity_digest"], "backend": "robolab.v1",
+                      "runtime_digest": spec["runtime_identity_digest"], "backend": FAMILY_BACKEND if family else "robolab.v1",
                       "task_success_contract_digest": spec["task_success_contract_digest"],
                       "max_hourly_rate_usd": str(rate.quantize(Decimal("0.01"), rounding=ROUND_UP)),
                       "hard_ttl_seconds": ttl, "implementation_commit": commit, **hosted_settings}
@@ -205,7 +237,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         if total_cap > 15:
             continue
         bindings[key] = {"configuration_digest": configured["configuration_digest"],
-                         "runtime_digest": descriptor["runtime_digest"], "backend": "robolab.v1",
+                         "runtime_digest": descriptor["runtime_digest"], "backend": descriptor["backend"],
                          "admission_digest": canonical_digest(descriptor), "execution_spec": descriptor}
         quote = {"schema_version": "beta_policy_screening_cost_quote.v1", "quote_id": "operator-cap-" + key,
                  "price_source": ("canonical_gpu_hard_cap_plus_bounded_hosted_http_charges" if hosted else
@@ -216,5 +248,6 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                  "maximum_cost_usd": str(total_cap.quantize(Decimal("0.01"), rounding=ROUND_UP)), "quote_digest": ""}
         quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
         quotes[key] = quote
-    return {"scene": scene, "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials},
+    return {"scene": scene, **({"candidate_ids": [selection["candidate_id"]]} if selection is not None else {}),
+            "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials},
             "cost_quotes": quotes}
