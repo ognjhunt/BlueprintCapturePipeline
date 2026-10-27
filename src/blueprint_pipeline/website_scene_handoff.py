@@ -194,13 +194,14 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
                 if (preparation["status"] == "intake_ready"
                         and preparation["intake_request"]["task"]["strategy"] == "pick_and_place"):
-                    # Abstain before the owner is asked to pay when the arm cannot carry the task.
+                    # Abstain before the owner is asked to pay when no enabled embodiment can carry the
+                    # task; one the gate cannot model is unassessed and never refused.
                     from .website_rigid_feasibility import rigid_task_verdict
                     verdict = rigid_task_verdict(preparation=preparation, collision_path=Path(runtime_inputs["collision"]["path"]))
                     write_json(native_root / "capability_verdict.json", verdict)
                     result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
                         "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
-                    if verdict["status"] != "clear":
+                    if verdict["status"] == "abstained":
                         result.update(status="needs_input", blockers=list(verdict["blockers"]))
                 if preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained":
                     from .website_scene_dispatch import binding_root, register_website_preparation

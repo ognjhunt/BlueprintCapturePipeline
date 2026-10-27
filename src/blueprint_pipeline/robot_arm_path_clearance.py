@@ -167,6 +167,29 @@ ARM_LINK_BOUNDS: dict[str, dict[str, Any]] = {
 }
 
 
+# The hand's body in the flange (link 8) frame: the Robotiq 2F-85's base, knuckles and outer fingers at
+# their authored rest pose (open, 83 mm between the pads), measured with ``measure_hand_body_bound`` from the
+# same runtime USD as ``ARM_LINK_BOUNDS``. The inner fingers carry the pads that hold the object and are not
+# measured; the body ends 19.4 mm short of the grasp point. Only a rigid carry measures it: an articulated
+# task's hand is meant to touch its handle.
+HAND_BODY_BOUNDS: dict[str, dict[str, Any]] = {
+    "franka_panda": {
+        "measured_from_sha256": "sha256:c8d72259834e2e5290754f8580b37efbc0dec079ac6a98b27b167efe6461eb2c",
+        "name": "robotiq_2f85_body",
+        "flange_link": "panda_link8",
+        "frame": 8,
+        "hand_root": "Robotiq_2F_85",
+        "parts": ("base_link", "left_outer_knuckle", "right_outer_knuckle", "left_inner_knuckle",
+                  "right_inner_knuckle", "left_outer_finger", "right_outer_finger"),
+        "offsets": (0.0376, 0.0750, 0.1299, 0.0375, 0.0753, -0.0145, 0.0702, 0.0702, 0.0705, 0.0705,
+                    0.1418, 0.1419, 0.0032, 0.0042, 0.0209, 0.0792, 0.0209, 0.0791, 0.0750, 0.1237,
+                    0.0269, 0.0291, 0.0844, 0.1237, 0.0269, 0.0291, 0.0844, 0.0753, 0.1238, 0.0270,
+                    0.0291, 0.0845, 0.1238, 0.0270, 0.0291, 0.0845, 0.1299, 0.1272, 0.1272, 0.1273,
+                    0.1273, -0.0145, 0.0061, 0.0061, 0.0061, 0.0061, 0.0376, 0.0375),
+    },
+}
+
+
 def measure_arm_link_bounds(robot_usd: str | Path, links: Sequence[str]) -> dict[str, tuple[float, ...]]:
     """Each named link's outer bound from a robot USD's collision meshes, in that link's frame.
 
@@ -190,27 +213,71 @@ def measure_arm_link_bounds(robot_usd: str | Path, links: Sequence[str]) -> dict
         link = next((p for p in Usd.PrimRange(root) if p.GetName() == name), None)
         if link is None:
             raise RobotArmPathClearanceError("robot_arm_path_link_missing:" + name)
-        link_from_world = np.linalg.inv(matrix(link))
-        parts = []
-        for prim in Usd.PrimRange(link, Usd.TraverseInstanceProxies()):
-            if prim.IsA(UsdGeom.Mesh):
-                points = np.asarray(UsdGeom.Mesh(prim).GetPointsAttr().Get() or [], dtype=float).reshape(-1, 3)
-            elif prim.IsA(UsdGeom.Cylinder):
-                cylinder = UsdGeom.Cylinder(prim)
-                radius, half = float(cylinder.GetRadiusAttr().Get()), 0.5 * float(cylinder.GetHeightAttr().Get())
-                angles = np.linspace(0.0, 2.0 * math.pi, 96, endpoint=False)
-                ring = np.c_[radius * np.cos(angles), radius * np.sin(angles)]
-                axis = "XYZ".index(str(cylinder.GetAxisAttr().Get()))
-                points = np.concatenate([np.insert(ring, axis, z, axis=1) for z in (-half, half)])
-            else:
-                continue
-            frame = link_from_world @ matrix(prim)
-            parts.append(points @ frame[:3, :3].T + frame[:3, 3])
+        parts = _geometry_points(link, np.linalg.inv(matrix(link)), matrix)
         if not parts:
             raise RobotArmPathClearanceError("robot_arm_path_link_geometry_missing:" + name)
-        extent = (np.concatenate(parts) @ DIRECTIONS.T).max(axis=0)
-        bounds[name] = tuple(float(value) for value in np.ceil(extent * 1e4) / 1e4)
+        bounds[name] = _support_bound(parts)
     return bounds
+
+
+def measure_hand_body_bound(robot_usd: str | Path, *, flange_link: str, hand_root: str,
+                            parts: Sequence[str]) -> tuple[float, ...]:
+    """The hand's body bound in the flange link's frame, measured as ``ARM_LINK_BOUNDS`` are.
+
+    ``parts`` are prims under ``hand_root`` in their authored (rest) pose; how ``HAND_BODY_BOUNDS``
+    was measured.
+    """
+    from pxr import Usd, UsdGeom
+
+    stage = Usd.Stage.Open(str(robot_usd))
+    root = stage.GetDefaultPrim() if stage else None
+    if not root:
+        raise RobotArmPathClearanceError("robot_arm_path_robot_usd_invalid")
+    cache = UsdGeom.XformCache()
+
+    def matrix(prim: Any) -> np.ndarray:
+        return np.array(cache.GetLocalToWorldTransform(prim), dtype=float).T
+
+    def named(name: str, within: Any) -> Any:
+        found = next((p for p in Usd.PrimRange(within) if p.GetName() == name), None)
+        if found is None:
+            raise RobotArmPathClearanceError("robot_arm_path_link_missing:" + name)
+        return found
+
+    flange_from_world = np.linalg.inv(matrix(named(flange_link, root)))
+    hand = named(hand_root, root)
+    points = [p for part in parts for p in _geometry_points(named(part, hand), flange_from_world, matrix)]
+    if not points:
+        raise RobotArmPathClearanceError("robot_arm_path_link_geometry_missing:" + hand_root)
+    return _support_bound(points)
+
+
+def _geometry_points(prim: Any, frame_from_world: np.ndarray, matrix: Any) -> list[np.ndarray]:
+    """Every Mesh or Cylinder under ``prim`` (instance proxies included), in another frame."""
+    from pxr import Usd, UsdGeom
+
+    parts = []
+    for child in Usd.PrimRange(prim, Usd.TraverseInstanceProxies()):
+        if child.IsA(UsdGeom.Mesh):
+            points = np.asarray(UsdGeom.Mesh(child).GetPointsAttr().Get() or [], dtype=float).reshape(-1, 3)
+        elif child.IsA(UsdGeom.Cylinder):
+            cylinder = UsdGeom.Cylinder(child)
+            radius, half = float(cylinder.GetRadiusAttr().Get()), 0.5 * float(cylinder.GetHeightAttr().Get())
+            angles = np.linspace(0.0, 2.0 * math.pi, 96, endpoint=False)
+            ring = np.c_[radius * np.cos(angles), radius * np.sin(angles)]
+            axis = "XYZ".index(str(cylinder.GetAxisAttr().Get()))
+            points = np.concatenate([np.insert(ring, axis, z, axis=1) for z in (-half, half)])
+        else:
+            continue
+        frame = frame_from_world @ matrix(child)
+        parts.append(points @ frame[:3, :3].T + frame[:3, 3])
+    return parts
+
+
+def _support_bound(parts: Sequence[np.ndarray]) -> tuple[float, ...]:
+    """The points' largest extent along each of ``DIRECTIONS``, rounded up to 0.1 mm."""
+    extent = (np.concatenate(parts) @ DIRECTIONS.T).max(axis=0)
+    return tuple(float(value) for value in np.ceil(extent * 1e4) / 1e4)
 
 
 @lru_cache(maxsize=None)
@@ -221,11 +288,22 @@ def _arm_model(robot_id: str) -> tuple[tuple[tuple[str, int, np.ndarray, np.ndar
         raise RobotArmPathClearanceError("robot_arm_path_robot_unmeasured:" + str(robot_id))
     links = []
     for name, (frame, offsets) in model["links"].items():
-        offsets = np.asarray(offsets, dtype=float)
-        low, high = -offsets[3:6], offsets[0:3]
-        centre = (low + high) / 2.0
-        links.append((name, int(frame), offsets, centre, float(np.linalg.norm(high - centre))))
+        links.append(_bound_entry(name, frame, offsets))
     return tuple(links), np.asarray(model["grasp_point_flange_m"], dtype=float)
+
+
+def _bound_entry(name: str, frame: int, offsets: Sequence[float]) -> tuple[str, int, np.ndarray, np.ndarray, float]:
+    offsets = np.asarray(offsets, dtype=float)
+    low, high = -offsets[3:6], offsets[0:3]
+    centre = (low + high) / 2.0
+    return name, int(frame), offsets, centre, float(np.linalg.norm(high - centre))
+
+
+@lru_cache(maxsize=None)
+def _hand_model(robot_id: str) -> tuple[tuple[str, int, np.ndarray, np.ndarray, float], ...]:
+    """The hand's body as one more bound, or none for a robot whose hand is not measured."""
+    hand = HAND_BODY_BOUNDS.get(robot_id)
+    return () if hand is None else (_bound_entry(hand["name"], hand["frame"], hand["offsets"]),)
 
 
 _DH = np.asarray(FRANKA_MODIFIED_DH, dtype=float)
@@ -582,10 +660,12 @@ def rigid_pick_place_clearance(*, robot_id: str, base_pose_world: Mapping[str, S
     object's scoring frame, backing off along ``approach_unit``), turned about the approach by a few
     rolls. It comes down to the object, lifts it straight up, carries it across above the higher end,
     lowers it onto the target and backs off. The arm's pose is solved every ``RIGID_PATH_STEP_M`` from
-    the previous solution, from each seed, and every arm link keeps ``margin_m`` from the scene. A
-    pass means one such motion exists, not that a policy finds it; the object itself is not measured.
+    the previous solution, from each seed, and every arm link and the hand's body (``HAND_BODY_BOUNDS``)
+    keep ``margin_m`` from the scene; the finger pads that hold the object are not measured. A pass
+    means one such motion exists, not that a policy finds it; the object itself is not measured.
     """
     links, grasp_point = _arm_model(robot_id)
+    links = links + _hand_model(robot_id)
     world_from_base = _pose_matrix(base_pose_world)
     base_from_world = np.linalg.inv(world_from_base)
     pose = [float(v) for v in start_pose_world]
@@ -657,27 +737,37 @@ CARRY_STATIONS = 8
 
 
 def first_carrying_stance(stances: Sequence[Mapping[str, Any]], *, collision_path: str | Path, robot_id: str,
-                          seeds: Sequence[Sequence[float]], **task: Any
+                          seeds: Sequence[Sequence[float]], grasps: Sequence[Mapping[str, Any]] | None = None,
+                          **task: Any
                           ) -> tuple[Mapping[str, Any] | None, dict[str, Any], list[tuple[Mapping[str, Any], dict]]]:
     """The first of ``stances`` (best first) from which ``rigid_pick_place_clearance`` clears.
 
     ``task`` holds that function's start, target and grasp arguments; the static scene is
-    ``collision_path``. Returns the stance (``None`` when none clears), the deciding report
-    and every attempt. With no clearing stance the report is the attempt that got
-    furthest; a pose reached but struck outranks one not reached.
+    ``collision_path``. Each of ``grasps`` (best first, named) replaces the task's
+    ``approach_unit`` and ``gripper_orientation_xyzw`` and is tried from every stance before
+    the next grasp; the scene near a stance is loaded once. Returns the stance (``None`` when
+    none clears), the deciding report and every attempt. With no clearing stance the report
+    is the attempt that got furthest; a pose reached but struck outranks one not reached.
     """
-    attempts = []
-    for stance in stances:
-        centre = stance["position_world_m"]
-        radius = scene_radius_m(robot_id)
-        triangles = load_background_triangles(collision_path, centre=centre, radius=radius,
-                                              world_from_stage=np.eye(4))
-        report = rigid_pick_place_clearance(robot_id=robot_id, seeds=seeds,
-            base_pose_world={"position_world_m": centre, "orientation_xyzw": stance["orientation_xyzw"]},
-            scene_obstacles=sample_scene_obstacles(triangles, centre=centre, radius=radius), **task)
-        attempts.append((stance, report))
-        if report["status"] == "clear":
-            return stance, report, attempts
+    attempts, nearby = [], {}
+    for grasp in grasps or [None]:
+        held = task if grasp is None else {**task, "approach_unit": grasp["approach_unit"],
+                                           "gripper_orientation_xyzw": grasp["gripper_orientation_xyzw"]}
+        for index, stance in enumerate(stances):
+            centre = stance["position_world_m"]
+            if index not in nearby:
+                radius = scene_radius_m(robot_id)
+                triangles = load_background_triangles(collision_path, centre=centre, radius=radius,
+                                                      world_from_stage=np.eye(4))
+                nearby[index] = sample_scene_obstacles(triangles, centre=centre, radius=radius)
+            report = rigid_pick_place_clearance(robot_id=robot_id, seeds=seeds,
+                base_pose_world={"position_world_m": centre, "orientation_xyzw": stance["orientation_xyzw"]},
+                scene_obstacles=nearby[index], **held)
+            if grasp is not None:
+                report["grasp"] = grasp["name"]
+            attempts.append((stance, report))
+            if report["status"] == "clear":
+                return stance, report, attempts
     furthest = max(attempts, key=lambda a: (a[1]["furthest_sample"], "scene_strike" in a[1]["blockers"][0]))
     return None, furthest[1], attempts
 
