@@ -21,13 +21,16 @@ from pathlib import Path
 from typing import Any
 
 
+def _checkout_metadata(root: Path) -> os.stat_result:
+    return (root / ".git").stat() if (root / ".git").exists() else root.stat()
+
+
 def checkout_owner(repo: str | Path) -> tuple[int, int] | None:
     """The checkout's owner and group when this process is root and they are not; otherwise None."""
     if os.geteuid() != 0:
         return None
-    root = Path(repo)
     try:
-        metadata = (root / ".git").stat() if (root / ".git").exists() else root.stat()
+        metadata = _checkout_metadata(Path(repo))
     except OSError:
         return None
     return None if metadata.st_uid == 0 else (metadata.st_uid, metadata.st_gid)
