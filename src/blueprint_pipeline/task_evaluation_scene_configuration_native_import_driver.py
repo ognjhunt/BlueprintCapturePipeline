@@ -909,6 +909,7 @@ def _run_native_import(
     destination_asset_path: Path | None = None,
     articulated: bool = False,
     static_receipt: Mapping[str, Any] | None = None,
+    rigid_probe_factory: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     # Isaac allows one SimulationApp per process, so a supplemental destination
     # is settled inside the same session right after the subject replacement.
@@ -958,6 +959,17 @@ def _run_native_import(
                     timestep_seconds=1.0 / 60.0, articulated=True, static_receipt=static_receipt,
                     required_motion_probe=required_plan)
                 observation["required_motion_probe"] = extra["required_motion_probe"]
+        if rigid_probe_factory is not None and not articulated:
+            from .rigid_robot_free_probe_isaac import record_in_active_isaac
+            from .rigid_robot_free_probe_recorder import TRACE_SCHEMA
+            try:
+                prepared = rigid_probe_factory(observation)
+                trace = record_in_active_isaac(prepared)
+            except Exception as exc:  # noqa: BLE001 - failure is retained, never a fabricated pass
+                trace = {"schema_version": TRACE_SCHEMA, "status": "failed",
+                    "error": f"{type(exc).__name__}:{str(exc)[:200]}", "trace_digest": ""}
+                trace["trace_digest"] = canonical_digest(trace, digest_field="trace_digest")
+            observation["rigid_robot_free_success_probe"] = trace
         result = dict(observation_consumer(observation))
         exit_code = 0
         return result
@@ -1166,6 +1178,7 @@ def execute_native_import_component(
         maximum_translation: float,
         maximum_rotation: float,
         robot_free_probe: Any = None,
+        rigid_robot_free_probe: Any = None,
         required_motion_probe: Any = None,
     ) -> dict[str, Any]:
         runtime_result: dict[str, Any] = {
@@ -1229,6 +1242,8 @@ def execute_native_import_component(
                 runtime_result["robot_free_success_probe"] = dict(robot_free_probe)
             if required_motion_probe is not None:
                 runtime_result["required_motion_probe"] = dict(required_motion_probe)
+        if not articulated_result and isinstance(rigid_robot_free_probe, Mapping):
+            runtime_result["rigid_robot_free_success_probe"] = dict(rigid_robot_free_probe)
         runtime_result["result_digest"] = canonical_digest(
             runtime_result, digest_field="result_digest"
         )
@@ -1301,6 +1316,7 @@ def execute_native_import_component(
                     maximum_translation=maximum_translation,
                     maximum_rotation=maximum_rotation,
                     robot_free_probe=observed.get("robot_free_success_probe"),
+                    rigid_robot_free_probe=observed.get("rigid_robot_free_success_probe"),
                     required_motion_probe=required_result,
                 ),
             )
@@ -1350,6 +1366,19 @@ def execute_native_import_component(
         component_result_path.write_text(canonical_json(component) + "\n", encoding="utf-8")
         return component
 
+    def _prepare_rigid_probe(observation: Mapping[str, Any]) -> dict[str, Any]:
+        from .rigid_robot_free_construction_probe import prepare_construction_probe
+        repeats = observation.get("repeats")
+        state_digests, translation, rotation = _qualified_repeats(
+            repeats, code="scene_configuration_native_import_execution_invalid")
+        native = _runtime_result(articulated_result=False, identity=configuration["replacement_identity"],
+            asset_digest=asset_record["digest"], static_digest=static_record["digest"],
+            runtime_identity=observation["runtime_identity"], repeats=repeats,
+            state_digests=state_digests, maximum_translation=translation, maximum_rotation=rotation)
+        return prepare_construction_probe(envelope=production_input["construction_envelope"],
+            asset_path=asset_path, static_path=static_path, native_import=native,
+            destination_asset_path=destination_asset_path)
+
     runner_arguments: dict[str, Any] = {
         "asset_path": asset_path,
         "required_checks": checks,
@@ -1362,6 +1391,11 @@ def execute_native_import_component(
         runner_arguments["static_receipt"] = static_receipt
     if destination_asset_path is not None:
         runner_arguments["destination_asset_path"] = destination_asset_path
+    envelope = production_input.get("construction_envelope")
+    if not articulated and isinstance(envelope, Mapping) and isinstance(envelope.get("request"), Mapping):
+        strategy = envelope["request"].get("task", {}).get("strategy")
+        if strategy in {"pick_and_place", "planar_push"}:
+            runner_arguments["rigid_probe_factory"] = _prepare_rigid_probe
     return dict(native_runner(**runner_arguments))
 
 

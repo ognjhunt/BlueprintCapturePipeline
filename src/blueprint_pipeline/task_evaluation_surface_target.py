@@ -48,7 +48,8 @@ def validate_surface_target(value):
               "surface_position_world_m", "support_prim_path", "support_source_instance_id",
               "maximum_tilt_rad", "stable_seconds", "maximum_linear_speed_m_s",
               "maximum_angular_speed_rad_s", "target_digest"}
-    require(isinstance(value, Mapping) and set(value) == fields,
+    container_fields = {"placement_relation", "interior_bounds_world_m"}
+    require(isinstance(value, Mapping) and (set(value) == fields or set(value) == fields | container_fields),
             "surface_target_invalid")
     require(value["schema_version"] == SCHEMA and value["shape"] == "flat_green_disc"
             and value["non_colliding"] is True and bool(value["visible_label"])
@@ -66,6 +67,19 @@ def validate_surface_target(value):
     require(value["radius_m"] <= 0.5 and value["maximum_tilt_rad"] < math.pi / 2
             and _target_digest_matches(value),
             "surface_target_digest_invalid")
+    if "placement_relation" in value:
+        interior = value["interior_bounds_world_m"]
+        require(value["placement_relation"] == "inside" and isinstance(interior, Mapping)
+                and set(interior) == {"minimum", "maximum"}
+                and all(isinstance(interior[key], list) and len(interior[key]) == 3
+                        and all(type(x) in (int, float) and math.isfinite(x) for x in interior[key])
+                        for key in interior)
+                and all(a < b for a, b in zip(interior["minimum"], interior["maximum"], strict=True)),
+                "surface_target_interior_invalid")
+        require(abs(position[2] - interior["minimum"][2]) <= 0.005
+                and all(interior["minimum"][i] <= position[i] - value["radius_m"]
+                        and position[i] + value["radius_m"] <= interior["maximum"][i] for i in (0, 1)),
+                "surface_target_interior_region_invalid")
     return dict(value)
 
 
@@ -79,10 +93,51 @@ def surface_target_for_web(value):
     return result
 
 
+def minimum_container_carry_height(task_spec, *, clearance_m):
+    """Scoring-frame height that keeps the whole carried object above the rim.
+
+    Stable orientation uses the oriented collider envelope. When a transfer
+    rotates the object, its enclosing sphere also bounds intermediate rotations.
+    Both captured interiors and separately qualified destination bodies use this
+    geometry; it authorizes no execution or contact claim.
+    """
+    from .adp_rigid_retreat_scoring import _rotate, _vector
+
+    surface = task_spec.get("surface_target") or {}
+    if surface.get("placement_relation") == "inside":
+        surface = validate_surface_target(surface)
+        rim = surface["interior_bounds_world_m"]["maximum"][2]
+    elif task_spec.get("destination_relation") is not None:
+        pose = _vector(task_spec.get("destination_pose_world"), 7)
+        interior = task_spec.get("destination_interior_bounds_body_frame_m") or {}
+        lo, hi = _vector(interior.get("minimum"), 3), _vector(interior.get("maximum"), 3)
+        require(pose is not None and lo is not None and hi is not None
+                and math.isclose(sum(x*x for x in pose[3:]), 1., abs_tol=1e-6)
+                and all(a < b for a, b in zip(lo, hi, strict=True)), "container_carry_geometry_invalid")
+        rim = max(pose[2] + _rotate(corner, pose[3:])[2] for corner in product(*zip(lo, hi, strict=True)))
+    else:
+        return None
+    bounds = task_spec.get("subject_collision_bounds_scoring_frame_m") or {}
+    lo, hi = _vector(bounds.get("minimum"), 3), _vector(bounds.get("maximum"), 3)
+    start = _vector(task_spec.get("start_pose_world"), 7)
+    finish = _vector(task_spec.get("destination_orientation_xyzw"), 4)
+    require(lo is not None and hi is not None and start is not None and finish is not None
+            and all(a < b for a, b in zip(lo, hi, strict=True))
+            and math.isclose(sum(x*x for x in start[3:]), 1., abs_tol=1e-6)
+            and math.isclose(sum(x*x for x in finish), 1., abs_tol=1e-6)
+            and type(clearance_m) in (int, float) and math.isfinite(clearance_m) and clearance_m > 0,
+            "container_carry_geometry_invalid")
+    corners = list(product(*zip(lo, hi, strict=True)))
+    same = abs(sum(a*b for a, b in zip(start[3:], finish, strict=True))) >= 1. - 1e-8
+    bottom = (min(_rotate(corner, finish)[2] for corner in corners) if same
+              else -max(math.sqrt(sum(x*x for x in corner)) for corner in corners))
+    return float(rim) - bottom + clearance_m
+
+
 def derive_surface_target(*, destination, support, source_min, source_max, support_instance_id,
                           start_support=None):
     """The region on ``support``; ``start_support`` is the subject's own surface when it differs."""
-    require(destination.get("kind") == "green_region" and destination.get("relation") == "on"
+    require(destination.get("kind") == "green_region" and destination.get("relation") in {"on", "inside"}
             and destination.get("orientation_xyzw") == [0, 0, 0, 1],
             "surface_target_destination_invalid")
     value = {"schema_version": SCHEMA, "shape": "flat_green_disc", "non_colliding": True,
@@ -92,6 +147,8 @@ def derive_surface_target(*, destination, support, source_min, source_max, suppo
              "support_source_instance_id": str(support_instance_id),
              "maximum_tilt_rad": math.radians(15), "stable_seconds": 1.0,
              "maximum_linear_speed_m_s": 0.02, "maximum_angular_speed_rad_s": 0.1}
+    if destination["relation"] == "inside":
+        value.update(placement_relation="inside", interior_bounds_world_m=destination.get("interior_bounds_world_m"))
     overrides = destination.get("success", {})
     require(isinstance(overrides, Mapping) and set(overrides) <= {
         "maximum_tilt_rad", "stable_seconds", "maximum_linear_speed_m_s", "maximum_angular_speed_rad_s"},
@@ -111,6 +168,9 @@ def derive_surface_target(*, destination, support, source_min, source_max, suppo
     require(not level or math.dist(nearest, p[:2]) > radius, "surface_target_initial_overlap")
     require(math.hypot(*[(source_max[i] - source_min[i]) / 2 for i in (0, 1)]) < radius,
             "surface_target_subject_does_not_fit")
+    if "interior_bounds_world_m" in value:
+        require(source_max[2] - source_min[2] < value["interior_bounds_world_m"]["maximum"][2] - p[2],
+                "surface_target_subject_does_not_fit_interior")
     return value
 
 
@@ -167,6 +227,11 @@ def bind_native_surface_target(*, task_spec, target, static, support):
             "surface_target_native_subject_does_not_fit")
     p = target["surface_position_world_m"]
     goal = [p[0], p[1], p[2] - min(c[2] for c in corners)]
+    if "interior_bounds_world_m" in target:
+        interior = target["interior_bounds_world_m"]
+        require(all(interior["minimum"][i] - (0.005 if i == 2 else 0.0) <= goal[i] + c[i]
+                    <= interior["maximum"][i] for c in corners for i in range(3)),
+                "surface_target_native_subject_does_not_fit_interior")
     tolerance = value["destination_position_tolerance_m"]
     value.update(surface_target=target, visible_target_marker=marker_for_surface_target(target),
         target_position_world_m=goal, destination_pose_world=[*p, 0., 0., 0., 1.],
@@ -239,6 +304,11 @@ def score_surface_target(*, target, bounds, samples, frequency_hz, minimum_lift_
     window = poses[-count:]
     result["whole_footprint_contained"] = all(math.dist(p[:2], center[:2]) <= radius + 1e-12
                                                for _, _, world in window for p in world)
+    if "interior_bounds_world_m" in target:
+        interior = target["interior_bounds_world_m"]
+        result["whole_volume_contained"] = all(
+            interior["minimum"][i] - (0.005 if i == 2 else 0.0) <= p[i] <= interior["maximum"][i]
+            for _, _, world in window for p in world for i in range(3))
     result["upright"] = all(_rotate([0, 0, 1], pose[3:])[2] >= math.cos(target["maximum_tilt_rad"])
                             for _, pose, _ in window)
     # Native support contact and released gripper are checked by the parent

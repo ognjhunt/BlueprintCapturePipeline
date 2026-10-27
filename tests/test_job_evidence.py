@@ -111,10 +111,10 @@ def test_description_only_question_has_no_fake_capture_or_run(tmp_path):
 
 
 def test_missing_native_profile_does_not_block_qualified_analytical_evidence(tmp_path, monkeypatch):
-    # This fixture qualifies reachability only, never folding performance.
-    _catalog(tmp_path, monkeypatch, task_family="laundry_folding")
+    # This unimplemented-family fixture qualifies reachability only, never task performance.
+    _catalog(tmp_path, monkeypatch, task_family="unimplemented_task_family")
     store = JobEvidenceStore(tmp_path / "jobs", tmp_path / "runs")
-    job = _job(scientific=True, task_family="laundry_folding")
+    job = _job(scientific=True, task_family="unimplemented_task_family")
     planned = store.submit(job)
     assert planned["state"] == "planned"
     assert planned["authorization_candidates"][0]["method_family"] == "analytic_geometry_kinematics"
@@ -130,7 +130,7 @@ def test_missing_native_profile_does_not_block_qualified_analytical_evidence(tmp
 def test_unsupported_native_family_without_qualified_method_abstains(tmp_path, monkeypatch):
     _catalog(tmp_path, monkeypatch)
     store = JobEvidenceStore(tmp_path / "jobs", tmp_path / "runs")
-    job = _job(scientific=True, task_family="laundry_folding")
+    job = _job(scientific=True, task_family="unimplemented_task_family")
     planned = store.submit(job)
     assert planned["state"] == "planned"
     assert planned["authorization_candidates"] == []
@@ -139,7 +139,7 @@ def test_unsupported_native_family_without_qualified_method_abstains(tmp_path, m
     assert result["state"] == "abstention"
     assert result["decision_envelope"]["evidence_accepted"] == []
     assert result["decision_envelope"]["claim_ceiling"]["physical_success"] is False
-    assert any("Capability gap for task family 'laundry_folding'" in row for row in result["limitations"])
+    assert any("Capability gap for task family 'unimplemented_task_family'" in row for row in result["limitations"])
     assert store.submit(job) == result
 
 

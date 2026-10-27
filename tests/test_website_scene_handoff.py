@@ -58,7 +58,7 @@ def test_novel_family_retains_the_scene_without_masks_authoring_or_a_substitute_
         tmp_path, monkeypatch, ready_atlas):
     kwargs = inputs(tmp_path)
     context = kwargs["descriptor"]["metadata"]["site_task_context"]
-    context.update(task_family="laundry_folding", description="Fold the towels", context_digest="sha256:" + "a" * 64)
+    context.update(task_family="unimplemented_task_family", description="Fold the towels", context_digest="sha256:" + "a" * 64)
     kwargs["clean_plate"]["task_masks"] = {"deferred_target_ids": ["towel"]}
 
     def unexpected(**_):
@@ -74,7 +74,7 @@ def test_novel_family_retains_the_scene_without_masks_authoring_or_a_substitute_
     assert result["blockers"] == ["website_native_task_profile_preparation_required"]
     gap = result["native_task_preparation_gap"]
     assert gap["job_disposition"] == "held_for_preparation"
-    assert gap["task_family"] == "laundry_folding" and gap["description"] == "Fold the towels"
+    assert gap["task_family"] == "unimplemented_task_family" and gap["description"] == "Fold the towels"
     assert gap["task_context_digest"] == context["context_digest"]
     assert result["visual_reconstruction_ready"] is True and result["simulator_ready"] is False
     assert result["provider_mutation_performed"] is False
@@ -88,7 +88,7 @@ def test_unknown_family_cannot_hide_a_subject_origin_conflict(tmp_path, monkeypa
                                                              atlas_origin, has_synthetic):
     from tests.test_website_task_preparation import SYNTHETIC_BALL
     kwargs = inputs(tmp_path)
-    kwargs["descriptor"]["metadata"]["site_task_context"].update(task_family="laundry_folding", description="Original job")
+    kwargs["descriptor"]["metadata"]["site_task_context"].update(task_family="unimplemented_task_family", description="Original job")
     ready_atlas["subject_origin"] = atlas_origin
     write_json(tmp_path / "pipeline/removal.json", {"entries": [],
         **({"synthetic_subject": dict(SYNTHETIC_BALL)} if has_synthetic else {})})

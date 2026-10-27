@@ -53,7 +53,8 @@ OBJECT_TYPES = frozenset({"RIGID", "ARTICULATION"})
 CAMERA_ROLES = ("external", "wrist", "overview")
 CAMERA_OPTICAL_CONVENTIONS = ("opencv",)
 ENV_ROOT = "{ENV_REGEX_NS}"
-TASK_KINDS = ("rigid_pick_place", "articulated_open_close")
+FAMILY_TASK_KINDS = ("pouring", "wiping", "insertion", "stacking", "button_press", "cloth_folding", "multi_step")
+TASK_KINDS = ("rigid_pick_place", "articulated_open_close", *FAMILY_TASK_KINDS)
 SCENARIO_CONTEXT_KINDS = ("construction_canary", "evaluation_cell")
 SUPPORTED_SCENARIO_RUNTIME_TARGETS = frozenset(
     {
@@ -837,6 +838,16 @@ def materialize_native_task_runtime_contract(
 ) -> dict[str, Any]:
     """Validate and freeze one native scene/task request before execution."""
 
+    if isinstance(task_spec, Mapping) and task_spec.get("task_kind") in FAMILY_TASK_KINDS:
+        from .task_evaluation_task_family_native_adapter import materialize_task_family_native_runtime_contract
+        return materialize_task_family_native_runtime_contract(scene_id=scene_id, task_id=task_id,
+            task_spec=task_spec, task_state_binding=task_state_binding, assets=assets,
+            robot_base_pose_world=robot_base_pose_world, robot_joint_reset_positions_rad=robot_joint_reset_positions_rad,
+            robot_configuration=robot_configuration, cameras=cameras, scenario_cell_id=scenario_cell_id,
+            scenario_instance_digest=scenario_instance_digest, seed=seed,
+            scenario_context_kind=scenario_context_kind, scenario_parameter_bindings=scenario_parameter_bindings,
+            construction_bindings=construction_bindings, task_freeze_digest=task_freeze_digest, destination=destination)
+
     errors: list[str] = []
     scene = str(scene_id or "").strip()
     task = str(task_id or "").strip()
@@ -1134,6 +1145,9 @@ def load_native_task_runtime_contract(path: str | Path) -> dict[str, Any]:
         raise NativeTaskRuntimeContractError(
             ["native_task_runtime_contract_unreadable"]
         ) from exc
+    if isinstance(document, dict) and document.get("schema_version") == "task_family_native_runtime_contract.v1":
+        from .task_family_native_contracts import validate_task_family_native_runtime_contract
+        return validate_task_family_native_runtime_contract(document)
     if not isinstance(document, dict) or document.get("schema_version") != SCHEMA_VERSION:
         raise NativeTaskRuntimeContractError(["native_task_runtime_contract_schema_invalid"])
     expected = canonical_digest(document, digest_field="contract_digest")

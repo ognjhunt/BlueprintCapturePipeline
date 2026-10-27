@@ -575,7 +575,8 @@ def rigid_pick_place_clearance(*, robot_id: str, base_pose_world: Mapping[str, S
                                contact_point_m: Sequence[float], approach_unit: Sequence[float],
                                gripper_orientation_xyzw: Sequence[float], pregrasp_clearance_m: float,
                                seeds: Sequence[Sequence[float]], margin_m: float = DEFAULT_MARGIN_M,
-                               scene_obstacles: SceneObstacles | None = None) -> dict[str, Any]:
+                               scene_obstacles: SceneObstacles | None = None,
+                               carry_height_world_m: float | None = None) -> dict[str, Any]:
     """Whether the arm can carry a rigid object from its start to its target, clear of the static scene.
 
     The hand holds the task's own grasp (``contact_point_m`` and ``gripper_orientation_xyzw`` in the
@@ -596,6 +597,10 @@ def rigid_pick_place_clearance(*, robot_id: str, base_pose_world: Mapping[str, S
     pick = np.asarray(pose[:3], dtype=float) + contact
     place = np.asarray(target_position_world, dtype=float) + contact
     height = max(float(pick[2]), float(place[2])) + RIGID_CARRY_CLEARANCE_M
+    if carry_height_world_m is not None:
+        if not math.isfinite(carry_height_world_m):
+            raise RobotArmPathClearanceError("robot_rigid_reach_carry_height_invalid")
+        height = max(height, float(carry_height_world_m))
     corners = [pick + pregrasp_clearance_m * outward, pick, np.array([pick[0], pick[1], height]),
                np.array([place[0], place[1], height]), place, place + pregrasp_clearance_m * outward]
     phases = ("approach", "lift", "carry", "lower", "retreat")
@@ -698,6 +703,13 @@ def _packet_rigid_clearance(root: Path, plan: Mapping[str, Any], spec: Mapping[s
                   "approach_unit": affordance["approach_unit_scoring_frame"],
                   "gripper_orientation_xyzw": affordance["gripper_orientation_scoring_frame_xyzw"],
                   "pregrasp_clearance_m": float(affordance["pregrasp_clearance_m"])}
+        from .task_evaluation_surface_target import minimum_container_carry_height
+        height = minimum_container_carry_height(spec, clearance_m=RIGID_CARRY_CLEARANCE_M)
+        if height is not None:
+            held = _pose_matrix({"position_world_m": [0., 0., 0.],
+                                "orientation_xyzw": spec["start_pose_world"][3:]})[:3, :3]
+            contact_z = float((held @ np.asarray(affordance["contact_point_scoring_frame_m"], dtype=float))[2])
+            inputs["carry_height_world_m"] = height + contact_z
     except (KeyError, TypeError, ValueError) as exc:
         raise RobotArmPathClearanceError("robot_rigid_reach_task_affordance_invalid") from exc
     scenes = [o for o in plan.get("objects") or [] if isinstance(o, Mapping) and o.get("semantic_role") == "scene_collision"]

@@ -86,6 +86,55 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
     )
 
 
+def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
+    """Recognize the compiled family route without claiming runtime execution."""
+    if not isinstance(handoff, Mapping) or not isinstance(task_context, Mapping):
+        return False
+    from .task_family_scoring import canonical_task_family, validate_task_family_contract
+    family = canonical_task_family(task_context.get("task_family"))
+    inputs = handoff.get("task_evaluation_inputs")
+    try:
+        if (family is None or not isinstance(inputs, Mapping)
+                or task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
+                or handoff.get("schema_version") != "website_scene_handoff.v1"
+                or handoff.get("digest") != canonical_digest(handoff, digest_field="digest")
+                or any(handoff.get(key) != task_context.get(key) for key in ("scene_id", "capture_id"))
+                or handoff.get("visual_reconstruction_ready") is not True
+                or handoff.get("simulator_ready") is not False
+                or handoff.get("job_disposition") != "accepted"
+                or inputs.get("task_family") != family
+                or (inputs.get("scope") or {}).get("task_context_digest") != task_context["context_digest"]
+                or inputs.get("runtime_adapter") != "task_evaluation_task_family_native_adapter"
+                or inputs.get("automatic_paid_execution_authorized") is not False
+                or handoff.get("website_intake_outbox") or "runtime_inputs" in handoff
+                or handoff.get("status") not in {"needs_input", "task_evaluation_ready"}):
+            return False
+        contract = inputs.get("task_success_contract")
+        if contract is not None:
+            contract = validate_task_family_contract(contract)
+            if contract["scope"] != inputs["scope"] or contract["task_family"] != family:
+                return False
+        blockers = handoff.get("blockers")
+        if handoff["status"] == "needs_input":
+            return (isinstance(blockers, list) and bool(blockers)
+                and all(isinstance(code, str) and code in {
+                    "website_scene_processing_rights_required", "website_task_family_success_contract_required",
+                    "website_task_family_native_runtime_inputs_required", "website_task_family_source_scene_binding_required",
+                    "website_task_family_frame_registration_required", "website_task_family_scene_appearance_asset_required",
+                    "website_task_family_scene_collision_asset_required"} for code in blockers))
+        if blockers != [] or contract is None:
+            return False
+        from .task_family_native_contracts import family_source_blockers, validate_task_family_native_runtime_contract
+        native = validate_task_family_native_runtime_contract(inputs["native_runtime_contract"])
+        source = inputs["source_bindings"]
+        return (native["task_spec"]["task_success_contract"] == contract
+            and source.get("task_context_digest") == task_context["context_digest"]
+            and source.get("source_geometry_digest") == handoff.get("source_geometry_digest")
+            and not family_source_blockers(native=native, source_bindings=source, source_scene=inputs["source_scene"]))
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
 def validate_website_task_context(
     value: Mapping[str, Any], *, request_id: str, scene_id: str, capture_id: str,
     purpose: str | None = None,

@@ -16,8 +16,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_native_arena_episode_compiler import (
-    TaskEvaluationNativeArenaEpisodeCompilerError,
+from .rigid_destination_geometry_math import (
+    DestinationGeometryMathError,
     _rotate_xyzw,
     _multiply_xyzw,
     _subject_bounds_in_scoring_frame,
@@ -176,7 +176,7 @@ def derive_rigid_destination_geometry(
             bounds=subject_structure.get("collision_bounds_body_frame_m"),
             transform=subject_scoring_transform,
         )
-    except TaskEvaluationNativeArenaEpisodeCompilerError as exc:
+    except DestinationGeometryMathError as exc:
         raise RigidDestinationGeometryError(
             "rigid_destination_geometry_subject_bounds_invalid"
         ) from exc
@@ -330,7 +330,18 @@ def destination_trajectory_geometry(destination: Mapping[str, Any], geometry: Ma
             or not all(isinstance(item, str) and item.startswith("/") for item in intended)):
         raise RigidDestinationGeometryError(code)
     offset = _rotate_xyzw([(lo+hi)/2 for lo,hi in zip(lower,upper,strict=True)], orientation)
-    return {"target_position_world_m": [p+q for p,q in zip(position,offset,strict=True)],
+    target = [p+q for p,q in zip(position,offset,strict=True)]
+    # The centre of a deep cavity is airborne. Place at its qualified resting
+    # height so the native place phase can actually observe support contact.
+    target[2] = (support[0] + support[1]) / 2
+    local = _rotate_xyzw([a-b for a,b in zip(target,position,strict=True)],
+                         [-orientation[0], -orientation[1], -orientation[2], orientation[3]])
+    if any(not lo - 1e-9 <= item <= hi + 1e-9 for lo,item,hi in zip(lower,local,upper,strict=True)):
+        raise RigidDestinationGeometryError(code)
+    return {"target_position_world_m": target,
+            "destination_pose_world": [*position, *orientation],
+            "destination_position_bounds_destination_frame_m": {"minimum": lower, "maximum": upper},
+            "destination_interior_bounds_body_frame_m": geometry["destination_interior_bounds_body_frame_m"],
             "destination_orientation_world_xyzw": _multiply_xyzw(orientation, subject_orientation),
             "insertion_withdrawal_unit_world": _rotate_xyzw(withdrawal, orientation),
             "support_height_interval_m": support, "intended_support_prim_paths": list(intended),
@@ -350,6 +361,24 @@ def bind_destination_trajectory(task_spec: Mapping[str, Any], destination: Mappi
                   destination_orientation_xyzw=destination["destination_orientation_world_xyzw"],
                   support_height_interval_m=destination["support_height_interval_m"],
                   visible_target_label=destination["visible_label"], interaction_affordance=affordance)
+    # Native construction consumes the world-bound midpoint before the target
+    # field. Keep that midpoint at the same supported release pose; local
+    # whole-subject bounds remain the scoring authority for a destination body.
+    local, pose = destination.get("destination_position_bounds_destination_frame_m"), destination.get("destination_pose_world")
+    if local is not None and pose is not None:
+        points = [[pose[i] + rotated[i] for i in range(3)] for rotated in (
+            _rotate_xyzw([x,y,z], pose[3:])
+            for x in (local["minimum"][0], local["maximum"][0])
+            for y in (local["minimum"][1], local["maximum"][1])
+            for z in (local["minimum"][2], local["maximum"][2]))]
+        result["destination_position_bounds_world_m"] = {
+            "minimum": [min(point[0] for point in points), min(point[1] for point in points),
+                        destination["support_height_interval_m"][0]],
+            "maximum": [max(point[0] for point in points), max(point[1] for point in points),
+                        destination["support_height_interval_m"][1]]}
+        result.update(destination_relation=destination["relation"], destination_pose_world=pose,
+                      destination_position_bounds_destination_frame_m=local,
+                      destination_interior_bounds_body_frame_m=destination["destination_interior_bounds_body_frame_m"])
     if not result.get("instruction_subject_label"):
         result["prompt"] = (f"Pick up the configured rigid object and place it "
                             f"{destination['relation']} the {destination['visible_label']}.")

@@ -174,7 +174,7 @@ def test_a_scene_is_refused_by_name_before_any_packet(tmp_path) -> None:
         _compile(tmp_path, {**scene, "droid_profile_digest": "sha256:" + "0" * 64})
     destination = {**scene["revision"], "task_template": {**scene["revision"]["task_template"],
                                                           "destination": {"geometry": {}}}}
-    with pytest.raises(TeamScenePacketError, match="destination_body_unsupported"):
+    with pytest.raises(TeamScenePacketError, match="destination_placement_qualification_required"):
         _compile(tmp_path, {**scene, "revision": destination})
     assert not (tmp_path / "team-scene").exists()
 

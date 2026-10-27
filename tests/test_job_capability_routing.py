@@ -46,7 +46,7 @@ def test_missing_measurements_are_requested_not_assumed():
 
 
 def test_unsupported_family_is_a_gap_not_coerced_into_pick_place():
-    for family in ("laundry_folding", "manipulation", "pick"):
+    for family in ("unimplemented_task_family", "manipulation", "pick"):
         value = route_job_capabilities(family)
         assert value["status"] == "capability_gap"
         assert value["configurations"] == []

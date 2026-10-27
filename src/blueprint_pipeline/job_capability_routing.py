@@ -68,6 +68,7 @@ def route_job_capabilities(
     *,
     embodiment_ids: Sequence[str] = (),
     provided_inputs: Sequence[str] = (),
+    native_runtime_contracts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return supported complete configurations, or the exact reason none can run."""
 
@@ -91,13 +92,31 @@ def route_job_capabilities(
             "reason": "No supported task profile compiles and independently scores this task family yet.",
         }
     else:
-        missing_inputs.extend(item for item in profile.required_inputs if item not in provided_inputs)
+        from .task_family_scoring import canonical_task_family
+        family = canonical_task_family(task_family)
+        family_runtimes = {}
+        if family is not None:
+            from .task_family_native_contracts import validate_task_family_native_runtime_contract
+            for embodiment_id, raw in (native_runtime_contracts or {}).items():
+                runtime = validate_task_family_native_runtime_contract(raw)
+                if runtime["task_spec"]["task_kind"] != family:
+                    raise ValueError("job_capability_native_task_family_mismatch")
+                if runtime["robot_configuration"].get("embodiment_id") != embodiment_id:
+                    raise ValueError("job_capability_native_embodiment_mismatch")
+                family_runtimes[embodiment_id] = runtime
+        supplied = set(provided_inputs)
+        if family_runtimes:
+            supplied.update(profile.required_inputs)
+        missing_inputs.extend(item for item in profile.required_inputs if item not in supplied)
         bodies = [row for row in EMBODIMENT_REGISTRY if not requested or row.embodiment_id in requested]
         policies: list[PolicyCandidate | HostedPolicyCandidate] = [*REGISTRY, *HOSTED_REGISTRY]
         listed: set[str] = set()
         matched_policies: set[str] = set()
         for body in bodies:
-            if profile.profile_id not in body.task_profile_ids:
+            family_runtime = family_runtimes.get(body.embodiment_id)
+            if family is not None and family_runtime is None:
+                continue
+            if family is None and profile.profile_id not in body.task_profile_ids:
                 if requested:
                     unavailable.append({"kind": "embodiment", "id": body.embodiment_id,
                                         "reason": body.reason or f"No {profile.profile_id} adapter is admitted for this robot."})
@@ -119,6 +138,11 @@ def route_job_capabilities(
                     continue
                 if not body.available:
                     continue
+                if family_runtime is not None:
+                    configured = family_runtime["robot_configuration"]
+                    if (configured.get("observation_schema_id") != policy.observation_schema_id
+                            or configured.get("action_schema_id") != action):
+                        continue
                 configurations.append({
                     "task_profile_id": profile.profile_id,
                     "native_task_kind": profile.native_task_kind,
@@ -130,13 +154,16 @@ def route_job_capabilities(
                     "controller": body.controller, "simulator_runtime_id": body.simulator_runtime_id,
                     "sensor_reference": body.sensor_reference,
                     "policy": _policy_row(policy),
+                    **({"native_runtime_contract_digest": family_runtime["contract_digest"],
+                        "task_success_contract_digest": family_runtime["task_spec"]["task_success_contract"]["contract_digest"]}
+                       if family_runtime is not None else {}),
                 })
         unmatched = [
             {"kind": "policy", "id": policy.candidate_id,
              "reason": "No listed robot setup declares this policy's camera and action interface."}
             for policy in policies if policy.candidate_id not in matched_policies
         ]
-        if not configurations and gap is None:
+        if not configurations and gap is None and not (family is not None and missing_inputs):
             gap = {"task_family": task_family, "missing": ["runnable_configuration"],
                    "reason": "No available robot and runnable policy pair supports this task profile."}
     status: RoutingStatus = (
