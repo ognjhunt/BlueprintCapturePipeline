@@ -458,6 +458,10 @@ def test_provider_canary_package_imports_from_its_shipped_module_closure(
     }
     for name in module_names:
         shutil.copy2(package / name, staged / name)
+    for name in bundle.CANARY_SHIPPED_PACKAGE_FILES:
+        target = staged / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(package / name, target)
 
     completed = subprocess.run(
         [

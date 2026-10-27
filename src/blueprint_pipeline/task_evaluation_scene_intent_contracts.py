@@ -15,7 +15,9 @@ from typing import Any
 from .decision_evidence_contracts import cross_runtime_canonical_digest as canonical_digest
 from .validation_file_digests import note_consulted
 
-TASK_STRATEGIES = ("pick_and_place", "articulated_open_close")
+from .task_family_scoring import FAMILY_ALIASES
+
+TASK_STRATEGIES = ("pick_and_place", "articulated_open_close", *FAMILY_ALIASES)
 ARTICULATION_JOINT_TYPES = ("prismatic", "revolute")
 REQUEST_SCHEMA = "task_evaluation_scene_intake_request.v1"
 INTENT_SCHEMA = "task_evaluation_scene_intent.v1"
@@ -85,9 +87,17 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     _require(isinstance(task, Mapping) and task.get("strategy") in TASK_STRATEGIES
              and _identifier(task.get("task_id")), "task_invalid")
     _require(type(task.get("reuse_completed_stages", True)) is bool, "task_reuse_mode_invalid")
+    from .task_family_scoring import canonical_task_family
+    family = canonical_task_family(task["strategy"])
+    if family is not None:
+        from .task_family_dispatch_contracts import validate_family_intake_task
+        try:
+            validate_family_intake_task(task)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise SceneIntakeError("scene_intake_task_family_invalid:" + str(exc)) from exc
     # A relocation binds a destination; an articulated open/close binds the
     # mechanism instead (the moving part never leaves its assembly).
-    required = (("subject", "support", "articulation", "success")
+    required = (() if family is not None else ("subject", "support", "articulation", "success")
                 if task["strategy"] == "articulated_open_close"
                 else ("subject", "support", "destination", "success"))
     for key in required:

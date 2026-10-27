@@ -53,7 +53,11 @@ def register_website_preparation(*, preparation_path, runtime_inputs_path, task_
     context = read(task_context_path, digest_field="context_digest")
     construction_rights_admission(preparation=preparation, task_context=context, now=now)
     capture_source = _selected_capture_source(preparation_path, preparation, context)
-    prepare_construction_stages(runtime_inputs_path=Path(runtime_inputs_path), preparation_path=Path(preparation_path))
+    from .website_task_family_packet import is_task_family_preparation, family_source_references
+    if is_task_family_preparation(preparation):
+        family_source_references(preparation=preparation, runtime_inputs_path=runtime_inputs_path)
+    else:
+        prepare_construction_stages(runtime_inputs_path=Path(runtime_inputs_path), preparation_path=Path(preparation_path))
     value = {"schema_version": "website_scene_source_registration.v1",
         "request_digest": cross_runtime_canonical_digest(preparation["intake_request"]),
         "references": {"preparation": record(preparation_path), "runtime_inputs": record(runtime_inputs_path),
@@ -98,10 +102,15 @@ def resolve_website_source(*, intent, config):
                 and intent['request'].get('consent', {}).get('rights_reference')
                     == capture_source['capture_rights_digest'],
                 'website_capture_source_intake_mismatch')
-    from .website_native_background import prepare_construction_stages
-    construction = prepare_construction_stages(runtime_inputs_path=Path(refs["runtime_inputs"]["path"]),
-                                               preparation_path=Path(refs["preparation"]["path"]))
-    files = {row["path"]: row["size_bytes"] for row in construction["references"]}
+    from .website_task_family_packet import is_task_family_preparation, family_source_references
+    if is_task_family_preparation(preparation):
+        rows = family_source_references(preparation=preparation, runtime_inputs_path=refs["runtime_inputs"]["path"])
+        files = {row["reference"]["path"]: row["reference"]["size_bytes"] for row in rows}
+    else:
+        from .website_native_background import prepare_construction_stages
+        construction = prepare_construction_stages(runtime_inputs_path=Path(refs["runtime_inputs"]["path"]),
+                                                   preparation_path=Path(refs["preparation"]["path"]))
+        files = {row["path"]: row["size_bytes"] for row in construction["references"]}
     files.update({ref["path"]: ref["size_bytes"] for ref in refs.values()})
     value = {"schema_version": "website_scene_source_binding.v1", "binding_id": intent["request"]["source"]["binding_id"],
         "source_content_digest": intent["request"]["source"]["content_digest"], "intent_digest": intent["intent_digest"],
@@ -165,6 +174,44 @@ def materialize_website_attempt(*, intent_path, source_binding_path, machinery_p
     birth_scene_member(output, owner_intent_id=intent['intent_id'],
         owner_raw_ref=record(intent_path),
         birth_request_raw_ref=record(preparation_attempt_path(Path(intent_path).parent, attempt_id)), now=now)
+    from .website_task_family_packet import is_task_family_preparation
+    if is_task_family_preparation(preparation):
+        from .website_native_background import construction_rights_admission
+        from .task_evaluation_scene_configuration_submission_inputs import release_inputs
+        from .website_task_family_packet import materialize_website_task_family_packet
+        # Preserve the same immutable release admission as the rigid producer.
+        checked_file(release['release_environment']['path'], release['release_environment'])
+        release_inputs(deploy_path=checked_file(release['deploy_receipt']['path'], release['deploy_receipt']),
+            provenance_path=checked_file(release['release_provenance']['path'], release['release_provenance']),
+            publication_root=safe_path(release['runtime_publication_root']), commit=release['source_commit'],
+            release_admission_mode=release['release_admission_mode'])
+        import time
+        construction_rights_admission(preparation=preparation, task_context=context,
+                                     now=time.time() if now is None else now)
+        require(attempt.get('maximum_spend_usd') == 0
+                and attempt.get('paid_authority_granted') is False
+                and attempt.get('provider_allocation_permitted') is False,
+                'website_task_family_preparation_attempt_authority_invalid')
+        packet = materialize_website_task_family_packet(preparation=preparation,
+            runtime_inputs_path=refs['runtime_inputs']['path'], output_root=output / 'native-packet',
+            intent_reference=record(intent_path), attempt_reference=record(
+                preparation_attempt_path(Path(intent_path).parent, attempt_id)),
+            release_reference=record(release_binding_path))
+        from .website_task_family_scene_inputs import write_family_scene_inputs
+        packet.update(write_family_scene_inputs(packet=packet, preparation=preparation,
+            preparation_reference=refs['preparation'], task_context_reference=refs['task_context'],
+            runtime_inputs_reference=refs['runtime_inputs'], intent_reference=record(intent_path)))
+        result = {'schema_version': 'website_scene_attempt_factory.v1', 'status': 'native_packet_ready',
+            'intent_digest': intent['intent_digest'], 'attempt_digest': attempt['attempt_digest'],
+            'source_commit': release['source_commit'], **packet,
+            'task_family': preparation['task_evaluation_inputs']['task_family'],
+            'task_family_runtime_selection': preparation['task_evaluation_inputs']['task_family_runtime_selection'],
+            'policy_selection': preparation['task_evaluation_inputs'].get('policy_selection'),
+            'execution_authority_granted': False, 'provider_mutation_performed': False,
+            'physical_scale_measured': False, 'physical_registration_proven': False,
+            'claim_scope': 'development_only'}
+        result['factory_digest'] = canonical_digest(result, digest_field='factory_digest')
+        return result
     submission = output / "submission"
     materialize_website_submission(task=task, expected_production_commit=release["source_commit"],
         **{key + "_path": checked_file(release[key]["path"], release[key])

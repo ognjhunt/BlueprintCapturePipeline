@@ -64,6 +64,10 @@ def _completed_resolution(intent, config):
 def resolve_scene_source(*, intent, config, release):
     from .task_evaluation_scene_progression import SourceResolution
     source = intent["request"]["source"]
+    from .task_family_scoring import canonical_task_family
+    if source['kind'] == 'gaussian_splat' and canonical_task_family(intent['request']['task'].get('strategy')):
+        from .website_scene_dispatch import resolve_website_source
+        return resolve_website_source(intent=intent, config=config)
     if ((source["kind"] == "gaussian_splat" or (source["kind"] == "mesh"
              and source["binding_id"].startswith("website-development-")))
             and intent["request"]["task"].get("subject", {}).get("geometry_origin")

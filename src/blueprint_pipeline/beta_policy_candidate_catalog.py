@@ -62,6 +62,11 @@ INTERFACE_SCHEMA = _object({
     "history_frames": {"type": "integer", "minimum": 1, "maximum": 10000},
     "normalization_digest": _OPTIONAL_DIGEST,
 })
+# Native families retain the served controller and bounds alongside the shared
+# interface fields. Existing DROID catalog entries keep their frozen shape.
+INTERFACE_SCHEMA["properties"].update({"controller": _ID, "action_bounds": {
+    "type": "array", "minItems": 1, "items": {"type": "array", "minItems": 2, "maxItems": 2,
+                                                "items": {"type": "number"}}}})
 RUNTIME_SCHEMA = _object({
     "backend": _ID,
     "runtime_id": _ID,

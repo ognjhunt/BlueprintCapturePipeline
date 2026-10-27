@@ -139,7 +139,21 @@ def _history(decoded: dict, intent: dict, roots: dict, reasons: set, *, work_bud
                  and isinstance(value["state"], dict) and isinstance(value["blockers"], list)
                  and all(isinstance(code, str) for code in (_work_items(value["blockers"], work_budget) if work_budget is not None else value["blockers"])), "event_invalid", **_work_kwargs(work_budget))
         if value["result_reference"] is not None:
-            _remote(value["result_reference"], **_work_kwargs(work_budget))
+            reference = value['result_reference']
+            if isinstance(reference, dict) and reference.get('schema_version') == 'website_task_family_preparation_result.v1':
+                from .task_family_dispatch_contracts import validate_family_preparation_result_reference
+                try:
+                    if work_budget is not None:
+                        _work_call(work_budget, validate_family_preparation_result_reference, reference,
+                            request=intent['request'], status=value['status'], phase=value['phase'])
+                    else:
+                        validate_family_preparation_result_reference(reference, request=intent['request'],
+                            status=value['status'], phase=value['phase'])
+                    retained._path(reference['path'], **_work_kwargs(work_budget))
+                except (ValueError, TypeError, KeyError):
+                    raise SceneInventoryError('scene_inventory_family_result_reference_invalid') from None
+            else:
+                _remote(reference, **_work_kwargs(work_budget))
         events[sequence] = value
     previous = None
     for number in (_work_items(range(1, len(events) + 1), work_budget) if work_budget is not None else range(1, len(events) + 1)):
@@ -195,7 +209,7 @@ def _proofs(emission_budget, *groups, work_budget=None):
 def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_id: str, *, emission_budget=None, work_budget=None) -> tuple:
     if work_budget is not None:
         _work(work_budget)
-    local, remote, occurrences, deferred = {}, {}, 0, 0
+    local, remote, family, occurrences, deferred = {}, {}, {}, 0, 0
     index = {_identity(row, **_work_kwargs(work_budget)): (role, row) for role, rows in (_work_items(decoded.items(), work_budget) if work_budget is not None else decoded.items()) for row in (_work_items(rows, work_budget) if work_budget is not None else rows)}
     def add(role, ref, sequence):
         if work_budget is not None:
@@ -224,7 +238,14 @@ def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_
         if ref is not None:
             occurrences += 1
             _require(occurrences <= MAX_REFERENCES, "references_limit", **_work_kwargs(work_budget))
-            remote.setdefault((ref["uri"], ref["digest"], ref["size_bytes"]), set()).add(sequence)
+            if ref.get('schema_version') == 'website_task_family_preparation_result.v1':
+                key = _raw_reference({name: ref[name] for name in ('path', 'sha256', 'size_bytes')},
+                                     **_work_kwargs(work_budget))
+                prior = family.setdefault(key, {'reference': ref, 'sequences': set()})
+                _require(prior['reference'] == ref, 'family_result_reference_conflict', **_work_kwargs(work_budget))
+                prior['sequences'].add(sequence)
+            else:
+                remote.setdefault((ref["uri"], ref["digest"], ref["size_bytes"]), set()).add(sequence)
     rows = _output_rows(emission_budget, reference=True, **_work_kwargs(work_budget))
     for key, sequences in (_work_items((_work_order(work_budget, sorted, local.items()) if work_budget is not None else sorted(local.items())), work_budget) if work_budget is not None else sorted(local.items())):
         role, path, digest, size = key
@@ -244,7 +265,16 @@ def _obligations(events: dict, decoded: dict, reasons: set, roots: dict, intent_
         (_work_sort(work_budget, sequences) if work_budget is not None else sequences.sort())
         rows.append({"role": "remote_result_reference", "uri": uri, "digest": digest, "size_bytes": size,
                      "event_sequences": sequences, "status": "kept_deferred", "reason": "remote_result_scope_unproven"})
-    return rows, deferred + len(remote), occurrences
+    for (path, digest, size), branch in (_work_items((_work_order(work_budget, sorted, family.items()) if work_budget is not None else sorted(family.items())), work_budget) if work_budget is not None else sorted(family.items())):
+        sequences = _output_rows(emission_budget, branch['sequences'], **_work_kwargs(work_budget))
+        (_work_sort(work_budget, sequences) if work_budget is not None else sequences.sort())
+        reference = branch['reference']
+        rows.append({'role': 'family_preparation_result', 'path': path, 'sha256': digest, 'size_bytes': size,
+            'digest': reference['digest'], 'task_family': reference['task_family'], 'event_sequences': sequences,
+            'status': 'kept_deferred', 'reason': 'family_preparation_result_scope_unproven',
+            'source_provenance': None})
+        reasons.add('family_preparation_result_scope_unproven')
+    return rows, deferred + len(remote) + len(family), occurrences
 
 
 def _member(path: str, kind: str, binding: dict, sources: list, *, emission_budget=None, work_budget=None) -> dict:

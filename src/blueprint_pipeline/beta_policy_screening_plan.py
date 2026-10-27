@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from .beta_policy_candidate_catalog import CANDIDATE_ID_PATTERN, DIGEST_PATTERN, ID_PATTERN, validate_catalog
 from .decision_evidence_contracts import canonical_digest
 from .team_evaluation_plan import scored_cells
+from .task_family_policy_execution import FAMILY_BACKEND, family_policy_execution_binding
 
 PLAN_SCHEMA_VERSION = "beta_policy_screening_plan.v1"
 EXECUTION_SCHEMA_VERSION = "blueprint.beta_policy_screening_execution.v1"
@@ -104,7 +105,7 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
     if (set(result) - required - {"machine_avoidlist_path", "credential_file"} - _HOSTED_COST_FIELDS
             or required - set(result)
             or result["schema_version"] != EXECUTION_SCHEMA_VERSION
-            or result["backend"] != "robolab.v1"
+            or result["backend"] not in {"robolab.v1", FAMILY_BACKEND}
             or result["candidate_id"] != candidate_id
             or result["configuration_digest"] != configuration_digest):
         raise BetaPolicyScreeningPlanError("beta_screening_execution_binding_invalid")
@@ -202,6 +203,23 @@ def validate_cost_quote(value: Mapping[str, Any], *, configuration_digest: str,
 
 def _native_scene_plan(scene: Mapping[str, Any]) -> Mapping[str, Any]:
     plan = scene.get("native_scene_plan")
+    if scene.get("evaluation_backend") == FAMILY_BACKEND:
+        if (not isinstance(plan, Mapping) or plan.get("task_kind") != scene.get("task_kind")
+                or plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")):
+            raise BetaPolicyScreeningPlanError("beta_screening_native_family_scene_plan_invalid")
+        try:
+            family_policy_execution_binding(plan)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise BetaPolicyScreeningPlanError("beta_screening_native_family_scene_plan_invalid") from exc
+        if (plan.get("task_spec") != scene.get("task_spec")
+                or plan["plan_digest"] != scene.get("scene_revision_digest")
+                or plan["native_runtime_contract"]["task_spec"]["task_success_contract"]["scope"] != {
+                    "scene_id": scene.get("scene_id"), "task_id": scene.get("task_id"),
+                    "task_context_digest": scene.get("task_context_digest")}
+                or plan["native_runtime_contract"]["task_spec"]["task_success_contract"]["contract_digest"]
+                != scene.get("task_success_contract_digest")):
+            raise BetaPolicyScreeningPlanError("beta_screening_native_family_scene_plan_invalid")
+        return plan
     if (not isinstance(plan, Mapping) or plan.get("task_kind") != scene.get("task_kind")
             or plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
             or not isinstance(plan.get("objects"), list)
@@ -221,6 +239,19 @@ def screening_cells(scene: Mapping[str, Any], count: int = DEFAULT_EPISODES) -> 
     # This public screening salt is never the private scored-200 salt.
     seed_material = "beta_policy_screening.v1:" + scene["scene_revision_digest"] + ":" + scene["task_context_digest"]
     salt = hashlib.sha256(seed_material.encode()).hexdigest()
+    if scene.get("evaluation_backend") == FAMILY_BACKEND:
+        # These are matched, frozen-reset repetitions. Do not advertise the
+        # rigid lane's placement/lighting perturbations for engines that have
+        # not qualified their application to this family's native assets.
+        cells = []
+        for ordinal in range(count):
+            scenario = {"family": "canonical_anchor", "ordinal": ordinal, "parameters": {}}
+            digest = canonical_digest(scenario)
+            seed = int(hashlib.sha256(f"{salt}:{ordinal}".encode()).hexdigest()[:8], 16) % 2**31
+            cells.append({"cell_id": f"screening.{scene['scene_id']}.{ordinal:03d}", "seed": seed,
+                "family": "canonical_anchor", "partition": "screening", "resolved_scenario": scenario,
+                "cell_spec_digest": digest, "resolved_scenario_digest": digest})
+        return cells
     draws = scored_cells(scene_revision_digest=scene["scene_revision_digest"], scene_id=scene["scene_id"],
                          salt=salt, task_spec=scene["task_spec"], task_kind=scene["task_kind"],
                          nominal_dynamic_friction=scene.get("nominal_dynamic_friction"), count=max(10, count))
@@ -246,11 +277,20 @@ def _scene(value: Mapping[str, Any]) -> dict[str, Any]:
     scene = _json(value)
     for key in ("site_id", "scene_id", "capture_id", "task_id", "scene_intent_id", "task_kind"):
         _id(scene.get(key), "beta_screening_scene_" + key + "_missing")
+    family = scene.get("evaluation_backend") == FAMILY_BACKEND
     for key in ("scene_revision_digest", "scene_intent_digest", "task_context_digest",
-                "task_success_contract_digest", "robot_free_probe_digest"):
+                "task_success_contract_digest"):
         _digest(scene.get(key), "beta_screening_scene_" + key + "_missing")
-    if scene.get("robot_free_probe_status") != "passed":
-        raise BetaPolicyScreeningPlanError("beta_screening_robot_free_probe_not_passed")
+    if family:
+        _digest(scene.get("family_static_readiness_digest"), "beta_screening_family_readiness_missing")
+        if (scene.get("pre_policy_site_qualification_required") is not True
+                or scene.get("scenario_scope") != "native_frozen_reset_seeds"
+                or "robot_free_probe_digest" in scene or "robot_free_probe_status" in scene):
+            raise BetaPolicyScreeningPlanError("beta_screening_family_native_qualification_required")
+    else:
+        _digest(scene.get("robot_free_probe_digest"), "beta_screening_scene_robot_free_probe_digest_missing")
+        if scene.get("robot_free_probe_status") != "passed":
+            raise BetaPolicyScreeningPlanError("beta_screening_robot_free_probe_not_passed")
     if not isinstance(scene.get("task_spec"), dict) or scene["task_spec"].get("task_kind") != scene["task_kind"]:
         raise BetaPolicyScreeningPlanError("beta_screening_task_spec_binding_invalid")
     _receipt(scene.get("scene_inputs"))
@@ -308,6 +348,7 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
                 or binding.get("backend") != spec["backend"]
                 or binding.get("admission_digest") != canonical_digest(spec)
                 or spec["task_success_contract_digest"] != scene["task_success_contract_digest"]
+                or (spec["backend"] == FAMILY_BACKEND) is not (scene.get("evaluation_backend") == FAMILY_BACKEND)
                 or (candidate["runtime"] or {}).get("backend") != spec["backend"]):
             blockers.append("runtime_candidate_binding_mismatch")
     except BetaPolicyScreeningPlanError as exc:
@@ -390,7 +431,10 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         "scene_id": scene["scene_id"], "capture_id": scene["capture_id"], "task_id": scene["task_id"],
         "scene_revision_digest": scene["scene_revision_digest"],
         "task_success_contract_digest": scene["task_success_contract_digest"],
-        "robot_free_probe_digest": scene["robot_free_probe_digest"],
+        **({"evaluation_backend": FAMILY_BACKEND, "pre_policy_site_qualification_required": True,
+            "family_static_readiness_digest": scene["family_static_readiness_digest"],
+            "scenario_scope": "native_frozen_reset_seeds"} if scene.get("evaluation_backend") == FAMILY_BACKEND
+           else {"robot_free_probe_digest": scene["robot_free_probe_digest"]}),
         "source": {field: scene[field] for field in SOURCE_FIELDS},
         "scene_inputs": deepcopy(scene["scene_inputs"]), "catalog_digest": catalog["catalog_digest"],
         "scenario_plan_digest": canonical_digest({"cells": cells}), "scenario_cells": cells,
@@ -405,19 +449,29 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
 def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate retained plans without expiring their historical cost evidence."""
     plan = _json(value)
+    family = plan.get("evaluation_backend") == FAMILY_BACKEND
     required = {"schema_version", "campaign_id", "site_id", "scene_id", "capture_id", "task_id",
-                "scene_revision_digest", "task_success_contract_digest", "robot_free_probe_digest", "source",
+                "scene_revision_digest", "task_success_contract_digest", "source",
                 "scene_inputs", "catalog_digest", "scenario_plan_digest", "scenario_cells", "budget_usd",
                 "maximum_planned_cost_usd", "purpose", "claim_ceiling", "recommendation_eligible",
                 "candidates", "plan_digest"}
+    required |= ({"evaluation_backend", "pre_policy_site_qualification_required",
+                  "family_static_readiness_digest", "scenario_scope"} if family else {"robot_free_probe_digest"})
     if (set(plan) != required or plan["schema_version"] != PLAN_SCHEMA_VERSION
             or plan["purpose"] != "screening" or plan["claim_ceiling"] != CLAIM_CEILING
             or plan["recommendation_eligible"] is not False):
         raise BetaPolicyScreeningPlanError("beta_screening_plan_schema_invalid")
     for key in ("campaign_id", "site_id", "scene_id", "capture_id", "task_id"):
         _id(plan[key], "beta_screening_plan_identity_invalid")
-    for key in ("scene_revision_digest", "task_success_contract_digest", "robot_free_probe_digest", "catalog_digest"):
+    for key in ("scene_revision_digest", "task_success_contract_digest", "catalog_digest"):
         _digest(plan[key], "beta_screening_plan_digest_invalid")
+    if family:
+        _digest(plan["family_static_readiness_digest"], "beta_screening_family_readiness_missing")
+        if (plan["pre_policy_site_qualification_required"] is not True
+                or plan["scenario_scope"] != "native_frozen_reset_seeds"):
+            raise BetaPolicyScreeningPlanError("beta_screening_family_native_qualification_required")
+    else:
+        _digest(plan["robot_free_probe_digest"], "beta_screening_plan_digest_invalid")
     source = plan["source"]
     if not isinstance(source, dict) or set(source) != set(SOURCE_FIELDS):
         raise BetaPolicyScreeningPlanError("beta_screening_source_invalid")
@@ -459,6 +513,9 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                        for number in scenario["parameters"].values())):
             raise BetaPolicyScreeningPlanError("beta_screening_scenario_parameters_invalid")
         _validate_coverage_gaps(scenario)
+        if family and (cell["family"] != "canonical_anchor" or scenario["parameters"]
+                       or "runtime_coverage_gaps" in scenario):
+            raise BetaPolicyScreeningPlanError("beta_screening_family_scenario_not_qualified")
         ids.append(cell["cell_id"])
         seeds.append(cell["seed"])
     if (len(set(ids)) != len(ids) or len(set(seeds)) != len(seeds)
@@ -494,6 +551,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise BetaPolicyScreeningPlanError("beta_screening_admission_binding_invalid")
             if spec["task_success_contract_digest"] != plan["task_success_contract_digest"]:
                 raise BetaPolicyScreeningPlanError("beta_screening_execution_task_mismatch")
+            if (spec["backend"] == FAMILY_BACKEND) is not family:
+                raise BetaPolicyScreeningPlanError("beta_screening_execution_backend_mismatch")
             quote = validate_cost_quote(row.get("cost_quote", {}), configuration_digest=row["configuration_digest"],
                                          scene_revision_digest=plan["scene_revision_digest"], episode_count=len(cells))
             if row.get("max_cost_usd") != quote["maximum_cost_usd"]:

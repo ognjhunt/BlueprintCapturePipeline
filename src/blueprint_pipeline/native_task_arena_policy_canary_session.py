@@ -23,14 +23,14 @@ from typing import Any
 # sibling it needs has to resolve both ways or the bundle import closure breaks
 # on a rented GPU rather than here.
 try:  # flat provider-bundle layout
-    from adp_task_scoring import TaskNeutralScoringError
+    from adp_task_scoring import TaskNeutralScoringError as TaskNeutralScoringError
     from adp_articulated_task_success_contract import (
         task_kind_of_contract,
         validate_task_success_contract,
     )
     from decision_evidence_contracts import canonical_digest
 except ModuleNotFoundError:  # repository package
-    from .adp_task_scoring import TaskNeutralScoringError
+    from .adp_task_scoring import TaskNeutralScoringError as TaskNeutralScoringError
     from .adp_articulated_task_success_contract import (
         task_kind_of_contract,
         validate_task_success_contract,
@@ -75,7 +75,7 @@ except ModuleNotFoundError:
 CANONICAL_ALLOCATOR = (
     "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
 )
-CONTROL_MODES = frozenset({"nonblocking_diagnostic_pending", "nonblocking_diagnostic_bound", "nonblocking_omitted_by_user", "required_before_policy"})
+CONTROL_MODES = frozenset({"nonblocking_diagnostic_pending", "nonblocking_diagnostic_bound", "nonblocking_omitted_by_user", "required_before_policy", "native_family_prepolicy_required"})
 _REGISTRY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -181,10 +181,29 @@ def _beta_admission_binding(payload: Mapping[str, Any]) -> None:
         return
     row = _mapping(binding)
     digests = ("admission_digest", "plan_digest", "configuration_digest", "scene_revision_digest",
-               "task_success_contract_digest", "robot_free_probe_receipt_digest")
-    if (set(row) != {"schema_version", "candidate_id", "evaluation_purpose", "backend", *digests}
+               "task_success_contract_digest")
+    fields = {"schema_version", "candidate_id", "evaluation_purpose", "backend", *digests}
+    family = row.get("backend") == "task_family_native.v1"
+    if family:
+        fields |= {"pre_policy_site_qualification_required", "family_static_readiness_digest"}
+        family_binding_valid = (
+            row.get("pre_policy_site_qualification_required") is True
+            and payload.get("pre_policy_site_qualification_required") is True
+            and _digest(row.get("family_static_readiness_digest"))
+            and row.get("family_static_readiness_digest") == payload.get("family_static_readiness_digest")
+            and ("task_success_contract" not in payload
+                 or _mapping(payload["task_success_contract"]).get("schema_version") == "task_family_success_contract.v1")
+        )
+        if "robot_free_probe_receipt_digest" in row:
+            fields.add("robot_free_probe_receipt_digest")
+            family_binding_valid = family_binding_valid and _digest(row["robot_free_probe_receipt_digest"])
+    else:
+        fields.add("robot_free_probe_receipt_digest")
+        family_binding_valid = (row.get("backend") == "robolab.v1"
+                                and _digest(row.get("robot_free_probe_receipt_digest")))
+    if (set(row) != fields
             or row.get("schema_version") != BETA_ADMISSION_SCHEMA_VERSION
-            or row.get("evaluation_purpose") != "screening" or row.get("backend") != "robolab.v1"
+            or row.get("evaluation_purpose") != "screening" or not family_binding_valid
             or not all(_digest(row.get(key)) for key in digests)
             or [row.get("candidate_id")] != list(payload.get("candidate_ids") or [])
             or any(row.get(key) != payload.get(key) for key in
@@ -295,6 +314,8 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         "diagnostic_continuation_protocol",
         "team_candidate_admission",
         "beta_screening_admission",
+        "family_static_readiness_digest",
+        "pre_policy_site_qualification_required",
     }
     if (
         not set(payload).issubset(allowed_fields)
@@ -311,11 +332,19 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         if not _digest(payload.get(field)):
             raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
     try:
-        task_success_contract = validate_task_success_contract(
-            _mapping(payload.get("task_success_contract")),
-            task_kind=task_kind_of_contract(_mapping(payload.get("task_success_contract"))),
-        )
-    except TaskNeutralScoringError as exc:
+        raw_task = _mapping(payload.get("task_success_contract"))
+        if raw_task.get("schema_version") == "task_family_success_contract.v1":
+            if (payload.get("run_kind") != BETA_RUN_KIND
+                    or _mapping(payload.get("beta_screening_admission")).get("backend") != "task_family_native.v1"
+                    or payload.get("pre_policy_site_qualification_required") is not True):
+                raise PolicyCanarySessionError("policy_canary_family_requires_beta_admission")
+            from .task_family_scoring import validate_task_family_contract
+            task_success_contract = validate_task_family_contract(raw_task)
+        else:
+            task_success_contract = validate_task_success_contract(
+                raw_task, task_kind=task_kind_of_contract(raw_task),
+            )
+    except ValueError as exc:
         raise PolicyCanarySessionError(
             "policy_canary_runtime_task_success_contract_invalid:" + str(exc)
         ) from exc
@@ -328,8 +357,14 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         )
     if "matrix_digest" in payload and not _digest(payload.get("matrix_digest")):
         raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
-    for field in ("base_native_packet", "runtime_source", "construction_result"):
+    family_pending = (_mapping(payload.get("beta_screening_admission")).get("backend") == "task_family_native.v1"
+                      and payload.get("pre_policy_site_qualification_required") is True)
+    required_records = ("base_native_packet", "runtime_source") if family_pending else (
+        "base_native_packet", "runtime_source", "construction_result")
+    for field in required_records:
         _record(payload.get(field), code=f"policy_canary_runtime_input_{field}_invalid")
+    if family_pending and "construction_result" in payload:
+        _record(payload["construction_result"], code="policy_canary_runtime_input_construction_result_invalid")
     execution_authority = _mapping(payload.get("execution_authority"))
     if (
         execution_authority.get("maximum_provider_allocations") != 1
@@ -363,13 +398,21 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
             or not scenario
             or row.get("resolved_scenario_digest") != canonical_digest(scenario)
             or mode not in CONTROL_MODES
-            or control.get("policy_execution_blocked") is not (mode == "required_before_policy")
+            or control.get("policy_execution_blocked") is not (mode in {"required_before_policy", "native_family_prepolicy_required"})
         ):
             raise PolicyCanarySessionError("policy_canary_runtime_input_cell_invalid")
         strict_controls = (task_success_contract.get("criteria") or {}).get("controls", {}).get("mode") == "required_per_cell"
-        if strict_controls != (mode == "required_before_policy"):
+        if family_pending:
+            if (mode != "native_family_prepolicy_required"
+                    or control.get("typed_gap") != "native_site_qualification_pending"
+                    or "receipt" in control):
+                raise PolicyCanarySessionError("policy_canary_family_site_qualification_required")
+        elif strict_controls != (mode == "required_before_policy"):
             raise PolicyCanarySessionError("policy_canary_control_requirement_mismatch")
-        if mode == "nonblocking_omitted_by_user":
+        if mode == "native_family_prepolicy_required":
+            if not family_pending:
+                raise PolicyCanarySessionError("policy_canary_family_site_qualification_required")
+        elif mode == "nonblocking_omitted_by_user":
             if control.get("typed_gap") != "controls_omitted_by_user_request" or "receipt" in control:
                 raise PolicyCanarySessionError("policy_canary_control_gap_invalid")
             validate_control_omission_authority(
@@ -582,7 +625,9 @@ def build_session_authority(
             else {}
         ),
         **({"beta_screening_admission": inputs["beta_screening_admission"],
-            **{key: inputs[key] for key in ("scene_revision_digest", "plan_digest", "configuration_digest")}}
+            **{key: inputs[key] for key in ("scene_revision_digest", "plan_digest", "configuration_digest",
+                                            "pre_policy_site_qualification_required", "family_static_readiness_digest")
+               if key in inputs}}
            if inputs["run_kind"] == BETA_RUN_KIND else {}),
         "authority_digest": "",
     }
@@ -736,11 +781,17 @@ def validate_session_result(
             )
     else:
         try:
-            task_success_contract = validate_task_success_contract(
-                _mapping(raw_success_contract),
-                task_kind=task_kind_of_contract(_mapping(raw_success_contract)),
-            )
-        except TaskNeutralScoringError as exc:
+            if (_mapping(raw_success_contract).get("schema_version") == "task_family_success_contract.v1"
+                    and payload.get("run_kind") == BETA_RUN_KIND
+                    and _mapping(payload.get("beta_screening_admission")).get("backend") == "task_family_native.v1"):
+                from blueprint_pipeline.task_family_scoring import validate_task_family_contract
+                task_success_contract = validate_task_family_contract(raw_success_contract)
+            else:
+                task_success_contract = validate_task_success_contract(
+                    _mapping(raw_success_contract),
+                    task_kind=task_kind_of_contract(_mapping(raw_success_contract)),
+                )
+        except ValueError as exc:
             raise PolicyCanarySessionError(
                 "policy_canary_session_result_task_success_contract_invalid:"
                 + str(exc)
@@ -765,6 +816,12 @@ def validate_session_result(
     cell_scenarios: dict[tuple[str, int], tuple[Any, Any]] = {}
     for episode in episodes:
         row = _mapping(episode)
+        if (_mapping(raw_success_contract).get("schema_version") == "task_family_success_contract.v1"
+                and row.get("status") == "completed"):
+            from blueprint_pipeline.task_family_result_admission import family_policy_episode_interpretable
+            if (not family_policy_episode_interpretable(row, raw_success_contract)
+                    or row.get("policy_outcome_interpretable") is not True):
+                raise PolicyCanarySessionError("policy_canary_family_episode_evidence_invalid")
         candidate = str(row.get("candidate_id") or "")
         cell_id = str(row.get("cell_id") or "")
         seed = row.get("seed")
@@ -869,7 +926,10 @@ def execute_paired_session(
     }
     open_failure: Exception | None = None
     preload_observation_gate: dict[str, Any] | None = None
+    family_pending = inputs.get("pre_policy_site_qualification_required") is True
     try:
+        if family_pending and prepolicy_observation_gate is None:
+            raise PolicyCanarySessionError("policy_canary_family_site_qualification_required")
         session = open_session(inputs)
         if not isinstance(session, Mapping) or (
             not provider_closeout_pending
@@ -885,6 +945,10 @@ def execute_paired_session(
                 raise PolicyCanarySessionError(
                     "policy_canary_session_observation_integrity_blocked"
                 )
+            if family_pending:
+                from blueprint_pipeline.task_family_result_admission import family_site_qualification_valid
+                if not family_site_qualification_valid(inputs["task_success_contract"], preload_observation_gate.get("site_qualification")):
+                    raise PolicyCanarySessionError("policy_canary_family_site_qualification_required")
         if (inputs["task_success_contract"].get("criteria") or {}).get("controls", {}).get("mode") == "required_per_cell":
             if prepolicy_control_gate is None or prepolicy_control_gate(session).get("status") != "passed":
                 raise PolicyCanarySessionError("policy_canary_strict_controls_unproven")
@@ -957,10 +1021,14 @@ def execute_paired_session(
                         )
                     observed.update(context)
                     episode_score = _mapping(_mapping(observed.get("episode")).get("score"))
+                    motion_valid = observed.get("arm_moved") is True
+                    if family_pending:
+                        from blueprint_pipeline.task_family_result_admission import family_policy_episode_interpretable
+                        motion_valid = family_policy_episode_interpretable(observed, inputs["task_success_contract"])
                     observed["policy_outcome_interpretable"] = bool(
                         observed.get("candidate_policy_queried") is True
                         and observed.get("actions_reached_robot") is True
-                        and observed.get("arm_moved") is True
+                        and motion_valid
                         and observed.get("observation_support_qualified", True)
                         is True
                         and observed.get("scoring_authority")
@@ -1008,7 +1076,8 @@ def execute_paired_session(
         "learned_policy_rollout_count": len(episodes),
         "planned_learned_policy_rollout_count": expected_episode_count,
         **({"beta_screening_admission": inputs["beta_screening_admission"],
-            **{key: inputs[key] for key in ("scene_revision_digest", "plan_digest", "configuration_digest")}}
+            **{key: inputs[key] for key in ("scene_revision_digest", "plan_digest", "configuration_digest")},
+            **{key: inputs[key] for key in ("pre_policy_site_qualification_required", "family_static_readiness_digest") if key in inputs}}
            if inputs["run_kind"] == BETA_RUN_KIND else {}),
         "provider_allocations_observed": (
             None

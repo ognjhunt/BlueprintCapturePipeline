@@ -118,7 +118,9 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
             _write(states / path.name, outcome)
             _write(cursor_path, {"last": path.name})
             outcomes.append(outcome)
-    return {"sources": outcomes}
+    from .beta_policy_screening_family_sources import enqueue_registered_family_scenes
+    family = enqueue_registered_family_scenes(queue_root=root, max_sources=max_sources)
+    return {"sources": outcomes + family["sources"]}
 
 
 def publish_screening(publication: Mapping[str, Any]) -> dict[str, Any]:

@@ -18,12 +18,13 @@ INTERFACES = {
     # Dream supplies absolute named-arm TCP targets; the native robot adapter
     # owns pose control and independent grippers. It never uses DROID actions.
     "dreamlabs_dream1.v1": "team_embodiment",
+    "task_family_policy_https.v1": "task_family_native",
 }
 # Written out, not inverted: two interfaces share pi05_droid's contract, and
 # only the pinned OpenPI one may ever serve the frozen pi05_droid candidate.
 LEGACY_INTERFACES = {"pi05_droid": "openpi_droid.v1", "groot_n17_droid": "groot_n17_droid.v1"}
 TEAM_ROBOT_INTERFACES = frozenset({"blueprint_policy_https.v1", "dreamlabs_dream1.v1"})
-TEAM_HTTPS_INTERFACES = frozenset({"openpi_droid_https.v1", *TEAM_ROBOT_INTERFACES})
+TEAM_HTTPS_INTERFACES = frozenset({"openpi_droid_https.v1", "task_family_policy_https.v1", *TEAM_ROBOT_INTERFACES})
 
 
 def resolve_policy_interface(spec: Mapping[str, Any]) -> str:

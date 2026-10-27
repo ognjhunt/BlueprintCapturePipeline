@@ -76,12 +76,53 @@ def _quaternion_product_xyzw(a: list[float], b: list[float]) -> list[float]:
     ]
 
 
+def _resolved_family_scene_plan(base, cell, task_success_contract):
+    from .task_family_native_contracts import validate_task_family_native_runtime_contract
+    from .task_family_policy_execution import task_family_policy_execution_binding
+    if base.get("plan_digest") != canonical_digest(base, digest_field="plan_digest"):
+        raise RuntimeError("policy_canary_scene_plan_invalid")
+    task_family_policy_execution_binding(base)
+    plan = deepcopy(dict(base))
+    native = validate_task_family_native_runtime_contract(plan["native_runtime_contract"])
+    task = task_success_contract or cell.get("task_success_contract")
+    if (task != native["task_spec"]["task_success_contract"]
+            or cell.get("task_success_contract_digest", task.get("contract_digest") if isinstance(task, Mapping) else None)
+                != (task or {}).get("contract_digest")):
+        raise RuntimeError("policy_canary_task_success_contract_binding_invalid")
+    scenario = deepcopy(dict(cell["resolved_scenario"]))
+    digest = canonical_digest(scenario)
+    if cell.get("resolved_scenario_digest", digest) != digest:
+        raise RuntimeError("policy_canary_family_scenario_digest_invalid")
+    if scenario.get("parameters"):
+        raise RuntimeError("policy_canary_task_family_scenario_parameters_not_implemented:" +
+                           ",".join(sorted(scenario["parameters"])))
+    if cell.get("operator_wrist_camera_aim") is not None:
+        raise RuntimeError("policy_canary_task_family_camera_aim_not_implemented")
+    plan["source_native_runtime_contract"] = deepcopy(plan.get("source_native_runtime_contract") or native)
+    plan["source_native_runtime_contract_digest"] = plan["source_native_runtime_contract"]["contract_digest"]
+    native["scenario_cell_id"] = cell["cell_id"]
+    native["scenario_instance_digest"] = digest
+    native["seed"] = cell["seed"]
+    native["contract_digest"] = canonical_digest(native, digest_field="contract_digest")
+    validate_task_family_native_runtime_contract(native)
+    plan["native_runtime_contract"] = native
+    plan["runtime_contract_digest"] = native["contract_digest"]
+    plan["scenario"] = {**scenario, "cell_id": cell["cell_id"], "seed": cell["seed"],
+        "scenario_instance_digest": digest, "resolved_scenario_digest": digest,
+        "parameter_applications": []}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    task_family_policy_execution_binding(plan)
+    return plan
+
+
 def resolved_scene_plan(
     base: Mapping[str, Any],
     cell: Mapping[str, Any],
     *,
     task_success_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if (base.get("native_runtime_contract") or {}).get("schema_version") == "task_family_native_runtime_contract.v1":
+        return _resolved_family_scene_plan(base, cell, task_success_contract)
     plan = deepcopy(dict(base))
     aim = cell.get("operator_wrist_camera_aim")
     if aim is not None:

@@ -1,4 +1,4 @@
-"""Private delivery and bounded API charges for configured DROID HTTPS policies.
+"""Private delivery and bounded API charges for configured HTTPS policies.
 
 Only operator-owned credential paths enter local execution records. Secret
 contents never enter the plan, provider bundle or public result. The existing
@@ -30,9 +30,15 @@ def validate_hosted_delivery(spec: Mapping[str, Any], settings: Mapping[str, Any
     from .droid_https_policy_client import DroidHttpsPolicySpec
     from .team_candidate_quick10_vast import credential_file_blockers
 
-    if spec.get("policy_interface_id") != "openpi_droid_https.v1":
+    interface = spec.get("policy_interface_id")
+    if interface == "openpi_droid_https.v1":
+        policy = DroidHttpsPolicySpec(**spec["policy_spec"])
+    elif interface == "task_family_policy_https.v1" and spec.get("evaluation_backend") == "task_family_native.v1":
+        from .task_family_policy_https_client import TaskFamilyPolicySpec
+
+        policy = TaskFamilyPolicySpec(**spec["policy_spec"])
+    else:
         raise ValueError("beta_screening_hosted_interface_not_supported")
-    policy = DroidHttpsPolicySpec(**spec["policy_spec"])
     policy.validate()
     if any(urlsplit(url).query for url in (policy.endpoint_url, policy.metadata_url)):
         raise ValueError("beta_screening_hosted_query_parameters_forbidden")

@@ -2558,7 +2558,6 @@ def _blueprint_bundle_preflight(
     policy_canary_session_required_entries = native_task_arena_required_entries | {
         "provider_runtime/runtime_inputs/policy_canary_runtime_inputs.json",
         "provider_runtime/runtime_inputs/policy_canary_session_authority.json",
-        "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
         "provider_runtime/blueprint_pipeline/native_task_arena_policy_canary_session.py",
         "provider_runtime/blueprint_pipeline/native_task_arena_policy_worker.py",
         "provider_runtime/blueprint_pipeline/policy_episode_trace_evidence.py",
@@ -2949,11 +2948,11 @@ def _blueprint_bundle_preflight(
                                 native_manifest
                             )
                             from .policy_canary_session_bundle_identity import (
-                                run_kind_entrypoint_blockers,
-                                run_kind_required_entries,
+                                run_kind_entrypoint_blockers, run_kind_required_entries, verify_family_operator_input_bytes,
                             )
                             required_entries.update(run_kind_required_entries(readiness))
                             blockers.extend(run_kind_entrypoint_blockers(readiness, entrypoint_text))
+                            verify_family_operator_input_bytes(readiness, archive.read)
                         except (
                             KeyError,
                             TypeError,
@@ -3016,6 +3015,8 @@ def _blueprint_bundle_preflight(
                                 expected_module_paths.add(
                                     "provider_runtime/blueprint_pipeline/core/security_controls.py"
                                 )
+                            if execution_mode in {"policy", "policy_diagnostic"}:
+                                expected_module_paths.update("provider_runtime/blueprint_pipeline/core/" + name for name in ("common.py", "security_controls.py"))
                             if (
                                 native_manifest.get("schema_version")
                                 != "native_task_arena_provider_bundle.v1"

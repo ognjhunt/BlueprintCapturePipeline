@@ -233,3 +233,26 @@ def test_actual_capture_handoff_compiles_family_without_rigid_authoring(tmp_path
     assert result["task_evaluation_inputs"]["task_family"] == "cloth_folding"
     assert "native_task_preparation_gap" not in result and result["simulator_ready"] is False
     assert json.loads((pipeline / "website_scene_preparation/handoff.json").read_text()) == result
+
+
+@pytest.mark.parametrize("missing", ["runtime_selection", "authority", "expired_authority"])
+def test_prepared_family_never_infers_dispatch_or_paid_authority(tmp_path, missing):
+    args = _arguments_for_family(tmp_path)
+    inputs = _evaluation_inputs(args)
+    inputs["task_family_runtime_selection"] = {
+        "runtime_id": "registered_engine", "runtime_catalog_digest": "sha256:" + "b" * 64}
+    args["spend"] = copy.deepcopy(args["spend"])
+    if missing == "runtime_selection":
+        del inputs["task_family_runtime_selection"]
+        expected = "website_task_family_qualified_runtime_selection_required"
+    elif missing == "authority":
+        args["spend"] = {}
+        expected = "website_scene_execution_authority_required"
+    else:
+        args["spend"]["expires_at_epoch"] = args["now"]
+        expected = "scene_intake_authority_expiry_invalid"
+    result = website.compile_website_scene_preparation(**args, evaluation_inputs=inputs)
+    assert result["status"] == "task_evaluation_ready"
+    assert result["intake_request"] is None and expected in result["dispatch_blockers"]
+    assert result["job_disposition"] == "accepted"
+    assert result["task_evaluation_inputs"]["automatic_paid_execution_authorized"] is False

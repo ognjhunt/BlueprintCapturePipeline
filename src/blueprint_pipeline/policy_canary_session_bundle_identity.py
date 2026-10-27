@@ -18,7 +18,9 @@ shape is refused before any provider mutation.
 from __future__ import annotations
 
 import re
+import hashlib
 from collections.abc import Mapping
+from pathlib import PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
@@ -36,6 +38,7 @@ TEAM_MAX_CELLS_PER_SESSION = 200
 TEAM_ENTRYPOINT_MARKER = "blueprint_team_candidate_remote_policy_session"
 _TEAM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SECRET_FILE_ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,58}_FILE$")
+_SHA = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _PAIR_ENTRIES = frozenset({
     "provider_runtime/runtime_inputs/policy_execution_spec.pi05_droid.json",
     "provider_runtime/runtime_inputs/policy_execution_spec.groot_n17_droid.json",
@@ -63,6 +66,28 @@ def _episode_shape_valid(payload: Mapping[str, Any], shape: tuple[str, str, int]
     return episodes == 10 and rollouts == shape[2]
 
 
+def _family_operator_inputs_valid(value: Any) -> bool:
+    if (not isinstance(value, Mapping)
+            or value.get("catalog_relative_path") != "runtime_operator_inputs/catalog.json"
+            or not _SHA.fullmatch(str(value.get("runtime_catalog_digest") or ""))):
+        return False
+    rows = value.get("files")
+    if not isinstance(rows, list) or not rows:
+        return False
+    names = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            return False
+        name = str(row.get("relative_path") or "")
+        path = PurePosixPath(name)
+        if (path.is_absolute() or ".." in path.parts or not name.startswith("runtime_operator_inputs/")
+                or not _SHA.fullmatch(str(row.get("sha256") or ""))
+                or type(row.get("size_bytes")) is not int or row["size_bytes"] < 1):
+            return False
+        names.append(name)
+    return len(names) == len(set(names)) and value["catalog_relative_path"] in names
+
+
 def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
     """Return the readiness record for a sealed session manifest, or raise."""
 
@@ -73,16 +98,27 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
     if shape is BETA_SHAPE:
         dependencies = payload.get("contract_python_dependencies") or []
         robolab = next((row for row in dependencies if row.get("distribution") == "robolab"), {})
-        candidates_valid = (
-            isinstance(candidates, list) and len(candidates) == 1
-            and _TEAM_ID.fullmatch(str(candidates[0] or "")) is not None
-            and (("team_credential_env" not in payload and candidates[0] in PAIR)
-                 or (payload.get("team_policy_interface_id") == "openpi_droid_https.v1"
-                     and _SECRET_FILE_ENV.fullmatch(str(payload.get("team_credential_env") or "")) is not None
-                     and payload.get("secret_material_bundled") is False))
+        family = payload.get("evaluation_backend") == "task_family_native.v1"
+        delivery_valid = (
+            payload.get("team_policy_interface_id") == "task_family_policy_https.v1"
+            and _SECRET_FILE_ENV.fullmatch(str(payload.get("team_credential_env") or "")) is not None
+            and payload.get("secret_material_bundled") is False
+            and _family_operator_inputs_valid(payload.get("task_family_operator_inputs"))
+            and payload.get("pre_policy_site_qualification_required") is True
+            and _SHA.fullmatch(str(payload.get("family_static_readiness_digest") or "")) is not None
+        ) if family else (
+            (("team_credential_env" not in payload and isinstance(candidates, list) and candidates and candidates[0] in PAIR)
+             or (payload.get("team_policy_interface_id") == "openpi_droid_https.v1"
+                 and _SECRET_FILE_ENV.fullmatch(str(payload.get("team_credential_env") or "")) is not None
+                 and payload.get("secret_material_bundled") is False))
             and payload.get("evaluation_backend") == "robolab.v1"
             and robolab.get("source_commit") == "b6cfcf6ccd2113c4cd1216d35b33024a7d5691da"
             and robolab.get("archive_sha256") == "sha256:16092baa43c5a2eb78f6dc8a330330e8e8bfc6a8cafce59efff560b26d6af278"
+        )
+        candidates_valid = (
+            isinstance(candidates, list) and len(candidates) == 1
+            and _TEAM_ID.fullmatch(str(candidates[0] or "")) is not None
+            and delivery_valid
         )
     elif shape is TEAM_SHAPE:
         candidates_valid = (
@@ -120,26 +156,33 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
 
     if _shape(manifest) is BETA_SHAPE:
         candidate = str((manifest.get("candidate_ids") or [""])[0])
-        required = {
-            f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json",
-            "provider_runtime/blueprint_pipeline/beta_robolab_runtime.py",
-            "provider_runtime/robolab/eval/episode.py",
-            "provider_runtime/robolab/eval/base_client.py",
-            "provider_runtime/robolab-source.v1.json",
-        }
+        required = {f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json"}
+        if manifest.get("evaluation_backend") == "task_family_native.v1":
+            required.update("provider_runtime/blueprint_pipeline/" + name for name in (
+                "task_family_native_runtime.py", "task_family_native_contracts.py", "task_family_native_controls.py",
+                "task_family_policy_execution.py", "task_family_policy_worker_execution.py", "task_family_policy_canary_execution.py",
+                "task_family_policy_https_client.py", "task_family_result_admission.py",
+                "task_evaluation_task_family_native_adapter.py", "task_family_scoring.py", "core/common.py"))
+            required.update("provider_runtime/" + row["relative_path"]
+                            for row in manifest["task_family_operator_inputs"]["files"])
+        else:
+            required.update({"provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
+                "provider_runtime/blueprint_pipeline/beta_robolab_runtime.py", "provider_runtime/robolab/eval/episode.py",
+                "provider_runtime/robolab/eval/base_client.py", "provider_runtime/robolab-source.v1.json"})
         if manifest.get("team_credential_env"):
             required.update({"provider_runtime/blueprint_pipeline/team_candidate_policy_client.py",
                 "provider_runtime/blueprint_pipeline/droid_https_policy_client.py",
                 "provider_runtime/blueprint_pipeline/core/security_controls.py"})
         return required
     if _shape(manifest) is not TEAM_SHAPE:
-        return set(_PAIR_ENTRIES)
+        return set(_PAIR_ENTRIES) | {"provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json"}
     candidate = str((manifest.get("candidate_ids") or [""])[0])
     required = {
         f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json",
         "provider_runtime/blueprint_pipeline/team_candidate_policy_client.py",
         "provider_runtime/blueprint_pipeline/droid_https_policy_client.py",
         "provider_runtime/blueprint_pipeline/core/security_controls.py",
+        "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
     }
     if manifest.get("team_policy_interface_id") == "dreamlabs_dream1.v1":
         required.update({"provider_runtime/blueprint_pipeline/dreamlabs_policy_client.py",
@@ -154,6 +197,8 @@ def run_kind_entrypoint_blockers(manifest: Mapping[str, Any], entrypoint_text: s
         valid = ("blueprint_beta_screening" in entrypoint_text
                  and "adp_arena_provider_runner.py" in entrypoint_text
                  and "trap teardown_servers EXIT INT TERM HUP" in entrypoint_text)
+        if manifest.get("evaluation_backend") == "task_family_native.v1":
+            valid = valid and 'export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"' in entrypoint_text
     elif _shape(manifest) is not TEAM_SHAPE:
         valid = "adp009d_policy_server_worker.py" in entrypoint_text
     else:
@@ -161,6 +206,16 @@ def run_kind_entrypoint_blockers(manifest: Mapping[str, Any], entrypoint_text: s
                  and "adp009d_policy_provisioning" not in entrypoint_text
                  and "adp009d_policy_server_worker.py" not in entrypoint_text)
     return [] if valid else ["provider_runner_missing_policy_canary_session_runtime_contract"]
+
+
+def verify_family_operator_input_bytes(manifest: Mapping[str, Any], read_member: Any) -> None:
+    """Reprove the operator config retained inside a family provider archive."""
+    if manifest.get("evaluation_backend") != "task_family_native.v1":
+        return
+    for row in manifest["task_family_operator_inputs"]["files"]:
+        raw = read_member("provider_runtime/" + row["relative_path"])
+        if len(raw) != row["size_bytes"] or "sha256:" + hashlib.sha256(raw).hexdigest() != row["sha256"]:
+            raise ValueError("task_family_operator_input_bytes_changed")
 
 
 __all__ = [

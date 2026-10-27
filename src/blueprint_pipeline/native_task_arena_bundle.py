@@ -75,6 +75,7 @@ POLICY_RUNTIME_ROOT_MODULE_NAMES = (
     "groot_n17_droid_policy_runtime.py",
     "openpi_droid_policy_runtime.py",
 )
+POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES = ("core/__init__.py", "core/common.py", "core/security_controls.py")
 
 
 class NativeTaskArenaBundleError(ValueError):
@@ -247,6 +248,14 @@ def _rendered_external_views(packet_root: Path,
     inputs = _read_mapping(Path(source), error="native_task_arena_bundle_runtime_inputs_invalid")
     plan = _read_mapping(packet_root / "native_task_arena_scene_plan.v1.json",
                          error="native_task_arena_bundle_packet_plan_invalid")
+    if (plan.get("native_runtime_contract") or {}).get("schema_version") == "task_family_native_runtime_contract.v1":
+        # This measurement models Arena's DROID external camera. Family
+        # cameras retain their native identities and are measured by the
+        # qualified SDK's pre-policy site qualification.
+        from .task_family_policy_execution import family_policy_execution_binding
+
+        family_policy_execution_binding(plan)
+        return []
     views: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
     for cell in inputs.get("cells") or []:
         try:
@@ -719,11 +728,17 @@ def build_native_task_arena_bundle(
             }
         )
     runtime_root_rows: list[dict[str, Any]] = []
-    for relative_text, source_text in sorted((runtime_extra_files or {}).items()):
+    extra_files = dict(runtime_extra_files or {})
+    if is_policy_mode:
+        package_source = Path(__file__).resolve().parent
+        extra_files.update({"blueprint_pipeline/" + name: package_source / name
+                            for name in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES})
+    for relative_text, source_text in sorted(extra_files.items()):
         relative = PurePosixPath(relative_text)
         source = Path(source_text)
         if (relative.is_absolute() or ".." in relative.parts or not relative.parts
-                or relative.parts[0] not in {"blueprint_pipeline", "rfc8785", "rfc8785-0.1.4.dist-info"}
+                or relative.parts[0] not in {"blueprint_pipeline", "rfc8785", "rfc8785-0.1.4.dist-info",
+                                             "runtime_operator_inputs"}
                 or source.is_symlink() or not source.is_file()):
             raise NativeTaskArenaBundleError(["native_task_arena_runtime_extra_file_invalid"])
         destination = runtime / relative.as_posix()
@@ -738,6 +753,7 @@ def build_native_task_arena_bundle(
     policy_execution_spec_digest: str | None = None
     policy_execution_authority: str | None = None
     policy_rights_binding: dict[str, Any] | None = None
+    family_execution_binding: dict[str, Any] = {}
     if is_policy_mode:
         from .adp009d_policy_provisioning import (
             CHECKPOINT_INVENTORY_STAGED_NAME,
@@ -822,6 +838,12 @@ def build_native_task_arena_bundle(
         policy_rights_binding = json.loads(
             json.dumps(sealed_rights, allow_nan=False)
         )
+        if sealed_execution_spec.get("evaluation_backend") == "task_family_native.v1":
+            family_execution_binding = {
+                field: sealed_execution_spec.get(field)
+                for field in ("evaluation_backend", "native_runtime_contract_digest",
+                              "task_family_runtime_selection")
+            }
         shutil.copy2(
             execution_spec_source,
             runtime / POLICY_EXECUTION_SPEC_STAGED_NAME,
@@ -920,6 +942,7 @@ def build_native_task_arena_bundle(
                 "policy_execution_spec_digest": policy_execution_spec_digest,
                 "policy_execution_authority": policy_execution_authority,
                 "policy_rights_binding": policy_rights_binding,
+                **family_execution_binding,
             }
             if is_policy_mode
             else {}

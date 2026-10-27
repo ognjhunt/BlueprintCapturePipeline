@@ -185,6 +185,112 @@ def test_remote_reference_shape_refuses(updates):
     refuses(args)
 
 
+def family_result_fixture():
+    args = fixture()
+    intent = json.loads(args['records']['intent'][1])
+    task = {'task_id': 'task-1', 'strategy': 'button_press',
+        'task_success_contract_digest': 'sha256:' + 'a' * 64,
+        'native_runtime_contract_digest': 'sha256:' + 'b' * 64,
+        'task_family_runtime_selection': {'runtime_id': 'qualified-buttons',
+            'runtime_catalog_digest': 'sha256:' + 'c' * 64}}
+    intent['request']['task'] = task
+    intent['request']['execution'] = {'purpose': 'scene_preparation'}
+    intent['task_content_digest'] = cross_runtime_canonical_digest(task)
+    args['records']['intent'] = pair(args['records']['intent'][0], seal(intent, 'intent_digest', cross=True))
+    reference = {'schema_version': 'website_task_family_preparation_result.v1',
+        'path': '/retained/factories/intent-1/source-1/materialized/family_native_preparation_result.v1.json',
+        'sha256': 'sha256:' + 'd' * 64, 'size_bytes': 123, 'digest': 'sha256:' + 'e' * 64,
+        'task_family': 'button_press', 'task_success_contract_digest': task['task_success_contract_digest'],
+        'native_runtime_contract_digest': task['native_runtime_contract_digest'],
+        'task_family_runtime_selection': task['task_family_runtime_selection'],
+        'native_application_claimed': False, 'policy_episode_claimed': False,
+        'pre_policy_site_qualification_required': True}
+    return args, reference
+
+
+def test_family_cpu_completion_retains_unknown_local_result_without_membership_or_cleanup():
+    args, reference = family_result_fixture()
+    original = copy.deepcopy(args)
+    first = event(args, remote=reference, updates={'status': 'completed', 'phase': 'family_native_prepared'})
+    second = event(args, remote=reference, updates={'status': 'completed', 'phase': 'family_native_prepared'})
+    project(args, second)
+    supplied = copy.deepcopy(args)
+    result = api().join_retained_scene_inventory_seed(**args)
+    assert original['records']['events'] == [] and args == supplied
+    assert result['history']['chain_validated'] and result['history']['projection_state'] == 'current'
+    assert result['obligations'] == [{'role': 'family_preparation_result', 'path': reference['path'],
+        'sha256': reference['sha256'], 'size_bytes': reference['size_bytes'], 'digest': reference['digest'],
+        'task_family': 'button_press', 'event_sequences': [first['sequence'], second['sequence']],
+        'status': 'kept_deferred', 'reason': 'family_preparation_result_scope_unproven', 'source_provenance': None}]
+    assert result['deferred_branch_count'] == 1 and result['members'] == []
+    assert result['unresolved_reasons'] == ['family_preparation_result_scope_unproven']
+    assert result['mutations'] == 0 and not result['cleanup_authorized'] and not result['execution_authorized']
+    assert not result['payload_presence_checked'] and not result['complete_scene_inventory']
+
+
+@pytest.mark.parametrize('changes', [
+    {'status': 'awaiting_execution'}, {'phase': 'scene_configuration'},
+    {'ref': {'task_family': 'cloth_folding'}}, {'ref': {'native_application_claimed': True}},
+    {'ref': {'policy_episode_claimed': True}}, {'ref': {'pre_policy_site_qualification_required': False}},
+    {'ref': {'native_runtime_contract_digest': 'sha256:' + 'f' * 64}},
+    {'ref': {'task_success_contract_digest': 'sha256:' + 'f' * 64}},
+    {'ref': {'path': '/retained/family_native_preparation_result.v1.json/../family_native_preparation_result.v1.json'}},
+    {'ref': {'size_bytes': True}}, {'ref': {'unexpected': 1}},
+])
+def test_resealed_family_result_contradictions_refuse(changes):
+    args, reference = family_result_fixture()
+    reference.update(changes.get('ref', {}))
+    event(args, remote=reference, updates={'status': changes.get('status', 'completed'),
+        'phase': changes.get('phase', 'family_native_prepared')})
+    refuses(args, 'family_result_reference_invalid')
+
+
+def test_family_result_conflicting_raw_tuple_and_reference_occurrence_budget_refuse(monkeypatch):
+    args, reference = family_result_fixture()
+    event(args, remote=reference, updates={'status': 'completed', 'phase': 'family_native_prepared'})
+    event(args, remote={**reference, 'digest': 'sha256:' + 'f' * 64},
+        updates={'status': 'completed', 'phase': 'family_native_prepared'})
+    refuses(args, 'family_result_reference_conflict')
+    args['records']['events'].pop()
+    event(args, remote=reference, updates={'status': 'completed', 'phase': 'family_native_prepared'})
+    monkeypatch.setattr(api(), 'MAX_REFERENCES', 1)
+    refuses(args, 'references_limit')
+
+
+def test_family_cpu_completion_inventory_performs_no_filesystem_or_execution_calls(monkeypatch):
+    from pathlib import Path
+    import builtins
+    import subprocess
+    from blueprint_pipeline.task_family_dispatch_contracts import validate_family_preparation_result_reference
+    from blueprint_pipeline.task_family_scoring import canonical_task_family
+    assert validate_family_preparation_result_reference and canonical_task_family('button_press')
+    args, reference = family_result_fixture()
+    event(args, remote=reference, updates={'status': 'completed', 'phase': 'family_native_prepared'})
+    module = api()
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('Pure retained inventory attempted host I/O or execution')
+    with monkeypatch.context() as sealed:
+        for name in ('open', 'read_bytes', 'read_text', 'stat', 'exists', 'is_file', 'resolve'):
+            sealed.setattr(Path, name, forbidden)
+        sealed.setattr(builtins, 'open', forbidden)
+        sealed.setattr(subprocess, 'run', forbidden)
+        result = module.join_retained_scene_inventory_seed(**args)
+    assert result['obligations'][0]['status'] == 'kept_deferred'
+
+
+def test_family_cpu_completion_is_kept_by_the_pure_source_inventory_wrapper():
+    from tests.test_scene_source_family_website import fixture as source_family_fixture
+    from blueprint_pipeline.task_evaluation_scene_source_family_inventory import join_retained_scene_source_family_inventory
+    seed, reference = family_result_fixture()
+    project(seed, event(seed, remote=reference, updates={'status': 'completed', 'phase': 'family_native_prepared'}))
+    args = source_family_fixture()
+    args['seed_records'] = seed['records']
+    result = join_retained_scene_source_family_inventory(**args)
+    obligation = result['downstream_inventory']['seed']['obligations'][0]
+    assert obligation['role'] == 'family_preparation_result' and obligation['status'] == 'kept_deferred'
+    assert not result['source_family_complete'] and not result['cleanup_authorized'] and result['mutations'] == 0
+
+
 def test_source_missing_proof_and_paid_rows_survive_without_history_references():
     for paid in (False, True):
         args = fixture(source=True)

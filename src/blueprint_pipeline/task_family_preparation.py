@@ -26,7 +26,8 @@ from .task_family_scoring import (
 def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                         removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                         base_scene: Mapping[str, Any], output_root: Path,
-                        evaluation_inputs: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                        evaluation_inputs: Mapping[str, Any] | None = None,
+                        spend: Mapping[str, Any] | None = None, now: float | None = None) -> dict[str, Any]:
     """Retain the whole job, including multiple subjects and deformable state."""
     family = canonical_task_family(task_context.get("task_family"))
     if family is None:
@@ -69,6 +70,42 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         native = materialize_native_task_runtime_contract(scene_id=scope["scene_id"], task_id=task_id,
             task_spec={"task_kind": family, "task_success_contract": contract}, **kwargs)
         blockers.extend(family_source_blockers(native=native, source_bindings=source_bindings, source_scene=base_scene))
+    # Source/task readiness and dispatch authority are separate facts. Missing
+    # dispatch inputs retain the prepared job and cannot mint a paid grant.
+    dispatch_blockers = []
+    request = None
+    selection = inputs.get("task_family_runtime_selection")
+    policy_selection = inputs.get("policy_selection")
+    if not blockers:
+        from .task_family_dispatch_contracts import validate_runtime_selection, validate_policy_selection
+        try:
+            selection = validate_runtime_selection(selection)
+            if policy_selection is not None:
+                policy_selection = validate_policy_selection(policy_selection)
+        except ValueError as exc:
+            dispatch_blockers.append(str(exc))
+        authority = dict(spend or {})
+        if not authority.get("owner") or not authority.get("consent"):
+            dispatch_blockers.append("website_scene_execution_authority_required")
+        if not dispatch_blockers:
+            from .task_evaluation_scene_intent_contracts import REQUEST_SCHEMA, validate_request, SceneIntakeError
+            request = {"schema_version": REQUEST_SCHEMA, "submission_id": task_context["capture_id"],
+                "owner": authority["owner"], "source": {"kind": "gaussian_splat",
+                    "binding_id": base_scene["splat_binding_id"], "content_digest": base_scene["splat_digest"]},
+                "task": {"task_id": task_id, "strategy": family, "task_success_contract_digest": contract["contract_digest"],
+                    "native_runtime_contract_digest": native["contract_digest"],
+                    "task_family_runtime_selection": selection,
+                    **({"policy_selection": policy_selection} if policy_selection is not None else {})},
+                "execution": {"purpose": "scene_preparation", "max_total_spend_usd": authority.get("max_total_spend_usd"),
+                    "max_paid_attempts": authority.get("max_paid_attempts"), "max_retries": 0,
+                    "expires_at_epoch": authority.get("expires_at_epoch"),
+                    "allowed_providers": authority.get("allowed_providers", ["vast", "openai"]),
+                    "policy_candidates": [], "claim_scope": "development_only"}, "consent": authority["consent"]}
+            try:
+                request = validate_request(request, now=now)
+            except SceneIntakeError as exc:
+                dispatch_blockers.append(str(exc))
+                request = None
     stages = contract["stages"] if contract else []
     requirements = ({stage["stage_id"]: {"task_family": stage["task_family"],
         "criteria": list(FAMILY_CRITERIA[stage["task_family"]]),
@@ -78,7 +115,8 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
             **({"ordered_stages_required": True} if family == "multi_step" else {})}})
     value = {
         "schema_version": "website_scene_preparation.v1",
-        "status": "needs_input" if blockers else "task_evaluation_ready",
+        "status": "needs_input" if blockers else "intake_ready" if request else "task_evaluation_ready",
+        "dispatch_blockers": dispatch_blockers,
         "blockers": blockers, "job_disposition": "accepted", "claim_ceiling": "development_only",
         "binding": {"task_context_digest": task_context["context_digest"], "task_masks_digest": task_masks["digest"],
             "source_geometry_digest": source_geometry["digest"], "removal_manifest_digest": canonical_digest(removal_manifest),
@@ -87,13 +125,17 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
             "runtime_adapter": "task_evaluation_task_family_native_adapter",
             "task_success_contract": contract, "native_runtime_contract": native,
             "source_bindings": source_bindings,
+            "task_family_runtime_selection": selection, "policy_selection": policy_selection,
+            "asset_sources": inputs.get("asset_sources", {}),
+            "runtime_source": inputs.get("runtime_source"),
             "requirements": requirements,
             "source_targets": [dict(row) for row in task_masks.get("targets", ())],
             "source_scene": {key: base_scene.get(key) for key in ("splat_path", "splat_digest", "collision_mesh_path",
                 "collision_mesh_digest", "up_axis", "meters_per_unit")},
             "reset_required": True, "independent_native_readback_required": True,
             "automatic_paid_execution_authorized": False},
-        "intake_request": None, "thumbnail": None, "provider_mutation_performed": False,
+        **({"website_preparation_authority": dict(spend or {})} if task_context.get("confirmed") is False else {}),
+        "intake_request": request, "thumbnail": None, "provider_mutation_performed": False,
     }
     value["digest"] = canonical_digest(value, digest_field="digest")
     detached = json.loads(json.dumps(value, allow_nan=False))

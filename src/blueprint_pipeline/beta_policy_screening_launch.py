@@ -121,9 +121,14 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     from .native_task_arena_policy_canary_bundle import (
         build_policy_canary_session_bundle, preflight_sealed_policy_canary_bundle,
     )
+    from .task_family_policy_execution import FAMILY_BACKEND, validate_task_family_policy_execution_spec
     root = Path(attempt_dir).resolve()
     identity = _identity(plan, candidate)
     _check_quote(plan, candidate)
+    family = candidate["execution_spec"].get("backend") == FAMILY_BACKEND
+    if family:
+        from .task_evaluation_control_stage_policy import require_controls_enabled
+        require_controls_enabled()
     previous = root / "prepared.json"
     if previous.exists():
         prepared = _read(previous)
@@ -135,7 +140,7 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     if commit != execution.get("implementation_commit"):
         raise ValueError("beta_screening_implementation_commit_changed")
     if (execution.get("schema_version") != EXECUTION_SCHEMA
-            or execution.get("backend") != "robolab.v1"
+            or execution.get("backend") not in {"robolab.v1", FAMILY_BACKEND}
             or execution.get("candidate_id") != candidate["candidate_id"]
             or execution.get("configuration_digest") != candidate["configuration_digest"]
             or candidate.get("admission_digest") != canonical_digest(execution)):
@@ -144,18 +149,32 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     if (scene["scene_revision_digest"] != plan["scene_revision_digest"]
             or scene["task_success_contract_digest"] != execution["task_success_contract_digest"]):
         raise ValueError("beta_screening_scene_binding_invalid")
-    from .robot_free_probe_gate import require_robot_free_probe, task_success_contract_binding
-    probe = require_robot_free_probe(scene.get("beta_robot_free_probe_receipt"),
-        scene_revision_digest=scene["scene_revision_digest"], task_kind=scene.get("beta_task_kind"),
-        task_spec_digest=scene.get("beta_probe_task_spec_digest"),
-        task_success_contract_digest=task_success_contract_binding(scene.get("beta_task_kind"), scene["task_success_contract"]))
-    if probe["receipt_digest"] != plan["robot_free_probe_digest"]:
-        raise ValueError("beta_screening_robot_free_probe_changed")
-    for key in ("base_native_packet", "runtime_source", "construction_result"):
+    if family:
+        from .beta_policy_screening_family import reopen_family_planning_inputs
+        static = reopen_family_planning_inputs(scene)
+        if (plan.get("pre_policy_site_qualification_required") is not True
+                or plan.get("family_static_readiness_digest") != scene["family_static_readiness_digest"]
+                or plan.get("evaluation_backend") != FAMILY_BACKEND
+                or plan.get("scenario_scope") != "native_frozen_reset_seeds"):
+            raise ValueError("beta_screening_family_plan_binding_invalid")
+    else:
+        from .robot_free_probe_gate import require_robot_free_probe, task_success_contract_binding
+        probe = require_robot_free_probe(scene.get("beta_robot_free_probe_receipt"),
+            scene_revision_digest=scene["scene_revision_digest"], task_kind=scene.get("beta_task_kind"),
+            task_spec_digest=scene.get("beta_probe_task_spec_digest"),
+            task_success_contract_digest=task_success_contract_binding(scene.get("beta_task_kind"), scene["task_success_contract"]))
+        if probe["receipt_digest"] != plan["robot_free_probe_digest"]:
+            raise ValueError("beta_screening_robot_free_probe_changed")
+    for key in (("base_native_packet", "runtime_source") if family else ("base_native_packet", "runtime_source", "construction_result")):
         _bound_path(scene[key])
-    native_spec = validate_robolab_policy_execution_spec(
-        _read(_bound_path(execution["policy_execution_spec"])), candidate_id=candidate["candidate_id"])
-    if native_spec.get("policy_interface_id") == "openpi_droid_https.v1":
+    raw_spec = _read(_bound_path(execution["policy_execution_spec"]))
+    native_spec = (validate_task_family_policy_execution_spec(raw_spec,
+        candidate_id=candidate["candidate_id"], scene_plan=static["scene_plan"]) if family else
+        validate_robolab_policy_execution_spec(raw_spec, candidate_id=candidate["candidate_id"]))
+    if family:
+        from .beta_policy_screening_family import validate_family_candidate_catalog
+        validate_family_candidate_catalog(plan, candidate, native_spec, static)
+    if native_spec.get("policy_interface_id") in {"openpi_droid_https.v1", "task_family_policy_https.v1"}:
         from .beta_policy_screening_hosted import validate_hosted_delivery
         validate_hosted_delivery(native_spec, execution, episodes=candidate["episode_count"])
     elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid"}:
@@ -163,16 +182,20 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     if (native_spec["runtime_identity_digest"] != execution["runtime_digest"]
             or native_spec["task_success_contract_digest"] != scene["task_success_contract_digest"]):
         raise ValueError("beta_screening_policy_scene_binding_invalid")
-    cells = [{**dict(cell), "control_diagnostic": dict(scene["control_diagnostic"])}
+    control = ({"mode": "native_family_prepolicy_required", "typed_gap": "native_site_qualification_pending",
+                "policy_execution_blocked": True} if family else dict(scene["control_diagnostic"]))
+    cells = [{**dict(cell), "control_diagnostic": control}
              for cell in candidate["scenario_cells"]]
     if len(cells) != candidate["episode_count"]:
         raise ValueError("beta_screening_episode_count_invalid")
     run_id = "beta-" + canonical_digest({**identity, "attempt_dir": str(root)})[7:39]
     binding = {"schema_version": BETA_ADMISSION_SCHEMA_VERSION, **identity,
                "admission_digest": candidate["admission_digest"], "evaluation_purpose": "screening",
-               "backend": "robolab.v1", "scene_revision_digest": plan["scene_revision_digest"],
+               "backend": execution["backend"], "scene_revision_digest": plan["scene_revision_digest"],
                "task_success_contract_digest": scene["task_success_contract_digest"],
-               "robot_free_probe_receipt_digest": plan["robot_free_probe_digest"]}
+               **({"pre_policy_site_qualification_required": True,
+                   "family_static_readiness_digest": scene["family_static_readiness_digest"]} if family else
+                  {"robot_free_probe_receipt_digest": plan["robot_free_probe_digest"]})}
     activation = {"schema_version": "task_evaluation_policy_campaign_activation.v1", "run_id": run_id,
                   "run_kind": BETA_RUN_KIND, "claim_ceiling": CLAIM_CEILING,
                   "candidate_ids": [candidate["candidate_id"]],
@@ -186,7 +209,11 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
               "candidate_ids": [candidate["candidate_id"]], "cells": cells,
               "configuration_digest": candidate["configuration_digest"], "plan_digest": plan["plan_digest"],
               "matrix_digest": plan["scenario_plan_digest"], "beta_screening_admission": binding,
+              **({"pre_policy_site_qualification_required": True,
+                  "family_static_readiness_digest": scene["family_static_readiness_digest"]} if family else {}),
               "activation_digest": activation["activation_digest"], "runtime_inputs_digest": ""}
+    if family:
+        inputs.pop("construction_result", None)
     inputs["runtime_inputs_digest"] = canonical_digest(inputs, digest_field="runtime_inputs_digest")
     inputs = validate_runtime_input_manifest(inputs)
     directory = root / "runtime_inputs"
@@ -271,6 +298,13 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
     try:
         _check_quote(plan, candidate)
         execution = candidate.get("execution_spec") or {}
+        if execution.get("backend") == "task_family_native.v1":
+            from .beta_policy_screening_family import reopen_family_planning_inputs, validate_family_candidate_catalog
+            from .task_evaluation_control_stage_policy import require_controls_enabled
+            require_controls_enabled()
+            static = reopen_family_planning_inputs(_read(_bound_path(plan["scene_inputs"])))
+            validate_family_candidate_catalog(plan, candidate,
+                _read(_bound_path(execution["policy_execution_spec"])), static)
         if execution.get("credential_file"):
             from .beta_policy_screening_hosted import validate_hosted_delivery
             validate_hosted_delivery(_read(_bound_path(execution["policy_execution_spec"])), execution,
