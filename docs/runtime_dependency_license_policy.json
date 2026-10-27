@@ -632,6 +632,14 @@
       "expires_on": "2027-08-15",
       "source": "PyPI JSON metadata License 'BSD' and BSD classifier retrieved 2026-08-15"
     },
+    "msgpack==1.2.1": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution metadata License-Expression"
+    },
     "msgpack==1.2.3": {
       "license_expression": "Apache-2.0",
       "approved": true,
