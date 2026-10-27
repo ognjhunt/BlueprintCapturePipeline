@@ -128,6 +128,13 @@ def test_control_plane_lane_does_not_import_hot_lane() -> None:
     )
 
 
+def test_task_profile_hold_contracts_do_not_import_robot_or_policy_inventory() -> None:
+    reachable = _transitive_local_modules(("website_task_context_contracts",))
+    assert "task_profile_contracts" in reachable
+    assert not reachable.intersection(HOT_LANE_MODULES | {
+        "job_capability_routing", "task_evaluation_embodiment_registry", "task_evaluation_policy_candidate_registry"})
+
+
 def test_shared_paid_admission_stays_off_the_hot_lane() -> None:
     # Every lane imports this chokepoint. Its monthly-budget check once pulled
     # the VM inventory and the GPU providers into the control plane (2026-10-23).

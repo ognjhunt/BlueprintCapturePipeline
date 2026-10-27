@@ -1266,7 +1266,8 @@ def test_website_preparation_finishes_only_at_its_native_outbox(tmp_path, monkey
 
 
 @pytest.mark.parametrize("stale", [False, True])
-def test_website_native_profile_gap_finishes_preparation_without_native_execution(tmp_path, monkeypatch, stale):
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_website_native_profile_gap_finishes_preparation_without_native_execution(tmp_path, monkeypatch, stale, mismatch):
     import blueprint_pipeline.website_scene_handoff as handoff
     from blueprint_pipeline.website_task_preparation import native_task_preparation_gap
 
@@ -1277,20 +1278,21 @@ def test_website_native_profile_gap_finishes_preparation_without_native_executio
     _patch_pipeline_side_effects(monkeypatch)
 
     def current_task(**identity):
-        context = {**_confirmed_website_task(**identity), "task_family": "laundry_folding"}
+        context = {**_confirmed_website_task(**identity),
+                   "task_family": "articulated_open_close" if mismatch else "laundry_folding"}
         context["context_digest"] = canonical_digest(context, digest_field="context_digest")
         return context
 
     def held(**kwargs):
         context = kwargs["descriptor"]["metadata"]["site_task_context"]
-        gap = native_task_preparation_gap(context)
+        gap = native_task_preparation_gap(context, **({"inferred_profile_id": "rigid_pick_place"} if mismatch else {}))
         if stale:
             gap["task_context_digest"] = "sha256:" + "9" * 64
         value = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
                  "scene_id": context["scene_id"], "capture_id": context["capture_id"],
                  "blockers": [gap["code"]], "native_task_preparation_gap": gap,
                  "simulator_ready": False, "visual_reconstruction_ready": True,
-                 "provider_mutation_performed": False}
+                 **({} if mismatch else {"provider_mutation_performed": False})}
         value["digest"] = canonical_digest(value, digest_field="digest")
         return value
 
@@ -1300,7 +1302,8 @@ def test_website_native_profile_gap_finishes_preparation_without_native_executio
     monkeypatch.setattr(handoff, "prepare_website_scene_handoff", held)
     monkeypatch.setattr(q, "sync_webapp_pipeline_attachment", lambda **_: pytest.fail("held preparation has no native outbox"))
     if stale:
-        with pytest.raises(PipelineError, match="website_native_task_profile_preparation_required"):
+        with pytest.raises(PipelineError, match=("website_task_profile_mechanism_mismatch" if mismatch
+                                                else "website_native_task_profile_preparation_required")):
             q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
     else:
         result = q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri, config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))

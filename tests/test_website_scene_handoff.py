@@ -11,6 +11,7 @@ import pytest
 
 from blueprint_pipeline import website_scene_handoff as handoff
 from blueprint_pipeline.common import write_json
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 
 
@@ -80,6 +81,89 @@ def test_novel_family_retains_the_scene_without_masks_authoring_or_a_substitute_
     assert "runtime_inputs" not in result and "website_intake_outbox" not in result
     assert json.loads((tmp_path / "pipeline/website_scene_preparation/base_scene.json").read_text()) == ready_atlas["base_scene"]
     assert json.loads((tmp_path / "pipeline/website_scene_preparation/handoff.json").read_text()) == result
+
+
+@pytest.mark.parametrize("family,mechanism", [("articulated_open_close", ""), ("rigid_pick_and_place", "prismatic")])
+def test_mechanism_mismatch_is_held_before_coverage_and_native_preparation(tmp_path, monkeypatch, ready_atlas,
+                                                                        family, mechanism):
+    from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
+    kwargs = inputs(tmp_path)
+    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+    context.update(schema_version="website_site_task_context.v1", task_family=family, description="The original job")
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    kwargs["clean_plate"]["task_masks"] = {"targets": [{"target_id": "subject", "articulation_kind": mechanism}]}
+    write_json(tmp_path / "pipeline/removal.json", {"entries": [{"target_id": "subject", "task_effect": "manipulated"}]})
+
+    def unexpected(**_):
+        pytest.fail("Contradictory task semantics must wait before coverage, specs or native preparation")
+
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", unexpected)
+    monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs", unexpected)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", unexpected)
+    monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", unexpected)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == ["website_task_profile_mechanism_mismatch"]
+    assert holds_native_task_preparation(result, context)
+    assert "runtime_inputs" not in result and "website_intake_outbox" not in result
+    assert "provider_mutation_performed" not in result
+
+
+@pytest.mark.parametrize("family,mechanism", [("rigid_pick_and_place", ""), ("articulated_open_close", "prismatic")])
+def test_matching_native_profile_continues_existing_preparation(tmp_path, monkeypatch, ready_atlas, family, mechanism):
+    kwargs = inputs(tmp_path)
+    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+    context.update(task_family=family, description="The original job")
+    kwargs["clean_plate"]["task_masks"] = {"targets": [{"target_id": "subject", "articulation_kind": mechanism}]}
+    write_json(tmp_path / "pipeline/removal.json", {"entries": [{"target_id": "subject", "task_effect": "manipulated"}]})
+
+    def coverage(**_):
+        raise ValueError("coverage_pending")
+
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", coverage)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == ["coverage_pending"]
+    assert "native_task_preparation_gap" not in result
+
+
+@pytest.mark.parametrize("family,initial_mechanism,revised_mechanism", [
+    ("articulated_open_close", "prismatic", ""), ("rigid_pick_and_place", "", "prismatic")])
+def test_a_later_real_compiler_mismatch_is_retained_without_a_native_intake(
+        tmp_path, monkeypatch, ready_atlas, family, initial_mechanism, revised_mechanism):
+    from tests.test_website_task_preparation import _arguments
+    from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
+    kwargs, arguments = inputs(tmp_path), _arguments(tmp_path)
+    context, masks = arguments["task_context"], arguments["task_masks"]
+    geometry = arguments["source_geometry"]
+    geometry["geometry_backend"] = "world_labs_atlas"
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    masks["source_geometry_digest"] = geometry["digest"]
+    context["task_family"] = family
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    masks["targets"][0]["articulation_kind"] = initial_mechanism
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    kwargs["descriptor"].update(scene_id=context["scene_id"], capture_id=context["capture_id"])
+    kwargs["descriptor"]["metadata"]["site_task_context"] = context
+    kwargs["clean_plate"]["task_masks"] = masks
+    write_json(tmp_path / "pipeline/removal.json", arguments["removal_manifest"])
+    ready_atlas.update(base_scene=arguments["base_scene"], source_geometry=arguments["source_geometry"])
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **kw: kw["task_masks"])
+
+    def revised_coverage(**kw):
+        revised = json.loads(json.dumps(kw["task_masks"]))
+        revised["targets"][0]["articulation_kind"] = revised_mechanism
+        revised["digest"] = canonical_digest(revised, digest_field="digest")
+        return revised
+
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", revised_coverage)
+    monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs", lambda **kw: kw["task_masks"])
+    monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", lambda **_: pytest.fail("A held compiler result has no native intake"))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == ["website_task_profile_mechanism_mismatch"]
+    preparation = json.loads((tmp_path / "pipeline/website_scene_preparation/preparation.json").read_text())
+    assert preparation["intake_request"] is None
+    assert result["native_task_preparation_gap"] == preparation["native_task_preparation_gap"]
+    assert holds_native_task_preparation(result, context)
+    assert "runtime_inputs" not in result and "provider_mutation_performed" not in result
 
 
 def test_a_ready_atlas_scene_drives_preparation_but_never_invents_execution(tmp_path, monkeypatch, ready_atlas):

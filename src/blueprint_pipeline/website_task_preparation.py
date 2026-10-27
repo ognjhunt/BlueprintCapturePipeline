@@ -64,6 +64,13 @@ PHYSICS_PRIORS = {"density_kg_m3": [50.0, 2500.0], "envelope_fill": [0.2, 1.0],
 DIMENSION_RELATIVE_ERROR = 0.25
 
 
+def native_task_subject_profile(subject_entry: Mapping[str, Any],
+                                subject_target: Mapping[str, Any]) -> tuple[str, str]:
+    """The existing compiler's mechanism hint and native profile, shared by preflight."""
+    kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
+    return kind, "articulated_open_close" if kind in {"prismatic", "revolute"} else "rigid_pick_place"
+
+
 def native_task_preparation_gap(task_context: Mapping[str, Any], *,
                                 inferred_profile_id: str | None = None) -> dict[str, Any] | None:
     """Keep a novel job without pretending an existing adapter evaluates it.
@@ -78,7 +85,7 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
     family = task_context["task_family"]
     if not isinstance(family, str) or not family.strip():
         raise ValueError("website_task_context_family_invalid")
-    from .job_capability_routing import task_profile_for
+    from .task_profile_contracts import task_profile_for
 
     profile = task_profile_for(family)
     mismatch = profile is not None and inferred_profile_id is not None and profile.profile_id != inferred_profile_id
@@ -687,10 +694,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     if len(removed) != 1 or removed[0]["target_id"] not in targets:
         raise ValueError("website_single_manipulated_subject_required")
     subject_entry, subject_target = removed[0], targets[removed[0]["target_id"]]
-    articulation_kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
-    articulated = articulation_kind in {"prismatic", "revolute"}
-    gap = native_task_preparation_gap(task_context,
-        inferred_profile_id="articulated_open_close" if articulated else "rigid_pick_place")
+    articulation_kind, inferred_profile_id = native_task_subject_profile(subject_entry, subject_target)
+    articulated = inferred_profile_id == "articulated_open_close"
+    gap = native_task_preparation_gap(task_context, inferred_profile_id=inferred_profile_id)
     if gap is not None:
         return retain_gap(gap)
     declared_mpu = base_scene.get("meters_per_unit")

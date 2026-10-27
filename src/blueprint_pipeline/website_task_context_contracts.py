@@ -49,7 +49,23 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
             or any(not isinstance(task_context.get(key), str) or not task_context[key]
                    for key in ("scene_id", "capture_id"))):
         return False
-    code = "website_native_task_profile_preparation_required"
+    from .task_profile_contracts import task_profile_for
+
+    code = gap.get("code")
+    declared = task_profile_for(family)
+    if code == "website_native_task_profile_preparation_required":
+        if declared is not None or handoff.get("provider_mutation_performed") is not False:
+            return False
+    elif code == "website_task_profile_mechanism_mismatch":
+        inferred_id = gap.get("inferred_profile_id")
+        inferred = task_profile_for(inferred_id) if isinstance(inferred_id, str) else None
+        if (declared is None or inferred is None or inferred.profile_id != inferred_id
+                or declared.profile_id == inferred.profile_id
+                or ("provider_mutation_performed" in handoff and
+                    type(handoff["provider_mutation_performed"]) is not bool)):
+            return False
+    else:
+        return False
     return (
         task_context.get("schema_version") == "website_site_task_context.v1"
         and digest == canonical_digest(task_context, digest_field="context_digest")
@@ -60,7 +76,6 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
         and handoff.get("blockers") == [code]
         and handoff.get("simulator_ready") is False
         and handoff.get("visual_reconstruction_ready") is True
-        and handoff.get("provider_mutation_performed") is False
         and not handoff.get("website_intake_outbox")
         and "runtime_inputs" not in handoff
         and gap.get("code") == code

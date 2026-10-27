@@ -74,6 +74,24 @@ def test_only_the_current_native_profile_gap_completes_a_held_preparation_stage(
     assert holds_native_task_preparation(handoff, task) is (fault is None)
 
 
+@pytest.mark.parametrize("inferred,expected", [("rigid_pick_place", True), ("articulated_open_close", False),
+                                              ("unregistered", False), ("rigid_relocation", False), (None, False)])
+def test_mechanism_mismatch_hold_requires_distinct_canonical_profiles(inferred, expected):
+    from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
+    from blueprint_pipeline.website_task_preparation import native_task_preparation_gap
+
+    task = {**context(), "task_family": "articulated_open_close"}
+    task["context_digest"] = canonical_digest(task, digest_field="context_digest")
+    gap = native_task_preparation_gap(task, inferred_profile_id="rigid_pick_place")
+    gap["inferred_profile_id"] = inferred
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+               **{key: task[key] for key in ("scene_id", "capture_id")},
+               "blockers": [gap["code"]], "native_task_preparation_gap": gap,
+               "simulator_ready": False, "visual_reconstruction_ready": True}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    assert holds_native_task_preparation(handoff, task) is expected
+
+
 def test_consumes_actual_web_supplementary_context_and_keeps_independent_frames(monkeypatch):
     vector = json.loads((Path(__file__).parent / "fixtures/website-continuation-vector.json").read_text())
     value = vector["context"]
