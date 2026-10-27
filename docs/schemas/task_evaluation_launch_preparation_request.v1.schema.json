@@ -274,7 +274,7 @@
                 },
                 "frames": {
                   "type": "array",
-                  "minItems": 1,
+                  "minItems": 0,
                   "maxItems": 256,
                   "items": {
                     "$ref": "#/$defs/reference"

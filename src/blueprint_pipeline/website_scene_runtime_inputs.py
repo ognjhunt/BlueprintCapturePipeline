@@ -21,8 +21,11 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
                                    output_root: Path) -> dict[str, Any]:
     if preparation.get("digest") != canonical_digest(preparation, digest_field="digest"):
         raise ValueError("website_native_preparation_changed")
+    # A designed subject (website_synthetic_subject) was never captured, so it has no frames.
+    designed = preparation.get("subject", {}).get("geometry_origin") == "synthetic_design"
     if (preparation.get("claim_ceiling") != "development_only"
-            or preparation.get("subject", {}).get("geometry_origin") != "removed_before_reconstruction"):
+            or (preparation.get("subject", {}).get("geometry_origin") != "removed_before_reconstruction"
+                and not designed)):
         raise ValueError("website_native_preparation_kind_invalid")
     if "website_scene_processing_rights_required" in preparation.get("blockers", []):
         raise ValueError("website_scene_processing_rights_required")
@@ -32,7 +35,7 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
         if _sha256_file(path) != base_scene[key + "_digest"] or base_scene[key + "_digest"] != bindings[key + "_digest"]:
             raise ValueError("website_native_background_changed")
     frames = preparation["authoring_inputs"]["source_frames"]
-    if not frames:
+    if bool(frames) == designed:
         raise ValueError("website_native_observed_object_references_required")
     for frame in frames:
         if frame.get("role") != "observed_source" or _sha256_file(Path(frame["path"])) != frame["sha256"]:

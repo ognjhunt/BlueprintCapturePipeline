@@ -90,19 +90,22 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
         runtime=runtime, preparation=preparation, observation_manifest_path=observed_path),
         "object_configuration_transition_invalid")
     observed = json.loads(observed_path.read_text())
+    # A designed subject is authored from its supplied mesh: whole, with no observed frames.
+    designed = (observed.get("subject_origin") == "synthetic_design"
+                and third.get("source_observation_kind") == "synthetic_design")
     _require(observed.get("schema_version") == OBSERVATIONS_SCHEMA
              and observed.get("digest") == canonical_digest(observed, digest_field="digest")
              and observed.get("preparation_digest") == preparation["digest"]
              and observed.get("source_geometry_digest") == preparation["binding"]["source_geometry_digest"]
              and observed.get("target_id") == third["source_object_identity"]
-             and observed.get("complete_object_geometry") is False
+             and observed.get("complete_object_geometry") is designed
              and observed.get("physical_measurement_proven") is False, "observations_binding_invalid")
     reference(PREFIX + ".candidate", observed["candidate"])
     _require(all(observed["candidate"][k] == authoring["source_candidate"][k] for k in ("digest", "size_bytes")),
              "candidate_binding_invalid")
     frame_rows = observed.get("frames", [])
     supplied = request["scene"]["website_native_inputs"]["frames"]
-    _require(frame_rows and len(frame_rows) == len(supplied)
+    _require(bool(frame_rows) != designed and len(frame_rows) == len(supplied)
              and len({row["frame_id"] for row in frame_rows}) == len(frame_rows), "frames_invalid")
     for index, row in enumerate(frame_rows):
         reference(PREFIX + f".frames.{index}", row["image"])

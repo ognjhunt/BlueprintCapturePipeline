@@ -40,20 +40,53 @@ def _checked(record: Mapping[str, Any], *, root: Path) -> Path:
     return path
 
 
+def _designed_candidate(*, preparation, source_geometry, task_masks, config, design, output_root):
+    """A designed subject has no observations: its candidate is the design, where it starts."""
+    from .website_synthetic_subject import ORIGIN, write_candidate
+
+    bound_config = {**config, "website_preparation_digest": preparation["digest"],
+                    "website_source_geometry_digest": source_geometry["digest"]}
+    root = output_root.resolve() / preparation["digest"][7:]
+    path = root / "observations.json"
+    if path.exists():
+        value, _ = validate_observation_handoff(path, configuration=bound_config)
+        return {"manifest": _record(path), "candidate": _record(_checked(value["candidate"], root=root)),
+                "configuration": bound_config}
+    root.mkdir(parents=True, exist_ok=True)
+    candidate = root / "source_object_candidate.usda"
+    lower, upper = preparation["subject"]["aabb_min_xyz"], preparation["subject"]["aabb_max_xyz"]
+    geometry = write_candidate(design, center_xyz_m=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)],
+                               path=candidate)
+    value = {"schema_version": SCHEMA, "preparation_digest": preparation["digest"],
+             "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
+             "target_id": config["source_object_identity"], "frames": [],
+             "candidate": _record(candidate, relative_to=root), "source_to_simulator": np.eye(4).tolist(),
+             "subject_origin": ORIGIN, "design": dict(design), "candidate_geometry": geometry,
+             "dimension_authority": ORIGIN, "complete_object_geometry": True, "physical_measurement_proven": False,
+             "claim_ceiling": "development_only", "background_modified": False}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    write_json(path, value)
+    return {"manifest": _record(path), "candidate": _record(candidate), "configuration": bound_config}
+
+
 def validate_observation_handoff(path: Path, *, configuration: Mapping[str, Any]) -> tuple[dict, list[Path]]:
     value = json.loads(path.read_text())
-    if (value.get("schema_version") != SCHEMA
+    # A designed subject (website_synthetic_subject) is whole by design and was never observed.
+    designed = value.get("subject_origin") == "synthetic_design"
+    if (designed != (configuration.get("source_observation_kind") == "synthetic_design")
+            or value.get("schema_version") != SCHEMA
             or value.get("digest") != canonical_digest(value, digest_field="digest")
             or value.get("preparation_digest") != configuration.get("website_preparation_digest")
             or value.get("source_geometry_digest") != configuration.get("website_source_geometry_digest")
             or value.get("target_id") != configuration.get("source_object_identity")
-            or value.get("dimension_authority") != "estimated"
+            or value.get("dimension_authority") != ("synthetic_design" if designed else "estimated")
             or value.get("physical_measurement_proven") is not False
-            or value.get("complete_object_geometry") is not False
+            or value.get("complete_object_geometry") is not designed
             or value.get("claim_ceiling") != "development_only"):
         raise ValueError("website_object_observation_binding_invalid")
     rows = value.get("frames")
-    if not isinstance(rows, list) or not rows or len({row["frame_id"] for row in rows}) != len(rows):
+    if (not isinstance(rows, list) or bool(rows) == designed
+            or len({row["frame_id"] for row in rows}) != len(rows)):
         raise ValueError("website_object_observation_frames_invalid")
     frames = [_checked(row["image"], root=path.parent) for row in rows]
     _checked(value["candidate"], root=path.parent)
@@ -96,6 +129,10 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
         raise ValueError("website_object_observation_source_mismatch")
     config = preparation["authoring_inputs"]["configuration"]
     target_id = config["source_object_identity"]
+    design = preparation["authoring_inputs"].get("synthetic_design")
+    if design is not None:
+        return _designed_candidate(preparation=preparation, source_geometry=source_geometry, task_masks=task_masks,
+                                   config=config, design=design, output_root=output_root)
     targets = [row for row in task_masks["targets"] if row["target_id"] == target_id and row["task_effect"] == "manipulated"]
     if len(targets) != 1:
         raise ValueError("website_object_observation_target_missing")

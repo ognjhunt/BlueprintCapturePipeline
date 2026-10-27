@@ -630,9 +630,19 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     up_sign = -1 if base_scene["up_axis"] == "-Y" else 1
     targets = {row["target_id"]: row for row in task_masks["targets"]}
     removed = [row for row in removal_manifest["entries"] if row.get("task_effect") == "manipulated"]
-    if len(removed) != 1 or removed[0]["target_id"] not in targets:
+    synthetic = removal_manifest.get("synthetic_subject")
+    if synthetic is not None:
+        # A task that adds a new object removes nothing: the object is designed
+        # and starts on the observed support the analysis named.
+        if removed or synthetic.get("start_support_target_id") not in targets:
+            raise ValueError("website_synthetic_subject_binding_invalid")
+        subject_target = targets[synthetic["start_support_target_id"]]
+        subject_entry = {"target_id": "synthetic-" + re.sub(r"[^a-z0-9]+", "-", synthetic["semantic_label"].lower()).strip("-"),
+                         "semantic_label": synthetic["semantic_label"], "support_label": subject_target.get("semantic_label")}
+    elif len(removed) != 1 or removed[0]["target_id"] not in targets:
         raise ValueError("website_single_manipulated_subject_required")
-    subject_entry, subject_target = removed[0], targets[removed[0]["target_id"]]
+    else:
+        subject_entry, subject_target = removed[0], targets[removed[0]["target_id"]]
     declared_mpu = base_scene.get("meters_per_unit")
     if isinstance(declared_mpu, bool) or (declared_mpu is not None and (
             not isinstance(declared_mpu, (int, float)) or not math.isfinite(declared_mpu) or declared_mpu <= 0)):
@@ -697,16 +707,30 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                         max_relative_half_range=DIMENSION_RELATIVE_ERROR)
         if published is not None:
             body = published_body_bounds(body, published, source_to_simulator_scale=scale)
+    import trimesh
+    collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
+    start = None
     if body is not None:
         subject_min, subject_max = levelled_body_bounds(body, matrix, up=up)
+    elif synthetic is not None:
+        from .website_synthetic_subject import choose_start
+        region = _runtime_bounds(subject_target["estimated_visible_bounds"], matrix)
+        destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
+        attractor = (np.mean(_runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix), axis=0)
+                     if len(destination_rows) == 1 else np.mean(region, axis=0))
+        subject_min, subject_max, support, start = choose_start(collider=collider, region=region, attractor=attractor,
+            design=synthetic, up=up, up_sign=up_sign, meters_per_unit=mpu, support_under=support_under)
+        if support is None:
+            blockers.append("website_synthetic_subject_start_unplaceable")
+            centre, half = np.mean(region, axis=0), np.asarray(synthetic["dimensions_m"]) / (2 * mpu)
+            subject_min, subject_max = (centre - half).tolist(), (centre + half).tolist()
     else:
         subject_bounds = estimate_target_bounds(subject_target["track"], source_geometry["frames"],
                                                 source_to_target=matrix)
         subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
-    import trimesh
-    collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
-    support = (None if independent_object else
-               support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign))
+    if synthetic is None:
+        support = (None if independent_object else
+                   support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign))
     # A rebuilt, floor-standing assembly rarely shows its
     # lowest band, and a generated world often leaves the empty bay without a
     # floor: its body reaches down to the floor the footage observed.
@@ -849,7 +873,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                          "frame_id": row["frame_id"], "reason": row["reason"],
                          "source_sha256": row["transmission"]["source_sha256"]}
                         for row in (contract or {}).get("reference_frames") or []]
-    for observation in [] if body is not None else track["observations"]:
+    for observation in [] if body is not None or synthetic is not None else track["observations"]:
         frame = frames_by_id[observation["source_frame_id"]]
         authoring_frames.append({"path": frame["image_path"], "sha256": frame["image_digest"],
                                  "role": "observed_source", "frame_id": frame["frame_id"]})
@@ -962,7 +986,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 "published_check": size_check, "video_estimate_check": estimate_check,
                 "anchor": body["sizing_anchor"], "claim": published["claim"], "physical_measurement_proven": False}
     else:
-        physics = screen_physics(dimensions_m)
+        if synthetic is not None:
+            from .website_synthetic_subject import design_physics
+            physics = design_physics(synthetic)
+        else:
+            physics = screen_physics(dimensions_m)
         authoring_configuration = stage_three_configuration(
             authoring_backend=authoring_backend,
             scene_id=task_context["scene_id"],
@@ -1000,6 +1028,15 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             "unknown_surfaces": "Generated completion must remain an explicit assumption.",
         },
     )
+    if synthetic is not None:
+        from .website_synthetic_subject import AUTHORING_METHOD, ORIGIN
+        # The designed mesh is authored as supplied geometry: no generative
+        # backend, so no Astra or ARTISAN spend or runtime contract.
+        authoring_configuration.pop("authoring_backend", None)
+        authoring_configuration.update(authoring_method=AUTHORING_METHOD, dimension_authority=ORIGIN,
+                                       source_observation_kind=ORIGIN, appearance_inputs="synthetic_primitive_design",
+                                       geometry_support="synthetic_primitive_design",
+                                       synthetic_design=dict(synthetic))
     if contract is not None and authoring_configuration.get("authoring_backend") == "astra_cad_blender_v1":
         # Hold what the legacy builder would refuse before anything is bought.
         from .task_object_articulated_packaging import plan_articulated_assembly
@@ -1072,8 +1109,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                  "subject": {"description": subject_entry.get("semantic_label") or subject_entry["target_id"],
                              "aabb_min_xyz": sim_min, "aabb_max_xyz": sim_max,
                              "coordinate_frame": "Z_up_estimated_meters",
-                             "geometry_origin": "removed_before_reconstruction",
-                             "complete_object_dimensions": body is not None},
+                             "geometry_origin": "synthetic_design" if synthetic is not None
+                             else "removed_before_reconstruction",
+                             "complete_object_dimensions": body is not None or synthetic is not None},
                  "support": {"description": subject_entry.get("support_label") or "support surface under subject",
                              "aabb_min_xyz": sim_support[0], "aabb_max_xyz": sim_support[1]},
                  **({"articulation": mechanism, "success": dict(ARTICULATED_SUCCESS)} if articulated else
@@ -1132,13 +1170,18 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
-        "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated else "content_agents_rigid_replacement",
+        **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
+        "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
+                             else "provided_mesh_rigid_authoring" if synthetic is not None
+                             else "content_agents_rigid_replacement",
+                             **({"synthetic_design": dict(synthetic)} if synthetic is not None else {}),
                              "source_frames": authoring_frames,
                              "configuration": authoring_configuration,
                              "metric_envelope": {"minimum_xyz_m": sim_min,
                                                  "maximum_xyz_m": sim_max,
                                                  "maximum_dimension_relative_error": DIMENSION_RELATIVE_ERROR},
-                             "dimension_authority": published["dimension_authority"] if published else "estimated"},
+                             "dimension_authority": (published["dimension_authority"] if published
+                                                     else "synthetic_design" if synthetic is not None else "estimated")},
         "physics": physics, "thumbnail": {key: value for key, value in thumbnail.items() if key != "png_base64"},
         "intake_request": request, "compose_back": compose_back,
         "recipe_plan": {"observed_appearance_object_removal": "satisfied_by_website_clean_plate_before_reconstruction",
@@ -1149,7 +1192,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                            {"rigid_replacement_authoring": "content_agents_rigid_replacement",
                             "replacement_static_qualification": "simready_static_rigid_qualification"}),
                         "replacement_native_import_qualification": "simready_native_import_qualification",
-                        "scene_assembly": "native_task_scene_assembly"},
+                        "scene_assembly": "native_task_scene_assembly",
+                        # A designed subject was never captured: nothing to erase, its mesh is supplied.
+                        **({"observed_appearance_object_removal": "not_required_subject_never_captured",
+                            "rigid_replacement_authoring": "provided_mesh_rigid_authoring"}
+                           if synthetic is not None else {})},
         "provider_mutation_performed": False,
     }
     value["digest"] = canonical_digest(value, digest_field="digest")
