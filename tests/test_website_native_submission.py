@@ -40,7 +40,7 @@ def test_capture_mounting_and_shared_instance_pose_reach_the_frozen_template():
 
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
           max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False,
-          authoring_backend=None, synthetic=False, inside=False):
+          authoring_backend=None, synthetic=False, inside=False, synthetic_cad=False):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
@@ -50,6 +50,9 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     if synthetic:
         from tests.test_website_task_preparation import synthetic_arguments
         args = synthetic_arguments(args)
+        if not synthetic_cad:
+            # Exercise compatibility packets separately from the pinned CAD transport tests.
+            args["synthetic_authoring_backend"] = "legacy_primitive_mesh_v1"
     if articulated:
         from tests.test_website_task_preparation import _assembly_inputs
         args.update(_assembly_inputs(capture))

@@ -681,7 +681,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                       base_scene: Mapping[str, Any], output_root: Path, spend: Mapping[str, Any],
                                       now: float, task_semantics: Mapping[str, Any] | None = None,
-                                      evaluation_inputs: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                                      evaluation_inputs: Mapping[str, Any] | None = None,
+                                      synthetic_authoring_backend: str = "pinned_cad_primitive_v1") -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
     semantics_options = {"task_semantics": task_semantics,
@@ -1153,13 +1154,15 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     )
     if synthetic is not None:
         from .website_synthetic_subject import AUTHORING_METHOD, ORIGIN
+        from .website_synthetic_cad import SyntheticAuthoring
         # The designed mesh is authored as supplied geometry: no generative
         # backend, so no Astra or ARTISAN spend or runtime contract.
         authoring_configuration.pop("authoring_backend", None)
         authoring_configuration.update(authoring_method=AUTHORING_METHOD, dimension_authority=ORIGIN,
                                        source_observation_kind=ORIGIN, appearance_inputs="synthetic_primitive_design",
                                        geometry_support="synthetic_primitive_design",
-                                       synthetic_design=dict(synthetic))
+                                       synthetic_design=dict(synthetic),
+                                       synthetic_authoring=SyntheticAuthoring(backend=synthetic_authoring_backend).model_dump())
     if contract is not None and authoring_configuration.get("authoring_backend") == "astra_cad_blender_v1":
         # Hold what the legacy builder would refuse before anything is bought.
         from .task_object_articulated_packaging import plan_articulated_assembly

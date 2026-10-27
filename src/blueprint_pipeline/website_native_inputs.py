@@ -103,6 +103,16 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
     reference(PREFIX + ".candidate", observed["candidate"])
     _require(all(observed["candidate"][k] == authoring["source_candidate"][k] for k in ("digest", "size_bytes")),
              "candidate_binding_invalid")
+    from .website_synthetic_cad import CAD_BACKEND, selection, verify_evidence
+    selected = third.get("synthetic_authoring")
+    cad = (observed.get("candidate_geometry") or {}).get("cad_authoring")
+    expects_cad = selected is not None and selection(selected)["backend"] == CAD_BACKEND
+    _require(bool(cad) == expects_cad, "synthetic_cad_binding_invalid")
+    if cad:
+        _, cad_path = reference(PREFIX + ".cad_evidence", cad["evidence"])
+        verify_evidence(cad_path, design=third["synthetic_design"], expected_manifest_digest=cad["manifest_digest"])
+    else:
+        _require("cad_evidence" not in request["scene"]["website_native_inputs"], "unexpected_cad_evidence")
     frame_rows = observed.get("frames", [])
     supplied = request["scene"]["website_native_inputs"]["frames"]
     _require(bool(frame_rows) != designed and len(frame_rows) == len(supplied)

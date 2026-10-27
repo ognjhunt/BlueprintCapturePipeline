@@ -62,11 +62,20 @@ def primitive_mesh(design: Mapping[str, Any]) -> Any:
     return trimesh.creation.box(extents=dimensions)
 
 
-def write_candidate(design: Mapping[str, Any], *, center_xyz_m: Sequence[float], path: Path) -> dict[str, Any]:
+def write_candidate(design: Mapping[str, Any], *, center_xyz_m: Sequence[float], path: Path,
+                    authoring: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The design as construction's source candidate, where it starts (Z up, metres)."""
     from pxr import Usd, UsdGeom
 
-    mesh = primitive_mesh(design)
+    cad = None
+    if authoring is not None:
+        from .website_synthetic_cad import CAD_BACKEND, author_candidate, selection
+        if selection(authoring)["backend"] == CAD_BACKEND:
+            mesh, cad = author_candidate(design, path=path)
+        else:
+            mesh = primitive_mesh(design)
+    else:
+        mesh = primitive_mesh(design)  # Saved configurations retain their original geometry.
     stage = Usd.Stage.CreateNew(str(path))
     stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Root").GetPrim())
     UsdGeom.Xform.Define(stage, "/Root/SourceObjectCandidate")
@@ -78,8 +87,12 @@ def write_candidate(design: Mapping[str, Any], *, center_xyz_m: Sequence[float],
     prim.CreateFaceVertexIndicesAttr(np.asarray(mesh.faces).ravel().tolist())
     prim.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
     stage.GetRootLayer().Save()
-    return {"shape": design["shape"], "face_count": int(len(mesh.faces)), "watertight": bool(mesh.is_watertight),
-            "sphere_subdivisions": SPHERE_SUBDIVISIONS, "cylinder_sections": CYLINDER_SECTIONS}
+    result = {"shape": design["shape"], "face_count": int(len(mesh.faces)), "watertight": bool(mesh.is_watertight)}
+    if cad is not None:
+        result["cad_authoring"] = cad
+    else:
+        result.update(sphere_subdivisions=SPHERE_SUBDIVISIONS, cylinder_sections=CYLINDER_SECTIONS)
+    return result
 
 
 def choose_start(*, collider: Any, region: Sequence[Sequence[float]], attractor: Sequence[float],

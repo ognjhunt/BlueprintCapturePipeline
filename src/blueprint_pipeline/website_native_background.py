@@ -295,12 +295,15 @@ def prepare_collision_stage(runtime_inputs_path: Path) -> dict[str, Any]:
     value = _runtime(runtime_inputs_path)
     authoring = value["object_authoring"]
     manifest = Path(authoring["observation_manifest"]["path"])
-    _, frames = validate_observation_handoff(manifest, configuration=authoring["configuration"])
+    observed, frames = validate_observation_handoff(manifest, configuration=authoring["configuration"])
     records = {PREFIX + ".runtime_inputs": _record(runtime_inputs_path),
                "scene.geometry.collision": value["collision"],
                PREFIX + ".observations": authoring["observation_manifest"],
                PREFIX + ".candidate": authoring["source_candidate"],
                **{PREFIX + f".frames.{i}": _record(frame) for i, frame in enumerate(frames)}}
+    cad = (observed.get("candidate_geometry") or {}).get("cad_authoring")
+    if cad:
+        records[PREFIX + ".cad_evidence"] = _record(manifest.parent / cad["evidence"]["path"])
     references = []
     for contract, row in records.items():
         checked = _record(Path(row["path"]))
@@ -499,6 +502,9 @@ def execute_prepared_collision(*, envelope, stage, configuration, configuration_
     # never through the control-plane machine's original absolute paths.
     copy_rows = [(PREFIX + ".candidate", observed["candidate"])] + [
         (PREFIX + f".frames.{i}", row["image"]) for i, row in enumerate(observed["frames"])]
+    cad = (observed.get("candidate_geometry") or {}).get("cad_authoring")
+    if cad:
+        copy_rows.append((PREFIX + ".cad_evidence", cad["evidence"]))
     for contract, record in copy_rows:
         name = Path(record["path"])
         if name.is_absolute() or len(name.parts) != 1 or name.name in {"", ".", ".."}:
@@ -523,4 +529,6 @@ def execute_prepared_collision(*, envelope, stage, configuration, configuration_
         {"role": "configured_collision_without_source_object", **background},
         {"role": "source_object_candidate_mesh", **candidate},
         {"role": REFERENCE_ROLE, **observation_artifact},
+        *([{"role": "source_cad_authoring_evidence", **_record(observed_root / cad["evidence"]["path"])}]
+          if cad else []),
         {"role": "website_background_reuse_receipt", **_record(receipt_path)}])

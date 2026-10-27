@@ -158,6 +158,8 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     website = {key: refs[PREFIX + "." + key] for key in ("runtime_inputs", "appearance", "observations", "candidate")}
     website["frames"] = [refs[PREFIX + f".frames.{i}"] for i in range(
         sum(key.startswith(PREFIX + ".frames.") for key in refs))]
+    if PREFIX + ".cad_evidence" in refs:
+        website["cad_evidence"] = refs[PREFIX + ".cad_evidence"]
     subject = runtime["subject"]
     lower, upper = subject["aabb_min_xyz"], subject["aabb_max_xyz"]
     support = owner_task["support"]

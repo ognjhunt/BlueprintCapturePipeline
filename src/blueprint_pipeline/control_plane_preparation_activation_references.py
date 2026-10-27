@@ -55,7 +55,7 @@ _STRUCTURED = {
     "scene.rights": "admission evidence public_display_authorization",
     "scene.rights.evidence.i": "artifact",
     "scene.rights.public_display_authorization": "scene_identity task_identity subject_identity allowed_fields",
-    "scene.website_native_inputs": "runtime_inputs appearance observations candidate frames",
+    "scene.website_native_inputs": "runtime_inputs appearance observations candidate frames cad_evidence",
     "construction": "recipe output_identity", "robot": "identity configuration kinematics joint_bounds base_registration controller_configuration",
     "controller": "identity configuration model_or_asset_rights",
     "task": "identity destination subject definition success_criteria execution surface_target",
@@ -580,10 +580,12 @@ class _Interpretation:
                 for key in ("rights_admission_digest", "human_authority_record_digest", "authorization_digest"):
                     self.selector(doc, "scene.rights.public_display_authorization." + key, authorization.get(key))
             if "website_native_inputs" in scene:
-                native = self.shape(doc, scene["website_native_inputs"], "scene.website_native_inputs", "runtime_inputs appearance observations candidate frames")
-                refs.update(self.leaves(doc, native, "scene.website_native_inputs", "runtime_inputs appearance observations candidate"))
+                native = self.shape(doc, scene["website_native_inputs"], "scene.website_native_inputs", "runtime_inputs appearance observations candidate frames cad_evidence")
+                refs.update(self.leaves(doc, native, "scene.website_native_inputs", "runtime_inputs appearance observations candidate", "cad_evidence"))
                 frames = native.get("frames")
-                _check(isinstance(frames, list) and 1 <= len(frames) <= 256, "supported_reference_invalid")
+                # CAD evidence is a reference to a designed subject, never a captured observation.
+                _check(isinstance(frames, list) and (0 if "cad_evidence" in native else 1) <= len(frames) <= 256,
+                       "supported_reference_invalid")
                 for index, item in enumerate(frames):
                     path = "scene.website_native_inputs.frames." + str(index)
                     refs[path] = self.remote(doc, path, item)

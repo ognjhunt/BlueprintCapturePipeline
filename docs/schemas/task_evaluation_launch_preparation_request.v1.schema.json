@@ -272,6 +272,9 @@
                 "candidate": {
                   "$ref": "#/$defs/reference"
                 },
+                "cad_evidence": {
+                  "$ref": "#/$defs/reference"
+                },
                 "frames": {
                   "type": "array",
                   "minItems": 0,
