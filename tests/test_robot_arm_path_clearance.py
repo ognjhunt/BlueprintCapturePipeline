@@ -248,6 +248,56 @@ def test_link_bounds_are_measured_from_the_robot_meshes_in_each_link_frame(tmp_p
         measure_arm_link_bounds(tmp_path / "robot.usda", ["panda_link9"])
 
 
+def test_the_hand_body_is_measured_in_the_flange_frame_without_its_finger_pads(tmp_path):
+    from blueprint_pipeline.robot_arm_path_clearance import measure_hand_body_bound
+
+    robot = Usd.Stage.CreateNew(str(tmp_path / "robot.usda"))
+    robot.SetDefaultPrim(UsdGeom.Xform.Define(robot, "/panda").GetPrim())
+    UsdGeom.Xform.Define(robot, "/panda/panda_link8").AddTranslateOp().Set(Gf.Vec3d(5.0, 0.0, 1.0))
+    UsdGeom.Xform.Define(robot, "/panda/Gripper").AddTranslateOp().Set(Gf.Vec3d(5.0, 0.0, 1.0))
+    for name, (low, high) in {"base_link": ((-0.04, -0.03, 0.01), (0.04, 0.03, 0.12)),
+                              "left_inner_finger": ((-0.01, 0.04, 0.12), (0.01, 0.06, 0.17))}.items():
+        mesh = UsdGeom.Mesh.Define(robot, f"/panda/Gripper/Robotiq_2F_85/{name}/collision")
+        mesh.CreatePointsAttr([Gf.Vec3f(x, y, z) for x in (low[0], high[0]) for y in (low[1], high[1])
+                               for z in (low[2], high[2])])
+    robot.GetRootLayer().Save()
+    bound = measure_hand_body_bound(tmp_path / "robot.usda", flange_link="panda_link8",
+                                    hand_root="Robotiq_2F_85", parts=("base_link",))
+    # The base, in the flange frame; the pad finger is not part of the body.
+    np.testing.assert_allclose(bound[:6], [0.04, 0.03, 0.12, 0.04, 0.03, -0.01], atol=1.01e-4)
+    with pytest.raises(RobotArmPathClearanceError, match="robot_arm_path_link_missing:right_outer_finger"):
+        measure_hand_body_bound(tmp_path / "robot.usda", flange_link="panda_link8", hand_root="Robotiq_2F_85",
+                                parts=("right_outer_finger",))
+
+
+def test_the_hand_body_comes_from_the_same_runtime_robot_and_stops_short_of_the_grasp_point():
+    from blueprint_pipeline.robot_arm_path_clearance import HAND_BODY_BOUNDS
+
+    hand, arm = HAND_BODY_BOUNDS["franka_panda"], ARM_LINK_BOUNDS["franka_panda"]
+    assert hand["measured_from_sha256"] == arm["measured_from_sha256"] and hand["frame"] == 8
+    offsets = np.asarray(hand["offsets"])
+    assert offsets.shape == (len(DIRECTIONS),) and np.all(offsets[:3] + offsets[3:6] > 0.0)
+    # The pads reach the grasp point; the measured body ends before it.
+    assert offsets[2] < arm["grasp_point_flange_m"][2]
+
+
+def test_a_side_grasp_at_floor_level_is_refused_by_the_hand_body_where_top_down_clears():
+    from blueprint_pipeline.native_franka_action_math import grasp_orientation_contact_xyzw
+    from blueprint_pipeline.robot_arm_path_clearance import NOMINAL_SEED_RAD, REST_SEED_RAD, rigid_pick_place_clearance
+
+    floor = sample_scene_obstacles(_box_triangles([-1.5, -1.5, -0.02], [1.5, 1.5, 0.0]),
+                                   centre=[0.0, 0.0, 0.0], radius=1.4)
+    common = {**RIGID_GRASP, "seeds": [list(NOMINAL_SEED_RAD), list(REST_SEED_RAD["franka_panda"])],
+              "start_pose_world": [0.5, 0.0, 0.0325, 0.0, 0.0, 0.0, 1.0], "target_position_world": [0.5, 0.3, 0.0325],
+              "scene_obstacles": floor}
+    assert rigid_pick_place_clearance(**common)["status"] == "clear"
+    side = rigid_pick_place_clearance(**{**common, "approach_unit": [-1.0, 0.0, 0.0],
+        "gripper_orientation_xyzw": grasp_orientation_contact_xyzw(approach_axis=[1.0, 0.0, 0.0], jaw_axis=[0.0, 1.0, 0.0])})
+    # Side-on at a 6.5 cm ball's centre, the hand's body would scrape the floor.
+    assert side["status"] == "blocked"
+    assert side["blockers"] == ["robot_rigid_pick_place_scene_strike:robotiq_2f85_body:approach"]
+
+
 def test_the_link_table_is_bound_to_the_runtime_robot_the_base_volumes_were_measured_on():
     model = ARM_LINK_BOUNDS["franka_panda"]
     assert model["measured_from_sha256"] == ROBOT_FIXED_VOLUMES["franka_panda"]["measured_from_sha256"]
