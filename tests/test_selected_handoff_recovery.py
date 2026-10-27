@@ -591,3 +591,133 @@ def test_selected_atlas_inherits_current_owner_membership_and_retirement_refusal
         result = recover_selected_handoff(selection, storage_root=tmp_path, client=client, listener=listener,
                                           **{**arguments, **changed})
         assert result["status"] == "blocked" and "private" not in json.dumps(result)
+
+
+def discovery_fixture(tmp_path, *, fault=None):
+    full, objects, _, listener, owner, retirement, _, _, calls = fixture(tmp_path)
+    selection = {key: full[key] for key in (
+        "kind", "bucket", "scene_id", "capture_id", "marker_generation")}
+    selection["mode"] = "discover-selector"
+    reads = []
+
+    class Blob:
+        def __init__(self, name, generation=None):
+            self.name = name
+            self.pinned = generation is not None
+            self.generation = generation or (2 if name.endswith("/pipeline_handoff.json") else 3)
+            self.size = len(objects[name])
+            if fault == "oversized_metadata":
+                self.size = 65537
+            elif fault == "invalid_generation":
+                self.generation = "0"
+            elif fault == "changed_metadata" and self.pinned:
+                self.size += 1
+
+        def reload(self, **kw):
+            if self.pinned:
+                assert kw == {"if_generation_match": self.generation, "timeout": 20}
+            else:
+                assert kw == {"timeout": 20}
+            reads.append(("metadata", self.name, self.pinned))
+
+        def download_as_bytes(self, **kw):
+            assert self.pinned and kw == {"if_generation_match": self.generation,
+                "timeout": 20, "start": 0, "end": self.size, "raw_download": True}
+            reads.append(("download", self.name, kw))
+            raw = objects[self.name]
+            if fault == "oversized_response":
+                return raw + b"x"
+            return raw
+
+    client = SimpleNamespace(bucket=lambda bucket: SimpleNamespace(blob=lambda name, generation=None: Blob(name, generation)))
+    return selection, full, objects, client, listener, owner, retirement, reads, calls
+
+
+def discover(tmp_path, *, fault=None, edit=None, **overrides):
+    s, full, objects, client, listener, owner, retirement, reads, calls = discovery_fixture(tmp_path, fault=fault)
+    if edit:
+        edit(s, objects, listener)
+    seen = []
+
+    def membership(**kw):
+        seen.append(kw)
+        return None
+
+    result = recover_selected_handoff(s, storage_root=tmp_path, client=client, listener=listener,
+        owner_reader=overrides.get("owner", owner), retirement_reader=overrides.get("retirement", retirement),
+        membership_reader=overrides.get("membership", membership),
+        admission_reader=lambda *a: pytest.fail("selector discovery must not request a grant or admission"))
+    return result, full, reads, calls, seen
+
+
+def test_discovery_returns_exact_reusable_selector_despite_existing_job(tmp_path):
+    capture = tmp_path / "capture"
+    capture.mkdir()
+    (capture / "existing-job.json").write_text("preserve")
+    before = sorted(tmp_path.rglob("*"))
+    result, full, reads, calls, seen = discover(tmp_path)
+    assert result["status"] == "selector_discovered"
+    assert result["selector"] == {key: value for key, value in full.items() if key not in {"kind", "mode"}}
+    assert validate_selection({**result["selector"], "kind": "selected-handoff", "mode": "atlas-status"})
+    assert result["source_membership_verified"] and len(seen) == 1
+    assert not result["provider_dispatch_performed"] and not result["new_authority_created"]
+    assert not calls and sorted(tmp_path.rglob("*")) == before
+    assert (capture / "existing-job.json").read_text() == "preserve"
+    assert len(reads) == 6
+    assert all(row[2]["end"] <= 65536 for row in reads if row[0] == "download")
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("oversized_metadata", "selected_handoff_object_metadata_invalid"),
+    ("invalid_generation", "selected_handoff_object_metadata_invalid"),
+    ("changed_metadata", "selected_handoff_object_changed"),
+    ("oversized_response", "selected_handoff_object_changed"),
+])
+def test_discovery_rejects_changed_or_oversized_objects_without_selector(tmp_path, fault, reason):
+    result, _, reads, calls, _ = discover(tmp_path, fault=fault)
+    assert result["status"] == "blocked" and result["blockers"] == [reason]
+    assert "selector" not in result and not calls
+    if fault in {"oversized_metadata", "invalid_generation", "changed_metadata"}:
+        assert not any(row[0] == "download" for row in reads)
+
+
+@pytest.mark.parametrize("fault", ["stale_receipt", "wrong_source", "not_published", "wrong_membership"])
+def test_discovery_rechecks_original_publication_and_full_source_membership(tmp_path, fault):
+    def edit(s, objects, listener):
+        for name, raw in objects.copy().items():
+            value = json.loads(raw)
+            if fault == "stale_receipt" and name.endswith("_receipt.json"):
+                value["source_finalize"]["generation"] = "99"
+            elif fault == "not_published" and name.endswith("_receipt.json"):
+                value["status"] = "publishing"
+            elif fault == "wrong_source" and name.endswith("/pipeline_handoff.json"):
+                value["source_finalize"]["object_name"] = "scenes/other/raw/capture_upload_complete.json"
+            objects[name] = json.dumps(value).encode()
+
+    def bad_membership(**kw):
+        raise ValueError("source membership changed private token=secret")
+
+    result, _, _, calls, _ = discover(tmp_path, edit=edit,
+        **({"membership": bad_membership} if fault == "wrong_membership" else {}))
+    assert result["status"] == "blocked" and "selector" not in result and not calls
+    assert "secret" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("which", ["owner", "retirement"])
+def test_discovery_respects_current_owner_rights_and_retirement_without_jobs(tmp_path, which):
+    def owner(**kw):
+        raise ValueError("capture_owner_rights_not_admitted")
+
+    result, _, _, calls, _ = discover(tmp_path, **{
+        which: owner if which == "owner" else lambda **kw: {"status": "retired"}})
+    assert result["status"] == "blocked" and "selector" not in result and not calls
+
+
+@pytest.mark.parametrize("extra", [
+    {"handoff_generation": "2"}, {"job": "/tmp/other"}, {"command": "retry"},
+    {"maximum_cost_usd": 100}, {"atlas_status_digest": "sha256:" + "c" * 64},
+])
+def test_discovery_input_never_mixes_with_execution_or_caller_chosen_objects(tmp_path, extra):
+    selection, *_ = discovery_fixture(tmp_path)
+    with pytest.raises(ValueError, match="selected_handoff_fields_invalid"):
+        validate_selection({**selection, **extra})

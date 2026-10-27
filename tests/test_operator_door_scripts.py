@@ -631,7 +631,7 @@ exit "$FAKE_HELPER_RC"
     else:
         assert not (tmp_path / "helper-private").exists()
     assert all(line == "umask 0077" for line in calls if line.startswith("umask "))
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "discover-selector"])
 def test_selected_atlas_shell_runs_only_service_helper_without_runtime_reconciliation(env, tmp_path, mode):
     repository = tmp_path / "repository"
     repository.mkdir()

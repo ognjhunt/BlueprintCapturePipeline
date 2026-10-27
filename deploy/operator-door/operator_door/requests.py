@@ -330,16 +330,18 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             normalized["bucket"] = bucket
         return normalized
     if kind == "selected-handoff":
-        if DISPATCHER_HOLD_ONLY and body.get("mode") not in ("dispatch", "atlas-status", "atlas-retry"):
+        if DISPATCHER_HOLD_ONLY and body.get("mode") not in ("dispatch", "atlas-status", "atlas-retry", "discover-selector"):
             raise RequestRefused("selected_handoff_dispatch_only")
         fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation",
                   "handoff_generation", "handoff_sha256", "handoff_size_bytes", "receipt_generation",
                   "receipt_sha256", "receipt_size_bytes"}
         mode = body.get("mode")
-        allowed = (fields | {"atlas_status_digest"},) if mode == "atlas-retry" else (
-            (fields, fields | {"resume_request_id"}) if mode == "dispatch" else (fields,))
+        identity_fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation"}
+        allowed = (identity_fields,) if mode == "discover-selector" else (
+            (fields | {"atlas_status_digest"},) if mode == "atlas-retry" else (
+                (fields, fields | {"resume_request_id"}) if mode == "dispatch" else (fields,)))
         if (set(body) not in allowed or type(mode) is not str
-                or mode not in {"inspect", "dispatch", "atlas-status", "atlas-retry"}):
+                or mode not in {"inspect", "dispatch", "atlas-status", "atlas-retry", "discover-selector"}):
             raise RequestRefused("selected_handoff_fields_invalid")
         if mode == "atlas-retry" and (type(body["atlas_status_digest"]) is not str
                 or not _LEASE_DIGEST.fullmatch(body["atlas_status_digest"])):
@@ -356,9 +358,12 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if (not body["capture_id"].startswith("walkthrough-")
                 or body["scene_id"] != "site-" + body["capture_id"].removeprefix("walkthrough-")):
             raise RequestRefused("selected_handoff_identity_invalid")
-        for field in ("marker_generation", "handoff_generation", "receipt_generation"):
+        for field in (("marker_generation",) if mode == "discover-selector" else
+                      ("marker_generation", "handoff_generation", "receipt_generation")):
             if type(body[field]) is not str or not re.fullmatch(r"[1-9][0-9]{0,19}", body[field]):
                 raise RequestRefused("selected_handoff_generation_invalid")
+        if mode == "discover-selector":
+            return dict(body)
         for role in ("handoff", "receipt"):
             if (type(body[role + "_size_bytes"]) is not int or not 0 < body[role + "_size_bytes"] <= 65536
                     or type(body[role + "_sha256"]) is not str

@@ -547,3 +547,20 @@ def test_selected_atlas_modes_are_bounded_and_never_native_resume(mode):
     else:
         with pytest.raises(RequestRefused):
             validate_request({**body, "atlas_status_digest": "sha256:" + "c" * 64})
+
+
+def test_selected_handoff_selector_discovery_is_readonly_identity_only():
+    fields = {"kind", "bucket", "scene_id", "capture_id", "marker_generation"}
+    body = {key: value for key, value in _selected_request().items() if key in fields}
+    body["mode"] = "discover-selector"
+    assert validate_request(body) == body
+    for change in ({"marker_generation": "0"}, {"bucket": "../other"},
+                   {"scene_id": "site-other"}, {"handoff_generation": "1"},
+                   {"path": "/arbitrary"}, {"maximum_cost_usd": 100},
+                   {"atlas_status_digest": "sha256:" + "c" * 64},
+                   {"resume_request_id": "20261009T154718Z-selected-handoff-9ef60661"}):
+        with pytest.raises(RequestRefused):
+            validate_request({**body, **change})
+    for mode in ("inspect", "dispatch", "atlas-status", "atlas-retry"):
+        with pytest.raises(RequestRefused):
+            validate_request({**body, "mode": mode})

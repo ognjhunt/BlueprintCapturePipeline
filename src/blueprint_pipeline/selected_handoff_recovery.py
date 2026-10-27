@@ -13,6 +13,8 @@ import re
 import time
 from pathlib import Path
 
+IDENTITY_FIELDS = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation"}
+
 FIELDS = {
     "kind",
     "mode",
@@ -31,13 +33,14 @@ FIELDS = {
 
 def validate_selection(value):
     if type(value) is not dict or set(value) != (
+        IDENTITY_FIELDS if value.get("mode") == "discover-selector" else
         FIELDS | ({"atlas_status_digest"} if value.get("mode") == "atlas-retry" else set())
     ):
         raise ValueError("selected_handoff_fields_invalid")
     if (
         value["kind"] != "selected-handoff"
         or type(value["mode"]) is not str
-        or value["mode"] not in {"inspect", "dispatch", "atlas-status", "atlas-retry"}
+        or value["mode"] not in {"inspect", "dispatch", "atlas-status", "atlas-retry", "discover-selector"}
     ):
         raise ValueError("selected_handoff_mode_invalid")
     if value["mode"] == "atlas-retry" and (
@@ -57,9 +60,12 @@ def validate_selection(value):
     request = value["capture_id"].removeprefix("walkthrough-")
     if not value["capture_id"].startswith("walkthrough-") or value["scene_id"] != "site-" + request:
         raise ValueError("selected_handoff_identity_invalid")
-    for field in ("marker_generation", "handoff_generation", "receipt_generation"):
+    for field in (("marker_generation",) if value["mode"] == "discover-selector" else
+                  ("marker_generation", "handoff_generation", "receipt_generation")):
         if type(value[field]) is not str or not re.fullmatch(r"[1-9][0-9]{0,19}", value[field]):
             raise ValueError("selected_handoff_generation_invalid")
+    if value["mode"] == "discover-selector":
+        return dict(value)
     for role in ("handoff", "receipt"):
         if (
             type(value[role + "_size_bytes"]) is not int
@@ -105,6 +111,41 @@ def _read(client, selection, prefix, role, filename):
     ):
         raise ValueError("selected_handoff_object_changed")
     return raw
+
+
+def _discover_objects(client, selection, prefix):
+    """Resolve only the two original producer objects, then pin bounded reads.
+
+    Metadata discovery confers no launch authority. A returned selector remains
+    tied to the original marker and must pass all shared owner/source checks.
+    """
+    resolved = dict(selection)
+    objects = {}
+    for role, filename in (("handoff", "pipeline_handoff.json"),
+                           ("receipt", "pipeline_handoff_pubsub_receipt.json")):
+        bucket = client.bucket(selection["bucket"])
+        latest = bucket.blob(prefix + filename)
+        latest.reload(timeout=20)
+        generation, size = latest.generation, latest.size
+        if (type(generation) not in {str, int}
+                or not re.fullmatch(r"[1-9][0-9]{0,19}", str(generation))
+                or type(size) is not int or not 0 < size <= 65536):
+            raise ValueError("selected_handoff_object_metadata_invalid")
+        pinned = bucket.blob(prefix + filename, generation=int(generation))
+        pinned.reload(if_generation_match=int(generation), timeout=20)
+        if int(pinned.generation) != int(generation) or pinned.size != size:
+            raise ValueError("selected_handoff_object_changed")
+        # Range bounds memory even if the response contradicts metadata. Read
+        # one extra byte to reject oversized content rather than truncate it.
+        raw = pinned.download_as_bytes(if_generation_match=int(generation),
+                                       start=0, end=size, raw_download=True, timeout=20)
+        if len(raw) != size:
+            raise ValueError("selected_handoff_object_changed")
+        resolved[role + "_generation"] = str(generation)
+        resolved[role + "_size_bytes"] = size
+        resolved[role + "_sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+        objects[role] = raw
+    return resolved, objects
 
 
 def current_admission(selection, observation):
@@ -175,10 +216,13 @@ def recover_selected_handoff(
         "new_authority_created": False,
     }
     try:
-        raw = _read(client, selection, prefix, "handoff", "pipeline_handoff.json")
-        receipt = _json(
-            _read(client, selection, prefix, "receipt", "pipeline_handoff_pubsub_receipt.json")
-        )
+        discovered = None
+        if selection["mode"] == "discover-selector":
+            selection, discovered = _discover_objects(client, selection, prefix)
+        raw = discovered["handoff"] if discovered is not None else _read(
+            client, selection, prefix, "handoff", "pipeline_handoff.json")
+        receipt = _json(discovered["receipt"] if discovered is not None else _read(
+            client, selection, prefix, "receipt", "pipeline_handoff_pubsub_receipt.json"))
         handoff = _json(raw)
         parsed = listener.parse_handoff_payload(raw)
         finalize = handoff.get("source_finalize")
@@ -224,6 +268,12 @@ def recover_selected_handoff(
         )
         if retired is not None:
             raise ValueError("selected_handoff_retirement_requires_reconciliation")
+        if selection["mode"] == "discover-selector":
+            result.update(
+                status="selector_discovered",
+                selector={key: value for key, value in selection.items() if key not in {"kind", "mode"}},
+            )
+            return result
         capture_root = listener._handoff_capture_root(parsed, storage_root=Path(storage_root))
         if selection["mode"] in {"atlas-status", "atlas-retry"}:
             from .selected_atlas_preview_recovery import recover_selected_atlas_preview

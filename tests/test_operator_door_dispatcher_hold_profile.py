@@ -55,6 +55,9 @@ atlas_status = {**selected, "mode":"atlas-status"}
 atlas_retry = {**selected, "mode":"atlas-retry", "atlas_status_digest":"sha256:"+"c"*64}
 assert r.validate_request(atlas_status) == atlas_status
 assert r.validate_request(atlas_retry) == atlas_retry
+discovery = {key:value for key,value in selected.items() if key in {"kind", "bucket", "scene_id", "capture_id", "marker_generation"}}
+discovery["mode"] = "discover-selector"
+assert r.validate_request(discovery) == discovery
 for atlas in (atlas_status, atlas_retry):
     try: r.validate_request({**atlas, "resume_request_id":"20261009T000000Z-selected-handoff-0123abcd"})
     except r.RequestRefused: pass
