@@ -427,6 +427,68 @@ def surface_height_references(frames: list[dict], surfaces, floor: dict) -> list
     return rows
 
 
+#: The clean plate's registry and an Atlas input name one decoded frame within this presentation time.
+SURFACE_FRAME_PTS_TOLERANCE_S = 0.002
+
+
+def _same_aspect(width: float, height: float, other_width: float, other_height: float) -> bool:
+    return abs(width * other_height - height * other_width) <= 0.01 * width * other_height
+
+
+def surfaces_on_posed_views(frames: list[dict], inputs: dict, selection: dict) -> list[dict]:
+    """Retained task-surface tracks (``website_task_masks.retained_task_surfaces``) on these posed views.
+
+    A view takes a surface's upright source mask only when the clean plate's
+    decoded-frame registry names the same frame, at the same presentation time,
+    with the aspect of the view's own checked source; the mask then follows that
+    view's source-to-posed pixel alignment. Any other view is not observed:
+    nothing is guessed. ``frames`` come from ``load_views`` on the full-view sources.
+    """
+    if selection.get("status") != "selected":
+        return []
+    import cv2
+    from .website_task_masks import decode_track_mask
+
+    registry = {row.get("source_frame_id"): row for row in selection.get("source_frame_registry") or []}
+    times = {row.get("frame_id"): row.get("timestamp_seconds") for row in inputs.get("frames") or []}
+    by_id = {frame["frame_id"]: frame for frame in frames}
+    centre = np.array([[1.0, 0.0, 0.5], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]])
+    surfaces = []
+    for target in selection.get("targets") or []:
+        observations = []
+        for observation in target["source_track"].get("observations") or []:
+            frame_id = observation.get("source_frame_id")
+            frame, row, time = by_id.get(frame_id), registry.get(frame_id), times.get(frame_id)
+            alignment = (frame or {}).get("pixel_alignment") or {}
+            if frame is None or row is None or time is None or "matrix" not in alignment:
+                continue
+            try:
+                mask = decode_track_mask(observation)
+            except ValueError:
+                continue
+            (mask_height, mask_width), (source_width, source_height) = mask.shape, alignment["source_grid"]
+            if (abs(float(row["decoded_pts_seconds"]) - float(time)) > SURFACE_FRAME_PTS_TOLERANCE_S
+                    or not _same_aspect(mask_width, mask_height, source_width, source_height)
+                    or not _same_aspect(row["width"], row["height"], source_width, source_height)):
+                continue
+            height, width = frame["depth"].shape
+            # Mask pixel centres -> source grid -> posed grid, in OpenCV's centre convention.
+            to_source = np.diag([source_width / mask_width, source_height / mask_height, 1.0])
+            matrix = np.linalg.inv(centre) @ np.asarray(alignment["matrix"]) @ to_source @ centre
+            posed = cv2.warpAffine(mask.astype(np.uint8), matrix[:2], (width, height), flags=cv2.INTER_NEAREST,
+                                   borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 0
+            edges = np.diff(np.pad(posed.reshape(-1).astype(np.int8), (1, 1)))
+            starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+            observations.append({"source_frame_id": frame_id, "width": width, "height": height,
+                                 "source_mask_digest": canonical_digest(observation),
+                                 "resampling": "source_to_posed_nearest",
+                                 "runs": [{"start": int(s), "length": int(e - s)} for s, e in zip(starts, ends)]})
+        surfaces.append({**{key: target.get(key) for key in (
+            "target_id", "target_role", "semantic_label", "segmentation_prompt")},
+            "track": {"track_id": target["source_track"].get("track_id"), "observations": observations}})
+    return surfaces
+
+
 def _vote_with_height_priors(references: list[dict], priors: list[dict], alone: dict
                              ) -> tuple[list[dict], list[dict], list[dict], dict]:
     """The references' vote again, with each height prior as one more object.
@@ -494,7 +556,7 @@ def _on_named_object(row: dict | None, pixels: np.ndarray, frame: dict) -> None:
 def estimate_sizes(
     *, frames: list[dict], automation: dict, pose_digest: str, output: Path, tracks: list[dict] = (),
     reference_masks: list[dict] | None = None, camera_height: bool = False,
-    surfaces: list[dict] | tuple = (),
+    surfaces: list[dict] | tuple = (), surface_source: dict | None = None,
 ) -> dict:
     """Metres per unit from the agreeing references, and the sizes they give.
 
@@ -510,7 +572,9 @@ def estimate_sizes(
     standard height. Each breaks a tie, confirms or contradicts a single
     reference, or, with no reference, gives a guesstimate with its own wide
     range; disagreeing votes give no scale. ``height_priors`` records what each
-    found. A retained result is read back as it was written.
+    found, and ``surface_source`` where the surfaces came from. Surfaces are an
+    opportunistic input, not part of the binding: a retained result is read back
+    as it was written, with whatever surfaces it measured.
     """
     binding = {
         "pose_digest": pose_digest,
@@ -519,8 +583,6 @@ def estimate_sizes(
     }
     if reference_masks is not None:
         binding["reference_masks_digest"] = canonical_digest({"reference_masks": reference_masks})
-    if surfaces:
-        binding["surfaces_digest"] = canonical_digest({"surfaces": list(surfaces)})
     if output.is_file():
         value = json.loads(output.read_text())
         if value.get("binding") != binding or value.get("digest") != canonical_digest(
@@ -575,7 +637,8 @@ def estimate_sizes(
         floor = observed_floor(frames, points)
         priors = {"floor": floor,
                   **({"camera": camera_height_reference(frames, floor)} if camera_height else {}),
-                  **({"surfaces": surface_height_references(frames, surfaces, floor)} if surfaces else {})}
+                  **({"surfaces": surface_height_references(frames, surfaces, floor)} if surfaces else {}),
+                  **({"surface_source": dict(surface_source)} if surface_source is not None else {})}
         votes = [row for row in [priors.get("camera"), *priors.get("surfaces", [])]
                  if row is not None and row["status"] == "measured"]
         if votes:

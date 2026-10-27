@@ -129,6 +129,7 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
             return {"status": "processing", "stage": "source_pose", "operation_id": posed.get("operation_id")}
         pose, frames = load_views(pose_root, inputs)
         verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=pose_root)
+        full_views = frames
         measurement_path = pose_root / 'scene_measurements.json'
         measurement_input_digest = reference_inputs['digest'] if reference_inputs is not None else None
         if reference_inputs is not None:
@@ -151,10 +152,24 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
         reference_masks = segment_scale_references(frames=frames, references=plan.get("scale_references", []),
             root=pose_root / "reference_masks", task_context=task_context,
             source_digest=(inputs.get("binding") or {}).get("source_video_digest"), checkpoint=check)
-        # The selected original views: their camera height is a scale cue too.
+        # The task's own supports and destinations, from the clean plate's retained
+        # tracks, read only. They are no part of a measurement's binding: a retained
+        # measurement is read back as it was written.
+        from .atlas_scene_measurements import surfaces_on_posed_views
+        from .website_task_masks import retained_task_surfaces
+        pipeline_root = next((p for p in (parent_root, *parent_root.parents) if p.name == "pipeline"), None)
+        selection = (retained_task_surfaces(pipeline_root=pipeline_root,
+                                            source_video_digest=(inputs.get("binding") or {}).get(
+                                                "source_video_digest"))
+                     if pipeline_root is not None else
+                     {"status": "unavailable", "reason": "clean_plate_task_masks_unavailable"})
+        surfaces = surfaces_on_posed_views(full_views, inputs, selection)
+        surface_source = {key: value for key, value in selection.items()
+                          if key not in ("targets", "source_frame_registry")}
+        # The selected original views: their camera height and named surfaces are scale cues too.
         measurements = estimate_sizes(frames=frames, automation=plan, pose_digest=pose["digest"],
                                       output=measurement_path, reference_masks=reference_masks,
-                                      camera_height=True)
+                                      camera_height=True, surfaces=surfaces, surface_source=surface_source)
         if configuration is not None:
             from .atlas_scale_review import needs_scale_review, repair_source_scale, rests_on_height_priors
             from .paid_resource_allocator import run_sponsored_website_atlas_plan
@@ -163,7 +178,8 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
                     reviewed = repair_source_scale(pose_root=pose_root,
                         pose=pose, inputs=inputs, automation=plan, previous=measurements,
                         task_context=task_context, configuration=configuration, check=check,
-                        planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw))
+                        planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw),
+                        surfaces=surfaces, surface_source=surface_source)
                 except ValueError as exc:
                     # The review found no reference to add: the height priors' guesstimate stands.
                     if str(exc) != "atlas_scale_review_abstained" or not rests_on_height_priors(measurements):
