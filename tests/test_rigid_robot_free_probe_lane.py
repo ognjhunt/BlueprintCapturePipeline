@@ -763,7 +763,7 @@ def test_the_paid_resource_inventory_and_reachability_ledger_name_the_lane() -> 
     spec.loader.exec_module(verifier)
     assert relative in verifier.APPROVED_ADMISSION_ISSUERS and relative in verifier.APPROVED_LANE_ADMISSION_BUILDERS
     ledger = (root / "docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md").read_text()
-    assert f"`{PROBE_KIND}` — `not_a_website_lane`, **switched off by default**" in ledger
+    assert f"`{PROBE_KIND}` — `not_a_website_lane`, automatic under the capture's grant" in ledger
 
 
 def test_the_runner_units_are_automatic_under_capture_grants_and_allow_opt_out(monkeypatch) -> None:

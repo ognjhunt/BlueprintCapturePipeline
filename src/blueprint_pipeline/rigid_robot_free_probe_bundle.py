@@ -216,6 +216,30 @@ def load_verified_rigid_robot_free_probe_bundle(receipt_path: str | Path, *,
     return receipt
 
 
+def main(argv: list[str] | None = None) -> int:
+    """Rebuild a probe bundle from its retained inputs at an explicit release commit."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    for name in ("job-dir", "packet-dir", "runtime-source-packet-receipt", "inputs-path"):
+        parser.add_argument("--" + name, required=True, type=Path)
+    parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument("--generated-at")
+    args = parser.parse_args(argv)
+    receipt = build_rigid_robot_free_probe_bundle(
+        job_dir=args.job_dir, packet_dir=args.packet_dir,
+        runtime_source_packet_receipt=args.runtime_source_packet_receipt,
+        inputs_path=args.inputs_path, implementation_commit=args.implementation_commit,
+        generated_at=args.generated_at)
+    print(json.dumps({name: receipt[name] for name in
+                      ("bundle_path", "bundle_sha256", "implementation_commit")}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
+
+
 __all__ = [
     "BUNDLE_RECEIPT_FILENAME",
     "PROBE_KIND",

@@ -32,9 +32,12 @@ from blueprint_pipeline.provider_runtime_import_closure import (
     provider_runtime_import_closure_blockers,
 )
 from blueprint_pipeline.rigid_robot_free_probe_bundle import (
+    BUNDLE_RECEIPT_FILENAME,
     RigidRobotFreeProbeBundleError,
     build_rigid_robot_free_probe_bundle,
+    current_probe_state,
     load_verified_rigid_robot_free_probe_bundle,
+    main,
 )
 from tests.test_rigid_robot_free_probe_lane import COMMIT, build_world, staged_attempt
 
@@ -85,6 +88,25 @@ def sealed(tmp_path, monkeypatch) -> dict:
     receipt_path = staged["root"] / "bundle" / "native_task_arena_provider_bundle_receipt.v1.json"
     return {"world": world, "staged": staged, "receipt_path": receipt_path,
             "receipt": json.loads(receipt_path.read_text())}
+
+
+def test_cli_rebuilds_retained_inputs_at_a_new_commit_without_spending(sealed, tmp_path, capsys):
+    state = current_probe_state(sealed["world"]["capture"])
+    rebuilt = tmp_path / "rebuilt"
+    commit = "b" * 40
+    assert main([
+        "--job-dir", str(rebuilt), "--packet-dir", str(state["facts"]["packet_dir"]),
+        "--runtime-source-packet-receipt", str(state["facts"]["runtime_source_packet_receipt"]),
+        "--inputs-path", str(sealed["staged"]["root"] / worker.INPUTS_FILENAME),
+        "--implementation-commit", commit,
+        "--generated-at", "2026-10-27T18:00:00+00:00",
+    ]) == 0
+    receipt = load_verified_rigid_robot_free_probe_bundle(
+        rebuilt / BUNDLE_RECEIPT_FILENAME, expected_implementation_commit=commit)
+    assert json.loads(capsys.readouterr().out)["bundle_sha256"] == receipt["bundle_sha256"]
+    assert receipt["bound_runtime_inputs"] == sealed["receipt"]["bound_runtime_inputs"]
+    assert sealed["world"]["allocator_calls"] == []
+    assert sealed["world"]["webapp_calls"] == []
 
 
 def test_the_sealed_bundle_passes_the_vast_preflight_and_carries_no_policy(sealed, tmp_path) -> None:

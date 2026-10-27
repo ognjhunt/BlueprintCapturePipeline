@@ -94,6 +94,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-policy-canary-dispatcher.path
   blueprint-team-evaluation-runner.path
   blueprint-rigid-robot-free-probe-runner.path
+  blueprint-rigid-robot-free-probe-runner.timer
   blueprint-native-g1-team-campaign-dispatcher.timer
   blueprint-native-g1-team-campaign-settlement.timer
   blueprint-task-evaluation-configured-controls-progression.timer
