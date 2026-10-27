@@ -162,15 +162,39 @@ def test_the_external_camera_the_runtime_renders_replaces_the_plans_row(tmp_path
     rendered = {"role": "external", "pose_frame": "world", "policy_input": True, "review_only": False,
                 "optical_convention": "opencv", "frame_from_camera_matrix": sum(FACING, []), "intrinsics": INTRINSICS}
     # The plan's row faces away and would block; the camera the runtime renders sees the handle.
-    root, _ = _packet(tmp_path, external=AWAY)
-    report = scv.require_scene_camera_admission(root, rendered_external_rows=[rendered])
+    root, plan = _packet(tmp_path, external=AWAY)
+    report = scv.require_scene_camera_admission(root, rendered_external_views=[(rendered, plan)])
     assert report["status"] == "passed"
     assert "scene_camera_plan_row_not_rendered:external" in report["notices"]
     assert "scene_camera_contact_outside_view:external" in report["advisories"]
     assert [row.get("rendered_by_policy_runtime", False) for row in report["cameras"]
             if row["role"] == "external"] == [False, True]
     # Gaussians in front of the rendered camera block, whatever the plan's row sees.
-    root, _ = _packet(tmp_path / "hidden", sheet_x=0.6, external=AWAY)
+    root, plan = _packet(tmp_path / "hidden", sheet_x=0.6, external=AWAY)
     with pytest.raises(scv.SceneCameraVisibilityBlocked) as blocked:
-        scv.require_scene_camera_admission(root, rendered_external_rows=[rendered])
+        scv.require_scene_camera_admission(root, rendered_external_views=[(rendered, plan)])
     assert blocked.value.blockers == ["scene_camera_contact_occluded_by_scene:external:100%"]
+
+
+def test_each_rendered_camera_sees_the_task_where_its_cell_places_it(tmp_path):
+    import copy
+
+    rendered = {"role": "external", "pose_frame": "world", "policy_input": True, "review_only": False,
+                "optical_convention": "opencv", "frame_from_camera_matrix": sum(FACING, []), "intrinsics": INTRINSICS}
+    root, plan = _packet(tmp_path, external=AWAY)
+    plan["task_object_observability"] = {"task_object_extent_m": [0.6, 0.6, 0.9],
+                                         "object_positions_world": [[0.0, 0.0, 0.45]]}
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    # A cell that carries the cabinet 3 m aside: the same camera that sees the nominal handle cannot see it.
+    moved = copy.deepcopy(plan)
+    shifted = {"position_world_m": [0.0, 3.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    moved["objects"][1]["pose_world"] = shifted
+    moved["objects"][1]["reset_state"]["root_pose_world"] = shifted
+    moved["task_object_observability"]["object_positions_world"] = [[0.0, 3.0, 0.45]]
+    assert scv.task_geometry_key(moved) != scv.task_geometry_key(plan)
+    evaluate = scv.packet_view_evaluator(root)
+    assert evaluate(rendered) == evaluate(rendered, plan) == []
+    assert "scene_camera_contact_outside_view:external" in evaluate(rendered, moved)
+    with pytest.raises(scv.SceneCameraVisibilityBlocked) as blocked:
+        scv.require_scene_camera_admission(root, rendered_external_views=[(rendered, plan), (rendered, moved)])
+    assert blocked.value.blockers == ["scene_camera_contact_outside_view:external"]

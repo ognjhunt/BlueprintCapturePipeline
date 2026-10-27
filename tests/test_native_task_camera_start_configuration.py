@@ -291,16 +291,23 @@ def test_start_refuses_a_hidden_external_camera_measuring_each_camera_once():
     shifted["scenario"] = {"parameters": {"external_camera_x_delta_m": 0.02}}
     seen = []
 
-    def clear(row):
-        seen.append(row["frame_from_camera_matrix"])
+    def clear(row, plan):
+        seen.append((row["frame_from_camera_matrix"], plan))
         return []
 
     # Ten cells with two camera positions cost two measurements.
     assert require_external_camera_scene_view([nominal] * 5 + [shifted] * 5, clear) == 2
     assert len(seen) == 2
-    hidden = seen[1]
+    hidden = seen[1][0]
     with pytest.raises(ValueError, match="policy_camera_external_scene_view_blocked:"
                                          "scene_camera_contact_occluded_by_scene:external:40%"):
-        require_external_camera_scene_view([nominal, shifted], lambda row: (
+        require_external_camera_scene_view([nominal, shifted], lambda row, plan: (
             ["scene_camera_contact_occluded_by_scene:external:40%"]
             if row["frame_from_camera_matrix"] == hidden else []))
+    # A cell that turns the task under the same camera is measured on its own, with its own plan.
+    turned = deepcopy(nominal)
+    turned["objects"] = [{"task_subject": True, "object_type": "RIGID",
+                          "pose_world": {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.38, 0.92]}}]
+    seen.clear()
+    assert require_external_camera_scene_view([nominal, turned, turned], clear) == 2
+    assert [plan is turned for _, plan in seen] == [False, True]

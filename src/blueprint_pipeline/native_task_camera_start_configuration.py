@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 import hashlib
 import itertools
+import json
 import math
 from pathlib import Path
 from typing import Any
@@ -236,19 +237,31 @@ def official_external_camera_row(plan) -> dict[str, Any]:
                            "width": width, "height": height}}
 
 
+def task_geometry_key(plan) -> str:
+    """What fixes a plan's task geometry for a camera check: the subject's placement, reset and contact."""
+    subjects = [row for row in plan.get("objects") or [] if isinstance(row, Mapping)
+                and (row.get("task_subject") is True or row.get("semantic_role") == "task_object")]
+    subject = subjects[0] if len(subjects) == 1 else {}
+    task_spec = plan.get("task_spec") or {}
+    return json.dumps([subject.get("pose_world"), subject.get("reset_state"), task_spec.get("interaction_affordance"),
+                       task_spec.get("executable_opening_threshold"), plan.get("task_object_observability")],
+                      sort_keys=True, default=str)
+
+
 def require_external_camera_scene_view(plans, evaluate) -> int:
     """Refuse a start whose rendered external camera cannot see the task through the scene.
 
-    ``evaluate`` returns the problems that keep a world camera row from seeing the task
-    (``scene_camera_visibility.packet_view_evaluator``). Each distinct camera among the
-    resolved cell plans is measured once; returns how many were measured.
+    ``evaluate(row, plan)`` returns the problems that keep a world camera row from seeing the task
+    where that resolved plan places it (``scene_camera_visibility.packet_view_evaluator``). A cell
+    may move or turn the task as well as the camera, so each distinct camera and task placement
+    among the resolved cell plans is measured once; returns how many were measured.
     """
     measured: dict[tuple, list[str]] = {}
     for plan in plans:
         row = runtime_external_camera_row(plan)
-        key = (*row["frame_from_camera_matrix"], *sorted(row["intrinsics"].items()))
+        key = (*row["frame_from_camera_matrix"], *sorted(row["intrinsics"].items()), task_geometry_key(plan))
         if key not in measured:
-            measured[key] = sorted(str(value) for value in evaluate(row))
+            measured[key] = sorted(str(value) for value in evaluate(row, plan))
         if measured[key]:
             raise ValueError("policy_camera_external_scene_view_blocked:" + ",".join(measured[key]))
     return len(measured)
