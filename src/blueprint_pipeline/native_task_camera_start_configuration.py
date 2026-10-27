@@ -23,6 +23,9 @@ WRIST_POSITION = [0.011, -0.031, -0.074]
 WRIST_QUATERNION_XYZW = [0.570, 0.576, -0.409, -0.420]
 EXTERNAL_POSITION = [0.05, 0.57, 0.66]
 EXTERNAL_QUATERNION_XYZW = [-0.195, 0.399, 0.805, -0.393]
+# Arena's DROID external camera optics, as the policy runtime renders them (OpenGL frame).
+EXTERNAL_INTRINSICS = [[500., 0., 640.], [0., 500., 360.], [0., 0., 1.]]
+EXTERNAL_RESOLUTION = (1280, 720)
 
 
 def pose_matrix(position, quaternion) -> np.ndarray:
@@ -197,6 +200,54 @@ def task_external_camera_position(plan) -> list[float]:
     return (parent[:3, :3].T @ (world_position-parent[:3, 3])).tolist()
 
 
+def external_camera_world(plan) -> np.ndarray:
+    """World-from-camera (OpenGL) of Arena's external camera at the plan's sealed offset."""
+    base = plan["robot"]["base_pose_world"]
+    return (pose_matrix(base["position_world_m"], base["orientation_xyzw"])
+            @ pose_matrix(external_camera_offset_position(plan), EXTERNAL_QUATERNION_XYZW))
+
+
+def runtime_external_camera_row(plan) -> dict[str, Any]:
+    """The external policy camera the native runtime renders, as a world scene-plan row.
+
+    Under the DROID policy profile the runtime keeps Arena's own external camera, its
+    rotation and optics, and moves it only to the start binding's offset
+    (``native_task_arena_runtime``). The plan's world ``external`` row is then never
+    rendered, so a check of that row says nothing about what the policies see.
+    """
+    profile = plan.get("policy_canary_embodiment_profile") or {}
+    official = ((profile.get("preserve_official_policy_camera_calibration") is True
+                 or profile.get("preserve_official_policy_camera_intrinsics") is True)
+                and "external" in (profile.get("policy_camera_roles") or []))
+    if not official:
+        return deepcopy(next(c for c in plan["cameras"] if c["role"] == "external"))
+    width, height = EXTERNAL_RESOLUTION
+    return {"role": "external", "policy_input": True, "scoring_input": False, "pose_frame": "world",
+            "parent_prim_path": "{ENV_REGEX_NS}", "optical_convention": "opencv",
+            "frame_from_camera_matrix": (external_camera_world(plan) @ np.diag([1., -1., -1., 1.])).reshape(-1).tolist(),
+            "intrinsics": {"fx": EXTERNAL_INTRINSICS[0][0], "fy": EXTERNAL_INTRINSICS[1][1],
+                           "cx": EXTERNAL_INTRINSICS[0][2], "cy": EXTERNAL_INTRINSICS[1][2],
+                           "width": width, "height": height}}
+
+
+def require_external_camera_scene_view(plans, evaluate) -> int:
+    """Refuse a start whose rendered external camera cannot see the task through the scene.
+
+    ``evaluate`` returns the problems that keep a world camera row from seeing the task
+    (``scene_camera_visibility.packet_view_evaluator``). Each distinct camera among the
+    resolved cell plans is measured once; returns how many were measured.
+    """
+    measured: dict[tuple, list[str]] = {}
+    for plan in plans:
+        row = runtime_external_camera_row(plan)
+        key = (*row["frame_from_camera_matrix"], *sorted(row["intrinsics"].items()))
+        if key not in measured:
+            measured[key] = sorted(str(value) for value in evaluate(row))
+        if measured[key]:
+            raise ValueError("policy_camera_external_scene_view_blocked:" + ",".join(measured[key]))
+    return len(measured)
+
+
 def resolved_camera_matrices(plan, chain, joints) -> dict[str, tuple[np.ndarray, list[list[float]]]]:
     base = plan["robot"]["base_pose_world"]
     poses = joint_body_poses(chain, joints, base)
@@ -205,9 +256,7 @@ def resolved_camera_matrices(plan, chain, joints) -> dict[str, tuple[np.ndarray,
         raise ValueError("policy_camera_overview_frame_invalid")
     k = overview["intrinsics"]
     return {
-        "external": (pose_matrix(base["position_world_m"], base["orientation_xyzw"])
-                     @ pose_matrix(external_camera_offset_position(plan), EXTERNAL_QUATERNION_XYZW),
-                     [[500., 0., 640.], [0., 500., 360.], [0., 0., 1.]]),
+        "external": (external_camera_world(plan), deepcopy(EXTERNAL_INTRINSICS)),
         "wrist": (poses[BODY] @ pose_matrix(WRIST_POSITION, WRIST_QUATERNION_XYZW),
                   [[2000/3, 0., 640.], [0., 2000/3, 360.], [0., 0., 1.]]),
         "overview": (np.asarray(overview["frame_from_camera_matrix"]).reshape(4, 4) @ np.diag([1., -1., -1., 1.]),
