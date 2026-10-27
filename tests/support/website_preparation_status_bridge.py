@@ -150,14 +150,15 @@ def main() -> None:
         write_json(root / "pipeline/website_task_context.json", context)
         result = prepare_website_scene_handoff(descriptor={"scene_id": owner["scene_id"], "capture_id": owner["capture_id"], "metadata": {"site_task_context": context}},
             clean_plate={"privacy_verified": True, "status": "noop"}, capture_root=root, now=0)
-        assert result["status"] == "awaiting_inputs" and result["blockers"] == ["website_reconstruction_pending"]
-        raise PipelineError("website_reconstruction_pending") from StageError("website_scene_preparation", "website_reconstruction_pending")
+        assert result["status"] == "needs_input" and result["blockers"] == ["website_atlas_job_required"]
+        assert result["simulator_ready"] is False
+        raise PipelineError("website_atlas_job_required") from StageError("website_scene_preparation", "website_atlas_job_required")
     def process():
         try:
             listener.process_handoff_payload(payload, storage_root=storage_root, provider="local", storage_client=Client(), run_e2e=held,
                 run_e2e_enabled=False, stage_control_plane=True)
         except PipelineError as exc:
-            assert str(exc) == "website_reconstruction_pending"
+            assert str(exc) == "website_atlas_job_required"
     if not args.resume_only:
         process()
     else:
