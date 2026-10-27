@@ -26,6 +26,7 @@ _CONFIG_REFUSALS = frozenset({
     "source_revoked", "task_brief_missing", "website_scene_sponsorship_binding_invalid",
     "website_atlas_runtime_policy_required",
     "website_atlas_reservation_accounting_invalid", "website_atlas_reservation_summary_too_large",
+    "website_atlas_accounting_response_too_large",
 })
 
 

@@ -253,6 +253,7 @@ def test_reviewed_status_must_still_match_current_job_authority_and_allowance(si
     ("price", "atlas_runtime_price_review_expired"),
     ("budget", "atlas_current_budget_admission_blocked"),
     ("config", "website_atlas_source_consent_required"),
+    ("oversized_config", "website_atlas_accounting_response_too_large"),
 ])
 def test_preflight_blockers_are_visible_and_cannot_requeue(site, monkeypatch, kind, expected):
     from blueprint_pipeline import paid_resource_admission as budget
@@ -274,7 +275,7 @@ def test_preflight_blockers_are_visible_and_cannot_requeue(site, monkeypatch, ki
         monkeypatch.setattr(budget, "require_paid_resource_budget", refuse)
     else:
         def missing_grant(*args, **kwargs):
-            raise ValueError("website_control_atlas-configuration_http_409:website_atlas_source_consent_required")
+            raise ValueError("website_control_atlas-configuration_http_409:" + expected)
         monkeypatch.setattr(recovery, "_configuration", missing_grant)
     result = recover(site)
     assert expected in result["atlas"]["preflight_blockers"]

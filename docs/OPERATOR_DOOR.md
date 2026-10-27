@@ -141,6 +141,10 @@ an absent projection is `null`, not zero cost. These facts enter the reviewed
 snapshot digest without creating a new spending grant or unknown-cost gate.
 The two lane caps are never a combined allowance or the remaining authorization
 for an entire run.
+Only the noncreating Atlas configuration read allows up to 200,000 response
+bytes, covering the 128 preparation and 64 inference row limits. Other control
+reads retain 100,000 bytes. Oversized responses fail closed without truncation;
+unbounded configuration prose does not make the transport unbounded.
 
 Use `selected-handoff --selector-file SELECTOR --atlas-status --wait` first.
 After reviewing that result against the run's authorized cumulative ceiling,
