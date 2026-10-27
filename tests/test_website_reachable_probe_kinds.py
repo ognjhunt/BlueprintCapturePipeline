@@ -71,6 +71,10 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     # The team-only controlled-observation offer follows its own signed run
     # queue and exact checkpoint registry, rather than a scene profile builder.
     "native-task-arena-controlled-policy": "not_a_website_lane",
+    # Beta L5: the packet worker's hook queues a prepared rigid scene's
+    # robot-free probe and the queue runner funds it from that capture's own
+    # website grant; no launch profile names it (rigid_robot_free_probe_runner).
+    "rigid-robot-free-probe": "not_a_website_lane",
     # Real debt -- executable, not retired, not frozen, and unreachable -- is
     # empty as of this lane's builder. Every probe kind the allocator can run
     # is now either reachable from the website or a recorded decision. A new

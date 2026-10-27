@@ -15,6 +15,7 @@ from blueprint_pipeline import website_task_context as context_reader
 from blueprint_pipeline import capture_original_owner_observer as observer
 from blueprint_pipeline import website_assessment_resume as resume
 from blueprint_pipeline.common import write_json
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_retirement_generations import capture_birth_source_projection
 from tests.test_website_preparation_status import prepared_source  # noqa: F401
 
@@ -60,6 +61,67 @@ def _ready(waiting, monkeypatch):
         "questions_pending": True, "scope": "scene_preparation_only", "robot_suitability_verified": False,
         "physical_trial_authorized": False}
     monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", lambda **_: {"assessment_preparation_proposal": proposal})
+
+
+def _admit(waiting):
+    root, owner, _, raw, record = waiting
+    return resume.admit_browser_preparation(listener, payload=raw,
+        handoff=listener.parse_handoff_payload(raw), capture_root=root, observation=owner,
+        producer_delivery_key=record["producer_delivery_key"], payload_digest=listener.payload_sha256(raw),
+        allow_resume=False)
+
+
+def test_additive_task_family_upgrades_context_before_current_sponsorship_admission(waiting, monkeypatch):
+    root, _, context, _, _ = waiting
+    _ready(waiting, monkeypatch)
+    original = (root / "pipeline/website_task_context.json").read_bytes()
+    current = {**context, "task_family": "rigid_object_relocation"}
+    current["context_digest"] = canonical_digest(current, digest_field="context_digest")
+    monkeypatch.setattr(context_reader, "load_current_website_task_context", lambda **_: current)
+    sponsorship = context_reader.load_website_scene_sponsorship
+    admitted = []
+    def authorize(**kwargs):
+        admitted.append(kwargs["task_context"])
+        return sponsorship(**kwargs)
+    monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", authorize)
+    before = listener._read_job_ledger(root)
+    _admit(waiting)
+    history = root / "pipeline/website_task_context_history" / (context["context_digest"][7:] + ".json")
+    assert history.read_bytes() == original
+    assert json.loads((root / "pipeline/website_task_context.json").read_bytes()) == current
+    assert admitted == [current]
+    assert listener._read_job_ledger(root) == before
+    _admit(waiting)
+    assert history.read_bytes() == original
+    assert len(list(history.parent.iterdir())) == 1
+
+
+@pytest.mark.parametrize("change", ["description", "rights", "confirmed", "family", "digest", "archive"])
+def test_task_family_upgrade_preserves_context_changes_and_archive_conflicts_as_refusals(waiting, monkeypatch, change):
+    root, _, context, _, _ = waiting
+    original_path = root / "pipeline/website_task_context.json"
+    if change == "family":
+        context = {**context, "task_family": "pouring"}
+        context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+        write_json(original_path, context)
+    original = original_path.read_bytes()
+    current = {**context, "task_family": "rigid_object_relocation"}
+    if change == "description":
+        current["description"] = "A different task"
+    elif change == "rights":
+        current["capture_rights"] = {"derived_scene_generation_allowed": True}
+    elif change == "confirmed":
+        current["confirmed"] = False
+    current["context_digest"] = canonical_digest(current, digest_field="context_digest")
+    if change == "digest":
+        current["context_digest"] = "sha256:" + "e" * 64
+    elif change == "archive":
+        write_json(root / "pipeline/website_task_context_history" / (context["context_digest"][7:] + ".json"), {"wrong": "bytes"})
+    monkeypatch.setattr(context_reader, "load_current_website_task_context", lambda **_: current)
+    monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", lambda **_: pytest.fail("changed context entered spending admission"))
+    with pytest.raises(ValueError):
+        _admit(waiting)
+    assert original_path.read_bytes() == original
 
 
 def test_pending_preflight_retains_exact_bytes_and_never_claims_another_attempt(waiting, monkeypatch):
