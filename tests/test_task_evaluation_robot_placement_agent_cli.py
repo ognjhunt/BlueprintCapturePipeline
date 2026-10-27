@@ -634,3 +634,57 @@ def test_live_selection_persists_interruption_safe_inference_audit(
     assert len(audits) == 1
     assert audits[0].kwargs["run_id"] == "live-audited-selection"
     assert audits[0].manifest_writes == 1
+
+
+def test_the_deterministic_pick_keeps_its_mount_and_support_rule_into_the_receipt(tmp_path, monkeypatch) -> None:
+    import blueprint_pipeline.task_evaluation_robot_placement_agent_cli as module
+
+    mount = {"rule": "droid_working_band", "height_m": 0.57, "post_radius_m": 0.1}
+    candidate = {
+        "candidate_id": "scanned_00_03_0.039_0.600_10_mount0.570", "support_surface_id": "surface",
+        "support_rule": "scanned", "robot_mount": mount,
+        "pose": {"position_world_m": [0.57, 0.05, 0.609], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        "geometry_gate_digest": "sha256:geometry", "shoulder_to_target_distance_m": 0.5,
+        "trajectory_position_ik_gate_digest": "sha256:trajectory", "trajectory_minimum_manipulability": 0.2,
+        "trajectory_position_ik_gate": {"status": "passed"},
+    }
+    gate = {"schema_version": "task_evaluation_robot_placement_geometry_gate.v1",
+            "candidate_id": candidate["candidate_id"], "declared_support_surface_id": "surface", "status": "passed",
+            "blockers": [], "robot_mount": mount, "orientation_slew_feasibility": {"feasible": True, "blockers": []},
+            "geometry_gate_digest": ""}
+    gate["geometry_gate_digest"] = canonical_digest(gate, digest_field="geometry_gate_digest")
+    seen = {}
+    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: SimpleNamespace(task_asset_bindings=()))
+    monkeypatch.setattr(module, "summarize_robot_placement_geometry", lambda *_a, **_k: {})
+    monkeypatch.setattr(module, "enumerate_robot_placement_geometry_candidates",
+                        lambda **kwargs: seen.setdefault("rule", kwargs["robot_mount_rule"]) and [candidate])
+    monkeypatch.setattr(module, "validate_robot_placement_geometry_candidate",
+                        lambda **kwargs: seen.setdefault("proposal", kwargs["proposal"]) and gate)
+    monkeypatch.setattr(module, "_reject_infeasible_orientation_slew", lambda **kwargs: kwargs["gate"])
+    digest = "sha256:" + hashlib.sha256(_ONE_PIXEL_PNG).hexdigest()
+    monkeypatch.setattr(module, "render_robot_placement_geometry_previews", lambda **_: [{
+        "label": "top_down", "digest": digest, "detail": "high",
+        "image_url": "data:image/png;base64," + base64.b64encode(_ONE_PIXEL_PNG).decode("ascii")}])
+    arguments = dict(
+        run_id="mounted", scene_collision_usd=Path("scene.usda"), robot_asset_usd=Path("robot.usda"),
+        target_position_world_m=[0.0, 0.0, 0.889], scene_binding={"scene": "dishwasher"},
+        task_binding={"task": "open"}, overview_image_paths=[], max_rounds=1, candidate_inventory_cap=12,
+        max_input_tokens=1_000, max_inference_cost_usd=0.0, allow_live_invocation=False, tracing_disabled=True,
+        robot_mount_rule="droid_working_band")
+    # A mount is only an opt-in fresh deterministic search.
+    with pytest.raises(ValueError, match="mount_requires_fresh_deterministic_search"):
+        run_robot_placement_cli(output_dir=tmp_path / "agent", **arguments)
+
+    receipt = run_robot_placement_cli(output_dir=tmp_path / "output", deterministic_selection=True, **arguments)
+
+    assert seen["rule"] == "droid_working_band"
+    # The gate re-checked the pick under the rule and the mount it was found with.
+    assert seen["proposal"]["support_rule"] == "scanned" and seen["proposal"]["robot_mount"] == mount
+    assert receipt["accepted_robot_mount"] == mount
+    validated = validate_robot_placement_receipt(receipt)
+    assert validated["accepted_robot_mount"] == mount
+    forged = json.loads(json.dumps(receipt))
+    forged["accepted_robot_mount"] = {**mount, "height_m": 0.3}
+    forged["receipt_digest"] = canonical_digest(forged, digest_field="receipt_digest")
+    with pytest.raises(ValueError, match="robot_placement_receipt_acceptance_invalid"):
+        validate_robot_placement_receipt(forged)

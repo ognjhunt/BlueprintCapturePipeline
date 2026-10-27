@@ -1221,3 +1221,110 @@ def test_parallel_geometry_workers_preserve_serial_order_and_gate_bytes(
 
     assert executor_calls == [{"max_workers": 2, "start_method": "spawn"}]
     assert parallel == serial
+
+
+def _mount(height):
+    from blueprint_pipeline.task_evaluation_robot_placement_geometry import (
+        ROBOT_MOUNT_POST_RADIUS_M, ROBOT_MOUNT_RULE_DROID_WORKING_BAND)
+    return {"rule": ROBOT_MOUNT_RULE_DROID_WORKING_BAND, "height_m": height, "post_radius_m": ROBOT_MOUNT_POST_RADIUS_M}
+
+
+def test_the_droid_mount_puts_the_target_at_droids_working_height():
+    from blueprint_pipeline.task_evaluation_robot_placement_geometry import robot_mount_height_m
+
+    # The 2026-10-26 dishwasher handle stood 0.85 m above the floor-mounted base; DROID's median is 0.28 m.
+    assert robot_mount_height_m("droid_working_band", target_height_m=0.889, support_height_m=0.039) == 0.57
+    assert robot_mount_height_m("droid_working_band", target_height_m=0.30, support_height_m=0.0) == 0.0
+    assert robot_mount_height_m("droid_working_band", target_height_m=3.0, support_height_m=0.0) == 0.8
+    assert robot_mount_height_m(None, target_height_m=3.0, support_height_m=0.0) == 0.0
+    with pytest.raises(RobotPlacementGeometryError, match="mount_rule_unknown"):
+        robot_mount_height_m("stilts", target_height_m=1.0, support_height_m=0.0)
+
+
+def test_a_mounted_base_stands_on_its_post_and_only_a_described_mount_is_accepted(tmp_path):
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot)
+    floor = next(surface for surface in index.support_surfaces if surface.prim_path == "/Scene/Floor")
+    target = [0.6, 0.0, 0.85]
+    raised = _proposal(floor.surface_id, (0.0, 0.0, 0.57))
+    gate = validate_robot_placement_geometry_candidate(index=index, proposal={**raised, "robot_mount": _mount(0.57)},
+                                                       target_position_world_m=target)
+    assert gate["status"] == "passed"
+    assert gate["support_height_m"] == pytest.approx(0.0) and gate["robot_mount"] == _mount(0.57)
+    # The same raised pose without its post floats above the floor.
+    assert "robot_root_not_on_declared_support_height" in validate_robot_placement_geometry_candidate(
+        index=index, proposal=raised, target_position_world_m=target)["blockers"]
+    # A floor base keeps its gate exactly: no mount fields.
+    floor_gate = validate_robot_placement_geometry_candidate(index=index, proposal=_proposal(floor.surface_id),
+                                                             target_position_world_m=target)
+    assert "robot_mount" not in floor_gate and "support_height_m" not in floor_gate
+    for bad in ({**_mount(0.57), "post_radius_m": 0.3}, {**_mount(0.57), "rule": "stilts"}, _mount(1.5),
+                {"rule": "droid_working_band"}):
+        with pytest.raises(RobotPlacementGeometryError, match="robot_placement_mount_invalid"):
+            validate_robot_placement_geometry_candidate(index=index, proposal={**raised, "robot_mount": bad},
+                                                        target_position_world_m=target)
+
+
+def test_the_post_must_clear_the_room_below_a_raised_base(tmp_path):
+    scene_path = tmp_path / "stool.usda"
+    stage = Usd.Stage.CreateNew(str(scene_path))
+    stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Scene").GetPrim())
+    _mesh(stage, "/Scene/Floor", [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)], [(0, 1, 2, 3)])
+    # A 0.3 m stool: under the post at x = 0.05, beside it but under the robot's footprint at x = 0.13.
+    _box(stage, "/Scene/Stool", (0.05, 0.6, 0.0), (0.09, 0.7, 0.3))
+    _box(stage, "/Scene/Crate", (0.12, -0.7, 0.0), (0.14, -0.6, 0.3))
+    stage.GetRootLayer().Save()
+    _, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene_path, robot_asset_usd_path=robot)
+    floor = next(surface for surface in index.support_surfaces if surface.prim_path == "/Scene/Floor")
+
+    def gate(y):
+        proposal = {**_proposal(floor.surface_id, (0.0, y, 0.57)), "robot_mount": _mount(0.57)}
+        return validate_robot_placement_geometry_candidate(index=index, proposal=proposal,
+                                                           target_position_world_m=[0.6, y, 0.85])
+
+    over_stool, beside_crate = gate(0.65), gate(-0.65)
+    assert "robot_reset_bounds_overlap_scene_geometry" in over_stool["blockers"]
+    assert over_stool["scene_overlap_prim_paths"] == ["/Scene/Stool"]
+    # The raised robot clears the crate; only its 0.1 m post comes down to the floor.
+    assert beside_crate["status"] == "passed"
+
+
+def test_the_post_stands_in_a_doors_swing_where_the_raised_robot_does_not(tmp_path):
+    from blueprint_pipeline.task_evaluation_robot_placement_geometry import _task_motion_contact_count
+
+    scene, robot = _assets(tmp_path)
+    actor = _cabinet_with_drop_door(tmp_path)
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot,
+                                                 task_assets=[actor])
+    # 0.7 m out, the 0.8 m door passes at most 0.47 m up: under a base raised 0.8 m, through its post.
+    position = np.asarray([0.7, 0.0, 0.8])
+    assert _task_motion_contact_count(index, "franka_panda", position, math.pi) == 0
+    assert _task_motion_contact_count(index, "franka_panda", position, math.pi, mount_m=0.8) > 0
+    floor = next(s for s in index.support_surfaces if s.prim_path == "/Scene/Floor")
+    blocked = validate_robot_placement_geometry_candidate(
+        index=index, proposal={**_proposal(floor.surface_id, tuple(position), math.pi), "robot_mount": _mount(0.8)},
+        target_position_world_m=[0.05, 0.0, 0.85])
+    assert "robot_base_in_task_motion_path" in blocked["blockers"]
+
+
+def test_the_search_mounts_every_base_only_when_asked(tmp_path):
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene, robot_asset_usd_path=robot)
+    target = [0.6, 0.0, 0.85]
+    floor_bases = enumerate_robot_placement_geometry_candidates(index=index, target_position_world_m=target,
+                                                                maximum_candidates=6)
+    assert floor_bases and all("robot_mount" not in row and row["pose"]["position_world_m"][2] == 0.0
+                               for row in floor_bases)
+    diagnostics = {}
+    mounted = enumerate_robot_placement_geometry_candidates(index=index, target_position_world_m=target,
+                                                            maximum_candidates=6, diagnostics=diagnostics,
+                                                            robot_mount_rule="droid_working_band")
+    assert mounted and diagnostics["robot_mount_rule"] == "droid_working_band"
+    for row in mounted:
+        assert row["robot_mount"] == _mount(0.57)
+        assert row["pose"]["position_world_m"][2] == pytest.approx(0.57)
+        assert row["candidate_id"].endswith("_mount0.570")
+    with pytest.raises(RobotPlacementGeometryError, match="mount_rule_unknown"):
+        enumerate_robot_placement_geometry_candidates(index=index, target_position_world_m=target,
+                                                      robot_mount_rule="stilts")

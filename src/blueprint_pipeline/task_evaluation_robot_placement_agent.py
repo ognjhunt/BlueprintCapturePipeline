@@ -1198,6 +1198,9 @@ def validate_robot_placement_receipt(
         or accepted_gate.get("status") != "passed"
         or accepted_gate.get("geometry_gate_digest")
         != receipt.get("accepted_geometry_gate_digest")
+        # A raised mount is one fact in three places: the receipt, the proposal and its gate.
+        or accepted_proposal.get("robot_mount") != receipt.get("accepted_robot_mount")
+        or accepted_gate.get("robot_mount") != receipt.get("accepted_robot_mount")
     ):
         raise RobotPlacementAgentError("robot_placement_receipt_acceptance_invalid")
     deterministic = receipt.get("model") == DETERMINISTIC_ROBOT_PLACEMENT_MODEL
