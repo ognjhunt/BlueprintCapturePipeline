@@ -5298,10 +5298,12 @@ def run_qualification_pipeline(
                 "schema_version": "v1", "provider_name": None, "status": "not_requested",
                 "website_scene_preparation": website_scene_preparation})
             outbox = website_scene_preparation.get("website_intake_outbox") or {}
-            from .website_task_context_contracts import holds_native_task_preparation
+            from .website_task_context_contracts import holds_native_task_preparation, retains_task_family_preparation
             native_profile_held = holds_native_task_preparation(
                 website_scene_preparation, descriptor.metadata.get("site_task_context") or {})
-            if outbox.get("state") != "forward_pending" and not native_profile_held:
+            family_prepared = retains_task_family_preparation(
+                website_scene_preparation, descriptor.metadata.get("site_task_context") or {})
+            if outbox.get("state") != "forward_pending" and not native_profile_held and not family_prepared:
                 raise StageError("website_scene_preparation", ",".join(
                     website_scene_preparation.get("blockers")
                     or (website_scene_preparation.get("runtime_inputs") or {}).get("blockers")

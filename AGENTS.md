@@ -38,9 +38,10 @@ one predicted failure boundary with held-out physical trials.
 Owner decision 2026-10-05
 (`gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`)
 opens a demand-discovery phase across robot forms and task families; the rule is
-under Product Rules. Until the owner records a focus decision from that demand
-evidence, the fixed-arm, rigid-object envelope above is the current default
-build target, not a ban on other forms.
+under Product Rules. The 2026-10-27 owner request explicitly authorizes fixing
+beta evaluation support across task families and robot forms, including
+deformables and humanoids. The fixed-arm, rigid-object envelope above continues
+to bound Arm Decision Proof, rather than beta implementation work.
 
 A **Task Evaluation Run** is a bounded technical assessment when new evidence
 is needed, not a mandatory step for every commercial job. The maintained
@@ -123,6 +124,15 @@ dependent step as blocked instead of guessing.
   - The evidence bar is unchanged: a simulator-scored site evaluation of that
     job, the job's pass mark, an admitted runtime, and a passed robot-free probe.
 - Preserve rights, privacy, provenance, and capture truth through the pipeline.
+- **Owner direction 2026-10-27 (beta task coverage).** Implement the missing
+  task-family evaluation paths, rigid robot-free execution and placement into
+  containers. Pouring, wiping, insertion, stacking, buttons, cloth, multi-step
+  work and other embodiments are not held behind a program freeze or another
+  focus decision. Route by the actual task, assets, reset, simulator state,
+  independent scoring and executable policy/robot interfaces. Missing inputs
+  and unimplemented physics remain specific preparation requirements; they
+  never establish that robots cannot do the job. This authorization serves
+  beta job-to-evaluation and leaves ADP's two-candidate physical proof intact.
 - Treat readiness and review *outputs* (qualification summaries, trust scores, readiness matrices) as optional support layers. Do not confuse that posture with the module historically named for it: `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) is the core capture→package orchestration spine, not a secondary readiness module.
 - Do not make downstream generated artifacts appear more authoritative than raw capture evidence.
 - Use existing captures, fixtures, OpenUSD scenes, and SimReady candidates to
@@ -160,10 +170,9 @@ dependent step as blocked instead of guessing.
   included. Name ADP-010 and the partner-phase day-7 gate for this work. Measure
   demand by behavior on both sides: site replies, interest, and submitted videos
   by task family, and robot teams seeking sites or evaluations by form and task.
-  Building evaluation support for a new form or task family needs a recorded
-  owner focus decision based on that demand evidence; the same decision sets
-  the focus for the first case studies. Until one is recorded, the fixed-arm,
-  rigid-object envelope is the default build target. Spend stays inside
+  The 2026-10-27 owner task-coverage direction supplies the beta implementation
+  authorization across those forms and families. ADP's fixed-arm, rigid-object
+  envelope still bounds its first physical proof. Spend stays inside
   approved allowances. Sending and automatic first contact stay off; a draft is
   not permission to send. Five-policy/general-ranking campaigns,
   world-model/evaluator research, reconstruction/provider bakeoffs, universal

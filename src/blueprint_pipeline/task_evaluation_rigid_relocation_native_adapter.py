@@ -662,6 +662,24 @@ def adapt_rigid_relocation_task_template(
         replacement_identity = revision["replacement"]["identity"]
         authority_digest = revision["revision_digest"]
 
+    return _adapt_rigid_relocation_documents(
+        documents=documents, bindings=bindings, task=task, replacement_identity=replacement_identity,
+        authority_digest=authority_digest, diagnostic=diagnostic,
+        configured_revision=configured_revision, request=request,
+    )
+
+
+def _adapt_rigid_relocation_documents(
+    *, documents: Mapping[str, Mapping[str, Any]], bindings: list[dict[str, Any]],
+    task: Mapping[str, Any], replacement_identity: Mapping[str, Any], authority_digest: str,
+    diagnostic: bool, configured_revision: Mapping[str, Any] | None = None,
+    request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Shared derivation after the caller verifies its exact authority and document bytes.
+
+    Construction uses this only to derive an unscored robot-free probe plan;
+    public evaluation admission remains in adapt_rigid_relocation_task_template.
+    """
     template = documents[DEFINITION_CONTRACT_PATH]
     success = documents[SUCCESS_CONTRACT_PATH]
     execution = documents[EXECUTION_CONTRACT_PATH]
@@ -1057,8 +1075,9 @@ def adapt_rigid_relocation_task_template(
         # retain the original native target in the compiled evidence.
         try:
             expected = surface_target_for_web(surface)
-            candidates = [success.get("surface_target"),
-                configured_revision["task_template"].get("surface_target") if configured_revision is not None else None]
+            candidates = [success.get("surface_target")]
+            if configured_revision is not None:
+                candidates.append(configured_revision["task_template"].get("surface_target"))
             if request is not None:
                 candidates.append(request["task"].get("surface_target"))
             matches = all(surface_target_for_web(candidate) == expected for candidate in candidates)

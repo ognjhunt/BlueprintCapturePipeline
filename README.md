@@ -1,6 +1,6 @@
 # BlueprintCapturePipeline
 
-> Current owner direction (2026-10-05, recorded in AGENTS.md; owner record `gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`): **demand discovery is open.** Prospecting, screening, outreach, and partner discovery span every robot form (fixed arm, humanoid, wheeled, bimanual, and others) and task family, deformables included. Arm Decision Proof v1 stays as the first evaluation-proof track; its fixed-arm, rigid-object envelope is the current default build target, not a ban on other forms. Building evaluation support for a new form or task family needs a recorded owner focus decision based on demand evidence. Spend stays inside approved allowances; sending and automatic first contact stay off.
+> Current owner direction (2026-10-27, recorded in AGENTS.md): **implement beta task coverage across task families and robot forms**, including deformables and humanoids. The task kind cannot impose a program freeze. Execution requires the actual assets, reset, independent state measurements and compatible runtime; missing simulator support cannot establish that robots cannot do the job. Arm Decision Proof retains its fixed-arm, rigid-object scope. Spend stays inside approved allowances; sending and automatic first contact stay off.
 
 > Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
 
@@ -60,12 +60,23 @@ evidence bindings are documented in the WebApp's
 [task-assessment audit](https://github.com/ognjhunt/Blueprint-WebApp/blob/main/docs/research/task-assessment-audit-2026-10-07.md).
 Pipeline's runnable-policy registry is a separate execution inventory.
 
-Website task contexts may now retain an optional, digest-bound `task_family`.
-It is an open string, not an intake allowlist. Native preparation uses the
-existing task profiles and retains an explicit preparation gap for other
-families, preserving the reconstructed scene and original task instead of
-converting it to pick-and-place. Older contexts keep their compatibility path;
-their missing family is not new evidence of task capability.
+Website task contexts retain an optional, digest-bound `task_family`. It is an
+open string, not an intake allowlist. Native preparation has explicit profiles
+and independent state scorers for rigid placement, articulated open/close,
+pouring, wiping, insertion, stacking, button presses, cloth folding and ordered
+multi-step work. Additional families retain their exact missing adapter and
+measurement requirements. The family adapter consumes a sealed task contract,
+scene assets, reset, native metric bindings and runtime identity; a registered
+profile does not supply missing engine physics or establish a successful run.
+Older contexts keep their compatibility path.
+
+See [task-family evaluation](docs/runbooks/task-family-evaluation.md) for the
+native contracts, state measurements and execution boundary.
+
+Placement into an open container uses the capture-derived floor, surrounding
+walls and unobstructed interior. Native scoring checks the whole oriented
+object volume, support, release and stability. A destination mask or the
+object's center alone cannot establish containment.
 
 A job assessment can use existing evidence without creating a capture,
 testbed or run. WebApp owns briefs, proposals, customer choice, pilot agreement
@@ -89,10 +100,9 @@ not itself start evaluation or authorize spending.
 
 The first envelope is one partner, one site, one fixed arm, one bounded
 rigid-object pick-and-place task, and two genuine frozen candidates. It is the
-current default build target, not a ban on other robot forms or task families:
-demand discovery is open across them (see the 2026-10-05 note above), and
-building evaluation support for another form or task family needs a recorded
-owner focus decision. Five-policy campaigns, universal runtime support, general
+current ADP build target. Beta task coverage across other robot forms and task
+families is authorized by the 2026-10-27 owner direction above. General-ranking
+campaigns, universal runtime support, general
 ranking, provider bakeoffs, world-model expansion, post-training products, and
 multi-site generalization stay frozen.
 

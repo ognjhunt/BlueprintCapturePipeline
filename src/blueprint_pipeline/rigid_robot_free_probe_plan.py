@@ -23,7 +23,8 @@ Robot-side readback (gripper width, robot contact force, retries, regrasps,
 withdrawal of the grasp frame) has no robot to measure; it is synthesized for
 the virtual carrier, named in ``ROBOT_SIDE_CRITERIA`` and never claimed as
 exercised. Contracts whose success is a robot state (holding the object at the
-end) and destination-body tasks are refused by name rather than approximated.
+end) are refused by name. Destination-body tasks retain their qualified local
+geometry and require a live destination-pose readback in every physics sample.
 """
 
 from __future__ import annotations
@@ -78,8 +79,6 @@ def probe_context(task_spec: Mapping[str, Any]) -> dict[str, Any]:
 
     spec = _normalize_rigid_task_spec(task_spec)
     criteria = spec["task_success_contract"]["criteria"]
-    if spec.get("destination_relation") is not None:
-        raise RigidRobotFreeProbeUnsupported("destination_body_relation")
     if (criteria["gripper_state"]["mode"] == "closed_at_most"
             or criteria["terminal_task_contact"]["mode"] == "maintained"):
         # Success is the robot still holding the object; no carrier-free state shows that.
@@ -102,14 +101,23 @@ def probe_context(task_spec: Mapping[str, Any]) -> dict[str, Any]:
               if surface is not None and spec["control_frequency_hz"] else 0)
     window = int(criteria["settling"]["window_samples"])
     threshold = criteria["gripper_state"].get("threshold_m")
+    lift = max(float(criteria["motion"]["minimum_lift_m"] or 0.0),
+               float(spec["minimum_lift_m"]) if surface is not None else 0.0) + CARRY_CLEARANCE_M
+    from .task_evaluation_surface_target import minimum_container_carry_height
+    carry_height = minimum_container_carry_height(task_spec, clearance_m=CARRY_CLEARANCE_M)
+    if carry_height is not None:
+        # carry_waypoints uses one common flight height above the higher
+        # endpoint; subtract that endpoint to avoid excess lift across levels.
+        lift = max(lift, carry_height - max(float(spec["start_pose_world"][2]), target[2]))
+    destination_pose = spec.get("destination_pose_world") if spec.get("destination_relation") else None
     return {
+        "destination_pose_world": destination_pose,
         "spec": spec, "criteria": criteria, "start": list(spec["start_pose_world"]), "target": target,
         "criteria_contract_digest": str(spec["task_success_contract"]["contract_digest"]),
         "reference_xyzw": list(criteria["orientation"]["reference_xyzw"] or spec["destination_orientation_xyzw"]),
         "control_hz": float(spec["control_frequency_hz"] or 0.0),
         "hold_samples": max(window, stable) + HOLD_EXTRA_SAMPLES, "window_samples": window,
-        "lift_m": max(float(criteria["motion"]["minimum_lift_m"] or 0.0),
-                      float(spec["minimum_lift_m"]) if surface is not None else 0.0) + CARRY_CLEARANCE_M,
+        "lift_m": lift,
         "open_width_m": float(threshold if threshold is not None else spec["release_gripper_width_min_m"]),
         "collision_threshold_n": float(task_spec.get("collision_failure_minimum_force_n") or 1.0),
         "workspace": workspace, "subject_bounds": subject, "surface": surface,
@@ -173,6 +181,18 @@ def _outside_offsets(context: Mapping[str, Any]) -> list[tuple[str, list[float]]
     spec, target = context["spec"], context["target"]
     lower = spec["destination_position_bounds_world_m"]["minimum"]
     upper = spec["destination_position_bounds_world_m"]["maximum"]
+    destination = context.get("destination_pose_world")
+    if destination is not None:
+        local = spec["destination_interior_bounds_body_frame_m"]
+        center = [(a + b) / 2 for a, b in zip(local["minimum"], local["maximum"], strict=True)]
+        offsets = []
+        for axis, sign, name in ((0, 1.0, "x_plus"), (0, -1.0, "x_minus"),
+                                 (1, 1.0, "y_plus"), (1, -1.0, "y_minus")):
+            point = list(center)
+            point[axis] = local["maximum" if sign > 0 else "minimum"][axis] + sign * OUTSIDE_MARGIN_M
+            rotated = _rotate_xyzw(point, destination[3:])
+            offsets.append((name, [destination[i] + rotated[i] - target[i] for i in range(3)]))
+        return offsets
     reach = 0.0
     if context["surface"] is not None:
         bounds = context["subject_bounds"]
@@ -217,6 +237,10 @@ def contract_cases(context: Mapping[str, Any]) -> dict[str, tuple[bool, list[dic
     if no_drop["mode"] == "required":
         cases["dropped"] = (False, _placement(context, goal, hold,
                                               drop_m=float(no_drop["minimum_fall_m"]) + DROP_EXTRA_FALL_M))
+    if context.get("destination_pose_world") is not None:
+        for _expected, rows in cases.values():
+            for row in rows:
+                row["destination_pose_world"] = list(context["destination_pose_world"])
     return cases
 
 
@@ -272,10 +296,11 @@ def scorer_samples(context: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
             "contact_classes_active": ["object_background"] if scene_force >= threshold else [],
             "retry_count": 0, "regrasp_count": 0,
         }
-        if marker is not None:
-            sample["destination_pose_world"] = list(marker)
-        if retreat is not None and marker is not None and bounds:
-            direction = _rotate_xyzw(retreat["withdrawal_unit_destination_frame"], marker[3:])
+        destination = row.get("destination_pose_world") if context.get("destination_pose_world") is not None else marker
+        if destination is not None:
+            sample["destination_pose_world"] = list(destination)
+        if retreat is not None and destination is not None and bounds:
+            direction = _rotate_xyzw(retreat["withdrawal_unit_destination_frame"], destination[3:])
             clear = (0.0 if carrying else _oriented_bounds_projection(
                 {"minimum": bounds[0], "maximum": bounds[1]}, pose[3:], direction)
                 + float(retreat["minimum_clearance_m"]) + WITHDRAWAL_MARGIN_M)

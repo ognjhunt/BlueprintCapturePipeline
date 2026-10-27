@@ -1,5 +1,11 @@
 # World Model Strategy Context
 
+> Owner direction 2026-10-27: implement beta evaluation support across task
+> families and robot forms, including deformables and humanoids. This supplies
+> the scope authorization requested by older freeze/focus wording below.
+> Preserve exact runtime, evidence, rights and spend requirements and ADP's
+> frozen physical-proof scope. See `AGENTS.md` for the current task-coverage rule.
+
 > Current owner direction (2026-10-05, recorded in AGENTS.md; owner record `gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`): **demand discovery is open.** Prospecting, screening, outreach, and partner discovery span every robot form (fixed arm, humanoid, wheeled, bimanual, and others) and task family, deformables included. Arm Decision Proof v1 stays as the first evaluation-proof track; its fixed-arm, rigid-object envelope is the current default build target, not a ban on other forms. Building evaluation support for a new form or task family needs a recorded owner focus decision based on demand evidence; it does not have to wait for a successful Arm Decision Proof. So the humanoid and deformable freeze in "Stop Rather Than Expand" below ends for a form or task family when the owner records that focus; the other frozen lanes there are unchanged. Spend stays inside approved allowances; sending and automatic first contact stay off. The canonical shared doctrine below incorporates the current owner direction through the three-repo sync.
 
 > Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
