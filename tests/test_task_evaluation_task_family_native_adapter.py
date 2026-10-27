@@ -402,3 +402,79 @@ def test_pouring_in_flight_stream_is_distinct_from_escaped_spill(tmp_path, unfin
     intermediate = receipt["telemetry"]["samples"][1]["measurements"]["stage1"]
     assert intermediate["in_flight_volume_ml"] == 10 and intermediate["spilled_volume_ml"] == 0
     assert runtime.closed
+
+
+def _folding_runtime():
+    task = _task("cloth_folding", criteria={"maximum_fold_keypoint_error_m": .1,
+        "minimum_fold_overlap_fraction": .9, "maximum_linear_speed_m_s": .1, "require_release": True},
+        reset={"fold_keypoint_error_m": 2, "fold_overlap_fraction": 0,
+               "linear_speed_m_s": 0, "robot_contact_active": False})
+    native_contract = _runtime_contract(task, roles={"cloth": "cloth1"}, geometry={
+        "fold_plane_pose_world": POSE, "target_keypoint_positions_m": [[0, 0, 0]],
+        "keypoint_vertex_indices": [4], "first_fold_vertex_indices": [0, 1, 2, 3],
+        "second_fold_vertex_indices": [4, 5, 6, 7]})
+    class FoldingRuntime(Runtime):
+        def native_state(self):
+            first = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]
+            if self.index == 0:
+                second = [[2, 0, 0], [3, 0, 0], [3, 1, 0], [2, 1, 0]]
+            elif self.index == 1:
+                # The moving half is perpendicular to the measurement plane.
+                second = [[1, 0, 0], [1, 0, 1], [1, 1, 1], [1, 1, 0]]
+            elif self.index == 2:
+                # Cloth may temporarily project to a concave boundary.
+                second = [[0, 0, 0], [1, 0, 0], [.5, .25, 0], [0, 1, 0]]
+            else:
+                second = first
+            return {"source": "native_simulator_state", "simulation_time_seconds": self.index,
+                    "safety_violation": False, "native_provenance": adapter.native_runtime_provenance(self.native_runtime_contract),
+                    "asset_states": {"cloth1": {"vertex_positions_m": first + second,
+                        "vertex_velocities_m_s": [[0, 0, 0]] * 8,
+                        "robot_contact_active": self.index in {1, 2}}}}
+    runtime = FoldingRuntime()
+    runtime.native_runtime_contract = native_contract
+    runtime.native_runtime_contract_digest = native_contract["contract_digest"]
+    return task, runtime
+
+
+def test_complete_fold_can_pass_through_edge_on_and_concave_projections(tmp_path):
+    task, runtime = _folding_runtime()
+    receipt = adapter.execute_task_family_episode(runtime=runtime, policy=Policy(), contract=task,
+        maximum_steps=4, control_frequency_hz=1, output_dir=tmp_path, episode_id="fold1")
+    assert receipt["status"] == "completed" and receipt["task_succeeded"] and runtime.closed
+    samples = receipt["telemetry"]["samples"]
+    overlaps = [sample["measurements"]["stage1"]["fold_overlap_fraction"] for sample in samples]
+    assert overlaps == [0, 0, 0, 1, 1]
+    assert len(runtime.actions) == 4
+
+
+@pytest.mark.parametrize("malformed", ["nonfinite", "wrong_shape"])
+def test_malformed_cloth_readback_still_invalidates_fold(tmp_path, malformed):
+    task, runtime = _folding_runtime()
+    native = runtime.native_state
+    def malformed_readback():
+        state = native()
+        if runtime.index == 1:
+            vertices = state["asset_states"]["cloth1"]["vertex_positions_m"]
+            if malformed == "nonfinite":
+                vertices[7][2] = float("nan")
+            else:
+                state["asset_states"]["cloth1"]["vertex_positions_m"] = [[0, 0]] * 8
+        return state
+    runtime.native_state = malformed_readback
+    receipt = adapter.execute_task_family_episode(runtime=runtime, policy=Policy(), contract=task,
+        maximum_steps=4, control_frequency_hz=1, output_dir=tmp_path, episode_id="fold1")
+    assert receipt["status"] == "invalid" and not receipt["task_succeeded"] and runtime.closed
+    assert len(runtime.actions) == 1
+
+
+@pytest.mark.parametrize("polygon", [[[0, 0], [0, 0], [1, 0]],
+                                    [[0, 0], [1, 0], [.5, .25], [0, 1]]])
+def test_static_support_polygons_remain_strict(polygon):
+    task = _task("stacking", criteria={"minimum_support_margin_m": .05,
+        "maximum_linear_speed_m_s": .1, "maximum_angular_speed_rad_s": .1},
+        reset={"support_contact": False, "com_support_margin_m": -.1,
+               "linear_speed_m_s": 0, "angular_speed_rad_s": 0, "robot_contact_active": False})
+    with pytest.raises(ValueError, match="polygon_(degenerate|not_convex)"):
+        _runtime_contract(task, roles={"object": "object1", "support": "support1"}, geometry={
+            "support_polygon_local_xy_m": polygon})

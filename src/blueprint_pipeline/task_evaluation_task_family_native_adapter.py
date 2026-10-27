@@ -266,6 +266,29 @@ def _intersection(subject: np.ndarray, clip: np.ndarray) -> np.ndarray:
     return np.asarray(output)
 
 
+def _cloth_overlap_fraction(first: Any, second: Any) -> float:
+    """Score finite intermediate fold projections conservatively.
+
+    An edge-on or concave cloth half is a normal intermediate state. The
+    convex clipping method cannot establish overlap there, so it contributes
+    zero progress. Malformed or nonfinite native geometry remains invalid.
+    """
+    projected = [_array(value, columns=2) for value in (first, second)]
+    _require(all(len(polygon) >= 3 for polygon in projected), "polygon_invalid")
+    polygons = []
+    for polygon in projected:
+        extent = float(np.ptp(polygon, axis=0).max())
+        if _area(polygon) <= 1e-12 * extent * extent:
+            return 0.0
+        try:
+            polygons.append(_polygon(polygon))
+        except ValueError as exc:
+            if str(exc) not in {"task_family_native_polygon_degenerate", "task_family_native_polygon_not_convex"}:
+                raise
+            return 0.0
+    return min(1.0, _area(_intersection(*polygons)) / max(_area(polygon) for polygon in polygons))
+
+
 def _stage_measurements(kind: str, row: Mapping[str, Any]) -> dict[str, Any]:
     if kind == "pouring":
         positions, volumes = _array(row["particle_positions_m"], columns=3), _array(row["particle_volumes_ml"])
@@ -322,10 +345,10 @@ def _stage_measurements(kind: str, row: Mapping[str, Any]) -> dict[str, Any]:
     if kind == "cloth_folding":
         points, target = _array(row["keypoint_positions_m"], columns=3), _array(row["target_keypoint_positions_m"], columns=3)
         _require(points.shape == target.shape, "cloth_keypoints_invalid")
-        first, second = (_polygon(row[key]) for key in ("first_fold_polygon_xy_m", "second_fold_polygon_xy_m"))
+        overlap = _cloth_overlap_fraction(row["first_fold_polygon_xy_m"], row["second_fold_polygon_xy_m"])
         _require(type(row.get("robot_contact_active")) is bool, "robot_contact_readback_missing")
         return {"fold_keypoint_error_m": float(np.linalg.norm(points - target, axis=1).max()),
-                "fold_overlap_fraction": min(1.0, _area(_intersection(first, second)) / max(_area(first), _area(second))),
+                "fold_overlap_fraction": overlap,
                 "robot_contact_active": row["robot_contact_active"],
                 "linear_speed_m_s": float(np.linalg.norm(_array(row["vertex_velocities_m_s"], columns=3), axis=1).max())}
     raise ValueError("task_family_native_unknown_readback")
