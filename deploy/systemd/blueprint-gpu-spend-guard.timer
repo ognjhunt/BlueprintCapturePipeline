@@ -3,7 +3,9 @@ Description=Run Blueprint GPU spend guard periodically
 
 [Timer]
 OnBootSec=1min
-OnUnitActiveSec=2min
+# Slow refreshes must finish before the next interval starts, leaving workers
+# ordered after the guard a chance to run with its fresh admission report.
+OnUnitInactiveSec=2min
 RandomizedDelaySec=20s
 Persistent=true
 Unit=blueprint-gpu-spend-guard.service
