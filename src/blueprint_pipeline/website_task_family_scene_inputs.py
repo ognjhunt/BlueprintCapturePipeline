@@ -94,7 +94,8 @@ def read_family_scene_inputs(path):
     preparation = read(refs['preparation']['path'], digest_field='digest')
     context = read(refs['task_context']['path'], digest_field='context_digest')
     intent = read_intent_record(Path(refs['scene_intent']['path']), 'intent_digest')
-    family_source_references(preparation=preparation, runtime_inputs_path=refs['runtime_inputs']['path'])
+    family_source_references(preparation=preparation, runtime_inputs_path=refs['runtime_inputs']['path'],
+                             task_context=context)
     from .native_task_arena_bundle import verify_native_task_arena_packet
     packet_root, receipt, _ = verify_native_task_arena_packet(value['packet_root'])
     checked_file(value['base_native_packet']['path'], value['base_native_packet'])

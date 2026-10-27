@@ -51,6 +51,17 @@ selected = {"kind":"selected-handoff", "mode":"dispatch", "bucket":"fixture-buck
     "receipt_generation":"3", "receipt_sha256":"sha256:"+"b"*64, "receipt_size_bytes":1}
 assert r.required_scope("selected-handoff") == "operate"
 assert r.validate_request(selected) == selected
+atlas_status = {**selected, "mode":"atlas-status"}
+atlas_retry = {**selected, "mode":"atlas-retry", "atlas_status_digest":"sha256:"+"c"*64}
+assert r.validate_request(atlas_status) == atlas_status
+assert r.validate_request(atlas_retry) == atlas_retry
+discovery = {key:value for key,value in selected.items() if key in {"kind", "bucket", "scene_id", "capture_id", "marker_generation"}}
+discovery["mode"] = "discover-selector"
+assert r.validate_request(discovery) == discovery
+for atlas in (atlas_status, atlas_retry):
+    try: r.validate_request({**atlas, "resume_request_id":"20261009T000000Z-selected-handoff-0123abcd"})
+    except r.RequestRefused: pass
+    else: raise AssertionError("native resume admitted for Atlas")
 assert r.validate_request_id("20261009T000000Z-selected-handoff-0123abcd")
 try: r.validate_request({**selected, "mode":"inspect"})
 except r.RequestRefused as e: assert e.code == "selected_handoff_dispatch_only"

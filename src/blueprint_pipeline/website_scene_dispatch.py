@@ -55,7 +55,7 @@ def register_website_preparation(*, preparation_path, runtime_inputs_path, task_
     capture_source = _selected_capture_source(preparation_path, preparation, context)
     from .website_task_family_packet import is_task_family_preparation, family_source_references
     if is_task_family_preparation(preparation):
-        family_source_references(preparation=preparation, runtime_inputs_path=runtime_inputs_path)
+        family_source_references(preparation=preparation, runtime_inputs_path=runtime_inputs_path, task_context=context)
     else:
         prepare_construction_stages(runtime_inputs_path=Path(runtime_inputs_path), preparation_path=Path(preparation_path))
     value = {"schema_version": "website_scene_source_registration.v1",
@@ -104,7 +104,8 @@ def resolve_website_source(*, intent, config):
                 'website_capture_source_intake_mismatch')
     from .website_task_family_packet import is_task_family_preparation, family_source_references
     if is_task_family_preparation(preparation):
-        rows = family_source_references(preparation=preparation, runtime_inputs_path=refs["runtime_inputs"]["path"])
+        rows = family_source_references(preparation=preparation, runtime_inputs_path=refs["runtime_inputs"]["path"],
+                                        task_context=context)
         files = {row["reference"]["path"]: row["reference"]["size_bytes"] for row in rows}
     else:
         from .website_native_background import prepare_construction_stages
@@ -194,6 +195,7 @@ def materialize_website_attempt(*, intent_path, source_binding_path, machinery_p
                 'website_task_family_preparation_attempt_authority_invalid')
         packet = materialize_website_task_family_packet(preparation=preparation,
             runtime_inputs_path=refs['runtime_inputs']['path'], output_root=output / 'native-packet',
+            task_context=context,
             intent_reference=record(intent_path), attempt_reference=record(
                 preparation_attempt_path(Path(intent_path).parent, attempt_id)),
             release_reference=record(release_binding_path))

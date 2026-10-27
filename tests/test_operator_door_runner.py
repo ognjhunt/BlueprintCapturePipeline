@@ -770,6 +770,33 @@ def test_canonical_provenance_cannot_replace_existing_results_symlink(config: Do
 _PRIOR_SELECTED = "20261009T154718Z-selected-handoff-9ef60661"
 
 
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "discover-selector"])
+def test_selected_atlas_runner_keeps_service_user_and_only_exact_job_write_path(config, mode):
+    from tests.test_operator_door_requests import _selected_request
+    body = {**_selected_request(), "mode": mode}
+    if mode == "atlas-retry":
+        body["atlas_status_digest"] = "sha256:" + "c" * 64
+    if mode == "discover-selector":
+        fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation"}
+        body = {key: value for key, value in body.items() if key in fields}
+    request_id = _spooled(config, body)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["status"] == "launched"
+    launch = next(call for call in runner.calls if call[0] == "systemd-run")
+    env = dict(part.removeprefix("--setenv=").split("=", 1) for part in launch if part.startswith("--setenv="))
+    assert env["DOOR_SERVICE_USER"] == "blueprint"
+    assert json.loads(env["DOOR_SELECTED_HANDOFF_REQUEST"]) == body
+    writable = str(Path(config.spool_root) / "results")
+    if mode == "atlas-retry":
+        writable += (f" /var/lib/blueprint/pubsub-handoffs/{body['bucket']}/scenes/{body['scene_id']}"
+                     f"/captures/{body['capture_id']}/pipeline/atlas")
+    assert f"--property=ReadWritePaths={writable}" in launch
+    assert "--property=ReadWritePaths=/var/lib/blueprint" not in launch
+    assert "--property=ProtectSystem=strict" in launch
+    assert launch[-1].endswith("door-selected-handoff.sh")
+
+
 def _preclaim_evidence(config, *, native_status="capture_owner_observation_unavailable_retryable", prior=_PRIOR_SELECTED):
     from tests.test_operator_door_requests import _selected_request
 

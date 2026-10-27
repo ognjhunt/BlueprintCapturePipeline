@@ -70,6 +70,14 @@ scene assets, reset, native metric bindings and runtime identity; a registered
 profile does not supply missing engine physics or establish a successful run.
 Older contexts keep their compatibility path.
 
+An ambiguous `general_task` hint can be resolved by operation semantics retained
+by the existing Atlas review. That derivation binds the original task context,
+source video and completed planner response; it never rewrites the owner's
+brief. Resolution uses the current profile catalog and preserves every requested
+operation. Missing semantics, unknown operations or ambiguous stage identities
+keep the job in preparation. Registered families still need their actual native
+contracts, assets, reset and runtime inputs before execution.
+
 See [task-family evaluation](docs/runbooks/task-family-evaluation.md) for the
 native contracts, state measurements and execution boundary.
 

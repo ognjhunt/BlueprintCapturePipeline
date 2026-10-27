@@ -248,6 +248,7 @@ def test_dirty_source_refuses_before_model(tmp_path, monkeypatch):
     with pytest.raises(runtime.AstraCADRuntimeBlocked, match="exact_clean_pin"):
         runtime._verify_source(tmp_path, runtime.MAC_COMMIT)
     assert len(calls) == 2
+    assert all(f"safe.directory={tmp_path}" in argv and "core.fsmonitor=false" in argv for argv in calls)
 
 
 @pytest.fixture

@@ -524,3 +524,47 @@ def test_selected_handoff_cli_links_explicit_recovery_and_keeps_selector_plain(d
     assert json.loads(_run(*args, "--dispatch")[1])["id"] == request_id
     selector.write_text(json.dumps({**body, "resume_request_id": prior}))
     assert _run(*args, "--dispatch")[0] == 2
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_selected_atlas_cli_requires_explicit_snapshot_review_and_excludes_native_dispatch(door, retry):
+    from tests.test_operator_door_requests import _selected_request
+    body = {key: value for key, value in _selected_request().items() if key not in {"kind", "mode"}}
+    selector = door["base"] / "selected-atlas.json"
+    selector.write_text(json.dumps(body))
+    args = ["selected-handoff", "--selector-file", str(selector), "--atlas-retry" if retry else "--atlas-status"]
+    digest = "sha256:" + "c" * 64
+    if retry:
+        assert _run(*args)[0] == 2
+        args += ["--atlas-status-digest", digest]
+    else:
+        assert _run(*args, "--atlas-status-digest", digest)[0] == 2
+    code, output = _run(*args)
+    assert code == 0
+    request_id = json.loads(output)["id"]
+    request = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())["request"]
+    assert request == {**body, "kind": "selected-handoff", "mode": "atlas-retry" if retry else "atlas-status",
+                       **({"atlas_status_digest": digest} if retry else {})}
+    with pytest.raises(SystemExit) as conflict:
+        _run(*args, "--dispatch")
+    assert conflict.value.code == 2
+    assert _run(*args, "--resume-request", "20261009T154718Z-selected-handoff-9ef60661")[0] == 2
+
+
+def test_selected_handoff_cli_discovers_original_selectors_without_execution(door):
+    from tests.test_operator_door_requests import _selected_request
+    fields = {"bucket", "scene_id", "capture_id", "marker_generation"}
+    body = {key: value for key, value in _selected_request().items() if key in fields}
+    selector = door["base"] / "selected-discovery.json"
+    selector.write_text(json.dumps(body))
+    args = ["selected-handoff", "--selector-file", str(selector), "--discover-selector"]
+    code, output = _run(*args)
+    assert code == 0
+    request_id = json.loads(output)["id"]
+    request = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())["request"]
+    assert request == {**body, "kind": "selected-handoff", "mode": "discover-selector"}
+    for flag in ("--dispatch", "--atlas-status", "--atlas-retry"):
+        with pytest.raises(SystemExit):
+            _run(*args, flag)
+    assert _run(*args, "--atlas-status-digest", "sha256:" + "c" * 64)[0] == 2
+    assert _run(*args, "--resume-request", "20261009T154718Z-selected-handoff-9ef60661")[0] == 2

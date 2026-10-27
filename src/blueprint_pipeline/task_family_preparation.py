@@ -7,6 +7,7 @@ does not establish native physics application or authorize paid execution.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -27,9 +28,13 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
                         removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                         base_scene: Mapping[str, Any], output_root: Path,
                         evaluation_inputs: Mapping[str, Any] | None = None,
-                        spend: Mapping[str, Any] | None = None, now: float | None = None) -> dict[str, Any]:
+                        spend: Mapping[str, Any] | None = None, now: float | None = None,
+                        task_semantics: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Retain the whole job, including multiple subjects and deformable state."""
-    family = canonical_task_family(task_context.get("task_family"))
+    from .website_task_semantics import effective_task_profile
+    source_video_digest = (source_geometry.get("binding") or {}).get("source_video_digest")
+    family = canonical_task_family(effective_task_profile(task_context=task_context,
+        task_semantics=task_semantics, source_video_digest=source_video_digest))
     if family is None:
         raise ValueError("website_task_family_unknown")
     if task_masks.get("source_geometry_digest") != source_geometry.get("digest"):
@@ -51,6 +56,9 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         contract = validate_task_family_contract(contract)
         if contract["scope"] != scope or contract["task_family"] != family:
             raise ValueError("website_task_family_contract_scope_mismatch")
+        from .website_task_semantics import require_semantic_stage_order
+        require_semantic_stage_order(task_context=task_context, task_semantics=task_semantics,
+                                    source_video_digest=source_video_digest, contract=contract)
     # Runtime inputs are data from the configured native scene, not model
     # executable code. The existing native contract entrypoint validates them.
     native = None
@@ -87,6 +95,10 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         authority = dict(spend or {})
         if not authority.get("owner") or not authority.get("consent"):
             dispatch_blockers.append("website_scene_execution_authority_required")
+        anthropic_terms = authority.get("anthropic_provider_terms_reference")
+        if authority.get("authoring_provider") == "anthropic" and (
+                not isinstance(anthropic_terms, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", anthropic_terms) is None):
+            dispatch_blockers.append("website_anthropic_provider_terms_authority_required")
         if not dispatch_blockers:
             from .task_evaluation_scene_intent_contracts import REQUEST_SCHEMA, validate_request, SceneIntakeError
             request = {"schema_version": REQUEST_SCHEMA, "submission_id": task_context["capture_id"],
@@ -99,7 +111,8 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
                 "execution": {"purpose": "scene_preparation", "max_total_spend_usd": authority.get("max_total_spend_usd"),
                     "max_paid_attempts": authority.get("max_paid_attempts"), "max_retries": 0,
                     "expires_at_epoch": authority.get("expires_at_epoch"),
-                    "allowed_providers": authority.get("allowed_providers", ["vast", "openai"]),
+                    "allowed_providers": authority.get("allowed_providers", ["vast", "openai"] +
+                        (["anthropic"] if authority.get("authoring_provider") == "anthropic" else [])),
                     "policy_candidates": [], "claim_scope": "development_only"}, "consent": authority["consent"]}
             try:
                 request = validate_request(request, now=now)
@@ -122,6 +135,8 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
             "source_geometry_digest": source_geometry["digest"], "removal_manifest_digest": canonical_digest(removal_manifest),
             "splat_digest": base_scene["splat_digest"], "collision_mesh_digest": base_scene["collision_mesh_digest"]},
         "task_evaluation_inputs": {"task_family": family, "scope": scope,
+            **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
+               if task_semantics is not None else {}),
             "runtime_adapter": "task_evaluation_task_family_native_adapter",
             "task_success_contract": contract, "native_runtime_contract": native,
             "source_bindings": source_bindings,
@@ -135,6 +150,9 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
             "reset_required": True, "independent_native_readback_required": True,
             "automatic_paid_execution_authorized": False},
         **({"website_preparation_authority": dict(spend or {})} if task_context.get("confirmed") is False else {}),
+        **({"authoring_provider_terms_reference": spend["anthropic_provider_terms_reference"]}
+           if (spend or {}).get("authoring_provider") == "anthropic"
+               and isinstance((spend or {}).get("anthropic_provider_terms_reference"), str) else {}),
         "intake_request": request, "thumbnail": None, "provider_mutation_performed": False,
     }
     value["digest"] = canonical_digest(value, digest_field="digest")

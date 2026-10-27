@@ -167,11 +167,22 @@ def select_views(*, frames: Sequence[Mapping[str, Any]], features: Sequence[Any]
     return sorted(selected), diagnostics
 
 
+#: Coverage of these roles is the task's working area: a gap there refuses.
+#: ``surrounding_scene`` frames are context: a blurry or unconnected one is
+#: recorded as an uncaptured region, unless no surrounding frame connects.
+WORKING_AREA_ROLES = frozenset({"task_object", "task_region", "support_surface", "approach_space"})
+SURROUNDING_GAP_DECISIONS = {"surrounding_scene_below_quality": "below the reviewed sharpness or clipping policy",
+                             "surrounding_scene_unconnected": "not connected by overlapping views"}
+
+
 def select_coverage_views(*, frames, features, maximum_frames, requirements, anchor_id, policy=None):
     """Connect reviewed task and environment anchors before admitting a subset.
 
     Labels come from source-image review. Feature matches establish only a
     candidate overlap path, never complete or metrically correct geometry.
+    Every working-area frame (``WORKING_AREA_ROLES``) must be sharp and connected.
+    A surrounding-scene frame that is not is dropped into the diagnostics, to be
+    reported as uncaptured, so long as another surrounding frame connects.
     """
     from collections import deque
     if (not isinstance(requirements, list) or not requirements
@@ -182,13 +193,18 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
     if type(maximum_frames) is not int or maximum_frames < 2:
         raise ValueError("atlas_selection_limit_invalid")
     identifiers = {r["frame_id"]: i for i, r in enumerate(frames)}
-    required = []
+    required, working, context_labels = [], set(), {}
     for requirement in requirements:
         ids = requirement.get("required_frame_ids")
         if (not requirement.get("label") or not isinstance(ids, list) or not ids
                 or any(identifier not in identifiers for identifier in ids)):
             raise ValueError("atlas_coverage_anchor_outside_static_candidate_split")
         required.extend(identifiers[identifier] for identifier in ids)
+        if requirement.get("role") in WORKING_AREA_ROLES:
+            working.update(identifiers[identifier] for identifier in ids)
+        else:
+            for identifier in ids:
+                context_labels.setdefault(identifiers[identifier], requirement["label"])
     if anchor_id not in identifiers:
         raise ValueError("atlas_coverage_task_anchor_missing")
     policy = dict(policy or {})
@@ -201,11 +217,20 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
         raise ValueError("atlas_scene_selection_policy_invalid")
     eligible = {i for i, r in enumerate(frames) if r["sharpness"] >= minimum_sharpness and r["clipped_fraction"] <= maximum_clipping}
     anchor = identifiers[anchor_id]
-    if not set([anchor, *required]).issubset(eligible):
+    context = set(context_labels) - working
+    if not set([anchor, *(i for i in required if i not in context)]).issubset(eligible):
         raise ValueError("atlas_coverage_anchor_quality_insufficient")
-    selected, cache, diagnostics = {anchor}, {}, []
+    selected, cache, diagnostics, dropped = {anchor}, {}, [], []
+
+    def drop(target: int, decision: str) -> None:
+        dropped.append(target)
+        diagnostics.append({"frame_id": frames[target]["frame_id"], "label": context_labels[target],
+                            "decision": decision})
     for target in dict.fromkeys(required):
         if target in selected:
+            continue
+        if target in context and target not in eligible:
+            drop(target, "surrounding_scene_below_quality")
             continue
         queue = deque(sorted(selected))
         parent = {i: None for i in selected}
@@ -222,6 +247,9 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
                 if other == target:
                     break
         if target not in parent:
+            if target in context:
+                drop(target, "surrounding_scene_unconnected")
+                continue
             raise ValueError("atlas_task_and_scene_coverage_gap:" + frames[target]["frame_id"])
         cursor = target
         while cursor not in selected:
@@ -235,6 +263,12 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
             cursor = previous
         if len(selected) > maximum_frames:
             raise ValueError("atlas_coverage_exceeds_frame_budget")
+    if context and context <= set(dropped):
+        # No surrounding frame connects at all: the room around the task is unseen.
+        unconnected = [i for i in dropped if i in eligible]
+        if not unconnected:
+            raise ValueError("atlas_coverage_anchor_quality_insufficient")
+        raise ValueError("atlas_task_and_scene_coverage_gap:" + frames[unconnected[0]]["frame_id"])
     if len(selected) < 2:
         raise ValueError("atlas_insufficient_overlapping_distinct_views")
     return sorted(selected), diagnostics
@@ -430,6 +464,9 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     if retained.is_file() and json.loads(retained.read_text()) != inputs:
         raise ValueError("atlas_geometry_inputs_identity_conflict")
     write_json(retained, inputs)
+    # Surrounding-scene frames left out are reported, never claimed as covered.
+    uncaptured = [f"{row['label']}: frame {row['frame_id']} {SURROUNDING_GAP_DECISIONS[row['decision']]}"
+                  for row in diagnostics if row.get("decision") in SURROUNDING_GAP_DECISIONS]
     plan = {"schema_version": "atlas_view_selection.v1", "review": dict(review),
             "input_digest": inputs["digest"], "selected_frame_count": len(prepared),
             "maximum_frames": maximum_frames, "diagnostics": diagnostics,
@@ -437,6 +474,7 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
                              "frame_target": maximum_frames,
                              "connected_cover_frames": len(cover), "distinct_views_added": len(selected) - len(cover)},
             "task_and_surrounding_scene_covered": True,
+            **({"uncaptured_regions": uncaptured} if uncaptured else {}),
             "coverage_requirements": requirements, "coverage_authority": "source_image_review_and_overlap_heuristic",
             "privacy_screen": inputs["binding"]["privacy_screen"],
             "frames": [{k: r[k] for k in ("frame_id", "timestamp_seconds", "image_digest")} for r in prepared],

@@ -84,7 +84,9 @@ def native_task_subject_profile(subject_entry: Mapping[str, Any],
 
 
 def native_task_preparation_gap(task_context: Mapping[str, Any], *,
-                                inferred_profile_id: str | None = None) -> dict[str, Any] | None:
+                                inferred_profile_id: str | None = None,
+                                task_semantics: Mapping[str, Any] | None = None,
+                                source_video_digest: str | None = None) -> dict[str, Any] | None:
     """Keep a novel job without pretending an existing adapter evaluates it.
 
     Older contexts omit the analysis family and retain their compatibility
@@ -100,6 +102,13 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
     from .task_profile_contracts import task_profile_for
 
     profile = task_profile_for(family)
+    resolved = None
+    if family == "general_task" and task_semantics is not None:
+        from .website_task_semantics import resolved_task_profile
+        resolved = resolved_task_profile(task_semantics, task_context=task_context,
+                                        source_video_digest=source_video_digest)
+        # Shape alone never resolves the operation and explicit families win.
+        profile = task_profile_for(resolved)
     # Geometry movability is not a task classification. Pouring, wiping,
     # insertion, stacking and cloth work have their own state predicates, even
     # when their containers or tools also happen to be rigid/articulated.
@@ -122,6 +131,8 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
         "missing": (["task_profile_mechanism_binding"] if mismatch else
                     ["native_task_runtime_adapter", "independent_task_scorer", "reset_contract"]),
         **({"inferred_profile_id": inferred_profile_id} if mismatch else {}),
+        **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
+           if resolved is not None and mismatch else {}),
         "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",
     }
 
@@ -669,12 +680,17 @@ def _unplaceable_part_estimate(code: str, configuration: Mapping[str, Any]) -> s
 def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                                       removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                       base_scene: Mapping[str, Any], output_root: Path, spend: Mapping[str, Any],
-                                      now: float, evaluation_inputs: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                                      now: float, task_semantics: Mapping[str, Any] | None = None,
+                                      evaluation_inputs: Mapping[str, Any] | None = None,
+                                      synthetic_authoring_backend: str = "pinned_cad_primitive_v1") -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
-    gap = native_task_preparation_gap(task_context)
+    semantics_options = {"task_semantics": task_semantics,
+                         "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest")}
+    gap = native_task_preparation_gap(task_context, **semantics_options)
     from .task_family_scoring import canonical_task_family
-    family = canonical_task_family(task_context.get("task_family"))
+    from .website_task_semantics import effective_task_profile
+    family = canonical_task_family(effective_task_profile(task_context=task_context, **semantics_options))
     if gap is None and family is None and task_masks.get("deferred_target_ids"):
         raise ValueError("website_static_task_masks_pending")
 
@@ -702,7 +718,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         from .task_family_preparation import prepare_task_family
         return prepare_task_family(task_context=task_context, task_masks=task_masks,
             removal_manifest=removal_manifest, source_geometry=source_geometry, base_scene=base_scene,
-            output_root=output_root, evaluation_inputs=evaluation_inputs, spend=spend, now=now)
+            output_root=output_root, evaluation_inputs=evaluation_inputs, spend=spend, now=now,
+            **({"task_semantics": task_semantics} if task_semantics is not None else {}))
     if task_masks.get("source_geometry_digest") != source_geometry["digest"]:
         raise ValueError("website_preparation_geometry_binding_mismatch")
     request_id, capture_id = str(task_context["request_id"]), str(task_context["capture_id"])
@@ -731,7 +748,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     articulation_kind, inferred_profile_id = native_task_subject_profile(
         subject_entry, subject_target, synthetic_subject=synthetic)
     articulated = inferred_profile_id == "articulated_open_close"
-    gap = native_task_preparation_gap(task_context, inferred_profile_id=inferred_profile_id)
+    gap = native_task_preparation_gap(task_context, inferred_profile_id=inferred_profile_id, **semantics_options)
     if gap is not None:
         return retain_gap(gap)
     declared_mpu = base_scene.get("meters_per_unit")
@@ -1095,7 +1112,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     else:
         if synthetic is not None:
             from .website_synthetic_subject import design_physics
-            physics = design_physics(synthetic)
+            from .website_synthetic_cad import SyntheticAuthoring, resolved_selection
+            synthetic_authoring = resolved_selection(SyntheticAuthoring(backend=synthetic_authoring_backend).model_dump(), synthetic)
+            physics = design_physics(synthetic, authoring=synthetic_authoring)
         else:
             physics = screen_physics(dimensions_m)
         authoring_configuration = stage_three_configuration(
@@ -1143,7 +1162,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         authoring_configuration.update(authoring_method=AUTHORING_METHOD, dimension_authority=ORIGIN,
                                        source_observation_kind=ORIGIN, appearance_inputs="synthetic_primitive_design",
                                        geometry_support="synthetic_primitive_design",
-                                       synthetic_design=dict(synthetic))
+                                       synthetic_design=dict(synthetic),
+                                       synthetic_authoring=synthetic_authoring)
     if contract is not None and authoring_configuration.get("authoring_backend") == "astra_cad_blender_v1":
         # Hold what the legacy builder would refuse before anything is bought.
         from .task_object_articulated_packaging import plan_articulated_assembly
@@ -1257,6 +1277,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     value = {
         "schema_version": SCHEMA_VERSION, "status": "needs_input" if blockers else "intake_ready",
         "blockers": blockers, "claim_ceiling": CLAIM_CEILING,
+        **({"task_semantics": dict(task_semantics)} if task_semantics is not None else {}),
         "owner_success_criteria": owner_targets,
         **({"website_preparation_authority": dict(spend)} if task_context.get("confirmed") is False else {}),
         **({"authoring_provider_terms_reference": terms} if authoring_provider == "anthropic" and

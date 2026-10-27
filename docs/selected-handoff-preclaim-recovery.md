@@ -84,3 +84,26 @@ stores were also absent. Their required protected creation is part of the
 reviewed installation action. Without approved policy bytes and a supported
 privileged installer, preparation remains blocked even after this repair is
 deployed.
+
+## Read the original selector from a cloud session
+
+A staged capture deliberately contains its finite source membership rather than
+copies of its original producer envelope and publication receipt. The root
+`pipeline_handoff.json` can be a synthesized compatibility manifest; it is not a
+substitute for those original GCS objects.
+
+Use `selected-handoff --discover-selector --selector-file original-identity.json --wait`
+to read the original selector. The private input file contains only
+`bucket`, `scene_id`, `capture_id` and the known original `marker_generation`.
+The read-only mode derives the two fixed producer object paths from that marker,
+reads their actual metadata, pins both generations, and reads at most 64 KiB of
+JSON plus a one-byte overflow sentinel per object. It validates their original
+publication binding, current capture-owner consent, complete source membership
+and retirement state before returning a `selector` object. It neither stages
+sources nor requests spending authority, changes jobs or invokes providers.
+
+Save that returned `selector` as the private selector file for the existing
+`--atlas-status` operation. Status, retry and dispatch continue to require every
+pinned generation, hash and size; discovery cannot be combined with those modes
+or bypass a reviewed status digest before an Atlas retry. Existing dispatcher
+holds and grant controls are preserved.

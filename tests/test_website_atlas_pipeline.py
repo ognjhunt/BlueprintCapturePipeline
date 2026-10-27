@@ -8,6 +8,24 @@ import pytest
 from blueprint_pipeline.website_atlas_pipeline import generation_request
 
 
+def test_configuration_read_requires_explicit_server_no_creation_evidence(monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, website_task_context as transport
+    context = {"request_id": "request", "scene_id": "site-request", "capture_id": "walkthrough-request",
+               "context_digest": "sha256:" + "c" * 64}
+    source = "sha256:" + "a" * 64
+    response = {"schema_version": "website_atlas_configuration.v1", "source_video_digest": source,
+                "task_context_digest": context["context_digest"], "dispatch_authorized": False}
+    calls = []
+    monkeypatch.setattr(transport, "website_webapp_request", lambda **kw: calls.append(kw) or response)
+    with pytest.raises(ValueError, match="atlas_runtime_configuration_invalid"):
+        pipeline.load_configuration(context, source, create=False)
+    assert calls[-1]["payload"]["create"] is False
+    response["grant_creation_allowed"] = False
+    assert pipeline.load_configuration(context, source, create=False) == response
+    assert pipeline.load_configuration(context, source) == response
+    assert "create" not in calls[-1]["payload"]
+
+
 def _reviewed_today():
     # The pipeline checks the review's age against the real date, so fixtures
     # must not carry a fixed day that expires a month later.
@@ -390,6 +408,57 @@ def test_a_height_prior_guesstimate_continues_when_the_scale_review_finds_no_ref
         assert result["meters_per_unit_estimate"] == 0.9
     else:
         assert result == {"status": "needs_input", "reason": outcome}
+
+
+def test_the_source_pose_measures_with_the_task_surfaces_the_clean_plate_retained(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, website_atlas_pose as pose_api
+    from blueprint_pipeline import paid_resource_allocator as allocator, atlas_scale_review as review
+    from blueprint_pipeline import atlas_scene_measurements as measurements, atlas_scene_automation as automation
+    from blueprint_pipeline import atlas_source_pose_inputs, atlas_context_fov, atlas_reference_masks
+    from blueprint_pipeline import website_task_masks
+
+    pose_root = tmp_path / "capture" / "pipeline" / "atlas" / "pose"
+    pose_root.mkdir(parents=True)
+    (pose_root / "atlas_posed_rgbd_result.json").write_text("{}")
+    monkeypatch.setenv(pose_api.ATLAS_PRICE_REVIEW_ENV, "")
+    inputs = {"frames": [{"frame_id": "a", "timestamp_seconds": 0.0}],
+              "binding": {"source_video_digest": "video"}, "digest": "inputs"}
+    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda root: (root, inputs))
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", lambda **_: {"status": "completed"})
+    monkeypatch.setattr(measurements, "load_views", lambda *_: ({"digest": "sha256:pose", "operation": {"id": "op"}},
+                                                                ["full views"]))
+    monkeypatch.setattr(atlas_context_fov, "verify_pose_context_fov", lambda **_: None)
+    monkeypatch.setattr(automation, "measurement_plan", lambda _: {"scale_references": []})
+    monkeypatch.setattr(atlas_reference_masks, "segment_scale_references", lambda **_: None)
+    selections, lifted, measured, reviews = [], [], [], []
+    selection = {"status": "selected", "task_masks_digest": "sha256:masks", "source_video_digest": "video",
+                 "targets": ["desk track"], "source_frame_registry": ["registry"]}
+    monkeypatch.setattr(website_task_masks, "retained_task_surfaces",
+                        lambda **kw: selections.append(kw) or selection)
+    monkeypatch.setattr(measurements, "surfaces_on_posed_views",
+                        lambda *args: lifted.append(args) or ["desk on the posed views"])
+    monkeypatch.setattr(measurements, "estimate_sizes", lambda **kw: measured.append(kw) or {
+        "digest": "sha256:first", "binding": {}, "status": "estimated", "meters_per_unit_estimate": 0.9,
+        "scale_status": "estimated_from_named_assumptions",
+        "reference_agreement": {"basis": "surface_height_prior_only"}})
+
+    def abstain(**kw):
+        reviews.append(kw)
+        raise ValueError("atlas_scale_review_abstained")
+    monkeypatch.setattr(review, "repair_source_scale", abstain)
+    policy = {"pose_input_cost_usd": .01, "rate_card_reference": "https://example.test/rates",
+              "reviewed_by": "test", "reviewed_on": _reviewed_today()}
+    result = pipeline._source_pose(pose_root=pose_root, inputs={}, review={}, policy=policy,
+        task_context={"capture_id": "c"}, check=lambda _: None, experimental=False, max_polls=1,
+        configuration={"policy": policy})
+    # The capture's own clean plate, read for this video; its tracks are lifted onto the full views.
+    assert selections == [{"pipeline_root": tmp_path / "capture" / "pipeline", "source_video_digest": "video"}]
+    assert lifted == [(["full views"], inputs, selection)]
+    source = {"status": "selected", "task_masks_digest": "sha256:masks", "source_video_digest": "video"}
+    assert measured[0]["surfaces"] == ["desk on the posed views"] and measured[0]["surface_source"] == source
+    # The scale review measures with the same surfaces; the guesstimate stands when it finds no reference.
+    assert reviews[0]["surfaces"] == ["desk on the posed views"] and reviews[0]["surface_source"] == source
+    assert result["status"] == "completed" and result["scene_measurements_digest"] == "sha256:first"
 
 
 def test_a_checkpoint_refusal_stops_the_run_before_the_first_paid_review(tmp_path, monkeypatch):

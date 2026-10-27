@@ -59,13 +59,16 @@ def _digest(path: Path) -> str:
 
 
 def _verify_source(root: Path, expected: str) -> dict[str, Any]:
-    commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    # Provisioned host sources intentionally remain root-owned and read-only;
+    # authorize only this exact checkout, without changing global Git trust.
+    git = ["git", "-c", f"safe.directory={root}", "-c", "core.fsmonitor=false", "-C", str(root)]
+    commit = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
     dirty = subprocess.check_output(
-        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True
+        [*git, "status", "--porcelain", "--untracked-files=all"], text=True
     ).strip()
     if commit != expected or dirty:
         raise AstraCADRuntimeBlocked("cad_source_not_exact_clean_pin")
-    tracked = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"]).decode().split("\0")
+    tracked = subprocess.check_output([*git, "ls-files", "-z"]).decode().split("\0")
     hashes = {name: _digest(root / name) for name in tracked if name.endswith((".py", ".md", ".toml"))}
     return {"root": str(root), "commit": commit, "tracked_file_sha256": hashes, "source_diff": ""}
 

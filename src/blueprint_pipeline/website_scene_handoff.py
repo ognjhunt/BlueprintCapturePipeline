@@ -114,7 +114,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # manifest performs no mask, authoring or provider work.
         if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
             raise ValueError("website_subject_origin_conflict")
-        gap = native_task_preparation_gap(context)
+        from .website_task_semantics import load_task_semantics
+        source_video_digest = (atlas["source_geometry"].get("binding") or {}).get("source_video_digest")
+        semantics = (load_task_semantics(job_dir=capture_root / "pipeline" / "atlas", task_context=context,
+                                        source_video_digest=source_video_digest)
+                     if context.get("task_family") == "general_task" and source_video_digest else None)
+        semantics_options = {"task_semantics": semantics, "source_video_digest": source_video_digest}
+        gap = native_task_preparation_gap(context, **semantics_options)
         if gap is not None:
             # Retain the completed reconstruction and original task. Missing
             # adapter/scoring support cannot turn a different job into pick/place.
@@ -123,7 +129,8 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             return retain_gap(gap)
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
         from .task_family_scoring import canonical_task_family
-        family = canonical_task_family(context.get("task_family"))
+        from .website_task_semantics import effective_task_profile
+        family = canonical_task_family(effective_task_profile(task_context=context, **semantics_options))
         result.pop("provider_mutation_performed", None)
         if family is None and (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
             result["deferred_masks_controller_invoked"] = True
@@ -149,7 +156,8 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             preparation = compile_website_scene_preparation(task_context=context, task_masks=masks,
                 removal_manifest=removal, source_geometry=geometry, base_scene=base, output_root=root,
                 spend=metadata.get("website_scene_execution_authority") or {}, now=now,
-                evaluation_inputs=metadata.get("native_task_evaluation"))
+                evaluation_inputs=metadata.get("native_task_evaluation"),
+                **({"task_semantics": semantics} if semantics is not None else {}))
             result.update(status=preparation["status"], blockers=preparation["blockers"],
                 job_disposition="accepted", task_evaluation_inputs=preparation["task_evaluation_inputs"],
                 preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
@@ -184,7 +192,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         elif len(subjects) == 1 and subjects[0].get("target_id") in targets:
             _, inferred = native_task_subject_profile(subjects[0], targets[subjects[0]["target_id"]])
         if inferred is not None:
-            gap = native_task_preparation_gap(context, inferred_profile_id=inferred)
+            gap = native_task_preparation_gap(context, inferred_profile_id=inferred, **semantics_options)
             if gap is not None:
                 # Catch a contradictory profile before coverage/spec callbacks.
                 # Earlier mask work may have called a provider, so do not reset
@@ -219,6 +227,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             task_context=context, task_masks=clean_plate["task_masks"],
             removal_manifest=removal, source_geometry=clean_plate["source_geometry"],
             base_scene=base, output_root=root, spend=authority, now=now,
+            **({"task_semantics": semantics} if semantics is not None else {}),
         )
         result.update(status=preparation["status"], blockers=preparation["blockers"],
                       preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
@@ -268,13 +277,14 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
                 if (preparation["status"] == "intake_ready"
                         and preparation["intake_request"]["task"]["strategy"] == "pick_and_place"):
-                    # Abstain before the owner is asked to pay when the arm cannot carry the task.
+                    # Abstain before the owner is asked to pay when no enabled embodiment can carry the
+                    # task; one the gate cannot model is unassessed and never refused.
                     from .website_rigid_feasibility import rigid_task_verdict
                     verdict = rigid_task_verdict(preparation=preparation, collision_path=Path(runtime_inputs["collision"]["path"]))
                     write_json(native_root / "capability_verdict.json", verdict)
                     result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
                         "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
-                    if verdict["status"] != "clear":
+                    if verdict["status"] == "abstained":
                         result.update(status="needs_input", blockers=list(verdict["blockers"]))
                 if preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained":
                     from .website_scene_dispatch import binding_root, register_website_preparation

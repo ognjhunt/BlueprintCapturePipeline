@@ -24,10 +24,31 @@ def is_task_family_preparation(preparation):
         "schema_version") == RUNTIME_SCHEMA
 
 
-def family_source_references(*, preparation, runtime_inputs_path):
+def family_source_references(*, preparation, runtime_inputs_path, task_context=None):
     """Reopen every source byte before registration, resolution and staging."""
     inputs = preparation["task_evaluation_inputs"]
     native = validate_task_family_native_runtime_contract(inputs["native_runtime_contract"])
+    require(inputs.get('task_success_contract') == native['task_spec']['task_success_contract']
+            and inputs.get('scope') == native['task_spec']['task_success_contract']['scope'],
+            'website_task_family_native_task_binding_changed')
+    require(all(preparation.get('binding', {}).get(key) == inputs['source_bindings'].get(key)
+                for key in ('task_context_digest', 'source_geometry_digest', 'task_masks_digest',
+                            'splat_digest', 'collision_mesh_digest')), 'website_task_family_preparation_binding_changed')
+    if task_context is None:
+        require(inputs.get('task_semantics') is None, 'website_task_family_semantics_context_required')
+    else:
+        from .task_family_scoring import canonical_task_family
+        from .website_task_semantics import effective_task_profile, require_semantic_stage_order
+        require(task_context.get('context_digest') == canonical_digest(task_context, digest_field='context_digest')
+                and task_context.get('context_digest') == preparation['binding']['task_context_digest']
+                and native['task_spec']['task_success_contract']['scope']['task_context_digest'] == task_context['context_digest'],
+                'website_task_family_source_context_changed')
+        family = canonical_task_family(effective_task_profile(task_context=task_context,
+            task_semantics=inputs.get('task_semantics'), source_video_digest=inputs.get('source_video_digest')))
+        require(family is not None and family == inputs['task_family'] == native['task_family'],
+                'website_task_family_semantic_profile_changed')
+        require_semantic_stage_order(task_context=task_context, task_semantics=inputs.get('task_semantics'),
+            source_video_digest=inputs.get('source_video_digest'), contract=inputs['task_success_contract'])
     require(preparation.get("status") == "intake_ready" and preparation.get("blockers") == [],
             "website_task_family_preparation_not_ready")
     retained = json.loads(Path(runtime_inputs_path).read_text())
@@ -73,8 +94,9 @@ def family_source_references(*, preparation, runtime_inputs_path):
 
 
 def materialize_website_task_family_packet(*, preparation, runtime_inputs_path, output_root,
-                                         intent_reference, attempt_reference, release_reference):
-    rows = family_source_references(preparation=preparation, runtime_inputs_path=runtime_inputs_path)
+                                         intent_reference, attempt_reference, release_reference, task_context=None):
+    rows = family_source_references(preparation=preparation, runtime_inputs_path=runtime_inputs_path,
+                                   task_context=task_context)
     inputs = preparation["task_evaluation_inputs"]
     native = inputs["native_runtime_contract"]
     output = safe_path(output_root)
@@ -124,7 +146,8 @@ def materialize_website_task_family_packet(*, preparation, runtime_inputs_path, 
             "simulator_execution_is_not_physical_truth": True}
         receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
         write_json(output / "native_task_arena_packet_receipt.v1.json", receipt)
-        family_source_references(preparation=preparation, runtime_inputs_path=runtime_inputs_path)
+        family_source_references(preparation=preparation, runtime_inputs_path=runtime_inputs_path,
+                                 task_context=task_context)
         return {"packet_root": str(output), "packet_receipt": record(output / "native_task_arena_packet_receipt.v1.json"),
             "scene_plan": record(output / "native_task_arena_scene_plan.v1.json"),
             "native_runtime_contract": record(output / "native_task_runtime_contract.v1.json")}
