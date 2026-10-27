@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
+from .native_task_camera_start_configuration import task_geometry_key
 from .scene_physics_preflight import (
     ScenePhysicsPreflightError,
     _file_sha256,
@@ -236,10 +237,25 @@ def _plan_parts(plan: Mapping[str, Any]) -> tuple[list[Mapping[str, Any]], list[
     return subjects, appearance, plan.get("appearance_frame_alignment") or {}
 
 
+def _opaque_splat(root: Path, appearance: Mapping[str, Any], alignment: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    centres, radii, opacity = load_splat(_bound(root, appearance), str(alignment.get("appearance_prim_path") or ""),
+                                         _pose_matrix(appearance["pose_world"]))
+    keep = opacity >= MINIMUM_OPACITY
+    return centres[keep], radii[keep]
+
+
 def _scene_geometry(root: Path, plan: Mapping[str, Any], subject: Mapping[str, Any], appearance: Mapping[str, Any],
                     alignment: Mapping[str, Any]) -> tuple[list[tuple[Any, np.ndarray]], np.ndarray, np.ndarray,
                                                           Mapping[str, Any] | None]:
     """The task asset's placed colliders, the opaque splat Gaussians and the contact region (or None)."""
+    colliders, region = _task_geometry(root, plan, subject)
+    centres, radii = _opaque_splat(root, appearance, alignment)
+    return colliders, centres, radii, region
+
+
+def _task_geometry(root: Path, plan: Mapping[str, Any],
+                   subject: Mapping[str, Any]) -> tuple[list[tuple[Any, np.ndarray]], Mapping[str, Any] | None]:
+    """The task asset's colliders placed as this plan resets it, and its contact region (or None)."""
     from .native_task_asset_composition_gate import articulated_reset_contact_region
 
     try:
@@ -256,10 +272,7 @@ def _scene_geometry(root: Path, plan: Mapping[str, Any], subject: Mapping[str, A
     colliders = list(_placed(model.colliders, poses))
     if not colliders:
         raise SceneCameraVisibilityError("scene_camera_asset_colliders_missing")
-    centres, radii, opacity = load_splat(_bound(root, appearance), str(alignment.get("appearance_prim_path") or ""),
-                                         _pose_matrix(appearance["pose_world"]))
-    keep = opacity >= MINIMUM_OPACITY
-    return colliders, centres[keep], radii[keep], region
+    return colliders, region
 
 
 def coverage_problems(row: Mapping[str, Any]) -> list[str]:
@@ -276,12 +289,14 @@ def coverage_problems(row: Mapping[str, Any]) -> list[str]:
     return problems
 
 
-def packet_view_evaluator(packet_dir: str | Path) -> Callable[[Mapping[str, Any]], list[str]]:
+def packet_view_evaluator(packet_dir: str | Path) -> Callable[..., list[str]]:
     """The problems that keep a proposed world camera from seeing this packet's task through its scene.
 
     The coverage rule of ``scene_camera_visibility`` plus the plan's sealed framing floor, for a
     camera the plan does not carry yet (``droid_exterior_cameras``). A rigid task is held to
-    whole-asset coverage. Raises ``SceneCameraVisibilityError`` when the packet cannot be measured.
+    whole-asset coverage. ``evaluate(camera, plan)`` measures the task where that plan places it,
+    such as a policy cell's resolved plan that moves or turns the object; without ``plan``, the
+    packet's own. Raises ``SceneCameraVisibilityError`` when the packet cannot be measured.
     """
     from .native_task_camera_framing_expectation import (
         FRAMING_MINIMUM_EXPECTED_BBOX_AREA_PX,
@@ -299,11 +314,20 @@ def packet_view_evaluator(packet_dir: str | Path) -> Callable[[Mapping[str, Any]
         raise SceneCameraVisibilityError("scene_camera_task_subject_unresolved")
     if len(appearance) != 1 or alignment.get("representation") != SPLAT_REPRESENTATION:
         raise SceneCameraVisibilityError("scene_camera_appearance_not_a_gaussian_splat")
-    colliders, centres, radii, region = _scene_geometry(root, plan, subjects[0], appearance[0], alignment)
-    observability = plan.get("task_object_observability") or {}
+    centres, radii = _opaque_splat(root, appearance[0], alignment)
+    geometry: dict[str, tuple[list[tuple[Any, np.ndarray]], Mapping[str, Any] | None]] = {}
 
-    def evaluate(camera: Mapping[str, Any]) -> list[str]:
+    def evaluate(camera: Mapping[str, Any], plan_for_camera: Mapping[str, Any] | None = None) -> list[str]:
         role = camera.get("role")
+        measured = plan if plan_for_camera is None else plan_for_camera
+        key = task_geometry_key(measured)
+        if key not in geometry:
+            cell_subjects, _, _ = _plan_parts(measured)
+            if len(cell_subjects) != 1:
+                raise SceneCameraVisibilityError("scene_camera_task_subject_unresolved")
+            geometry[key] = _task_geometry(root, measured, cell_subjects[0])
+        colliders, region = geometry[key]
+        observability = measured.get("task_object_observability") or {}
         problems = coverage_problems(camera_coverage(colliders=colliders, centres=centres, radii=radii,
                                                      camera=camera, region=region))
         try:
@@ -320,12 +344,14 @@ def packet_view_evaluator(packet_dir: str | Path) -> Callable[[Mapping[str, Any]
 
 
 def scene_camera_visibility(packet_dir: str | Path,
-                            rendered_external_rows: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                            rendered_external_views: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]] | None = None,
+                            ) -> dict[str, Any]:
     """Measure contact-patch visibility for every world-fixed camera of a packet's plan.
 
-    ``rendered_external_rows`` are the external cameras a policy runtime renders in place of the plan's
-    world ``external`` row (``native_task_camera_start_configuration.runtime_external_camera_row``). They
-    are required; the plan's row is then measured and reported without blocking.
+    ``rendered_external_views`` pair each external camera a policy runtime renders in place of the plan's
+    world ``external`` row (``native_task_camera_start_configuration.runtime_external_camera_row``) with
+    the resolved plan it renders, which places the task. They are required; the plan's row is then
+    measured and reported without blocking.
     """
     from .decision_evidence_contracts import canonical_digest
 
@@ -347,8 +373,19 @@ def scene_camera_visibility(packet_dir: str | Path,
         return result
 
     colliders, centres, radii, region = _scene_geometry(root, plan, subjects[0], appearance[0], alignment)
+    geometry = {task_geometry_key(plan): (colliders, region)}
+    placed_by = {}
+    rendered = []
+    for row, cell_plan in rendered_external_views or ():
+        rendered.append(dict(row))
+        key = task_geometry_key(cell_plan)
+        if key not in geometry:
+            cell_subjects, _, _ = _plan_parts(cell_plan)
+            if len(cell_subjects) != 1:
+                raise SceneCameraVisibilityError("scene_camera_task_subject_unresolved")
+            geometry[key] = _task_geometry(root, cell_plan, cell_subjects[0])
+        placed_by[id(rendered[-1])] = key
     cameras, blockers, advisories, notices = [], [], [], []
-    rendered = [dict(row) for row in rendered_external_rows or ()]
     for camera in [*(plan.get("cameras") or []), *rendered]:
         role = str(camera.get("role"))
         if camera.get("pose_frame") != "world":
@@ -359,7 +396,8 @@ def scene_camera_visibility(packet_dir: str | Path,
         if rendered and role == "external" and not by_runtime:
             required = False
             notices.append("scene_camera_plan_row_not_rendered:external")
-        row = camera_coverage(colliders=colliders, centres=centres, radii=radii, camera=camera, region=region)
+        task_colliders, task_region = geometry[placed_by.get(id(camera), task_geometry_key(plan))]
+        row = camera_coverage(colliders=task_colliders, centres=centres, radii=radii, camera=camera, region=task_region)
         row["required"] = required
         if by_runtime:
             row["rendered_by_policy_runtime"] = True
@@ -383,11 +421,13 @@ def scene_camera_visibility(packet_dir: str | Path,
     return result
 
 
-def require_scene_camera_admission(packet_dir: str | Path,
-                                   rendered_external_rows: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+def require_scene_camera_admission(
+        packet_dir: str | Path,
+        rendered_external_views: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]] | None = None,
+) -> dict[str, Any]:
     """Refuse a paid native run whose policy camera cannot see the contact, or that this cannot measure."""
     try:
-        report = scene_camera_visibility(packet_dir, rendered_external_rows)
+        report = scene_camera_visibility(packet_dir, rendered_external_views)
     except (SceneCameraVisibilityError, ScenePhysicsPreflightError, OSError, KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, SceneCameraVisibilityBlocked):
             raise

@@ -255,9 +255,9 @@ def _scene_view_evaluator(packet_dir: Path):
             return None
         raise ValueError('scene_control_omission_camera_external_view_unmeasurable:' + str(exc)) from exc
 
-    def problems(row):
+    def problems(row, plan=None):
         try:
-            return evaluate(row)
+            return evaluate(row, plan)
         except SceneCameraVisibilityError as exc:
             raise ValueError('scene_control_omission_camera_external_view_unmeasurable:' + str(exc)) from exc
 
